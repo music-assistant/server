@@ -85,6 +85,7 @@ async def get_config_entries(
 @dataclass
 class TrackStub:
     """Minimal track representation inside a playlist payload."""
+
     title: str
     artist: str | None = None
     isrc: str | None = None
@@ -232,6 +233,7 @@ class ShareProvider(PluginProvider):
             if hasattr(item, "album") and item.album:
                 album_str = item.album.name
             links = self._build_provider_links(item, media_type)
+            await self._enrich_links_via_isrc(links, isrc, item.name, artist_str)
 
         elif media_type == "artist":
             mbid = item.get_external_id(ExternalID.MB_ARTIST)
@@ -270,13 +272,75 @@ class ShareProvider(PluginProvider):
                 links[domain] = schema.format(id=mapping.item_id)
         return links
 
+    async def _enrich_links_via_isrc(
+        self, links: dict[str, str], isrc: str | None, title: str, artist: str | None
+    ) -> None:
+        """
+        Add missing provider links using keyless public APIs and active MA providers.
+
+        - Deezer: keyless ISRC lookup via public API.
+        - Apple Music: keyless iTunes Search API (title + artist).
+        - YouTube Music: via the active ytmusic MA provider if configured.
+
+        Modifies ``links`` in place — only adds entries for providers not already present.
+        """
+        if not isrc and not title:
+            return
+
+        q = f"{artist} {title}" if artist else title
+
+        # Deezer — keyless ISRC lookup
+        if "deezer" not in links and isrc:
+            with suppress(Exception):
+                async with self.mass.http_session.get(
+                    f"https://api.deezer.com/track/isrc:{isrc}",
+                    timeout=4,
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        if link := data.get("link"):
+                            links["deezer"] = link
+
+        # Apple Music — keyless iTunes Search
+        if "apple_music" not in links:
+            with suppress(Exception):
+                async with self.mass.http_session.get(
+                    "https://itunes.apple.com/search",
+                    params={"term": q, "entity": "song", "limit": 5},
+                    timeout=4,
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        for r in data.get("results", []):
+                            if r.get("kind") == "song":
+                                links["apple_music"] = r["trackViewUrl"]
+                                break
+
+        # YouTube Music — via active ytmusic MA provider
+        if "ytmusic" not in links:
+            ytmusic_prov = next(
+                (
+                    p for p in (self.mass.get_provider(pid) for pid in self.mass.music.get_unique_providers())
+                    if p and p.domain == "ytmusic"
+                ),
+                None,
+            )
+            if ytmusic_prov:
+                with suppress(Exception):
+                    results = await ytmusic_prov.search(q, [MediaType.TRACK], limit=3)  # type: ignore[attr-defined]
+                    for track in results.tracks or []:
+                        for mapping in track.provider_mappings:
+                            if mapping.provider_domain == "ytmusic":
+                                links["ytmusic"] = f"https://music.youtube.com/watch?v={mapping.item_id}"
+                                break
+                        if "ytmusic" in links:
+                            break
+
     async def _build_playlist_tracks(self, playlist: MediaItemType) -> list[dict[str, Any]]:
         """Fetch and serialize playlist tracks as minimal stubs (no provider links)."""
         result: list[dict[str, Any]] = []
         with suppress(Exception):
-            tracks = await self.mass.music.playlists.tracks(
-                playlist.item_id, playlist.provider
-            )
+            tracks = await self.mass.music.playlists.tracks(playlist.item_id, playlist.provider)
             for track in tracks:
                 stub: dict[str, Any] = {"title": track.name}
                 if hasattr(track, "artist_str") and track.artist_str:
