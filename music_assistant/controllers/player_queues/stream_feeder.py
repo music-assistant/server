@@ -98,6 +98,7 @@ class StreamFeederMixin(_PlayerQueuesBase):
             return
 
         async def _enqueue_next_item_on_player(next_item: QueueItem) -> None:
+            # Player state updates can lag behind queue loading, so wait before validating.
             async with self.mass.players.wait_for_player_update(
                 queue_id,
                 attribute_name="playback_state",
