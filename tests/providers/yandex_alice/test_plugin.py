@@ -24,7 +24,8 @@ def _plugin(tmp_path: Path, values: dict[str, object]) -> tuple[YandexAlicePlugi
     mass.cache = MagicMock()
     mass.webserver.register_dynamic_route = MagicMock(return_value=MagicMock())
     config = MagicMock()
-    config.get_value.side_effect = lambda key: values.get(key)
+    config_values = {"log_level": "GLOBAL", **values}
+    config.get_value.side_effect = config_values.get
     manifest = MagicMock()
     manifest.domain = "yandex_alice"
     plugin = YandexAlicePlugin(mass, manifest, config, set())
