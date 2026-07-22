@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from music_assistant_models.enums import PlaybackState
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -16,8 +17,13 @@ from music_assistant.controllers.player_queues import PlayerQueuesController
 from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 
-async def test_enqueue_next_item_waits_for_playing_player_update() -> None:
-    """The queued next item is enqueued after the player update reports PLAYING."""
+@pytest.mark.parametrize(
+    "index_in_buffer",
+    [0, 1],
+    ids=["aligned-buffer-index", "dynamic-queue-reindexed"],
+)
+async def test_enqueue_next_item_waits_for_playing_player_update(index_in_buffer: int) -> None:
+    """Enqueue the expected next item after an update, even if its buffered index is stale."""
     controller = PlayerQueuesController.__new__(PlayerQueuesController)
     controller.logger = MagicMock()
 
@@ -43,23 +49,25 @@ async def test_enqueue_next_item_waits_for_playing_player_update() -> None:
     mass.players.enqueue_next_media = AsyncMock()
     controller.mass = mass
 
-    current_item = _make_queue_item("q1", "current")
-    next_item = _make_queue_item("q1", "next")
+    current_item = _make_queue_item("q1", "nerin")
+    next_item = _make_queue_item("q1", "another-love")
+    future_item = _make_queue_item("q1", "future-track")
+    queue_items = [current_item, next_item, future_item]
     queue = PlayerQueue(
         queue_id="q1",
         active=True,
         display_name="Q1",
         available=True,
-        items=2,
+        items=len(queue_items),
         state=PlaybackState.IDLE,
         current_index=0,
-        index_in_buffer=0,
+        index_in_buffer=index_in_buffer,
         current_item=current_item,
     )
     controller._queue_data = {
         "q1": PlayerQueueData(
             queue=queue,
-            items=[current_item, next_item],
+            items=queue_items,
             session_id="session-1",
         )
     }
@@ -83,8 +91,11 @@ async def test_enqueue_next_item_waits_for_playing_player_update() -> None:
     )
     mass.players.enqueue_next_media.assert_awaited_once()
     assert mass.players.enqueue_next_media.await_args.kwargs["player_id"] == "q1"
-    assert mass.players.enqueue_next_media.await_args.kwargs["media"].queue_item_id == "next"
-    assert controller._queue_data["q1"].next_item_id_enqueued == "next"
+    assert (
+        mass.players.enqueue_next_media.await_args.kwargs["media"].queue_item_id
+        == next_item.queue_item_id
+    )
+    assert controller._queue_data["q1"].next_item_id_enqueued == next_item.queue_item_id
 
 
 def _make_queue_item(queue_id: str, item_id: str) -> QueueItem:
