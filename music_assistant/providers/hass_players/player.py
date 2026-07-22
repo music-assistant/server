@@ -34,8 +34,8 @@ from music_assistant.providers.hass.constants import (
     StateMap,
 )
 
-from .constants import CONF_ENTRY_WARN_HASS_INTEGRATION, WARN_HASS_INTEGRATIONS
-from .helpers import ESPHomeSupportedAudioFormat
+from .constants import CONF_ENTRY_WARN_HASS_INTEGRATION, NATIVE_SUPPORTED_HASS_INTEGRATIONS
+from .helpers import ESPHomeSupportedAudioFormat, native_player_macs, normalized_mac
 
 if TYPE_CHECKING:
     from hass_client import HomeAssistantClient
@@ -143,6 +143,12 @@ class HomeAssistantPlayer(Player):
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         base_entries = [*DEFAULT_PLAYER_CONFIG_ENTRIES]
+        # add alert if the player (type) is also supported by a native MA provider
+        if (
+            self.extra_data.get("hass_domain") in NATIVE_SUPPORTED_HASS_INTEGRATIONS
+            or self._has_native_duplicate()
+        ):
+            base_entries = [CONF_ENTRY_WARN_HASS_INTEGRATION, *base_entries]
         supported_formats: list[ESPHomeSupportedAudioFormat] | None = self.extra_data.get(
             "esphome_supported_audio_formats"
         )
@@ -172,10 +178,6 @@ class HomeAssistantPlayer(Player):
             )
 
             return config_entries
-
-        # add alert if player is a known player type that has a native provider in MA
-        if self.extra_data.get("hass_domain") in WARN_HASS_INTEGRATIONS:
-            base_entries = [CONF_ENTRY_WARN_HASS_INTEGRATION, *base_entries]
 
         return base_entries
 
@@ -501,3 +503,9 @@ class HomeAssistantPlayer(Player):
             )
             return self.mass.metadata.get_image_url(image)
         return None
+
+    def _has_native_duplicate(self) -> bool:
+        """Whether this device is also registered as a native Music Assistant player."""
+        if not (mac := self.device_info.identifiers.get(IdentifierType.MAC_ADDRESS)):
+            return False
+        return normalized_mac(mac) in native_player_macs(self.mass)
