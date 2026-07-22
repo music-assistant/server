@@ -87,21 +87,6 @@ async def test_enqueue_next_item_waits_for_playing_player_update() -> None:
     assert controller._queue_data["q1"].next_item_id_enqueued == "next"
 
 
-class _BlockingWaitForPlayerUpdate:
-    """Async context manager that blocks until the test releases it."""
-
-    def __init__(self) -> None:
-        self.entered = asyncio.Event()
-        self.released = asyncio.Event()
-
-    async def __aenter__(self) -> None:
-        self.entered.set()
-        await self.released.wait()
-
-    async def __aexit__(self, *args: object) -> bool:
-        return False
-
-
 def _make_queue_item(queue_id: str, item_id: str) -> QueueItem:
     """Build a minimal playable queue item."""
     return QueueItem(
