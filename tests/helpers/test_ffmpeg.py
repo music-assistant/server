@@ -12,10 +12,33 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.ffmpeg import (
     FFMpegStreamInfo,
+    get_ffmpeg_args,
     get_ffmpeg_overlay_stream,
     parse_ffmpeg_duration,
     parse_ffmpeg_stream_info,
 )
+
+
+def test_get_ffmpeg_args_does_not_mutate_filters() -> None:
+    """Automatic resampling must not alter a caller-owned filter plan."""
+    input_format = AudioFormat(
+        content_type=ContentType.PCM_F32LE,
+        sample_rate=96000,
+        bit_depth=32,
+        channels=2,
+    )
+    output_format = AudioFormat(
+        content_type=ContentType.FLAC,
+        sample_rate=48000,
+        bit_depth=16,
+        channels=2,
+    )
+    filter_params = ["volume=-1dB"]
+
+    get_ffmpeg_args(input_format, output_format, filter_params)
+
+    assert filter_params == ["volume=-1dB"]
+
 
 # -- parse_ffmpeg_stream_info --
 

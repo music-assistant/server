@@ -31,6 +31,7 @@ from music_assistant.constants import (
     DEFAULT_STREAM_HEADERS,
     DLNA_CONTENT_FEATURES_REALTIME,
 )
+from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
@@ -307,6 +308,8 @@ class UniversalGroupPlayer(Player):
             audio_source=audio_source,
             audio_format=pivot_format,
             base_pcm_format=pivot_format,
+            queue_id=media.source_id,
+            session_id=get_media_session_id(media),
         )
         base_url = f"{self.mass.streams.base_url}/ugp/{self.player_id}.{fmt_str}"
 
@@ -329,7 +332,10 @@ class UniversalGroupPlayer(Player):
                             media_type=MediaType.FLOW_STREAM,
                             title=self.display_name,
                             source_id=self.player_id,
-                            custom_data={"ugp_player_id": self.player_id},
+                            custom_data={
+                                "ugp_player_id": self.player_id,
+                                "session_id": self.stream.session_id,
+                            },
                         ),
                     )
                 )
@@ -381,7 +387,10 @@ class UniversalGroupPlayer(Player):
                         media_type=MediaType.FLOW_STREAM,
                         title=self.display_name,
                         source_id=self.player_id,
-                        custom_data={"ugp_player_id": self.player_id},
+                        custom_data={
+                            "ugp_player_id": self.player_id,
+                            "session_id": self.stream.session_id,
+                        },
                     ),
                 )
         # handle removals
@@ -617,15 +626,19 @@ class UniversalGroupPlayer(Player):
         )
 
         # Generate filter params for the player specific DSP settings
-        filter_params = None
+        output_plan = None
         if child_player_id:
-            filter_params = self.mass.streams.audio.get_player_filter_params(
-                child_player_id, self.stream.input_format, output_format
+            output_plan = self.mass.streams.audio.get_player_output_plan(
+                child_player_id,
+                self.stream.input_format,
+                output_format,
+                queue_id=self.stream.queue_id,
+                session_id=self.stream.session_id,
             )
 
         async for chunk in self.stream.get_stream(
             output_format,
-            filter_params=filter_params,
+            filter_params=output_plan.filter_params if output_plan else None,
         ):
             try:
                 await resp.write(chunk)

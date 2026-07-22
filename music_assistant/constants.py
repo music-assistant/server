@@ -39,7 +39,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 37
+API_SCHEMA_VERSION: Final[int] = 38
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -359,6 +359,7 @@ CONF_ENTRY_FLOW_MODE_SAMPLE_RATE = ConfigEntry(
         ConfigValueOption(FLOW_MODE_SAMPLE_RATE_HIGHEST),
     ],
     default_value=FLOW_MODE_SAMPLE_RATE_SMART,
+    depends_on=CONF_FLOW_MODE,
     category="protocol_generic",
     advanced=True,
     requires_reload=True,

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+import time
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1479,3 +1481,314 @@ class TestLeaderPlaybackAwaited:
 
         mass.players.wait_for_player_update.assert_not_called()
         mass.players.cmd_resume.assert_awaited_once()
+
+
+class TestPlaybackStartMarker:
+    """A just-issued playback start counts as playing for group-command decisions."""
+
+    def _setup_group(self, mass: MagicMock, group_state: PlaybackState) -> SyncGroupPlayer:
+        sgp = _make_sync_group(mass)
+        # a provider without dynamic leader switching, so leader removal takes the
+        # dissolve+reform path
+        leader = _make_mock_player("leader", provider_domain="wiim")
+        other = _make_mock_player("other", provider_domain="wiim")
+        mass.players.get_player = _player_lookup({"leader": leader, "other": other})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "other"]
+        sgp._attr_playback_state = group_state
+        # close scheduled background coroutines (idle-grace) instead of leaking them
+        mass.create_task = MagicMock(side_effect=lambda coro, *_a, **_k: coro.close())
+        return sgp
+
+    @pytest.mark.asyncio
+    async def test_leader_removal_during_startup_window_resumes(self) -> None:
+        """
+        Leader removal right after a start command must still resume.
+
+        Devices report transient states (a false PLAYING, bounces through IDLE)
+        while a group session starts, so the group state alone misreads the
+        startup window as idle and would skip the post-reform resume.
+        """
+        mass = _make_mock_mass()
+        sgp = self._setup_group(mass, group_state=PlaybackState.IDLE)
+        sgp._playback_start_at = time.monotonic()
+
+        with (
+            patch.object(sgp, "_dissolve_and_reform", new=AsyncMock()) as reform,
+            patch.object(sgp, "_dynamic_leader_switch", new=AsyncMock()) as dyn_switch,
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+
+        dyn_switch.assert_not_awaited()
+        reform.assert_awaited_once()
+        assert reform.await_args is not None
+        assert reform.await_args.kwargs.get("resume_playback") is True
+
+    @pytest.mark.asyncio
+    async def test_paused_group_never_resumes_despite_recent_start(self) -> None:
+        """PAUSED is deliberate user intent and always wins over the startup marker."""
+        mass = _make_mock_mass()
+        sgp = self._setup_group(mass, group_state=PlaybackState.PAUSED)
+        sgp._playback_start_at = time.monotonic()
+
+        with (
+            patch.object(sgp, "_dissolve_and_reform", new=AsyncMock()) as reform,
+            patch.object(sgp, "_dynamic_leader_switch", new=AsyncMock()),
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+
+        reform.assert_awaited_once()
+        assert reform.await_args is not None
+        assert reform.await_args.kwargs.get("resume_playback") is False
+
+    @pytest.mark.asyncio
+    async def test_await_leader_playback_stamps_the_marker(self) -> None:
+        """The playback wait stamps the start so decision logic can see the window."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        sgp.sync_leader = _make_mock_player("leader")
+        assert sgp._playback_recently_started is False
+
+        async with sgp._await_leader_playback():
+            pass
+
+        assert sgp._playback_recently_started is True
+
+    @pytest.mark.asyncio
+    async def test_stop_voids_the_marker(self) -> None:
+        """An explicit stop clears the marker so a later unjoin won't resume."""
+        mass = _make_mock_mass()
+        sgp = _make_sync_group(mass)
+        leader = _make_mock_player("leader")
+        mass.players.get_player = _player_lookup({"leader": leader})
+        sgp.sync_leader = leader
+        sgp._playback_start_at = time.monotonic()
+
+        with patch.object(sgp, "update_state"):
+            await sgp.stop()
+
+        assert sgp._playback_recently_started is False
+
+
+class TestDebouncedReform:
+    """Leader removal re-forms debounced so cascaded unjoins coalesce."""
+
+    def _setup_group(self, mass: MagicMock, members: list[str]) -> SyncGroupPlayer:
+        sgp = _make_sync_group(mass)
+        players = {
+            member_id: _make_mock_player(member_id, provider_domain="wiim") for member_id in members
+        }
+        mass.players.get_player = _player_lookup(players)
+        sgp.sync_leader = players[members[0]]
+        sgp._attr_group_members = list(members)
+        sgp._attr_playback_state = PlaybackState.PLAYING
+        # run scheduled coroutines for real so the debounced re-form actually fires;
+        # eager_start mirrors mass.create_task so the runner enters its sleep at
+        # schedule time (a later cancel then always lands inside the body)
+        mass.create_task = MagicMock(
+            side_effect=lambda coro, *_a, **_k: asyncio.Task(
+                coro, loop=asyncio.get_running_loop(), eager_start=True
+            )
+        )
+        return sgp
+
+    @pytest.mark.asyncio
+    async def test_leader_removal_schedules_debounced_reform(self) -> None:
+        """The stop/dissolve happens immediately; the re-form (with resume) is debounced."""
+        mass = _make_mock_mass()
+        sgp = self._setup_group(mass, members=["leader", "m2"])
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+            patch.object(sgp, "play", new=AsyncMock()) as play,
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+
+            # immediate half: leader stopped, group dissolved, re-form pending
+            mass.players._handle_cmd_stop.assert_any_await("leader")
+            assert sgp.sync_leader is None
+            task = sgp._reform_task
+            assert task is not None
+            play.assert_not_awaited()
+            # the group keeps claiming its members while the re-form is pending
+            assert sgp.is_active_session is True
+
+            await task
+
+        play.assert_awaited_once()
+        assert sgp._reform_task is None
+
+    @pytest.mark.asyncio
+    async def test_cascaded_unjoins_coalesce_into_single_reform(self) -> None:
+        """A second unjoin within the window re-arms it: one re-form, final member list."""
+        mass = _make_mock_mass()
+        sgp = self._setup_group(mass, members=["leader", "m2", "m3"])
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+            patch.object(sgp, "play", new=AsyncMock()) as play,
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+            first_task = sgp._reform_task
+            assert first_task is not None
+
+            # second unjoin lands inside the debounce window
+            await sgp.set_members(player_ids_to_remove=["m2"])
+            second_task = sgp._reform_task
+            assert second_task is not None
+            assert second_task is not first_task
+
+            await asyncio.gather(first_task, second_task)
+
+        play.assert_awaited_once()
+        assert sgp._attr_group_members == ["m3"]
+
+    @pytest.mark.asyncio
+    async def test_explicit_stop_cancels_pending_reform(self) -> None:
+        """An explicit stop during the window means silence — no resume may follow."""
+        mass = _make_mock_mass()
+        sgp = self._setup_group(mass, members=["leader", "m2"])
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+            patch.object(sgp, "play", new=AsyncMock()) as play,
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+            task = sgp._reform_task
+            assert task is not None
+
+            await sgp.stop()
+            assert sgp._reform_task is None
+            await task
+
+        play.assert_not_awaited()
+        assert sgp.is_active_session is False
+
+    @pytest.mark.asyncio
+    async def test_reform_aborts_when_all_members_left(self) -> None:
+        """When the window drains the whole group, the re-form fires as a no-op."""
+        mass = _make_mock_mass()
+        sgp = self._setup_group(mass, members=["leader", "m2"])
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+            patch.object(sgp, "play", new=AsyncMock()) as play,
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+            await sgp.set_members(player_ids_to_remove=["m2"])
+            task = sgp._reform_task
+            assert task is not None
+
+            await task
+
+        play.assert_not_awaited()
+        assert sgp._reform_task is None
+        assert sgp.is_active_session is False
+
+    @pytest.mark.asyncio
+    async def test_explicit_play_supersedes_pending_reform(self) -> None:
+        """A user play during the window forms right away; the pending re-form is dropped."""
+        mass = _make_mock_mass()
+        sgp = self._setup_group(mass, members=["leader", "m2"])
+        mass.players.cmd_resume = AsyncMock()
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+            task = sgp._reform_task
+            assert task is not None
+
+            await sgp.play()
+            assert sgp._reform_task is None
+            await task
+
+        mass.players.cmd_resume.assert_awaited_once()
+        assert sgp.sync_leader is not None
+        assert sgp.sync_leader.player_id == "m2"
+
+    @pytest.mark.asyncio
+    async def test_reform_survives_cancel_from_its_own_form(self) -> None:
+        """
+        The firing re-form must not cancel itself.
+
+        The runner resumes via play() -> _form_syncgroup, which cancels any pending
+        re-form timer — including, without the identity guard, the very task that
+        is executing it.
+        """
+        mass = _make_mock_mass()
+        sgp = self._setup_group(mass, members=["leader", "m2"])
+        mass.players.cmd_resume = AsyncMock()
+
+        with (
+            patch("music_assistant.providers.sync_group.player.REFORM_DEBOUNCE_SECONDS", 0.05),
+            patch.object(sgp, "update_state"),
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+            task = sgp._reform_task
+            assert task is not None
+
+            await task
+
+        mass.players.cmd_resume.assert_awaited_once()
+        assert sgp.sync_leader is not None
+        assert sgp.sync_leader.player_id == "m2"
+        assert sgp._reform_task is None
+
+
+class TestReformResumeGate:
+    """Removing the sync leader resumes playback if (and only if) the group was playing."""
+
+    def _setup_group(self, mass: MagicMock, group_state: PlaybackState) -> SyncGroupPlayer:
+        sgp = _make_sync_group(mass)
+        # a provider without dynamic leader switching, so leader removal takes the
+        # dissolve+reform path
+        leader = _make_mock_player("leader", provider_domain="wiim")
+        other = _make_mock_player("other", provider_domain="wiim")
+        mass.players.get_player = _player_lookup({"leader": leader, "other": other})
+        sgp.sync_leader = leader
+        sgp._attr_group_members = ["leader", "other"]
+        sgp._attr_playback_state = group_state
+        # close scheduled background coroutines (idle-grace) instead of leaking them
+        mass.create_task = MagicMock(side_effect=lambda coro, *_a, **_k: coro.close())
+        return sgp
+
+    @pytest.mark.asyncio
+    async def test_leader_removal_resumes_when_playing(self) -> None:
+        """Leader removal on a playing group must reform with a resume."""
+        mass = _make_mock_mass()
+        sgp = self._setup_group(mass, group_state=PlaybackState.PLAYING)
+
+        with (
+            patch.object(sgp, "_dissolve_and_reform", new=AsyncMock()) as reform,
+            patch.object(sgp, "_dynamic_leader_switch", new=AsyncMock()) as dyn_switch,
+            patch.object(sgp, "_active_session_player", return_value=None),
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+
+        dyn_switch.assert_not_awaited()
+        reform.assert_awaited_once()
+        assert reform.await_args is not None
+        assert reform.await_args.kwargs.get("resume_playback") is True
+
+    @pytest.mark.asyncio
+    async def test_leader_removal_does_not_resume_when_idle(self) -> None:
+        """A genuinely idle group must not spuriously start playing on leader removal."""
+        mass = _make_mock_mass()
+        sgp = self._setup_group(mass, group_state=PlaybackState.IDLE)
+
+        with (
+            patch.object(sgp, "_dissolve_and_reform", new=AsyncMock()) as reform,
+            patch.object(sgp, "_dynamic_leader_switch", new=AsyncMock()),
+            patch.object(sgp, "_active_session_player", return_value=None),
+        ):
+            await sgp.set_members(player_ids_to_remove=["leader"])
+
+        reform.assert_awaited_once()
+        assert reform.await_args is not None
+        assert reform.await_args.kwargs.get("resume_playback") is False

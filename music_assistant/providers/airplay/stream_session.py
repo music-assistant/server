@@ -12,15 +12,17 @@ from music_assistant_models.enums import PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import CONF_SYNC_ADJUST
+from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.ffmpeg import FFMpeg
 
-from .constants import StreamingProtocol
-from .helpers import get_final_output_format, ntp_to_unix_time, unix_time_to_ntp
-from .protocols.airplay2 import AirPlay2Stream
-from .protocols.raop import RaopStream
+from .constants import AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS, StreamingProtocol
+from .helpers import get_final_output_format
+from .stream import AirPlayStream
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
+
+    from music_assistant.models.player import PlayerMedia
 
     from .player import AirPlayPlayer
     from .provider import AirPlayProvider
@@ -34,6 +36,7 @@ class AirPlayStreamSession:
         airplay_provider: AirPlayProvider,
         sync_clients: list[AirPlayPlayer],
         pcm_format: AudioFormat,
+        media: PlayerMedia,
     ) -> None:
         """
         Initialize AirPlayStreamSession.
@@ -41,44 +44,70 @@ class AirPlayStreamSession:
         :param airplay_provider: The AirPlay provider instance.
         :param sync_clients: List of AirPlay players to stream to.
         :param pcm_format: PCM format of the input stream.
+        :param media: Queue media that owns the stream session.
         """
         assert sync_clients
         self.prov = airplay_provider
         self.mass = airplay_provider.mass
         self.pcm_format = pcm_format
+        self.media = media
         self.sync_clients = sync_clients
         self._audio_source_task: asyncio.Task[None] | None = None
         self._player_ffmpeg: dict[str, FFMpeg] = {}
         self._lock = asyncio.Lock()
-        self.start_ntp: int = 0
+        self._ptp_lock = asyncio.Lock()
+        self.start_unix_ms: int = 0
         self.start_time: float = 0.0
         self.wait_start: float = 0.0
         self.seconds_streamed: float = 0
-        # Raw PCM ring buffer for late joiners.  Capped at ~5 seconds.
-        # When a late joiner arrives we send this buffer to prime its
-        # pipeline so it starts playing quickly instead of waiting for
-        # the full pipeline to fill from scratch.
+        # Timing source for the whole session, decided once in start() and applied
+        # identically to every native AirPlay 2 member (and any late joiner) so a
+        # sync group can never mix shared-PTP and NTP members.
+        self.use_shared_ptp: bool = False
+        self._shared_ptp_resolved = False
+        self._ptp_degraded_warning_logged = False
+        # Raw PCM ring buffer for late joiners. When a late joiner arrives we
+        # send this buffer to prime its pipeline so it starts playing quickly
+        # instead of waiting for the full pipeline to fill from scratch.
+        # Must cover how far the feed runs ahead of the audible position
+        # (the binary's ring cap of latency+2s plus the ~2s receiver buffer)
+        # with enough slack left to prime the joiner.
         self._pcm_buffer = bytearray()
-        self._pcm_buffer_max = pcm_format.pcm_sample_size * 5  # 5 seconds
+        self._pcm_buffer_max = pcm_format.pcm_sample_size * 10  # 10 seconds
 
     async def start(self, audio_source: AsyncGenerator[bytes]) -> None:
         """Initialize stream session for all players."""
+        ap2_members = sum(1 for p in self.sync_clients if p.protocol == StreamingProtocol.AIRPLAY2)
+        if ap2_members:
+            # Resolve the timing source before calculating the audible anchor so
+            # a bounded daemon-readiness wait cannot consume the setup lead.
+            self.use_shared_ptp = await self._resolve_shared_ptp(ap2_members)
+            self._shared_ptp_resolved = True
         cur_time = time.time()
         wait_start = max(p.wait_start for p in self.sync_clients)
         wait_start_seconds = wait_start / 1000
         self.wait_start = wait_start_seconds
         self.start_time = cur_time + wait_start_seconds
-        self.start_ntp = unix_time_to_ntp(self.start_time)
-        await asyncio.gather(*[self._start_client(p, self.start_ntp) for p in self.sync_clients])
-        self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
+        # group start as plain unix epoch milliseconds: every member of the
+        # sync group receives the exact same value (--start-unix-ms)
+        self.start_unix_ms = int(self.start_time * 1000)
         try:
+            async with asyncio.TaskGroup() as task_group:
+                for player in self.sync_clients:
+                    task_group.create_task(
+                        self._start_client(player, self.start_unix_ms, self.use_shared_ptp)
+                    )
+            self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
             await asyncio.gather(
                 *[p.stream.wait_for_connection() for p in self.sync_clients if p.stream]
             )
-        except Exception:
+        except asyncio.CancelledError:
+            await self.stop()
+            raise
+        except Exception as err:
             # playback failed to start, cleanup
             await self.stop()
-            raise PlayerCommandFailed("Playback failed to start")
+            raise PlayerCommandFailed("Playback failed to start") from err
 
     async def stop(self) -> None:
         """Stop playback and cleanup."""
@@ -133,10 +162,11 @@ class AirPlayStreamSession:
         Add a sync client to the session as a late joiner.
 
         Uses the PCM ring buffer to prime the late joiner's pipeline so it
-        starts playing quickly. All work happens under the lock to ensure
-        ``seconds_streamed`` and the buffer are consistent.
+        starts playing quickly. Timing-source readiness is resolved before the
+        session lock; buffer calculations and writes stay under the lock so
+        ``seconds_streamed`` and the buffer remain consistent.
 
-        Devices generally cannot honour an NTP start anchor that is in the
+        Devices generally cannot honour a start anchor that is in the
         past — they just play whatever the pipe gives them, trailing the
         group by the deficit. To stay in sync we therefore push the late
         joiner's ``start_at`` into the future (at least ``wait_start`` ahead
@@ -146,13 +176,14 @@ class AirPlayStreamSession:
 
         1. Snapshot the ring buffer and calculate how many seconds it holds.
         2. Map the buffer's first byte to its stream position; if the
-           resulting NTP start is in the past, shift it forward to
+           resulting start anchor is in the past, shift it forward to
            ``now + min_headroom`` and trim that many seconds from the buffer
            head so timing stays aligned with the rest of the group.
         3. Start ffmpeg+CLI, write the (possibly trimmed) buffer into ffmpeg
-           to prime the pipe while cliraop is still connecting, then add to
+           to prime the pipe while cliairplay is still connecting, then add to
            sync_clients so the audio streamer continues seamlessly.
         """
+        await self._resolve_late_joiner_ptp(airplay_player)
         async with self._lock:
             if not self.sync_clients:
                 return
@@ -169,13 +200,18 @@ class AirPlayStreamSession:
             first_byte_pos = self.seconds_streamed - buffer_seconds
             start_at = self.start_time + first_byte_pos
 
-            # The audio we hand to ffmpeg → cliraop must be bit-aligned with
+            # The audio we hand to ffmpeg → cliairplay must be bit-aligned with
             # ``start_at``: the first sample sent should be the one that should
-            # play at ``start_at``. cliraop buffers ``wait_start`` seconds of
+            # play at ``start_at``. cliairplay buffers ``wait_start`` seconds of
             # audio before starting playback, so we keep ``start_at`` at least
             # that far in the future (using the larger of the session's
-            # existing wait_start and the late joiner's own).
-            min_headroom = max(self.wait_start, airplay_player.wait_start / 1000)
+            # existing wait_start, the late joiner's own and the late-join
+            # floor, which is more conservative than the plain session lead).
+            min_headroom = max(
+                self.wait_start,
+                airplay_player.wait_start / 1000,
+                AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000,
+            )
             target_start_at = now + min_headroom
             trim_seconds = 0.0
             if start_at < target_start_at:
@@ -202,7 +238,7 @@ class AirPlayStreamSession:
                 # connections / very-far-behind joiners.
                 start_at = max(start_at, target_start_at)
 
-            start_ntp = unix_time_to_ntp(start_at)
+            start_unix_ms = int(start_at * 1000)
 
             self.prov.logger.debug(
                 "Late joiner %s: sending %.2fs of buffered audio, "
@@ -219,9 +255,11 @@ class AirPlayStreamSession:
 
             # Start ffmpeg+CLI and immediately write the buffered PCM.
             # ffmpeg accepts data on stdin right away; it queues in the pipe
-            # while cliraop is still connecting to the device.
+            # while cliairplay is still connecting to the device.
             try:
-                await self._start_client(airplay_player, start_ntp)
+                # A late joiner must use the SAME timing source the group
+                # committed to at session start, else it would drift against it.
+                await self._start_client(airplay_player, start_unix_ms, self.use_shared_ptp)
                 if buffered_pcm:
                     await self._write_chunk_to_player(airplay_player, buffered_pcm)
             except Exception as err:
@@ -237,6 +275,13 @@ class AirPlayStreamSession:
             # continues exactly from seconds_streamed where the buffer ended.
             if airplay_player not in self.sync_clients:
                 self.sync_clients.append(airplay_player)
+            if airplay_player.protocol == StreamingProtocol.AIRPLAY2 and not self.use_shared_ptp:
+                ap2_members = sum(
+                    1
+                    for player in self.sync_clients
+                    if player.protocol == StreamingProtocol.AIRPLAY2
+                )
+                self._warn_degraded_shared_ptp(ap2_members)
 
         # Wait for device connection outside the lock.
         if airplay_player.stream:
@@ -254,6 +299,64 @@ class AirPlayStreamSession:
                     time.time() - now,
                 )
                 await self.remove_client(airplay_player, reason="late joiner connection timeout")
+
+    async def _resolve_shared_ptp(self, ap2_members: int | None = None) -> bool:
+        """
+        Decide, once per session, whether members attach to the shared PTP daemon.
+
+        The decision is session-wide and gated on the daemon actually being ready
+        (bound to 319/320 with its control channel open), not merely spawned, so a
+        group start cannot race the daemon and end up mixing PTP and NTP members.
+
+        :param ap2_members: Number of native AirPlay 2 members that will use the
+            decision. Defaults to the current session members.
+        :return: True if every native AirPlay 2 member should use the shared PTP
+            clock; False to degrade the whole session consistently (no member
+            attaches to the daemon).
+        """
+        if ap2_members is None:
+            ap2_members = sum(
+                1 for p in self.sync_clients if p.protocol == StreamingProtocol.AIRPLAY2
+            )
+        if not ap2_members:
+            return False
+        if await self.prov.wait_ptp_daemon_ready():
+            return True
+        # Daemon not ready: keep the group coherent by attaching no one to the
+        # shared clock. A lone native AP2 player can still self-bind its own PTP
+        # with no partner to drift against; only a real multi-room group loses
+        # tight sync, so warn just for that case.
+        self._warn_degraded_shared_ptp(ap2_members)
+        return False
+
+    async def _resolve_late_joiner_ptp(self, airplay_player: AirPlayPlayer) -> None:
+        """Resolve the session timing source before its first late AirPlay 2 join."""
+        if airplay_player.protocol != StreamingProtocol.AIRPLAY2:
+            return
+        async with self._ptp_lock:
+            if self._shared_ptp_resolved:
+                return
+            async with self._lock:
+                ap2_members = sum(
+                    1
+                    for player in self.sync_clients
+                    if player.protocol == StreamingProtocol.AIRPLAY2
+                ) + (airplay_player not in self.sync_clients)
+            self.use_shared_ptp = await self._resolve_shared_ptp(ap2_members)
+            self._shared_ptp_resolved = True
+
+    def _warn_degraded_shared_ptp(self, ap2_members: int) -> None:
+        """Warn once when multiple AirPlay 2 members cannot share the PTP clock."""
+        if ap2_members <= 1 or self._ptp_degraded_warning_logged:
+            return
+        self._ptp_degraded_warning_logged = True
+        self.prov.logger.warning(
+            "Shared PTP clock daemon not ready - native AirPlay 2 multi-room sync "
+            "for this group of %d players is degraded and members may drift. The "
+            "server likely cannot bind the privileged PTP ports (UDP 319/320); "
+            "running without root or CAP_NET_BIND_SERVICE is the common cause.",
+            ap2_members,
+        )
 
     async def _cleanup_after_removal(
         self, airplay_player: AirPlayPlayer, reason: str = "client removed"
@@ -389,29 +492,40 @@ class AirPlayStreamSession:
             if airplay_player.stream:
                 await airplay_player.stream.write_audio_eof()
 
-    async def _start_client(self, airplay_player: AirPlayPlayer, start_ntp: int) -> None:
-        """Start CLI process and ffmpeg for a single client."""
+    async def _start_client(
+        self, airplay_player: AirPlayPlayer, start_unix_ms: int, use_shared_ptp: bool
+    ) -> None:
+        """
+        Start CLI process and ffmpeg for a single client.
+
+        :param airplay_player: The player to start streaming to.
+        :param start_unix_ms: The audible-start instant in unix epoch ms.
+        :param use_shared_ptp: The session-wide shared-PTP decision applied to
+            this member so the whole group shares one timing source.
+        """
         # sync volume from parent player if needed
         airplay_player.sync_volume_level()
         if airplay_player.stream and airplay_player.stream.running:
             await airplay_player.stream.stop()
-        if airplay_player.protocol == StreamingProtocol.AIRPLAY2:
-            airplay_player.stream = AirPlay2Stream(airplay_player)
-        else:
-            airplay_player.stream = RaopStream(airplay_player)
+        stream_pcm_format = airplay_player.get_stream_pcm_format(self.pcm_format)
+        airplay_player.stream = AirPlayStream(airplay_player, pcm_format=stream_pcm_format)
         airplay_player.stream.session = self
         sync_adjust = airplay_player.config.get_value(CONF_SYNC_ADJUST, 0)
         assert isinstance(sync_adjust, int)
         if sync_adjust != 0:
-            start_ntp = unix_time_to_ntp(ntp_to_unix_time(start_ntp) + (sync_adjust / 1000))
-        await airplay_player.stream.start(start_ntp)
+            start_unix_ms += sync_adjust
+        await airplay_player.stream.start(start_unix_ms, use_shared_ptp)
         # Start ffmpeg to feed audio to CLI stdin
         if ffmpeg := self._player_ffmpeg.pop(airplay_player.player_id, None):
             await ffmpeg.close()
-        filter_params = self.mass.streams.audio.get_player_filter_params(
+        handoff_format = airplay_player.stream.pcm_format
+        output_plan = self.mass.streams.audio.get_player_output_plan(
             airplay_player.player_id,
             input_format=self.pcm_format,
-            output_format=get_final_output_format(airplay_player.stream.pcm_format, airplay_player),
+            output_format=get_final_output_format(handoff_format, airplay_player),
+            handoff_format=handoff_format,
+            queue_id=self.media.source_id,
+            session_id=get_media_session_id(self.media),
         )
         cli_proc = airplay_player.stream._cli_proc
         assert cli_proc
@@ -422,8 +536,8 @@ class AirPlayStreamSession:
         ffmpeg = FFMpeg(
             audio_input="-",
             input_format=self.pcm_format,
-            output_format=airplay_player.stream.pcm_format,
-            filter_params=filter_params,
+            output_format=handoff_format,
+            filter_params=output_plan.filter_params,
             audio_output=audio_output,
         )
         await ffmpeg.start()

@@ -1,10 +1,13 @@
 """Unit tests for AirPlay stream session late-join logic."""
 
+import asyncio
 import time
+from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
 
@@ -33,10 +36,10 @@ def _make_session(
     leader.stream = MagicMock()
     leader.stream.running = True
 
-    session = AirPlayStreamSession(prov, [leader], pcm_format)
+    session = AirPlayStreamSession(prov, [leader], pcm_format, MagicMock())
     session.start_time = start_time
     session.seconds_streamed = seconds_streamed
-    session.start_ntp = 1  # dummy
+    session.start_unix_ms = 1  # dummy
     session.wait_start = 2.0
 
     return session
@@ -64,6 +67,54 @@ def _setup_stream(player: MagicMock) -> Any:
     return _side_effect
 
 
+def _captured_start_at(mock_start: AsyncMock) -> float:
+    """Return the start time (unix seconds) passed to the patched _start_client."""
+    start_unix_ms = mock_start.call_args[0][1]
+    assert isinstance(start_unix_ms, int)
+    return start_unix_ms / 1000
+
+
+@pytest.mark.asyncio
+async def test_initial_client_failure_stops_started_clients() -> None:
+    """A partial group startup failure cancels siblings before session teardown."""
+    session = _make_session(time.time(), 0)
+    first_player: Any = session.sync_clients[0]
+    first_player.wait_start = 0
+    second_player = MagicMock(wait_start=0)
+    session.sync_clients.append(second_player)
+    first_started = asyncio.Event()
+    first_cancelled = asyncio.Event()
+
+    async def audio_source() -> AsyncGenerator[bytes]:
+        yield b""
+
+    async def start_client(player: Any, *_args: Any) -> None:
+        if player is first_player:
+            first_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                first_cancelled.set()
+                raise
+        await first_started.wait()
+        raise OSError("process failed")
+
+    with (
+        patch.object(
+            session,
+            "_start_client",
+            new_callable=AsyncMock,
+            side_effect=start_client,
+        ),
+        patch.object(session, "stop", new_callable=AsyncMock) as stop_session,
+        pytest.raises(PlayerCommandFailed, match="Playback failed to start"),
+    ):
+        await session.start(audio_source())
+
+    assert first_cancelled.is_set()
+    stop_session.assert_awaited_once()
+
+
 @pytest.mark.asyncio
 async def test_late_join_empty_buffer() -> None:
     """Test that with an empty buffer, start_at = start_time + seconds_streamed."""
@@ -73,25 +124,13 @@ async def test_late_join_empty_buffer() -> None:
     session = _make_session(start_time, seconds_streamed)
     player = _make_late_joiner(wait_start_ms=2000)
 
-    captured_start_at: list[float] = []
-
-    def capture_ntp(unix_ts: float) -> int:
-        captured_start_at.append(unix_ts)
-        return 1
-
-    with (
-        patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
-        patch(
-            "music_assistant.providers.airplay.stream_session.unix_time_to_ntp",
-            side_effect=capture_ntp,
-        ),
-    ):
+    with patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start:
         mock_start.side_effect = _setup_stream(player)
         await session.add_client(player)
 
-    assert captured_start_at, "unix_time_to_ntp was never called"
+    assert mock_start.called, "_start_client was never called"
     expected = start_time + seconds_streamed
-    assert abs(captured_start_at[0] - expected) < 0.1
+    assert abs(_captured_start_at(mock_start) - expected) < 0.1
 
 
 @pytest.mark.asyncio
@@ -107,28 +146,19 @@ async def test_late_join_with_buffered_pcm_in_future() -> None:
     session._pcm_buffer = bytearray(b"\x00" * PCM_SAMPLE_SIZE * 3)
     player = _make_late_joiner(wait_start_ms=2000)
 
-    captured_start_at: list[float] = []
-
-    def capture_ntp(unix_ts: float) -> int:
-        captured_start_at.append(unix_ts)
-        return 1
-
     with (
         patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
         patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
-        patch(
-            "music_assistant.providers.airplay.stream_session.unix_time_to_ntp",
-            side_effect=capture_ntp,
-        ),
     ):
         mock_start.side_effect = _setup_stream(player)
         await session.add_client(player)
 
-    assert captured_start_at, "unix_time_to_ntp was never called"
+    assert mock_start.called, "_start_client was never called"
     # start_at should remain at start_time + (seconds_streamed - 3.0) — already in future
     expected = start_time + (seconds_streamed - 3.0)
-    assert abs(captured_start_at[0] - expected) < 0.1, (
-        f"start_at should match buffer position, expected {expected}, got {captured_start_at[0]}"
+    captured = _captured_start_at(mock_start)
+    assert abs(captured - expected) < 0.1, (
+        f"start_at should match buffer position, expected {expected}, got {captured}"
     )
 
 
@@ -141,11 +171,7 @@ async def test_late_join_adds_to_sync_clients() -> None:
 
     with patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start:
         mock_start.side_effect = _setup_stream(player)
-        with patch(
-            "music_assistant.providers.airplay.stream_session.unix_time_to_ntp",
-            return_value=1,
-        ):
-            await session.add_client(player)
+        await session.add_client(player)
 
     assert player in session.sync_clients
 
@@ -180,11 +206,6 @@ async def test_late_join_trims_and_shifts_when_start_at_in_past() -> None:
     player = _make_late_joiner(wait_start_ms=2000)
 
     written_chunks: list[bytes] = []
-    captured_start_at: list[float] = []
-
-    def capture_ntp(unix_ts: float) -> int:
-        captured_start_at.append(unix_ts)
-        return 1
 
     async def capture_write(_player: Any, chunk: bytes) -> None:
         written_chunks.append(chunk)
@@ -192,19 +213,16 @@ async def test_late_join_trims_and_shifts_when_start_at_in_past() -> None:
     with (
         patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
         patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
-        patch(
-            "music_assistant.providers.airplay.stream_session.unix_time_to_ntp",
-            side_effect=capture_ntp,
-        ),
         patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
     ):
         mock_start.side_effect = _setup_stream(player)
         await session.add_client(player)
 
     # start_at should be pushed to now + min_headroom (session.wait_start = 2.0)
-    assert captured_start_at, "unix_time_to_ntp was never called"
-    assert captured_start_at[0] - now == pytest.approx(2.0, abs=0.01), (
-        f"start_at should be at now + min_headroom, got offset {captured_start_at[0] - now:.4f}s"
+    assert mock_start.called, "_start_client was never called"
+    assert _captured_start_at(mock_start) - now == pytest.approx(2.0, abs=0.01), (
+        f"start_at should be at now + min_headroom, "
+        f"got offset {_captured_start_at(mock_start) - now:.4f}s"
     )
 
     # Buffer should have been trimmed: 2.5s out of 5s (start_at shifted from -0.5 to +2.0)
@@ -230,11 +248,6 @@ async def test_late_join_drops_buffer_when_trim_exceeds_buffer() -> None:
     player = _make_late_joiner(wait_start_ms=2000)
 
     written_chunks: list[bytes] = []
-    captured_start_at: list[float] = []
-
-    def capture_ntp(unix_ts: float) -> int:
-        captured_start_at.append(unix_ts)
-        return 1
 
     async def capture_write(_player: Any, chunk: bytes) -> None:
         written_chunks.append(chunk)
@@ -242,10 +255,6 @@ async def test_late_join_drops_buffer_when_trim_exceeds_buffer() -> None:
     with (
         patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
         patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
-        patch(
-            "music_assistant.providers.airplay.stream_session.unix_time_to_ntp",
-            side_effect=capture_ntp,
-        ),
         patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
     ):
         mock_start.side_effect = _setup_stream(player)
@@ -255,7 +264,7 @@ async def test_late_join_drops_buffer_when_trim_exceeds_buffer() -> None:
     assert written_chunks == [], "Buffer should have been dropped entirely"
     # start_at should be exactly now + min_headroom (since the next-chunk anchor would
     # have landed at now - 1.0, which is below the target).
-    assert captured_start_at[0] - now == pytest.approx(2.0, abs=0.01)
+    assert _captured_start_at(mock_start) - now == pytest.approx(2.0, abs=0.01)
 
 
 @pytest.mark.asyncio

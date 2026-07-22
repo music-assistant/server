@@ -7,6 +7,7 @@ from music_assistant_models.enums import PlaybackState, PlayerFeature
 from wiim import PlayingStatus
 from wiim.exceptions import WiimDeviceException, WiimRequestException
 
+from music_assistant.providers.wiim.constants import SOURCE_NETWORK
 from music_assistant.providers.wiim.player import SDK_TO_MA_STATE, WiimPlayer
 
 
@@ -106,6 +107,121 @@ class TestSDKStateMapping:
         for status in PlayingStatus:
             if status != PlayingStatus.UNKNOWN:
                 assert status in SDK_TO_MA_STATE, f"{status} not mapped"
+
+
+class TestFalsePlayingFilter:
+    """A uri-less PLAYING report in network mode must not become PLAYING state."""
+
+    def _make_player(self, provider: MagicMock, device: MagicMock) -> WiimPlayer:
+        player = WiimPlayer(provider=provider, player_id="uuid:test", device=device)
+        player.update_state = MagicMock()  # type: ignore[misc,method-assign]
+        return player
+
+    def test_false_playing_ack_is_suppressed(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """
+        The transient PLAYING ack without media loaded must keep the previous state.
+
+        The device acks (group) transport commands with a short false PLAYING
+        report before any track is loaded; propagating it causes a
+        PLAYING->IDLE->PLAYING flicker downstream.
+        """
+        mock_wiim_device.play_mode = SOURCE_NETWORK
+        mock_wiim_device.current_media = None
+        mock_wiim_device.playing_status = PlayingStatus.PLAYING
+        player = self._make_player(mock_provider, mock_wiim_device)
+        player._attr_playback_state = PlaybackState.IDLE
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player._attr_playback_state == PlaybackState.IDLE
+
+    def test_loading_without_uri_is_suppressed(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """LOADING maps to PLAYING and gets the same uri-less filter."""
+        mock_wiim_device.play_mode = SOURCE_NETWORK
+        mock_wiim_device.current_media = None
+        mock_wiim_device.playing_status = PlayingStatus.LOADING
+        player = self._make_player(mock_provider, mock_wiim_device)
+        player._attr_playback_state = PlaybackState.IDLE
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player._attr_playback_state == PlaybackState.IDLE
+
+    def test_playing_kept_when_uri_drops_mid_playback(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """The filter keeps the previous state; it never forces a playing player idle."""
+        mock_wiim_device.play_mode = SOURCE_NETWORK
+        mock_wiim_device.current_media = None
+        mock_wiim_device.playing_status = PlayingStatus.PLAYING
+        player = self._make_player(mock_provider, mock_wiim_device)
+        player._attr_playback_state = PlaybackState.PLAYING
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player._attr_playback_state == PlaybackState.PLAYING
+
+    def test_playing_accepted_once_uri_present(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """A PLAYING report with media loaded is a real start and passes through."""
+        media = MagicMock()
+        media.uri = "http://192.168.1.80:8097/single/abc/queue/item/uuid:test.flac"
+        mock_wiim_device.play_mode = SOURCE_NETWORK
+        mock_wiim_device.current_media = media
+        mock_wiim_device.playing_status = PlayingStatus.PLAYING
+        player = self._make_player(mock_provider, mock_wiim_device)
+        player._attr_playback_state = PlaybackState.IDLE
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player._attr_playback_state == PlaybackState.PLAYING
+
+    def test_external_input_playing_without_uri_accepted(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """External inputs legitimately play without a URI and must not be filtered."""
+        mock_wiim_device.play_mode = "Line In"
+        mock_wiim_device.current_media = None
+        mock_wiim_device.playing_status = PlayingStatus.PLAYING
+        player = self._make_player(mock_provider, mock_wiim_device)
+        player._attr_playback_state = PlaybackState.IDLE
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player._attr_playback_state == PlaybackState.PLAYING
+
+    def test_unknown_play_mode_trusts_device(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """Without a known play mode the device report is trusted (no suppression)."""
+        mock_wiim_device.play_mode = None
+        mock_wiim_device.current_media = None
+        mock_wiim_device.playing_status = PlayingStatus.PLAYING
+        player = self._make_player(mock_provider, mock_wiim_device)
+        player._attr_playback_state = PlaybackState.IDLE
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player._attr_playback_state == PlaybackState.PLAYING
+
+    def test_stopped_report_unaffected(
+        self, mock_provider: MagicMock, mock_wiim_device: MagicMock
+    ) -> None:
+        """The filter only guards PLAYING-mapped reports; STOPPED passes through."""
+        mock_wiim_device.play_mode = SOURCE_NETWORK
+        mock_wiim_device.current_media = None
+        mock_wiim_device.playing_status = PlayingStatus.STOPPED
+        player = self._make_player(mock_provider, mock_wiim_device)
+        player._attr_playback_state = PlaybackState.PLAYING
+
+        player._update_ma_state_from_sdk_cache()
+
+        assert player._attr_playback_state == PlaybackState.IDLE
 
 
 class TestSupportedFeatures:

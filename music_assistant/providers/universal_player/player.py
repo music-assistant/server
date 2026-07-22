@@ -75,7 +75,17 @@ class UniversalPlayer(Player):
     def available(self) -> bool:
         """Return if the player is currently available."""
         return any(
-            (p := self.mass.players.get_player(pid)) and p.available
+            (p := self.mass.players.get_player(pid)) and p.available and not p.needs_setup
+            for pid in self._protocol_player_ids
+        )
+
+    @property
+    def needs_setup(self) -> bool:
+        """Return if the player needs setup (a protocol is connected but not set up)."""
+        if self.available:
+            return False
+        return any(
+            (p := self.mass.players.get_player(pid)) and p.available and p.needs_setup
             for pid in self._protocol_player_ids
         )
 
