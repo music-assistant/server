@@ -38,6 +38,7 @@ LOGGER = logging.getLogger(__name__)
 SCPD_DIR = Path(__file__).parent / "scpd"
 
 SoapCallback = Callable[..., Awaitable[None]]
+PlayCallback = Callable[[str], Awaitable[None]]
 
 # Extra entity mapping for XML attribute values (default escape() handles only &, <, >).
 _ATTR_ENTITIES = {'"': "&quot;"}
@@ -102,7 +103,7 @@ class UPnPRenderer:
 
         # Callbacks (set by provider)
         self.on_set_av_transport_uri: SoapCallback | None = None
-        self.on_play: SoapCallback | None = None
+        self.on_play: PlayCallback | None = None
         self.on_pause: SoapCallback | None = None
         self.on_stop: SoapCallback | None = None
         self.on_seek: SoapCallback | None = None
@@ -327,9 +328,10 @@ class UPnPRenderer:
             return self._soap_response(action_name, UPNP_SERVICE_AV_TRANSPORT)
 
         if action_name == "Play":
-            self.transport_state = TRANSPORT_STATE_PLAYING
+            previous_state = self.transport_state
             if self.on_play:
-                await self.on_play()
+                await self.on_play(previous_state)
+            self.transport_state = TRANSPORT_STATE_PLAYING
             await self._notify_av_transport_change()
             return self._soap_response(action_name, UPNP_SERVICE_AV_TRANSPORT)
 

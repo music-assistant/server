@@ -15,10 +15,16 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, QueueOption, StreamType
+from music_assistant_models.streamdetails import StreamMetadata
 
+from music_assistant.providers.dlna_receiver import get_config_entries
 from music_assistant.providers.dlna_receiver.constants import (
+    CONF_BIND_IP,
     CONF_TARGET_PLAYER,
     CONF_TARGET_PLAYERS,
+    TRANSPORT_STATE_PAUSED,
+    TRANSPORT_STATE_PLAYING,
+    TRANSPORT_STATE_STOPPED,
     UDN_NAMESPACE,
 )
 from music_assistant.providers.dlna_receiver.renderer import UPnPRenderer
@@ -132,10 +138,41 @@ def test_raw_target_falls_back_to_legacy_key(provider_cls) -> None:  # type: ign
     assert inst._raw_target() == "*"
 
 
-def test_raw_target_empty_when_neither_set(provider_cls) -> None:  # type: ignore[no-untyped-def]
-    """No configured targets → empty string (single unbound renderer)."""
+def test_raw_target_defaults_to_all_players(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """No configured targets defaults to all available players."""
     inst = _make_provider(provider_cls, {})
-    assert inst._raw_target() == ""
+    assert inst._raw_target() == "*"
+
+
+def test_target_players_config_defaults_to_all() -> None:
+    """New configurations default target_players to all players."""
+    entries = asyncio.run(get_config_entries(cast("Any", None)))
+    target_entry = next(entry for entry in entries if entry.key == CONF_TARGET_PLAYERS)
+    assert target_entry.default_value == "*"
+
+
+async def test_loaded_without_players_does_not_create_unbound_renderer(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """The all-players default waits instead of advertising a dead renderer."""
+
+    def _all_players(**_kwargs: object) -> list[object]:
+        return []
+
+    mass = types.SimpleNamespace(
+        cache=None,
+        players=types.SimpleNamespace(all_players=_all_players),
+    )
+    prov = provider_cls(
+        cast("Any", mass),
+        cast("Any", types.SimpleNamespace(domain="dlna_receiver")),
+        cast("Any", _StubConfig({CONF_BIND_IP: "192.168.1.20"})),
+    )
+
+    await prov.loaded_in_mass()
+    try:
+        assert prov._instances == {}
+        assert prov._discovery_task is not None
+    finally:
+        await prov.unload()
 
 
 # ---------------------------------------------------------------------
@@ -351,13 +388,76 @@ def test_on_play_routes_through_play_media(provider_cls) -> None:  # type: ignor
         ),
     )
 
-    asyncio.run(prov._on_play(inst))
+    asyncio.run(prov._on_play(inst, TRANSPORT_STATE_STOPPED))
 
     assert len(calls) == 1
     player_id, media_uri, option = calls[0]
     assert player_id == "player_kitchen"
     assert media_uri == f"{prov.instance_id}://audio_source/player_kitchen"
     assert option == QueueOption.PLAY
+
+
+def test_on_play_resumes_paused_player_without_restarting_stream(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """DLNA Play after Pause resumes the player and preserves stream progress."""
+    inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/track.flac")
+    metadata = StreamMetadata(title="Song", elapsed_time=37)
+    inst.stream_metadata = metadata
+    inst.elapsed_offset = 37
+    inst.metadata_dirty = False
+    prov = _make_contract_provider(provider_cls, {"player_kitchen": inst})
+
+    play_commands: list[str] = []
+    play_media_calls: list[tuple[object, ...]] = []
+
+    async def _record_cmd_play(player_id: str) -> None:
+        play_commands.append(player_id)
+
+    async def _record_play_media(*args: object, **_kwargs: object) -> None:
+        play_media_calls.append(args)
+
+    prov.mass = cast(
+        "Any",
+        types.SimpleNamespace(
+            players=types.SimpleNamespace(cmd_play=_record_cmd_play),
+            player_queues=types.SimpleNamespace(play_media=_record_play_media),
+        ),
+    )
+
+    asyncio.run(prov._on_play(inst, TRANSPORT_STATE_PAUSED))
+
+    assert play_commands == ["player_kitchen"]
+    assert play_media_calls == []
+    assert inst.current_stream_url == "http://cp.local/track.flac"
+    assert inst.stream_metadata is metadata
+    assert inst.elapsed_offset == 37
+    assert inst.play_start_time is not None
+    assert inst.metadata_dirty is True
+
+
+def test_on_play_is_idempotent_while_already_playing(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """A duplicate DLNA Play command does not restart active playback."""
+    inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/track.flac")
+    inst.play_start_time = 123.0
+    inst.elapsed_offset = 9
+    prov = _make_contract_provider(provider_cls, {"player_kitchen": inst})
+    calls: list[str] = []
+
+    async def _record(*_args: object, **_kwargs: object) -> None:
+        calls.append("called")
+
+    prov.mass = cast(
+        "Any",
+        types.SimpleNamespace(
+            players=types.SimpleNamespace(cmd_play=_record),
+            player_queues=types.SimpleNamespace(play_media=_record),
+        ),
+    )
+
+    asyncio.run(prov._on_play(inst, TRANSPORT_STATE_PLAYING))
+
+    assert calls == []
+    assert inst.play_start_time == 123.0
+    assert inst.elapsed_offset == 9
 
 
 def test_on_stop_clears_only_that_instance(provider_cls) -> None:  # type: ignore[no-untyped-def]
@@ -380,8 +480,8 @@ def test_on_stop_clears_only_that_instance(provider_cls) -> None:  # type: ignor
     )
 
     async def _scenario() -> None:
-        await prov._on_play(inst_a)
-        await prov._on_play(inst_b)
+        await prov._on_play(inst_a, TRANSPORT_STATE_STOPPED)
+        await prov._on_play(inst_b, TRANSPORT_STATE_STOPPED)
         await prov._on_stop(inst_a)
 
     asyncio.run(_scenario())
@@ -407,29 +507,13 @@ def test_on_source_unselected_stops_elapsed_tracking(provider_cls) -> None:  # t
     )
 
     async def _scenario() -> None:
-        await prov._on_play(inst)
+        await prov._on_play(inst, TRANSPORT_STATE_STOPPED)
         await prov.on_source_selected("player_kitchen", "player_kitchen", "queue1", "sess-a")
         await prov.on_source_unselected("player_kitchen", "queue1", "sess-a")
 
     asyncio.run(_scenario())
 
     assert inst.stream_metadata is None
-
-
-def test_default_source_can_initiate(provider_cls) -> None:  # type: ignore[no-untyped-def]
-    """The unbound fallback renderer must stay startable from the MA UI."""
-    prov = _make_contract_provider(
-        provider_cls,
-        {
-            "__default__": _make_instance("", ""),
-            "player_kitchen": _make_instance("player_kitchen", "Kitchen"),
-        },
-    )
-
-    sources = {s.item_id: s for s in asyncio.run(prov.get_audio_sources())}
-
-    assert sources["__default__"].can_initiate is True
-    assert sources["player_kitchen"].can_initiate is False
 
 
 def test_get_audio_stream_raises_without_url(provider_cls) -> None:  # type: ignore[no-untyped-def]

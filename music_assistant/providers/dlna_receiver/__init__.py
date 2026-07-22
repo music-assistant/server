@@ -66,6 +66,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_TARGET_PLAYERS,
             type=ConfigEntryType.STRING,
+            default_value="*",
             required=False,
         ),
         ConfigEntry(

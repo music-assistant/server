@@ -189,6 +189,32 @@ async def test_play_pause_stop(
     assert renderer.transport_state == "STOPPED"
 
 
+async def test_play_callback_receives_prior_transport_state(
+    client: TestClient[Request, Application],
+    renderer: UPnPRenderer,
+) -> None:
+    """Play exposes the prior state before committing the PLAYING transition."""
+    renderer.transport_state = "PAUSED_PLAYBACK"
+    received_states: list[tuple[str, str]] = []
+
+    async def _on_play(previous_state: str) -> None:
+        received_states.append((previous_state, renderer.transport_state))
+
+    renderer.on_play = _on_play
+
+    resp = await client.post(
+        "/AVTransport/control",
+        headers={
+            "SOAPACTION": '"urn:schemas-upnp-org:service:AVTransport:1#Play"',
+        },
+        data="<dummy/>",
+    )
+
+    assert resp.status == 200
+    assert received_states == [("PAUSED_PLAYBACK", "PAUSED_PLAYBACK")]
+    assert renderer.transport_state == "PLAYING"
+
+
 async def test_seek_action(client: TestClient[Request, Application]) -> None:
     """Test that Seek action returns success (no-op)."""
     resp = await client.post(

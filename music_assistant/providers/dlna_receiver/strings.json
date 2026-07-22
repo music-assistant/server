@@ -6,7 +6,7 @@
     },
     "target_players": {
       "label": "Target players",
-      "description": "Comma-separated MA player_ids to expose as DLNA renderers. Use \"*\" to auto-create a renderer for every MA player. Leave empty for a single renderer without a fixed target."
+      "description": "Comma-separated MA player_ids to expose as DLNA renderers. Use \"*\" or leave empty to auto-create a renderer for every MA player."
     },
     "bind_ip": {
       "label": "Bind IP address",

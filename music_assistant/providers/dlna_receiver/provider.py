@@ -49,6 +49,8 @@ from .constants import (
     CONF_TARGET_PLAYERS,
     DEFAULT_FRIENDLY_NAME,
     DEFAULT_HTTP_PORT,
+    TRANSPORT_STATE_PAUSED,
+    TRANSPORT_STATE_PLAYING,
     UDN_NAMESPACE,
 )
 from .renderer import UPnPRenderer
@@ -185,32 +187,23 @@ class DLNAReceiverProvider(PluginProvider):
         raw_target = self._raw_target()
         player_specs = self._resolve_player_specs()
 
-        if player_specs:
-            for pid, pname in player_specs:
-                await self._create_instance(
-                    player_id=pid,
-                    player_name=pname,
-                    friendly_prefix=self._friendly_prefix,
-                    bind_ip=self._bind_ip,
-                    http_port=self._next_port,
-                )
-                self._next_port += 1
-        else:
-            # Fallback: single unbound renderer so DLNA discovery works
-            # immediately. In target_players=* mode this is retired as soon
-            # as the first real player renderer registers, so we don't keep
-            # advertising an unroutable renderer once real ones exist.
+        for pid, pname in player_specs:
             await self._create_instance(
-                player_id="",
-                player_name="",
+                player_id=pid,
+                player_name=pname,
                 friendly_prefix=self._friendly_prefix,
                 bind_ip=self._bind_ip,
                 http_port=self._next_port,
             )
             self._next_port += 1
 
+        if not player_specs:
+            LOGGER.info(
+                "No target players are available yet; waiting for player registration",
+            )
+
         # For target_players=*, keep looking for late-registering players in the
-        # background instead of blocking startup for up to 72 seconds.
+        # background instead of blocking startup.
         if raw_target == "*":
             self._discovery_task = asyncio.create_task(self._adopt_late_players())
 
@@ -413,12 +406,9 @@ class DLNAReceiverProvider(PluginProvider):
         Poll for newly-registered MA players and spin up renderers for them.
 
         Runs only when ``target_players=*``. Caps the total wait at ~5 minutes
-        so stale provider instances don't poll forever. The first time a real
-        player renderer is created we retire the unbound ``__default__``
-        fallback so we aren't advertising a renderer that can't route audio.
+        so stale provider instances don't poll forever.
         """
         known_ids = {inst.player_id for inst in self._instances.values() if inst.player_id}
-        default_retired = False
         try:
             for _ in range(60):  # ~5 minutes at 5s intervals
                 await asyncio.sleep(5)
@@ -434,28 +424,10 @@ class DLNAReceiverProvider(PluginProvider):
                     )
                     self._next_port += 1
                     known_ids.add(pid)
-                    if not default_retired:
-                        await self._retire_default_instance()
-                        default_retired = True
         except asyncio.CancelledError:
             pass
         except Exception:
             LOGGER.debug("Late-player discovery loop error", exc_info=True)
-
-    async def _retire_default_instance(self) -> None:
-        """
-        Stop and drop the unbound ``__default__`` renderer, if any.
-
-        Called once from ``_adopt_late_players`` after the first real player
-        renderer is created so control points no longer see a fallback
-        renderer that would silently swallow Play commands.
-        """
-        default = self._instances.pop("__default__", None)
-        if default is None:
-            return
-        await default.ssdp.stop()
-        await default.renderer.stop()
-        LOGGER.info("Retired unbound fallback renderer — real players registered")
 
     async def _create_instance(
         self,
@@ -495,7 +467,7 @@ class DLNAReceiverProvider(PluginProvider):
         renderer.on_set_av_transport_uri = lambda uri, meta: self._on_set_transport_uri(
             inst, uri, meta
         )
-        renderer.on_play = lambda: self._on_play(inst)
+        renderer.on_play = lambda previous_state: self._on_play(inst, previous_state)
         renderer.on_pause = lambda: self._on_pause(inst)
         renderer.on_stop = lambda: self._on_stop(inst)
         renderer.on_seek = lambda unit, target: self._on_seek(inst, unit, target)
@@ -533,7 +505,7 @@ class DLNAReceiverProvider(PluginProvider):
 
     def _raw_target(self) -> str:
         """
-        Return the configured target spec, honoring the legacy config key.
+        Return the configured target spec, defaulting to all players.
 
         Centralizes the CONF_TARGET_PLAYERS → CONF_TARGET_PLAYER fallback so
         every call site (late-player adoption check, spec resolution) sees
@@ -543,22 +515,19 @@ class DLNAReceiverProvider(PluginProvider):
         raw = str(self.config.get_value(CONF_TARGET_PLAYERS) or "").strip()
         if not raw:
             raw = str(self.config.get_value(CONF_TARGET_PLAYER) or "").strip()
-        return raw
+        return raw or "*"
 
     def _resolve_player_specs(self) -> list[tuple[str, str]]:
         """
         Resolve configured player targets to (player_id, display_name) pairs.
 
         Supports:
-        - Empty / not set → empty list (single unbound renderer)
+        - Empty / not set → all currently known MA players
         - "*" → all currently known MA players
         - Comma-separated player_ids
         - Legacy CONF_TARGET_PLAYER (single player_id, backward compat)
         """
         raw = self._raw_target()
-
-        if not raw:
-            return []
 
         if raw == "*":
             return self._get_all_players()
@@ -664,12 +633,9 @@ class DLNAReceiverProvider(PluginProvider):
                     audio_format=self._probe_audio_format(),
                 )
             },
-            # For player-bound renderers playback is initiated by the external
-            # DLNA sender (we call play_media ourselves on the SOAP Play
-            # action). The unbound fallback renderer has no player to route
-            # its SOAP Play to, so it must stay startable from the MA UI —
-            # otherwise the target_players="" mode has no playback path.
-            can_initiate=not inst.player_id,
+            # Playback is initiated by the external DLNA sender through the
+            # renderer bound to this player.
+            can_initiate=False,
             allow_external_trigger=True,
             exclusive=True,
         )
@@ -792,7 +758,7 @@ class DLNAReceiverProvider(PluginProvider):
         inst.current_stream_url = safe_url
         inst.current_metadata = self._parse_didl_metadata(metadata)
 
-    async def _on_play(self, inst: RendererInstance) -> None:
+    async def _on_play(self, inst: RendererInstance, previous_state: str) -> None:
         """Handle Play — start streaming to this instance's player."""
         target = inst.player_id
         if not target:
@@ -801,6 +767,18 @@ class DLNAReceiverProvider(PluginProvider):
 
         if not inst.current_stream_url:
             LOGGER.warning("Play received but no stream URL for %s", target)
+            return
+
+        if previous_state == TRANSPORT_STATE_PLAYING:
+            LOGGER.debug("Player %s is already playing; ignoring duplicate Play", target)
+            return
+
+        if previous_state == TRANSPORT_STATE_PAUSED:
+            LOGGER.info("Resuming playback on player %s", target)
+            await self.mass.players.cmd_play(target)
+            inst.play_start_time = time.time()
+            inst.metadata_dirty = True
+            self._ensure_metadata_task()
             return
 
         LOGGER.info("Starting playback on player %s", target)
