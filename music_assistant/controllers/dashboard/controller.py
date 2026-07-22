@@ -59,6 +59,7 @@ class DashboardController(CoreController):
         dashboard_id: str,
         name: str,
         supported_types: set[DashboardType] | None = None,
+        icon: str | None = None,
         player_id: str | None = None,
     ) -> None:
         """
@@ -69,12 +70,14 @@ class DashboardController(CoreController):
         :param dashboard_id: Unique id chosen by the registering client.
         :param name: Display name for the dashboard endpoint.
         :param supported_types: Dashboard types this endpoint can show, defaults to all.
+        :param icon: Optional material design (mdi-*) or MA/lucide icon name.
         :param player_id: Set when this dashboard endpoint is also registered as a MA player.
         """
         device = DashboardDevice(
             dashboard_id=dashboard_id,
             name=name,
             supported_types=set(supported_types) if supported_types else set(ALL_DASHBOARD_TYPES),
+            icon=icon,
             player_id=player_id,
         )
         existing = self._dashboards.get(dashboard_id)

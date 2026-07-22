@@ -157,11 +157,14 @@ async def test_register_dashboard_stores_registration_and_signals() -> None:
         "music_assistant.controllers.dashboard.controller.get_current_client_id",
         return_value=None,
     ):
-        await controller.register_dashboard("dash1", "Living Room")
+        await controller.register_dashboard("dash1", "Living Room", icon="apple-tv")
 
     device = controller._dashboards["dash1"].device
     assert device == DashboardDevice(
-        dashboard_id="dash1", name="Living Room", supported_types=set(ALL_DASHBOARD_TYPES)
+        dashboard_id="dash1",
+        name="Living Room",
+        supported_types=set(ALL_DASHBOARD_TYPES),
+        icon="apple-tv",
     )
     controller.mass.signal_event.assert_called_once_with(  # type: ignore[attr-defined]
         EventType.DASHBOARDS_UPDATED, data=[device]

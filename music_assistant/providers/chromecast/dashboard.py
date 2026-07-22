@@ -109,6 +109,7 @@ class ChromecastDashboards:
             dashboard_id=f"chromecast_{device_id}",
             name=cast_info.friendly_name or device_id,
             supported_types=SUPPORTED_DASHBOARD_TYPES,
+            icon="cast",
             player_id=player_id,
         )
         self._unregister_callbacks[device_id] = self.mass.dashboard.register_dashboard_handler(

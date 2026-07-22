@@ -77,6 +77,7 @@ def test_register_video_capable_device_without_player() -> None:
         dashboard_id=f"chromecast_{uuid}",
         name="Living Room TV",
         supported_types={DashboardType.PARTY, DashboardType.NOW_PLAYING},
+        icon="cast",
         player_id=None,
     )
 
