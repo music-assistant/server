@@ -4,11 +4,27 @@ from typing import Any
 from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import Album, ItemMapping
 
 from music_assistant.providers.apple_music.library import _TRACK_PAGE_SIZE, AppleMusicLibraryManager
 from music_assistant.providers.apple_music.media import AppleMusicMediaManager
-from music_assistant.providers.apple_music.parsers import parse_album, parse_track
+from music_assistant.providers.apple_music.parsers import (
+    parse_album,
+    parse_artwork_image,
+    parse_track,
+)
+
+BLOBSTORE_ARTWORK = {
+    "url": "https://store-033.blobstore.apple.com/pic/image?X-Amz-Signature=abc",
+    "width": 1200,
+    "height": 1200,
+}
+CATALOG_ARTWORK = {
+    "url": "https://is1-ssl.mzstatic.com/image/thumb/Music/{w}x{h}bb.jpg",
+    "width": 3000,
+    "height": 3000,
+}
 
 
 def _stream(items: list[dict[str, Any]]) -> MagicMock:
@@ -801,3 +817,143 @@ async def test_get_album_uses_catalog_endpoint_for_catalog_id() -> None:
     provider.api_client.get_data.assert_called_once_with(
         "catalog/us/albums/123456789", include="artists"
     )
+
+
+def test_parse_artwork_image_stores_stable_token_for_expiring_urls() -> None:
+    """Blobstore artwork (presigned, expiring) is stored as a resolvable token."""
+    provider = _create_provider_mock()
+
+    image = parse_artwork_image(
+        provider, MediaType.ALBUM, "l.album1", {"artwork": BLOBSTORE_ARTWORK}
+    )
+
+    assert image is not None
+    assert image.path == "album/l.album1"
+    assert image.remotely_accessible is False
+    assert image.provider == "apple_music_test"
+
+
+def test_parse_artwork_image_keeps_permanent_cdn_urls() -> None:
+    """Mzstatic artwork is permanent and stored as a directly accessible URL."""
+    provider = _create_provider_mock()
+
+    image = parse_artwork_image(
+        provider, MediaType.ALBUM, "1234567890", {"artwork": CATALOG_ARTWORK}
+    )
+
+    assert image is not None
+    assert image.path == "https://is1-ssl.mzstatic.com/image/thumb/Music/1000x1000bb.jpg"
+    assert image.remotely_accessible is True
+
+
+def test_parse_artwork_image_without_artwork() -> None:
+    """Items without (usable) artwork produce no image."""
+    provider = _create_provider_mock()
+
+    assert parse_artwork_image(provider, MediaType.ALBUM, "x", {}) is None
+    assert parse_artwork_image(provider, MediaType.ALBUM, "x", {"artwork": {"width": 1}}) is None
+
+
+def test_parse_album_stores_artwork_token_for_library_album() -> None:
+    """A library album with blobstore artwork ends up with a token image."""
+    provider = _create_provider_mock()
+    album_obj = {
+        "id": "l.album1",
+        "type": "library-albums",
+        "attributes": {
+            "name": "Uploaded Album",
+            "artistName": "Uploaded Artist",
+            "playParams": {"id": "l.album1"},
+            "artwork": BLOBSTORE_ARTWORK,
+        },
+        "relationships": {},
+    }
+
+    album = parse_album(provider, album_obj)
+
+    assert isinstance(album, Album)
+    assert [(image.path, image.remotely_accessible) for image in album.metadata.images or []] == [
+        ("album/l.album1", False)
+    ]
+
+
+async def test_get_artwork_url_returns_fresh_signed_url() -> None:
+    """The artwork token resolves to the current signed URL from the api."""
+    provider = _create_provider_mock()
+    provider.api_client.get_data = AsyncMock(
+        return_value={"data": [{"id": "l.album1", "attributes": {"artwork": BLOBSTORE_ARTWORK}}]}
+    )
+
+    manager = AppleMusicMediaManager(provider)
+    url = await manager.get_artwork_url("album", "l.album1")
+
+    assert url == BLOBSTORE_ARTWORK["url"]
+    provider.api_client.get_data.assert_called_once_with(
+        "me/library/albums/l.album1", include="catalog"
+    )
+
+
+async def test_get_artwork_url_falls_back_to_catalog_attributes() -> None:
+    """A library item without own artwork resolves via its catalog counterpart."""
+    provider = _create_provider_mock()
+    provider.api_client.get_data = AsyncMock(
+        return_value={
+            "data": [
+                {
+                    "id": "l.album1",
+                    "attributes": {"name": "Uploaded Album"},
+                    "relationships": {
+                        "catalog": {
+                            "data": [
+                                {"id": "123456789", "attributes": {"artwork": CATALOG_ARTWORK}}
+                            ]
+                        }
+                    },
+                }
+            ]
+        }
+    )
+
+    manager = AppleMusicMediaManager(provider)
+    url = await manager.get_artwork_url("album", "l.album1")
+
+    assert url == "https://is1-ssl.mzstatic.com/image/thumb/Music/1000x1000bb.jpg"
+
+
+async def test_get_artwork_url_routes_library_tracks_to_library_endpoint() -> None:
+    """Library song tokens (uploaded music) resolve via me/library, not the catalog."""
+    provider = _create_provider_mock()
+    provider.api_client.get_data = AsyncMock(
+        return_value={"data": [{"id": "i.track1", "attributes": {"artwork": BLOBSTORE_ARTWORK}}]}
+    )
+
+    manager = AppleMusicMediaManager(provider)
+    url = await manager.get_artwork_url("track", "i.track1")
+
+    assert url == BLOBSTORE_ARTWORK["url"]
+    provider.api_client.get_data.assert_called_once_with(
+        "me/library/songs/i.track1", include="catalog"
+    )
+
+
+async def test_get_artwork_url_routes_catalog_tracks_to_catalog_endpoint() -> None:
+    """Catalog song tokens resolve via the catalog endpoint."""
+    provider = _create_provider_mock()
+    provider.api_client.get_data = AsyncMock(
+        return_value={"data": [{"id": "1440783625", "attributes": {"artwork": CATALOG_ARTWORK}}]}
+    )
+
+    manager = AppleMusicMediaManager(provider)
+    await manager.get_artwork_url("track", "1440783625")
+
+    provider.api_client.get_data.assert_called_once_with(
+        "catalog/us/songs/1440783625", include="catalog"
+    )
+
+
+async def test_get_artwork_url_unknown_media_type() -> None:
+    """An unknown token media type resolves to nothing instead of raising."""
+    provider = _create_provider_mock()
+    manager = AppleMusicMediaManager(provider)
+
+    assert await manager.get_artwork_url("bogus", "1") is None
