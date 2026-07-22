@@ -158,7 +158,7 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
 
     # Drop the stored value of the removed output limiter player setting; clipping protection
     # is now an explicit Safety Limiter DSP filter instead of a fixed output stage.
-    # TODO: remove after 2.11 release
+    # TODO: remove after 2.10 release
     if _migrate_output_limiter(data):
         changed = True
 
