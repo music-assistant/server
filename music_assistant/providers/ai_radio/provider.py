@@ -298,7 +298,7 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
             self._run_session(session_id, station),
             task_id=f"ai_radio_session_{session_id}",
         )
-        self.logger.info(
+        self.logger.debug(
             "AI Radio session started: session=%s station=%s mode=%s",
             session_id,
             station_id,

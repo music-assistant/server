@@ -25,10 +25,9 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import InvalidDataError, MusicAssistantError
 from music_assistant_models.media_items import (
-    ItemMapping,
     MediaItemImage,
     ProviderMapping,
-    Track,
+    SoundEffect,
     UniqueList,
 )
 
@@ -418,7 +417,7 @@ class AIRadioRuntimeMixin:
             )
             section_by_uri = {audio.uri: audio for audio in audio_sections}
             media_entries: list[Any] = [
-                self._section_to_queue_track(section_by_uri[entry])
+                self._section_to_queue_sound_effect(section_by_uri[entry])
                 if entry in section_by_uri
                 else entry
                 for entry in entries
@@ -864,14 +863,14 @@ class AIRadioRuntimeMixin:
         """Generate section texts from planning entries."""
         generated: list[GeneratedSection] = []
         sorted_sections = sorted(planned_sections, key=lambda section: section.order)
-        self.logger.info(
+        self.logger.debug(
             "LLM generation started: station=%s sections=%d",
             station.get("id", "unknown"),
             len(sorted_sections),
         )
         for index, item in enumerate(sorted_sections, start=1):
             started = perf_counter()
-            self.logger.info(
+            self.logger.debug(
                 "LLM section %d/%d: section=%s when=%s web_mode=%s",
                 index,
                 len(sorted_sections),
@@ -910,7 +909,7 @@ class AIRadioRuntimeMixin:
                     text=text,
                 )
             )
-        self.logger.info("LLM generation finished: generated_sections=%d", len(generated))
+        self.logger.debug("LLM generation finished: generated_sections=%d", len(generated))
         return generated
 
     async def _synthesize_sections(
@@ -921,10 +920,10 @@ class AIRadioRuntimeMixin:
         output: list[AudioSection] = []
         if not generated_sections:
             return output
-        self.logger.info("TTS synthesis started: sections=%d", len(generated_sections))
+        self.logger.debug("TTS synthesis started: sections=%d", len(generated_sections))
         for index, section in enumerate(generated_sections):
             started = perf_counter()
-            self.logger.info(
+            self.logger.debug(
                 "TTS section %d/%d: section=%s chars=%d",
                 index + 1,
                 len(generated_sections),
@@ -958,7 +957,7 @@ class AIRadioRuntimeMixin:
                     duration=section_duration,
                 )
             )
-        self.logger.info("TTS synthesis finished: sections=%d", len(output))
+        self.logger.debug("TTS synthesis finished: sections=%d", len(output))
         return output
 
     def _compose_entries(
@@ -1026,9 +1025,9 @@ class AIRadioRuntimeMixin:
             providers=self._provider_mapping_infos_from_uri(track_uri),
         )
 
-    def _section_to_queue_track(self, section: AudioSection) -> Track | str:
+    def _section_to_queue_sound_effect(self, section: AudioSection) -> SoundEffect | str:
         """
-        Build a rich Track for queueing (dynamic mode).
+        Build a rich SoundEffect for queueing (dynamic mode).
 
         Falls back to the raw URI when the URI cannot be split into a builtin
         provider reference (e.g. unexpected scheme).
@@ -1040,26 +1039,15 @@ class AIRadioRuntimeMixin:
         if "/" not in rest:
             return uri
         media_type, item_id = rest.split("/", 1)
-        if not item_id or media_type != MediaType.TRACK.value:
+        if not item_id or media_type != MediaType.SOUND_EFFECT.value:
             return uri
         provider = self.mass.get_provider(provider_ref)
         provider_domain = str(getattr(provider, "domain", "") or provider_ref).strip()
         provider_instance = str(getattr(provider, "instance_id", "") or provider_ref).strip()
-        track = Track(
+        sound_effect = SoundEffect(
             item_id=item_id,
             provider=provider_instance,
             name=section.section_name,
-            duration=int(section.duration or 0),
-            artists=UniqueList(
-                [
-                    ItemMapping(
-                        item_id="AI Radio",
-                        provider=provider_instance,
-                        name="AI Radio",
-                        media_type=MediaType.ARTIST,
-                    )
-                ]
-            ),
             provider_mappings={
                 ProviderMapping(
                     item_id=item_id,
@@ -1068,7 +1056,9 @@ class AIRadioRuntimeMixin:
                 )
             },
         )
-        track.metadata.images = UniqueList(
+        if section.duration:
+            sound_effect.duration = int(section.duration)
+        sound_effect.metadata.images = UniqueList(
             [
                 MediaItemImage(
                     type=ImageType.THUMB,
@@ -1078,13 +1068,13 @@ class AIRadioRuntimeMixin:
                 )
             ]
         )
-        return track
+        return sound_effect
 
     def _section_to_playlist_item(self, section: AudioSection) -> PlaylistItem:
         """Create a fully described playlist item for a generated AI Radio section."""
         uri = str(section.uri).strip()
         title = section.section_name
-        media_type = self._extract_media_type_from_uri(uri) or MediaType.TRACK.value
+        media_type = self._extract_media_type_from_uri(uri) or MediaType.SOUND_EFFECT.value
         providers = self._provider_mapping_infos_from_uri(uri)
         artist_provider_domain = providers[0].domain if providers else "builtin"
         artist_provider_instance = providers[0].instance_id if providers else "builtin"
@@ -1575,7 +1565,7 @@ class AIRadioRuntimeMixin:
             builtin_provider = self.mass.get_provider("builtin")
             builtin_instance_id = str(getattr(builtin_provider, "instance_id", "") or "").strip()
             duration = await self._warm_builtin_duration_cache(builtin_provider, uri, section_name)
-            wrapped = create_uri(MediaType.TRACK, builtin_instance_id or "builtin", uri)
+            wrapped = create_uri(MediaType.SOUND_EFFECT, builtin_instance_id or "builtin", uri)
             return wrapped, duration
         return uri, 0
 

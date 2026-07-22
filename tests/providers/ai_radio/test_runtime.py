@@ -6,6 +6,7 @@ import asyncio
 import logging
 from contextlib import suppress
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 from music_assistant_models.background_task import BackgroundTask
@@ -18,6 +19,7 @@ from music_assistant_models.enums import (
     TaskStatus,
 )
 from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.media_items import SoundEffect
 
 from music_assistant.helpers.playlists import PlaylistItem, parse_m3u, parse_m3u_playlist_image
 from music_assistant.helpers.uri import create_uri
@@ -236,8 +238,8 @@ def test_plan_sections_ignores_invalid_optional_chance() -> None:
     assert planned == []
 
 
-async def test_render_tts_converts_raw_http_path_to_builtin_track_uri() -> None:
-    """Wrap raw TTS HTTP paths as builtin track URIs for queue progression."""
+async def test_render_tts_converts_raw_http_path_to_builtin_sound_effect_uri() -> None:
+    """Wrap raw TTS HTTP paths as builtin sound effect URIs for queue progression."""
 
     class DummyStreamDetails:
         def __init__(self, path: str) -> None:
@@ -270,15 +272,17 @@ async def test_render_tts_converts_raw_http_path_to_builtin_track_uri() -> None:
 
     runtime = DummyRuntime()
     _set_runtime_mass(runtime, DummyMass())
+    runtime._warm_builtin_duration_cache = AsyncMock(return_value=11)  # type: ignore[method-assign]
 
     uri, duration = await runtime._render_tts("hello world", "Test Section")
 
     assert uri == create_uri(
-        MediaType.TRACK,
+        MediaType.SOUND_EFFECT,
         "builtin_1",
         "http://example.test/api/tts_proxy/abc123.mp3",
     )
-    assert duration == 0
+    assert duration == 11
+    runtime._warm_builtin_duration_cache.assert_awaited_once()
 
 
 async def test_generate_text_wraps_not_connected_error() -> None:
@@ -354,7 +358,7 @@ def test_compose_builtin_playlist_items_preserves_section_metadata() -> None:
                 section_id="intro",
                 section_name="Intro",
                 insert_at_index=0,
-                uri=create_uri(MediaType.TRACK, "builtin_1", section_url),
+                uri=create_uri(MediaType.SOUND_EFFECT, "builtin_1", section_url),
             )
         ],
     )
@@ -363,7 +367,7 @@ def test_compose_builtin_playlist_items_preserves_section_metadata() -> None:
     assert len(items) == 2
     assert items[0].title == "Intro"
     assert items[0].metadata == {
-        "media_type": MediaType.TRACK.value,
+        "media_type": MediaType.SOUND_EFFECT.value,
         "name": "Intro",
     }
     assert items[0].images
@@ -375,6 +379,44 @@ def test_compose_builtin_playlist_items_preserves_section_metadata() -> None:
     assert items[0].artists
     assert items[0].artists[0].name == "AI Radio"
     assert items[1] == source_item
+
+
+def test_section_to_queue_sound_effect_preserves_display_data() -> None:
+    """Build a rich SoundEffect for dynamic-mode queue inserts."""
+
+    class DummyProvider:
+        domain = "builtin"
+        instance_id = "builtin_1"
+
+    class DummyMass:
+        def get_provider(self, provider: str) -> Any:
+            if provider in {"builtin", "builtin_1"}:
+                return DummyProvider()
+            return None
+
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, DummyMass())
+    section = AudioSection(
+        order=1,
+        section_id="intro",
+        section_name="Intro",
+        insert_at_index=0,
+        uri=create_uri(MediaType.SOUND_EFFECT, "builtin_1", "http://example.test/intro.mp3"),
+        duration=12,
+    )
+
+    item = runtime._section_to_queue_sound_effect(section)
+
+    assert isinstance(item, SoundEffect)
+    assert item.name == "Intro"
+    assert item.duration == 12
+    assert item.provider_mappings
+    mapping = next(iter(item.provider_mappings))
+    assert mapping.provider_domain == "builtin"
+    assert mapping.provider_instance == "builtin_1"
+    assert mapping.item_id == "http://example.test/intro.mp3"
+    assert item.metadata.images
+    assert item.metadata.images[0].path == runtime._ai_radio_cover_image_path()
 
 
 async def test_import_builtin_playlist_preserves_m3u_metadata() -> None:
@@ -405,7 +447,7 @@ async def test_import_builtin_playlist_preserves_m3u_metadata() -> None:
             section_id="intro",
             section_name="Intro",
             insert_at_index=0,
-            uri=create_uri(MediaType.TRACK, "builtin", "http://example.test/intro.mp3"),
+            uri=create_uri(MediaType.SOUND_EFFECT, "builtin", "http://example.test/intro.mp3"),
         )
     )
 
@@ -418,7 +460,7 @@ async def test_import_builtin_playlist_preserves_m3u_metadata() -> None:
     parsed = parse_m3u(mass.music.playlists.m3u_data)
     assert parsed[0].title == "Intro"
     assert parsed[0].metadata == {
-        "media_type": MediaType.TRACK.value,
+        "media_type": MediaType.SOUND_EFFECT.value,
         "name": "Intro",
     }
     assert parsed[0].images[0].path == runtime._ai_radio_cover_image_path()
@@ -496,14 +538,14 @@ def test_compose_entries_returns_correct_source_track_positions() -> None:
             section_id="intro",
             section_name="Intro",
             insert_at_index=0,
-            uri=create_uri(MediaType.TRACK, "builtin_1", "http://x/intro.mp3"),
+            uri=create_uri(MediaType.SOUND_EFFECT, "builtin_1", "http://x/intro.mp3"),
         ),
         AudioSection(
             order=1,
             section_id="outro",
             section_name="Outro",
             insert_at_index=2,
-            uri=create_uri(MediaType.TRACK, "builtin_1", "http://x/outro.mp3"),
+            uri=create_uri(MediaType.SOUND_EFFECT, "builtin_1", "http://x/outro.mp3"),
         ),
     ]
 
@@ -899,8 +941,9 @@ async def test_dynamic_mode_appends_to_playing_queue_when_clear_disabled(
             self.players = DummyPlayers()
             self.player_queues = player_queues
 
+    mass = DummyMass()
     runtime = watchdog_runtime_cls()
-    _set_runtime_mass(runtime, DummyMass())
+    _set_runtime_mass(runtime, mass)
     session = SessionState(session_id="s1", station_id="st", mode="dynamic")
     runtime._sessions[session.session_id] = session
 
@@ -952,8 +995,9 @@ async def test_dynamic_mode_starts_playback_on_idle_queue_when_clear_disabled(
             self.players = DummyPlayers()
             self.player_queues = player_queues
 
+    mass = DummyMass()
     runtime = watchdog_runtime_cls()
-    _set_runtime_mass(runtime, DummyMass())
+    _set_runtime_mass(runtime, mass)
     session = SessionState(session_id="s1", station_id="st", mode="dynamic")
     runtime._sessions[session.session_id] = session
 
@@ -1027,8 +1071,9 @@ async def test_dynamic_mode_targets_active_group_queue(
             self.players = DummyPlayers()
             self.player_queues = player_queues
 
+    mass = DummyMass()
     runtime = watchdog_runtime_cls()
-    _set_runtime_mass(runtime, DummyMass())
+    _set_runtime_mass(runtime, mass)
     session = SessionState(session_id="s1", station_id="st", mode="dynamic")
     runtime._sessions[session.session_id] = session
     station = {**_watchdog_station(), "clear_queue_on_start": True}

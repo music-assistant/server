@@ -35,6 +35,7 @@ from music_assistant_models.media_items import (
     Playlist,
     ProviderMapping,
     Radio,
+    SoundEffect,
     Track,
     UniqueList,
     media_from_dict,
@@ -302,6 +303,7 @@ class BuiltinProvider(MusicProvider):
                 MediaType.AUDIOBOOK,
                 MediaType.PODCAST_EPISODE,
                 MediaType.RADIO,
+                MediaType.SOUND_EFFECT,
                 MediaType.TRACK,
             },
             is_editable=True,
@@ -725,8 +727,9 @@ class BuiltinProvider(MusicProvider):
         url: str,
         force_refresh: bool = False,
         force_radio: bool = False,
-    ) -> Track | Radio:
-        """Parse plain URL to MediaItem of type Radio or Track."""
+        requested_media_type: MediaType | None = None,
+    ) -> Track | Radio | SoundEffect:
+        """Parse a plain URL to a Track, Radio, or SoundEffect item."""
         media_info = await self._get_media_info(url, force_refresh)
         is_radio = media_info.get("icyname") or not media_info.duration
         provider_mappings = {
@@ -742,8 +745,17 @@ class BuiltinProvider(MusicProvider):
                 ),
             )
         }
-        media_item: Track | Radio
-        if is_radio or force_radio:
+        media_item: Track | Radio | SoundEffect
+        if requested_media_type == MediaType.SOUND_EFFECT:
+            media_item = SoundEffect(
+                item_id=url,
+                provider=self.domain,
+                name=media_info.title or url,
+                provider_mappings=provider_mappings,
+            )
+            if media_info.duration:
+                media_item.duration = int(media_info.duration or 0)
+        elif is_radio or force_radio:
             # treat as radio
             media_item = Radio(
                 item_id=url,
@@ -799,9 +811,16 @@ class BuiltinProvider(MusicProvider):
         return path
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Get streamdetails for a track/radio."""
+        """Get stream details for a track, radio stream, or sound effect."""
         media_info = await self._get_media_info(item_id)
         is_radio = media_info.get("icy-name") or not media_info.duration
+        stream_media_type = (
+            MediaType.SOUND_EFFECT
+            if media_type == MediaType.SOUND_EFFECT
+            else MediaType.RADIO
+            if is_radio
+            else MediaType.TRACK
+        )
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -811,7 +830,7 @@ class BuiltinProvider(MusicProvider):
                 bit_depth=media_info.bits_per_sample,
                 channels=media_info.channels,
             ),
-            media_type=MediaType.RADIO if is_radio else MediaType.TRACK,
+            media_type=stream_media_type,
             stream_type=StreamType.HTTP,
             path=item_id,
             can_seek=not is_radio,
@@ -1258,6 +1277,8 @@ class BuiltinProvider(MusicProvider):
             return media_item
         # all stored provider instances are unavailable - try library lookup by domain
         media_type = MediaType((item.metadata or {}).get("media_type", "track"))
+        if media_type == MediaType.SOUND_EFFECT:
+            return media_item
         media_controller = self.mass.music.get_controller(media_type)
         for prov_info in item.providers:
             try:

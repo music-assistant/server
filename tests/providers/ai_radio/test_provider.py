@@ -173,7 +173,10 @@ async def test_get_ui_settings_clamps_interval_to_minimum() -> None:
 async def test_stop_run_rejects_already_completed_session() -> None:
     """Reject stopping a session that is already completed."""
     provider = _make_provider()
-    provider.logger = cast("Any", SimpleNamespace(info=lambda *_a, **_kw: None))
+    provider.logger = cast(
+        "Any",
+        SimpleNamespace(debug=lambda *_a, **_kw: None, info=lambda *_a, **_kw: None),
+    )
     provider._sessions["s_done"] = SessionState(
         session_id="s_done",
         station_id="st",
@@ -190,7 +193,10 @@ async def test_stop_run_rejects_already_completed_session() -> None:
 async def test_stop_run_accepts_running_session_by_id() -> None:
     """Stop a running session resolved by explicit session id."""
     provider = _make_provider()
-    provider.logger = cast("Any", SimpleNamespace(info=lambda *_a, **_kw: None))
+    provider.logger = cast(
+        "Any",
+        SimpleNamespace(debug=lambda *_a, **_kw: None, info=lambda *_a, **_kw: None),
+    )
     provider._sessions["s_run"] = SessionState(
         session_id="s_run",
         station_id="st",
@@ -207,7 +213,10 @@ async def test_stop_run_accepts_running_session_by_id() -> None:
 async def test_start_run_prunes_oldest_finished_sessions() -> None:
     """Drop the oldest finished sessions beyond the retention limit on run start."""
     provider = _make_provider()
-    provider.logger = cast("Any", SimpleNamespace(info=lambda *_a, **_kw: None))
+    provider.logger = cast(
+        "Any",
+        SimpleNamespace(debug=lambda *_a, **_kw: None, info=lambda *_a, **_kw: None),
+    )
     provider._stations = {
         "station_a": {
             "id": "station_a",
@@ -289,7 +298,10 @@ async def test_start_run_dynamic_rejects_zero_batch_size_override() -> None:
     """Reject dynamic run start when batch size override is zero."""
     player = SimpleNamespace(player_id="living_room", available=True, enabled=True)
     provider = _make_dynamic_provider(player_obj=player, default_player_id="living_room")
-    provider.logger = cast("Any", SimpleNamespace(info=lambda *_a, **_kw: None))
+    provider.logger = cast(
+        "Any",
+        SimpleNamespace(debug=lambda *_a, **_kw: None, info=lambda *_a, **_kw: None),
+    )
     provider.mass = cast(
         "Any",
         SimpleNamespace(
