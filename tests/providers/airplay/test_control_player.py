@@ -25,6 +25,8 @@ from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_DISCOVERY_TYPE,
     COMPANION_DISCOVERY_TYPE,
+    CONF_ACTION_START_COMPANION_PAIRING,
+    CONF_ACTION_START_MRP_PAIRING,
     CONF_COMPANION_CREDENTIALS,
     CONF_COMPANION_PAIRING_PIN,
     CONF_MRP_CREDENTIALS,
@@ -158,6 +160,57 @@ def test_native_transport_features_follow_live_capabilities() -> None:
     player._companion_device = device
 
     assert PlayerFeature.NEXT_PREVIOUS in player.supported_features
+
+
+async def test_config_entries_keep_pairing_sections_separate() -> None:
+    """Companion and MRP pairing entries are composed independently."""
+    player = _make_control_player()
+
+    entries = await player.get_config_entries()
+    keys = {entry.key for entry in entries}
+
+    assert CONF_ACTION_START_COMPANION_PAIRING in keys
+    assert CONF_ACTION_START_MRP_PAIRING in keys
+    assert CONF_COMPANION_CREDENTIALS in keys
+    assert CONF_MRP_CREDENTIALS in keys
+    assert CONF_NATIVE_MRP_CREDENTIALS in keys
+
+
+def test_mute_feature_follows_available_control_path() -> None:
+    """Mute is available only for an active stream or native absolute volume."""
+    player = _make_control_player()
+    assert PlayerFeature.VOLUME_MUTE not in player.supported_features
+
+    player.stream = MagicMock(running=True)
+    assert PlayerFeature.VOLUME_MUTE in player.supported_features
+
+    player.stream = None
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.SetVolume
+    player._mrp_device = device
+    assert PlayerFeature.VOLUME_MUTE in player.supported_features
+
+
+async def test_native_mute_zeros_and_restores_volume() -> None:
+    """Native mute emulation restores the previous absolute volume."""
+    player = _make_control_player()
+    player._attr_volume_level = 42
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.SetVolume
+    device.audio.set_volume = AsyncMock()
+    player._mrp_device = device
+
+    await player.volume_mute(True)
+    mute_state_after_mute = player.volume_muted
+    assert mute_state_after_mute is True
+    assert player.volume_level == 42
+    device.audio.set_volume.assert_awaited_once_with(0)
+
+    device.audio.set_volume.reset_mock()
+    await player.volume_mute(False)
+    mute_state_after_unmute = player.volume_muted
+    assert mute_state_after_unmute is False
+    device.audio.set_volume.assert_awaited_once_with(42)
 
 
 def test_pairable_companion_service_requires_setup_until_paired() -> None:

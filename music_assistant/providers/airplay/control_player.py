@@ -62,6 +62,7 @@ from .constants import (
     CONF_MRP_PAIRING_PIN,
     CONF_NATIVE_MRP_CREDENTIALS,
     CONF_STORED_VOLUME,
+    FALLBACK_VOLUME,
 )
 from .helpers import (
     supports_companion_pairing,
@@ -152,6 +153,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._connection_task: asyncio.Task[None] | None = None
         self._connection_lock = asyncio.Lock()
         self._power_on_event = asyncio.Event()
+        self._volume_before_mute: int | None = None
         self._disconnecting = False
         self._restart_connections = False
         self._unloading = False
@@ -209,6 +211,8 @@ class AirPlayControlPlayer(AirPlayPlayer):
             or self._device_for_feature(FeatureName.TurnOff)
         ):
             features.add(PlayerFeature.POWER)
+        if not self._stream_active and not self._device_for_feature(FeatureName.SetVolume):
+            features.discard(PlayerFeature.VOLUME_MUTE)
         return features
 
     async def get_config_entries(
@@ -231,142 +235,8 @@ class AirPlayControlPlayer(AirPlayPlayer):
         }:
             await self._handle_mrp_pairing_action(action, values)
 
-        credentials = self.config.get_value(CONF_COMPANION_CREDENTIALS)
-        if values is not None:
-            credentials = values.get(CONF_COMPANION_CREDENTIALS, credentials)
-        if credentials:
-            entries.extend(
-                [
-                    ConfigEntry(
-                        key="companion_pairing_status",
-                        type=ConfigEntryType.LABEL,
-                        category="protocol_generic",
-                    ),
-                    ConfigEntry(
-                        key=CONF_ACTION_RESET_COMPANION_PAIRING,
-                        type=ConfigEntryType.ACTION,
-                        action=CONF_ACTION_RESET_COMPANION_PAIRING,
-                        category="protocol_generic",
-                    ),
-                ]
-            )
-        elif self.companion_pairing_supported:
-            if self._active_companion_pairing:
-                entries.extend(
-                    [
-                        ConfigEntry(
-                            key=CONF_COMPANION_PAIRING_PIN,
-                            type=ConfigEntryType.STRING,
-                            required=True,
-                            category="protocol_generic",
-                        ),
-                        ConfigEntry(
-                            key=CONF_ACTION_FINISH_COMPANION_PAIRING,
-                            type=ConfigEntryType.ACTION,
-                            action=CONF_ACTION_FINISH_COMPANION_PAIRING,
-                            category="protocol_generic",
-                        ),
-                    ]
-                )
-            else:
-                entries.extend(
-                    [
-                        ConfigEntry(
-                            key="companion_pairing_instructions",
-                            type=ConfigEntryType.LABEL,
-                            category="protocol_generic",
-                        ),
-                        ConfigEntry(
-                            key=CONF_ACTION_START_COMPANION_PAIRING,
-                            type=ConfigEntryType.ACTION,
-                            action=CONF_ACTION_START_COMPANION_PAIRING,
-                            category="protocol_generic",
-                        ),
-                    ]
-                )
-
-        entries.append(
-            ConfigEntry(
-                key=CONF_COMPANION_CREDENTIALS,
-                type=ConfigEntryType.SECURE_STRING,
-                default_value=None,
-                value=credentials,
-                required=False,
-                hidden=True,
-                category="protocol_generic",
-            )
-        )
-
-        mrp_credentials = self._mrp_credentials
-        if values is not None:
-            credentials_value = values.get(self._mrp_credentials_key, mrp_credentials)
-            mrp_credentials = str(credentials_value) if credentials_value else None
-        if mrp_credentials:
-            entries.extend(
-                [
-                    ConfigEntry(
-                        key="mrp_pairing_status",
-                        type=ConfigEntryType.LABEL,
-                        category="protocol_generic",
-                    ),
-                    ConfigEntry(
-                        key=CONF_ACTION_RESET_MRP_PAIRING,
-                        type=ConfigEntryType.ACTION,
-                        action=CONF_ACTION_RESET_MRP_PAIRING,
-                        category="protocol_generic",
-                    ),
-                ]
-            )
-        elif self.mrp_pairing_supported:
-            if self._active_mrp_pairing:
-                entries.extend(
-                    [
-                        ConfigEntry(
-                            key=CONF_MRP_PAIRING_PIN,
-                            type=ConfigEntryType.STRING,
-                            required=True,
-                            category="protocol_generic",
-                        ),
-                        ConfigEntry(
-                            key=CONF_ACTION_FINISH_MRP_PAIRING,
-                            type=ConfigEntryType.ACTION,
-                            action=CONF_ACTION_FINISH_MRP_PAIRING,
-                            category="protocol_generic",
-                        ),
-                    ]
-                )
-            else:
-                entries.extend(
-                    [
-                        ConfigEntry(
-                            key="mrp_pairing_instructions",
-                            type=ConfigEntryType.LABEL,
-                            category="protocol_generic",
-                        ),
-                        ConfigEntry(
-                            key=CONF_ACTION_START_MRP_PAIRING,
-                            type=ConfigEntryType.ACTION,
-                            action=CONF_ACTION_START_MRP_PAIRING,
-                            category="protocol_generic",
-                        ),
-                    ]
-                )
-        for credentials_key in (CONF_MRP_CREDENTIALS, CONF_NATIVE_MRP_CREDENTIALS):
-            entries.append(
-                ConfigEntry(
-                    key=credentials_key,
-                    type=ConfigEntryType.SECURE_STRING,
-                    default_value=None,
-                    value=(
-                        values.get(credentials_key)
-                        if values is not None
-                        else self.config.get_value(credentials_key)
-                    ),
-                    required=False,
-                    hidden=True,
-                    category="protocol_generic",
-                )
-            )
+        entries.extend(self._get_companion_config_entries(values))
+        entries.extend(self._get_mrp_config_entries(values))
         return entries
 
     async def power(self, powered: bool) -> None:
@@ -441,11 +311,29 @@ class AirPlayControlPlayer(AirPlayPlayer):
             await super().volume_set(volume_level)
             return
         await self._run_control_command(device.audio.set_volume(volume_level), "set volume")
-        self._update_native_volume(volume_level)
+        self._handle_volume_update("command", volume_level)
 
     async def volume_mute(self, muted: bool) -> None:
-        """Mute the active Music Assistant stream."""
-        await super().volume_mute(muted)
+        """Mute an active stream or native device volume."""
+        if self._stream_active:
+            await super().volume_mute(muted)
+            return
+        device = self._device_for_feature(FeatureName.SetVolume)
+        if device is None:
+            raise PlayerCommandFailed(f"Mute control is unavailable for {self.display_name}")
+        if muted:
+            if self.volume_muted:
+                return
+            if self.volume_level and self.volume_level > 0:
+                self._volume_before_mute = self.volume_level
+            await self._run_control_command(device.audio.set_volume(0), "mute")
+            self._handle_volume_update("command", 0)
+            return
+        if not self.volume_muted:
+            return
+        volume = self._volume_before_mute or self.volume_level or FALLBACK_VOLUME
+        await self._run_control_command(device.audio.set_volume(volume), "unmute")
+        self._handle_volume_update("command", volume)
 
     async def next_track(self) -> None:
         """Skip to the next item in external playback."""
@@ -716,7 +604,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
     @property
     def _stream_active(self) -> bool:
         """Return whether Music Assistant is actively streaming to this device."""
-        return bool(self.stream and self.stream.running)
+        return bool((stream := getattr(self, "stream", None)) and stream.running)
 
     @property
     def _mrp_endpoint(self) -> tuple[AsyncServiceInfo, Protocol] | None:
@@ -790,6 +678,155 @@ class AirPlayControlPlayer(AirPlayPlayer):
             raise PlayerCommandFailed(
                 f"Unable to {description} {self.display_name}: {err}"
             ) from err
+
+    def _get_companion_config_entries(
+        self,
+        values: dict[str, ConfigValueType] | None,
+    ) -> list[ConfigEntry]:
+        """Return Companion pairing configuration entries."""
+        credentials = self.config.get_value(CONF_COMPANION_CREDENTIALS)
+        if values is not None:
+            credentials = values.get(CONF_COMPANION_CREDENTIALS, credentials)
+        entries: list[ConfigEntry] = []
+        if credentials:
+            entries.extend(
+                [
+                    ConfigEntry(
+                        key="companion_pairing_status",
+                        type=ConfigEntryType.LABEL,
+                        category="protocol_generic",
+                    ),
+                    ConfigEntry(
+                        key=CONF_ACTION_RESET_COMPANION_PAIRING,
+                        type=ConfigEntryType.ACTION,
+                        action=CONF_ACTION_RESET_COMPANION_PAIRING,
+                        category="protocol_generic",
+                    ),
+                ]
+            )
+        elif self.companion_pairing_supported:
+            if self._active_companion_pairing:
+                entries.extend(
+                    [
+                        ConfigEntry(
+                            key=CONF_COMPANION_PAIRING_PIN,
+                            type=ConfigEntryType.STRING,
+                            required=True,
+                            category="protocol_generic",
+                        ),
+                        ConfigEntry(
+                            key=CONF_ACTION_FINISH_COMPANION_PAIRING,
+                            type=ConfigEntryType.ACTION,
+                            action=CONF_ACTION_FINISH_COMPANION_PAIRING,
+                            category="protocol_generic",
+                        ),
+                    ]
+                )
+            else:
+                entries.extend(
+                    [
+                        ConfigEntry(
+                            key="companion_pairing_instructions",
+                            type=ConfigEntryType.LABEL,
+                            category="protocol_generic",
+                        ),
+                        ConfigEntry(
+                            key=CONF_ACTION_START_COMPANION_PAIRING,
+                            type=ConfigEntryType.ACTION,
+                            action=CONF_ACTION_START_COMPANION_PAIRING,
+                            category="protocol_generic",
+                        ),
+                    ]
+                )
+        entries.append(self._get_hidden_credentials_entry(CONF_COMPANION_CREDENTIALS, credentials))
+        return entries
+
+    def _get_mrp_config_entries(
+        self,
+        values: dict[str, ConfigValueType] | None,
+    ) -> list[ConfigEntry]:
+        """Return MRP pairing configuration entries."""
+        credentials = self._mrp_credentials
+        if values is not None:
+            credentials_value = values.get(self._mrp_credentials_key, credentials)
+            credentials = str(credentials_value) if credentials_value else None
+        entries: list[ConfigEntry] = []
+        if credentials:
+            entries.extend(
+                [
+                    ConfigEntry(
+                        key="mrp_pairing_status",
+                        type=ConfigEntryType.LABEL,
+                        category="protocol_generic",
+                    ),
+                    ConfigEntry(
+                        key=CONF_ACTION_RESET_MRP_PAIRING,
+                        type=ConfigEntryType.ACTION,
+                        action=CONF_ACTION_RESET_MRP_PAIRING,
+                        category="protocol_generic",
+                    ),
+                ]
+            )
+        elif self.mrp_pairing_supported:
+            if self._active_mrp_pairing:
+                entries.extend(
+                    [
+                        ConfigEntry(
+                            key=CONF_MRP_PAIRING_PIN,
+                            type=ConfigEntryType.STRING,
+                            required=True,
+                            category="protocol_generic",
+                        ),
+                        ConfigEntry(
+                            key=CONF_ACTION_FINISH_MRP_PAIRING,
+                            type=ConfigEntryType.ACTION,
+                            action=CONF_ACTION_FINISH_MRP_PAIRING,
+                            category="protocol_generic",
+                        ),
+                    ]
+                )
+            else:
+                entries.extend(
+                    [
+                        ConfigEntry(
+                            key="mrp_pairing_instructions",
+                            type=ConfigEntryType.LABEL,
+                            category="protocol_generic",
+                        ),
+                        ConfigEntry(
+                            key=CONF_ACTION_START_MRP_PAIRING,
+                            type=ConfigEntryType.ACTION,
+                            action=CONF_ACTION_START_MRP_PAIRING,
+                            category="protocol_generic",
+                        ),
+                    ]
+                )
+        entries.extend(
+            self._get_hidden_credentials_entry(
+                credentials_key,
+                values.get(credentials_key)
+                if values is not None
+                else self.config.get_value(credentials_key),
+            )
+            for credentials_key in (CONF_MRP_CREDENTIALS, CONF_NATIVE_MRP_CREDENTIALS)
+        )
+        return entries
+
+    @staticmethod
+    def _get_hidden_credentials_entry(
+        credentials_key: str,
+        credentials: ConfigValueType,
+    ) -> ConfigEntry:
+        """Return a hidden secure credentials entry."""
+        return ConfigEntry(
+            key=credentials_key,
+            type=ConfigEntryType.SECURE_STRING,
+            default_value=None,
+            value=credentials,
+            required=False,
+            hidden=True,
+            category="protocol_generic",
+        )
 
     async def _handle_companion_pairing_action(
         self,
@@ -1006,7 +1043,16 @@ class AirPlayControlPlayer(AirPlayPlayer):
         """Apply a pushed pyatv volume level."""
         if source == "mrp" and self._companion_device is not None:
             return
-        self._update_native_volume(round(volume))
+        volume_level = max(0, min(100, round(volume)))
+        if volume_level == 0:
+            if self._volume_before_mute is None and self._attr_volume_level:
+                self._volume_before_mute = self._attr_volume_level
+            self._attr_volume_muted = True
+            self.update_state()
+            return
+        self._attr_volume_muted = False
+        self._volume_before_mute = None
+        self._update_native_volume(volume_level)
 
     def _update_native_volume(self, volume: int) -> None:
         """Update and persist a volume reported by device control."""
