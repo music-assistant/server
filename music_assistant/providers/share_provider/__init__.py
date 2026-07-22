@@ -340,8 +340,9 @@ class ShareProvider(PluginProvider):
         """Fetch and serialize playlist tracks as minimal stubs (no provider links)."""
         result: list[dict[str, Any]] = []
         with suppress(Exception):
-            tracks = await self.mass.music.playlists.tracks(playlist.item_id, playlist.provider)
-            for track in tracks:
+            async for track in self.mass.music.playlists.tracks(
+                playlist.item_id, playlist.provider
+            ):
                 stub: dict[str, Any] = {"title": track.name}
                 if hasattr(track, "artist_str") and track.artist_str:
                     stub["artist"] = track.artist_str
@@ -409,11 +410,11 @@ class ShareProvider(PluginProvider):
 
         # Create a new library playlist with the resolved tracks
         new_playlist = await self.mass.music.playlists.create_playlist(payload.title)
-        for track in matched:
-            with suppress(Exception):
-                await self.mass.music.playlists.add_playlist_tracks(
-                    new_playlist.item_id, [track.uri]
-                )
+        uris = [t.uri for t in matched if t.uri]
+        if uris:
+            await self.mass.music.playlists.add_playlist_tracks(
+                new_playlist.item_id, uris
+            )
         return new_playlist
 
     async def _lookup_by_isrc(self, isrc: str) -> MediaItemType | None:
