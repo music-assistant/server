@@ -18,7 +18,9 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
 
-SUPPORTED_FEATURES: set[ProviderFeature] = set()
+SUPPORTED_FEATURES: set[ProviderFeature] = (
+    set()
+)  # we don't have any special supported features (yet)
 
 # Monkey patch the Media controller here to store the queue items
 _patched_process_media_status_org = MediaController._process_media_status

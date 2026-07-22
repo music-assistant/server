@@ -58,7 +58,6 @@ class DashboardController(CoreController):
         super().__init__(mass)
         self.manifest.name = "Dashboard"
         self.manifest.description = "Casts Music Assistant dashboards to display devices."
-        # in-memory only: not reconciled after a server restart
         self._dashboards: dict[str, _RegisteredDashboard] = {}
         self._sessions: dict[str, DashboardSession] = {}
 
@@ -73,9 +72,6 @@ class DashboardController(CoreController):
     ) -> None:
         """
         Register the calling client as a dashboard endpoint.
-
-        Re-registering an existing dashboard_id from the same client replaces it,
-        e.g. on a client reconnect.
 
         :param dashboard_id: Unique id chosen by the registering client.
         :param name: Display name for the dashboard endpoint.
@@ -117,8 +113,6 @@ class DashboardController(CoreController):
     async def unregister_dashboard(self, dashboard_id: str) -> None:
         """
         Unregister a dashboard endpoint, dropping any active session for it.
-
-        Graceful no-op when dashboard_id is not currently registered.
 
         :param dashboard_id: Id of a registered dashboard endpoint.
         :raises InvalidCommand: If not called from a websocket client, or if dashboard_id
@@ -211,8 +205,6 @@ class DashboardController(CoreController):
         """
         Hide a Music Assistant dashboard from a registered dashboard endpoint.
 
-        Graceful no-op when dashboard_id is unknown or nothing is currently showing.
-
         :param dashboard_id: Id of a registered dashboard endpoint, as returned
             by `dashboard/dashboards`.
         """
@@ -238,9 +230,6 @@ class DashboardController(CoreController):
     ) -> str:
         """
         Return a fully-qualified dashboard URL for a client to load itself.
-
-        Requires the users.invite scope, or that the calling client owns a registered
-        dashboard endpoint with an active session matching the requested dashboard.
 
         :param dashboard: Dashboard to load.
         :param player_id: Player to show, required when dashboard is NOW_PLAYING.
