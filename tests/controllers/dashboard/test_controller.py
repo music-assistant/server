@@ -358,7 +358,7 @@ async def test_show_dashboard_callback_path_resolves_url_and_invokes_on_show() -
         await controller.show_dashboard("dash1", DashboardType.PARTY)
 
     on_show.assert_awaited_once()
-    dashboard_arg, url_arg, player_id_arg = on_show.await_args.args
+    dashboard_arg, url_arg, player_id_arg = on_show.await_args.args  # type: ignore[union-attr]
     assert dashboard_arg == DashboardType.PARTY
     assert player_id_arg is None
     assert _query(url_arg) == {
