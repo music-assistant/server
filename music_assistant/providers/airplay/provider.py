@@ -646,7 +646,10 @@ class AirPlayProvider(PlayerProvider):
                 err,
             )
             return
-        args = [cli_binary, "--ptp-daemon"]
+        # Advertise the same grandmaster identity as the per-stream sessions
+        # (which derive their PTP clock id from --dacp), so receivers see one
+        # consistent clock whether the daemon or an in-process engine serves it.
+        args = [cli_binary, "--ptp-daemon", "--dacp", self.dacp_id]
         bind_ip = str(self.mass.streams.bind_ip)
         if bind_ip not in ("0.0.0.0", "::", ""):
             args += ["--if", bind_ip]
