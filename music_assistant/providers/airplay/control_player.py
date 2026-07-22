@@ -906,6 +906,10 @@ class AirPlayControlPlayer(AirPlayPlayer):
             if not pairing.has_paired or not credentials:
                 raise PlayerCommandFailed("Companion pairing did not complete")
             values[CONF_COMPANION_CREDENTIALS] = credentials
+            # the action flow never persists `values` itself, so save right away
+            await self.mass.config.save_player_config(
+                self.player_id, {CONF_COMPANION_CREDENTIALS: credentials}
+            )
         except (pyatv_exceptions.PairingError, *_CONNECTION_ERRORS) as err:
             raise PlayerCommandFailed(
                 f"Unable to finish Companion pairing for {self.display_name}: {err}"
@@ -913,6 +917,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         finally:
             await pairing.close()
             self._active_companion_pairing = None
+        self._schedule_connection(force=True)
 
     async def _reset_companion_pairing(self, values: dict[str, ConfigValueType] | None) -> None:
         """Clear stored Companion credentials and active connections."""
@@ -925,8 +930,11 @@ class AirPlayControlPlayer(AirPlayPlayer):
             self._active_companion_pairing = None
         if values is not None:
             values[CONF_COMPANION_CREDENTIALS] = None
-        self.config.update({CONF_COMPANION_CREDENTIALS: None})
         await self._disconnect_control_services()
+        # persist the cleared credentials so a restart cannot resurrect them
+        await self.mass.config.save_player_config(
+            self.player_id, {CONF_COMPANION_CREDENTIALS: None}
+        )
         self._schedule_connection(force=True)
 
     async def _start_mrp_pairing(self) -> None:
@@ -984,7 +992,12 @@ class AirPlayControlPlayer(AirPlayPlayer):
             credentials = pairing.service.credentials
             if not pairing.has_paired or not credentials:
                 raise PlayerCommandFailed("Playback monitoring pairing did not complete")
-            values[self._mrp_credentials_key] = credentials
+            credentials_key = self._mrp_credentials_key
+            values[credentials_key] = credentials
+            # the action flow never persists `values` itself, so save right away
+            await self.mass.config.save_player_config(
+                self.player_id, {credentials_key: credentials}
+            )
         except (pyatv_exceptions.PairingError, *_CONNECTION_ERRORS) as err:
             raise PlayerCommandFailed(
                 f"Unable to finish playback monitoring pairing for {self.display_name}: {err}"
@@ -992,6 +1005,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         finally:
             await pairing.close()
             self._active_mrp_pairing = None
+        self._schedule_connection(force=True)
 
     async def _reset_mrp_pairing(self, values: dict[str, ConfigValueType] | None) -> None:
         """Clear stored playback-monitoring credentials and reconnect Companion."""
@@ -1005,13 +1019,15 @@ class AirPlayControlPlayer(AirPlayPlayer):
         if values is not None:
             values[CONF_MRP_CREDENTIALS] = None
             values[CONF_NATIVE_MRP_CREDENTIALS] = None
-        self.config.update(
+        await self._disconnect_control_services()
+        # persist the cleared credentials so a restart cannot resurrect them
+        await self.mass.config.save_player_config(
+            self.player_id,
             {
                 CONF_MRP_CREDENTIALS: None,
                 CONF_NATIVE_MRP_CREDENTIALS: None,
-            }
+            },
         )
-        await self._disconnect_control_services()
         self._schedule_connection(force=True)
 
     def _apply_initial_device_state(self, device: AppleTV, source: str) -> None:

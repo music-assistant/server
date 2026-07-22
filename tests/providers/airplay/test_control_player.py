@@ -83,6 +83,7 @@ def _make_control_player(
     config.get_value.side_effect = lambda key, default=None: values.get(key, default)
     config.update.side_effect = values.update
     provider.mass.config.get_base_player_config.return_value = config
+    provider.mass.config.save_player_config = AsyncMock()
     companion_info = (
         _service_info(
             COMPANION_DISCOVERY_TYPE,
@@ -900,6 +901,9 @@ async def test_companion_pairing_stores_separate_credentials() -> None:
 
     pairing.pin.assert_called_once_with(1234)
     assert values[CONF_COMPANION_CREDENTIALS] == "companion-creds"
+    cast("MagicMock", player.mass.config).save_player_config.assert_awaited_once_with(
+        PLAYER_ID, {CONF_COMPANION_CREDENTIALS: "companion-creds"}
+    )
 
 
 async def test_mrp_pairing_stores_complete_airplay_credentials() -> None:
@@ -919,6 +923,9 @@ async def test_mrp_pairing_stores_complete_airplay_credentials() -> None:
 
     pairing.pin.assert_called_once_with(1234)
     assert values[CONF_MRP_CREDENTIALS] == "ltpk:ltsk:accessory-id:client-id"
+    cast("MagicMock", player.mass.config).save_player_config.assert_awaited_once_with(
+        PLAYER_ID, {CONF_MRP_CREDENTIALS: "ltpk:ltsk:accessory-id:client-id"}
+    )
 
 
 async def test_reset_companion_pairing_reconnects_mrp() -> None:
@@ -935,3 +942,6 @@ async def test_reset_companion_pairing_reconnects_mrp() -> None:
     disconnect.assert_awaited_once()
     schedule.assert_called_once_with(force=True)
     assert values[CONF_COMPANION_CREDENTIALS] is None
+    cast("MagicMock", player.mass.config).save_player_config.assert_awaited_once_with(
+        PLAYER_ID, {CONF_COMPANION_CREDENTIALS: None}
+    )
