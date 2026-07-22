@@ -10,10 +10,15 @@ from music_assistant_models.enums import ConfigEntryType, PlayerFeature, Provide
 from music_assistant.providers.msx_bridge import get_config_entries, setup
 from music_assistant.providers.msx_bridge.constants import (
     CONF_ENABLE_GROUPING,
+    CONF_ENABLE_SENDSPIN_BRIDGE,
+    CONF_GROUP_STREAM_MODE,
     CONF_HTTP_PORT,
     CONF_OUTPUT_FORMAT,
     DEFAULT_HTTP_PORT,
     DEFAULT_OUTPUT_FORMAT,
+    GROUP_STREAM_MODE_INDEPENDENT,
+    GROUP_STREAM_MODE_REDIRECT,
+    GROUP_STREAM_MODE_SHARED,
 )
 from music_assistant.providers.msx_bridge.player import MSXPlayer
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
@@ -54,6 +59,28 @@ async def test_get_config_entries(mass_mock: Mock) -> None:
     assert grouping_entry is not None
     assert grouping_entry.type == ConfigEntryType.BOOLEAN
     assert grouping_entry.default_value is False
+
+
+async def test_sendspin_bridge_and_redirect_enabled_by_default(mass_mock: Mock) -> None:
+    """Fresh installs get the Sendspin bridge on and redirect stream mode by default."""
+    entries = await get_config_entries(mass_mock)
+    sendspin_entry = next(e for e in entries if e.key == CONF_ENABLE_SENDSPIN_BRIDGE)
+    assert sendspin_entry.default_value is True
+    mode_entry = next(e for e in entries if e.key == CONF_GROUP_STREAM_MODE)
+    assert mode_entry.default_value == GROUP_STREAM_MODE_REDIRECT
+
+
+async def test_group_stream_mode_options_include_redirect(mass_mock: Mock) -> None:
+    """The redirect (MA streamserver) mode must be selectable in the config UI."""
+    entries = await get_config_entries(mass_mock)
+    entry = next(e for e in entries if e.key == CONF_GROUP_STREAM_MODE)
+    assert entry.options is not None
+    values = [o.value for o in entry.options]
+    assert values == [
+        GROUP_STREAM_MODE_INDEPENDENT,
+        GROUP_STREAM_MODE_SHARED,
+        GROUP_STREAM_MODE_REDIRECT,
+    ]
 
 
 async def test_setup_without_sync_players(
