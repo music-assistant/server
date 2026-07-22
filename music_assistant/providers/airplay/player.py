@@ -74,7 +74,7 @@ _DOCKER_SUBNET = ipaddress.ip_network("172.16.0.0/12")
 
 
 class AirPlayPlayer(Player):
-    """AirPlay Player implementation."""
+    """Base implementation shared by all AirPlay players."""
 
     def __init__(
         self,
@@ -114,14 +114,6 @@ class AirPlayPlayer(Player):
         self._attr_volume_level = initial_volume
         self._attr_can_group_with = {provider.instance_id}
         self._attr_enabled_by_default = True
-
-        # Set player type based on manufacturer/model:
-        # - Apple devices (HomePod, Apple TV) have native AirPlay support -> PLAYER
-        # - Non-Apple devices are generic AirPlay receivers -> PROTOCOL (wrapped in UniversalPlayer)
-        if is_apple_device(manufacturer, model):
-            self._attr_type = PlayerType.PLAYER
-        else:
-            self._attr_type = PlayerType.PROTOCOL
 
     @property
     def protocol(self) -> StreamingProtocol:
@@ -1094,3 +1086,9 @@ class AirPlayPlayer(Player):
             if client := cast("AirPlayPlayer | None", self.mass.players.get_player(child_id)):
                 sync_clients.append(client)
         return sync_clients
+
+
+class GenericAirPlayPlayer(AirPlayPlayer):
+    """AirPlay protocol endpoint without independent device control."""
+
+    _attr_type = PlayerType.PROTOCOL
