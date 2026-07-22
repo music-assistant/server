@@ -1016,23 +1016,34 @@ class SendspinPlayer(SendspinBasePlayer):
 
     def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
         """Event callback registered to the sendspin group this player belongs to."""
-        if (
+        is_resume = (
             isinstance(event, GroupStateChangedEvent)
             and event.state == PlaybackStateType.PLAYING
             and self._attr_playback_state == PlaybackState.PAUSED
-            and self._attr_current_media is not None
-        ):
-            # current_media's identity is unchanged on resume, so update_state()
-            # below won't debounce a metadata push; refresh the anchor now so
-            # corrected_elapsed_time doesn't extrapolate through the paused span.
-            self._attr_current_media.elapsed_time_last_updated = time.time()
+        )
+        if is_resume:
+            # _attr_elapsed_time_last_updated is only advanced by playback.py's commit
+            # loop, which stops while paused - so it's still anchored to the moment
+            # playback paused. Fast-forward it now, before update_state() below flips
+            # playback_state to PLAYING, so corrected_elapsed_time doesn't extrapolate
+            # across the paused span.
+            self._attr_elapsed_time_last_updated = time.time()
         super().group_event_cb(group, event)
+        if is_resume and self.state.current_media is not None:
+            # send_current_media_metadata() (scheduled below) reads self.state.current_media,
+            # which the queue controller rebuilds from its own cached elapsed-time anchor -
+            # only refreshed via a 500ms-debounced callback, so it's still stale here even
+            # after the fix above. Patch this update's snapshot directly so the imminent
+            # metadata push doesn't race ahead of that debounce with a stale value.
+            self.state.current_media.elapsed_time_last_updated = time.time()
         match event:
             case GroupStateChangedEvent(state=state) if self.synced_to is None and state in (
                 PlaybackStateType.PLAYING,
                 PlaybackStateType.PAUSED,
             ):
-                # Same reason as above: push progress explicitly (README:1445).
+                # Push progress explicitly: current_media's identity is unchanged across
+                # pause/resume so update_state() above won't debounce a metadata push
+                # through the normal media-changed callback.
                 self.mass.create_task(
                     self.send_current_media_metadata(),
                     task_id=f"sendspin_metadata_{self.player_id}",
