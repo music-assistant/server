@@ -838,7 +838,7 @@ class OpenSonicProvider(MusicProvider):
     async def _podcast_recommendations(self) -> RecommendationFolder:
         podcasts: RecommendationFolder = RecommendationFolder(
             item_id="subsonic_newest_podcasts",
-            provider=self.domain,
+            provider=self.instance_id,
             name="Newest Podcast Episodes",
             translation_key="episodes_recently_added",
         )
@@ -853,7 +853,7 @@ class OpenSonicProvider(MusicProvider):
     async def _favorites_recommendation(self) -> RecommendationFolder:
         faves: RecommendationFolder = RecommendationFolder(
             item_id="subsonic_starred_albums",
-            provider=self.domain,
+            provider=self.instance_id,
             name="Starred Items",
             translation_key="starred_items",
         )
@@ -877,7 +877,7 @@ class OpenSonicProvider(MusicProvider):
     async def _new_recommendations(self) -> RecommendationFolder:
         new_stuff: RecommendationFolder = RecommendationFolder(
             item_id="subsonic_new_albums",
-            provider=self.domain,
+            provider=self.instance_id,
             name="New Albums",
             translation_key="recently_added_albums",
         )
@@ -890,7 +890,7 @@ class OpenSonicProvider(MusicProvider):
     async def _played_recommendations(self) -> RecommendationFolder:
         recent: RecommendationFolder = RecommendationFolder(
             item_id="subsonic_most_played",
-            provider=self.domain,
+            provider=self.instance_id,
             name="Most Played Albums",
             translation_key="most_played_albums",
         )
@@ -911,7 +911,7 @@ class OpenSonicProvider(MusicProvider):
             recos.append(
                 RecommendationFolder(
                     item_id="subsonic_newest_podcasts",
-                    provider=self.domain,
+                    provider=self.instance_id,
                     name="Newest Podcast Episodes",
                     translation_key="episodes_recently_added",
                 )
@@ -920,7 +920,7 @@ class OpenSonicProvider(MusicProvider):
             recos.append(
                 RecommendationFolder(
                     item_id="subsonic_starred_albums",
-                    provider=self.domain,
+                    provider=self.instance_id,
                     name="Starred Items",
                     translation_key="starred_items",
                 )
@@ -929,7 +929,7 @@ class OpenSonicProvider(MusicProvider):
             recos.append(
                 RecommendationFolder(
                     item_id="subsonic_new_albums",
-                    provider=self.domain,
+                    provider=self.instance_id,
                     name="New Albums",
                     translation_key="recently_added_albums",
                 )
@@ -938,7 +938,7 @@ class OpenSonicProvider(MusicProvider):
             recos.append(
                 RecommendationFolder(
                     item_id="subsonic_most_played",
-                    provider=self.domain,
+                    provider=self.instance_id,
                     name="Most Played Albums",
                     translation_key="most_played_albums",
                 )

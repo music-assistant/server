@@ -294,7 +294,7 @@ class SmartPlaylistProvider(PluginProvider):
         return [
             RecommendationFolder(
                 item_id="smart_playlists",
-                provider=self.domain,
+                provider=self.instance_id,
                 name="Smart Playlists",
                 translation_key="smart_playlists",
             )

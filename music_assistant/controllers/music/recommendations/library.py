@@ -43,13 +43,13 @@ def library_rows() -> list[RecommendationFolder]:
             LibraryRowID.RECENTLY_ADDED_TRACKS,
             "Recently added tracks",
             "recently_added_tracks",
-            "music-note-plus",
+            "mdi-music-note-plus",
         ),
         _folder(
             LibraryRowID.RECENTLY_ADDED_ALBUMS,
             "Recently added albums",
             "recently_added_albums",
-            "music-note-plus",
+            "mdi-album",
         ),
         _folder(
             LibraryRowID.RANDOM_ARTISTS,

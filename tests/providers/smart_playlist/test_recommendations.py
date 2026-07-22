@@ -36,7 +36,8 @@ async def test_get_recommendations_returns_static_row() -> None:
     assert len(result) == 1
     folder = result[0]
     assert folder.item_id == "smart_playlists"
-    assert folder.provider == "smart_playlist"
+    # rows must carry the instance_id: the items API resolves the provider from it
+    assert folder.provider == plugin.instance_id
     assert folder.name == "Smart Playlists"
     assert folder.translation_key == "smart_playlists"
     assert len(folder.items) == 0
