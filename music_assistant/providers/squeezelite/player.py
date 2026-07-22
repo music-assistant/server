@@ -70,10 +70,9 @@ CACHE_CATEGORY_PREV_STATE = (
 PROTOCOL_ONLY_MODELS = (
     # Device models where slimproto is only a secondary protocol on a device with
     # its own (native) identity: WiiM/LinkPlay devices (ModelName=WiiM Player) and
-    # the LMS bridge tools that expose AirPlay/Chromecast/UPnP devices as squeezelite
-    # players. These are registered as PlayerType.PROTOCOL so they get wrapped by
-    # (or linked to) the device's visible player. All other squeezelite endpoints,
-    # hardware and software alike, are full players.
+    # the LMS bridge tools that expose AirPlay/Chromecast/UPnP devices as
+    # squeezelite players. These register as PlayerType.PROTOCOL and get linked
+    # to the device's visible player.
     "wiim",
     "raopbridge",
     "castbridge",
@@ -110,11 +109,9 @@ class SqueezelitePlayer(Player):
             PlayerFeature.ENQUEUE,
             PlayerFeature.GAPLESS_PLAYBACK,
         }
-        # The player type is decided once at creation, based on the device identity
-        # reported in the HELO capabilities. Protocol players never expose power
-        # control (they are powered on/off with the stream), while full players get
-        # native power support (slimproto power can e.g. drive a GPIO/script wired
-        # to an amplifier).
+        # Protocol players are powered on/off with the stream and expose no power
+        # control; full players get native power support (slimproto power can e.g.
+        # drive a GPIO/script wired to an amplifier).
         if is_protocol_only_device(client.device_model):
             self._attr_type = PlayerType.PROTOCOL
         else:
