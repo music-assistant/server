@@ -98,13 +98,30 @@ class StreamFeederMixin(_PlayerQueuesBase):
             return
 
         async def _enqueue_next_item_on_player(next_item: QueueItem) -> None:
-            if (
-                not queue.active
-                or queue_data.session_id != session_id
-                or queue.state != PlaybackState.PLAYING
+            async with self.mass.players.wait_for_player_update(
+                queue_id,
+                attribute_name="playback_state",
+                attribute_value=PlaybackState.PLAYING,
             ):
-                # queue is not active anymore or session_id does not match, so we bail out
+                pass
+
+            player = self.mass.players.get_player(queue_id)
+            if (
+                player is None
+                or player.state.playback_state != PlaybackState.PLAYING
+                or player.state.active_source not in (queue.queue_id, None)
+                or queue_data.session_id != session_id
+                or queue.flow_mode
+            ):
                 return
+
+            current_index = queue.index_in_buffer
+            if current_index is None:
+                return
+            current_next = self.get_next_item(queue_id, current_index)
+            if current_next is None or current_next.queue_item_id != next_item.queue_item_id:
+                return
+
             await self.mass.players.enqueue_next_media(
                 player_id=queue_id,
                 media=await self.player_media_from_queue_item(next_item),
