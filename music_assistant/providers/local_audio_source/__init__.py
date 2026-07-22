@@ -51,7 +51,7 @@ async def get_config_entries(
     mass: MusicAssistant,
     instance_id: str | None = None,  # noqa: ARG001
     action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
+    values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
     """
     Return Config entries to setup this provider.
@@ -75,18 +75,15 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_FRIENDLY_NAME,
             type=ConfigEntryType.STRING,
-            label="Display Name",
             default_value="Local Audio Source",
             required=True,
         ),
         ConfigEntry(
             key=CONF_ICON_PRESET,
             type=ConfigEntryType.STRING,
-            label="Thumbnail",
-            description="Pick a bundled icon or use a custom image URL.",
             options=[
-                ConfigValueOption(ICON_PRESET_CUSTOM, title="Custom URL"),
-                *(ConfigValueOption(key, title=label) for key, label in ICON_PRESETS.items()),
+                ConfigValueOption(ICON_PRESET_CUSTOM),
+                *(ConfigValueOption(key) for key in ICON_PRESETS),
             ],
             default_value=ICON_PRESET_CUSTOM,
             required=True,
@@ -94,8 +91,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_THUMBNAIL_IMAGE,
             type=ConfigEntryType.STRING,
-            label="Thumbnail image URL",
-            description="Direct URL to an SVG/PNG/JPG, e.g. https://example.com/icon.svg",
             default_value="",
             required=False,
             depends_on=CONF_ICON_PRESET,
@@ -104,11 +99,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_INCLUDE_MONITORS,
             type=ConfigEntryType.BOOLEAN,
-            label="Include monitor sources",
-            description=(
-                "When enabled, sink monitor sources (loopback capture of what's currently "
-                "playing on an output) also appear in the Audio Input Device list below."
-            ),
             default_value=False,
             required=False,
             immediate_apply=True,
@@ -116,8 +106,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_INPUT_DEVICE,
             type=ConfigEntryType.STRING,
-            label="Audio Input Device",
-            description="Select a PulseAudio/PipeWire capture source (pactl list sources).",
             options=device_options,
             default_value=device_options[0].value if device_options else None,
             required=True,
@@ -125,26 +113,14 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_AUTO_TRIGGER,
             type=ConfigEntryType.BOOLEAN,
-            label="Auto-start on signal",
-            description=(
-                "Watch the input for signal and automatically start/stop playback on a "
-                "chosen player — for devices that are always connected (e.g. a USB sound "
-                "card) rather than selected on demand from Live Inputs."
-            ),
             default_value=False,
             required=False,
         ),
         ConfigEntry(
             key=CONF_TARGET_PLAYER_ID,
             type=ConfigEntryType.STRING,
-            label="Auto-start target player",
-            description=(
-                "Which player to start automatically when signal is detected. "
-                "'Auto' prefers whichever player is currently playing, falling back to "
-                "the first available player."
-            ),
             options=[
-                ConfigValueOption(PLAYER_ID_AUTO, title="Auto"),
+                ConfigValueOption(PLAYER_ID_AUTO),
                 *player_options,
             ],
             default_value=PLAYER_ID_AUTO,
@@ -155,12 +131,6 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_TRIGGER_THRESHOLD_DBFS,
             type=ConfigEntryType.FLOAT,
-            label="Signal threshold (dBFS)",
-            description=(
-                "RMS level above which the input counts as active audio. "
-                "Higher (closer to 0) = less sensitive, lower = more sensitive to quiet "
-                "signals and background noise."
-            ),
             default_value=DEFAULT_TRIGGER_THRESHOLD_DBFS,
             required=False,
             depends_on=CONF_AUTO_TRIGGER,

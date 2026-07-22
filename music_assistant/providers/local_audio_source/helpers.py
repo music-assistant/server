@@ -23,7 +23,7 @@ async def get_available_input_devices(include_monitors: bool = False) -> list[Co
     loop = asyncio.get_running_loop()
     try:
         sources = await loop.run_in_executor(None, enumerate_pa_sources)
-    except (FileNotFoundError, RuntimeError):
+    except FileNotFoundError, RuntimeError:
         # pactl not installed, or the PulseAudio/PipeWire server isn't reachable
         sources = []
 
@@ -35,5 +35,5 @@ async def get_available_input_devices(include_monitors: bool = False) -> list[Co
         options.append(ConfigValueOption(src["name"], title=label))
 
     if not options:
-        options = [ConfigValueOption("", title="Manual Entry (PA/PipeWire source name)")]
+        options = [ConfigValueOption("")]
     return options

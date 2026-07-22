@@ -19,16 +19,18 @@ CONF_TRIGGER_THRESHOLD_DBFS = "trigger_threshold_dbfs"  # float, dBFS RMS level 
 # back to the first available player
 PLAYER_ID_AUTO = "__auto__"
 
-# bundled icon presets, shipped in the local images/ subfolder as "<key>.svg";
-# maps preset key -> display label
+# bundled icon presets, shipped in the local images/ subfolder as "<key>.svg".
+# Display labels for these (and for ICON_PRESET_CUSTOM) live in strings.json
+# under config_entries.icon_preset.options.<value>, not here — this is just
+# the set of valid preset keys, used for iteration and validation.
 ICON_PRESET_CUSTOM = "custom"
-ICON_PRESETS: dict[str, str] = {
-    "bluetooth": "Bluetooth Receiver",
-    "cable": "Line-in / Cable",
-    "chromecast": "Chromecast",
-    "music": "Turntable / Vinyl",
-    "stereo": "Stereo / Generic Input",
-}
+ICON_PRESETS: tuple[str, ...] = (
+    "bluetooth",
+    "cable",
+    "chromecast",
+    "music",
+    "stereo",
+)
 
 # fixed audio capture parameters — PulseAudio/PipeWire resample/remap to this
 # spec on the server side, so it's safe to request regardless of the

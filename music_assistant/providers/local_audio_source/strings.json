@@ -1,0 +1,56 @@
+{
+  "config_entries": {
+    "friendly_name": {
+      "label": "Display Name",
+      "description": "What this source shows up as in Live Inputs and on players."
+    },
+    "icon_preset": {
+      "label": "Thumbnail",
+      "description": "Pick a bundled icon or use a custom image URL.",
+      "options": {
+        "custom": "Custom URL",
+        "bluetooth": "Bluetooth Receiver",
+        "cable": "Line-in / Cable",
+        "chromecast": "Chromecast",
+        "music": "Turntable / Vinyl",
+        "stereo": "Stereo / Generic Input"
+      }
+    },
+    "thumbnail_image": {
+      "label": "Thumbnail image URL",
+      "description": "Direct URL to an SVG/PNG/JPG, e.g. https://example.com/icon.svg"
+    },
+    "include_monitors": {
+      "label": "Include monitor sources",
+      "description": "When enabled, sink monitor sources (loopback capture of what's currently playing on an output) also appear in the Audio Input Device list below."
+    },
+    "input_device": {
+      "label": "Audio Input Device",
+      "description": "Select a PulseAudio/PipeWire capture source (pactl list sources).",
+      "options": {
+        "": "Manual Entry (PA/PipeWire source name)"
+      }
+    },
+    "auto_trigger": {
+      "label": "Auto-start on signal",
+      "description": "Watch the input for signal and automatically start/stop playback on a chosen player — for devices that are always connected (e.g. a USB sound card) rather than selected on demand from Live Inputs."
+    },
+    "target_player_id": {
+      "label": "Auto-start target player",
+      "description": "Which player to start automatically when signal is detected. 'Auto' prefers whichever player is currently playing, falling back to the first available player.",
+      "options": {
+        "__auto__": "Auto"
+      }
+    },
+    "trigger_threshold_dbfs": {
+      "label": "Signal threshold (dBFS)",
+      "description": "RMS level above which the input counts as active audio. Higher (closer to 0) = less sensitive, lower = more sensitive to quiet signals and background noise."
+    }
+  },
+  "manifest": {
+    "description": "Pipe realtime audio from a PulseAudio/PipeWire capture source (e.g. Bluetooth receiver or line-in) to any Music Assistant player."
+  },
+  "errors": {
+    "no_packets": "No audio could be captured from source {0} for '{1}'."
+  }
+}
