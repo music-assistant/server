@@ -7,8 +7,6 @@ from typing import TYPE_CHECKING
 from .provider import Provider
 
 if TYPE_CHECKING:
-    from music_assistant_models.dashboard import DashboardDevice
-
     from music_assistant.models.player import Player
 
 
@@ -69,36 +67,6 @@ class PlayerProvider(Provider):
         # This will be called when the player provider is (re)loaded into MA.
         # For providers that support dynamic discovery of players via mdns,
         # there is no need to implement this method.
-
-    async def get_dashboard_devices(self) -> list[DashboardDevice]:
-        """
-        Return all display devices this provider can show a MA dashboard on.
-
-        Only called for providers that declare the SHOW_DASHBOARD feature.
-        """
-        raise NotImplementedError
-
-    async def show_dashboard(self, device_id: str, url: str) -> None:
-        """
-        Show a Music Assistant dashboard on a display device.
-
-        Only called for providers that declare the SHOW_DASHBOARD feature.
-
-        :param device_id: Provider-scoped device ID, as returned by `get_dashboard_devices`.
-        :param url: Fully-qualified dashboard URL for the receiver to load.
-        """
-        raise NotImplementedError
-
-    async def hide_dashboard(self, device_id: str) -> None:
-        """
-        Hide a Music Assistant dashboard from a display device.
-
-        Only called for providers that declare the SHOW_DASHBOARD feature.
-        Must be a graceful no-op when no dashboard is currently showing.
-
-        :param device_id: Provider-scoped device ID, as returned by `get_dashboard_devices`.
-        """
-        raise NotImplementedError
 
     @property
     def players(self) -> list[Player]:

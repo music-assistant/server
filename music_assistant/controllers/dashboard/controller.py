@@ -2,33 +2,41 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
 from urllib.parse import urlencode
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.dashboard import DashboardSession
-from music_assistant_models.enums import DashboardType, EventType, ProviderFeature, ProviderType
-from music_assistant_models.errors import (
-    ActionUnavailable,
-    InvalidCommand,
-    MusicAssistantError,
-    ProviderUnavailableError,
-)
+from music_assistant_models.dashboard import DashboardDevice, DashboardSession
+from music_assistant_models.enums import DashboardType, EventType
+from music_assistant_models.errors import ActionUnavailable, InvalidCommand, MusicAssistantError
 
+from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_client_id
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.guest_access import get_or_create_guest_user
 from music_assistant.models.core_controller import CoreController
-from music_assistant.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.dashboard import DashboardDevice
-
     from music_assistant.mass import MusicAssistant
 
 DASHBOARD_VIEWER_USERNAME = "dashboard_viewer"
 DASHBOARD_VIEWER_DISPLAY_NAME = "Dashboard Viewer"
 DASHBOARD_CODE_EXPIRY_HOURS = 1
 APP_MA_HOST = "https://app.music-assistant.io"
+# every real dashboard type, i.e. what a registration supports when not given explicitly
+ALL_DASHBOARD_TYPES = frozenset(t for t in DashboardType if t != DashboardType.UNKNOWN)
+
+
+@dataclass
+class _RegisteredDashboard:
+    """A dashboard endpoint tracked by the controller, either API- or callback-registered."""
+
+    device: DashboardDevice
+    # callbacks set for in-server registrations (e.g. chromecast); API registrations use events
+    on_show: Callable[[DashboardType, str, str | None], Awaitable[None]] | None = None
+    on_hide: Callable[[], Awaitable[None]] | None = None
+    client_id: str | None = None  # websocket connection that owns an API registration
 
 
 class DashboardController(CoreController):
@@ -42,18 +50,67 @@ class DashboardController(CoreController):
         self.manifest.name = "Dashboard"
         self.manifest.description = "Casts Music Assistant dashboards to display devices."
         # in-memory only: not reconciled after a server restart
-        self._sessions: dict[tuple[str, str], DashboardSession] = {}
+        self._dashboards: dict[str, _RegisteredDashboard] = {}
+        self._sessions: dict[str, DashboardSession] = {}
 
-    @api_command("dashboard/devices")
-    async def get_dashboard_devices(self) -> list[DashboardDevice]:
-        """Return all display devices capable of showing a MA dashboard."""
-        devices: list[DashboardDevice] = []
-        for provider in self.mass.get_providers_supporting_feature(
-            ProviderFeature.SHOW_DASHBOARD, priority=(ProviderType.PLAYER,)
-        ):
-            provider = cast("PlayerProvider", provider)
-            devices.extend(await provider.get_dashboard_devices())
-        return devices
+    @api_command("dashboard/register")
+    async def register_dashboard(
+        self,
+        dashboard_id: str,
+        name: str,
+        supported_types: set[DashboardType] | None = None,
+        player_id: str | None = None,
+    ) -> None:
+        """
+        Register the calling client as a dashboard endpoint.
+
+        Re-registering an existing dashboard_id replaces it, e.g. on a client reconnect.
+
+        :param dashboard_id: Unique id chosen by the registering client.
+        :param name: Display name for the dashboard endpoint.
+        :param supported_types: Dashboard types this endpoint can show, defaults to all.
+        :param player_id: Set when this dashboard endpoint is also registered as a MA player.
+        """
+        device = DashboardDevice(
+            dashboard_id=dashboard_id,
+            name=name,
+            supported_types=set(supported_types) if supported_types else set(ALL_DASHBOARD_TYPES),
+            player_id=player_id,
+        )
+        existing = self._dashboards.get(dashboard_id)
+        self._dashboards[dashboard_id] = _RegisteredDashboard(
+            device=device, client_id=get_current_client_id()
+        )
+        # don't spam subscribers when a re-registration changed nothing
+        if existing is None or existing.device != device:
+            self._signal_dashboards_updated()
+
+    @api_command("dashboard/unregister")
+    async def unregister_dashboard(self, dashboard_id: str) -> None:
+        """
+        Unregister a dashboard endpoint, dropping any active session for it.
+
+        Graceful no-op when dashboard_id is not currently registered.
+
+        :param dashboard_id: Id of a registered dashboard endpoint.
+        """
+        if self._dashboards.pop(dashboard_id, None) is None:
+            return
+        self._signal_dashboards_updated()
+        if self._sessions.pop(dashboard_id, None) is not None:
+            self._signal_sessions_updated()
+
+    @api_command("dashboard/dashboards")
+    async def get_dashboards(self, dashboard: DashboardType | None = None) -> list[DashboardDevice]:
+        """
+        Return all registered dashboard endpoints.
+
+        :param dashboard: When given, only return endpoints that support this dashboard type.
+        """
+        devices = [registration.device for registration in self._dashboards.values()]
+        if dashboard is None:
+            return devices
+        return [device for device in devices if dashboard in device.supported_types]
 
     @api_command("dashboard/sessions")
     async def get_dashboard_sessions(self) -> list[DashboardSession]:
@@ -63,75 +120,135 @@ class DashboardController(CoreController):
     @api_command("dashboard/show", required_scope=Scope.USERS_INVITE)
     async def show_dashboard(
         self,
-        provider_instance: str,
-        device_id: str,
+        dashboard_id: str,
         dashboard: DashboardType,
         player_id: str | None = None,
     ) -> None:
         """
-        Show a Music Assistant dashboard on a display device.
+        Show a Music Assistant dashboard on a registered dashboard endpoint.
 
-        :param provider_instance: Instance ID of the provider owning the display device.
-        :param device_id: Provider-scoped device ID, as returned by `dashboard/devices`.
-        :param dashboard: Dashboard to show on the display.
+        :param dashboard_id: Id of a registered dashboard endpoint, as returned
+            by `dashboard/dashboards`.
+        :param dashboard: Dashboard to show.
         :param player_id: Player to show, required when dashboard is NOW_PLAYING.
+        :raises InvalidCommand: If dashboard_id is unknown, or doesn't support this dashboard.
         """
-        provider = self.mass.get_provider(provider_instance, provider_type=PlayerProvider)
-        # get_provider's provider_type is only a type hint, so guard at runtime
-        if provider is None or provider.type != ProviderType.PLAYER:
-            msg = f"Player provider not found: {provider_instance}"
-            raise ProviderUnavailableError(msg)
-        provider.check_feature(ProviderFeature.SHOW_DASHBOARD)
+        registration = self._dashboards.get(dashboard_id)
+        if registration is None:
+            msg = f"Unknown dashboard: {dashboard_id}"
+            raise InvalidCommand(msg)
+        if dashboard not in registration.device.supported_types:
+            msg = f"Dashboard {dashboard_id} does not support {dashboard}"
+            raise InvalidCommand(msg)
 
-        # resolve everything that can fail before the cast, so a failure never
-        # leaves a dashboard showing without a tracked session
-        device_name = await self._resolve_device_name(provider, device_id)
-        url = await self._resolve_dashboard_url(dashboard, player_id)
-        await provider.show_dashboard(device_id=device_id, url=url)
-        self._sessions[(provider_instance, device_id)] = DashboardSession(
-            device_id=device_id,
-            provider_instance=provider_instance,
-            name=device_name,
+        session = DashboardSession(
+            dashboard_id=dashboard_id,
+            name=registration.device.name,
             dashboard=dashboard,
             player_id=player_id,
         )
+
+        if registration.on_show is not None:
+            # resolve everything that can fail before invoking the callback, so a failure
+            # never leaves a dashboard showing without a tracked session
+            url = await self._resolve_dashboard_url(dashboard, player_id)
+            await registration.on_show(dashboard, url, player_id)
+        else:
+            # API registration: fire the event and store an optimistic session; url-based
+            # clients are expected to resolve their own url via `dashboard/get_url`
+            self.mass.signal_event(EventType.DASHBOARD_SHOW, object_id=dashboard_id, data=session)
+
+        self._sessions[dashboard_id] = session
         self._signal_sessions_updated()
 
     @api_command("dashboard/hide", required_scope=Scope.USERS_INVITE)
-    async def hide_dashboard(self, provider_instance: str, device_id: str) -> None:
+    async def hide_dashboard(self, dashboard_id: str) -> None:
         """
-        Hide a Music Assistant dashboard from a display device.
+        Hide a Music Assistant dashboard from a registered dashboard endpoint.
 
-        :param provider_instance: Instance ID of the provider owning the display device.
-        :param device_id: Provider-scoped device ID, as returned by `dashboard/devices`.
+        Graceful no-op when dashboard_id is unknown or nothing is currently showing.
+
+        :param dashboard_id: Id of a registered dashboard endpoint, as returned
+            by `dashboard/dashboards`.
         """
-        provider = self.mass.get_provider(provider_instance, provider_type=PlayerProvider)
-        # get_provider's provider_type is only a type hint, so guard at runtime
-        if provider is None or provider.type != ProviderType.PLAYER:
-            msg = f"Player provider not found: {provider_instance}"
-            raise ProviderUnavailableError(msg)
-        provider.check_feature(ProviderFeature.SHOW_DASHBOARD)
+        registration = self._dashboards.get(dashboard_id)
+        if registration is not None:
+            if registration.on_hide is not None:
+                try:
+                    await registration.on_hide()
+                except MusicAssistantError:
+                    # the endpoint may simply not have been showing a dashboard: not fatal
+                    self.logger.debug(
+                        "Dashboard %s could not hide its dashboard", dashboard_id, exc_info=True
+                    )
+            else:
+                self.mass.signal_event(EventType.DASHBOARD_HIDE, object_id=dashboard_id)
 
-        try:
-            await provider.hide_dashboard(device_id)
-        except MusicAssistantError:
-            # the receiver app may simply not have been showing a dashboard: not fatal
-            self.logger.debug(
-                "Provider %s could not hide dashboard on %s",
-                provider_instance,
-                device_id,
-                exc_info=True,
-            )
-
-        self._sessions.pop((provider_instance, device_id), None)
+        self._sessions.pop(dashboard_id, None)
         self._signal_sessions_updated()
 
-    async def _resolve_device_name(self, provider: PlayerProvider, device_id: str) -> str:
-        """Return the display name for a device, falling back to its id."""
-        for device in await provider.get_dashboard_devices():
-            if device.device_id == device_id:
-                return device.name
-        return device_id
+    @api_command("dashboard/get_url")
+    async def get_url_for_dashboard(
+        self, dashboard: DashboardType, player_id: str | None = None
+    ) -> str:
+        """
+        Return a fully-qualified dashboard URL for a client to load itself.
+
+        :param dashboard: Dashboard to load.
+        :param player_id: Player to show, required when dashboard is NOW_PLAYING.
+        """
+        return await self._resolve_dashboard_url(dashboard, player_id)
+
+    def register_dashboard_handler(
+        self,
+        device: DashboardDevice,
+        on_show: Callable[[DashboardType, str, str | None], Awaitable[None]],
+        on_hide: Callable[[], Awaitable[None]],
+    ) -> Callable[[], None]:
+        """
+        Register an in-server dashboard endpoint (e.g. chromecast) with show/hide callbacks.
+
+        :param device: Metadata for the dashboard endpoint being registered.
+        :param on_show: Called with (dashboard, url, player_id) to show a dashboard.
+        :param on_hide: Called to hide whatever dashboard is currently showing.
+        :return: Callable that unregisters the endpoint and drops its active session.
+        """
+        dashboard_id = device.dashboard_id
+        existing = self._dashboards.get(dashboard_id)
+        self._dashboards[dashboard_id] = _RegisteredDashboard(
+            device=device, on_show=on_show, on_hide=on_hide
+        )
+        # don't spam subscribers when a re-registration changed nothing
+        if existing is None or existing.device != device:
+            self._signal_dashboards_updated()
+
+        def unregister() -> None:
+            self._dashboards.pop(dashboard_id, None)
+            self._signal_dashboards_updated()
+            if self._sessions.pop(dashboard_id, None) is not None:
+                self._signal_sessions_updated()
+
+        return unregister
+
+    def handle_client_disconnected(self, client_id: str) -> None:
+        """Drop all dashboard registrations (and sessions) owned by a disconnected client."""
+        stale_ids = [
+            dashboard_id
+            for dashboard_id, registration in self._dashboards.items()
+            if registration.client_id == client_id
+        ]
+        if not stale_ids:
+            return
+
+        sessions_changed = False
+        for dashboard_id in stale_ids:
+            del self._dashboards[dashboard_id]
+            if self._sessions.pop(dashboard_id, None) is not None:
+                sessions_changed = True
+
+        self._signal_dashboards_updated()
+        if sessions_changed:
+            self._signal_sessions_updated()
 
     async def _resolve_dashboard_url(self, dashboard: DashboardType, player_id: str | None) -> str:
         """
@@ -206,6 +323,13 @@ class DashboardController(CoreController):
         if "b" in version or "rc" in version:
             return "beta"
         return "stable"
+
+    def _signal_dashboards_updated(self) -> None:
+        """Signal the current list of registered dashboard endpoints to subscribers."""
+        self.mass.signal_event(
+            EventType.DASHBOARDS_UPDATED,
+            data=[registration.device for registration in self._dashboards.values()],
+        )
 
     def _signal_sessions_updated(self) -> None:
         """Signal the current list of dashboard cast sessions to subscribers."""
