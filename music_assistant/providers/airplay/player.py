@@ -1013,13 +1013,15 @@ class AirPlayPlayer(Player):
 
         # Store credentials with the protocol-specific key. `values` only feeds the
         # ConfigEntry response of this (read-only) config/players/get_entries call, so
-        # without also persisting to the live config here, stream.py's subsequent
-        # config.get_value(cred_key) lookup at play time finds nothing and cliairplay
-        # falls back to asking for interactive pairing again, even though pairing just
-        # succeeded (see _reset_pairing below, which already does this for its case).
+        # without also persisting here, stream.py's subsequent config.get_value(cred_key)
+        # lookup at play time finds nothing and cliairplay falls back to asking for
+        # interactive pairing again, even though pairing just succeeded. Go through
+        # save_player_config (not a raw config.update) so the SECURE_STRING credentials
+        # are encrypted at rest and survive a server restart, same as any other player
+        # config change.
         cred_key = self._get_credentials_key(protocol)
         values[cred_key] = credentials
-        self.config.update({cred_key: credentials})
+        await self.mass.config.save_player_config(self.player_id, {cred_key: credentials})
 
         self.logger.info(f"Finished {protocol_name} pairing for {self.display_name}")
 
@@ -1035,7 +1037,13 @@ class AirPlayPlayer(Player):
         if values is not None:
             values[cred_key] = None
             values[CONF_AP2PASSWORD] = None
-        self.config.update({cred_key: None, CONF_AP2PASSWORD: None})
+        # save_player_config (not a raw config.update) so the reset is actually
+        # persisted to disk, not just the in-memory config - otherwise a restart
+        # would resurrect the "reset" credentials from the still-unchanged stored
+        # config, silently re-pairing the device with stale keys.
+        await self.mass.config.save_player_config(
+            self.player_id, {cred_key: None, CONF_AP2PASSWORD: None}
+        )
 
     def _on_player_media_updated(self) -> None:
         """Handle callback when the current media of the player is updated."""

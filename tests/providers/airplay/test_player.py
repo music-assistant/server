@@ -13,6 +13,7 @@ from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_PCM_FORMAT,
     CONF_AIRPLAY_CREDENTIALS,
+    CONF_AP2PASSWORD,
     CONF_ENCRYPTION,
     CONF_FORCE_RAOP,
     CONF_HIRES_PLAYBACK,
@@ -246,12 +247,14 @@ def _make_pin_required_player(**overrides: object) -> AirPlayPlayer:
     )
     player._active_pairing = AsyncMock()
     player._active_pairing.finish_pairing = AsyncMock(return_value=FAKE_HAP_CREDENTIALS)
+    player.mass.config.save_player_config = AsyncMock()  # type: ignore[attr-defined]
     return player
 
 
 @pytest.mark.asyncio
 async def test_finish_pairing_persists_credentials_to_live_config() -> None:
-    """A successful pairing must write the credentials into the live player config.
+    """
+    A successful pairing must persist the credentials, not just report them.
 
     Regression test: pairing computed valid HAP credentials and logged success
     ("Finished AirPlay pairing for ...") but only stored them in the transient
@@ -260,6 +263,10 @@ async def test_finish_pairing_persists_credentials_to_live_config() -> None:
     attempt then found nothing, no --auth was passed to cliairplay, and it fell
     back to asking for interactive pairing again even though pairing had just
     succeeded (observed with an LG webOS TV as an AirPlay 2 hass_players target).
+
+    The persistence must go through save_player_config (not a raw config.update)
+    so the SECURE_STRING credentials are (a) encrypted at rest and (b) actually
+    survive a server restart instead of only living in the in-memory config copy.
     """
     player = _make_pin_required_player()
     pairing_session = player._active_pairing  # captured before _finish_pairing clears it
@@ -271,10 +278,10 @@ async def test_finish_pairing_persists_credentials_to_live_config() -> None:
     # the response payload for the UI/API caller must contain the credentials...
     assert values[CONF_AIRPLAY_CREDENTIALS] == FAKE_HAP_CREDENTIALS
     # ...but that alone is not enough: config/players/get_entries never persists
-    # `values` anywhere, so the live PlayerConfig must be updated explicitly too
-    # (mirroring what _reset_pairing already does for the clear-credentials case).
-    player.config.update.assert_called_once_with(  # type: ignore[attr-defined]
-        {CONF_AIRPLAY_CREDENTIALS: FAKE_HAP_CREDENTIALS}
+    # `values` anywhere, so the change must be written through the real config
+    # persistence path (mirroring what _reset_pairing does for the clear case).
+    player.mass.config.save_player_config.assert_awaited_once_with(  # type: ignore[attr-defined]
+        player.player_id, {CONF_AIRPLAY_CREDENTIALS: FAKE_HAP_CREDENTIALS}
     )
     # the finished pairing session must be cleared so a stray second pairing
     # attempt from the device-side subprocess can't be mistaken for it
@@ -289,8 +296,8 @@ async def test_finish_pairing_raop_uses_raop_credentials_key() -> None:
 
     await player._finish_pairing(values, StreamingProtocol.RAOP, "RAOP")
 
-    player.config.update.assert_called_once_with(  # type: ignore[attr-defined]
-        {CONF_RAOP_CREDENTIALS: FAKE_HAP_CREDENTIALS}
+    player.mass.config.save_player_config.assert_awaited_once_with(  # type: ignore[attr-defined]
+        player.player_id, {CONF_RAOP_CREDENTIALS: FAKE_HAP_CREDENTIALS}
     )
 
 
@@ -303,7 +310,27 @@ async def test_finish_pairing_without_active_session_does_not_persist() -> None:
 
     await player._finish_pairing(values, StreamingProtocol.AIRPLAY2, "AirPlay")
 
-    player.config.update.assert_not_called()  # type: ignore[attr-defined]
+    player.mass.config.save_player_config.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_reset_pairing_persists_cleared_credentials() -> None:
+    """
+    Resetting pairing must also persist through save_player_config.
+
+    A raw config.update() alone (the previous implementation) never survives a
+    restart: the still-unchanged stored config would resurrect the "reset"
+    credentials from disk, silently re-pairing the device with stale keys.
+    """
+    player = _make_pin_required_player()
+    values: dict[str, object] = {CONF_AIRPLAY_CREDENTIALS: FAKE_HAP_CREDENTIALS}
+
+    await player._reset_pairing(values, StreamingProtocol.AIRPLAY2, "AirPlay")
+
+    assert values[CONF_AIRPLAY_CREDENTIALS] is None
+    player.mass.config.save_player_config.assert_awaited_once_with(  # type: ignore[attr-defined]
+        player.player_id, {CONF_AIRPLAY_CREDENTIALS: None, CONF_AP2PASSWORD: None}
+    )
 
 
 @pytest.mark.asyncio
