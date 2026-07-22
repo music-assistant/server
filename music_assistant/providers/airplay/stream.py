@@ -29,6 +29,7 @@ from music_assistant.providers.airplay.constants import (
     CONF_ENCRYPTION,
     CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
+    AirPlayRemoteCommand,
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.helpers import (
@@ -497,6 +498,7 @@ class AirPlayStream:
           [STATUS] route protocol=<raop|airplay2> flow=<...> timing=<ntp|ptp> buffered=<0|1>
           [STATUS] latency lead_ms=<int> device_min_frames=<int> device_max_frames=<int>
           [STATUS] mrp path=<command> status=<http status>
+          [EVENT] remote command=<play|pause|play_pause|next|previous>
         """
         if not self._cli_proc:
             return
@@ -514,7 +516,22 @@ class AirPlayStream:
                     self._parse_mrp_status(line)
                 elif "[STATUS] latency" in line:
                     self._parse_latency_status(line)
+                elif line.startswith("[EVENT] remote command="):
+                    self._parse_remote_event(line)
                 self.player.logger.log(VERBOSE_LOG_LEVEL, line)
+
+    def _parse_remote_event(self, line: str) -> None:
+        """Dispatch a normalized remote command reported by cliairplay."""
+        command_value = line.removeprefix("[EVENT] remote command=").strip()
+        try:
+            command = AirPlayRemoteCommand(command_value)
+        except ValueError:
+            self.player.logger.warning(
+                "Ignoring unknown cliairplay remote command: %s", command_value
+            )
+            return
+        prov = cast("AirPlayProvider", self.prov)
+        prov.handle_remote_command(self.player, command)
 
     def _parse_mrp_status(self, line: str) -> None:
         """Parse the [STATUS] mrp line and log the now-playing push result."""
