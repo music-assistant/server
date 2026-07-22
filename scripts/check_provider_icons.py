@@ -38,6 +38,15 @@ ICON_ROOTS = (
 # Maximum allowed size per format. Raster pngs get more headroom than vector svgs.
 MAX_SIZE_BY_SUFFIX = {".svg": 5 * 1024, ".png": 20 * 1024}
 
+# The exact icon filenames that get served to clients; keep in sync with detect_provider_icons
+# in music_assistant/helpers/images.py. Only these are size-checked, so unrelated svg/png assets
+# that may live in a provider/controller folder are left alone.
+ICON_FILENAMES = tuple(
+    f"{stem}{suffix}"
+    for stem in ("icon", "icon_dark", "icon_monochrome")
+    for suffix in MAX_SIZE_BY_SUFFIX
+)
+
 _BASELINE_HEADER = (
     "Provider/controller icons that already exceeded their size budget when the check was "
     "introduced.\nNew icons must stay within budget (svg <= 5 KB, png <= 20 KB); shrink these and "
@@ -47,13 +56,14 @@ _BASELINE_HEADER = (
 
 
 def find_oversized_icons() -> dict[str, int]:
-    """Return ``{repo-relative path: 1}`` for every icon larger than its per-format budget."""
-    # Only top-level icons (``<root>/<name>/*.svg|*.png``); nested vendored assets are skipped.
+    """Return ``{repo-relative path: 1}`` for every icon file larger than its per-format budget."""
+    # Match only the known icon filenames one level below each root (``<root>/<name>/<icon>``),
+    # so unrelated svg/png assets in a provider/controller folder are never flagged.
     oversized: dict[str, int] = {}
     for root in ICON_ROOTS:
-        for suffix, max_size in MAX_SIZE_BY_SUFFIX.items():
-            for icon_path in sorted(root.glob(f"*/*{suffix}")):
-                if icon_path.stat().st_size > max_size:
+        for name in ICON_FILENAMES:
+            for icon_path in sorted(root.glob(f"*/{name}")):
+                if icon_path.stat().st_size > MAX_SIZE_BY_SUFFIX[icon_path.suffix.lower()]:
                     oversized[icon_path.relative_to(REPO_ROOT).as_posix()] = 1
     return oversized
 
