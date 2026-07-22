@@ -2,26 +2,22 @@
 Share Links plugin for Music Assistant.
 
 Generates and resolves provider-agnostic share links for tracks, artists and
-playlists. Links encode item metadata (ISRC, MusicBrainz ID, title, artist,
-cover art URL) as base64-encoded JSON in the URL fragment, so no server-side
-storage is required.
+playlists. Links encode item metadata as base64-encoded JSON in the URL
+fragment — no server-side storage required.
 
 Link format:
     https://<share_base_url>/#<base64url-encoded-json>
-
-The share landing page (hosted at share_base_url) decodes the fragment,
-shows a preview card, and offers an "Open in Music Assistant" button that
-calls the HTTP endpoint registered by this plugin on the local MA instance.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
 from contextlib import suppress
-from dataclasses import asdict, dataclass
-from typing import TYPE_CHECKING
+from dataclasses import asdict, dataclass, field
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 from music_assistant_models.config_entries import ConfigEntry
@@ -31,7 +27,7 @@ from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
-    from music_assistant_models.media_items import MediaItemType
+    from music_assistant_models.media_items import MediaItemType, Track
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -42,6 +38,23 @@ DEFAULT_SHARE_BASE_URL = "https://share.music-assistant.io"
 HTTP_ROUTE = "/api/share/resolve"
 
 LOGGER = logging.getLogger(__name__)
+
+# Known web URL schemas per provider domain, keyed by (provider_domain, media_type).
+# {id} is replaced with the provider item_id from the provider_mappings.
+PROVIDER_URL_SCHEMAS: dict[tuple[str, str], str] = {
+    ("spotify", "track"): "https://open.spotify.com/track/{id}",
+    ("spotify", "artist"): "https://open.spotify.com/artist/{id}",
+    ("tidal", "track"): "https://tidal.com/browse/track/{id}",
+    ("tidal", "artist"): "https://tidal.com/browse/artist/{id}",
+    ("qobuz", "track"): "https://open.qobuz.com/track/{id}",
+    ("qobuz", "artist"): "https://open.qobuz.com/artist/{id}",
+    ("ytmusic", "track"): "https://music.youtube.com/watch?v={id}",
+    ("ytmusic", "artist"): "https://music.youtube.com/channel/{id}",
+    ("deezer", "track"): "https://www.deezer.com/track/{id}",
+    ("deezer", "artist"): "https://www.deezer.com/artist/{id}",
+    ("apple_music", "track"): "https://music.apple.com/album/x/{id}",
+    ("apple_music", "artist"): "https://music.apple.com/artist/x/{id}",
+}
 
 
 async def setup(
@@ -64,19 +77,24 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             default_value=DEFAULT_SHARE_BASE_URL,
             label="Share base URL",
-            description=(
-                "Base URL of the share landing page. "
-                "Change this if you host your own share page."
-            ),
+            description="Base URL of the share landing page.",
         ),
     )
+
+
+@dataclass
+class TrackStub:
+    """Minimal track representation inside a playlist payload."""
+    title: str
+    artist: str | None = None
+    isrc: str | None = None
 
 
 @dataclass
 class SharePayload:
     """Provider-agnostic share payload encoded in the share link."""
 
-    v: int  # schema version
+    v: int
     type: str  # "track" | "artist" | "playlist"
     title: str
     artist: str | None = None
@@ -84,6 +102,10 @@ class SharePayload:
     isrc: str | None = None
     mbid: str | None = None
     art: str | None = None
+    # Direct provider web URLs keyed by provider domain (tracks only).
+    links: dict[str, str] | None = None
+    # Minimal track list (playlists only).
+    tracks: list[dict[str, Any]] | None = None
 
     def to_base64(self) -> str:
         """Encode payload as URL-safe base64 JSON."""
@@ -107,12 +129,9 @@ class ShareProvider(PluginProvider):
         """Register API commands and HTTP endpoint on startup."""
         self.mass.register_api_command("share/generate", self.generate_share_link)
         self.mass.register_api_command("share/resolve", self.resolve_share_link)
-        # Register a plain HTTP POST endpoint so the share landing page can
-        # call it directly without a WebSocket connection.
         self._unregister_route = self.mass.webserver.register_dynamic_route(
             HTTP_ROUTE, self._http_resolve, "POST"
         )
-        # Also allow CORS preflight
         self.mass.webserver.register_dynamic_route(HTTP_ROUTE, self._http_resolve, "OPTIONS")
         LOGGER.debug("Registered HTTP share resolve endpoint at %s", HTTP_ROUTE)
 
@@ -122,17 +141,11 @@ class ShareProvider(PluginProvider):
             self._unregister_route()
 
     # ------------------------------------------------------------------
-    # HTTP endpoint (called by the share landing page)
+    # HTTP endpoint
     # ------------------------------------------------------------------
 
     async def _http_resolve(self, request: web.Request) -> web.Response:
-        """
-        Handle POST /api/share/resolve.
-
-        Expected JSON body: {"encoded": "<base64-payload>"}
-        Returns resolved MA item as JSON, or 404.
-        Includes CORS headers so the share landing page (any origin) can call it.
-        """
+        """Handle POST /api/share/resolve with CORS headers."""
         cors_headers = {
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -140,7 +153,6 @@ class ShareProvider(PluginProvider):
         }
         if request.method == "OPTIONS":
             return web.Response(status=204, headers=cors_headers)
-
         try:
             body = await request.json()
             encoded = body.get("encoded", "")
@@ -169,7 +181,7 @@ class ShareProvider(PluginProvider):
         :return: A fully-qualified share URL with the payload in the fragment.
         """
         item = await self.mass.music.get_item_by_uri(uri)
-        payload = self._build_payload(item)
+        payload = await self._build_payload(item)
         base_url = self.config.get_value(CONF_SHARE_BASE_URL) or DEFAULT_SHARE_BASE_URL
         return f"{base_url}/#{payload.to_base64()}"
 
@@ -190,13 +202,15 @@ class ShareProvider(PluginProvider):
             return await self._resolve_track(payload)
         if payload.type == "artist":
             return await self._resolve_artist(payload)
+        if payload.type == "playlist":
+            return await self._resolve_playlist(payload)
         return None
 
     # ------------------------------------------------------------------
-    # private helpers
+    # private helpers — payload building
     # ------------------------------------------------------------------
 
-    def _build_payload(self, item: MediaItemType) -> SharePayload:
+    async def _build_payload(self, item: MediaItemType) -> SharePayload:
         """Build a SharePayload from a MediaItem."""
         media_type = item.media_type.value
         artist_str: str | None = None
@@ -204,13 +218,11 @@ class ShareProvider(PluginProvider):
         isrc: str | None = None
         mbid: str | None = None
         art: str | None = None
+        links: dict[str, str] | None = None
+        tracks: list[dict[str, Any]] | None = None
 
-        if item.image:
-            # Only include art URLs that are publicly accessible from anywhere.
-            # Local imageproxy URLs (e.g. http://localhost:8095/imageproxy/...)
-            # are useless to the recipient of the share link.
-            if item.image.remotely_accessible:
-                art = item.image.path
+        if item.image and item.image.remotely_accessible:
+            art = item.image.path
 
         if media_type == "track":
             isrc = item.get_external_id(ExternalID.ISRC)
@@ -219,12 +231,19 @@ class ShareProvider(PluginProvider):
                 artist_str = item.artist_str or None
             if hasattr(item, "album") and item.album:
                 album_str = item.album.name
+            links = self._build_provider_links(item, media_type)
+
         elif media_type == "artist":
             mbid = item.get_external_id(ExternalID.MB_ARTIST)
+            links = self._build_provider_links(item, media_type)
+
         elif media_type == "album":
             mbid = item.get_external_id(ExternalID.MB_ALBUM)
             if hasattr(item, "artist_str"):
                 artist_str = item.artist_str or None
+
+        elif media_type == "playlist":
+            tracks = await self._build_playlist_tracks(item)
 
         return SharePayload(
             v=1,
@@ -235,7 +254,42 @@ class ShareProvider(PluginProvider):
             isrc=isrc,
             mbid=mbid,
             art=art,
+            links=links or None,
+            tracks=tracks,
         )
+
+    def _build_provider_links(self, item: MediaItemType, media_type: str) -> dict[str, str]:
+        """Build direct provider web URLs from provider_mappings."""
+        links: dict[str, str] = {}
+        if not hasattr(item, "provider_mappings"):
+            return links
+        for mapping in item.provider_mappings:
+            domain = mapping.provider_domain
+            schema = PROVIDER_URL_SCHEMAS.get((domain, media_type))
+            if schema:
+                links[domain] = schema.format(id=mapping.item_id)
+        return links
+
+    async def _build_playlist_tracks(self, playlist: MediaItemType) -> list[dict[str, Any]]:
+        """Fetch and serialize playlist tracks as minimal stubs (no provider links)."""
+        result: list[dict[str, Any]] = []
+        with suppress(Exception):
+            tracks = await self.mass.music.playlists.tracks(
+                playlist.item_id, playlist.provider
+            )
+            for track in tracks:
+                stub: dict[str, Any] = {"title": track.name}
+                if hasattr(track, "artist_str") and track.artist_str:
+                    stub["artist"] = track.artist_str
+                isrc = track.get_external_id(ExternalID.ISRC)
+                if isrc:
+                    stub["isrc"] = isrc
+                result.append(stub)
+        return result
+
+    # ------------------------------------------------------------------
+    # private helpers — resolution
+    # ------------------------------------------------------------------
 
     async def _resolve_track(self, payload: SharePayload) -> MediaItemType | None:
         """Resolve a track share payload."""
@@ -243,7 +297,6 @@ class ShareProvider(PluginProvider):
             result = await self._lookup_by_isrc(payload.isrc)
             if result:
                 return result
-
         if payload.title:
             query = f"{payload.artist} {payload.title}" if payload.artist else payload.title
             results = await self.mass.music.search(query, media_types=[MediaType.TRACK], limit=5)
@@ -258,8 +311,49 @@ class ShareProvider(PluginProvider):
         )
         return results.artists[0] if results.artists else None
 
+    async def _resolve_playlist(self, payload: SharePayload) -> MediaItemType | None:
+        """
+        Resolve a playlist payload by searching for each track and creating
+        a new MA playlist with the matches.
+        """
+        if not payload.tracks:
+            return None
+
+        # Resolve tracks in parallel (capped to avoid hammering the providers)
+        sem = asyncio.Semaphore(5)
+
+        async def _resolve_one(stub: dict[str, Any]) -> MediaItemType | None:
+            async with sem:
+                title = stub.get("title", "")
+                artist = stub.get("artist")
+                isrc = stub.get("isrc")
+                if isrc:
+                    result = await self._lookup_by_isrc(isrc)
+                    if result:
+                        return result
+                if title:
+                    q = f"{artist} {title}" if artist else title
+                    sr = await self.mass.music.search(q, media_types=[MediaType.TRACK], limit=3)
+                    if sr.tracks:
+                        return sr.tracks[0]
+            return None
+
+        resolved = await asyncio.gather(*[_resolve_one(t) for t in payload.tracks])
+        matched = [t for t in resolved if t is not None]
+        if not matched:
+            return None
+
+        # Create a new library playlist with the resolved tracks
+        new_playlist = await self.mass.music.playlists.create_playlist(payload.title)
+        for track in matched:
+            with suppress(Exception):
+                await self.mass.music.playlists.add_playlist_tracks(
+                    new_playlist.item_id, [track.uri]
+                )
+        return new_playlist
+
     async def _lookup_by_isrc(self, isrc: str) -> MediaItemType | None:
-        """Look up a track by ISRC via each provider's search (isrc:<code> syntax)."""
+        """Look up a track by ISRC via each provider's search."""
         for provider_id in self.mass.music.get_unique_providers():
             prov = self.mass.get_provider(provider_id)
             if prov is None:
