@@ -472,6 +472,16 @@ AirPlay MRP tunnel. This is capability-based rather than vendor-based, so
 third-party implementations work too. All other endpoints use
 `GenericAirPlayPlayer`.
 
+The chosen model is persisted in the player config (`control_capable`) and a
+registered player never changes model in place: the model determines the player
+id exposed to API consumers (protocol endpoint behind a parent player vs
+standalone player), which must stay stable for Home Assistant and other API
+clients. This also keeps the model stable when discovery timing varies, e.g. an
+Apple TV that withdraws its Companion record while it sleeps through a server
+restart. Control capability detected after a player was registered as generic
+is recorded and applied the next time the player registers (e.g. after a
+restart). Removing the player (and its config) resets the decision.
+
 ### Independent device control
 
 Control-capable receivers keep AirPlay streaming separate from their monitoring

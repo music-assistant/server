@@ -30,6 +30,7 @@ from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_VOLUME_MUTE,
     COMPANION_DISCOVERY_TYPE,
+    CONF_CONTROL_CAPABLE,
     CONF_FORCE_RAOP,
     CONF_IGNORE_VOLUME,
     CONF_LEGACY_AIRPLAY_PROTOCOL,
@@ -382,25 +383,41 @@ class AirPlayProvider(PlayerProvider):
             raop_discovery_info,
         )
         player_addresses.add(address)
-        companion_info, mrp_info = await asyncio.gather(
-            self._get_related_discovery_info(
-                COMPANION_DISCOVERY_TYPE,
-                self._companion_info_by_address,
-                player_addresses,
-                display_name,
-            ),
-            self._get_related_discovery_info(
-                MRP_DISCOVERY_TYPE,
-                self._mrp_info_by_address,
-                player_addresses,
-                display_name,
-            ),
+        # The control-vs-generic model is decided once and persisted: the model
+        # determines how the player is exposed to API consumers (protocol
+        # endpoint behind a parent vs standalone player), so it must not vary
+        # with mDNS discovery timing, e.g. an Apple TV that withdraws its
+        # Companion record while it sleeps through a server restart.
+        control_capable = self.mass.config.get_raw_player_config_value(
+            player_id, CONF_CONTROL_CAPABLE
         )
+        companion_info: AsyncServiceInfo | None = None
+        mrp_info: AsyncServiceInfo | None = None
+        if control_capable is not False:
+            companion_info, mrp_info = await asyncio.gather(
+                self._get_related_discovery_info(
+                    COMPANION_DISCOVERY_TYPE,
+                    self._companion_info_by_address,
+                    player_addresses,
+                    display_name,
+                ),
+                self._get_related_discovery_info(
+                    MRP_DISCOVERY_TYPE,
+                    self._mrp_info_by_address,
+                    player_addresses,
+                    display_name,
+                ),
+            )
         enhanced_control = (
-            supports_companion_pairing(companion_info)
+            control_capable is True
+            or supports_companion_pairing(companion_info)
             or supports_mrp_tunnel(airplay_discovery_info)
             or supports_mrp_service(mrp_info)
         )
+        if control_capable != enhanced_control:
+            self.mass.config.set_raw_player_config_value(
+                player_id, CONF_CONTROL_CAPABLE, enhanced_control
+            )
 
         player: AirPlayPlayer
         if enhanced_control:
@@ -456,7 +473,7 @@ class AirPlayProvider(PlayerProvider):
         if isinstance(player, AirPlayControlPlayer):
             await player.set_companion_discovery_info(info)
         elif supports_companion_pairing(info):
-            await self._promote_control_player(player.player_id)
+            self._mark_control_capable(player)
 
     async def _handle_mrp_service_state_change(
         self,
@@ -474,7 +491,7 @@ class AirPlayProvider(PlayerProvider):
         if isinstance(player, AirPlayControlPlayer):
             await player.set_mrp_discovery_info(info)
         elif supports_mrp_service(info):
-            await self._promote_control_player(player.player_id)
+            self._mark_control_capable(player)
 
     async def _get_related_discovery_info(
         self,
@@ -551,71 +568,20 @@ class AirPlayProvider(PlayerProvider):
             None,
         )
 
-    async def _promote_control_player(self, player_id: str) -> None:
-        """Replace an idle generic player when a control capability appears."""
-        player = self.get_player(player_id)
-        if not isinstance(player, GenericAirPlayPlayer):
+    def _mark_control_capable(self, player: AirPlayPlayer) -> None:
+        """Persist late-detected control capability for the next registration."""
+        if self.mass.config.get_raw_player_config_value(player.player_id, CONF_CONTROL_CAPABLE):
             return
-        if player.stream and player.stream.running:
-            self.mass.call_later(
-                5,
-                self._promote_control_player,
-                player_id,
-                task_id=f"airplay_control_promotion_{player_id}",
-            )
-            return
-
-        player_addresses = {
-            player.address,
-            *self._get_discovery_addresses(
-                player.airplay_discovery_info,
-                player.raop_discovery_info,
-            ),
-        }
-        companion_info = next(
-            (
-                self._companion_info_by_address[address]
-                for address in player_addresses
-                if address in self._companion_info_by_address
-            ),
-            None,
+        # The model of a registered player is never changed in place: switching
+        # between protocol endpoint and standalone player changes the player id
+        # seen by API consumers (e.g. Home Assistant). The capability is only
+        # recorded here and picked up when the player registers again.
+        self.mass.config.set_raw_player_config_value(player.player_id, CONF_CONTROL_CAPABLE, True)
+        self.logger.info(
+            "Native control capability detected for %s; it will be enabled the next time "
+            "the player is registered (e.g. after a restart)",
+            player.display_name,
         )
-        mrp_info = next(
-            (
-                self._mrp_info_by_address[address]
-                for address in player_addresses
-                if address in self._mrp_info_by_address
-            ),
-            None,
-        )
-        if not (
-            supports_companion_pairing(companion_info)
-            or supports_mrp_tunnel(player.airplay_discovery_info)
-            or supports_mrp_service(mrp_info)
-        ):
-            return
-
-        group_members = list(player.group_members)
-        await self._bridge_manager.remove_bridge(player_id)
-        await self.mass.players.unregister(player_id)
-        control_player = AirPlayControlPlayer(
-            provider=self,
-            player_id=player_id,
-            raop_discovery_info=player.raop_discovery_info,
-            airplay_discovery_info=player.airplay_discovery_info,
-            companion_discovery_info=companion_info,
-            mrp_discovery_info=mrp_info,
-            address=player.address,
-            display_name=player.display_name,
-            manufacturer=player.device_info.manufacturer,
-            model=player.device_info.model,
-            initial_volume=player.volume_level
-            if player.volume_level is not None
-            else FALLBACK_VOLUME,
-        )
-        control_player._attr_group_members = group_members
-        await self.mass.players.register(control_player)
-        await self._bridge_manager.evaluate_bridge(control_player)
 
     @staticmethod
     def _cache_control_service(
