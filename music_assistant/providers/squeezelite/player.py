@@ -67,16 +67,24 @@ CACHE_CATEGORY_PREV_STATE = (
     1  # category for caching previous player state (bumped to invalidate old format)
 )
 
-PLAYER_DEVICE_TYPES = {
-    # list of device types that are considered real hardware players
-    "squeezebox",
-    "squeezebox2",
-    "transporter",
-    "receiver",
-    "controller",
-    "boom",
-    "squeezeplay",
-}
+PROTOCOL_ONLY_MODELS = (
+    # Device models where slimproto is only a secondary protocol on a device with
+    # its own (native) identity: WiiM/LinkPlay devices (ModelName=WiiM Player) and
+    # the LMS bridge tools that expose AirPlay/Chromecast/UPnP devices as squeezelite
+    # players. These are registered as PlayerType.PROTOCOL so they get wrapped by
+    # (or linked to) the device's visible player. All other squeezelite endpoints,
+    # hardware and software alike, are full players.
+    "wiim",
+    "raopbridge",
+    "castbridge",
+    "upnpbridge",
+)
+
+
+def is_protocol_only_device(device_model: str) -> bool:
+    """Return True if the device uses squeezelite as a secondary protocol only."""
+    device_model_lower = device_model.lower()
+    return any(model in device_model_lower for model in PROTOCOL_ONLY_MODELS)
 
 
 class SqueezelitePlayer(Player):
@@ -102,6 +110,16 @@ class SqueezelitePlayer(Player):
             PlayerFeature.ENQUEUE,
             PlayerFeature.GAPLESS_PLAYBACK,
         }
+        # The player type is decided once at creation, based on the device identity
+        # reported in the HELO capabilities. Protocol players never expose power
+        # control (they are powered on/off with the stream), while full players get
+        # native power support (slimproto power can e.g. drive a GPIO/script wired
+        # to an amplifier).
+        if is_protocol_only_device(client.device_model):
+            self._attr_type = PlayerType.PROTOCOL
+        else:
+            self._attr_type = PlayerType.PLAYER
+            self._attr_supported_features.add(PlayerFeature.POWER)
         self._attr_can_group_with = {provider.instance_id}
         max_sr = int(self.client.max_sample_rate)
         self._attr_supported_sample_rates = [
@@ -418,15 +436,6 @@ class SqueezelitePlayer(Player):
     def update_attributes(self) -> None:
         """Update player attributes from slim player."""
         # Update player state from slim player
-        self._attr_type = (
-            PlayerType.PLAYER
-            if self.client.device_type in PLAYER_DEVICE_TYPES
-            else PlayerType.PROTOCOL
-        )
-        if self.type == PlayerType.PLAYER:
-            self._attr_supported_features.add(PlayerFeature.POWER)
-        else:
-            self._attr_supported_features.discard(PlayerFeature.POWER)
         self._attr_available = self.client.connected
         self._attr_name = self.client.name
         self._attr_powered = self.client.powered
