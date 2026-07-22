@@ -446,34 +446,34 @@ device_max_frames=...`), which the stream parses and logs for diagnostics.
 
 ## Player Types
 
-The provider uses a shared AirPlay streaming base with separate player models for
-native Apple devices and third-party AirPlay receivers.
+The provider uses a shared AirPlay streaming base with separate player models
+based on the control protocols each receiver advertises.
 
 ### PlayerType.PLAYER
-- **Devices**: Recognized Apple devices that advertise pairable Companion
-  control (currently Apple TV)
-- **Reason**: These are standalone players with both native AirPlay support and
-  a control plane Music Assistant can authenticate
+- **Devices**: AirPlay receivers with usable Companion, native MRP, or tunneled
+  MRP support
+- **Reason**: These are standalone players with an independent control or
+  playback-monitoring plane Music Assistant can use
 - **Behavior**: Exposed as top-level players, with external playback monitoring
   and native controls when the device advertises them
 - **Not merged**: These players are NOT combined with other protocols
 
 ### PlayerType.PROTOCOL
-- **Devices**: HomePod and third-party AirPlay receivers (Sonos, receivers,
-  smart speakers, soundbars)
+- **Devices**: AirPlay receivers without usable Companion or MRP support
 - **Reason**: AirPlay is just one output protocol among many for these devices (often supporting Chromecast, DLNA, etc.)
 - **Behavior**: Automatically merged into a **Universal Player** if other protocols are detected for the same device
 - **Example**: A Sonos speaker supporting both AirPlay and Chromecast will appear as a single "Sonos" player with selectable output protocols
 
-**Detection**: [provider.py](provider.py) selects `AppleDevicePlayer` only when
-the AirPlay endpoint is a recognized Apple device and its matching
-`_companion-link._tcp` service advertises PIN pairing. All other endpoints use
+**Detection**: [provider.py](provider.py) selects `AirPlayControlPlayer` whenever
+the receiver advertises pairable Companion, a usable native MRP service, or an
+AirPlay MRP tunnel. This is capability-based rather than vendor-based, so
+third-party implementations work too. All other endpoints use
 `GenericAirPlayPlayer`.
 
-### Apple device control
+### Independent device control
 
-Apple devices keep their AirPlay streaming connection separate from their
-always-on control connections:
+Control-capable receivers keep AirPlay streaming separate from their monitoring
+and control connections:
 
 - **Companion** tracks power state and controls wake, power, native playback,
   and volume independently of Music Assistant streaming.
@@ -481,16 +481,17 @@ always-on control connections:
   metadata, elapsed time, and transport state.
 - Music Assistant explicitly wakes a sleeping device before starting or
   resuming an AirPlay stream.
-- AirPlay streaming, Companion control, and Apple TV playback monitoring keep
+- AirPlay streaming, Companion control, and MRP playback monitoring keep
   independent pairing credentials. This lets pyatv retain the complete
   accessory identity required by MRP without changing the streaming identity.
   A failed MRP monitor does not interrupt a healthy Companion connection, and
   vice versa.
 
-Support is capability-driven. Apple TV models that advertise Companion PIN
-pairing expose the full control surface. Current HomePod firmware advertises
-Companion without a PIN-pairing path (authorization is tied to the Apple Home),
-so HomePods remain generic AirPlay endpoints.
+Apple TV models generally expose pairable Companion and an AirPlay MRP tunnel.
+Current HomePod firmware advertises Companion without a PIN-pairing path, so
+Companion power/wake control is not available; HomePods instead use AirPlay's
+transient MRP tunnel with no PIN or persisted credentials. Third-party receivers
+gain the same behavior whenever they advertise compatible protocol capabilities.
 
 **For more details on output protocols and protocol linking**, see the [Player Controller README](../../controllers/players/README.md), which explains:
 - How multiple protocol players for the same physical device are automatically linked
@@ -509,13 +510,14 @@ so HomePods remain generic AirPlay endpoints.
 - **`hires_playback`**: Advanced per-player opt-in for 24-bit playback over native AirPlay 2 (default: off; only shown for AirPlay 2-capable devices - some devices accept 24-bit and play silence, hence opt-in)
 - **`sync_adjust`**: Per-player audio synchronization delay correction in milliseconds (default: 0; negative = play earlier, e.g. to compensate for a TV/AV receiver that adds latency). The playback lead/buffer is handled automatically by the binary.
 
-### Pairing (Apple devices only)
+### Pairing
 - **`raop_credentials`**: Stored RAOP pairing credentials (hidden)
 - **`airplay_credentials`**: Stored AirPlay 2 pairing credentials (hidden)
-- **`companion_credentials`**: Stored Apple device control credentials (hidden
-  and paired separately)
-- **`mrp_credentials`**: Stored Apple TV playback-monitoring credentials
-  (hidden and paired separately)
+- **`companion_credentials`**: Stored Companion credentials (hidden and paired
+  separately)
+- **`mrp_credentials`**: Stored AirPlay-tunneled MRP credentials (hidden;
+  transient MRP requires none)
+- **`native_mrp_credentials`**: Stored native MRP credentials (hidden)
 
 ## Known Issues
 
@@ -527,11 +529,11 @@ Some devices have known broken AirPlay implementations (see `BROKEN_AIRPLAY_MODE
 
 ### Limitations
 
-1. **DACP remote control**: Only active while streaming; Apple devices use
+1. **DACP remote control**: Only active while streaming; controlled devices use
    Companion/MRP for idle and external playback control
 2. **Pause while synced**: Not supported; uses stop instead
-3. **HomePod native control**: Current HomePod firmware does not advertise
-   Companion PIN pairing, so only AirPlay-session controls are available
+3. **HomePod power control**: Current HomePod firmware does not advertise
+   Companion PIN pairing, so explicit power/wake control is unavailable
 4. **External artwork**: MRP exposes external playback metadata but its artwork
    is not currently published through the Music Assistant image proxy
 5. **Apple TV artwork for non-public images**: Cover art only reachable through the imageproxy (e.g. filesystem-provider images with no public URL) does not currently render on the Apple TV's now-playing screen, while externally-hosted art does

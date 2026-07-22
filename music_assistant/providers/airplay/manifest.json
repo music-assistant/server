@@ -7,7 +7,7 @@
   "codeowners": ["@music-assistant", "@bradkeifer"],
   "credits": [
     "[airplay-cli](https://github.com/music-assistant/airplay-cli)",
-    "[pyatv (Apple device control)](https://github.com/postlund/pyatv)"
+    "[pyatv (Companion and MRP control)](https://github.com/postlund/pyatv)"
   ],
   "requirements": ["pyatv==0.18.0"],
   "documentation": "https://music-assistant.io/player-support/airplay/",
@@ -15,8 +15,9 @@
   "builtin": false,
   "icon": "cast-variant",
   "mdns_discovery": [
-    "_airplay._tcp.local.",
     "_companion-link._tcp.local.",
+    "_mediaremotetv._tcp.local.",
+    "_airplay._tcp.local.",
     "_raop._tcp.local."
   ]
 }

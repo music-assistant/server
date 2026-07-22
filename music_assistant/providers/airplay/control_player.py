@@ -1,4 +1,4 @@
-"""Apple device implementation for the AirPlay provider."""
+"""Control-capable player implementation for the AirPlay provider."""
 
 from __future__ import annotations
 
@@ -44,6 +44,8 @@ from pyatv.interface import (
     PowerListener,
     PushListener,
 )
+from pyatv.settings import MrpTunnel
+from pyatv.storage.memory_storage import MemoryStorage
 
 from music_assistant.models.player import PlayerMedia
 
@@ -58,9 +60,15 @@ from .constants import (
     CONF_COMPANION_PAIRING_PIN,
     CONF_MRP_CREDENTIALS,
     CONF_MRP_PAIRING_PIN,
+    CONF_NATIVE_MRP_CREDENTIALS,
     CONF_STORED_VOLUME,
 )
-from .helpers import supports_companion_pairing
+from .helpers import (
+    supports_companion_pairing,
+    supports_mrp_service,
+    supports_mrp_tunnel,
+    supports_transient_mrp,
+)
 from .player import AirPlayPlayer
 
 if TYPE_CHECKING:
@@ -101,26 +109,28 @@ _COMMAND_ERRORS = (
 )
 
 
-class AppleDevicePlayer(AirPlayPlayer):
-    """AirPlay player with native Apple device monitoring and control."""
+class AirPlayControlPlayer(AirPlayPlayer):
+    """AirPlay player with independent device monitoring and control."""
 
     _attr_type = PlayerType.PLAYER
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         provider: AirPlayProvider,
         player_id: str,
         raop_discovery_info: AsyncServiceInfo | None,
         airplay_discovery_info: AsyncServiceInfo | None,
         companion_discovery_info: AsyncServiceInfo | None,
+        mrp_discovery_info: AsyncServiceInfo | None,
         address: str,
         display_name: str,
         manufacturer: str,
         model: str,
         initial_volume: int,
     ) -> None:
-        """Initialize an Apple device player."""
+        """Initialize a control-capable AirPlay player."""
         self.companion_discovery_info = companion_discovery_info
+        self.mrp_discovery_info = mrp_discovery_info
         self._companion_device: AppleTV | None = None
         self._mrp_device: AppleTV | None = None
         super().__init__(
@@ -134,9 +144,9 @@ class AppleDevicePlayer(AirPlayPlayer):
             model=model,
             initial_volume=initial_volume,
         )
-        self._companion_listener: _AppleStateListener | None = None
-        self._mrp_state_listener: _AppleStateListener | None = None
-        self._mrp_push_listener: _ApplePushListener | None = None
+        self._companion_listener: _AirPlayStateListener | None = None
+        self._mrp_state_listener: _AirPlayStateListener | None = None
+        self._mrp_push_listener: _AirPlayPushListener | None = None
         self._active_companion_pairing: PairingHandler | None = None
         self._active_mrp_pairing: PairingHandler | None = None
         self._connection_task: asyncio.Task[None] | None = None
@@ -153,34 +163,51 @@ class AppleDevicePlayer(AirPlayPlayer):
 
     @property
     def needs_setup(self) -> bool:
-        """Return whether streaming or Apple device control still requires pairing."""
+        """Return whether streaming or control features still require pairing."""
         return (
             super().needs_setup
             or (
                 self.companion_pairing_supported
                 and not self.config.get_value(CONF_COMPANION_CREDENTIALS)
             )
-            or (self.mrp_pairing_supported and not self.config.get_value(CONF_MRP_CREDENTIALS))
+            or (self.mrp_pairing_supported and not self._mrp_credentials)
         )
 
     @property
     def mrp_pairing_supported(self) -> bool:
-        """Return whether AirPlay playback monitoring can be paired."""
+        """Return whether MRP playback monitoring can be paired."""
+        endpoint = self._mrp_endpoint
+        if endpoint is None:
+            return False
+        discovery_info, protocol = endpoint
+        if protocol == Protocol.MRP:
+            allow_pairing = (
+                discovery_info.decoded_properties.get("AllowPairing")
+                or discovery_info.decoded_properties.get("allowpairing")
+                or "no"
+            )
+            return allow_pairing.lower() == "yes"
         return bool(
-            self.airplay_discovery_info
+            not self._uses_transient_mrp
+            and protocol == Protocol.AirPlay
             and self._is_airplay2_capable
-            and self.airplay_discovery_info.decoded_properties.get("acl", "0") != "1"
+            and discovery_info.decoded_properties.get("acl", "0") != "1"
         )
 
     @property
     def supported_features(self) -> set[PlayerFeature]:
-        """Return the supported features of this Apple device."""
+        """Return the supported features of this controlled device."""
         features = {*super().supported_features}
         if self._device_for_feature(FeatureName.Next) or self._device_for_feature(
             FeatureName.Previous
         ):
             features.add(PlayerFeature.NEXT_PREVIOUS)
-        if self.companion_pairing_supported or self.config.get_value(CONF_COMPANION_CREDENTIALS):
+        if (
+            self.companion_pairing_supported
+            or self.config.get_value(CONF_COMPANION_CREDENTIALS)
+            or self._device_for_feature(FeatureName.TurnOn)
+            or self._device_for_feature(FeatureName.TurnOff)
+        ):
             features.add(PlayerFeature.POWER)
         return features
 
@@ -189,7 +216,7 @@ class AppleDevicePlayer(AirPlayPlayer):
         action: str | None = None,
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
-        """Return player configuration entries, including Apple device pairing."""
+        """Return player configuration entries, including control pairing."""
         entries = await super().get_config_entries(action, values)
         if action in {
             CONF_ACTION_START_COMPANION_PAIRING,
@@ -270,9 +297,10 @@ class AppleDevicePlayer(AirPlayPlayer):
             )
         )
 
-        mrp_credentials = self.config.get_value(CONF_MRP_CREDENTIALS)
+        mrp_credentials = self._mrp_credentials
         if values is not None:
-            mrp_credentials = values.get(CONF_MRP_CREDENTIALS, mrp_credentials)
+            credentials_value = values.get(self._mrp_credentials_key, mrp_credentials)
+            mrp_credentials = str(credentials_value) if credentials_value else None
         if mrp_credentials:
             entries.extend(
                 [
@@ -323,21 +351,26 @@ class AppleDevicePlayer(AirPlayPlayer):
                         ),
                     ]
                 )
-        entries.append(
-            ConfigEntry(
-                key=CONF_MRP_CREDENTIALS,
-                type=ConfigEntryType.SECURE_STRING,
-                default_value=None,
-                value=mrp_credentials,
-                required=False,
-                hidden=True,
-                category="protocol_generic",
+        for credentials_key in (CONF_MRP_CREDENTIALS, CONF_NATIVE_MRP_CREDENTIALS):
+            entries.append(
+                ConfigEntry(
+                    key=credentials_key,
+                    type=ConfigEntryType.SECURE_STRING,
+                    default_value=None,
+                    value=(
+                        values.get(credentials_key)
+                        if values is not None
+                        else self.config.get_value(credentials_key)
+                    ),
+                    required=False,
+                    hidden=True,
+                    category="protocol_generic",
+                )
             )
-        )
         return entries
 
     async def power(self, powered: bool) -> None:
-        """Turn the Apple device on or off."""
+        """Turn the controlled device on or off."""
         feature = FeatureName.TurnOn if powered else FeatureName.TurnOff
         device = self._device_for_feature(feature)
         if device is None:
@@ -394,12 +427,12 @@ class AppleDevicePlayer(AirPlayPlayer):
         raise PlayerCommandFailed(f"Stop control is unavailable for {self.display_name}")
 
     async def play_media(self, media: PlayerMedia) -> None:
-        """Wake the Apple device and start Music Assistant playback."""
+        """Wake the controlled device and start Music Assistant playback."""
         await self._wake_for_playback()
         await super().play_media(media)
 
     async def volume_set(self, volume_level: int) -> None:
-        """Set stream or native Apple device volume."""
+        """Set stream or native device volume."""
         if self._stream_active:
             await super().volume_set(volume_level)
             return
@@ -429,7 +462,7 @@ class AppleDevicePlayer(AirPlayPlayer):
         await self._run_control_command(device.remote_control.previous(), "skip to previous")
 
     def set_discovery_info(self, discovery_info: AsyncServiceInfo, display_name: str) -> None:
-        """Update AirPlay discovery data and reconnect Apple control if needed."""
+        """Update AirPlay discovery data and reconnect device control if needed."""
         previous_signature = self._service_signature(self.airplay_discovery_info)
         previous_address = self.address
         super().set_discovery_info(discovery_info, display_name)
@@ -449,19 +482,29 @@ class AppleDevicePlayer(AirPlayPlayer):
         self.update_state()
         self._schedule_connection(force=True)
 
+    async def set_mrp_discovery_info(self, discovery_info: AsyncServiceInfo | None) -> None:
+        """Update native MRP discovery data and reconnect playback monitoring."""
+        if self._service_signature(self.mrp_discovery_info) == self._service_signature(
+            discovery_info
+        ):
+            return
+        self.mrp_discovery_info = discovery_info
+        self.update_state()
+        self._schedule_connection(force=True)
+
     async def on_config_updated(self) -> None:
-        """Reconnect Apple services when player configuration changes."""
+        """Reconnect control services when player configuration changes."""
         await super().on_config_updated()
         self._schedule_connection(force=True)
 
     async def on_unload(self) -> None:
-        """Close Apple control connections and pairing resources."""
+        """Close control connections and pairing resources."""
         self._unloading = True
         if self._connection_task and not self._connection_task.done():
             self._connection_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._connection_task
-        await self._disconnect_apple_services()
+        await self._disconnect_control_services()
         if self._active_companion_pairing:
             await self._active_companion_pairing.close()
             self._active_companion_pairing = None
@@ -486,19 +529,19 @@ class AppleDevicePlayer(AirPlayPlayer):
         )
 
     async def _connection_loop(self) -> None:
-        """Connect Apple control services and retry transient failures."""
+        """Connect control services and retry transient failures."""
         retry = True
         while retry and not self._unloading:
-            retry = await self._connect_apple_services()
+            retry = await self._connect_control_services()
             if retry:
                 await asyncio.sleep(_CONTROL_RECONNECT_DELAY)
 
-    async def _connect_apple_services(self) -> bool:
+    async def _connect_control_services(self) -> bool:
         """Connect Companion and MRP independently."""
         async with self._connection_lock:
             if self._restart_connections:
                 self._restart_connections = False
-                await self._disconnect_apple_services()
+                await self._disconnect_control_services()
             companion_retry, mrp_retry = await asyncio.gather(
                 self._connect_companion(),
                 self._connect_mrp(),
@@ -524,16 +567,16 @@ class AppleDevicePlayer(AirPlayPlayer):
             device = await pyatv.connect(config, self.mass.loop)
         except pyatv_exceptions.AuthenticationError, pyatv_exceptions.InvalidCredentialsError:
             self.logger.warning(
-                "Stored Apple device control credentials are no longer valid for %s",
+                "Stored Companion credentials are no longer valid for %s",
                 self.display_name,
             )
             return False
         except _CONNECTION_ERRORS as err:
-            self.logger.debug("Unable to connect Apple device control for %s: %s", self.name, err)
+            self.logger.debug("Unable to connect Companion control for %s: %s", self.name, err)
             return True
 
         self._companion_device = device
-        listener = _AppleStateListener(self, device, "companion")
+        listener = _AirPlayStateListener(self, device, "companion")
         self._companion_listener = listener
         device.listener = listener
         device.power.listener = listener
@@ -544,46 +587,51 @@ class AppleDevicePlayer(AirPlayPlayer):
         return False
 
     async def _connect_mrp(self) -> bool:
-        """Connect the AirPlay MRP tunnel for external playback state."""
+        """Connect MRP playback monitoring."""
         if self._mrp_device is not None:
             return False
-        if not self.airplay_discovery_info:
+        endpoint = self._mrp_endpoint
+        if endpoint is None:
             return False
-        credentials = self.config.get_value(CONF_MRP_CREDENTIALS)
-        if credentials is None:
+        discovery_info, protocol = endpoint
+        credentials = self._mrp_credentials
+        if protocol == Protocol.AirPlay and credentials is None and not self._uses_transient_mrp:
             return False
         config = self._build_config(
-            self.airplay_discovery_info,
-            Protocol.AirPlay,
+            discovery_info,
+            protocol,
             str(credentials) if credentials else None,
             PairingRequirement.NotNeeded,
         )
         if config is None:
             return False
+        storage: MemoryStorage | None = None
+        if protocol == Protocol.AirPlay:
+            storage = MemoryStorage()
+            settings = await storage.get_settings(config)
+            settings.protocols.airplay.mrp_tunnel = MrpTunnel.Force
         try:
-            device = await pyatv.connect(config, self.mass.loop)
+            device = await pyatv.connect(config, self.mass.loop, storage=storage)
         except (
             pyatv_exceptions.AuthenticationError,
             pyatv_exceptions.InvalidCredentialsError,
         ) as err:
             self.logger.warning(
-                "Unable to authenticate Apple playback monitoring for %s: %s", self.name, err
+                "Unable to authenticate playback monitoring for %s: %s", self.name, err
             )
             return False
         except _CONNECTION_ERRORS as err:
-            self.logger.debug(
-                "Unable to connect Apple playback monitoring for %s: %s", self.name, err
-            )
+            self.logger.debug("Unable to connect playback monitoring for %s: %s", self.name, err)
             return True
 
         if not self._feature_available(device, FeatureName.PushUpdates):
             device.close()
-            self.logger.debug("Apple playback monitoring is not supported by %s", self.name)
+            self.logger.debug("Playback monitoring is not supported by %s", self.name)
             return False
 
         self._mrp_device = device
-        state_listener = _AppleStateListener(self, device, "mrp")
-        push_listener = _ApplePushListener(self, device)
+        state_listener = _AirPlayStateListener(self, device, "mrp")
+        push_listener = _AirPlayPushListener(self, device)
         self._mrp_state_listener = state_listener
         self._mrp_push_listener = push_listener
         device.listener = state_listener
@@ -596,11 +644,11 @@ class AppleDevicePlayer(AirPlayPlayer):
             self._handle_playing_update(await device.metadata.playing())
         except _CONNECTION_ERRORS as err:
             self.logger.debug("Unable to read initial playback state for %s: %s", self.name, err)
-        self.logger.debug("Connected AirPlay playback monitoring for %s", self.display_name)
+        self.logger.debug("Connected MRP playback monitoring for %s", self.display_name)
         self.update_state()
         return False
 
-    async def _disconnect_apple_services(self) -> None:
+    async def _disconnect_control_services(self) -> None:
         """Close all active pyatv connections."""
         self._disconnecting = True
         companion_device = self._companion_device
@@ -629,10 +677,10 @@ class AppleDevicePlayer(AirPlayPlayer):
         """Build a pyatv configuration from an existing mDNS record."""
         address = self._control_address(info)
         if address is None:
-            self.logger.debug("Apple device control requires an IPv4 address for %s", self.name)
+            self.logger.debug("Device control requires an IPv4 address for %s", self.name)
             return None
         if info.port is None:
-            self.logger.debug("Apple device control service has no port for %s", self.name)
+            self.logger.debug("Device control service has no port for %s", self.name)
             return None
         properties = {
             key: value for key, value in info.decoded_properties.items() if value is not None
@@ -666,6 +714,38 @@ class AppleDevicePlayer(AirPlayPlayer):
     def _stream_active(self) -> bool:
         """Return whether Music Assistant is actively streaming to this device."""
         return bool(self.stream and self.stream.running)
+
+    @property
+    def _mrp_endpoint(self) -> tuple[AsyncServiceInfo, Protocol] | None:
+        """Return the preferred MRP endpoint and transport protocol."""
+        if supports_mrp_service(self.mrp_discovery_info):
+            assert self.mrp_discovery_info is not None
+            return self.mrp_discovery_info, Protocol.MRP
+        if supports_mrp_tunnel(self.airplay_discovery_info):
+            assert self.airplay_discovery_info is not None
+            return self.airplay_discovery_info, Protocol.AirPlay
+        return None
+
+    @property
+    def _mrp_credentials_key(self) -> str:
+        """Return the credential key for the active MRP transport."""
+        endpoint = self._mrp_endpoint
+        if endpoint is not None and endpoint[1] == Protocol.MRP:
+            return CONF_NATIVE_MRP_CREDENTIALS
+        return CONF_MRP_CREDENTIALS
+
+    @property
+    def _mrp_credentials(self) -> str | None:
+        """Return credentials for the active MRP transport."""
+        credentials = self.config.get_value(self._mrp_credentials_key)
+        return str(credentials) if credentials else None
+
+    @property
+    def _uses_transient_mrp(self) -> bool:
+        """Return whether playback monitoring uses transient AirPlay credentials."""
+        return not self.companion_pairing_supported and supports_transient_mrp(
+            self.airplay_discovery_info
+        )
 
     def _device_for_feature(self, feature: FeatureName) -> AppleTV | None:
         """Return the preferred connected device facade for a feature."""
@@ -713,7 +793,7 @@ class AppleDevicePlayer(AirPlayPlayer):
         action: str,
         values: dict[str, ConfigValueType] | None,
     ) -> None:
-        """Handle an Apple device control pairing action."""
+        """Handle a Companion control pairing action."""
         if action == CONF_ACTION_START_COMPANION_PAIRING:
             await self._reset_companion_pairing(values)
             await self._start_companion_pairing()
@@ -727,7 +807,7 @@ class AppleDevicePlayer(AirPlayPlayer):
         action: str,
         values: dict[str, ConfigValueType] | None,
     ) -> None:
-        """Handle an Apple playback monitoring pairing action."""
+        """Handle an MRP playback-monitoring pairing action."""
         if action == CONF_ACTION_START_MRP_PAIRING:
             await self._reset_mrp_pairing(values)
             await self._start_mrp_pairing()
@@ -739,11 +819,9 @@ class AppleDevicePlayer(AirPlayPlayer):
     async def _start_companion_pairing(self) -> None:
         """Start Companion PIN pairing."""
         if self._active_mrp_pairing:
-            raise PlayerCommandFailed("Finish Apple playback monitoring pairing first")
+            raise PlayerCommandFailed("Finish playback monitoring pairing first")
         if not self.companion_discovery_info or not self.companion_pairing_supported:
-            raise PlayerCommandFailed(
-                f"Apple device control pairing is unavailable for {self.display_name}"
-            )
+            raise PlayerCommandFailed(f"Companion pairing is unavailable for {self.display_name}")
         config = self._build_config(
             self.companion_discovery_info,
             Protocol.Companion,
@@ -752,7 +830,7 @@ class AppleDevicePlayer(AirPlayPlayer):
         )
         if config is None:
             raise PlayerCommandFailed(
-                f"Apple device control pairing requires an IPv4 address for {self.display_name}"
+                f"Companion pairing requires an IPv4 address for {self.display_name}"
             )
         pairing: PairingHandler | None = None
         try:
@@ -767,30 +845,30 @@ class AppleDevicePlayer(AirPlayPlayer):
             if pairing:
                 await pairing.close()
             raise PlayerCommandFailed(
-                f"Unable to start Apple device control pairing for {self.display_name}: {err}"
+                f"Unable to start Companion pairing for {self.display_name}: {err}"
             ) from err
         self._active_companion_pairing = pairing
 
     async def _finish_companion_pairing(self, values: dict[str, ConfigValueType] | None) -> None:
         """Finish Companion PIN pairing and retain its credentials."""
         if not self._active_companion_pairing or values is None:
-            raise PlayerCommandFailed("Apple device control pairing was not started")
+            raise PlayerCommandFailed("Companion pairing was not started")
         pin = values.get(CONF_COMPANION_PAIRING_PIN)
         try:
             pin_code = int(str(pin))
         except (TypeError, ValueError) as err:
-            raise PlayerCommandFailed("Enter the 4-digit PIN shown on the Apple device") from err
+            raise PlayerCommandFailed("Enter the 4-digit PIN shown on the device") from err
         pairing = self._active_companion_pairing
         try:
             pairing.pin(pin_code)
             await pairing.finish()
             credentials = pairing.service.credentials
             if not pairing.has_paired or not credentials:
-                raise PlayerCommandFailed("Apple device control pairing did not complete")
+                raise PlayerCommandFailed("Companion pairing did not complete")
             values[CONF_COMPANION_CREDENTIALS] = credentials
         except (pyatv_exceptions.PairingError, *_CONNECTION_ERRORS) as err:
             raise PlayerCommandFailed(
-                f"Unable to finish Apple device control pairing for {self.display_name}: {err}"
+                f"Unable to finish Companion pairing for {self.display_name}: {err}"
             ) from err
         finally:
             await pairing.close()
@@ -808,33 +886,36 @@ class AppleDevicePlayer(AirPlayPlayer):
         if values is not None:
             values[CONF_COMPANION_CREDENTIALS] = None
         self.config.update({CONF_COMPANION_CREDENTIALS: None})
-        await self._disconnect_apple_services()
+        await self._disconnect_control_services()
         self._schedule_connection(force=True)
 
     async def _start_mrp_pairing(self) -> None:
-        """Start AirPlay remote-control pairing for playback monitoring."""
+        """Start pairing for MRP playback monitoring."""
         if self._active_companion_pairing:
-            raise PlayerCommandFailed("Finish Apple device control pairing first")
-        if not self.airplay_discovery_info or not self.mrp_pairing_supported:
+            raise PlayerCommandFailed("Finish Companion pairing first")
+        endpoint = self._mrp_endpoint
+        if endpoint is None or not self.mrp_pairing_supported:
             raise PlayerCommandFailed(
-                f"Apple playback monitoring pairing is unavailable for {self.display_name}"
+                f"Playback monitoring pairing is unavailable for {self.display_name}"
             )
+        discovery_info, protocol = endpoint
         config = self._build_config(
-            self.airplay_discovery_info,
-            Protocol.AirPlay,
+            discovery_info,
+            protocol,
             None,
-            PairingRequirement.Mandatory,
+            PairingRequirement.Optional
+            if protocol == Protocol.MRP
+            else PairingRequirement.Mandatory,
         )
         if config is None:
             raise PlayerCommandFailed(
-                f"Apple playback monitoring pairing requires an IPv4 address for "
-                f"{self.display_name}"
+                f"Playback monitoring pairing requires an IPv4 address for {self.display_name}"
             )
         pairing: PairingHandler | None = None
         try:
             pairing = await pyatv.pair(
                 config,
-                Protocol.AirPlay,
+                protocol,
                 self.mass.loop,
                 name="Music Assistant",
             )
@@ -843,30 +924,30 @@ class AppleDevicePlayer(AirPlayPlayer):
             if pairing:
                 await pairing.close()
             raise PlayerCommandFailed(
-                f"Unable to start Apple playback monitoring pairing for {self.display_name}: {err}"
+                f"Unable to start playback monitoring pairing for {self.display_name}: {err}"
             ) from err
         self._active_mrp_pairing = pairing
 
     async def _finish_mrp_pairing(self, values: dict[str, ConfigValueType] | None) -> None:
-        """Finish AirPlay remote-control pairing and retain its credentials."""
+        """Finish MRP playback-monitoring pairing and retain its credentials."""
         if not self._active_mrp_pairing or values is None:
-            raise PlayerCommandFailed("Apple playback monitoring pairing was not started")
+            raise PlayerCommandFailed("Playback monitoring pairing was not started")
         pin = values.get(CONF_MRP_PAIRING_PIN)
         try:
             pin_code = int(str(pin))
         except (TypeError, ValueError) as err:
-            raise PlayerCommandFailed("Enter the 4-digit PIN shown on the Apple device") from err
+            raise PlayerCommandFailed("Enter the 4-digit PIN shown on the device") from err
         pairing = self._active_mrp_pairing
         try:
             pairing.pin(pin_code)
             await pairing.finish()
             credentials = pairing.service.credentials
             if not pairing.has_paired or not credentials:
-                raise PlayerCommandFailed("Apple playback monitoring pairing did not complete")
-            values[CONF_MRP_CREDENTIALS] = credentials
+                raise PlayerCommandFailed("Playback monitoring pairing did not complete")
+            values[self._mrp_credentials_key] = credentials
         except (pyatv_exceptions.PairingError, *_CONNECTION_ERRORS) as err:
             raise PlayerCommandFailed(
-                f"Unable to finish Apple playback monitoring pairing for {self.display_name}: {err}"
+                f"Unable to finish playback monitoring pairing for {self.display_name}: {err}"
             ) from err
         finally:
             await pairing.close()
@@ -883,8 +964,14 @@ class AppleDevicePlayer(AirPlayPlayer):
             self._active_mrp_pairing = None
         if values is not None:
             values[CONF_MRP_CREDENTIALS] = None
-        self.config.update({CONF_MRP_CREDENTIALS: None})
-        await self._disconnect_apple_services()
+            values[CONF_NATIVE_MRP_CREDENTIALS] = None
+        self.config.update(
+            {
+                CONF_MRP_CREDENTIALS: None,
+                CONF_NATIVE_MRP_CREDENTIALS: None,
+            }
+        )
+        await self._disconnect_control_services()
         self._schedule_connection(force=True)
 
     def _apply_initial_device_state(self, device: AppleTV, source: str) -> None:
@@ -919,7 +1006,7 @@ class AppleDevicePlayer(AirPlayPlayer):
         self._update_native_volume(round(volume))
 
     def _update_native_volume(self, volume: int) -> None:
-        """Update and persist a volume reported by Apple device control."""
+        """Update and persist a volume reported by device control."""
         volume = max(0, min(100, volume))
         self._attr_volume_level = volume
         self.mass.config.set_raw_player_config_value(
@@ -947,8 +1034,8 @@ class AppleDevicePlayer(AirPlayPlayer):
             return
 
         app = self._mrp_device.metadata.app if self._mrp_device else None
-        source_id = app.identifier if app else "apple_device"
-        source_name = (app.name or app.identifier) if app else "Apple device"
+        source_id = app.identifier if app else "airplay_control"
+        source_name = (app.name or app.identifier) if app else "AirPlay device"
         self._attr_active_source = source_id
         self._ensure_source(source_id, source_name)
         self._attr_elapsed_time = float(playing.position or 0)
@@ -970,7 +1057,7 @@ class AppleDevicePlayer(AirPlayPlayer):
         self.update_state()
 
     def _ensure_source(self, source_id: str, source_name: str) -> None:
-        """Add a passive source reported by Apple playback monitoring."""
+        """Add a passive source reported by MRP playback monitoring."""
         if any(source.id == source_id for source in self._attr_source_list):
             return
         self._attr_source_list.append(
@@ -1012,10 +1099,10 @@ class AppleDevicePlayer(AirPlayPlayer):
             self._schedule_connection()
 
     def _handle_push_error(self, device: AppleTV, exception: Exception) -> None:
-        """Restart Apple playback monitoring after a push update error."""
+        """Restart MRP playback monitoring after a push update error."""
         if self._mrp_device is not device:
             return
-        self.logger.debug("Apple playback updates failed for %s: %s", self.name, exception)
+        self.logger.debug("MRP playback updates failed for %s: %s", self.name, exception)
         device.push_updater.stop()
         self._mrp_device = None
         self._mrp_state_listener = None
@@ -1036,10 +1123,10 @@ class AppleDevicePlayer(AirPlayPlayer):
         )
 
 
-class _AppleStateListener(DeviceListener, PowerListener, AudioListener):
-    """Forward pyatv device, power, and volume events to an Apple player."""
+class _AirPlayStateListener(DeviceListener, PowerListener, AudioListener):
+    """Forward pyatv device, power, and volume events to a controlled player."""
 
-    def __init__(self, player: AppleDevicePlayer, device: AppleTV, source: str) -> None:
+    def __init__(self, player: AirPlayControlPlayer, device: AppleTV, source: str) -> None:
         """Initialize a listener for one pyatv connection."""
         self._player = player
         self._device = device
@@ -1077,10 +1164,10 @@ class _AppleStateListener(DeviceListener, PowerListener, AudioListener):
         """Ignore output-device membership updates."""
 
 
-class _ApplePushListener(PushListener):
-    """Forward MRP now-playing updates to an Apple player."""
+class _AirPlayPushListener(PushListener):
+    """Forward MRP now-playing updates to a controlled player."""
 
-    def __init__(self, player: AppleDevicePlayer, device: AppleTV) -> None:
+    def __init__(self, player: AirPlayControlPlayer, device: AppleTV) -> None:
         """Initialize an MRP push listener."""
         self._player = player
         self._device = device

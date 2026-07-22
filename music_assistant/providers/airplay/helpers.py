@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import re
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ContentType
@@ -123,6 +124,20 @@ def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:  # noqa: PLR0911
     return (manufacturer or "AirPlay", model)
 
 
+def parse_airplay_features(features_value: str | None) -> int:
+    """Return an AirPlay features bitmask, or zero for an invalid value."""
+    if not features_value:
+        return 0
+    try:
+        parts = features_value.split(",")
+        features = int(parts[0], 16)
+        if len(parts) > 1:
+            features |= int(parts[1], 16) << 32
+    except TypeError, ValueError:
+        return 0
+    return features
+
+
 def supports_airplay2(features_value: str | None) -> bool:
     """
     Check if a device advertises AirPlay 2 support in its features bitmask.
@@ -131,15 +146,7 @@ def supports_airplay2(features_value: str | None) -> bool:
         (``features`` on the _airplay service or ``ft`` on the _raop service),
         formatted as ``0xLOW`` or ``0xLOW,0xHIGH``.
     """
-    if not features_value:
-        return False
-    try:
-        parts = features_value.split(",")
-        features = int(parts[0], 16)
-        if len(parts) > 1:
-            features |= int(parts[1], 16) << 32
-    except ValueError, TypeError:
-        return False
+    features = parse_airplay_features(features_value)
     # SupportsUnifiedMediaControl (bit 38) / SupportsCoreUtilsPairingAndEncryption
     # (bit 48): either one means the device speaks AirPlay 2. This mirrors the
     # test the cliairplay binary uses for its automatic route selection.
@@ -160,16 +167,6 @@ def is_apple_device(manufacturer: str, model: str) -> bool:
     )
 
 
-def is_native_apple_device(discovery_info: AsyncServiceInfo) -> bool:
-    """Return whether AirPlay identifies a standalone Apple device model."""
-    raw_model = (
-        discovery_info.decoded_properties.get("model")
-        or discovery_info.decoded_properties.get("am")
-        or ""
-    )
-    return raw_model.startswith(("AppleTV", "AudioAccessory"))
-
-
 def supports_companion_pairing(discovery_info: AsyncServiceInfo | None) -> bool:
     """Return whether a Companion service supports PIN pairing."""
     if discovery_info is None:
@@ -184,6 +181,42 @@ def supports_companion_pairing(discovery_info: AsyncServiceInfo | None) -> bool:
     return bool(flags & _COMPANION_PAIRING_WITH_PIN) and not bool(
         flags & _COMPANION_PAIRING_DISABLED
     )
+
+
+def supports_mrp_tunnel(discovery_info: AsyncServiceInfo | None) -> bool:
+    """Return whether an AirPlay service advertises tunneled MRP control."""
+    if discovery_info is None:
+        return False
+    features = parse_airplay_features(
+        discovery_info.decoded_properties.get("features")
+        or discovery_info.decoded_properties.get("ft")
+    )
+    return bool((features >> 58) & 1)
+
+
+def supports_transient_mrp(discovery_info: AsyncServiceInfo | None) -> bool:
+    """Return whether an AirPlay MRP tunnel supports transient authentication."""
+    if not supports_mrp_tunnel(discovery_info):
+        return False
+    assert discovery_info is not None
+    features = parse_airplay_features(
+        discovery_info.decoded_properties.get("features")
+        or discovery_info.decoded_properties.get("ft")
+    )
+    return bool((features >> 43) & 1 or (features >> 48) & 1)
+
+
+def supports_mrp_service(discovery_info: AsyncServiceInfo | None) -> bool:
+    """Return whether a native MRP service is usable."""
+    if discovery_info is None or discovery_info.port is None:
+        return False
+    build = (
+        discovery_info.decoded_properties.get("SystemBuildVersion")
+        or discovery_info.decoded_properties.get("systembuildversion")
+        or ""
+    )
+    match = re.match(r"^(\d+)[A-Z]", build)
+    return match is None or int(match.group(1)) < 19
 
 
 async def get_cli_binary() -> str:

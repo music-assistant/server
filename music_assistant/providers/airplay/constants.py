@@ -33,9 +33,11 @@ CONF_STORED_VOLUME: Final[str] = "stored_volume"
 CONF_HIRES_PLAYBACK: Final[str] = "hires_playback"
 CONF_COMPANION_CREDENTIALS: Final[str] = "companion_credentials"
 CONF_MRP_CREDENTIALS: Final[str] = "mrp_credentials"
+CONF_NATIVE_MRP_CREDENTIALS: Final[str] = "native_mrp_credentials"
 
 AIRPLAY_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
 COMPANION_DISCOVERY_TYPE: Final[str] = "_companion-link._tcp.local."
+MRP_DISCOVERY_TYPE: Final[str] = "_mediaremotetv._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
