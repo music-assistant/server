@@ -265,6 +265,121 @@ def test_temporary_paths_are_unique_per_stream() -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_queues_text_metadata_before_connection() -> None:
+    """Text metadata is queued as soon as cliairplay starts."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    metadata = MagicMock(corrected_elapsed_time=12.5)
+    player.current_media = metadata
+    process = MagicMock(closed=False)
+    process.start = AsyncMock()
+    operation_order: list[str] = []
+
+    async def create_pipe() -> None:
+        operation_order.append("pipe")
+
+    async def start_process() -> None:
+        operation_order.append("process")
+
+    async def send_metadata(*_args: Any, **_kwargs: Any) -> None:
+        operation_order.append("metadata")
+
+    def consume_task(awaitable: Any) -> MagicMock:
+        awaitable.close()
+        task = MagicMock()
+        task.done.return_value = True
+        return task
+
+    process.start.side_effect = start_process
+    player.provider.mass.create_task.side_effect = consume_task
+    with (
+        patch.object(stream, "_build_cli_args", new_callable=AsyncMock, return_value=["binary"]),
+        patch(
+            "music_assistant.providers.airplay.stream.AsyncProcess",
+            return_value=process,
+        ),
+        patch.object(stream.commands_pipe, "create", side_effect=create_pipe),
+        patch.object(stream, "send_metadata", side_effect=send_metadata) as send_metadata_mock,
+    ):
+        await stream.start(START_UNIX_MS)
+
+    assert operation_order == ["pipe", "process", "metadata"]
+    send_metadata_mock.assert_awaited_once_with(12, metadata, send_artwork=False)
+
+
+@pytest.mark.asyncio
+async def test_start_failure_cleans_up_process_and_pipe() -> None:
+    """A metadata write failure cannot leave a live cliairplay process or FIFO."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    metadata = MagicMock(corrected_elapsed_time=0)
+    player.current_media = metadata
+    process = MagicMock(closed=False)
+    process.start = AsyncMock()
+    process.kill = AsyncMock()
+
+    def consume_task(awaitable: Any) -> MagicMock:
+        awaitable.close()
+        task = MagicMock()
+        task.done.return_value = True
+        return task
+
+    player.provider.mass.create_task.side_effect = consume_task
+    with (
+        patch.object(stream, "_build_cli_args", new_callable=AsyncMock, return_value=["binary"]),
+        patch(
+            "music_assistant.providers.airplay.stream.AsyncProcess",
+            return_value=process,
+        ),
+        patch.object(stream.commands_pipe, "create", new_callable=AsyncMock),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock) as remove_pipe,
+        patch.object(
+            stream,
+            "send_metadata",
+            new_callable=AsyncMock,
+            side_effect=OSError("metadata write failed"),
+        ),
+        pytest.raises(OSError, match="metadata write failed"),
+    ):
+        await stream.start(START_UNIX_MS)
+
+    process.kill.assert_awaited_once()
+    remove_pipe.assert_awaited_once()
+    assert stream._cli_proc is None
+    assert stream._cleanup_complete is True
+
+
+@pytest.mark.asyncio
+async def test_initial_metadata_skips_artwork() -> None:
+    """The pre-connect metadata push cannot delay setup on artwork rendering."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = MagicMock(closed=False)
+    metadata = MagicMock(
+        title="Track",
+        artist="Artist",
+        album="Album",
+        duration=180,
+        image_url="image",
+    )
+
+    with (
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
+        patch.object(
+            stream,
+            "_render_and_send_artwork",
+            new_callable=AsyncMock,
+        ) as send_artwork,
+    ):
+        await stream.send_metadata(0, metadata, send_artwork=False)
+
+    send_command.assert_awaited_once()
+    assert send_command.await_args is not None
+    assert "TITLE=Track" in send_command.await_args.args[0]
+    send_artwork.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_wait_for_connection_pushes_metadata_immediately() -> None:
     """
     Track metadata is pushed the instant the device connects.

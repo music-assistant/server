@@ -1,10 +1,13 @@
 """Unit tests for AirPlay stream session late-join logic."""
 
+import asyncio
 import time
+from collections.abc import AsyncGenerator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
 
@@ -69,6 +72,47 @@ def _captured_start_at(mock_start: AsyncMock) -> float:
     start_unix_ms = mock_start.call_args[0][1]
     assert isinstance(start_unix_ms, int)
     return start_unix_ms / 1000
+
+
+@pytest.mark.asyncio
+async def test_initial_client_failure_stops_started_clients() -> None:
+    """A partial group startup failure cancels siblings before session teardown."""
+    session = _make_session(time.time(), 0)
+    first_player: Any = session.sync_clients[0]
+    first_player.wait_start = 0
+    second_player = MagicMock(wait_start=0)
+    session.sync_clients.append(second_player)
+    first_started = asyncio.Event()
+    first_cancelled = asyncio.Event()
+
+    async def audio_source() -> AsyncGenerator[bytes]:
+        yield b""
+
+    async def start_client(player: Any, *_args: Any) -> None:
+        if player is first_player:
+            first_started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                first_cancelled.set()
+                raise
+        await first_started.wait()
+        raise OSError("process failed")
+
+    with (
+        patch.object(
+            session,
+            "_start_client",
+            new_callable=AsyncMock,
+            side_effect=start_client,
+        ),
+        patch.object(session, "stop", new_callable=AsyncMock) as stop_session,
+        pytest.raises(PlayerCommandFailed, match="Playback failed to start"),
+    ):
+        await session.start(audio_source())
+
+    assert first_cancelled.is_set()
+    stop_session.assert_awaited_once()
 
 
 @pytest.mark.asyncio
