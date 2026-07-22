@@ -844,6 +844,7 @@ async def test_late_companion_discovery_promotes_generic_player() -> None:
         display_name="Controlled receiver",
         manufacturer="Receiver",
         model="Model",
+        initial_volume=0,
     )
     provider.mass.players.get_player.return_value = generic_player
     provider.mass.players.unregister = AsyncMock()
@@ -854,6 +855,7 @@ async def test_late_companion_discovery_promotes_generic_player() -> None:
     provider.mass.players.unregister.assert_awaited_once_with(PLAYER_ID)
     promoted_player = provider.mass.players.register.await_args.args[0]
     assert isinstance(promoted_player, AirPlayControlPlayer)
+    assert promoted_player.volume_level == 0
     provider._bridge_manager.evaluate_bridge.assert_awaited_once_with(promoted_player)
 
 

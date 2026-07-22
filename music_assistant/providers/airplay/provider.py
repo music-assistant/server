@@ -609,7 +609,9 @@ class AirPlayProvider(PlayerProvider):
             display_name=player.display_name,
             manufacturer=player.device_info.manufacturer,
             model=player.device_info.model,
-            initial_volume=player.volume_level or FALLBACK_VOLUME,
+            initial_volume=player.volume_level
+            if player.volume_level is not None
+            else FALLBACK_VOLUME,
         )
         control_player._attr_group_members = group_members
         await self.mass.players.register(control_player)
