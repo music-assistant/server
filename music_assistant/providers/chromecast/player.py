@@ -662,6 +662,8 @@ class ChromecastPlayer(Player):
 
     def _flow_stream_underrun(self) -> bool:
         """Return whether the active queue's flow stream has been fully consumed."""
-        # a group child mirrors the group's status, so use the queue-owning player
-        queue_id = self.active_cast_group or self.player_id
+        # Resolve the queue-owning player: a Cast group child mirrors the group's
+        # status, and a Cast exposed as a protocol player is wrapped by a universal
+        # player that owns the queue. Only a native/standalone Cast owns its own queue.
+        queue_id = self.active_cast_group or self.protocol_parent_id or self.player_id
         return self.mass.player_queues.flow_stream_finished(queue_id)

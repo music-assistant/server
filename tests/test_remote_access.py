@@ -2,6 +2,8 @@
 
 import asyncio
 import base64
+import contextlib
+import json
 from collections.abc import Callable
 from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
@@ -863,3 +865,130 @@ async def test_http_proxy_request_cannot_change_host(
     assert parsed.port == 8095
     assert parsed.username is None
     assert "evil.com" not in (parsed.netloc or "")
+
+
+async def test_http_proxy_request_does_not_block_receive_loop(mock_certificate: Mock) -> None:
+    """A slow proxied image fetch must not stall API messages behind it in the receive loop."""
+    mock_session = Mock()
+    release = asyncio.Event()
+
+    def fake_request(_method: str, _url: str, **_kwargs: object) -> AsyncMock:
+        response = AsyncMock()
+        response.status = 200
+        response.headers = {}
+        response.read = AsyncMock(return_value=b"")
+
+        async def blocking_aenter(*_args: object) -> AsyncMock:
+            await release.wait()
+            return response
+
+        ctx = AsyncMock()
+        ctx.__aenter__ = blocking_aenter
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        return ctx
+
+    mock_session.request = fake_request
+
+    gateway = WebRTCGateway(
+        http_session=mock_session,
+        remote_id="TEST-REMOTE-ID",
+        certificate=mock_certificate,
+        local_ws_url="ws://localhost:8095/ws",
+    )
+    session = WebRTCSession(session_id="s1", peer_connection=Mock())
+    session.local_ws = Mock()
+    session.local_ws.closed = False
+    session.local_ws.send_str = AsyncMock()
+    session.data_channel = Mock()
+    session.data_channel.readyState = "open"
+    session.data_channel.send = Mock()
+
+    proxy_message = json.dumps(
+        {"type": "http-proxy-request", "id": "1", "method": "GET", "path": "/imageproxy/x"}
+    )
+    api_message = '{"command": "ping"}'
+    session.message_queue.put_nowait(proxy_message)
+    session.message_queue.put_nowait(api_message)
+
+    forward_task = asyncio.create_task(gateway._forward_to_local(session))
+
+    try:
+        # The API message must get through while the proxy fetch is still blocked.
+        for _ in range(20):
+            if session.local_ws.send_str.await_args_list:
+                break
+            await asyncio.sleep(0.05)
+        assert not release.is_set()
+        session.local_ws.send_str.assert_awaited_with(api_message)
+
+        release.set()
+
+        for _ in range(20):
+            if session.data_channel.send.call_args_list:
+                break
+            await asyncio.sleep(0.05)
+        assert session.data_channel.send.call_args is not None
+        response_data = json.loads(session.data_channel.send.call_args[0][0])
+        assert response_data["id"] == "1"
+    finally:
+        # Unblock a still-pending fetch so cleanup can't hang on assertion failure
+        release.set()
+        session.local_ws.closed = True
+        forward_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await forward_task
+        for task in list(session.proxy_tasks):
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
+async def test_close_data_channel_bridge_cancels_pending_proxy_tasks(
+    mock_certificate: Mock,
+) -> None:
+    """Closing a session's bridge must cancel its still-running proxy fetches."""
+    mock_session = Mock()
+    release = asyncio.Event()
+
+    def fake_request(_method: str, _url: str, **_kwargs: object) -> AsyncMock:
+        async def blocking_aenter(*_args: object) -> AsyncMock:
+            await release.wait()
+            return AsyncMock()
+
+        ctx = AsyncMock()
+        ctx.__aenter__ = blocking_aenter
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        return ctx
+
+    mock_session.request = fake_request
+
+    gateway = WebRTCGateway(
+        http_session=mock_session,
+        remote_id="TEST-REMOTE-ID",
+        certificate=mock_certificate,
+        local_ws_url="ws://localhost:8095/ws",
+    )
+    session = WebRTCSession(session_id="s1", peer_connection=Mock())
+    session.local_ws = Mock()
+    session.local_ws.closed = False
+    session.local_ws.close = AsyncMock()
+    session.data_channel = Mock()
+    session.data_channel.readyState = "open"
+
+    session.message_queue.put_nowait(
+        json.dumps({"type": "http-proxy-request", "id": "1", "method": "GET", "path": "/img"})
+    )
+    session.forward_to_local_task = asyncio.create_task(gateway._forward_to_local(session))
+
+    try:
+        for _ in range(20):
+            if session.proxy_tasks:
+                break
+            await asyncio.sleep(0.05)
+        proxy_task = next(iter(session.proxy_tasks))
+
+        await gateway._close_data_channel_bridge(session)
+
+        assert proxy_task.cancelled()
+        assert not session.proxy_tasks
+    finally:
+        release.set()
