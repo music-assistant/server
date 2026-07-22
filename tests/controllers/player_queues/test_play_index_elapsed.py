@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from unittest.mock import AsyncMock, MagicMock, Mock
 
+from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
@@ -47,6 +48,7 @@ def _controller_with_stale_queue() -> tuple[
     ctrl.player_media_from_queue_item = AsyncMock()  # type: ignore[method-assign]
     ctrl.mass = MagicMock()
     ctrl.mass.players.play_media = AsyncMock()
+    ctrl.logger = MagicMock()  # the retry-fallback path logs a warning
     return ctrl, queue, signals
 
 
@@ -73,3 +75,21 @@ async def test_play_index_sets_elapsed_to_seek_position() -> None:
 
     assert queue.elapsed_time == 30
     assert all(elapsed == 30 for item_id, elapsed in signals if item_id == "new"), signals
+
+
+async def test_play_index_retry_fallback_discards_failed_items_seek_position() -> None:
+    """Falling back to another item after a load failure zeroes elapsed_time, not seek_position."""
+    ctrl, queue, signals = _controller_with_stale_queue()
+    fallback_item = QueueItem(
+        queue_id=QUEUE_ID, queue_item_id="fallback", name="fallback", duration=200
+    )
+    ctrl._queue_data[QUEUE_ID].items.append(fallback_item)
+    ctrl._load_item = AsyncMock(side_effect=[MediaNotFoundError("unplayable"), None])  # type: ignore[method-assign]
+    ctrl._get_next_index = Mock(return_value=2)  # type: ignore[method-assign]
+
+    await ctrl.play_index(QUEUE_ID, 1, seek_position=45)
+
+    assert queue.current_item is not None
+    assert queue.current_item.queue_item_id == "fallback"
+    assert queue.elapsed_time == 0
+    assert all(elapsed == 0 for item_id, elapsed in signals if item_id == "fallback"), signals
