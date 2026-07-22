@@ -1245,20 +1245,19 @@ class SendspinPlaybackSession:
         except Exception:
             filter_params = ()
             output_plan = None
-        custom_filter_graph = any(
-            param.strip() and not param.strip().startswith("alimiter=") for param in filter_params
-        )
+        custom_filter_graph = any(param.strip() for param in filter_params)
         requires_transform = dsp_enabled or output_channels != "stereo" or custom_filter_graph
-        if output_plan is not None:
-            if not requires_transform:
-                output_plan.output_details.dsp.output_limiter = False
-            if self._queue_id is not None and self._queue_session_id is not None:
-                self.player.mass.streams.audio_processing.update_output(
-                    output_plan.output_details.player_ids[0],
-                    output_plan,
-                    queue_id=self._queue_id,
-                    session_id=self._queue_session_id,
-                )
+        if (
+            output_plan is not None
+            and self._queue_id is not None
+            and self._queue_session_id is not None
+        ):
+            self.player.mass.streams.audio_processing.update_output(
+                output_plan.output_details.player_ids[0],
+                output_plan,
+                queue_id=self._queue_id,
+                session_id=self._queue_session_id,
+            )
         return _PipelineConfig(
             requires_transform=requires_transform,
             output_channels=output_channels,
