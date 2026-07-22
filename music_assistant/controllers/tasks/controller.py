@@ -24,7 +24,7 @@ from music_assistant_models.enums import EventType, TaskStatus
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import CONF_ENTRY_MAX_CONCURRENT_TASKS, CONF_MAX_CONCURRENT_TASKS
-from music_assistant.controllers.webserver.helpers.auth_middleware import (
+
     get_current_user,
     has_scope,
 )
@@ -99,7 +99,6 @@ class TasksController(CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        del action, values
         return (CONF_ENTRY_MAX_CONCURRENT_TASKS,)
 
     async def close(self) -> None:
