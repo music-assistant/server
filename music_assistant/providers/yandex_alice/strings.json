@@ -214,6 +214,51 @@
     "manifest_banner_invalid": {
       "label": "⚠ Skill manifest: override at {0} is invalid — falling back to bundled default ({1} intents, {2} entities). Error: {3}"
     },
+    "manifest_export_exists": {
+      "label": "Manifest override already exists at {0}; the existing file was not overwritten."
+    },
+    "manifest_export_write_error": {
+      "label": "Manifest export failed: could not write {0}: {1}"
+    },
+    "manifest_export_success": {
+      "label": "Manifest exported to {0}. Open the file in an external editor."
+    },
+    "manifest_import_empty": {
+      "label": "The manifest paste field is empty; there is nothing to import."
+    },
+    "manifest_import_decode_error": {
+      "label": "Manifest import failed: {0}"
+    },
+    "manifest_import_invalid": {
+      "label": "Manifest import failed validation: {0}"
+    },
+    "manifest_import_write_error": {
+      "label": "Manifest import failed: could not write {0}: {1}"
+    },
+    "manifest_import_success": {
+      "label": "Manifest imported into {0} ({1} intents, {2} entities)."
+    },
+    "manifest_reset_absent": {
+      "label": "No manifest override exists; the bundled default is already active."
+    },
+    "manifest_reset_delete_error": {
+      "label": "Manifest reset failed: could not delete {0}: {1}"
+    },
+    "manifest_reset_success": {
+      "label": "Manifest override at {0} was removed; the bundled default is active."
+    },
+    "manifest_validate_absent": {
+      "label": "No manifest override exists; there is nothing to validate."
+    },
+    "manifest_validate_read_error": {
+      "label": "Could not read manifest override {0}: {1}"
+    },
+    "manifest_validate_invalid": {
+      "label": "✗ Manifest override is invalid: {0}"
+    },
+    "manifest_validate_success": {
+      "label": "✓ Manifest override is valid ({0} intents, {1} entities)."
+    },
     "export_manifest": {
       "label": "Export manifest",
       "description": "Write the current bundled manifest to {0}. Will not overwrite an existing override; use Reset first if you want to start over.",

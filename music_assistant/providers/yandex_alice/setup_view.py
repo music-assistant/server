@@ -96,7 +96,7 @@ from .publication_status import (
     STATUS_ON_AIR,
     STATUS_REJECTED,
 )
-from .skill_manifest_provider import ManifestStatus
+from .skill_manifest_provider import ManifestActionResult, ManifestStatus
 from .url_helpers import validate_external_base_url
 
 
@@ -882,7 +882,7 @@ def _manifest_block(
     *,
     status: ManifestStatus,
     paste_value: str,
-    update_message: str | None,
+    update_message: ManifestActionResult | None,
 ) -> tuple[ConfigEntry, ...]:
     """
     Skill manifest banner + Export / Import / Reset / Validate actions.
@@ -916,7 +916,8 @@ def _manifest_block(
             ConfigEntry(
                 key="label_manifest_message",
                 type=ConfigEntryType.LABEL,
-                label=update_message,
+                translation_key=update_message.translation_key,
+                translation_params=list(update_message.translation_params),
             )
         )
     entries.extend(
@@ -1049,7 +1050,7 @@ def build_form_entries(  # noqa: PLR0913
     diagnostics: tuple[ConfigEntry, ...],
     manifest_status: ManifestStatus,
     manifest_paste: str,
-    manifest_message: str | None,
+    manifest_message: ManifestActionResult | None,
     hidden_state: tuple[ConfigEntry, ...],
     borrow_options: list[ConfigValueOption],
     borrow_selected: str,

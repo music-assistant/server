@@ -185,6 +185,24 @@ def test_states_only_entries_are_authored() -> None:
     """Texts of entries rendered only in hard-to-simulate states stay authored."""
     authored = load_strings()["config_entries"]
     assert "label" in authored.get("label_diagnostics_inactive", {})
+    manifest_results = {
+        "manifest_export_exists",
+        "manifest_export_write_error",
+        "manifest_export_success",
+        "manifest_import_empty",
+        "manifest_import_decode_error",
+        "manifest_import_invalid",
+        "manifest_import_write_error",
+        "manifest_import_success",
+        "manifest_reset_absent",
+        "manifest_reset_delete_error",
+        "manifest_reset_success",
+        "manifest_validate_absent",
+        "manifest_validate_read_error",
+        "manifest_validate_invalid",
+        "manifest_validate_success",
+    }
+    assert manifest_results <= set(authored)
 
 
 def test_config_categories_are_authored() -> None:

@@ -20,9 +20,13 @@ either reverse-proxy or our handler crashed.
 
 from __future__ import annotations
 
+import ipaddress
 import json
+import socket
 
 import aiohttp
+from aiohttp.abc import AbstractResolver, ResolveResult
+from aiohttp.resolver import ThreadedResolver
 
 from .constants import DIALOG_WEBHOOK_BASE_PATH
 from .url_helpers import is_public_https_url
@@ -33,6 +37,34 @@ _TEST_TIMEOUT_SECONDS = 5.0
 _SENTINEL_SKILL_ID = "00000000-0000-0000-0000-000000000000"
 _SENTINEL_SESSION_ID = "ma-test-reachability"
 _SENTINEL_USER_ID = "ma-test-user"
+
+
+class _NonPublicAddressError(OSError):
+    """Raised when DNS points the outbound probe at a non-global address."""
+
+
+class _PublicAddressResolver(AbstractResolver):
+    """Resolve a host and reject every non-global answer before connecting."""
+
+    def __init__(self, resolver: AbstractResolver | None = None) -> None:
+        self._resolver = resolver or ThreadedResolver()
+
+    async def resolve(
+        self,
+        host: str,
+        port: int = 0,
+        family: socket.AddressFamily = socket.AF_INET,
+    ) -> list[ResolveResult]:
+        results = await self._resolver.resolve(host, port, family)
+        for result in results:
+            address = ipaddress.ip_address(result["host"])
+            if not address.is_global:
+                raise _NonPublicAddressError(f"{host!r} resolves to non-public address {address}")
+        return results
+
+    async def close(self) -> None:
+        """Close the wrapped resolver."""
+        await self._resolver.close()
 
 
 def _build_test_envelope() -> dict[str, object]:
@@ -101,14 +133,22 @@ async def probe_webhook_reachability(base_url: str, webhook_secret: str) -> tupl
     body = json.dumps(payload).encode("utf-8")
     headers = {"Content-Type": "application/json"}
     timeout = aiohttp.ClientTimeout(total=_TEST_TIMEOUT_SECONDS)
+    connector = aiohttp.TCPConnector(resolver=_PublicAddressResolver())
 
     try:
         async with (
-            aiohttp.ClientSession(timeout=timeout) as session,
-            session.post(url, data=body, headers=headers) as resp,
+            aiohttp.ClientSession(timeout=timeout, connector=connector) as session,
+            session.post(
+                url,
+                data=body,
+                headers=headers,
+                allow_redirects=False,
+            ) as resp,
         ):
             status = resp.status
     except aiohttp.ClientConnectorDNSError as exc:
+        if isinstance(exc.os_error, _NonPublicAddressError):
+            return False, f"Blocked non-public DNS destination: {exc.os_error}"
         return False, f"DNS resolution failed for {base}: {exc}"
     except aiohttp.ClientSSLError as exc:
         return False, f"TLS / certificate error: {exc}"
@@ -129,6 +169,8 @@ async def probe_webhook_reachability(base_url: str, webhook_secret: str) -> tupl
         # Unlikely but possible: the user happened to register a skill with
         # all-zero UUID, or our handler regressed and accepts anything.
         return True, "Webhook reachable (HTTP 200)."
+    if 300 <= status < 400:
+        return False, f"HTTP {status} redirect rejected — the webhook URL must be final."
     if status == 404:
         return (
             False,

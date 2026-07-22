@@ -1,4 +1,4 @@
-# ruff: noqa: D107, RUF001
+# ruff: noqa: D107
 """
 Effective skill manifest with file-based override + UI status reporting.
 
@@ -6,8 +6,8 @@ Single class :class:`SkillManifestProvider` is the only entry point for
 the rest of the provider to read / write / validate the skill TOML
 manifest. It encapsulates:
 
-* Loading the **effective** manifest (override file if present and
-  valid, else the package-bundled default at
+* Loading a startup **snapshot** of the effective manifest (override file if
+  present and valid, else the package-bundled default at
   ``provider/data/skill.toml``).
 * Status reporting to UI: ``bundled`` / ``override_valid`` /
   ``override_invalid`` (with parser error message for the latter)
@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 __all__ = [
+    "ManifestActionResult",
     "ManifestStatus",
     "SkillManifestProvider",
 ]
@@ -87,12 +88,21 @@ class ManifestStatus:
     error: str | None = None
 
 
+@dataclasses.dataclass(frozen=True, slots=True)
+class ManifestActionResult:
+    """Localizable result emitted by a manifest config action."""
+
+    translation_key: str
+    translation_params: tuple[str, ...] = ()
+    success: bool = False
+
+
 _ResolvedSource = Literal["bundled", "override_valid", "override_invalid"]
 
 
 @dataclasses.dataclass(frozen=True, slots=True)
 class _Resolved:
-    """Cached snapshot of one ``stat()`` worth of effective manifest state."""
+    """In-memory snapshot of the effective manifest state."""
 
     manifest: SkillManifest
     source: _ResolvedSource
@@ -103,20 +113,17 @@ class SkillManifestProvider:
     """
     Effective skill manifest gateway for the rest of the provider.
 
-    Cheap to construct (no I/O until the first call). Subsequent calls
-    that hit the override path use a stat-keyed cache: the override is
-    re-parsed only when the file's ``(existence, mtime_ns)`` pair
-    changes. External edits take effect on the next call without a
-    restart, but unchanged files do not trigger redundant disk reads
-    or TOML parses on every webhook hit / UI render.
+    Loads one immutable runtime snapshot during construction. Webhook intent
+    dispatch is therefore pure in-memory work and never performs ``stat`` or
+    file reads on the event loop. Config actions explicitly reload the snapshot
+    after a successful mutation; external edits take effect on provider reload.
     """
 
     def __init__(self, mass: MusicAssistant) -> None:
         self._mass = mass
         self._last_import_success = False
         self._bundled_cache: SkillManifest | None = None
-        self._resolved_cache_key: tuple[bool, int | None] | None = None
-        self._resolved_cache: _Resolved | None = None
+        self._resolved = self._load_resolved()
 
     # -----------------------------------------------------------------------
     # Path & status
@@ -134,7 +141,7 @@ class SkillManifestProvider:
 
     def status(self) -> ManifestStatus:
         """Diagnostic snapshot for UI display."""
-        resolved = self._resolve()
+        resolved = self._resolved
         path = self.override_path
         return ManifestStatus(
             source=resolved.source,
@@ -150,7 +157,11 @@ class SkillManifestProvider:
 
     def manifest(self) -> SkillManifest:
         """Return the effective manifest — override if valid, else bundled."""
-        return self._resolve().manifest
+        return self._resolved.manifest
+
+    def reload(self) -> None:
+        """Reload the effective manifest after a config change or explicit action."""
+        self._resolved = self._load_resolved()
 
     def grammar(self) -> list[IntentDraft]:
         """Effective intents as ``IntentDraft`` for ``set_intents``."""
@@ -210,7 +221,7 @@ class SkillManifestProvider:
     # User-facing actions
     # -----------------------------------------------------------------------
 
-    def export_to_override(self) -> str:
+    def export_to_override(self) -> ManifestActionResult:
         """
         Copy bundled default into the override path (if not already there).
 
@@ -220,15 +231,15 @@ class SkillManifestProvider:
         """
         path = self.override_path
         if path.exists():
-            return f"Override уже существует: {path}"
+            return ManifestActionResult("manifest_export_exists", (str(path),))
         try:
             self._atomic_write_text(path, self._bundled_manifest_text())
         except OSError as exc:
-            return f"Экспорт не удался — не могу записать {path}: {exc}"
-        self._invalidate_cache()
-        return f"Манифест экспортирован в {path}. Откройте файл во внешнем редакторе."
+            return ManifestActionResult("manifest_export_write_error", (str(path), str(exc)))
+        self.reload()
+        return ManifestActionResult("manifest_export_success", (str(path),), success=True)
 
-    def import_from_paste(self, paste: str) -> str:
+    def import_from_paste(self, paste: str) -> ManifestActionResult:
         """
         Validate and write a TOML paste into the override file.
 
@@ -239,50 +250,54 @@ class SkillManifestProvider:
         """
         self._last_import_success = False
         if not paste or not paste.strip():
-            return "Поле для вставки пусто, нечего импортировать"
+            return ManifestActionResult("manifest_import_empty")
 
         text, decode_error = self._decode_paste(paste)
         if decode_error is not None:
-            return f"Импорт не удался: {decode_error}"
+            return ManifestActionResult("manifest_import_decode_error", (decode_error,))
 
         try:
             manifest = parse_manifest_text(text)
         except SkillManifestError as exc:
-            return f"Импорт не удался — манифест невалиден: {exc}"
+            return ManifestActionResult("manifest_import_invalid", (str(exc),))
 
         path = self.override_path
         try:
             self._atomic_write_text(path, text)
         except OSError as exc:
-            return f"Импорт не удался — не могу записать {path}: {exc}"
+            return ManifestActionResult("manifest_import_write_error", (str(path), str(exc)))
 
-        self._invalidate_cache()
+        self.reload()
         self._last_import_success = True
-        return (
-            f"Манифест импортирован в {path} — "
-            f"{len(manifest.intents)} intents, "
-            f"{len(manifest.to_entity_drafts())} entities"
+        return ManifestActionResult(
+            "manifest_import_success",
+            (
+                str(path),
+                str(len(manifest.intents)),
+                str(len(manifest.to_entity_drafts())),
+            ),
+            success=True,
         )
 
-    def reset_override(self) -> str:
+    def reset_override(self) -> ManifestActionResult:
         """
         Delete the override file so the bundled default takes effect.
 
-        Idempotent in effect — calling on an already-clean state is
-        a no-op. The returned message differs (``удалён`` vs
-        ``отсутствует``) so the UI can confirm what actually happened.
+        Idempotent in effect — calling on an already-clean state is a no-op.
+        Distinct translation keys let the UI report whether a file was removed
+        or the bundled default was already active.
         """
         path = self.override_path
         if not path.exists():
-            return "Override отсутствует, используется bundled default"
+            return ManifestActionResult("manifest_reset_absent")
         try:
             path.unlink()
         except OSError as exc:
-            return f"Сброс не удался — не могу удалить {path}: {exc}"
-        self._invalidate_cache()
-        return f"Override удалён ({path}), используется bundled default"
+            return ManifestActionResult("manifest_reset_delete_error", (str(path), str(exc)))
+        self.reload()
+        return ManifestActionResult("manifest_reset_success", (str(path),), success=True)
 
-    def validate_override_message(self) -> str:
+    def validate_override_message(self) -> ManifestActionResult:
         """
         Local-only validation of the override file.
 
@@ -292,18 +307,19 @@ class SkillManifestProvider:
         """
         path = self.override_path
         if not path.exists():
-            return "Override отсутствует, нечего валидировать"
+            return ManifestActionResult("manifest_validate_absent")
         try:
             text = path.read_text(encoding="utf-8")
         except OSError as exc:
-            return f"Не могу прочитать {path}: {exc}"
+            return ManifestActionResult("manifest_validate_read_error", (str(path), str(exc)))
         try:
             manifest = parse_manifest_text(text)
         except SkillManifestError as exc:
-            return f"✗ Override невалиден: {exc}"
-        return (
-            f"✓ Override валиден ({len(manifest.intents)} intents, "
-            f"{len(manifest.to_entity_drafts())} entities)"
+            return ManifestActionResult("manifest_validate_invalid", (str(exc),))
+        return ManifestActionResult(
+            "manifest_validate_success",
+            (str(len(manifest.intents)), str(len(manifest.to_entity_drafts()))),
+            success=True,
         )
 
     # -----------------------------------------------------------------------
@@ -324,65 +340,40 @@ class SkillManifestProvider:
             return Path(attr)
         return Path.home() / ".musicassistant"
 
-    def _resolve(self) -> _Resolved:
+    def _load_resolved(self) -> _Resolved:
         """
-        Stat-keyed effective-manifest cache.
+        Read and parse one effective-manifest snapshot.
 
-        Cache key is ``(override_exists, override_mtime_ns)``. Returns
-        the cached snapshot when the key matches; otherwise re-reads
-        the override file (or bundled fallback) and refreshes the
-        cache. Mutating actions (export / import / reset) must call
-        :meth:`_invalidate_cache` so the next read picks up the change
-        even when the new mtime collides with the old (rare on most
-        filesystems but possible on coarse-resolution clocks).
+        This method is called during provider construction and after explicit
+        config mutations only. Runtime intent parsing never touches the file
+        system; operators who edit the override directly reload the provider to
+        activate the new snapshot.
         """
         path = self.override_path
-        try:
-            stat = path.stat()
-        except FileNotFoundError:
-            key: tuple[bool, int | None] = (False, None)
-        else:
-            key = (True, stat.st_mtime_ns)
-
-        if self._resolved_cache_key == key and self._resolved_cache is not None:
-            return self._resolved_cache
-
-        if not key[0]:
-            resolved = _Resolved(
+        if not path.exists():
+            return _Resolved(
                 manifest=self._bundled_manifest(),
                 source="bundled",
                 error=None,
             )
-        else:
-            try:
-                override = parse_manifest_text(path.read_text(encoding="utf-8"))
-            except (OSError, SkillManifestError) as exc:
-                _LOGGER.warning(
-                    "skill manifest override at %s is invalid (%s); "
-                    "falling back to bundled default",
-                    path,
-                    exc,
-                )
-                resolved = _Resolved(
-                    manifest=self._bundled_manifest(),
-                    source="override_invalid",
-                    error=str(exc),
-                )
-            else:
-                resolved = _Resolved(
-                    manifest=override,
-                    source="override_valid",
-                    error=None,
-                )
-
-        self._resolved_cache_key = key
-        self._resolved_cache = resolved
-        return resolved
-
-    def _invalidate_cache(self) -> None:
-        """Drop the resolved-manifest cache (called by mutating actions)."""
-        self._resolved_cache_key = None
-        self._resolved_cache = None
+        try:
+            override = parse_manifest_text(path.read_text(encoding="utf-8"))
+        except (OSError, SkillManifestError) as exc:
+            _LOGGER.warning(
+                "skill manifest override at %s is invalid (%s); falling back to bundled default",
+                path,
+                exc,
+            )
+            return _Resolved(
+                manifest=self._bundled_manifest(),
+                source="override_invalid",
+                error=str(exc),
+            )
+        return _Resolved(
+            manifest=override,
+            source="override_valid",
+            error=None,
+        )
 
     def _bundled_manifest(self) -> SkillManifest:
         if self._bundled_cache is None:
@@ -440,8 +431,8 @@ class SkillManifestProvider:
         try:
             decoded_bytes = base64.b64decode(encoded, validate=True)
         except (binascii.Error, ValueError) as exc:
-            return paste, f"base64 декодирование не удалось: {exc}"
+            return paste, f"base64 decode failed: {exc}"
         try:
             return decoded_bytes.decode("utf-8"), None
         except UnicodeDecodeError as exc:
-            return paste, f"декодированные данные не UTF-8: {exc}"
+            return paste, f"decoded data is not UTF-8: {exc}"

@@ -17,6 +17,7 @@ Setup paths:
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 import secrets
@@ -100,7 +101,7 @@ from .dialog_skill_meta import (
 from .plugin import YandexAlicePlugin
 from .publication_status import fetch_skill_publication_status
 from .setup_view import build_form_entries
-from .skill_manifest_provider import SkillManifestProvider
+from .skill_manifest_provider import ManifestActionResult, SkillManifestProvider
 from .url_helpers import (
     is_public_https_url,
     try_detect_any_base_url,
@@ -405,12 +406,12 @@ async def get_config_entries(  # noqa: PLR0915
     update_message: str | None = None
     # Surfaced in the manifest banner block, separate from update_message
     # so manifest actions don't bleed into the skill-block status line.
-    manifest_message: str | None = None
+    manifest_message: ManifestActionResult | None = None
 
-    # Effective skill manifest — bundled default unless user wrote an
-    # override file. Cheap to construct (no I/O until .grammar() / .entities()
-    # are called). Reused across action branches that ship intents to Yandex.
-    manifest_provider = SkillManifestProvider(mass)
+    # Load one config-render snapshot off the event loop. All grammar/entity
+    # reads below are in-memory; manifest actions reload this snapshot after a
+    # successful write. Runtime handlers load their own snapshot at startup.
+    manifest_provider = await asyncio.to_thread(SkillManifestProvider, mass)
 
     # ---- Action dispatcher ----
     if action == CONF_ACTION_SIGN_IN and borrowing:
@@ -712,21 +713,33 @@ async def get_config_entries(  # noqa: PLR0915
                 update_message = "Publication status refreshed."
 
     elif action == CONF_ACTION_EXPORT_MANIFEST:
-        manifest_message = manifest_provider.export_to_override()
+        manifest_message = await asyncio.to_thread(manifest_provider.export_to_override)
 
     elif action == CONF_ACTION_IMPORT_MANIFEST:
         paste = str(values.get(CONF_DIALOG_SKILL_OVERRIDE_PASTE) or "")
-        manifest_message = manifest_provider.import_from_paste(paste)
+        manifest_message = await asyncio.to_thread(manifest_provider.import_from_paste, paste)
         if manifest_provider.last_import_success:
             # Successful import — clear the paste field so the form
             # doesn't redisplay the (now stale) raw TOML.
             values[CONF_DIALOG_SKILL_OVERRIDE_PASTE] = ""
 
     elif action == CONF_ACTION_RESET_MANIFEST:
-        manifest_message = manifest_provider.reset_override()
+        manifest_message = await asyncio.to_thread(manifest_provider.reset_override)
 
     elif action == CONF_ACTION_VALIDATE_MANIFEST:
-        manifest_message = manifest_provider.validate_override_message()
+        manifest_message = await asyncio.to_thread(manifest_provider.validate_override_message)
+
+    # Successful manifest config actions activate the already-loaded snapshot
+    # in the running webhook immediately. This avoids runtime file polling while
+    # keeping Import / Reset / Validate useful without a full MA restart.
+    if manifest_message is not None and manifest_message.success and instance_id:
+        try:
+            running_provider = mass.get_provider(instance_id)
+        except Exception as exc:
+            _LOGGER.debug("manifest snapshot activation lookup failed: %r", exc)
+        else:
+            if isinstance(running_provider, YandexAlicePlugin):
+                running_provider.replace_manifest_provider(manifest_provider)
 
     # ---- Reflect outcome into values so the next form save persists state ----
     if action_outcome is not None:

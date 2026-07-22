@@ -28,15 +28,26 @@ from music_assistant.providers.yandex_alice.auto_create import (
 )
 from music_assistant.providers.yandex_alice.auto_update import AutoUpdateOutcome
 from music_assistant.providers.yandex_alice.constants import (
+    CONF_ACTION_ADOPT_EXISTING,
     CONF_ACTION_AUTO_CREATE_DIALOG,
     CONF_ACTION_CANCEL_DIALOG_SKILL_FLOW,
+    CONF_ACTION_CLEAR_AUTH,
+    CONF_ACTION_DELETE_SKILL,
+    CONF_ACTION_REFRESH_STATUS,
+    CONF_ACTION_REGENERATE_WEBHOOK_SECRET,
     CONF_ACTION_RENAME_DIALOG_SKILL,
+    CONF_ACTION_TEST_WEBHOOK,
+    CONF_AUTH_USER_NAME,
     CONF_AUTH_X_TOKEN,
     CONF_DIALOG_AUTO_CREATE_ARTIFACTS,
+    CONF_DIALOG_PUBLICATION_STATUS,
     CONF_DIALOG_SKILL_ID,
     CONF_DIALOG_SKILL_NAME,
+    CONF_DIALOG_WEBHOOK_SECRET,
     CONF_EXTERNAL_BASE_URL,
     CONF_INSTANCE_NAME,
+    CONF_PENDING_DUPLICATE_SKILL_ID,
+    CONF_PENDING_DUPLICATE_SKILL_NAME,
 )
 
 from .localization import entry_text
@@ -368,6 +379,145 @@ class TestCancelAction:
         assert rehydrated.skill_id is None
         # Token preserved
         assert values[CONF_AUTH_X_TOKEN] == "preserve-me"
+
+
+class TestSideEffectingActions:
+    """Dispatcher coverage for account, skill and network side effects."""
+
+    @pytest.mark.asyncio
+    async def test_clear_auth_resets_local_credentials_and_artifacts(self) -> None:
+        """Sign-out clears tokens, identity and resumable setup state."""
+        values: dict[str, Any] = {
+            CONF_AUTH_X_TOKEN: "tok",
+            CONF_AUTH_USER_NAME: "User",
+            CONF_PENDING_DUPLICATE_SKILL_ID: "duplicate",
+            CONF_PENDING_DUPLICATE_SKILL_NAME: "Duplicate Skill",
+            CONF_DIALOG_AUTO_CREATE_ARTIFACTS: dump_artifacts(
+                SkillCreationArtifacts(state=SkillCreationState.DONE, skill_id="sk-1")
+            ),
+        }
+
+        await get_config_entries(_make_mass(), action=CONF_ACTION_CLEAR_AUTH, values=values)
+
+        assert values[CONF_AUTH_X_TOKEN] == ""
+        assert values[CONF_AUTH_USER_NAME] == ""
+        assert values[CONF_PENDING_DUPLICATE_SKILL_ID] == ""
+        assert values[CONF_PENDING_DUPLICATE_SKILL_NAME] == ""
+
+    @pytest.mark.asyncio
+    async def test_delete_skill_dispatches_and_clears_registration(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Delete calls Yandex once and removes the persisted local identity."""
+        delete_mock = AsyncMock()
+        monkeypatch.setattr(yandex_alice, "_delete_skill_in_yandex", delete_mock)
+        values: dict[str, Any] = {
+            CONF_AUTH_X_TOKEN: "tok",
+            CONF_DIALOG_SKILL_ID: "sk-1",
+            CONF_DIALOG_PUBLICATION_STATUS: "on_air",
+            CONF_DIALOG_AUTO_CREATE_ARTIFACTS: dump_artifacts(
+                SkillCreationArtifacts(state=SkillCreationState.DONE, skill_id="sk-1")
+            ),
+        }
+
+        await get_config_entries(_make_mass(), action=CONF_ACTION_DELETE_SKILL, values=values)
+
+        delete_mock.assert_awaited_once_with("tok", "sk-1")
+        assert values[CONF_DIALOG_SKILL_ID] == ""
+        assert values[CONF_DIALOG_PUBLICATION_STATUS] == ""
+
+    @pytest.mark.asyncio
+    async def test_regenerate_secret_resets_skill_registration(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Secret rotation invalidates the old skill registration locally."""
+        monkeypatch.setattr(yandex_alice, "_generate_webhook_secret", lambda: "new-secret")
+        values: dict[str, Any] = {
+            CONF_AUTH_X_TOKEN: "tok",
+            CONF_DIALOG_WEBHOOK_SECRET: "old-secret",
+            CONF_DIALOG_SKILL_ID: "sk-1",
+            CONF_DIALOG_AUTO_CREATE_ARTIFACTS: dump_artifacts(
+                SkillCreationArtifacts(state=SkillCreationState.DONE, skill_id="sk-1")
+            ),
+        }
+
+        await get_config_entries(
+            _make_mass(), action=CONF_ACTION_REGENERATE_WEBHOOK_SECRET, values=values
+        )
+
+        assert values[CONF_DIALOG_WEBHOOK_SECRET] == "new-secret"
+        assert values[CONF_DIALOG_SKILL_ID] == ""
+
+    @pytest.mark.asyncio
+    async def test_adopt_existing_dispatches_selected_duplicate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Adopt forwards the duplicate ID and persists the resulting skill."""
+        outcome = AutoCreateOutcome(
+            artifacts=SkillCreationArtifacts(
+                state=SkillCreationState.DONE,
+                skill_id="sk-existing",
+                last_known_name="MA Test",
+            ),
+            x_token=None,
+            user_message="adopted",
+            stage=LocalAutoCreateStage.DONE,
+        )
+        adopt_mock = AsyncMock(return_value=outcome)
+        monkeypatch.setattr(yandex_alice, "adopt_existing_skill", adopt_mock)
+        monkeypatch.setattr(
+            yandex_alice, "fetch_skill_publication_status", AsyncMock(return_value=None)
+        )
+        values: dict[str, Any] = {
+            CONF_AUTH_X_TOKEN: "tok",
+            CONF_DIALOG_SKILL_NAME: "MA Test",
+            CONF_EXTERNAL_BASE_URL: "https://ma.example.com",
+            CONF_PENDING_DUPLICATE_SKILL_ID: "sk-existing",
+            CONF_PENDING_DUPLICATE_SKILL_NAME: "MA Test",
+        }
+
+        await get_config_entries(_make_mass(), action=CONF_ACTION_ADOPT_EXISTING, values=values)
+
+        assert adopt_mock.await_args is not None
+        assert adopt_mock.await_args.kwargs["existing_skill_id"] == "sk-existing"
+        assert values[CONF_DIALOG_SKILL_ID] == "sk-existing"
+        assert values[CONF_PENDING_DUPLICATE_SKILL_ID] == ""
+
+    @pytest.mark.asyncio
+    async def test_webhook_probe_action_dispatches_current_url(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The probe action uses the exact configured base URL and secret."""
+        probe_mock = AsyncMock(return_value=(True, "reachable"))
+        monkeypatch.setattr(yandex_alice, "probe_webhook_reachability", probe_mock)
+        values: dict[str, Any] = {
+            CONF_EXTERNAL_BASE_URL: "https://ma.example.com",
+            CONF_DIALOG_WEBHOOK_SECRET: "secret",
+        }
+
+        await get_config_entries(_make_mass(), action=CONF_ACTION_TEST_WEBHOOK, values=values)
+
+        probe_mock.assert_awaited_once_with("https://ma.example.com", "secret")
+
+    @pytest.mark.asyncio
+    async def test_refresh_status_persists_live_status(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Refresh fetches the registered skill and stores its live status."""
+        status_mock = AsyncMock(return_value="on_air")
+        monkeypatch.setattr(yandex_alice, "fetch_skill_publication_status", status_mock)
+        values: dict[str, Any] = {
+            CONF_AUTH_X_TOKEN: "tok",
+            CONF_DIALOG_SKILL_ID: "sk-1",
+            CONF_DIALOG_AUTO_CREATE_ARTIFACTS: dump_artifacts(
+                SkillCreationArtifacts(state=SkillCreationState.DONE, skill_id="sk-1")
+            ),
+        }
+
+        await get_config_entries(_make_mass(), action=CONF_ACTION_REFRESH_STATUS, values=values)
+
+        status_mock.assert_awaited_once_with("tok", "sk-1")
+        assert values[CONF_DIALOG_PUBLICATION_STATUS] == "on_air"
 
 
 # ---------------------------------------------------------------------------

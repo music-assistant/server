@@ -276,6 +276,7 @@ class DialogsWebhookHandler:
         exposed_player_ids: set[str] | None = None,
         voice_continuation: bool = False,
         logger: logging.Logger | None = None,
+        manifest_provider: SkillManifestProvider | None = None,
     ) -> None:
         """
         Initialize the handler.
@@ -301,7 +302,7 @@ class DialogsWebhookHandler:
         self._voice_continuation = voice_continuation
         self._logger = logger or _LOGGER
         self._unregister_callbacks: list[Callable[[], None]] = []
-        self._manifest_provider = SkillManifestProvider(mass)
+        self._manifest_provider = manifest_provider or SkillManifestProvider(mass)
         # In-process state cache; see _STATE_CACHE_TTL_SEC / _MAX.
         self._state_cache: OrderedDict[str, tuple[dict[str, Any], float]] = OrderedDict()
         # Diagnostics counters surfaced via ``get_diagnostics()`` on the
@@ -356,6 +357,10 @@ class DialogsWebhookHandler:
             except Exception:
                 self._logger.debug("Error unregistering dialog route", exc_info=True)
         self._unregister_callbacks.clear()
+
+    def replace_manifest_provider(self, manifest_provider: SkillManifestProvider) -> None:
+        """Activate a newly loaded manifest snapshot after a config action."""
+        self._manifest_provider = manifest_provider
 
     def _cache_key(self, session: dict[str, Any]) -> str | None:
         """
@@ -966,6 +971,14 @@ class DialogsWebhookHandler:
         has_screen: bool = True,
     ) -> web.Response:
         """Resolve player + dispatch a control action; build response."""
+        # A control intent abandons any outstanding play disambiguation / query
+        # prompt.  Normalise both Yandex state tiers here so every early return
+        # below (including informational and validation responses) publishes the
+        # same clean state.  Some screenless surfaces do not echo session_state,
+        # so clearing only that bucket lets stale application_state resurface.
+        session_state_in = _without_pending(session_state_in)
+        app_state_in = _without_pending(app_state_in)
+
         # list_players is informational — no player resolution / dispatch.
         if control.action == "list_players":
             players = list_exposed_players(self._mass, exposed_ids=self._exposed_player_ids)
@@ -981,6 +994,7 @@ class DialogsWebhookHandler:
                 tts=_tts_for(text),
                 end_session=False,
                 session_state=session_state_in,
+                application_state=app_state_in,
             )
 
         # now_playing — info query about the current track. Reads
@@ -1004,6 +1018,7 @@ class DialogsWebhookHandler:
                     tts=_tts_for(text),
                     end_session=False,
                     session_state=session_state_in,
+                    application_state=app_state_in,
                 )
             queue = None
             try:
@@ -1028,6 +1043,7 @@ class DialogsWebhookHandler:
                 tts=_tts_for(text),
                 end_session=False,
                 session_state=session_state_in,
+                application_state=app_state_in,
             )
 
         # transfer — moves the queue from the saved default player to
@@ -1042,6 +1058,7 @@ class DialogsWebhookHandler:
                     tts=_tts_for(text),
                     end_session=False,
                     session_state=session_state_in,
+                    application_state=app_state_in,
                 )
             target_candidates = resolve_player_candidates(
                 self._mass,
@@ -1058,6 +1075,7 @@ class DialogsWebhookHandler:
                     tts=_tts_for(text),
                     end_session=False,
                     session_state=session_state_in,
+                    application_state=app_state_in,
                 )
             if len(target_candidates) > 1:
                 # Multi-match: reuse the disambiguation flow, but the
@@ -1073,6 +1091,7 @@ class DialogsWebhookHandler:
                     tts=_tts_for(text),
                     end_session=False,
                     session_state=session_state_in,
+                    application_state=app_state_in,
                 )
             target = target_candidates[0]
             target_name = target.name or target.player_id
@@ -1084,6 +1103,7 @@ class DialogsWebhookHandler:
                     tts=_tts_for(text),
                     end_session=False,
                     session_state=session_state_in,
+                    application_state=app_state_in,
                 )
             self._logger.info(
                 "Control transfer: %s → %s",
@@ -1091,7 +1111,7 @@ class DialogsWebhookHandler:
                 target.player_id,
             )
             self._mass.create_task(
-                self._mass.player_queues.transfer_queue(
+                self._transfer_queue_logged(
                     source_queue_id=default_id,
                     target_queue_id=target.player_id,
                 )
@@ -1164,6 +1184,7 @@ class DialogsWebhookHandler:
                 tts=_tts_for(text),
                 end_session=False,
                 session_state=session_state_in,
+                application_state=app_state_in,
             )
         self._logger.debug(
             "Control %s → player %s (%s) value=%s",
@@ -1250,10 +1271,9 @@ class DialogsWebhookHandler:
         # to actually start streaming. mass.create_task tracks the task in the
         # MA lifecycle (cancelled on shutdown) and logs unhandled exceptions.
         self._mass.create_task(
-            play_for_alice(
-                self._mass,
-                player.player_id,
-                media,
+            self._play_for_alice_logged(
+                player_id=player.player_id,
+                media=media,
                 radio_mode=parsed.radio_mode,
                 enqueue_option=parsed.enqueue_option,
             )
@@ -1293,6 +1313,49 @@ class DialogsWebhookHandler:
             user_state_update=user_state_update,
             buttons=_PLAYBACK_SUGGESTION_BUTTONS if has_screen else None,
         )
+
+    async def _play_for_alice_logged(
+        self,
+        *,
+        player_id: str,
+        media: Any,
+        radio_mode: bool,
+        enqueue_option: str | None,
+    ) -> None:
+        """Run fire-and-forget playback while preserving actionable error logs."""
+        try:
+            await play_for_alice(
+                self._mass,
+                player_id,
+                media,
+                radio_mode=radio_mode,
+                enqueue_option=enqueue_option,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._logger.exception("Background playback failed for player %s", player_id)
+
+    async def _transfer_queue_logged(
+        self,
+        *,
+        source_queue_id: str,
+        target_queue_id: str,
+    ) -> None:
+        """Run a queue transfer in the background and log failures at ERROR."""
+        try:
+            await self._mass.player_queues.transfer_queue(
+                source_queue_id=source_queue_id,
+                target_queue_id=target_queue_id,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._logger.exception(
+                "Background queue transfer failed: %s -> %s",
+                source_queue_id,
+                target_queue_id,
+            )
 
     # -------------------------------------------------------------------
     # Disambiguation (P0.3)

@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from music_assistant_models.enums import QueueOption
 
 from music_assistant.providers.yandex_alice.dialogs_nlu import ParsedCommand
 from music_assistant.providers.yandex_alice.dialogs_player import play_for_alice, resolve_query
@@ -101,6 +102,43 @@ class TestResolveQuery:
         result = await resolve_query(mass, ParsedCommand(kind="my_wave", query="", radio_mode=True))
         assert result is None
 
+    async def test_my_wave_success_returns_provider_track_uri(self) -> None:
+        """The Yandex Music rotor success path returns a playable provider URI."""
+        mass = _make_mass()
+        provider = MagicMock(domain="yandex_music", available=True, instance_id="ym-main")
+        provider.domain = "yandex_music"
+        provider.available = True
+        provider.instance_id = "ym-main"
+        provider.client.get_rotor_station_tracks = AsyncMock(
+            return_value=([MagicMock(id="track-1")], "batch-1")
+        )
+        mass.music_providers = [provider]
+
+        result = await resolve_query(mass, ParsedCommand(kind="my_wave", query="", radio_mode=True))
+
+        assert result == "ym-main://track/track-1"
+        provider.client.get_rotor_station_tracks.assert_awaited_once_with("user:onyourwave")
+
+    async def test_genre_success_returns_provider_track_uri(self) -> None:
+        """A genre rotor hit avoids the generic MA search fallback."""
+        mass = _make_mass()
+        provider = MagicMock(domain="yandex_music", available=True, instance_id="ym-main")
+        provider.domain = "yandex_music"
+        provider.available = True
+        provider.instance_id = "ym-main"
+        provider.client.get_rotor_station_tracks = AsyncMock(
+            return_value=([MagicMock(id="genre-track")], "batch-2")
+        )
+        mass.music_providers = [provider]
+
+        result = await resolve_query(
+            mass, ParsedCommand(kind="genre", query="rock", radio_mode=True)
+        )
+
+        assert result == "ym-main://track/genre-track"
+        provider.client.get_rotor_station_tracks.assert_awaited_once_with("genre:rock")
+        mass.music.search.assert_not_awaited()
+
     async def test_search_failure_returns_none(self) -> None:
         """Search exception is swallowed and returns None."""
         mass = _make_mass()
@@ -190,3 +228,37 @@ class TestPlayForAlice:
         mass.player_queues.play_media.assert_awaited_once_with(
             queue_id="p1", media="library://artist/1", radio_mode=True
         )
+
+    @pytest.mark.parametrize(
+        ("enqueue_option", "expected"),
+        [
+            ("add", QueueOption.ADD),
+            ("next", QueueOption.NEXT),
+            ("replace", QueueOption.REPLACE),
+        ],
+    )
+    async def test_enqueue_option_mapping(self, enqueue_option: str, expected: QueueOption) -> None:
+        """Every supported manifest enqueue value maps to the MA QueueOption enum."""
+        mass = _make_mass()
+
+        await play_for_alice(
+            mass,
+            "p1",
+            "library://track/1",
+            enqueue_option=enqueue_option,
+        )
+
+        assert mass.player_queues.play_media.await_args.kwargs["option"] == expected
+
+    async def test_unknown_enqueue_option_is_not_forwarded(self) -> None:
+        """An unknown future manifest value cannot leak into the MA controller call."""
+        mass = _make_mass()
+
+        await play_for_alice(
+            mass,
+            "p1",
+            "library://track/1",
+            enqueue_option="unsupported",
+        )
+
+        assert "option" not in mass.player_queues.play_media.await_args.kwargs

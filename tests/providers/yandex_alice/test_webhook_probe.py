@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import socket
 from typing import Any, Self
 from unittest.mock import MagicMock
 
 import aiohttp
 import pytest
+from aiohttp.abc import AbstractResolver, ResolveResult
 
-from music_assistant.providers.yandex_alice.webhook_probe import probe_webhook_reachability
+from music_assistant.providers.yandex_alice.webhook_probe import (
+    _NonPublicAddressError,
+    _PublicAddressResolver,
+    probe_webhook_reachability,
+)
 
 
 def _patch_session_post(monkeypatch: pytest.MonkeyPatch, *, status: int) -> None:
@@ -26,15 +32,17 @@ def _patch_session_post(monkeypatch: pytest.MonkeyPatch, *, status: int) -> None
 
     class _FakeSession:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            pass
+            self.connector = kwargs.get("connector")
 
         async def __aenter__(self) -> Self:
             return self
 
         async def __aexit__(self, *_: object) -> None:
-            return None
+            if self.connector is not None:
+                await self.connector.close()
 
         def post(self, *_args: Any, **_kwargs: Any) -> _FakeResp:
+            assert _kwargs["allow_redirects"] is False
             return _FakeResp(status)
 
     monkeypatch.setattr(aiohttp, "ClientSession", _FakeSession)
@@ -45,13 +53,14 @@ def _patch_session_raises(monkeypatch: pytest.MonkeyPatch, exc: BaseException) -
 
     class _FakeSession:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
-            pass
+            self.connector = kwargs.get("connector")
 
         async def __aenter__(self) -> Self:
             return self
 
         async def __aexit__(self, *_: object) -> None:
-            return None
+            if self.connector is not None:
+                await self.connector.close()
 
         def post(self, *_args: Any, **_kwargs: Any) -> Any:
             class _Ctx:
@@ -91,6 +100,60 @@ class TestPreflightValidation:
         assert "secret" in msg.lower()
 
 
+class _FakeResolver(AbstractResolver):
+    """Deterministic resolver used to exercise the connector-level guard."""
+
+    def __init__(self, *addresses: str) -> None:
+        self.addresses = addresses
+        self.closed = False
+
+    async def resolve(
+        self,
+        host: str,
+        port: int = 0,
+        family: socket.AddressFamily = socket.AF_INET,
+    ) -> list[ResolveResult]:
+        return [
+            ResolveResult(
+                hostname=host,
+                host=address,
+                port=port,
+                family=family,
+                proto=0,
+                flags=0,
+            )
+            for address in self.addresses
+        ]
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+class TestPublicAddressResolver:
+    """DNS answers are checked immediately before aiohttp connects."""
+
+    @pytest.mark.asyncio
+    async def test_public_answer_is_forwarded(self) -> None:
+        """A globally routable DNS answer is returned unchanged."""
+        wrapped = _FakeResolver("93.184.216.34")
+        resolver = _PublicAddressResolver(wrapped)
+
+        results = await resolver.resolve("public.example", 443)
+
+        assert results[0]["host"] == "93.184.216.34"
+        await resolver.close()
+        assert wrapped.closed
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("address", ["127.0.0.1", "10.0.0.1", "169.254.1.1", "::1"])
+    async def test_non_public_answer_is_blocked(self, address: str) -> None:
+        """Loopback, private and link-local DNS answers are rejected."""
+        resolver = _PublicAddressResolver(_FakeResolver(address))
+
+        with pytest.raises(_NonPublicAddressError, match="non-public address"):
+            await resolver.resolve("internal.example", 443, socket.AF_UNSPEC)
+
+
 class TestStatusClassification:
     """HTTP status codes map to specific human-readable verdicts."""
 
@@ -126,6 +189,14 @@ class TestStatusClassification:
         ok, msg = await probe_webhook_reachability("https://ma.example.com", "secret")
         assert ok is False
         assert "502" in msg
+
+    @pytest.mark.asyncio
+    async def test_redirect_is_rejected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The probe never follows a redirect to an unchecked destination."""
+        _patch_session_post(monkeypatch, status=302)
+        ok, msg = await probe_webhook_reachability("https://ma.example.com", "secret")
+        assert ok is False
+        assert "redirect rejected" in msg
 
 
 class TestNetworkErrors:

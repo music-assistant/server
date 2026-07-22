@@ -40,15 +40,16 @@ def _is_private_or_loopback_host(host: str) -> bool:
     """Return True if *host* is private/loopback/link-local — not reachable from Yandex."""
     if not host:
         return True
-    if host.lower() in {"localhost", "127.0.0.1", "::1"}:
+    normalized = host.rstrip(".").lower()
+    if normalized in {"localhost", "127.0.0.1", "::1"}:
         return True
     try:
-        ip = ipaddress.ip_address(host)
+        ip = ipaddress.ip_address(normalized)
     except ValueError:
         # Hostname (not IP) — assume public; DNS may still fail at request time
         # but that's a different layer.
         return False
-    return ip.is_private or ip.is_loopback or ip.is_link_local
+    return not ip.is_global
 
 
 def is_public_https_url(url: str) -> bool:

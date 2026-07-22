@@ -187,6 +187,38 @@ class TestDialogsWebhookHandler:
         resp = await handler._handle_webhook(_build_request(body))
         assert resp.status == 401
 
+    async def test_malformed_json_returns_graceful_response(self) -> None:
+        """A request body that cannot be decoded never escapes as HTTP 500."""
+        mass = _make_mass([])
+        handler = self._make_handler(mass)
+        req = make_mocked_request(
+            "POST",
+            f"/api/yandex_dialogs/webhook/{_TEST_SECRET}",
+            match_info={"secret": _TEST_SECRET},
+        )
+        req.json = AsyncMock(side_effect=ValueError("invalid json"))  # type: ignore[method-assign]
+
+        resp = await handler._handle_webhook(req)
+
+        assert resp.status == 200
+        assert "пошло не так с запросом" in _response_body(resp)["response"]["text"].lower()
+
+    async def test_non_object_json_returns_graceful_response(self) -> None:
+        """A valid JSON value with the wrong top-level type is rejected safely."""
+        mass = _make_mass([])
+        handler = self._make_handler(mass)
+        req = make_mocked_request(
+            "POST",
+            f"/api/yandex_dialogs/webhook/{_TEST_SECRET}",
+            match_info={"secret": _TEST_SECRET},
+        )
+        req.json = AsyncMock(return_value=["not", "an", "object"])  # type: ignore[method-assign]
+
+        resp = await handler._handle_webhook(req)
+
+        assert resp.status == 200
+        assert "пошло не так с запросом" in _response_body(resp)["response"]["text"].lower()
+
     async def test_session_new_empty_command_greets(self) -> None:
         """New session with empty command returns 200 greeting without playing."""
         mass = _make_mass([])
@@ -240,6 +272,26 @@ class TestDialogsWebhookHandler:
         call_kwargs = mass.player_queues.play_media.call_args.kwargs
         assert call_kwargs["queue_id"] == "p1"
         assert call_kwargs["media"] is track
+
+    async def test_background_play_failure_is_logged_at_default_level(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failed fire-and-forget play remains diagnosable without DEBUG logging."""
+        track = MagicMock(uri="library://track/123", spec_set=["uri"])
+        mass = _make_mass([MockPlayer(player_id="p1", name="Кухня")], search_track=track)
+        mass.player_queues.play_media = AsyncMock(side_effect=RuntimeError("cannot play"))
+        handler = self._make_handler(mass)
+        body = {
+            "session": {"skill_id": "skill-uuid-1", "session_id": "s1", "new": False},
+            "request": {"command": "включи Metallica на кухне"},
+        }
+
+        with caplog.at_level("ERROR", logger="music_assistant.providers.yandex_alice.dialogs"):
+            resp = await handler._handle_webhook(_build_request(body))
+            await asyncio.sleep(0)
+
+        assert resp.status == 200
+        assert any("Background playback failed for player p1" in r.message for r in caplog.records)
 
     async def test_dangerous_context_log_redacts_command(
         self, caplog: pytest.LogCaptureFixture
@@ -1014,7 +1066,7 @@ class TestControlCommandsIntegration:
         handler = DialogsWebhookHandler(mass, skill_id="skill-uuid-1", webhook_secret=_TEST_SECRET)
         # Pre-seed cache with a stale default-player.
         handler._state_cache["user:u1"] = (
-            {"last_player_id": "p1"},
+            {"last_player_id": "p1", "pending_command": {"query": "stale"}},
             time.monotonic(),
         )
         body = {
@@ -1029,8 +1081,11 @@ class TestControlCommandsIntegration:
                 "nlu": {"intents": {"control.forget_player": {}}},
             },
             "state": {
-                "session": {"last_player_id": "p1"},
-                "application": {"last_player_id": "p1"},
+                "session": {"last_player_id": "p1", "awaiting_query": True},
+                "application": {
+                    "last_player_id": "p1",
+                    "pending_command": {"query": "stale"},
+                },
             },
         }
         resp = await handler._handle_webhook(_build_request(body))
@@ -1039,12 +1094,15 @@ class TestControlCommandsIntegration:
         # last_player_id removed from session and application state.
         assert "last_player_id" not in body_out["session_state"]
         assert "last_player_id" not in body_out["application_state"]
+        assert "awaiting_query" not in body_out["session_state"]
+        assert "pending_command" not in body_out["application_state"]
         # user_state_update sets preferred_player_id to None (Yandex
         # protocol: None = delete the key from merged user state).
         assert body_out["user_state_update"] == {"preferred_player_id": None}
         # Cache rewritten with no last_player_id.
         cached = handler._cache_get({"user": {"user_id": "u1"}})
         assert "last_player_id" not in cached
+        assert "pending_command" not in cached
 
     async def test_list_players_returns_player_names(self) -> None:
         """'сколько колонок видишь' → response with the count and names of exposed players."""
@@ -1062,6 +1120,10 @@ class TestControlCommandsIntegration:
                 "command": "сколько колонок видишь",
                 "nlu": {"intents": {"control.list_players": {}}},
             },
+            "state": {
+                "session": {"awaiting_query": True},
+                "application": {"pending_command": {"query": "stale"}},
+            },
         }
         resp = await handler._handle_webhook(_build_request(body))
         assert resp.status == 200
@@ -1073,6 +1135,8 @@ class TestControlCommandsIntegration:
         assert "Гостиная" in text
         # Informational query — keep the mic open for follow-ups.
         assert body_out["response"]["end_session"] is False
+        assert "awaiting_query" not in body_out["session_state"]
+        assert "pending_command" not in body_out["application_state"]
         # No playback or control was dispatched.
         mass.player_queues.pause.assert_not_awaited()
         mass.player_queues.play_media.assert_not_awaited()
@@ -1157,10 +1221,16 @@ class TestControlCommandsIntegration:
                 "command": "что играет на кухне",
                 "nlu": {"intents": {"control.now_playing": {}}},
             },
+            "state": {
+                "session": {"awaiting_query": True},
+                "application": {"pending_command": {"query": "stale"}},
+            },
         }
         resp = await handler._handle_webhook(_build_request(body))
         body_out = _response_body(resp)
         assert "The Beatles - Let It Be" in body_out["response"]["text"]
+        assert "awaiting_query" not in body_out["session_state"]
+        assert "pending_command" not in body_out["application_state"]
         # No MA mutation.
         mass.player_queues.pause.assert_not_awaited()
         mass.player_queues.play_media.assert_not_awaited()
@@ -1308,7 +1378,13 @@ class TestControlCommandsIntegration:
         body = {
             "session": {"skill_id": "skill-uuid-1", "session_id": "s1", "new": False},
             "request": {"command": "переведи на спальню"},
-            "state": {"session": {"last_player_id": "p1"}},
+            "state": {
+                "session": {"last_player_id": "p1", "awaiting_query": True},
+                "application": {
+                    "last_player_id": "p1",
+                    "pending_command": {"query": "stale"},
+                },
+            },
         }
         resp = await handler._handle_webhook(_build_request(body))
         await asyncio.sleep(0)
@@ -1319,6 +1395,32 @@ class TestControlCommandsIntegration:
         assert "Спальня" in body_out["response"]["text"]
         assert body_out["session_state"]["last_player_id"] == "p2"
         assert body_out["application_state"]["last_player_id"] == "p2"
+        assert "awaiting_query" not in body_out["session_state"]
+        assert "pending_command" not in body_out["application_state"]
+
+    async def test_background_transfer_failure_is_logged_at_default_level(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failed fire-and-forget transfer is logged explicitly at ERROR."""
+        mass = self._setup_mass_with_control_methods(
+            [MockPlayer(player_id="p1", name="Кухня"), MockPlayer(player_id="p2", name="Спальня")]
+        )
+        mass.player_queues.transfer_queue = AsyncMock(side_effect=RuntimeError("cannot transfer"))
+        handler = DialogsWebhookHandler(mass, skill_id="skill-uuid-1", webhook_secret=_TEST_SECRET)
+        body = {
+            "session": {"skill_id": "skill-uuid-1", "session_id": "s1", "new": False},
+            "request": {"command": "переведи на спальню"},
+            "state": {"session": {"last_player_id": "p1"}},
+        }
+
+        with caplog.at_level("ERROR", logger="music_assistant.providers.yandex_alice.dialogs"):
+            resp = await handler._handle_webhook(_build_request(body))
+            await asyncio.sleep(0)
+
+        assert resp.status == 200
+        assert any(
+            "Background queue transfer failed: p1 -> p2" in r.message for r in caplog.records
+        )
 
     async def test_transfer_no_default_replies_with_hint(self) -> None:
         """Transfer without saved last_player_id replies with 'сначала включи'."""

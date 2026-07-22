@@ -34,6 +34,7 @@ class TestIsPublicHttpsUrl:
         """Localhost / 127.0.0.1 → False (not reachable from Yandex)."""
         assert is_public_https_url("https://127.0.0.1") is False
         assert is_public_https_url("https://localhost:8095") is False
+        assert is_public_https_url("https://localhost.:8095") is False
 
     def test_private_ip_rejected(self) -> None:
         """RFC1918 / Docker bridge addresses → False."""

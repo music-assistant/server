@@ -26,6 +26,7 @@ import pytest
 from music_assistant.providers.yandex_alice.dialogs_control import ParsedControl
 from music_assistant.providers.yandex_alice.dialogs_nlu import ParsedCommand
 from music_assistant.providers.yandex_alice.skill_manifest_provider import (
+    ManifestActionResult,
     SkillManifestProvider,
 )
 
@@ -259,6 +260,7 @@ class TestManifestStatus:
         path = provider.override_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("not = valid = toml = ===", encoding="utf-8")
+        provider.reload()
         s = provider.status()
         assert s.source == "override_invalid"
         assert s.error is not None
@@ -285,6 +287,7 @@ class TestEffectiveManifest:
             '[intents.runtime]\nkind = "control"\naction = "pause"\n',
             encoding="utf-8",
         )
+        provider.reload()
         m = provider.manifest()
         assert len(m.intents) == 1
         assert m.intents[0].form_name == "control.test"
@@ -292,6 +295,7 @@ class TestEffectiveManifest:
     def test_invalid_override_falls_back(self, provider: SkillManifestProvider) -> None:
         provider.override_path.parent.mkdir(parents=True, exist_ok=True)
         provider.override_path.write_text("garbage = = =", encoding="utf-8")
+        provider.reload()
         bundled = provider.manifest()
         assert len(bundled.intents) > 0
         # Sanity — bundled has the original intents.
@@ -305,8 +309,10 @@ class TestEffectiveManifest:
 
 class TestExportToOverride:
     def test_first_export_creates_file(self, provider: SkillManifestProvider) -> None:
-        msg = provider.export_to_override()
-        assert "Манифест экспортирован" in msg
+        result = provider.export_to_override()
+        assert result == ManifestActionResult(
+            "manifest_export_success", (str(provider.override_path),), success=True
+        )
         assert provider.override_path.exists()
         text = provider.override_path.read_text(encoding="utf-8")
         assert "schema_version" in text
@@ -316,8 +322,8 @@ class TestExportToOverride:
         provider.export_to_override()
         # Tamper with the override.
         provider.override_path.write_text("schema_version = 1\n", encoding="utf-8")
-        msg = provider.export_to_override()
-        assert "уже существует" in msg
+        result = provider.export_to_override()
+        assert result.translation_key == "manifest_export_exists"
         # File still has the user's edit.
         assert provider.override_path.read_text(encoding="utf-8") == "schema_version = 1\n"
 
@@ -331,48 +337,51 @@ class TestImportFromPaste:
         )
 
     def test_empty_paste_no_op(self, provider: SkillManifestProvider) -> None:
-        msg = provider.import_from_paste("")
-        assert "пусто" in msg
+        result = provider.import_from_paste("")
+        assert result.translation_key == "manifest_import_empty"
         assert not provider.last_import_success
         assert not provider.override_path.exists()
 
     def test_whitespace_paste_no_op(self, provider: SkillManifestProvider) -> None:
-        msg = provider.import_from_paste("   \n\n  ")
-        assert "пусто" in msg
+        result = provider.import_from_paste("   \n\n  ")
+        assert result.translation_key == "manifest_import_empty"
         assert not provider.last_import_success
 
     def test_valid_toml_writes_override(self, provider: SkillManifestProvider) -> None:
         text = self._valid_toml()
-        msg = provider.import_from_paste(text)
-        assert "импортирован" in msg.lower()
+        result = provider.import_from_paste(text)
+        assert result.translation_key == "manifest_import_success"
+        assert result.success
         assert provider.last_import_success
         assert provider.override_path.read_text(encoding="utf-8") == text
 
     def test_invalid_toml_does_not_write(self, provider: SkillManifestProvider) -> None:
-        msg = provider.import_from_paste("not = = valid")
-        assert "невалиден" in msg.lower() or "не удался" in msg
+        result = provider.import_from_paste("not = = valid")
+        assert result.translation_key == "manifest_import_invalid"
         assert not provider.last_import_success
         assert not provider.override_path.exists()
 
     def test_valid_toml_invalid_schema(self, provider: SkillManifestProvider) -> None:
         # TOML parses but schema_version missing.
-        msg = provider.import_from_paste('[entities]\ntext = ""\n')
+        result = provider.import_from_paste('[entities]\ntext = ""\n')
         assert not provider.last_import_success
         assert not provider.override_path.exists()
-        assert "schema_version" in msg or "невалиден" in msg.lower()
+        assert result.translation_key == "manifest_import_invalid"
+        assert "schema_version" in result.translation_params[0]
 
     def test_base64_paste_decoded(self, provider: SkillManifestProvider) -> None:
         text = self._valid_toml()
         encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
-        msg = provider.import_from_paste(f"data:base64,{encoded}")
+        result = provider.import_from_paste(f"data:base64,{encoded}")
         assert provider.last_import_success
-        assert "импортирован" in msg.lower()
+        assert result.translation_key == "manifest_import_success"
         assert provider.override_path.read_text(encoding="utf-8") == text
 
     def test_base64_invalid_paste_rejected(self, provider: SkillManifestProvider) -> None:
-        msg = provider.import_from_paste("data:base64,!!!!not-base64!!!!")
+        result = provider.import_from_paste("data:base64,!!!!not-base64!!!!")
         assert not provider.last_import_success
-        assert "base64" in msg.lower() or "не удался" in msg
+        assert result.translation_key == "manifest_import_decode_error"
+        assert "base64" in result.translation_params[0].lower()
 
     def test_base64_paste_with_wrapped_lines(self, provider: SkillManifestProvider) -> None:
         # `base64 -i skill.toml` wraps at 76 cols by default — the decoder
@@ -381,43 +390,42 @@ class TestImportFromPaste:
         encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
         wrapped = "\n".join(encoded[i : i + 60] for i in range(0, len(encoded), 60))
         wrapped_with_spaces = f"  {wrapped}\n  "
-        msg = provider.import_from_paste(f"data:base64,{wrapped_with_spaces}")
-        assert provider.last_import_success, msg
+        result = provider.import_from_paste(f"data:base64,{wrapped_with_spaces}")
+        assert provider.last_import_success, result
         assert provider.override_path.read_text(encoding="utf-8") == text
 
 
 class TestResetOverride:
     def test_idempotent_when_absent(self, provider: SkillManifestProvider) -> None:
-        msg = provider.reset_override()
-        assert "отсутствует" in msg
+        result = provider.reset_override()
+        assert result.translation_key == "manifest_reset_absent"
         assert not provider.override_path.exists()
 
     def test_removes_override_file(self, provider: SkillManifestProvider) -> None:
         provider.export_to_override()
         assert provider.override_path.exists()
-        msg = provider.reset_override()
-        assert "удалён" in msg
+        result = provider.reset_override()
+        assert result.translation_key == "manifest_reset_success"
         assert not provider.override_path.exists()
 
 
 class TestValidateOverrideMessage:
     def test_no_override(self, provider: SkillManifestProvider) -> None:
-        msg = provider.validate_override_message()
-        assert "отсутствует" in msg
+        result = provider.validate_override_message()
+        assert result.translation_key == "manifest_validate_absent"
 
     def test_valid_override(self, provider: SkillManifestProvider) -> None:
         provider.export_to_override()
-        msg = provider.validate_override_message()
-        assert "✓" in msg
-        assert "валиден" in msg
+        result = provider.validate_override_message()
+        assert result.translation_key == "manifest_validate_success"
+        assert result.success
 
     def test_invalid_override(self, provider: SkillManifestProvider) -> None:
         path = provider.override_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('schema_version = 999\n[entities]\ntext = ""\n', encoding="utf-8")
-        msg = provider.validate_override_message()
-        assert "✗" in msg
-        assert "невалиден" in msg.lower()
+        result = provider.validate_override_message()
+        assert result.translation_key == "manifest_validate_invalid"
 
 
 # ---------------------------------------------------------------------------
@@ -440,17 +448,16 @@ class TestStorageRoot:
 
 
 # ---------------------------------------------------------------------------
-# Effective-manifest cache
+# Effective-manifest runtime snapshot
 # ---------------------------------------------------------------------------
 
 
-class TestResolvedCache:
+class TestRuntimeSnapshot:
     """
-    ``manifest()`` / ``status()`` reuse the parsed manifest until stat changes.
+    Runtime calls reuse a startup snapshot and never poll the file system.
 
-    The cache is keyed by ``(exists, mtime_ns)``: identical stat → same
-    object; mtime change → re-parse; mutating actions invalidate even
-    when mtime stays put (some filesystems coalesce sub-ms writes).
+    Explicit reload/config actions are the only points that activate external
+    edits, preventing one synchronous ``stat`` per webhook request.
     """
 
     def test_bundled_path_returns_same_object(self, provider: SkillManifestProvider) -> None:
@@ -458,41 +465,35 @@ class TestResolvedCache:
         second = provider.manifest()
         assert first is second
 
-    def test_override_path_returns_same_object_until_mtime_changes(
-        self, provider: SkillManifestProvider
-    ) -> None:
+    def test_external_edit_requires_explicit_reload(self, provider: SkillManifestProvider) -> None:
         provider.export_to_override()
         first = provider.manifest()
-        second = provider.manifest()
-        assert first is second
-        # Touch the file with a fresh mtime — cache must invalidate.
-        import os as _os
+        provider.override_path.write_text(
+            'schema_version = 1\n[entities]\ntext = ""\n'
+            '[[intents]]\nform_name = "control.test"\ngrammar = "root: x"\n'
+            '[intents.runtime]\nkind = "control"\naction = "pause"\n',
+            encoding="utf-8",
+        )
+        assert provider.manifest() is first
+        provider.reload()
+        assert provider.manifest() is not first
+        assert [intent.form_name for intent in provider.manifest().intents] == ["control.test"]
 
-        st = provider.override_path.stat()
-        _os.utime(provider.override_path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
-        third = provider.manifest()
-        assert third is not first
-
-    def test_export_invalidates_cache(self, provider: SkillManifestProvider) -> None:
-        # Prime cache on bundled.
+    def test_export_reloads_snapshot(self, provider: SkillManifestProvider) -> None:
         before = provider.manifest()
         assert provider.status().source == "bundled"
         provider.export_to_override()
-        # Now status must observe the freshly-written override.
         assert provider.status().source == "override_valid"
-        # Effective manifest still parses to a SkillManifest equivalent
-        # to the bundled one (Export copies bundled bytes verbatim) but
-        # is a fresh object — i.e. cache was actually invalidated.
         after = provider.manifest()
         assert after is not before
 
-    def test_reset_invalidates_cache(self, provider: SkillManifestProvider) -> None:
+    def test_reset_reloads_snapshot(self, provider: SkillManifestProvider) -> None:
         provider.export_to_override()
         assert provider.status().source == "override_valid"
         provider.reset_override()
         assert provider.status().source == "bundled"
 
-    def test_import_invalidates_cache(self, provider: SkillManifestProvider) -> None:
+    def test_import_reloads_snapshot(self, provider: SkillManifestProvider) -> None:
         toml = (
             'schema_version = 1\n[entities]\ntext = ""\n'
             '[[intents]]\nform_name = "control.test"\ngrammar = "root: x"\n'

@@ -17,6 +17,7 @@ explicitly (*«Алиса, попроси Music Assistant …»*).
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from music_assistant.models.plugin import PluginProvider
@@ -29,6 +30,7 @@ from .constants import (
     CONF_INSTANCE_NAME,
 )
 from .dialogs import DialogsWebhookHandler
+from .skill_manifest_provider import SkillManifestProvider
 
 
 class YandexAlicePlugin(PluginProvider):
@@ -63,12 +65,16 @@ class YandexAlicePlugin(PluginProvider):
         """
         if not (self._dialog_skill_id and self._dialog_webhook_secret):
             return
+        # Manifest file access happens once at provider startup, off the event
+        # loop. Runtime webhook dispatch uses this immutable in-memory snapshot.
+        manifest_provider = await asyncio.to_thread(SkillManifestProvider, self.mass)
         self._dialogs_handler = DialogsWebhookHandler(
             self.mass,
             skill_id=self._dialog_skill_id,
             webhook_secret=self._dialog_webhook_secret,
             exposed_player_ids=self._exposed_player_ids,
             voice_continuation=self._voice_continuation,
+            manifest_provider=manifest_provider,
         )
         self._dialogs_handler.register_routes()
 
@@ -78,6 +84,11 @@ class YandexAlicePlugin(PluginProvider):
         if self._dialogs_handler is not None:
             self._dialogs_handler.unregister_routes()
             self._dialogs_handler = None
+
+    def replace_manifest_provider(self, manifest_provider: SkillManifestProvider) -> None:
+        """Activate a config-loaded manifest snapshot in the running webhook."""
+        if self._dialogs_handler is not None:
+            self._dialogs_handler.replace_manifest_provider(manifest_provider)
 
     def diagnostics_snapshot(self) -> dict[str, Any]:
         """Expose a tiny status snapshot for the config UI (synchronous)."""
