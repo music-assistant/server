@@ -11,6 +11,7 @@ from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.ffmpeg import (
+    FFMpeg,
     FFMpegStreamInfo,
     get_ffmpeg_args,
     get_ffmpeg_overlay_stream,
@@ -319,3 +320,37 @@ async def test_overlay_stream_trims_leading_silence(
     # without trimming, the first second would be the overlay's silent intro;
     # the trim makes the tone play from the start, so the first second has signal
     assert any(output)
+
+
+# -- _log_reader_task (decode-error flood guard) --
+
+
+async def test_log_reader_reports_decode_errors_once_and_aborts() -> None:
+    """
+    Crossing the decode-error threshold logs a single line and aborts the stream.
+
+    Regression test: previously every stderr line was re-promoted to ERROR for the
+    rest of the process once 50 "Invalid data" lines were seen, flooding the log
+    with thousands of lines for a single corrupted file.
+    """
+    ffmpeg = FFMpeg(audio_input="-", input_format=_PCM_FORMAT, output_format=_PCM_FORMAT)
+
+    async def fake_stderr() -> AsyncGenerator[str]:
+        for _ in range(60):
+            yield "Invalid data found when processing input"
+        # noise that a genuinely corrupted stream keeps emitting after the threshold;
+        # none of this should reach ERROR level under the fix
+        for _ in range(20):
+            yield "Reserved bit set."
+
+    ffmpeg.iter_stderr = fake_stderr  # type: ignore[method-assign]
+
+    error_lines: list[str] = []
+    ffmpeg.logger.error = lambda msg, *args: error_lines.append(msg % args if args else msg)  # type: ignore[method-assign]
+
+    await ffmpeg._log_reader_task()
+    assert ffmpeg._abort_task is not None
+    await ffmpeg._abort_task
+
+    assert error_lines == ["Excessive decode errors (50+) for this stream; aborting"]
+    assert ffmpeg.closed

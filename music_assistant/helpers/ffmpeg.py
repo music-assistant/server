@@ -118,6 +118,9 @@ class FFMpeg(AsyncProcess):
         self.parsed_duration: int | None = None
         self._stdin_feeder_task: asyncio.Task[None] | None = None
         self._stderr_reader_task: asyncio.Task[None] | None = None
+        # holds the detached abort-on-corrupt-stream task from _log_reader_task so it
+        # isn't garbage collected mid-flight; not otherwise awaited
+        self._abort_task: asyncio.Task[None] | None = None
         # ffmpeg emits 'Input #N, ...' and 'Output #N, ...' headers before each block of
         # 'Stream #' lines; we track which block the next stream line belongs to.
         # Defaults to "input" so a stray Stream # line before any header still routes there.
@@ -189,6 +192,7 @@ class FFMpeg(AsyncProcess):
     async def _log_reader_task(self) -> None:
         """Read ffmpeg log from stderr."""
         decode_errors = 0
+        decode_errors_reported = False
         async for line in self.iter_stderr():
             if self.collect_log_history:
                 self.log_history.append(line)
@@ -201,8 +205,16 @@ class FFMpeg(AsyncProcess):
 
             if "Invalid data found when processing input" in line:
                 decode_errors += 1
-            if decode_errors >= 50:
-                self.logger.error(line)
+            if decode_errors >= 50 and not decode_errors_reported:
+                # stream is too corrupted to bother decoding further: report once (instead
+                # of promoting every remaining line to ERROR) and abort. close() awaits
+                # this very stderr reader task, so it must run as a detached task rather
+                # than be awaited here, or it would deadlock on itself.
+                decode_errors_reported = True
+                self.logger.error(
+                    "Excessive decode errors (%d+) for this stream; aborting", decode_errors
+                )
+                self._abort_task = asyncio.create_task(self.close())
 
             # Log reconnection events for radio streams
             if "Opening" in line or "Reconnect" in line or "reconnect" in line:
