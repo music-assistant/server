@@ -543,7 +543,8 @@ class HomeAssistantProvider(PluginProvider):
                         )
                         return None
                     return cast("State", await response.json())
-            except ClientError as err:
+            except (ClientError, ValueError) as err:
+                # ValueError covers a malformed JSON body
                 self.logger.warning("Failed to fetch state for %s: %s", entity_id, err)
                 return None
 
