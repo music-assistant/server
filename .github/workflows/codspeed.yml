@@ -43,7 +43,7 @@ jobs:
         # Pin an exact patch (not .python-version's "3.14") so the interpreter is
         # identical across runs and CodSpeed's instruction counts stay comparable;
         # check-latest is omitted so a new 3.14.x can't silently change the runtime.
-        uses: actions/setup-python@v6.3.0
+        uses: actions/setup-python@v7.0.0
         with:
           python-version: "3.14.6"
 
