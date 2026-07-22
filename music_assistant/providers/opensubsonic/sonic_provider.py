@@ -112,8 +112,10 @@ class OpenSonicProvider(MusicProvider):
         port = self.config.get_value(CONF_PORT)
         port = int(str(port)) if port is not None else 443
         path = self.config.get_value(CONF_PATH)
+
         if path is None:
             path = ""
+
         self.conn = SonicConnection(
             str(self.config.get_value(CONF_BASE_URL)),
             username=str(self.config.get_value(CONF_USERNAME)),
@@ -123,6 +125,7 @@ class OpenSonicProvider(MusicProvider):
             server_path=str(path),
             app_name="Music Assistant",
         )
+
         try:
             success = await self.conn.ping()
             if not success:
@@ -137,15 +140,30 @@ class OpenSonicProvider(MusicProvider):
                 translation_owner=self.translation_owner,
                 translation_args=[self.config.get_value(CONF_BASE_URL)],
             ) from e
-        self._enable_podcasts = bool(self.config.get_value(CONF_ENABLE_PODCASTS))
+
         try:
             extensions: list[OpenSubsonicExtension] = await self.conn.get_open_subsonic_extensions()
-            for entry in extensions:
-                if entry.name == "songLyrics":
-                    self._id_lyrics = True
-                    break
-        except OSError:
-            self.logger.info("Failed to query server for OpenSubsonic extensions")
+        except OSError as e:
+            msg = "Failed to query server for OpenSubsonic extensions"
+            raise LoginFailed(
+                msg, translation_key="extension_failure", translation_owner=self.translation_owner
+            ) from e
+
+        formpost_supported = False
+        for entry in extensions:
+            if entry.name == "formpost":
+                formpost_supported = True
+            if entry.name == "songLyrics":
+                self._id_lyrics = True
+        if not formpost_supported:
+            msg = (
+                "Server does not support the 'formpost' OpenSubsonic extension, which is required."
+            )
+            raise LoginFailed(
+                msg, translation_key="formpost_missing", translation_owner=self.translation_owner
+            )
+
+        self._enable_podcasts = bool(self.config.get_value(CONF_ENABLE_PODCASTS))
         self._show_faves = bool(self.config.get_value(CONF_RECO_FAVES))
         self._show_new = bool(self.config.get_value(CONF_NEW_ALBUMS))
         self._show_played = bool(self.config.get_value(CONF_PLAYED_ALBUMS))

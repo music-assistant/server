@@ -351,22 +351,22 @@
   "page": {
     "device_code": {
       "title": "Login to Yandex Music",
-      "step_copy": "Copy the code",
-      "hint_copy": "Tap the code to copy it",
-      "copied": "Copied ✓",
-      "copy_manual": "Automatic copy failed — select the code and copy it manually",
-      "step_open": "Open the Yandex page and enter the code",
-      "open_button": "Continue to Yandex",
-      "expires_label": "Code expires in",
-      "expired_title": "Code expired",
-      "expired_text": "The code is no longer valid. Return to Music Assistant and start the login again.",
-      "success_title": "Authorization successful",
-      "success_text": "You can close this window.",
-      "failed_title": "Authorization failed",
-      "failed_text": "Please return to Music Assistant and try again.",
-      "denied_text": "The login was denied. Return to Music Assistant and try again.",
-      "ended_title": "Session ended",
-      "ended_text": "This login session is no longer active. You can close this window."
+      "step_copy": "[%key:common::page::device_code::step_copy%]",
+      "hint_copy": "[%key:common::page::device_code::hint_copy%]",
+      "copied": "[%key:common::page::device_code::copied%]",
+      "copy_manual": "[%key:common::page::device_code::copy_manual%]",
+      "step_open": "[%key:common::page::device_code::step_open%]",
+      "open_button": "[%key:common::page::device_code::open_button%]",
+      "expires_label": "[%key:common::page::device_code::expires_label%]",
+      "expired_title": "[%key:common::page::device_code::expired_title%]",
+      "expired_text": "[%key:common::page::device_code::expired_text%]",
+      "success_title": "[%key:common::page::device_code::success_title%]",
+      "success_text": "[%key:common::page::device_code::success_text%]",
+      "failed_title": "[%key:common::page::device_code::failed_title%]",
+      "failed_text": "[%key:common::page::device_code::failed_text%]",
+      "denied_text": "[%key:common::page::device_code::denied_text%]",
+      "ended_title": "[%key:common::page::device_code::ended_title%]",
+      "ended_text": "[%key:common::page::device_code::ended_text%]"
     }
   }
 }

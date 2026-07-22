@@ -156,6 +156,11 @@ class AppleMusicProvider(MusicProvider, RecommendationPayloadMixin):
         """Get all album tracks for given album id."""
         return await self.media_manager.get_album_tracks(prov_album_id)
 
+    async def resolve_image(self, path: str) -> str | bytes:
+        """Resolve an artwork token to a freshly signed artwork URL."""
+        media_type, _, item_id = path.partition("/")
+        return await self.media_manager.get_artwork_url(media_type, item_id) or ""
+
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
         return await self.media_manager.get_playlist_tracks(prov_playlist_id, page)
