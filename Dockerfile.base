@@ -194,15 +194,12 @@ RUN set -x \
         libcurl4 \
         libsodium23 \
         libconfuse2 \
-        libxml2 \
         libevent-dev \
         libjson-c5 \
         libgcrypt20 \
         # glib is needed by the shairport-sync binary (previously pulled in only
         # indirectly via the pipewire/pulseaudio utils)
         libglib2.0-0 \
-        # NOTE: FFmpeg 5.x runtime libs for cliap2 (formerly distro libavfilter8) now come
-        # from the ffmpeg5-compat-builder stage, as trixie only ships FFmpeg 7
         # libsndfile needed for librosa audio file support (smartfades)
         libsndfile1 \
         # libchromaprint needed for AcoustID fingerprinting (acoustid_lookup)
