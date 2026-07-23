@@ -128,14 +128,44 @@ RUN PYAV_VERSION=$(python -c "import json; reqs=json.load(open('/tmp/sendspin_ma
 
 ##################################################################################################
 
-# TEMPORARY: bookworm-era libconfig.so.9 for the prebuilt shairport-sync binaries
-# (trixie only ships libconfig.so.11). The lib only depends on libc, so the bookworm
-# build runs fine on trixie's newer glibc.
-# Remove once shairport-sync is rebuilt statically / against trixie.
-FROM debian:bookworm-slim AS bookworm-compat-libs
+# Build shairport-sync (airplay receiver provider) from source against this image's
+# libraries, using the same configuration as bin/build_binaries.sh in the server repo:
+# tinysvcmdns as embedded mDNS backend (no avahi), stdout/pipe outputs and metadata support.
+FROM python:${PYTHON_VERSION}-slim-trixie AS shairport-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libconfig9 && rm -rf /var/lib/apt/lists/*
+    build-essential \
+    git \
+    autoconf \
+    automake \
+    libtool \
+    pkg-config \
+    libconfig-dev \
+    libpopt-dev \
+    libssl-dev \
+    libdbus-1-dev \
+    libglib2.0-dev \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG SHAIRPORT_VERSION=4.3.7
+RUN set -x \
+    && git clone --depth 1 --branch ${SHAIRPORT_VERSION} https://github.com/mikebrady/shairport-sync.git /tmp/shairport-sync \
+    && cd /tmp/shairport-sync \
+    && autoreconf -fi \
+    && ./configure \
+        --with-pipe \
+        --with-metadata \
+        --without-avahi \
+        --without-dns-sd \
+        --with-tinysvcmdns \
+        --with-ssl=openssl \
+        --with-stdout \
+        --sysconfdir=/etc \
+    && make -j$(nproc) \
+    && strip shairport-sync \
+    && cp shairport-sync /usr/local/bin/shairport-sync \
+    && rm -rf /tmp/shairport-sync
 
 ##################################################################################################
 
@@ -215,7 +245,7 @@ RUN set -x \
         libavahi-client3 \
         libavahi-common3 \
         # AirPlay receiver dependencies (shairport-sync)
-        # NOTE: libconfig9 comes from the bookworm-compat-libs stage
+        libconfig11 \
         libpopt0 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
@@ -272,9 +302,9 @@ COPY --from=ffmpeg-builder /usr/local/lib/libav*.so* /usr/local/lib/
 COPY --from=ffmpeg-builder /usr/local/lib/libsw*.so* /usr/local/lib/
 COPY --from=ffmpeg-builder /usr/local/lib/libpostproc.so* /usr/local/lib/
 
-# TEMPORARY: bookworm-era libconfig.so.9 for the prebuilt shairport-sync binaries
-# (see bookworm-compat-libs stage above)
-COPY --from=bookworm-compat-libs /usr/lib/*-linux-gnu/libconfig.so.9* /usr/local/lib/
+# Copy shairport-sync binary from builder stage (found by the airplay receiver
+# provider via its system PATH lookup)
+COPY --from=shairport-builder /usr/local/bin/shairport-sync /usr/local/bin/
 
 # Copy pre-built PyAV wheel for use by downstream images
 COPY --from=pyav-builder /wheels/ /usr/local/share/pyav-wheels/
