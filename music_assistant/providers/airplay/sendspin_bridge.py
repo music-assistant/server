@@ -96,7 +96,7 @@ def sendspin_audible_instant_to_unix_ms(
     Map an audible instant on the Sendspin clock to a unix epoch millisecond.
 
     Sendspin schedules playback on its own monotonic clock (``server.clock.now_us()``)
-    whereas the AirPlay binary's ``--start-unix-ms`` contract is unix wall-clock.
+    whereas the AirPlay generation START command uses unix wall-clock.
     The two clocks share no epoch, so only the *offset from now* transfers between
     them: this takes how far ``audible_instant_us`` sits in the future on the
     Sendspin clock and applies that same offset to a unix reading captured at the
@@ -187,6 +187,7 @@ class SendspinAirPlayBridge:
         self._writer_task: asyncio.Task[None] | None = None
         self._airplay_stream_start_task: asyncio.Task[None] | None = None
         self._airplay_stream_ready = asyncio.Event()
+        self._generation_started = False
         self._cleanup_task: asyncio.Task[None] | None = None
         # Timer id for the deferred teardown on stream end. A seek/next ends the
         # sendspin stream and immediately starts a new one; deferring the CLI
@@ -318,6 +319,7 @@ class SendspinAirPlayBridge:
             stream is not None
             and stream.running
             and stream.connected
+            and self._generation_started
             and stream.active_route.startswith("AirPlay 2")
         )
 
@@ -376,6 +378,7 @@ class SendspinAirPlayBridge:
         self._drop_until_us = 0
         self._start_aligned = False
         self._start_unix_ms = 0
+        self._generation_started = False
 
     def _on_bridge_stream_start(self) -> None:
         """
@@ -412,6 +415,7 @@ class SendspinAirPlayBridge:
         self._drop_until_us = 0
         self._start_aligned = False
         self._start_unix_ms = 0
+        self._generation_started = False
         # Drain stale audio data from the previous stream
         while not self._write_queue.empty():
             self._write_queue.get_nowait()
@@ -435,7 +439,7 @@ class SendspinAirPlayBridge:
             # Derive the audible start instant from _drop_until_us (set on first
             # chunk arrival) so the CLI has enough lead to connect and establish
             # the session. _drop_until_us is on the Sendspin (monotonic) clock;
-            # map it to the unix epoch ms the binary's --start-unix-ms expects.
+            # map it to the unix epoch ms used by the generation START command.
             sendspin_clock_now_us = self.sendspin_server.clock.now_us()
             unix_clock_now = time.time()
             start_unix_ms = sendspin_audible_instant_to_unix_ms(
@@ -478,25 +482,32 @@ class SendspinAirPlayBridge:
             # and leaked. Only publish once start() succeeds and this task is current.
             new_stream = AirPlayStream(self.airplay_player)
             try:
-                await new_stream.start(start_unix_ms)
+                await new_stream.start()
+                await new_stream.wait_for_connection()
+                if asyncio.current_task() is not self._airplay_stream_start_task:
+                    await new_stream.stop(force=True)
+                    return
+                self._airplay_stream = new_stream
+                self.airplay_player.stream = new_stream
+                await new_stream.prepare_generation(0, "-", 0)
+                self._airplay_stream_ready.set()
+                if not await new_stream.wait_generation_primed(0):
+                    raise RuntimeError("generation 0 prime timed out")
+                if asyncio.current_task() is not self._airplay_stream_start_task:
+                    await new_stream.stop(force=True)
+                    return
+                await new_stream.start_generation(0, 0, start_unix_ms)
+                self._generation_started = True
             except BaseException:
                 with suppress(Exception):
                     await new_stream.stop(force=True)
                 raise
-            if asyncio.current_task() is not self._airplay_stream_start_task:
-                with suppress(Exception):
-                    await new_stream.stop(force=True)
-                return
-            self._airplay_stream = new_stream
-            self.airplay_player.stream = new_stream
-            self._airplay_stream_ready.set()
             self.logger.info(
                 "Bridge protocol started for %s (start_unix_ms=%s, lookahead=%.0fms)",
                 self.airplay_player.display_name,
                 start_unix_ms,
                 lead_us / 1000,
             )
-            self.mass.create_task(self._wait_for_airplay_connection())
         except Exception as err:
             self.logger.error(
                 "Failed to start AirPlay protocol for %s: %s",
@@ -561,6 +572,7 @@ class SendspinAirPlayBridge:
                 # its next PREPARE.
                 return False
             await stream.start_generation(gen, 0, start_unix_ms)
+            self._generation_started = True
             self.logger.info(
                 "Bridge warm handover for %s (generation=%d, start_unix_ms=%d)",
                 self.airplay_player.display_name,
@@ -585,22 +597,6 @@ class SendspinAirPlayBridge:
                 with suppress(OSError):
                     await asyncio.to_thread(os.unlink, fifo)
         return True
-
-    async def _wait_for_airplay_connection(self) -> None:
-        """Wait for AirPlay connection in the background and log the result."""
-        if not self._airplay_stream:
-            return
-        try:
-            await self._airplay_stream.wait_for_connection()
-            self.logger.info(
-                "AirPlay connection established for %s", self.airplay_player.display_name
-            )
-        except Exception as err:
-            self.logger.warning(
-                "AirPlay connection failed for %s: %s",
-                self.airplay_player.display_name,
-                err,
-            )
 
     def _on_volume_change(self, volume: int) -> None:
         """Forward volume changes to the AirPlay player."""
@@ -888,6 +884,7 @@ class SendspinAirPlayBridge:
         self._is_streaming = False
         self._next_expected_timestamp_us = None
         self._airplay_stream_ready.clear()
+        self._generation_started = False
         if self._airplay_stream_start_task:
             self._airplay_stream_start_task.cancel()
             with suppress(asyncio.CancelledError, Exception):

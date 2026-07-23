@@ -89,24 +89,28 @@ class AirPlayStreamSession:
             # a bounded daemon-readiness wait cannot consume the setup lead.
             self.use_shared_ptp = await self._resolve_shared_ptp(ap2_members)
             self._shared_ptp_resolved = True
-        cur_time = time.time()
-        wait_start = max(p.wait_start for p in self.sync_clients)
-        wait_start_seconds = wait_start / 1000
-        self.wait_start = wait_start_seconds
-        self.start_time = cur_time + wait_start_seconds
-        # group start as plain unix epoch milliseconds: every member of the
-        # sync group receives the exact same value (--start-unix-ms)
-        self.start_unix_ms = int(self.start_time * 1000)
+        self.wait_start = max(p.wait_start for p in self.sync_clients) / 1000
+        position_ms = int((self.media.elapsed_time or 0) * 1000)
+        generations = {player.player_id: 0 for player in self.sync_clients}
         try:
             async with asyncio.TaskGroup() as task_group:
                 for player in self.sync_clients:
-                    task_group.create_task(
-                        self._start_client(player, self.start_unix_ms, self.use_shared_ptp)
-                    )
-            self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
+                    task_group.create_task(self._start_client(player, self.use_shared_ptp))
             await asyncio.gather(
                 *[p.stream.wait_for_connection() for p in self.sync_clients if p.stream]
             )
+            async with asyncio.TaskGroup() as task_group:
+                for player in self.sync_clients:
+                    stream = player.stream
+                    assert stream
+                    task_group.create_task(stream.prepare_generation(0, "-", position_ms))
+            self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
+            primed = await asyncio.gather(
+                *[p.stream.wait_generation_primed(0) for p in self.sync_clients if p.stream]
+            )
+            if not all(primed):
+                raise PlayerCommandFailed("generation prime timeout")
+            await self._commit_generations(generations, position_ms)
         except asyncio.CancelledError:
             await self.stop()
             raise
@@ -178,8 +182,6 @@ class AirPlayStreamSession:
             self._pcm_buffer.clear()
             self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
 
-            # commit once every member is primed: same instant for the group,
-            # ASAP (binary-clamped warm lead) for a standalone player
             primed = await asyncio.gather(
                 *[
                     p.stream.wait_generation_primed(generations[p.player_id])
@@ -189,25 +191,7 @@ class AirPlayStreamSession:
             )
             if not all(primed):
                 raise PlayerCommandFailed("generation prime timeout")
-            # Commit at an explicit shared instant: a lone player gets a hair
-            # above the binary's minimum warm lead, a group extra headroom.
-            warm_lead_ms = 400 if len(self.sync_clients) == 1 else 750
-            start_unix_ms = int(time.time() * 1000) + warm_lead_ms
-            for player in self.sync_clients:
-                member_start = start_unix_ms
-                sync_adjust = player.config.get_value(CONF_SYNC_ADJUST, 0)
-                if isinstance(sync_adjust, int) and sync_adjust:
-                    member_start += sync_adjust
-                stream = player.stream
-                assert stream
-                await stream.start_generation(
-                    generations[player.player_id], position_ms, member_start
-                )
-            # Re-anchor the session on the new generation's timeline so late
-            # joiners map buffered samples to the correct wall-clock instant
-            # (the old anchor died with the warm flush).
-            self.start_unix_ms = start_unix_ms
-            self.start_time = start_unix_ms / 1000
+            await self._commit_generations(generations, position_ms)
         except Exception as err:
             self.prov.logger.warning(
                 "Warm replacement failed (%r); falling back to a cold restart", err
@@ -301,7 +285,7 @@ class AirPlayStreamSession:
         if airplay_player.stream and airplay_player.stream.session == self:
             await airplay_player.stream.stop(force=True)
 
-    async def add_client(self, airplay_player: AirPlayPlayer) -> None:
+    async def add_client(self, airplay_player: AirPlayPlayer) -> None:  # noqa: PLR0915
         """
         Add a sync client to the session as a late joiner.
 
@@ -318,14 +302,15 @@ class AirPlayStreamSession:
         buffered PCM, so the first sample we send maps to the correct future
         stream position.
 
-        1. Snapshot the ring buffer and calculate how many seconds it holds.
-        2. Map the buffer's first byte to its stream position; if the
+        1. Connect the new client without starting playback.
+        2. Snapshot the ring buffer and map its first byte to its stream
+           position; if the
            resulting start anchor is in the past, shift it forward to
            ``now + min_headroom`` and trim that many seconds from the buffer
            head so timing stays aligned with the rest of the group.
-        3. Start ffmpeg+CLI, write the (possibly trimmed) buffer into ffmpeg
-           to prime the pipe while cliairplay is still connecting, then add to
-           sync_clients so the audio streamer continues seamlessly.
+        3. Prepare generation 0, write the (possibly trimmed) buffer, and add
+           the client so the live stream continues priming it.
+        4. Start generation 0 only after the client reports primed.
         """
         if self._ptp_follow:
             # A group needs the sender-owned timeline; the solo session
@@ -339,6 +324,31 @@ class AirPlayStreamSession:
             first_client = self.sync_clients[0]
             if not first_client.stream or not first_client.stream.running:
                 return
+        try:
+            await self._start_client(airplay_player, self.use_shared_ptp)
+            stream = airplay_player.stream
+            assert stream
+            await stream.wait_for_connection()
+        except asyncio.CancelledError:
+            await self.stop_client(airplay_player, reason="late joiner start cancelled")
+            raise
+        except Exception as err:
+            self.prov.logger.warning(
+                "Late joiner %s: failed to connect pipeline: %s",
+                airplay_player.player_id,
+                err,
+            )
+            await self.stop_client(airplay_player, reason="late joiner connection failed")
+            return
+
+        async with self._lock:
+            if not self.sync_clients:
+                await self.stop_client(airplay_player, reason="session ended during late join")
+                return
+            first_client = self.sync_clients[0]
+            if not first_client.stream or not first_client.stream.running:
+                await self.stop_client(airplay_player, reason="session ended during late join")
+                return
             now = time.time()
             pcm_sample_size = self.pcm_format.pcm_sample_size
             frame_size = (self.pcm_format.bit_depth // 8) * self.pcm_format.channels
@@ -347,6 +357,7 @@ class AirPlayStreamSession:
             buffer_seconds = len(buffered_pcm) / pcm_sample_size
             # The first byte in the buffer corresponds to this stream position
             first_byte_pos = self.seconds_streamed - buffer_seconds
+            first_sample_pos = first_byte_pos
             start_at = self.start_time + first_byte_pos
 
             # The audio we hand to ffmpeg → cliairplay must be bit-aligned with
@@ -377,17 +388,21 @@ class AirPlayStreamSession:
                     # the clamp below may still move it later to preserve
                     # the required headroom.
                     buffered_pcm = b""
+                    first_sample_pos = self.seconds_streamed
                     start_at = self.start_time + self.seconds_streamed
                 else:
                     buffered_pcm = buffered_pcm[trim_bytes:]
                     # Advance start_at by exactly the trimmed duration so the
                     # NTP anchor matches the first sample we actually send.
-                    start_at += trim_bytes / pcm_sample_size
+                    trimmed_seconds = trim_bytes / pcm_sample_size
+                    first_sample_pos += trimmed_seconds
+                    start_at += trimmed_seconds
                 # Make sure start_at still leaves enough lead time for slow
                 # connections / very-far-behind joiners.
                 start_at = max(start_at, target_start_at)
 
             start_unix_ms = int(start_at * 1000)
+            position_ms = int(((self.media.elapsed_time or 0) + first_sample_pos) * 1000)
 
             self.prov.logger.debug(
                 "Late joiner %s: sending %.2fs of buffered audio, "
@@ -402,15 +417,13 @@ class AirPlayStreamSession:
                 trim_seconds,
             )
 
-            # Start ffmpeg+CLI and immediately write the buffered PCM.
-            # ffmpeg accepts data on stdin right away; it queues in the pipe
-            # while cliairplay is still connecting to the device.
             try:
-                # A late joiner must use the SAME timing source the group
-                # committed to at session start, else it would drift against it.
-                await self._start_client(airplay_player, start_unix_ms, self.use_shared_ptp)
+                await stream.prepare_generation(0, "-", position_ms)
                 if buffered_pcm:
                     await self._write_chunk_to_player(airplay_player, buffered_pcm)
+            except asyncio.CancelledError:
+                await self.stop_client(airplay_player, reason="late joiner prepare cancelled")
+                raise
             except Exception as err:
                 self.prov.logger.warning(
                     "Late joiner %s: failed to start/prime pipeline: %s",
@@ -420,8 +433,6 @@ class AirPlayStreamSession:
                 await self.stop_client(airplay_player, reason="late joiner start/prime failed")
                 return
 
-            # Now add to sync_clients — the audio streamer's next chunk
-            # continues exactly from seconds_streamed where the buffer ended.
             if airplay_player not in self.sync_clients:
                 self.sync_clients.append(airplay_player)
             if airplay_player.protocol == StreamingProtocol.AIRPLAY2 and not self.use_shared_ptp:
@@ -432,22 +443,31 @@ class AirPlayStreamSession:
                 )
                 self._warn_degraded_shared_ptp(ap2_members)
 
-        # Wait for device connection outside the lock.
-        if airplay_player.stream:
-            try:
-                await airplay_player.stream.wait_for_connection()
-                self.prov.logger.debug(
-                    "Late joiner %s: device connected after %.2fs",
-                    airplay_player.player_id,
-                    time.time() - now,
-                )
-            except TimeoutError:
-                self.prov.logger.warning(
-                    "Late joiner %s: device connection timed out after %.2fs",
-                    airplay_player.player_id,
-                    time.time() - now,
-                )
-                await self.remove_client(airplay_player, reason="late joiner connection timeout")
+        try:
+            if not await stream.wait_generation_primed(0):
+                raise PlayerCommandFailed("generation prime timeout")
+            await self._commit_generations(
+                {airplay_player.player_id: 0},
+                position_ms,
+                start_unix_ms,
+                reanchor_session=False,
+            )
+        except asyncio.CancelledError:
+            await self.remove_client(airplay_player, reason="late joiner prime cancelled")
+            raise
+        except Exception as err:
+            self.prov.logger.warning(
+                "Late joiner %s: failed to prime generation: %s",
+                airplay_player.player_id,
+                err,
+            )
+            await self.remove_client(airplay_player, reason="late joiner prime failed")
+            return
+        self.prov.logger.debug(
+            "Late joiner %s: device primed after %.2fs",
+            airplay_player.player_id,
+            time.time() - now,
+        )
 
     async def _resolve_shared_ptp(self, ap2_members: int | None = None) -> bool:
         """
@@ -655,14 +675,11 @@ class AirPlayStreamSession:
             if airplay_player.stream:
                 await airplay_player.stream.write_audio_eof()
 
-    async def _start_client(
-        self, airplay_player: AirPlayPlayer, start_unix_ms: int, use_shared_ptp: bool
-    ) -> None:
+    async def _start_client(self, airplay_player: AirPlayPlayer, use_shared_ptp: bool) -> None:
         """
-        Start CLI process and ffmpeg for a single client.
+        Connect a CLI process and start ffmpeg for a single client.
 
         :param airplay_player: The player to start streaming to.
-        :param start_unix_ms: The audible-start instant in unix epoch ms.
         :param use_shared_ptp: The session-wide shared-PTP decision applied to
             this member so the whole group shares one timing source.
         """
@@ -673,13 +690,7 @@ class AirPlayStreamSession:
         stream_pcm_format = airplay_player.get_stream_pcm_format(self.pcm_format)
         airplay_player.stream = AirPlayStream(airplay_player, pcm_format=stream_pcm_format)
         airplay_player.stream.session = self
-        sync_adjust = airplay_player.config.get_value(CONF_SYNC_ADJUST, 0)
-        assert isinstance(sync_adjust, int)
-        if sync_adjust != 0:
-            start_unix_ms += sync_adjust
-        await airplay_player.stream.start(
-            start_unix_ms, use_shared_ptp, ptp_follow=self._ptp_follow
-        )
+        await airplay_player.stream.start(use_shared_ptp, ptp_follow=self._ptp_follow)
         # Start ffmpeg to feed audio to CLI stdin
         if ffmpeg := self._player_ffmpeg.pop(airplay_player.player_id, None):
             await ffmpeg.close()
@@ -707,6 +718,43 @@ class AirPlayStreamSession:
         )
         await ffmpeg.start()
         self._player_ffmpeg[airplay_player.player_id] = ffmpeg
+
+    async def _commit_generations(
+        self,
+        generations: dict[str, int],
+        position_ms: int,
+        start_unix_ms: int | None = None,
+        *,
+        reanchor_session: bool = True,
+    ) -> None:
+        """
+        Start prepared member generations at one audible instant.
+
+        :param generations: Generation number keyed by player ID.
+        :param position_ms: Media position represented by each generation's first sample.
+        :param start_unix_ms: Optional audible-start instant in unix epoch milliseconds.
+        :param reanchor_session: Whether this generation becomes the session timeline anchor.
+        """
+        if start_unix_ms is None:
+            start_lead_ms = 400 if len(generations) == 1 else 750
+            start_unix_ms = int(time.time() * 1000) + start_lead_ms
+        async with asyncio.TaskGroup() as task_group:
+            for player in self.sync_clients:
+                generation = generations.get(player.player_id)
+                if generation is None:
+                    continue
+                member_start = start_unix_ms
+                sync_adjust = player.config.get_value(CONF_SYNC_ADJUST, 0)
+                if isinstance(sync_adjust, int):
+                    member_start += sync_adjust
+                stream = player.stream
+                assert stream
+                task_group.create_task(
+                    stream.start_generation(generation, position_ms, member_start)
+                )
+        if reanchor_session:
+            self.start_unix_ms = start_unix_ms
+            self.start_time = start_unix_ms / 1000
 
     async def _start_generation_ffmpeg(
         self, player: AirPlayPlayer, fifo: str, media: PlayerMedia
