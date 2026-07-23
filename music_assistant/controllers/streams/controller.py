@@ -1009,6 +1009,7 @@ class StreamsController(CoreController):
             start_queue_item=start_queue_item,
             pcm_format=flow_pcm_format,
             session_id=session_id,
+            protocol_player=player,
         )
         if overlay_active(queue):
             flow_stream = self.audio.get_overlay_mixed_stream(queue, flow_stream, flow_pcm_format)
@@ -1280,6 +1281,7 @@ class StreamsController(CoreController):
                     start_queue_item=start_queue_item,
                     pcm_format=pcm_format,
                     session_id=queue_session_id,
+                    protocol_player=protocol_player,
                 )
                 if overlay_active(queue):
                     flow_stream = self.audio.get_overlay_mixed_stream(
