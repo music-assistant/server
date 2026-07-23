@@ -54,8 +54,8 @@ def mock_mass(tmp_path: Path) -> MagicMock:
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
     mass.cache = MagicMock()
-    # @use_cache on recommendations() awaits cache.get_with_freshness; return a miss so the
-    # wrapped method runs. cache.set is fire-and-forget via create_task (mocked).
+    # @use_cache on _get_inspired_recommendations() awaits cache.get_with_freshness; return a
+    # miss so the wrapped method runs. cache.set is fire-and-forget via create_task (mocked).
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.create_task = MagicMock()  # fire-and-forget; we assert it was called
@@ -148,6 +148,7 @@ def make_plugin(
         manifest.instance_id = "test-instance-id"
         manifest.domain = "sonic_similarity"
         config = MagicMock()
+        config.instance_id = "test-instance-id"
         config_values = {
             "log_level": "GLOBAL",
             "enable_clap_index": clap_enabled,

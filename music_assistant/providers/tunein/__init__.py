@@ -19,6 +19,7 @@ from music_assistant_models.errors import InvalidDataError, LoginFailed, MediaNo
 from music_assistant_models.media_items import (
     AudioFormat,
     BrowseFolder,
+    ItemMapping,
     MediaItemImage,
     MediaItemType,
     ProviderMapping,
@@ -248,27 +249,50 @@ class TuneInProvider(MusicProvider):
         msg = f"Item {prov_radio_id} not found"
         raise MediaNotFoundError(msg)
 
-    @use_cache(3600 * 3)
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Return trending stations as a recommendation folder."""
-        data = await self.__get_data("Browse.ashx", c="trending")
-        if not data or "body" not in data:
-            return []
-        all_stations = [
-            self._parse_radio_lazy(item)
-            for item in data["body"]
-            if item.get("type") == "audio" and "preset_id" in item
-        ]
-        stations: list[Radio] = random.sample(all_stations, min(20, len(all_stations)))
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
         return [
             RecommendationFolder(
                 item_id="trending",
                 provider=self.instance_id,
                 name="Trending",
                 translation_key="trending_stations",
-                items=UniqueList(stations),
             )
         ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id != "trending":
+            return UniqueList()
+        folder = await self._get_trending_folder()
+        if folder is None:
+            return UniqueList()
+        return folder.items
+
+    @use_cache(3600 * 3, base_class=RecommendationFolder)
+    async def _get_trending_folder(self) -> RecommendationFolder | None:
+        """Get the trending stations row with items, or None if unavailable."""
+        data = await self.__get_data("Browse.ashx", c="trending")
+        if not data or "body" not in data:
+            return None
+        all_stations = [
+            self._parse_radio_lazy(item)
+            for item in data["body"]
+            if item.get("type") == "audio" and "preset_id" in item
+        ]
+        return RecommendationFolder(
+            item_id="trending",
+            provider=self.instance_id,
+            name="Trending",
+            translation_key="trending_stations",
+            items=UniqueList(random.sample(all_stations, min(20, len(all_stations)))),
+        )
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details for a radio station."""

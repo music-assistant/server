@@ -70,6 +70,7 @@ from music_assistant_models.media_items import Album, Artist, is_track
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
+from music_assistant.constants import HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player, PlayerMedia
@@ -213,6 +214,7 @@ if TYPE_CHECKING:
 
     from music_assistant.controllers.player_queues.state import PlayerQueueData
     from music_assistant.providers.chromecast.sendspin_bridge import SendspinBridgeManager
+    from music_assistant.providers.hass import HomeAssistantProvider
 
     from .provider import PinPairingSession, SendspinProvider
 
@@ -856,6 +858,8 @@ class SendspinPlayer(SendspinBasePlayer):
     _beat_retry_queue_item_id: str | None = None
     playback_session: SendspinPlaybackSession
     static_delay_default_ms: int = DEFAULT_SENDSPIN_STATIC_DELAY
+    # HA media_player entity announcements are relayed to (ESPHome-backed devices)
+    _hass_announce_entity_id: str | None = None
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -904,6 +908,44 @@ class SendspinPlayer(SendspinBasePlayer):
                 self._attr_supported_features.add(feature)
             else:
                 self._attr_supported_features.discard(feature)
+
+    def set_hass_announce_entity(self, entity_id: str | None) -> None:
+        """
+        Set or clear the Home Assistant entity used to relay announcements.
+
+        ESPHome devices support announcements natively (ducking any running
+        playback), but that capability is only reachable through their Home
+        Assistant media_player entity; the PLAY_ANNOUNCEMENT feature follows it.
+
+        :param entity_id: The HA media_player entity id, or None to clear.
+        """
+        self._hass_announce_entity_id = entity_id
+        if entity_id is not None:
+            self._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
+        else:
+            self._attr_supported_features.discard(PlayerFeature.PLAY_ANNOUNCEMENT)
+
+    async def play_announcement(
+        self, announcement: PlayerMedia, volume_level: int | None = None
+    ) -> None:
+        """Handle (provider native) playback of an announcement on given player."""
+        entity_id = self._hass_announce_entity_id
+        hass = cast("HomeAssistantProvider | None", self.mass.get_provider("hass"))
+        if entity_id is None or hass is None or not hass.available:
+            raise PlayerCommandFailed(
+                f"Announcement relay via Home Assistant is not available for {self.display_name}"
+            )
+        self.logger.info(
+            "Playing announcement %s on %s (via Home Assistant)",
+            announcement.uri,
+            self.display_name,
+        )
+        if volume_level is not None:
+            # the device's announcement pipeline plays at its own volume;
+            # the announce volume config entries are hidden for this player
+            self.logger.debug("Ignoring announcement volume level for player %s", self.display_name)
+        await hass.play_announcement_on_entity(entity_id, announcement.uri)
+        self.logger.debug("Playing announcement on %s completed", self.display_name)
 
     def restore_bridge_identity(
         self, previous_device_info: DeviceInfo, previous_type: PlayerType
@@ -1796,6 +1838,11 @@ class SendspinPlayer(SendspinBasePlayer):
                     advanced=False,
                 )
             )
+
+        if self._hass_announce_entity_id is not None:
+            # announcements are relayed to the device via Home Assistant,
+            # which has no volume control for announcements
+            entries.extend(HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES)
 
         return entries
 

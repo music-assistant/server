@@ -89,6 +89,14 @@ if TYPE_CHECKING:
 
 AUDIOBOOKS_CHANNEL = "channels/audiobooks"
 
+# row item_ids fed by the single shared gql get_recommendations payload fetch
+SHARED_PAYLOAD_ROW_IDS = (
+    "recommended_playlists",
+    "recommended_artist_playlists",
+    "recommended_tracks",
+    "new_releases",
+)
+
 
 class DeezerBrowseManager:
     """Handles browse tree, recommendations, and virtual playlist content."""
@@ -605,10 +613,89 @@ class DeezerBrowseManager:
 
     # -- Recommendations --
 
-    @use_cache(3600)
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get Deezer's recommendations including Flow and personalized content."""
-        result: list[RecommendationFolder] = []
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get the static descriptors of Deezer's recommendation rows, without items."""
+        return [
+            RecommendationFolder(
+                item_id="made_for_you",
+                provider=self.instance_id,
+                name=BROWSE_MADE_FOR_YOU,
+                translation_key="made_for_you",
+            ),
+            RecommendationFolder(
+                item_id="recommended_playlists",
+                provider=self.instance_id,
+                name=BROWSE_RECOMMENDED_PLAYLISTS,
+                translation_key="recommended_playlists",
+            ),
+            RecommendationFolder(
+                item_id="recommended_artist_playlists",
+                provider=self.instance_id,
+                name=BROWSE_RECOMMENDED_ARTIST_PLAYLISTS,
+                translation_key="recommended_artist_playlists",
+            ),
+            RecommendationFolder(
+                item_id="recommended_tracks",
+                provider=self.instance_id,
+                name="Hot Tracks",
+                translation_key="recommended_tracks",
+            ),
+            RecommendationFolder(
+                item_id="new_releases",
+                provider=self.instance_id,
+                name="New Releases",
+                translation_key="new_releases",
+            ),
+            RecommendationFolder(
+                item_id="mood_flows",
+                provider=self.instance_id,
+                name="Deezer Mood Flows",
+                translation_key="mood_flows",
+            ),
+            RecommendationFolder(
+                item_id="genre_flows",
+                provider=self.instance_id,
+                name="Deezer Genre Flows",
+                translation_key="genre_flows",
+            ),
+            RecommendationFolder(
+                item_id="recently_played",
+                provider=self.instance_id,
+                name=BROWSE_RECENTLY_PLAYED,
+                translation_key="recently_played",
+            ),
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations
+            (empty result if unknown).
+        """
+        if item_id in SHARED_PAYLOAD_ROW_IDS:
+            return await self.provider._recommendation_items_from_payload(item_id)
+        if item_id == "made_for_you":
+            folders: list[RecommendationFolder] = []
+            await self._add_made_for_you(folders)
+            return folders[0].items if folders else UniqueList()
+        if item_id in ("mood_flows", "genre_flows"):
+            return next(
+                (
+                    folder.items
+                    for folder in await self._get_flow_folders()
+                    if folder.item_id == item_id
+                ),
+                UniqueList(),
+            )
+        if item_id == "recently_played":
+            return UniqueList(await self._get_recently_played_items())
+        return UniqueList()
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch the recommendation folders fed by the shared gql recommendations payload."""
         recs = await self.provider.gql_client.get_recommendations(
             playlists_first=50,
             artist_playlists_first=50,
@@ -616,30 +703,21 @@ class DeezerBrowseManager:
             artists_first=0,
             hot_tracks_limit=50,
         )
-        await self._add_made_for_you(result, recs)
+        result: list[RecommendationFolder] = []
         self._add_recommended_playlists(result, recs)
         self._add_recommended_artist_playlists(result, recs)
         self._add_recommended_tracks(result, recs)
         self._add_new_releases(result, recs)
-        await self._add_flow_configs(result)
-        recently_played = await self._get_recently_played_items()
-        if recently_played:
-            result.append(
-                RecommendationFolder(
-                    item_id="recently_played",
-                    provider=self.instance_id,
-                    name=BROWSE_RECENTLY_PLAYED,
-                    translation_key="recently_played",
-                    items=UniqueList(recently_played),
-                )
-            )
         return result
 
-    async def _add_made_for_you(
-        self,
-        result: list[RecommendationFolder],
-        recs: GetRecommendationsMe | None,
-    ) -> None:
+    @use_cache(3600, base_class=RecommendationFolder)
+    async def _get_flow_folders(self) -> list[RecommendationFolder]:
+        """Get the mood and genre flow rows, built from one shared backend fetch (cached)."""
+        result: list[RecommendationFolder] = []
+        await self._add_flow_configs(result)
+        return result
+
+    async def _add_made_for_you(self, result: list[RecommendationFolder]) -> None:
         """Add Made For You section to recommendations."""
         made_for_me_items: list[Playlist] = [
             create_virtual_playlist(

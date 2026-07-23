@@ -128,7 +128,9 @@ def mock_mass(mock_user: MagicMock) -> MagicMock:
     mass.music.search = AsyncMock()
     mass.music.recently_added_tracks = AsyncMock(return_value=[])
     mass.music.recently_played = AsyncMock(return_value=[])
-    mass.music.recommendations = AsyncMock(return_value=[])
+    mass.music.recommendations = MagicMock()
+    mass.music.recommendations.get_recommendations = AsyncMock(return_value=[])
+    mass.music.recommendations.get_recommendation_items = AsyncMock(return_value=[])
     mass.music.get_item_by_uri = AsyncMock()
 
     mass.music.tracks.library_items = AsyncMock(return_value=[])
