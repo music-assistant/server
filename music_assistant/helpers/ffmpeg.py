@@ -7,7 +7,7 @@ import logging
 import re
 import time
 from collections import deque
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
 from copy import copy
 from dataclasses import dataclass
@@ -19,6 +19,7 @@ from music_assistant_models.helpers import get_global_cache_value, set_global_ca
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 
+from .dsp import ComplexFilter                             
 from .process import AsyncProcess, check_output
 from .util import close_async_generator
 
@@ -127,7 +128,7 @@ class FFMpeg(AsyncProcess):
         audio_input: AsyncGenerator[bytes] | str | int,
         input_format: AudioFormat,
         output_format: AudioFormat,
-        filter_params: list[str] | None = None,
+        filter_params: Sequence[str | ComplexFilter] | None = None,
         extra_args: list[str] | None = None,
         extra_input_args: list[str] | None = None,
         extra_output_args: list[str] | None = None,
@@ -412,7 +413,7 @@ async def get_ffmpeg_stream(
     audio_input: AsyncGenerator[bytes] | str,
     input_format: AudioFormat,
     output_format: AudioFormat,
-    filter_params: list[str] | None = None,
+    filter_params: Sequence[str | ComplexFilter] | None = None,
     extra_args: list[str] | None = None,
     chunk_size: int | None = None,
     extra_input_args: list[str] | None = None,
@@ -514,7 +515,7 @@ async def get_ffmpeg_overlay_stream(
 def get_ffmpeg_resample_filter(
     input_format: AudioFormat,
     output_format: AudioFormat,
-    filter_params: list[str],
+    filter_params: Sequence[str | ComplexFilter],
 ) -> str | None:
     """
     Return the resampling and dithering filter required for a format conversion.
@@ -529,7 +530,9 @@ def get_ffmpeg_resample_filter(
         return None
     libsoxr_support = get_global_cache_value(CACHE_ATTR_LIBSOXR_PRESENT)
     # loudnorm and libsoxr cannot be combined due to https://trac.ffmpeg.org/ticket/11323
-    if libsoxr_support and not any("loudnorm" in value for value in filter_params):
+    if libsoxr_support and not any(
+        "loudnorm" in value for value in filter_params if isinstance(value, str)
+    ):
         resample_filter = "aresample=resampler=soxr:precision=30"
     else:
         resample_filter = "aresample=resampler=swr"
@@ -543,7 +546,7 @@ def get_ffmpeg_resample_filter(
 def get_ffmpeg_args(
     input_format: AudioFormat,
     output_format: AudioFormat,
-    filter_params: list[str],
+    filter_params: Sequence[str | ComplexFilter],
     extra_args: list[str] | None = None,
     input_path: str = "-",
     output_path: str = "-",
