@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+from contextlib import AbstractContextManager
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -19,6 +20,7 @@ from music_assistant.providers.airplay.player import AirPlayPlayer
 from music_assistant.providers.airplay.provider import AirPlayProvider
 from music_assistant.providers.airplay.stream import AirPlayStream
 from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
+from music_assistant.providers.airplay_receiver import airplay_receiver_port
 
 INSTANCE_ID = "airplay"
 START_UNIX_MS = 1_750_000_000_000
@@ -593,3 +595,175 @@ async def test_build_cli_args_none_falls_back_to_daemon_liveness() -> None:
     assert "--ptp-shared" not in await _build_args(
         _stream_player(ptp_daemon_running=False), use_shared_ptp=None
     )
+
+
+# --- Own AirPlay Receiver filtering in discovery -------------------------------
+
+RECEIVER_INSTANCE_ID = "airplay_receiver--test1234"
+HOST_IPS = ("192.168.1.10", "172.30.32.1")
+
+
+def _receiver_filter_provider(
+    provider_configs: dict[str, dict[str, object]],
+    receiver_instances: tuple[MagicMock, ...] = (),
+) -> AirPlayProvider:
+    """Build a bare provider wired to raw provider configs and running receiver instances."""
+    prov = AirPlayProvider.__new__(AirPlayProvider)
+    prov.mass = MagicMock()
+    prov.logger = logging.getLogger("test.airplay.provider")
+    prov.mass.config.get.return_value = provider_configs
+    prov.mass.get_provider_instances.return_value = list(receiver_instances)
+    return prov
+
+
+def _receiver_config(
+    airplay_name: str | None = "Garage [AirPlay]", enabled: bool = True
+) -> dict[str, dict[str, object]]:
+    """Build the raw provider config store with a single AirPlay Receiver instance."""
+    values: dict[str, object] = {"airplay_name": airplay_name} if airplay_name else {}
+    return {
+        RECEIVER_INSTANCE_ID: {
+            "domain": "airplay_receiver",
+            "instance_id": RECEIVER_INSTANCE_ID,
+            "enabled": enabled,
+            "values": values,
+        },
+        "spotify": {"domain": "spotify", "instance_id": "spotify", "values": {}},
+    }
+
+
+def _discovery_info(
+    addresses: list[str],
+    port: int | None = 7123,
+    properties: dict[str, str] | None = None,
+) -> MagicMock:
+    """Build a minimal mdns service info stand-in for the receiver filter."""
+    info = MagicMock()
+    info.parsed_addresses.return_value = addresses
+    info.port = port
+    info.decoded_properties = properties or {}
+    return info
+
+
+def _patch_host_ips() -> AbstractContextManager[AsyncMock]:
+    """Patch the host IP enumeration used by the receiver filter."""
+    return patch(
+        "music_assistant.providers.airplay.provider.get_ip_addresses",
+        AsyncMock(return_value=HOST_IPS),
+    )
+
+
+async def test_own_receiver_filtered_by_name_without_txt_record() -> None:
+    """A host-local advertisement matching a receiver name is ours, even without TXT data."""
+    prov = _receiver_filter_provider(_receiver_config())
+    # advertised via a secondary host interface (e.g. a docker bridge) and
+    # with an unresolved TXT record - both must not defeat the filter
+    info = _discovery_info(["172.30.32.1"], port=9999)
+
+    with _patch_host_ips():
+        assert await prov._is_own_airplay_receiver("Garage [AirPlay]", info) is True
+
+
+async def test_own_receiver_filtered_with_default_name() -> None:
+    """A receiver instance without an explicit name advertises the default name."""
+    prov = _receiver_filter_provider(_receiver_config(airplay_name=None))
+    info = _discovery_info(["192.168.1.10"])
+
+    with _patch_host_ips():
+        assert await prov._is_own_airplay_receiver("Music Assistant", info) is True
+
+
+async def test_own_receiver_filtered_on_loopback() -> None:
+    """A loopback advertisement matching a receiver name is filtered without host IP probing."""
+    prov = _receiver_filter_provider(_receiver_config())
+    info = _discovery_info(["127.0.0.1"])
+
+    assert await prov._is_own_airplay_receiver("Garage [AirPlay]", info) is True
+
+
+async def test_own_receiver_filtered_by_port_and_model() -> None:
+    """A host-local ShairportSync advertisement on a receiver port is ours, any name."""
+    prov = _receiver_filter_provider(_receiver_config())
+    info = _discovery_info(
+        ["192.168.1.10"],
+        port=airplay_receiver_port(RECEIVER_INSTANCE_ID),
+        properties={"am": "ShairportSync"},
+    )
+
+    with _patch_host_ips():
+        assert await prov._is_own_airplay_receiver("Renamed Receiver", info) is True
+
+
+async def test_own_receiver_filtered_by_running_instance_port() -> None:
+    """The port of a running receiver instance is honoured next to the derived ports."""
+    receiver = MagicMock()
+    receiver.airplay_port = 7555
+    prov = _receiver_filter_provider(_receiver_config(), receiver_instances=(receiver,))
+    info = _discovery_info(["192.168.1.10"], port=7555, properties={"am": "ShairportSync"})
+
+    with _patch_host_ips():
+        assert await prov._is_own_airplay_receiver("Renamed Receiver", info) is True
+
+
+async def test_same_name_receiver_on_other_host_not_filtered() -> None:
+    """A device with a matching name on another host must not be filtered."""
+    prov = _receiver_filter_provider(_receiver_config())
+    info = _discovery_info(["192.168.1.55"], properties={"am": "ShairportSync"})
+
+    with _patch_host_ips():
+        assert await prov._is_own_airplay_receiver("Garage [AirPlay]", info) is False
+
+
+async def test_user_shairport_on_same_host_not_filtered() -> None:
+    """A user-run shairport-sync on this host with its own name and port stays usable."""
+    prov = _receiver_filter_provider(_receiver_config())
+    info = _discovery_info(["192.168.1.10"], port=5000, properties={"am": "ShairportSync"})
+
+    with _patch_host_ips():
+        assert await prov._is_own_airplay_receiver("My Shairport", info) is False
+
+
+async def test_local_receiver_with_other_model_not_filtered_on_port_collision() -> None:
+    """A non-shairport local receiver is kept even when its port collides (e.g. macOS on 7000)."""
+    receiver = MagicMock()
+    receiver.airplay_port = 7000
+    prov = _receiver_filter_provider(_receiver_config(), receiver_instances=(receiver,))
+    info = _discovery_info(["192.168.1.10"], port=7000, properties={"am": "MacBookAir10,1"})
+
+    with _patch_host_ips():
+        assert await prov._is_own_airplay_receiver("Marcel's MacBook Air", info) is False
+
+
+async def test_disabled_receiver_config_not_filtered() -> None:
+    """A disabled receiver instance cannot be advertising, so its identity is ignored."""
+    prov = _receiver_filter_provider(_receiver_config(enabled=False))
+    info = _discovery_info(["192.168.1.10"])
+
+    with _patch_host_ips():
+        assert await prov._is_own_airplay_receiver("Garage [AirPlay]", info) is False
+
+
+async def test_no_receiver_configs_never_filters() -> None:
+    """Without any configured receiver instance the filter is a no-op."""
+    prov = _receiver_filter_provider(
+        {"spotify": {"domain": "spotify", "instance_id": "spotify", "values": {}}}
+    )
+    info = _discovery_info(["192.168.1.10"], properties={"am": "ShairportSync"})
+
+    assert await prov._is_own_airplay_receiver("Garage [AirPlay]", info) is False
+
+
+async def test_setup_player_skips_own_receiver_before_service_lookup() -> None:
+    """Discovery setup bails out on own receivers before any counterpart service lookup."""
+    prov = AirPlayProvider.__new__(AirPlayProvider)
+    prov.mass = MagicMock()
+    prov.logger = logging.getLogger("test.airplay.provider")
+    prov.mass.config.get_raw_player_config_value.return_value = True
+    prov._is_own_airplay_receiver = AsyncMock(return_value=True)  # type: ignore[method-assign]
+    info = _discovery_info(["192.168.1.10"])
+    info.type = "_raop._tcp.local."
+
+    await prov._setup_player("apdb1ff0aae80e", "Garage [AirPlay]", info)
+
+    prov.mass.discovery.async_find_mdns_service.assert_not_called()
+    prov.mass.players.register.assert_not_called()

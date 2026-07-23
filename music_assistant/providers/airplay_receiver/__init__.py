@@ -61,6 +61,7 @@ if TYPE_CHECKING:
 
 CONF_MASS_PLAYER_ID = "mass_player_id"
 CONF_AIRPLAY_NAME = "airplay_name"
+DEFAULT_AIRPLAY_NAME = "Music Assistant"
 
 # Special value for auto player selection
 PLAYER_ID_AUTO = "__auto__"
@@ -70,6 +71,19 @@ SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 # stable id for the single AudioSource this provider exposes;
 # combined with the provider instance_id this forms the persistent uri
 AUDIO_SOURCE_ID = "main"
+
+
+def airplay_receiver_port(instance_id: str) -> int:
+    """
+    Return the AirPlay port used by a receiver instance.
+
+    Deterministically derived from the instance id, so it stays the same across
+    server restarts (Python's built-in ``hash()`` is salted per process).
+
+    :param instance_id: The provider instance id of the AirPlay receiver.
+    """
+    digest = hashlib.md5(instance_id.encode(), usedforsecurity=False).hexdigest()
+    return 7000 + int(digest, 16) % 1000
 
 
 async def setup(
@@ -113,7 +127,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_AIRPLAY_NAME,
             type=ConfigEntryType.STRING,
-            default_value="Music Assistant",
+            default_value=DEFAULT_AIRPLAY_NAME,
         ),
     )
 
@@ -143,9 +157,10 @@ class AirPlayReceiverProvider(PluginProvider):
         self.audio_pipe = AsyncNamedPipeWriter(audio_pipe_path)
         self.metadata_pipe = AsyncNamedPipeWriter(metadata_pipe_path)
         self.config_file = f"/tmp/ma_shairport_sync_{self.instance_id}.conf"  # noqa: S108
-        # Use port 7000+ for AirPlay 2 compatibility
-        # Each instance gets a unique port: 7000, 7001, 7002, etc.
-        self.airplay_port = 7000 + (hash(self.instance_id) % 1000)
+        # Use port 7000+ for AirPlay 2 compatibility, one unique port per instance.
+        # The port must be stable across restarts: the AirPlay provider uses it to
+        # recognize (and ignore) our own shairport-sync advertisement in discovery.
+        self.airplay_port = airplay_receiver_port(self.instance_id)
         airplay_name = cast("str", self.config.get_value(CONF_AIRPLAY_NAME)) or self.name
         # _audio_format describes the original AirPlay source (ALAC at 44.1/16,
         # the protocol-native format AirPlay senders use) and is what we
