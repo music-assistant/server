@@ -497,14 +497,15 @@ class MediaResolver:
                 assert isinstance(media_item, MediaCollection)
             book: Audiobook | None = None
             for item in media_item.items:
-                _book = Audiobook.from_dict(item)
+                if TYPE_CHECKING:
+                    assert isinstance(item, Audiobook)
                 # enqueue the first not fully finished audiobook
                 fully_played, resume_position_ms = await self.mass.music.get_resume_position(
-                    _book, userid=userid
+                    item, userid=userid
                 )
                 if not fully_played:
-                    _book.resume_position_ms = resume_position_ms
-                    book = _book
+                    item.resume_position_ms = resume_position_ms
+                    book = item
                     break
             if book is None:
                 if len(media_item.items) > 0:

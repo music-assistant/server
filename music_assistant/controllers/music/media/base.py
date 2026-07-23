@@ -1992,19 +1992,52 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         collection_name: str | None = None,
         search: str | None = None,
     ) -> str:
-        # get column names of base query
-        db_rows = await self.mass.music.database.get_rows_from_query(
-            sql_query, query_params, limit=1, offset=0
-        )
-        # create a sql json_object which queries all these columns
-        if len(db_rows) > 0:
-            json_object = "json_object(" + ",".join([f"'{x}',{x}" for x in db_rows[0].keys()]) + ")"  # noqa: SIM118
-        else:
-            json_object = "json_object()"
+        cache_key_json_object = f"collection_{self.api_base}"
+        json_object = await self.mass.cache.get(key=cache_key_json_object, category=int(summary))
+        json_object = None
+        if json_object is None:
+            # get column names of base query
+            db_rows = await self.mass.music.database.get_rows_from_query(
+                sql_query, query_params, limit=1, offset=0
+            )
+            # create a sql json_object which queries all these columns
+            if len(db_rows) > 0:
+                json_object = (
+                    "json_object(" + ",".join([f"'{x}',{x}" for x in db_rows[0].keys()]) + ")"  # noqa: SIM118
+                )
+            else:
+                json_object = "json_object()"
+            await self.mass.cache.set(
+                key=cache_key_json_object, category=int(summary), data=json_object
+            )
 
         collections_column = (
             "collections" if summary else 'json_extract("metadata", "$.collections")'
         )
+
+        supported_order_keys = [
+            "name",
+            "name_desc",
+            "sort_name",
+            "sort_name_desc",
+            "timestamp_added",
+            "timestamp_added_desc",
+            "timestamp_modified",
+            "timestamp_modified_desc",
+            "last_played",
+            "last_played_desc",
+            "play_count",
+            "play_count_desc",
+        ]
+
+        # additional order options subject to media type
+        # single is targeting a single media item, collection the aggregated ones
+        single_extra_order_keys = ""
+        collection_extra_order_keys = ""
+        if MediaType.AUDIOBOOK.value in self.api_base:
+            single_extra_order_keys = "duration,"
+            collection_extra_order_keys = "SUM(duration) as duration,"
+            supported_order_keys += ["duration", "duration_desc"]
 
         sql_query = f"""
         SELECT * FROM (
@@ -2014,6 +2047,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 collection_extract as (
                     SELECT
                         name as media_name,
+                        timestamp_added,
+                        timestamp_modified,
+                        last_played,
+                        play_count,
+                        {single_extra_order_keys}
                         json_extract(iter_coll.value, "$.title") as collection_title,
                         json_extract(iter_coll.value, "$.sequence") as collection_sequence,
                         {json_object} as media_data
@@ -2026,9 +2064,17 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 collection_title as name,
                 replace(lower(collection_title),' ','') as search_name,
                 replace(lower(collection_title),' ','') as search_sort_name,
+                MAX(timestamp_added) as timestamp_added,
+                MAX(timestamp_modified) as timestamp_modified,
+                MAX(last_played) as last_played,
+                SUM(play_count) as play_count,
+                {collection_extra_order_keys}
                 json_group_array(media_data) as media_data
             FROM (
                 SELECT * FROM collection_extract
+                -- NOTE: The following ORDER_BY to control the aggregation order of json_group_array is undocumented sqlite behavior
+                -- Confirmed working with sqlite 3.40.1 & 3.53
+                -- Once our image moves to sqlite 3.44 we can and should make use of ORDER_BY in the aggregate itself
                 ORDER BY collection_title,
                 -- null case
                 CASE WHEN collection_sequence IS NULL THEN 1 ELSE 0 END,
@@ -2063,7 +2109,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
 
             UNION ALL
 
-            SELECT 'single', name, search_name, search_sort_name, {json_object} FROM joined_table
+            SELECT 'single', name, search_name, search_sort_name,
+                timestamp_added, timestamp_modified, last_played, play_count,
+                {single_extra_order_keys}
+                {json_object} FROM joined_table
                 WHERE {collections_column} IS NULL
                     OR {collections_column} = '[]'
         )
@@ -2077,8 +2126,10 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             sql_query += "WHERE search_name LIKE :search"
             return sql_query
 
-        supported_order_keys = ("name", "sort_name")
-        if order_by and order_by in supported_order_keys:
+        if order_by:
+            if order_by not in supported_order_keys:
+                self.logger.warning("%s is not supported for order_by key in collections", order_by)
+                order_by = "name"  # fallback
             if sort_key := SORT_KEYS.get(order_by):
                 sql_query += f" ORDER BY {sort_key}"
 

@@ -12,7 +12,7 @@ def get_collection_item_id(collection_name: str, item_media_type: MediaType) -> 
 
 def get_collection_name_from_item_id(collection_item_id: str) -> str:
     """Get collection's name from item id."""
-    return collection_item_id.rsplit(COLLECTION_ITEM_ID_SEPARATOR, maxsplit=1)[-1]
+    return collection_item_id.split(COLLECTION_ITEM_ID_SEPARATOR, maxsplit=1)[1]
 
 
 def get_collection_item_media_type_from_item_id(collection_item_id: str) -> MediaType:

@@ -889,7 +889,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
     ) -> MediaItemType | BrowseFolder:
         """Fetch MediaItem by uri."""
         media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
-        self.logger.error("%s %s %s", media_type, provider_instance_id_or_domain, item_id)
         return await self.get_item(
             media_type=media_type,
             item_id=item_id,
