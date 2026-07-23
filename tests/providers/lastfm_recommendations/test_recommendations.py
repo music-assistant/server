@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
 from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -163,3 +165,48 @@ async def test_get_recommendation_items_unknown_id_returns_empty(
 
     assert isinstance(result, UniqueList)
     assert len(result) == 0
+
+
+async def test_refresh_recommendations_serves_previous_generation_during_rebuild(
+    provider: LastFMRecommendationsProvider,
+) -> None:
+    """Old rows keep being served mid-rebuild; only the final swap replaces them."""
+    old_folders = _make_folders()
+    provider._recommendation_folders = old_folders
+
+    new_folder = RecommendationFolder(
+        item_id=f"{INSTANCE_ID}_new_row",
+        name="New Row",
+        translation_key="new_row",
+        provider=INSTANCE_ID,
+        items=UniqueList(),
+    )
+
+    builder_started = asyncio.Event()
+    resume_builder = asyncio.Event()
+
+    async def gated_builder() -> AsyncIterator[RecommendationFolder]:
+        builder_started.set()
+        await resume_builder.wait()
+        yield new_folder
+
+    provider.recommendations_manager.build_recommendation_folders = gated_builder  # type: ignore[method-assign]
+
+    refresh_task = asyncio.create_task(provider._refresh_recommendations())
+    await builder_started.wait()
+
+    # Mid-rebuild: the previous generation's rows and items are still served.
+    mid_rows = await provider.get_recommendations()
+    assert [row.item_id for row in mid_rows] == [
+        f"{INSTANCE_ID}_similar_artists",
+        f"{INSTANCE_ID}_chart_top_tracks",
+    ]
+    mid_items = await provider.get_recommendation_items(f"{INSTANCE_ID}_chart_top_tracks")
+    assert [item.item_id for item in mid_items] == ["t1"]
+
+    resume_builder.set()
+    await refresh_task
+
+    # After the swap: only the newly built generation is served.
+    new_rows = await provider.get_recommendations()
+    assert [row.item_id for row in new_rows] == [f"{INSTANCE_ID}_new_row"]

@@ -55,6 +55,9 @@ if TYPE_CHECKING:
 class YouSeeMusikProvider(MusicProvider, RecommendationPayloadMixin):
     """Provider implementation for YouSee Musik."""
 
+    # the personalized sections barely change intraday; keep the pre-refactor 24h interval
+    recommendation_payload_ttl = 3600 * 24
+
     auth: YouSeeAuthManager
 
     async def handle_async_init(self) -> None:

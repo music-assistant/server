@@ -2655,12 +2655,21 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             "timestamp = excluded.timestamp, queue_id = excluded.queue_id, "
             f"user_initiated = {DB_TABLE_PLAYLOG}.user_initiated OR excluded.user_initiated"
         )
+        # Resolve to the library item first, like _credit_artist_plays does, so an episode's
+        # parent-podcast credit lands on the same library-scoped row as an explicit play of the
+        # library show, instead of creating a separate provider-scoped duplicate.
+        db_podcast = await self.podcasts.get_library_item_by_prov_id(
+            podcast.item_id, podcast.provider
+        )
+        credited_podcast: Podcast | ItemMapping = db_podcast if db_podcast else podcast
         playlog_entry: dict[str, Any] = {
-            "item_id": podcast.item_id,
-            "provider": podcast.provider,
+            "item_id": credited_podcast.item_id,
+            "provider": "library" if db_podcast else podcast.provider,
             "media_type": MediaType.PODCAST.value,
-            "name": podcast.name,
-            "image": serialize_to_json(podcast.image.to_dict()) if podcast.image else None,
+            "name": credited_podcast.name,
+            "image": serialize_to_json(credited_podcast.image.to_dict())
+            if credited_podcast.image
+            else None,
             "fully_played": True,
             "seconds_played": None,
             "timestamp": timestamp,

@@ -139,3 +139,111 @@ async def test_partial_episode_does_not_credit_podcast(mass: MusicAssistant) -> 
         },
     )
     assert row is None, "Expected no playlog row for the parent podcast on partial play"
+
+
+async def test_library_podcast_episode_credits_library_scoped_row(
+    mass: MusicAssistant,
+) -> None:
+    """An episode of a library podcast credits the library row, not a provider-scoped duplicate."""
+    user = await mass.webserver.auth.create_user("podcastlibraryscoped")
+
+    ext_item_id = uuid4().hex
+    library_podcast = await mass.music.podcasts.add_item_to_library(
+        Podcast(
+            item_id="0",
+            provider="library",
+            name="Library Podcast Show",
+            provider_mappings={
+                ProviderMapping(
+                    item_id=ext_item_id,
+                    provider_domain="test_podcast_prov",
+                    provider_instance="test_podcast_prov",
+                )
+            },
+        )
+    )
+
+    # an explicit user play of the library show -> a user_initiated library-scoped row
+    await mass.music.mark_item_played(
+        library_podcast, fully_played=True, user_initiated=True, userid=user.user_id
+    )
+
+    # the episode's parent podcast carries provider-scoped ids, as returned by the provider layer
+    provider_scoped_podcast = Podcast(
+        item_id=ext_item_id,
+        provider="test_podcast_prov",
+        name="Library Podcast Show",
+        provider_mappings=_provider_mapping(),
+    )
+    episode = PodcastEpisode(
+        item_id="ep-lib-001",
+        provider="test_podcast_prov",
+        name="Episode 1",
+        provider_mappings=_provider_mapping(),
+        position=1,
+        podcast=provider_scoped_podcast,
+    )
+    await mass.music.mark_item_played(
+        episode, fully_played=True, user_initiated=False, userid=user.user_id
+    )
+
+    row = await mass.music.database.get_row(
+        DB_TABLE_PLAYLOG,
+        {
+            "media_type": MediaType.PODCAST.value,
+            "item_id": library_podcast.item_id,
+            "provider": "library",
+            "userid": user.user_id,
+        },
+    )
+    assert row is not None, "Expected the episode credit to land on the library-scoped row"
+    assert int(row["user_initiated"]) == 1, (
+        "the episode credit must merge into the library row, not downgrade it"
+    )
+
+    dup_row = await mass.music.database.get_row(
+        DB_TABLE_PLAYLOG,
+        {
+            "media_type": MediaType.PODCAST.value,
+            "item_id": ext_item_id,
+            "userid": user.user_id,
+        },
+    )
+    assert dup_row is None, "Should not create a separate provider-scoped duplicate row"
+
+
+async def test_non_library_podcast_episode_credits_provider_scoped_row(
+    mass: MusicAssistant,
+) -> None:
+    """An episode of a podcast that isn't in the library still credits the provider-scoped row."""
+    user = await mass.webserver.auth.create_user("podcastnonlibraryscoped")
+
+    podcast = Podcast(
+        item_id="show-004",
+        provider="test_podcast_prov",
+        name="Non-Library Show",
+        provider_mappings=_provider_mapping(),
+    )
+    episode = PodcastEpisode(
+        item_id="ep-004",
+        provider="test_podcast_prov",
+        name="Episode 4",
+        provider_mappings=_provider_mapping(),
+        position=1,
+        podcast=podcast,
+    )
+
+    await mass.music.mark_item_played(
+        episode, fully_played=True, user_initiated=False, userid=user.user_id
+    )
+
+    row = await mass.music.database.get_row(
+        DB_TABLE_PLAYLOG,
+        {
+            "media_type": MediaType.PODCAST.value,
+            "item_id": podcast.item_id,
+            "provider": podcast.provider,
+            "userid": user.user_id,
+        },
+    )
+    assert row is not None, "Expected a provider-scoped playlog row for the non-library podcast"

@@ -110,6 +110,9 @@ async def get_config_entries(
 class SoundcloudMusicProvider(MusicProvider, RecommendationPayloadMixin):
     """Provider for Soundcloud."""
 
+    # keep the pre-refactor 3h refresh interval for the mixed-selections payload
+    recommendation_payload_ttl = 3600 * 3
+
     _user_id: str = ""
     _soundcloud: SoundcloudAsyncAPI = None
     _me: dict[str, Any]

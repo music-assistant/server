@@ -175,12 +175,16 @@ class LastFMRecommendationsProvider(MetadataProvider):
 
     async def _refresh_recommendations(self) -> None:
         """Rebuild recommendation folders."""
-        self._recommendation_folders.clear()
+        # Build into a local list and swap it in atomically at the end, so a slow,
+        # rate-limited rebuild keeps serving the previous generation's rows instead of
+        # returning empty for folders that haven't been rebuilt yet.
+        new_folders: list[RecommendationFolder] = []
 
         try:
             self.logger.info("Building Last.fm recommendations")
             async for folder in self.recommendations_manager.build_recommendation_folders():
-                self._recommendation_folders.append(folder)
+                new_folders.append(folder)
+            self._recommendation_folders = new_folders
             self.logger.info(
                 "Last.fm recommendations built (%d folders)",
                 len(self._recommendation_folders),

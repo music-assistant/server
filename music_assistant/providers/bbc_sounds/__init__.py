@@ -134,6 +134,9 @@ async def get_config_entries(
 class BBCSoundsProvider(MusicProvider, RecommendationPayloadMixin):
     """A MusicProvider class to interact with the BBC Sounds API via auntie-sounds."""
 
+    # keep the pre-refactor 3h refresh interval for the experience-menu payload
+    recommendation_payload_ttl = 3600 * 3
+
     client: SoundsClient
     menu: Menu | None = None
     logged_in: bool = False

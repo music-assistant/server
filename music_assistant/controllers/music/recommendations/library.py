@@ -106,6 +106,7 @@ async def library_items(
                     MediaType.TRACK,
                     MediaType.PLAYLIST,
                     MediaType.ARTIST,
+                    MediaType.GENRE,
                 ],
                 user_initiated_only=True,
                 always_include_media_types=[MediaType.PODCAST, MediaType.AUDIOBOOK],

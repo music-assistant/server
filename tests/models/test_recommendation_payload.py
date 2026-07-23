@@ -8,11 +8,14 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import ItemMapping, RecommendationFolder
+from music_assistant_models.enums import ImageType, MediaType, RecommendationFolderType
+from music_assistant_models.media_items import ItemMapping, MediaItemImage, RecommendationFolder
 from music_assistant_models.unique_list import UniqueList
 
-from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
+from music_assistant.models.recommendation_payload import (
+    _PAYLOAD_CACHE_KEY,
+    RecommendationPayloadMixin,
+)
 
 INSTANCE_ID = "test_payload--instance1"
 
@@ -25,7 +28,8 @@ def _payload_dicts(payload: list[RecommendationFolder]) -> list[dict[str, Any]]:
     instances (BrowseFolder, its own base, is neither), so two structurally-identical
     but distinct RecommendationFolder objects always compare unequal - only the exact
     same object survives `==`. Comparing to_dict() output instead asserts the fields
-    actually match, which is what a warm-cache round trip (a fresh reconstruction) needs.
+    actually match, which is what a persisted-cache round trip (a fresh reconstruction
+    via from_dict) needs.
     """
     return [folder.to_dict() for folder in payload]
 
@@ -40,6 +44,9 @@ class _PayloadProvider(RecommendationPayloadMixin):
         self.logger = logging.getLogger(__name__)
         self._fetch = fetch
         self._cache_store: dict[str, Any] = {}
+        # freshness the fake cache reports for a hit; set False to simulate an
+        # expired persistent entry (returned as stale data, is_fresh=False)
+        self.cache_is_fresh = True
         self.background_tasks: list[asyncio.Future[Any]] = []
         self.mass = Mock()
         self.mass.cache.get_with_freshness = AsyncMock(side_effect=self._cache_get)
@@ -50,6 +57,10 @@ class _PayloadProvider(RecommendationPayloadMixin):
         result: list[RecommendationFolder] = await self._fetch()
         return result
 
+    def seed_cache(self, payload: list[RecommendationFolder]) -> None:
+        """Pre-fill the persistent cache store, as a previous run's store task would."""
+        self._cache_store[_PAYLOAD_CACHE_KEY] = _payload_dicts(payload)
+
     async def _cache_get(self, key: str, **kwargs: Any) -> tuple[Any, bool, bool]:
         if key not in self._cache_store:
             return None, False, False
@@ -59,9 +70,9 @@ class _PayloadProvider(RecommendationPayloadMixin):
             # mirrors production get_with_freshness: a list of dicts reconstructs as a
             # list of base_class instances, a single dict as one base_class instance
             if isinstance(data, list):
-                return [base_class.from_dict(item) for item in data], True, True
-            return base_class.from_dict(data), True, True
-        return data, True, True
+                return [base_class.from_dict(item) for item in data], self.cache_is_fresh, True
+            return base_class.from_dict(data), self.cache_is_fresh, True
+        return data, self.cache_is_fresh, True
 
     async def _cache_set(self, key: str, data: Any, **kwargs: Any) -> None:
         # mirrors production: entries are stored serialized (to_dict), reconstructed
@@ -79,8 +90,14 @@ class _PayloadProvider(RecommendationPayloadMixin):
         return task
 
 
+async def _drain_background(provider: _PayloadProvider) -> None:
+    """Let all background tasks finish, including tasks they spawn while draining."""
+    while pending := [task for task in provider.background_tasks if not task.done()]:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
 def _make_payload() -> list[RecommendationFolder]:
-    """Build a two-folder payload with items and all identity fields set."""
+    """Build a two-folder payload with items and all identity/presentation fields set."""
     return [
         RecommendationFolder(
             item_id=f"{INSTANCE_ID}_editorial",
@@ -90,6 +107,15 @@ def _make_payload() -> list[RecommendationFolder]:
             icon="mdi-star",
             subtitle="Picked for you",
             enabled_by_default=False,
+            is_playable=True,
+            media_type=MediaType.PLAYLIST,
+            type=RecommendationFolderType.TIMELINE,
+            image=MediaItemImage(
+                type=ImageType.THUMB,
+                path="http://backend/editorial.jpg",
+                provider=INSTANCE_ID,
+                remotely_accessible=True,
+            ),
             items=UniqueList(
                 [
                     ItemMapping(
@@ -119,16 +145,35 @@ def _make_payload() -> list[RecommendationFolder]:
     ]
 
 
+def _make_fresh_payload() -> list[RecommendationFolder]:
+    """Build a single-folder payload distinct from _make_payload, for refresh scenarios."""
+    return [
+        RecommendationFolder(
+            item_id=f"{INSTANCE_ID}_fresh",
+            provider=INSTANCE_ID,
+            name="Fresh",
+            items=UniqueList(
+                [
+                    ItemMapping(
+                        media_type=MediaType.TRACK,
+                        item_id="t2",
+                        provider=INSTANCE_ID,
+                        name="Track Two",
+                    )
+                ]
+            ),
+        )
+    ]
+
+
 @pytest.mark.asyncio
 async def test_rows_and_items_share_one_payload_fetch() -> None:
-    """Rows and two items calls are served from a single backend fetch via the cache."""
+    """Rows and two items calls are served from a single backend fetch via memory."""
     payload = _make_payload()
     fetch = AsyncMock(return_value=payload)
     provider = _PayloadProvider(fetch)
 
     rows = await provider._recommendation_rows_from_payload()
-    # let the background cache-store task complete before the next calls
-    await asyncio.gather(*provider.background_tasks)
     items_editorial = await provider._recommendation_items_from_payload(f"{INSTANCE_ID}_editorial")
     items_charts = await provider._recommendation_items_from_payload(f"{INSTANCE_ID}_charts")
 
@@ -137,17 +182,41 @@ async def test_rows_and_items_share_one_payload_fetch() -> None:
         f"{INSTANCE_ID}_editorial",
         f"{INSTANCE_ID}_charts",
     ]
-    assert items_editorial == payload[0].items
-    assert items_charts == payload[1].items
-    # the round trip through to_dict/from_dict reconstructed fresh objects, not the
-    # same live items the fetch returned - a fidelity regression would still pass
-    # this equality check if the cache handed back the original in-memory objects
-    assert items_editorial is not payload[0].items
-    assert items_charts is not payload[1].items
-    assert isinstance(items_editorial[0], ItemMapping)
-    assert items_editorial[0].item_id == "t1"
-    assert isinstance(items_charts[0], ItemMapping)
-    assert items_charts[0].item_id == "p1"
+    # warm calls serve the payload straight from memory: the very objects the
+    # backend fetch returned, with no cache-db round trip / re-deserialization
+    assert items_editorial is payload[0].items
+    assert items_charts is payload[1].items
+    # the fetch also stored the payload persistently, under the legacy cache key
+    await _drain_background(provider)
+    assert provider._cache_store[_PAYLOAD_CACHE_KEY] == _payload_dicts(payload)
+
+
+@pytest.mark.asyncio
+async def test_cold_start_rows_then_items_before_store_lands_fetches_once() -> None:
+    """The cold-start rows->items sequence does one fetch even if the store hasn't landed."""
+    payload = _make_payload()
+    fetch = AsyncMock(return_value=payload)
+    provider = _PayloadProvider(fetch)
+    # hold back the persistent store so the items call cannot be served by the cache db
+    store_gate = asyncio.Event()
+    plain_set = provider._cache_set
+
+    async def _gated_set(key: str, data: Any, **kwargs: Any) -> None:
+        await store_gate.wait()
+        await plain_set(key, data, **kwargs)
+
+    provider.mass.cache.set = AsyncMock(side_effect=_gated_set)
+
+    rows = await provider._recommendation_rows_from_payload()
+    items = await provider._recommendation_items_from_payload(f"{INSTANCE_ID}_editorial")
+
+    fetch.assert_awaited_once()
+    assert len(rows) == 2
+    assert items is payload[0].items
+
+    store_gate.set()
+    await _drain_background(provider)
+    assert provider._cache_store[_PAYLOAD_CACHE_KEY] == _payload_dicts(payload)
 
 
 @pytest.mark.asyncio
@@ -185,8 +254,8 @@ async def test_unknown_item_id_returns_empty() -> None:
 
 
 @pytest.mark.asyncio
-async def test_rows_have_empty_items_but_preserve_identity() -> None:
-    """Rows are stripped of items while keeping all identity fields of the payload folder."""
+async def test_rows_have_empty_items_but_preserve_all_fields() -> None:
+    """Rows are stripped of items while keeping every other field of the payload folder."""
     payload = _make_payload()
     fetch = AsyncMock(return_value=payload)
     provider = _PayloadProvider(fetch)
@@ -202,61 +271,107 @@ async def test_rows_have_empty_items_but_preserve_identity() -> None:
     assert editorial.icon == "mdi-star"
     assert editorial.subtitle == "Picked for you"
     assert editorial.enabled_by_default is False
+    # presentation/behavior fields survive the copy too (regression: an explicit
+    # field-by-field copy silently dropped these)
+    assert editorial.is_playable is True
+    assert editorial.media_type == MediaType.PLAYLIST
+    assert editorial.type == RecommendationFolderType.TIMELINE
+    assert editorial.image is not None
+    assert editorial.image.path == "http://backend/editorial.jpg"
     # stripping produced fresh copies: the payload folders keep their items
     assert editorial is not payload[0]
     assert len(payload[0].items) == 1
 
 
 @pytest.mark.asyncio
-async def test_refresh_fetches_fresh_and_stores_through_cached_path() -> None:
-    """_refresh_recommendation_payload bypasses the cached read and updates the cache entry."""
+async def test_stale_persistent_entry_served_with_single_background_refresh() -> None:
+    """A stale persisted payload is served immediately while exactly one refresh runs."""
+    stale = _make_payload()
+    fresh = _make_fresh_payload()
+    gate = asyncio.Event()
+
+    async def _gated_fetch() -> list[RecommendationFolder]:
+        await gate.wait()
+        return fresh
+
+    fetch = AsyncMock(side_effect=_gated_fetch)
+    provider = _PayloadProvider(fetch)
+    provider.seed_cache(stale)
+    provider.cache_is_fresh = False
+
+    # the stale payload is served without waiting for the backend
+    rows = await provider._recommendation_rows_from_payload()
+    assert [row.item_id for row in rows] == [folder.item_id for folder in stale]
+    # exactly one background refresh was scheduled and is now blocked in the backend call
+    await asyncio.sleep(0)
+    assert fetch.await_count == 1
+    # a second call while the refresh runs serves stale data and schedules no duplicate
+    items = await provider._recommendation_items_from_payload(f"{INSTANCE_ID}_editorial")
+    assert [item.item_id for item in items] == ["t1"]
+    await asyncio.sleep(0)
+    assert fetch.await_count == 1
+
+    gate.set()
+    await _drain_background(provider)
+
+    # the refreshed payload replaced both the in-memory payload and the cache entry
+    assert await provider._recommendation_payload() == fresh
+    assert provider._cache_store[_PAYLOAD_CACHE_KEY] == _payload_dicts(fresh)
+    assert fetch.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_fresh_persistent_entry_serves_cold_instance_without_fetch() -> None:
+    """A fresh persisted payload warms a cold instance without any backend fetch."""
+    payload = _make_payload()
+    fetch = AsyncMock(return_value=payload)
+    provider = _PayloadProvider(fetch)
+    provider.seed_cache(payload)
+
+    rows = await provider._recommendation_rows_from_payload()
+    items = await provider._recommendation_items_from_payload(f"{INSTANCE_ID}_editorial")
+
+    fetch.assert_not_awaited()
+    # the cache db was read exactly once; the items call was served from memory
+    provider.mass.cache.get_with_freshness.assert_awaited_once()
+    assert [row.item_id for row in rows] == [folder.item_id for folder in payload]
+    assert [item.item_id for item in items] == ["t1"]
+
+
+@pytest.mark.asyncio
+async def test_refresh_fetches_fresh_and_stores() -> None:
+    """_refresh_recommendation_payload bypasses cached data and updates memory + cache."""
     stale = _make_payload()
     fetch = AsyncMock(return_value=stale)
     provider = _PayloadProvider(fetch)
-    # warm the cache with the stale payload
+    # warm memory and the persistent cache with the stale payload
     await provider._recommendation_payload()
-    await asyncio.gather(*provider.background_tasks)
-    fresh = [
-        RecommendationFolder(
-            item_id=f"{INSTANCE_ID}_fresh",
-            provider=INSTANCE_ID,
-            name="Fresh",
-            items=UniqueList(
-                [
-                    ItemMapping(
-                        media_type=MediaType.TRACK,
-                        item_id="t2",
-                        provider=INSTANCE_ID,
-                        name="Track Two",
-                    )
-                ]
-            ),
-        )
-    ]
+    await _drain_background(provider)
+    fresh = _make_fresh_payload()
     fetch.return_value = fresh
 
     result = await provider._refresh_recommendation_payload()
 
     assert result == fresh
     assert fetch.await_count == 2
-    # the refresh stored under the same key the @use_cache decorator maintains,
-    # so subsequent cached reads serve the fresh payload without another fetch
-    assert set(provider._cache_store) == {"_cached_recommendation_payload"}
-    # this read is a genuine warm-cache hit (reconstructed via from_dict), so folder
-    # equality is compared structurally - see _payload_dicts
-    assert _payload_dicts(await provider._recommendation_payload()) == _payload_dicts(fresh)
+    await _drain_background(provider)
+    # the refresh stored under the same (legacy) key, replacing the stale entry
+    assert set(provider._cache_store) == {_PAYLOAD_CACHE_KEY}
+    assert provider._cache_store[_PAYLOAD_CACHE_KEY] == _payload_dicts(fresh)
+    # subsequent payload calls serve the refreshed payload from memory, no new fetch
+    assert await provider._recommendation_payload() == fresh
     assert fetch.await_count == 2
 
 
 @pytest.mark.asyncio
 async def test_refresh_raising_fetch_does_not_store_and_does_not_poison_retry() -> None:
-    """A raising refresh propagates without storing; a stale cache still serves, and retries."""
+    """A raising refresh propagates without storing; cached data still serves, and retries."""
     stale = _make_payload()
     fetch = AsyncMock(return_value=stale)
     provider = _PayloadProvider(fetch)
-    # warm the cache with the stale payload
+    # warm memory and the persistent cache with the stale payload
     await provider._recommendation_payload()
-    await asyncio.gather(*provider.background_tasks)
+    await _drain_background(provider)
     provider.mass.cache.set.reset_mock()
 
     fetch.side_effect = RuntimeError("backend down")
@@ -265,36 +380,20 @@ async def test_refresh_raising_fetch_does_not_store_and_does_not_poison_retry() 
         await provider._refresh_recommendation_payload()
 
     provider.mass.cache.set.assert_not_awaited()
-    # the previously cached (stale) payload still serves; this is a genuine
-    # warm-cache hit (reconstructed via from_dict), so compare structurally
-    assert _payload_dicts(await provider._recommendation_payload()) == _payload_dicts(stale)
+    # the previously fetched payload still serves from memory
+    assert await provider._recommendation_payload() == stale
     assert fetch.await_count == 2
 
-    fresh = [
-        RecommendationFolder(
-            item_id=f"{INSTANCE_ID}_fresh",
-            provider=INSTANCE_ID,
-            name="Fresh",
-            items=UniqueList(
-                [
-                    ItemMapping(
-                        media_type=MediaType.TRACK,
-                        item_id="t2",
-                        provider=INSTANCE_ID,
-                        name="Track Two",
-                    )
-                ]
-            ),
-        )
-    ]
+    fresh = _make_fresh_payload()
     fetch.side_effect = None
     fetch.return_value = fresh
 
     result = await provider._refresh_recommendation_payload()
 
     assert result == fresh
+    await _drain_background(provider)
     provider.mass.cache.set.assert_awaited_once()
-    assert _payload_dicts(await provider._recommendation_payload()) == _payload_dicts(fresh)
+    assert await provider._recommendation_payload() == fresh
     assert fetch.await_count == 3
 
 
@@ -351,6 +450,35 @@ async def test_cancelled_waiter_does_not_cancel_shared_fetch() -> None:
         await fast_caller
     # the shared fetch completed exactly once despite the cancelled waiter
     fetch.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_sole_cancelled_waiter_fetch_still_warms_memory_and_cache() -> None:
+    """A cold fetch whose only waiter is cancelled still completes and warms memory + cache."""
+    payload = _make_payload()
+    gate = asyncio.Event()
+
+    async def _gated_fetch() -> list[RecommendationFolder]:
+        await gate.wait()
+        return payload
+
+    fetch = AsyncMock(side_effect=_gated_fetch)
+    provider = _PayloadProvider(fetch)
+
+    sole_caller = asyncio.create_task(provider._recommendation_payload())
+    await asyncio.sleep(0)
+    # the rows timeout case: the only waiter is cancelled mid-fetch
+    sole_caller.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await sole_caller
+
+    gate.set()
+    await _drain_background(provider)
+
+    # the shielded fetch completed anyway: memory and cache are warm, no second fetch
+    assert await provider._recommendation_payload() == payload
+    fetch.assert_awaited_once()
+    assert provider._cache_store[_PAYLOAD_CACHE_KEY] == _payload_dicts(payload)
 
 
 @pytest.mark.asyncio

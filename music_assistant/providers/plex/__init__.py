@@ -514,6 +514,9 @@ MediaItemT = TypeVar("MediaItemT", bound=MediaItem)
 class PlexProvider(MusicProvider, RecommendationPayloadMixin):
     """Provider for a plex music library."""
 
+    # keep the pre-refactor 3h refresh interval for the hubs payload
+    recommendation_payload_ttl = 3600 * 3
+
     _plex_server: PlexServer = None
     _plex_library: PlexMusicSection = None
     _myplex_account: MyPlexAccount = None
