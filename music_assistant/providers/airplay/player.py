@@ -316,6 +316,14 @@ class AirPlayPlayer(Player):
 
     async def play(self) -> None:
         """Send PLAY (unpause) command to player."""
+        if self.group_members or self.synced_to:
+            # Grouped pause parks the whole session (standby); unpausing one
+            # member cannot restart the group in sync. Resume via the queue
+            # instead: play_media commits a fresh generation to every parked
+            # member at one shared instant.
+            queue_id = self.synced_to or self.player_id
+            await self.mass.player_queues.resume(queue_id, fade_in=False)
+            return
         async with self._lock:
             if self.stream and self.stream.running:
                 await self.stream.send_cli_command("ACTION=PLAY")
@@ -323,12 +331,21 @@ class AirPlayPlayer(Player):
     async def pause(self) -> None:
         """Send PAUSE command to player."""
         if self.group_members or self.synced_to:
-            # Each member of a sync group is an independent cliairplay process anchored
-            # to a shared start instant; a broadcast pause/resume cannot keep the members
-            # sample-aligned on resume. So grouped/synced playback is paused by stopping
-            # the whole session and letting the queue controller resume it from the saved
-            # position with a fresh shared anchor.
-            self.logger.debug("Player is part of a sync group, using STOP instead of PAUSE")
+            # A broadcast pause cannot keep independent member processes
+            # sample-aligned on resume. Instead the session is parked: every
+            # member stalls but keeps its connection (and remote control), and
+            # the queue's resume commits a new generation over the live
+            # connections — the same coordinated warm restart as seek/next.
+            if (
+                self.stream
+                and self.stream.running
+                and self.stream.session
+                and await self.stream.session.standby()
+            ):
+                return
+            # some member cannot be parked (e.g. RAOP legacy): full stop and
+            # let the queue controller resume from the saved position
+            self.logger.debug("Sync group cannot be parked, using STOP instead of PAUSE")
             await self.stop()
             return
 
@@ -362,6 +379,16 @@ class AirPlayPlayer(Player):
                 )
                 if await self.stream.session.replace(audio_source, media):
                     self._transitioning = False
+                    # A seek changes no media identity, so the identity-driven
+                    # metadata callback stays silent and receivers would show
+                    # a stale Now Playing position; nudge every member once
+                    # the queue position has settled.
+                    for member in self.stream.session.sync_clients:
+                        self.mass.call_later(
+                            1,
+                            member._on_player_media_updated,
+                            task_id=f"player_media_updated_{member.player_id}",
+                        )
                     return
                 # warm replacement failed; fall through to a cold restart
 

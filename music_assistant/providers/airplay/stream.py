@@ -657,40 +657,9 @@ class AirPlayStream:
         async for line in self._cli_proc.iter_stderr():
             if self._stopped:
                 break
-
-            if "[STATUS] connected" in line:
-                self._connected.set()
-            elif "[STATUS] playing elapsed_ms=" in line:
-                try:
-                    millis = int(line.split("elapsed_ms=")[1])
-                except ValueError, IndexError:
-                    pass
-                else:
-                    self._update_elapsed(millis / 1000)
-            elif "[STATUS] paused" in line:
-                player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
-            elif "[STATUS] ready generation=" in line:
-                if (event := self._gen_ready.get(self._parse_generation(line))) is not None:
-                    event.set()
-            elif "[STATUS] primed generation=" in line:
-                if (event := self._gen_primed.get(self._parse_generation(line))) is not None:
-                    event.set()
-            elif "[STATUS] input_eof generation=" in line:
-                logger.debug("cliairplay: %s", line.strip())
-            elif "[STATUS] eof generation=" in line:
-                # A generation's input finished. Only the ACTIVE generation
-                # ending matters; a retired generation's eof is just noise.
-                # The plain "[STATUS] eof" line that follows drives the
-                # end-of-stream path for the final generation.
-                if self._parse_generation(line) != self._generation:
-                    logger.debug("stale generation eof ignored: %s", line.strip())
-            elif "[STATUS] eof" in line:
-                logger.debug("End of stream reached")
+            if self._handle_status_line(line):
                 expected_eof = True
                 break
-            elif "[ERROR]" in line:
-                logger.error("cliairplay: %s", line.strip())
-
             logger.log(VERBOSE_LOG_LEVEL, line)
             await asyncio.sleep(0)
 
@@ -714,6 +683,47 @@ class AirPlayStream:
                 player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
             finally:
                 await self.commands_pipe.remove()
+
+    def _handle_status_line(self, line: str) -> bool:
+        """Dispatch one cliairplay status line; True ends the stderr loop."""
+        player = self.player
+        if "[STATUS] connected" in line:
+            self._connected.set()
+        elif "[STATUS] playing elapsed_ms=" in line:
+            try:
+                millis = int(line.split("elapsed_ms=")[1])
+            except ValueError, IndexError:
+                pass
+            else:
+                self._update_elapsed(millis / 1000)
+        elif "[STATUS] paused" in line:
+            player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
+        elif "[STATUS] ready generation=" in line:
+            if (event := self._gen_ready.get(self._parse_generation(line))) is not None:
+                event.set()
+        elif "[STATUS] primed generation=" in line:
+            if (event := self._gen_primed.get(self._parse_generation(line))) is not None:
+                event.set()
+        elif "[STATUS] input_eof generation=" in line:
+            player.logger.debug("cliairplay: %s", line.strip())
+        elif "[STATUS] eof generation=" in line:
+            # A generation's input finished. Only the ACTIVE generation
+            # ending matters; a retired generation's eof is just noise.
+            # The plain "[STATUS] eof" line that follows drives the
+            # end-of-stream path for the final generation.
+            if self._parse_generation(line) != self._generation:
+                player.logger.debug("stale generation eof ignored: %s", line.strip())
+        elif "[STATUS] idle_timeout" in line:
+            # a parked (paused) session outlived the binary's idle cap;
+            # treat it as a normal end of stream
+            player.logger.debug("cliairplay idle timeout reached")
+            return True
+        elif "[STATUS] eof" in line:
+            player.logger.debug("End of stream reached")
+            return True
+        elif "[ERROR]" in line:
+            player.logger.error("cliairplay: %s", line.strip())
+        return False
 
     @staticmethod
     def _parse_generation(line: str) -> int:

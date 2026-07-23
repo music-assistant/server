@@ -218,6 +218,36 @@ class AirPlayStreamSession:
                     await asyncio.to_thread(os.unlink, fifo)
         return True
 
+    async def standby(self) -> bool:
+        """
+        Park the session: stall every member but keep the connections alive.
+
+        The next play_media (resume or seek) commits a new generation over the
+        live connections — the same coordinated warm restart as seek/next.
+        Returns False when any member lacks a running AirPlay 2 stream (RAOP
+        cannot be parked), so the caller can fall back to a full stop.
+        """
+        if not all(
+            p.stream is not None and p.stream.running and p.protocol == StreamingProtocol.AIRPLAY2
+            for p in self.sync_clients
+        ):
+            return False
+        if self._audio_source_task and not self._audio_source_task.done():
+            self._audio_source_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._audio_source_task
+        for player in self.sync_clients:
+            if ffmpeg := self._player_ffmpeg.pop(player.player_id, None):
+                await ffmpeg.kill()
+            stream = player.stream
+            assert stream
+            await stream.send_cli_command("ACTION=STANDBY")
+            player.set_state_from_stream(state=PlaybackState.PAUSED, stream=stream)
+        # a parked session has no live timeline; the resume re-anchors it
+        self.seconds_streamed = 0
+        self._pcm_buffer.clear()
+        return True
+
     async def stop(self) -> None:
         """Stop playback and cleanup."""
         if self._audio_source_task and not self._audio_source_task.done():
