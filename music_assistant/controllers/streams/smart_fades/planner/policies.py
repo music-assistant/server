@@ -161,9 +161,12 @@ class DeadAirPolicy(Policy):
         if peak <= 0.0:
             return False
         bin_seconds = duration / len(rms)
-        fade_start = ctx.buffer_offset + plan.fade_out_window - plan.crossfade_duration
-        low = max(0, int((fade_start - self.lookback_seconds) / bin_seconds))
-        high = max(low + 1, min(len(rms), int(fade_start / bin_seconds)))
+        # sample the source RMS over the last lookback window ending at the cut
+        # anchor; the stored energy is unfaded, so this reads the outgoing's own
+        # level right before the cut with no crossfade-ramp or tempo-stretch mixed in
+        anchor = ctx.buffer_offset + plan.fade_out_window
+        low = max(0, int((anchor - self.lookback_seconds) / bin_seconds))
+        high = max(low + 1, min(len(rms), int(anchor / bin_seconds)))
         window = rms[low:high]
         return sum(window) / len(window) >= peak * self.hot_outgoing_floor
 
