@@ -853,3 +853,4 @@ def _namespaced_translation_key(translation_key: str | None) -> str | None:
     if translation_key and "." not in translation_key:
         return f"background_task.{translation_key}"
     return translation_key
+
