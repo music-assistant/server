@@ -29,6 +29,7 @@ from music_assistant.models.player_provider import PlayerProvider
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_VOLUME_MUTE,
+    COMPANION_DISCOVERY_TYPE,
     CONF_FORCE_RAOP,
     CONF_IGNORE_VOLUME,
     CONF_LEGACY_AIRPLAY_PROTOCOL,
@@ -38,18 +39,20 @@ from .constants import (
     CONF_SYNC_ADJUST_RESET_MARKER,
     DACP_DISCOVERY_TYPE,
     FALLBACK_VOLUME,
+    MRP_DISCOVERY_TYPE,
     RAOP_DISCOVERY_TYPE,
     AirPlayRemoteCommand,
     StreamingProtocol,
 )
-from .helpers import convert_airplay_volume, get_cli_binary, get_model_info
-from .player import AirPlayPlayer
+from .control_player import AirPlayControlPlayer
+from .helpers import (
+    convert_airplay_volume,
+    get_cli_binary,
+    get_model_info,
+    is_apple_device,
+)
+from .player import AirPlayPlayer, GenericAirPlayPlayer
 from .sendspin_bridge import SendspinBridgeManager
-
-# TODO: AirPlay provider
-# Implement Companion protocol for communicating with original Apple (TV) devices
-# This allows for getting state/metadata changes from the device,
-# even if we are not actively streaming to it.
 
 # Marker the `cliairplay --ptp-daemon` process prints once it has bound the
 # privileged PTP ports (UDP 319/320) and opened its control channel. Until this
@@ -160,6 +163,9 @@ class AirPlayProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        self._companion_info_by_address: dict[str, AsyncServiceInfo] = {}
+        self._mrp_info_by_address: dict[str, AsyncServiceInfo] = {}
+
         # Initialize Sendspin bridge manager for protocol linking
         self._bridge_manager = SendspinBridgeManager(self)
 
@@ -199,6 +205,14 @@ class AirPlayProvider(PlayerProvider):
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Handle MDNS service state callback."""
+        if (info and info.type == COMPANION_DISCOVERY_TYPE) or name.endswith(
+            COMPANION_DISCOVERY_TYPE
+        ):
+            await self._handle_companion_service_state_change(name, state_change, info)
+            return
+        if (info and info.type == MRP_DISCOVERY_TYPE) or name.endswith(MRP_DISCOVERY_TYPE):
+            await self._handle_mrp_service_state_change(name, state_change, info)
+            return
         if not info:
             if state_change == ServiceStateChange.Removed and "@" in name:
                 # Service name is enough to mark the player as unavailable on 'Removed' notification
@@ -306,11 +320,12 @@ class AirPlayProvider(PlayerProvider):
             )
 
         if airplay_discovery_info:
-            manufacturer, model = get_model_info(airplay_discovery_info)
+            model_discovery_info = airplay_discovery_info
         elif raop_discovery_info:
-            manufacturer, model = get_model_info(raop_discovery_info)
+            model_discovery_info = raop_discovery_info
         else:
             return  # should not happen, but guard just in case
+        manufacturer, model = get_model_info(model_discovery_info)
 
         prefer_ipv6 = ":" in str(self.mass.streams.publish_ip)
         address = get_primary_ip_address_from_zeroconf(discovery_info, prefer_ipv6=prefer_ipv6)
@@ -360,23 +375,209 @@ class AirPlayProvider(PlayerProvider):
             model,
         )
 
-        # Create single AirPlayPlayer for all devices
-        # Pairing config entries will be shown conditionally based on device type
-        player = AirPlayPlayer(
-            provider=self,
-            player_id=player_id,
-            raop_discovery_info=raop_discovery_info,
-            airplay_discovery_info=airplay_discovery_info,
-            address=address,
-            display_name=display_name,
-            manufacturer=manufacturer,
-            model=model,
-            initial_volume=volume,
+        player_addresses = self._get_discovery_addresses(
+            airplay_discovery_info,
+            raop_discovery_info,
         )
+        player_addresses.add(address)
+        # Apple TVs and HomePods are standalone players with a native control
+        # plane (Companion/MRP); all other receivers are protocol endpoints.
+        # The model is decided from the device's own identity only: it defines
+        # the player id exposed to API consumers (e.g. Home Assistant), so it
+        # must not vary with the discovery timing of the separate Companion/MRP
+        # mDNS records. Which control features are offered on a control player
+        # is decided from the advertised capabilities instead.
+        enhanced_control = is_apple_device(manufacturer, model)
+        companion_info: AsyncServiceInfo | None = None
+        mrp_info: AsyncServiceInfo | None = None
+        if enhanced_control:
+            companion_info, mrp_info = await asyncio.gather(
+                self._get_related_discovery_info(
+                    COMPANION_DISCOVERY_TYPE,
+                    self._companion_info_by_address,
+                    player_addresses,
+                    display_name,
+                ),
+                self._get_related_discovery_info(
+                    MRP_DISCOVERY_TYPE,
+                    self._mrp_info_by_address,
+                    player_addresses,
+                    display_name,
+                ),
+            )
+
+        player: AirPlayPlayer
+        if enhanced_control:
+            player = AirPlayControlPlayer(
+                provider=self,
+                player_id=player_id,
+                raop_discovery_info=raop_discovery_info,
+                airplay_discovery_info=airplay_discovery_info,
+                companion_discovery_info=companion_info,
+                mrp_discovery_info=mrp_info,
+                address=address,
+                display_name=display_name,
+                manufacturer=manufacturer,
+                model=model,
+                initial_volume=volume,
+            )
+        else:
+            player = GenericAirPlayPlayer(
+                provider=self,
+                player_id=player_id,
+                raop_discovery_info=raop_discovery_info,
+                airplay_discovery_info=airplay_discovery_info,
+                address=address,
+                display_name=display_name,
+                manufacturer=manufacturer,
+                model=model,
+                initial_volume=volume,
+            )
         await self.mass.players.register(player)
 
         # Set up Sendspin bridge for protocol linking (if Sendspin provider is available)
         await self._bridge_manager.evaluate_bridge(player)
+
+    async def _handle_companion_service_state_change(
+        self,
+        name: str,
+        state_change: ServiceStateChange,
+        info: AsyncServiceInfo | None,
+    ) -> None:
+        """Associate a Companion service with its controlled AirPlay player."""
+        if state_change == ServiceStateChange.Removed:
+            # Keep the last endpoint while the device sleeps. Some devices can
+            # withdraw services from mDNS before Companion reports the asleep
+            # state, but the existing endpoint is still needed to wake them.
+            return
+        if info is None:
+            return
+
+        addresses = self._cache_control_service(self._companion_info_by_address, info)
+        player = self._find_airplay_player(addresses)
+        if isinstance(player, AirPlayControlPlayer):
+            await player.set_companion_discovery_info(info)
+
+    async def _handle_mrp_service_state_change(
+        self,
+        name: str,
+        state_change: ServiceStateChange,
+        info: AsyncServiceInfo | None,
+    ) -> None:
+        """Associate an MRP service with its controlled AirPlay player."""
+        if state_change == ServiceStateChange.Removed or info is None:
+            return
+        addresses = self._cache_control_service(self._mrp_info_by_address, info)
+        player = self._find_airplay_player(addresses)
+        if isinstance(player, AirPlayControlPlayer):
+            await player.set_mrp_discovery_info(info)
+
+    async def _get_related_discovery_info(
+        self,
+        service_type: str,
+        info_by_address: dict[str, AsyncServiceInfo],
+        player_addresses: set[str],
+        display_name: str,
+    ) -> AsyncServiceInfo | None:
+        """Return a related control service from cache or mDNS discovery."""
+        for address in player_addresses:
+            if discovery_info := info_by_address.get(address):
+                return discovery_info
+        if discovery_info := await self._find_cached_discovery_info(
+            service_type,
+            player_addresses,
+        ):
+            self._cache_control_service(info_by_address, discovery_info)
+            return discovery_info
+        discovery_info = await self.mass.discovery.async_find_mdns_service(
+            service_type,
+            display_name,
+        )
+        if discovery_info is None:
+            discovery_info = await self._find_cached_discovery_info(
+                service_type,
+                player_addresses,
+            )
+            if discovery_info is None:
+                return None
+        if player_addresses.isdisjoint(discovery_info.parsed_addresses()):
+            return None
+        self._cache_control_service(info_by_address, discovery_info)
+        return discovery_info
+
+    async def _find_cached_discovery_info(
+        self,
+        service_type: str,
+        player_addresses: set[str],
+    ) -> AsyncServiceInfo | None:
+        """Find a cached mDNS service sharing an address with the AirPlay endpoint."""
+        service_type_lower = service_type.lower()
+        for mdns_name in set(self.mass.discovery.aiozc.zeroconf.cache.cache):
+            if service_type_lower not in mdns_name or mdns_name == service_type_lower:
+                continue
+            discovery_info = AsyncServiceInfo(service_type, mdns_name)
+            if not await discovery_info.async_request(
+                self.mass.discovery.aiozc.zeroconf,
+                3000,
+            ):
+                continue
+            if not player_addresses.isdisjoint(discovery_info.parsed_addresses()):
+                return discovery_info
+        return None
+
+    def _find_airplay_player(self, addresses: set[str]) -> AirPlayPlayer | None:
+        """Return the AirPlay player matching any advertised address."""
+        return next(
+            (
+                candidate
+                for candidate in self.get_players()
+                if not addresses.isdisjoint(
+                    {
+                        candidate.address,
+                        *self._get_discovery_addresses(
+                            candidate.airplay_discovery_info,
+                            candidate.raop_discovery_info,
+                            candidate.mrp_discovery_info
+                            if isinstance(candidate, AirPlayControlPlayer)
+                            else None,
+                        ),
+                    }
+                )
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _cache_control_service(
+        info_by_address: dict[str, AsyncServiceInfo],
+        info: AsyncServiceInfo,
+    ) -> set[str]:
+        """Cache a control service by address and return its current addresses."""
+        addresses = set(info.parsed_addresses())
+        # Drop addresses this service no longer advertises (e.g. after a DHCP
+        # change), so a stale entry can never classify a future device that
+        # gets the old address assigned.
+        for stale_address in [
+            address
+            for address, cached in info_by_address.items()
+            if cached.name == info.name and address not in addresses
+        ]:
+            del info_by_address[stale_address]
+        for address in addresses:
+            info_by_address[address] = info
+        return addresses
+
+    @staticmethod
+    def _get_discovery_addresses(
+        *discovery_infos: AsyncServiceInfo | None,
+    ) -> set[str]:
+        """Return all IP addresses advertised by the given mDNS services."""
+        return {
+            address
+            for discovery_info in discovery_infos
+            if discovery_info is not None
+            for address in discovery_info.parsed_addresses()
+        }
 
     def _migrate_sync_adjust(self) -> None:
         """One-time reset of persisted sync_adjust values on this provider's players."""
