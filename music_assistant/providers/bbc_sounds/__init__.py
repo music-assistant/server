@@ -131,7 +131,7 @@ async def get_config_entries(
     )
 
 
-class BBCSoundsProvider(MusicProvider, RecommendationPayloadMixin):
+class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
     """A MusicProvider class to interact with the BBC Sounds API via auntie-sounds."""
 
     # keep the pre-refactor 3h refresh interval for the experience-menu payload

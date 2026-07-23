@@ -190,7 +190,7 @@ async def get_config_entries(
     )
 
 
-class YoutubeMusicProvider(MusicProvider, RecommendationPayloadMixin):
+class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     """Provider for Youtube Music."""
 
     _headers: dict[str, str]

@@ -6,7 +6,7 @@ import asyncio
 import dataclasses
 import logging
 import time
-from typing import TYPE_CHECKING, Protocol, TypeVar, cast
+from typing import TYPE_CHECKING, TypeVar, cast
 
 from music_assistant_models.media_items import RecommendationFolder
 from music_assistant_models.unique_list import UniqueList
@@ -17,26 +17,12 @@ if TYPE_CHECKING:
 
     from music_assistant_models.media_items import BrowseFolder, ItemMapping, MediaItemType
 
-    from music_assistant import MusicAssistant
     from music_assistant.helpers.json import SerializableType
 
-    class _RecommendationPayloadHost(Protocol):
-        """Requirements a provider must fulfil to use RecommendationPayloadMixin."""
-
-        mass: MusicAssistant
-        logger: logging.Logger
-
-        @property
-        def domain(self) -> str: ...
-
-        @property
-        def instance_id(self) -> str: ...
-
-        async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
-            """Fetch and parse the full recommendations payload (folders WITH items)."""
-            ...
-
-    _MixinBase = _RecommendationPayloadHost
+    # type the mixin against the Provider base it composes with, so self.mass,
+    # self.logger, instance_id and the unload() chain resolve without redeclaring
+    # any (final) Provider members; at runtime the mixin stays a plain object base
+    from music_assistant.models.provider import Provider as _MixinBase
 else:
     _MixinBase = object
 
@@ -70,8 +56,10 @@ class RecommendationPayloadMixin(_MixinBase):
     result still lands in memory and cache.
 
     All background work runs in tasks created via mass.create_task, so it is cancelled
-    on server stop; a provider's unload can additionally cancel the exposed handles
-    _recommendation_payload_task and _recommendation_refresh_task. A cancelled fetch
+    on server stop; the mixin's unload() additionally cancels any in-flight fetch or
+    refresh when the provider itself is unloaded. For that override to be reachable,
+    list the mixin before the provider base class, e.g.
+    ``class MyProvider(RecommendationPayloadMixin, MusicProvider)``. A cancelled fetch
     does not poison later calls: the next call simply starts a fresh one.
     """
 
@@ -83,6 +71,20 @@ class RecommendationPayloadMixin(_MixinBase):
     _recommendation_payload_memory: list[RecommendationFolder] | None = None
     _recommendation_payload_timestamp: float = 0.0
     _recommendation_payload_cache_checked: bool = False
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """
+        Handle unload/close of the provider.
+
+        Cancels any in-flight payload fetch/refresh task before continuing the regular
+        provider unload chain.
+
+        :param is_removed: True when the provider is removed from the configuration.
+        """
+        for task in (self._recommendation_payload_task, self._recommendation_refresh_task):
+            if task is not None and not task.done():
+                task.cancel()
+        await super().unload(is_removed)
 
     async def _recommendation_rows_from_payload(self) -> list[RecommendationFolder]:
         """Return all payload folders as rows, without items."""
@@ -215,3 +217,8 @@ class RecommendationPayloadMixin(_MixinBase):
                 str(err),
                 exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
             )
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch and parse the full recommendations payload (folders WITH items)."""
+        # the provider using this mixin supplies its bulk backend fetch here
+        raise NotImplementedError

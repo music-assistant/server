@@ -233,7 +233,7 @@ R = TypeVar("R")
 P = ParamSpec("P")
 
 
-class Audiobookshelf(MusicProvider, RecommendationPayloadMixin):
+class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
     """Audiobookshelf MusicProvider."""
 
     _on_unload_callbacks: list[Callable[[], None]]
@@ -405,6 +405,8 @@ for more details.
             self.logger.debug("Ignoring error during logout: %s", err)
         for callback in self._on_unload_callbacks:
             callback()
+        # continue the unload chain (RecommendationPayloadMixin cancels its payload tasks)
+        await super().unload(is_removed)
 
     @property
     def is_streaming_provider(self) -> bool:

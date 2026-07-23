@@ -76,7 +76,7 @@ SUPPORTED_FEATURES = {
 CONF_ARL_TOKEN = "arl_token"
 
 
-class DeezerProvider(MusicProvider, RecommendationPayloadMixin):
+class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     """
     Deezer provider support.
 

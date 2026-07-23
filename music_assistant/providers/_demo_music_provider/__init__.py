@@ -641,7 +641,9 @@ class MyDemoMusicprovider(MusicProvider):
         # If your provider can only fetch its recommendations as one bulk payload,
         # use the RecommendationPayloadMixin (music_assistant.models.recommendation_payload):
         # implement _fetch_recommendation_payload() and serve this method from
-        # _recommendation_rows_from_payload().
+        # _recommendation_rows_from_payload(). List the mixin before the provider base
+        # class (class MyProvider(RecommendationPayloadMixin, MusicProvider)) so its
+        # unload() override can cancel in-flight payload tasks.
         return []
 
     async def get_recommendation_items(

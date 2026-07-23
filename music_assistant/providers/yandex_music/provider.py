@@ -223,6 +223,8 @@ class YandexMusicProvider(MusicProvider):
     _streaming: YandexMusicStreamingManager | None = None
     _wave_states: dict[str, _WaveState]  # Per-station state (incl. My Wave)
     _wave_bg_colors: dict[str, str]  # image_url -> hex bg color for transparent covers
+    # Tag pinned per category by the rows call so the items call serves matching items
+    _pinned_row_tags: dict[str, str] | None = None
     # Short-lived cache to dedupe the three library syncs (albums/podcasts/audiobooks)
     # that all derive from the same liked-albums endpoint.
     _liked_albums_cache: tuple[float, list[YandexAlbum]] | None = None
@@ -2672,12 +2674,15 @@ class YandexMusicProvider(MusicProvider):
                 translation_key="top_picks",
                 icon="mdi-star",
             ),
-            # Mood/Activity row titles are static; the rotating tag is picked at items time.
+            # Mood/Activity row titles are static; the rotating tag - picked here from
+            # the cached tag list (no backend I/O) and served by the items call - shows
+            # as the row subtitle.
             RecommendationFolder(
                 item_id="mood_mix",
                 provider=self.instance_id,
                 name="Mood Mix",
                 translation_key="mood_mix",
+                subtitle=await self._pin_rotating_row_tag("mood"),
                 icon="mdi-emoticon-outline",
             ),
             RecommendationFolder(
@@ -2685,6 +2690,7 @@ class YandexMusicProvider(MusicProvider):
                 provider=self.instance_id,
                 name="Activity Mix",
                 translation_key="activity_mix",
+                subtitle=await self._pin_rotating_row_tag("activity"),
                 icon="mdi-run",
             ),
             RecommendationFolder(
@@ -2719,12 +2725,12 @@ class YandexMusicProvider(MusicProvider):
         elif item_id == "top_picks":
             folder = await self._get_top_picks_recommendations()
         elif item_id == "mood_mix":
-            # Pick the tag outside the cached helper so rotation actually works
-            if mood_tag := await self._pick_random_tag_for_category("mood"):
+            # Serve the tag the rows call pinned (so items match the row subtitle),
+            # falling back to a fresh random pick outside the cached helper
+            if mood_tag := await self._rotating_row_tag("mood"):
                 folder = await self._get_mood_mix_recommendations(mood_tag)
         elif item_id == "activity_mix":
-            # Pick the tag outside the cached helper so rotation actually works
-            if activity_tag := await self._pick_random_tag_for_category("activity"):
+            if activity_tag := await self._rotating_row_tag("activity"):
                 folder = await self._get_activity_mix_recommendations(activity_tag)
         elif item_id == "seasonal_mix":
             folder = await self._get_seasonal_mix_recommendations()
@@ -3865,3 +3871,37 @@ class YandexMusicProvider(MusicProvider):
             total_played_seconds=offset,
             end_position_seconds=offset,
         )
+
+    async def _pin_rotating_row_tag(self, category: str) -> str | None:
+        """
+        Pick and pin the rotating tag for a mood/activity row, returning its display label.
+
+        Cache-only read of the validated tag list (rows must stay free of backend I/O):
+        returns None - no subtitle - until an items fetch has warmed that cache.
+
+        :param category: Tag category to pick from ('mood' or 'activity').
+        """
+        # key mirrors the @use_cache key construction on _get_valid_tags_for_category:
+        # the wrapped function's __name__ plus its positional args, joined by dots
+        tags, _, found = await self.mass.cache.get_with_freshness(
+            f"_get_valid_tags_for_category.{category}",
+            provider=self.instance_id,
+            include_expired=True,
+        )
+        if not found or not tags:
+            return None
+        tag = random.choice(tags)
+        if self._pinned_row_tags is None:
+            self._pinned_row_tags = {}
+        self._pinned_row_tags[category] = tag
+        return self._media_label("folder", _media_label_key(tag), tag.title())[0]
+
+    async def _rotating_row_tag(self, category: str) -> str | None:
+        """
+        Return the tag pinned by the rows call for this category, else a random pick.
+
+        :param category: Tag category ('mood' or 'activity').
+        """
+        if (pins := self._pinned_row_tags) and (pinned := pins.get(category)):
+            return pinned
+        return await self._pick_random_tag_for_category(category)

@@ -100,6 +100,9 @@ def provider() -> KionMusicProvider:
     mass = Mock()
     mass.metadata.locale = "en_US"
     mass.translations.get_translation = Mock(return_value=None)
+    # default: every cache lookup is a miss (tests override to simulate warm entries)
+    mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
+    mass.cache.set = AsyncMock()
     manifest = Mock()
     manifest.domain = "kion_music"
     config = Mock()
@@ -126,7 +129,8 @@ async def test_get_recommendations_returns_static_rows_without_backend_calls(
     assert [f.item_id for f in result] == ROW_IDS
     assert _awaited_methods(client) == set()
     assert all(not f.items for f in result)
-    # Mood/Activity row titles are static; the rotating tag is only picked at items time.
+    # Mood/Activity row titles are static; the rotating tag only shows as subtitle
+    # once the tag-list cache is warm (cold here, so no subtitle).
     by_id = {f.item_id: f for f in result}
     assert by_id["mood_mix"].name == "Mood Mix"
     assert by_id["mood_mix"].translation_key == "mood_mix"
@@ -175,3 +179,55 @@ async def test_get_recommendation_items_unknown_id_returns_empty(
 
     assert list(result) == []
     assert _awaited_methods(client) == set()
+
+
+def _install_tag_cache(provider: KionMusicProvider, tags_by_category: dict[str, list[str]]) -> None:
+    """Serve the validated-tag-list cache entries as warm hits, everything else as a miss."""
+
+    async def _cache_get(key: str, **_kwargs: Any) -> tuple[Any, bool, bool]:
+        for category, tags in tags_by_category.items():
+            if key == f"_get_valid_tags_for_category.{category}":
+                return tags, True, True
+        return None, False, False
+
+    provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
+        side_effect=_cache_get
+    )
+    provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
+
+
+@pytest.mark.asyncio
+async def test_rows_pin_cached_tag_as_subtitle_and_items_serve_it(
+    provider: KionMusicProvider,
+) -> None:
+    """With a warm tag cache the rows carry the tag as subtitle and items serve that tag."""
+    _install_tag_cache(provider, {"mood": ["chill"], "activity": ["workout"]})
+    client = cast("Mock", provider.client)
+
+    result = await provider.get_recommendations()
+
+    by_id = {f.item_id: f for f in result}
+    assert by_id["mood_mix"].subtitle == "Chill"
+    assert by_id["activity_mix"].subtitle == "Workout"
+    assert provider._pinned_row_tags == {"mood": "chill", "activity": "workout"}
+    # the tag came from the cache: rows still issue zero backend calls
+    assert _awaited_methods(client) == set()
+
+    await provider.get_recommendation_items("mood_mix")
+
+    # the items call served the pinned tag: no tag (re)selection via the landing API
+    client.get_tag_playlists.assert_any_await("chill")
+    assert "get_landing_tags" not in _awaited_methods(client)
+
+
+@pytest.mark.asyncio
+async def test_rows_without_cached_tags_have_no_subtitle(provider: KionMusicProvider) -> None:
+    """With a cold tag cache the mood/activity rows have no subtitle and pin nothing."""
+    _install_cache_mocks(provider)
+
+    result = await provider.get_recommendations()
+
+    by_id = {f.item_id: f for f in result}
+    assert by_id["mood_mix"].subtitle is None
+    assert by_id["activity_mix"].subtitle is None
+    assert provider._pinned_row_tags is None
