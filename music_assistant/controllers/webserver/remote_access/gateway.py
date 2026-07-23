@@ -762,9 +762,9 @@ class WebRTCGateway:
 
     # ---- Helpers -------------------------------------------------------------
 
-    def _build_ice_servers(self, servers: list[dict[str, Any]]) -> list[Any]:
+    def _build_ice_servers(self, servers: list[dict[str, Any]]) -> list[IceServer]:
         """Build IceServer entries (one per url) from ICE server config dicts."""
-        ice_servers: list[Any] = []
+        ice_servers: list[IceServer] = []
         for server in servers:
             urls = server.get("urls")
             username = server.get("username")
