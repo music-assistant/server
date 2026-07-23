@@ -92,7 +92,12 @@ class AirPlayStream:
         # Persistent generations: the binary keeps one connection alive and
         # plays numbered media generations over it (seek/next = new generation
         # on a fresh pipe instead of a reconnect).
+        # _generation is the latest ALLOCATED id (bumped at PREPARE, while the
+        # previous generation is still playing); _active_generation is the one
+        # actually playing (only advances at START). Elapsed/EOF handling keys
+        # off the active id so a staged generation never skews them mid-handover.
         self._generation = 0
+        self._active_generation = 0
         self._generation_position: float = 0.0
         self._gen_ready: dict[int, asyncio.Event] = {}
         self._gen_primed: dict[int, asyncio.Event] = {}
@@ -284,6 +289,7 @@ class AirPlayStream:
         primed member.
         """
         self._generation_position = position_ms / 1000
+        self._active_generation = generation
         # Stamp the player's elapsed onto the new generation's base right away:
         # until the binary's first status arrives, interpolation would otherwise
         # keep extending the SUPERSEDED generation's clock, which briefly maps
@@ -711,7 +717,7 @@ class AirPlayStream:
             # ending matters; a retired generation's eof is just noise.
             # The plain "[STATUS] eof" line that follows drives the
             # end-of-stream path for the final generation.
-            if self._parse_generation(line) != self._generation:
+            if self._parse_generation(line) != self._active_generation:
                 player.logger.debug("stale generation eof ignored: %s", line.strip())
         elif "[STATUS] idle_timeout" in line:
             # a parked (paused) session outlived the binary's idle cap;
@@ -735,12 +741,12 @@ class AirPlayStream:
 
     def _update_elapsed(self, elapsed_time: float) -> None:
         """Update elapsed time with session offset compensation."""
-        if self._generation > 0:
+        if self._active_generation > 0:
             # elapsed restarts per generation; report against its media base
             elapsed_time += self._generation_position
         elif self._elapsed_time_offset is None and self.session:
             self._elapsed_time_offset = max(0, time.time() - self.session.start_time - elapsed_time)
-        if self._generation == 0 and self._elapsed_time_offset:
+        if self._active_generation == 0 and self._elapsed_time_offset:
             elapsed_time += self._elapsed_time_offset
         # The binary only emits this status while actually playing, so it is
         # also the signal that drives the player into the PLAYING state.

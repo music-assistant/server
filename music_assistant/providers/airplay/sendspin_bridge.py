@@ -552,11 +552,13 @@ class SendspinAirPlayBridge:
                 return False
             if asyncio.current_task() is not self._airplay_stream_start_task:
                 # A newer stream start already owns the bridge; abandon this
-                # generation without touching state it may already have claimed.
+                # generation. Do NOT close fifo_fd here: it was published as
+                # self._sink_fd above, so it is either still the writer's active
+                # sink (closing it would break the writer with EBADF) or already
+                # closed/replaced by the newer task's _set_sink_fd. The sink fd's
+                # lifecycle is owned by _set_sink_fd / teardown, not this task.
                 # The binary safely collapses a superseded staged generation on
                 # its next PREPARE.
-                with suppress(OSError):
-                    await asyncio.to_thread(os.close, fifo_fd)
                 return False
             await stream.start_generation(gen, 0, start_unix_ms)
             self.logger.info(

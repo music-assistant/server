@@ -402,7 +402,8 @@ async def test_warm_generation_superseded_before_commit_does_not_start() -> None
 
     assert committed is False
     kept_stream.start_generation.assert_not_awaited()
-    mock_close.assert_any_call(77)
-    # Left pointing at the now-closed fd rather than touched further: a newer task may
-    # already be relying on self._sink_fd, so the stale attempt only cleans up its own copy.
+    # The stale attempt must NOT close the fd: it was published as self._sink_fd,
+    # so closing it here would break the writer (EBADF) or double-close a fd a
+    # newer task already replaced. Its lifecycle is owned by _set_sink_fd/teardown.
+    assert all(call.args[0] != 77 for call in mock_close.call_args_list)
     assert bridge._sink_fd == 77
