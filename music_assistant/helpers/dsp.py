@@ -1,6 +1,7 @@
 """Helper functions for DSP filters."""
 
 import math
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from music_assistant_models.dsp import (
@@ -17,6 +18,25 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items.audio_format import AudioFormat
 
 # ruff: noqa: PLR0915
+
+
+@dataclass(slots=True)
+class ComplexFilter:
+    """
+    A DSP filter fragment that pulls in one or more extra source inputs.
+
+    Represents a chain entry that cannot be expressed as a plain single-input
+    filter string, such as an FFmpeg ``afir`` convolution that needs an
+    impulse-response input.
+
+    :param body: The filter consuming the main input followed by each source in
+        order (e.g. "afir=gtype=gn").
+    :param sources: Sub-chains that each produce one extra input for ``body``
+        (e.g. "amovie='/x/ir.wav',aresample=48000").
+    """
+
+    body: str
+    sources: list[str] = field(default_factory=list)
 
 
 def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) -> list[str]:

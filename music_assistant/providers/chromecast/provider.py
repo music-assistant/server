@@ -155,6 +155,10 @@ class ChromecastProvider(PlayerProvider):
             if castplayer:
                 assert isinstance(castplayer, ChromecastPlayer)  # for type checking
                 castplayer.cast_info.update(disc_info)
+                socket_client = castplayer.cc.socket_client
+                if socket_client.services != disc_info.services:
+                    socket_client.services.clear()
+                    socket_client.services.update(disc_info.services)
                 self.mass.loop.call_soon_threadsafe(castplayer.update_state)
                 # An unavailable player may be a passive multichannel endpoint that
                 # slipped past the discovery filter (e.g. incomplete multizone info

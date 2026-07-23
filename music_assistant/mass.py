@@ -8,6 +8,7 @@ import logging
 import os
 import pathlib
 import threading
+from base64 import b64encode
 from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Self, TypeGuard, TypeVar, cast, overload
 from uuid import uuid4
@@ -17,7 +18,13 @@ from aiofiles.os import wrap
 from music_assistant_models.api import ServerInfoMessage
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ProviderError
-from music_assistant_models.enums import CoreState, EventType, ProviderFeature, ProviderType
+from music_assistant_models.enums import (
+    CoreState,
+    EventType,
+    ProviderFeature,
+    ProviderIconVariant,
+    ProviderType,
+)
 from music_assistant_models.errors import (
     MusicAssistantError,
     SetupFailedError,
@@ -57,7 +64,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.api import APICommandHandler, api_command
 from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
-from music_assistant.helpers.images import get_icon_string
+from music_assistant.helpers.images import detect_provider_icons
 from music_assistant.helpers.util import (
     TaskManager,
     get_package_version,
@@ -160,6 +167,7 @@ class MusicAssistant:
         self.command_handlers: dict[str, APICommandHandler] = {}
         self._subscribers: set[EventSubscriptionType] = set()
         self._provider_manifests: dict[str, ProviderManifest] = {}
+        self._provider_icons: dict[str, dict[ProviderIconVariant, tuple[str, bytes]]] = {}
         self._providers: dict[str, ProviderInstanceType] = {}
         self._tracked_tasks: dict[str, asyncio.Task[Any]] = {}
         self._tracked_timers: dict[str, asyncio.TimerHandle] = {}
@@ -202,20 +210,7 @@ class MusicAssistant:
         )
         await warn_if_missing_x86_64_v2(LOGGER)
         # setup other core controllers
-        self.cache = CacheController(self)
-        self.tasks = TasksController(self)
-        self.webserver = WebserverController(self)
-        self.metadata = MetaDataController(self)
-        self.music = MusicController(self)
-        self.players = PlayerController(self)
-        self.player_queues = PlayerQueuesController(self)
-        self.streams = StreamsController(self)
-        self.translations = TranslationController(self)
-        self.diagnostics = DiagnosticsController(self)
-        # add manifests for core controllers
-        for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
-            controller: CoreController = getattr(self, controller_name)
-            self._provider_manifests[controller.domain] = controller.manifest
+        await self._load_core_controllers()
 
         # setup all core controllers in parallel
         async def setup_controller(controller: CoreController) -> None:
@@ -367,6 +362,46 @@ class MusicAssistant:
         if provider := self.get_provider(instance_id_or_domain, return_unavailable=True):
             return provider.manifest
         raise KeyError(f"Provider manifest not found for {instance_id_or_domain}")
+
+    @api_command("providers/icon", required_scope=Scope.PROVIDERS_READ)
+    def get_provider_icon_data(
+        self,
+        provider: str,
+        variant: ProviderIconVariant = ProviderIconVariant.DEFAULT,
+    ) -> str | None:
+        """
+        Return a provider icon variant as a base64 data URI.
+
+        :param provider: A provider domain or instance id.
+        :param variant: Which icon variant to return.
+        """
+        icon = self.get_provider_icon(provider, variant)
+        if icon is None:
+            return None
+        mime, data = icon
+        return f"data:{mime};base64,{b64encode(data).decode('ascii')}"
+
+    def get_provider_icon(
+        self,
+        provider: str,
+        variant: ProviderIconVariant = ProviderIconVariant.DEFAULT,
+    ) -> tuple[str, bytes] | None:
+        """
+        Return the (mime, bytes) for a provider icon variant.
+
+        :param provider: A provider domain or instance id.
+        :param variant: Which icon variant to return.
+        """
+        domain = provider
+        if domain not in self._provider_icons:
+            try:
+                domain = self.get_provider_manifest(provider).domain
+            except KeyError:
+                return None
+        icons = self._provider_icons.get(domain)
+        if not icons:
+            return None
+        return icons.get(variant)
 
     @api_command("providers", required_scope=Scope.PROVIDERS_READ)
     def get_providers(
@@ -972,6 +1007,28 @@ class MusicAssistant:
                         obj.api_cmd, obj, authenticated, required_scope, allow_impersonation, alias
                     )
 
+    async def _load_core_controllers(self) -> None:
+        """Instantiate the core controllers and register their manifests and icons."""
+        self.cache = CacheController(self)
+        self.tasks = TasksController(self)
+        self.webserver = WebserverController(self)
+        self.metadata = MetaDataController(self)
+        self.music = MusicController(self)
+        self.players = PlayerController(self)
+        self.player_queues = PlayerQueuesController(self)
+        self.streams = StreamsController(self)
+        self.translations = TranslationController(self)
+        self.diagnostics = DiagnosticsController(self)
+        # add manifests for core controllers
+        for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
+            controller: CoreController = getattr(self, controller_name)
+            self._provider_manifests[controller.domain] = controller.manifest
+            # load icon image(s) shipped alongside the controller module
+            controller_dir = os.path.dirname(inspect.getfile(type(controller)))
+            if icons := await detect_provider_icons(controller_dir):
+                self._provider_icons[controller.domain] = icons
+                controller.manifest.icon_images = list(icons)
+
     async def _load_builtin_providers(self) -> None:
         """
         Load all builtin providers.
@@ -1166,21 +1223,11 @@ class MusicAssistant:
                     continue
                 try:
                     provider_manifest: ProviderManifest = await ProviderManifest.parse(file_path)
-                    # check for icon.svg file
-                    if not provider_manifest.icon_svg:
-                        icon_path = os.path.join(provider_path, "icon.svg")
-                        if await isfile(icon_path):
-                            provider_manifest.icon_svg = await get_icon_string(icon_path)
-                    # check for dark_icon file
-                    if not provider_manifest.icon_svg_dark:
-                        icon_path = os.path.join(provider_path, "icon_dark.svg")
-                        if await isfile(icon_path):
-                            provider_manifest.icon_svg_dark = await get_icon_string(icon_path)
-                    # check for icon_monochrome file
-                    if not provider_manifest.icon_svg_monochrome:
-                        icon_path = os.path.join(provider_path, "icon_monochrome.svg")
-                        if await isfile(icon_path):
-                            provider_manifest.icon_svg_monochrome = await get_icon_string(icon_path)
+                    # detect provider icon image variants (svg preferred over png)
+                    icons = await detect_provider_icons(provider_path)
+                    if icons:
+                        self._provider_icons[provider_manifest.domain] = icons
+                        provider_manifest.icon_images = list(icons)
                     # override Home Assistant provider if we're running as add-on
                     if provider_manifest.domain == "hass" and self.running_as_hass_addon:
                         provider_manifest.builtin = True

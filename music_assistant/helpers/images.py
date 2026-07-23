@@ -20,7 +20,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import aiofiles
+import aiofiles.os
 from aiohttp.client_exceptions import ClientError
+from music_assistant_models.enums import ProviderIconVariant
 from music_assistant_models.errors import MusicAssistantError
 from PIL import Image, UnidentifiedImageError
 
@@ -786,14 +788,47 @@ async def create_collage(
     return await asyncio.to_thread(_save_collage)
 
 
-async def get_icon_string(icon_path: str) -> str:
-    """Get svg icon as string."""
-    ext = icon_path.rsplit(".", maxsplit=1)[-1]
-    assert ext == "svg"
-    async with aiofiles.open(icon_path) as _file:
-        xml_data = await _file.read()
-        assert isinstance(xml_data, str)  # for type checking
-        return xml_data.replace("\n", "").strip()
+async def load_provider_icon(icon_path: str) -> tuple[str, bytes]:
+    """
+    Load a provider icon file and return its mime type and bytes.
+
+    :param icon_path: Path to an svg or (transparent) png icon file.
+    """
+    ext = icon_path.rsplit(".", maxsplit=1)[-1].lower()
+    if ext == "svg":
+        async with aiofiles.open(icon_path, encoding="utf-8") as svg_file:
+            xml_data = (await svg_file.read()).replace("\n", "").strip()
+        return "image/svg+xml", xml_data.encode("utf-8")
+    if ext == "png":
+        async with aiofiles.open(icon_path, "rb") as png_file:
+            return "image/png", await png_file.read()
+    msg = f"Unsupported provider icon format: {ext}"
+    raise ValueError(msg)
+
+
+async def detect_provider_icons(
+    provider_path: str,
+) -> dict[ProviderIconVariant, tuple[str, bytes]]:
+    """
+    Detect the provider icon variants present in a provider directory.
+
+    Svg is preferred over png when both exist for the same variant.
+
+    :param provider_path: Path to the provider directory to scan.
+    """
+    variant_files = {
+        ProviderIconVariant.DEFAULT: ("icon.svg", "icon.png"),
+        ProviderIconVariant.DARK: ("icon_dark.svg", "icon_dark.png"),
+        ProviderIconVariant.MONOCHROME: ("icon_monochrome.svg", "icon_monochrome.png"),
+    }
+    icons: dict[ProviderIconVariant, tuple[str, bytes]] = {}
+    for variant, filenames in variant_files.items():
+        for filename in filenames:  # svg first -> preferred
+            icon_path = os.path.join(provider_path, filename)
+            if await aiofiles.os.path.isfile(icon_path):
+                icons[variant] = await load_provider_icon(icon_path)
+                break
+    return icons
 
 
 def _thumb_cache_filepath(mass: MusicAssistant, cache_filename: str) -> str:

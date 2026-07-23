@@ -1,6 +1,7 @@
 """Unit tests for AirPlay player."""
 
 import time
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -13,15 +14,20 @@ from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_PCM_FORMAT,
     CONF_AIRPLAY_CREDENTIALS,
+    CONF_AP2PASSWORD,
     CONF_ENCRYPTION,
     CONF_FORCE_RAOP,
     CONF_HIRES_PLAYBACK,
     CONF_IGNORE_VOLUME,
+    CONF_PAIRING_PIN,
     CONF_RAOP_CREDENTIALS,
     CONF_STORED_VOLUME,
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.player import AirPlayPlayer
+
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigValueType
 
 # _airplay._tcp features bitmask with the AirPlay 2 feature bits set (bit 38/48).
 AP2_FEATURES = "0x4A7FDFD5,0x3C177FDE"
@@ -223,6 +229,91 @@ async def test_airplay2_pairing_fails_without_ipv4_address() -> None:
         pytest.raises(PlayerCommandFailed, match="requires an IPv4"),
     ):
         await player._start_pairing(StreamingProtocol.AIRPLAY2, "AirPlay")
+
+
+FAKE_HAP_CREDENTIALS = "ab" * 96  # 192 hex chars, as produced by cliairplay --pair-setup
+
+
+def _make_pin_required_player() -> AirPlayPlayer:
+    """Create a player whose discovery info requires PIN pairing (flags bit 0x8)."""
+    airplay_info = MagicMock()
+    airplay_info.properties = {b"flags": b"0x8"}
+    player = AirPlayPlayer(
+        provider=MagicMock(),
+        player_id="test_player",
+        display_name="Wohnzimmer TV",
+        address="127.0.0.1",
+        manufacturer="LG",
+        model="OLED48C17LB",
+        raop_discovery_info=None,
+        airplay_discovery_info=airplay_info,
+    )
+    player._active_pairing = AsyncMock()
+    player._active_pairing.finish_pairing = AsyncMock(return_value=FAKE_HAP_CREDENTIALS)
+    cast("MagicMock", player.mass.config).save_player_config = AsyncMock()
+    return player
+
+
+@pytest.mark.asyncio
+async def test_finish_pairing_persists_credentials_to_live_config() -> None:
+    """
+    Finishing pairing persists the credentials through save_player_config.
+
+    The get_entries action flow never persists `values` itself, so without the
+    explicit save the next play attempt finds no credentials and the device
+    asks for pairing again.
+    """
+    player = _make_pin_required_player()
+    pairing_session = cast("AsyncMock", player._active_pairing)
+    values: dict[str, ConfigValueType] = {CONF_PAIRING_PIN: "1234"}
+
+    await player._finish_pairing(values, StreamingProtocol.AIRPLAY2, "AirPlay")
+
+    pairing_session.finish_pairing.assert_awaited_once_with(pin="1234")
+    assert values[CONF_AIRPLAY_CREDENTIALS] == FAKE_HAP_CREDENTIALS
+    cast("MagicMock", player.mass.config).save_player_config.assert_awaited_once_with(
+        player.player_id, {CONF_AIRPLAY_CREDENTIALS: FAKE_HAP_CREDENTIALS}
+    )
+    assert player._active_pairing is None
+
+
+@pytest.mark.asyncio
+async def test_finish_pairing_raop_uses_raop_credentials_key() -> None:
+    """RAOP (AirPlay 1) pairing must persist under the RAOP-specific config key."""
+    player = _make_pin_required_player()
+    values: dict[str, ConfigValueType] = {CONF_PAIRING_PIN: "1234"}
+
+    await player._finish_pairing(values, StreamingProtocol.RAOP, "RAOP")
+
+    cast("MagicMock", player.mass.config).save_player_config.assert_awaited_once_with(
+        player.player_id, {CONF_RAOP_CREDENTIALS: FAKE_HAP_CREDENTIALS}
+    )
+
+
+@pytest.mark.asyncio
+async def test_finish_pairing_without_active_session_does_not_persist() -> None:
+    """No active pairing session means nothing should be written to config."""
+    player = _make_pin_required_player()
+    player._active_pairing = None
+    values: dict[str, ConfigValueType] = {CONF_PAIRING_PIN: "1234"}
+
+    await player._finish_pairing(values, StreamingProtocol.AIRPLAY2, "AirPlay")
+
+    cast("MagicMock", player.mass.config).save_player_config.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reset_pairing_persists_cleared_credentials() -> None:
+    """Resetting pairing persists the cleared credentials so a restart cannot revive them."""
+    player = _make_pin_required_player()
+    values: dict[str, ConfigValueType] = {CONF_AIRPLAY_CREDENTIALS: FAKE_HAP_CREDENTIALS}
+
+    await player._reset_pairing(values, StreamingProtocol.AIRPLAY2, "AirPlay")
+
+    assert values[CONF_AIRPLAY_CREDENTIALS] is None
+    cast("MagicMock", player.mass.config).save_player_config.assert_awaited_once_with(
+        player.player_id, {CONF_AIRPLAY_CREDENTIALS: None, CONF_AP2PASSWORD: None}
+    )
 
 
 @pytest.mark.asyncio
