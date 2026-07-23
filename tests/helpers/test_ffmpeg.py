@@ -342,7 +342,7 @@ class _FakeProc:
     def __init__(self) -> None:
         self.pid = 12345
         self.returncode: int | None = None
-        self.stdin = _FakeStream()
+        self.stdin: _FakeStream | None = _FakeStream()
         self.stdout = _FakeStream()
 
     async def communicate(self) -> tuple[bytes, bytes]:
@@ -351,6 +351,18 @@ class _FakeProc:
 
     def send_signal(self, _sig: int) -> None:
         pass
+
+
+class _FakeProcRacingExit(_FakeProc):
+    """A no-stdin process that has already exited, so send_signal raises ProcessLookupError."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        # no stdin routes close() down the send_signal(SIGINT) branch
+        self.stdin = None
+
+    def send_signal(self, _sig: int) -> None:
+        raise ProcessLookupError("no such process")
 
 
 async def test_log_reader_reports_decode_errors_once_and_aborts() -> None:
@@ -431,6 +443,35 @@ async def test_log_reader_abort_does_not_self_deadlock() -> None:
 
     await asyncio.wait_for(reader_task, timeout=2)
     assert ffmpeg._abort_task is not None
+    await asyncio.wait_for(ffmpeg._abort_task, timeout=2)
+
+    assert ffmpeg.closed
+
+
+async def test_abort_survives_send_signal_racing_process_exit() -> None:
+    """
+    The fire-and-forget abort must not crash if the process exits before it is signalled.
+
+    close() sends SIGINT to no-stdin processes, which raises ProcessLookupError when the
+    process already exited between the returncode check and the signal. The abort task is
+    never awaited by a caller, so that race must be swallowed inside close() rather than
+    escaping as an untracked "Task exception was never retrieved".
+    """
+    ffmpeg = FFMpeg(audio_input="-", input_format=_PCM_FORMAT, output_format=_PCM_FORMAT)
+    ffmpeg.proc = _FakeProcRacingExit()  # type: ignore[assignment]
+
+    async def fake_stderr() -> AsyncGenerator[str]:
+        for _ in range(50):
+            yield "Invalid data found when processing input"
+
+    ffmpeg.iter_stderr = fake_stderr  # type: ignore[method-assign]
+
+    reader_task = asyncio.create_task(ffmpeg._log_reader_task())
+    ffmpeg._stderr_reader_task = reader_task
+
+    await asyncio.wait_for(reader_task, timeout=2)
+    assert ffmpeg._abort_task is not None
+    # must complete without propagating ProcessLookupError
     await asyncio.wait_for(ffmpeg._abort_task, timeout=2)
 
     assert ffmpeg.closed
