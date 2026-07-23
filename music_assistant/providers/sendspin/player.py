@@ -580,8 +580,21 @@ class SendspinPlayer(SendspinBasePlayer):
 
     def _on_group_stopped(self) -> None:
         """Cancel playback session when group stops and we are the leader."""
-        if self.synced_to is None:
-            self.mass.create_task(self.playback_session.cancel("group stopped"))
+        if self.synced_to is not None:
+            return
+        # Bind the cancel to the session task that is live right now: by the time
+        # the deferred task below runs, play_media may already have started a fresh
+        # session, which must not be torn down by this stale group-stopped event.
+        stale_task = self.playback_session.playback_task
+        if stale_task is None or stale_task.done():
+            return
+        self.mass.create_task(self._cancel_stale_playback_session(stale_task))
+
+    async def _cancel_stale_playback_session(self, task: asyncio.Task[None]) -> None:
+        """Cancel the playback session only if the given task is still the active one."""
+        if self.playback_session.playback_task is not task:
+            return
+        await self.playback_session.cancel("group stopped")
 
     def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
         """Event callback registered to the sendspin group this player belongs to."""
