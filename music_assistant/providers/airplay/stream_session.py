@@ -164,28 +164,7 @@ class AirPlayStreamSession:
                 with suppress(asyncio.CancelledError):
                     await self._audio_source_task
             for player in self.sync_clients:
-                if ffmpeg := self._player_ffmpeg.pop(player.player_id, None):
-                    await ffmpeg.close()
-                stream = player.stream
-                assert stream
-                handoff_format = stream.pcm_format
-                output_plan = self.mass.streams.audio.get_player_output_plan(
-                    player.player_id,
-                    input_format=self.pcm_format,
-                    output_format=get_final_output_format(handoff_format, player),
-                    handoff_format=handoff_format,
-                    queue_id=media.source_id,
-                    session_id=get_media_session_id(media),
-                )
-                ffmpeg = FFMpeg(
-                    audio_input="-",
-                    input_format=self.pcm_format,
-                    output_format=handoff_format,
-                    filter_params=output_plan.filter_params,
-                    audio_output=fifos[player.player_id],
-                )
-                await ffmpeg.start()
-                self._player_ffmpeg[player.player_id] = ffmpeg
+                await self._start_generation_ffmpeg(player, fifos[player.player_id], media)
             self.media = media
             self.seconds_streamed = 0
             self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
@@ -219,6 +198,10 @@ class AirPlayStreamSession:
             return False
         finally:
             for fifo in fifos.values():
+                # Unblock any writer-open still pending on a failed pipe by
+                # briefly opening the read side, then remove the pipe node.
+                with suppress(OSError):
+                    os.close(os.open(fifo, os.O_RDONLY | os.O_NONBLOCK))
                 with suppress(OSError):
                     await asyncio.to_thread(os.unlink, fifo)
         return True
@@ -656,3 +639,44 @@ class AirPlayStreamSession:
         )
         await ffmpeg.start()
         self._player_ffmpeg[airplay_player.player_id] = ffmpeg
+
+    async def _start_generation_ffmpeg(
+        self, player: AirPlayPlayer, fifo: str, media: PlayerMedia
+    ) -> None:
+        """
+        Start the per-player DSP ffmpeg for a staged generation.
+
+        Retires the player's previous ffmpeg and spawns a fresh one writing
+        into the generation's pipe. The pipe's write side is opened here and
+        handed to ffmpeg as an inherited descriptor (like the stdin case in
+        ``_start_client``) because ffmpeg refuses to open an existing path.
+        The open pairs with the read side the binary opened at PREPARE.
+        """
+        if ffmpeg := self._player_ffmpeg.pop(player.player_id, None):
+            await ffmpeg.close()
+        stream = player.stream
+        assert stream
+        handoff_format = stream.pcm_format
+        output_plan = self.mass.streams.audio.get_player_output_plan(
+            player.player_id,
+            input_format=self.pcm_format,
+            output_format=get_final_output_format(handoff_format, player),
+            handoff_format=handoff_format,
+            queue_id=media.source_id,
+            session_id=get_media_session_id(media),
+        )
+        fifo_fd = await asyncio.wait_for(asyncio.to_thread(os.open, fifo, os.O_WRONLY), timeout=5)
+        try:
+            ffmpeg = FFMpeg(
+                audio_input="-",
+                input_format=self.pcm_format,
+                output_format=handoff_format,
+                filter_params=output_plan.filter_params,
+                audio_output=fifo_fd,
+            )
+            await ffmpeg.start()
+        finally:
+            # the ffmpeg child inherited the descriptor; drop our copy so the
+            # pipe sees EOF when ffmpeg exits
+            os.close(fifo_fd)
+        self._player_ffmpeg[player.player_id] = ffmpeg
