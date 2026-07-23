@@ -19,7 +19,7 @@ from music_assistant_models.helpers import get_global_cache_value, set_global_ca
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 
-from .dsp import ComplexFilter                             
+from .dsp import ComplexFilter
 from .process import AsyncProcess, check_output
 from .util import close_async_generator
 
@@ -27,7 +27,9 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
 
 LOGGER = logging.getLogger("ffmpeg")
-
+MINIMAL_FFMPEG_VERSION = 6
+CACHE_ATTR_LIBSOXR_PRESENT: Final[str] = "libsoxr_present"
+CACHE_ATTR_FFMPEG_VERSION: Final[str] = "ffmpeg_version"
 # flac is capped to 8 channels hence no solutions for >8
 _CHANNEL_LAYOUT: Final[dict[int, str]] = {
     1: "mono",
@@ -44,9 +46,8 @@ _CHANNEL_LAYOUT: Final[dict[int, str]] = {
 def _channel_layout(channels: int) -> str:
     """Return the FFmpeg channel layout name for a given channel count."""
     return _CHANNEL_LAYOUT.get(channels, "stereo")
-MINIMAL_FFMPEG_VERSION = 6
-CACHE_ATTR_LIBSOXR_PRESENT: Final[str] = "libsoxr_present"
-CACHE_ATTR_FFMPEG_VERSION: Final[str] = "ffmpeg_version"
+
+
 DEFAULT_MP3_BIT_RATE: Final[int] = 320
 
 # Regex patterns to extract audio format details from ffmpeg's stderr output.
@@ -55,38 +56,21 @@ DEFAULT_MP3_BIT_RATE: Final[int] = 320
 #   Stream #0:0(eng): Audio: aac (LC) (mp4a / 0x6134706D), 44100 Hz, stereo, fltp, 254 kb/s
 #   Stream #0:0: Audio: flac, 96000 Hz, stereo, s32 (24 bit)
 #   Duration: 00:03:25.78, start: 0.000000, bitrate: 320 kb/s
+_FFMPEG_CHANNEL_LAYOUT_RE: Final = re.compile(r"\d+ Hz,\s*([^,]+)")
+
+# flac is capped to 8 channels hence no solutions for >8
+_LAYOUT_TO_CHANNELS: Final[dict[str, int]] = {
+    "mono": 1, "stereo": 2, "2.1": 3, "quad": 4, "4.0": 4, "5.0": 5,
+    "5.0(side)": 5, "4.1": 5, "5.1": 6, "5.1(side)": 6, "6.0": 6,
+    "6.0(front)": 6, "hexagonal": 6, "6.1": 7, "6.1(back)": 7,
+    "6.1(front)": 7, "7.0": 7, "7.0(front)": 7, "7.1": 8,
+    "7.1(wide)": 8, "7.1(wide-side)": 8, "octagonal": 8,
+}
 _FFMPEG_SAMPLE_RATE_RE: Final = re.compile(r"(\d+) Hz")
 _FFMPEG_BIT_RATE_RE: Final = re.compile(r"(\d+) kb/s")
 _FFMPEG_EXPLICIT_BIT_DEPTH_RE: Final = re.compile(r"\((\d+) bit\)")
 _FFMPEG_SAMPLE_FMT_RE: Final = re.compile(r"\b(u8p?|s16p?|s24p?|s32p?|fltp?|dblp?)\b")
 _FFMPEG_DURATION_RE: Final = re.compile(r"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)")
-_FFMPEG_CHANNEL_LAYOUT_RE: Final = re.compile(r"\d+ Hz,\s*([^,]+)")
-
-# flac is capped to 8 channels hence no solutions for >8
-_LAYOUT_TO_CHANNELS: Final[dict[str, int]] = {
-    "mono": 1,
-    "stereo": 2,
-    "2.1": 3,
-    "quad": 4,
-    "4.0": 4,
-    "5.0": 5,
-    "5.0(side)": 5,
-    "4.1": 5,
-    "5.1": 6,
-    "5.1(side)": 6,
-    "6.0": 6,
-    "6.0(front)": 6,
-    "hexagonal": 6,
-    "6.1": 7,
-    "6.1(back)": 7,
-    "6.1(front)": 7,
-    "7.0": 7,
-    "7.0(front)": 7,
-    "7.1": 8,
-    "7.1(wide)": 8,
-    "7.1(wide-side)": 8,
-    "octagonal": 8,
-}
 
 # Mapping from ffmpeg sample format token to bit depth.
 # Note: planar variants (suffix 'p') describe memory layout only.
@@ -446,7 +430,6 @@ async def get_ffmpeg_stream(
             raise AudioError(log_tail)
 
 
-
 async def get_ffmpeg_overlay_stream(
     audio_input: AsyncGenerator[bytes],
     overlay_input: str,
@@ -511,6 +494,7 @@ async def get_ffmpeg_overlay_stream(
             # unclean exit of ffmpeg - raise error with log tail
             log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[-5:])
             raise AudioError(log_tail)
+
 
 def get_ffmpeg_resample_filter(
     input_format: AudioFormat,
@@ -710,7 +694,7 @@ def get_ffmpeg_args(
         filter_params.append(resample_filter)
 
     if filter_params and "-filter_complex" not in extra_args:
-        extra_args += ["-af", ",".join(filter_params)]
+        extra_args += _build_filtergraph_args(filter_params)
 
     return generic_args + input_args + extra_args + output_args
 
@@ -758,3 +742,55 @@ async def check_ffmpeg_version() -> None:
         version,
         "with libsoxr support" if libsoxr_support else "",
     )
+
+
+def _build_filtergraph_args(filter_params: list[str | ComplexFilter]) -> list[str]:
+    """
+    Render a DSP filter chain to FFmpeg command-line arguments.
+
+    :param filter_params: Ordered chain of plain filter strings and/or complex
+        fragments that need extra source inputs.
+    """
+    if not any(isinstance(item, ComplexFilter) for item in filter_params):
+        simple = [item for item in filter_params if isinstance(item, str) and item]
+        return ["-af", ",".join(simple)] if simple else []
+
+    parts: list[str] = []
+    pending: list[str] = []
+    current = "0:a"
+    counter = 0
+
+    def next_label() -> str:
+        nonlocal counter
+        counter += 1
+        return f"dsp{counter}"
+
+    def flush_pending() -> None:
+        nonlocal current
+        if not pending:
+            return
+        label = next_label()
+        parts.append(f"[{current}]{','.join(pending)}[{label}]")
+        current = label
+        pending.clear()
+
+    for item in filter_params:
+        if isinstance(item, str):
+            if item:
+                pending.append(item)
+            continue
+        # a complex fragment closes the current simple run, pulls its own source
+        # inputs into the graph, then consumes the main pad plus those sources
+        flush_pending()
+        source_labels: list[str] = []
+        for source in item.sources:
+            label = next_label()
+            parts.append(f"{source}[{label}]")
+            source_labels.append(label)
+        label = next_label()
+        inputs = f"[{current}]" + "".join(f"[{sl}]" for sl in source_labels)
+        parts.append(f"{inputs}{item.body}[{label}]")
+        current = label
+    flush_pending()
+
+    return ["-filter_complex", ";".join(parts), "-map", f"[{current}]"]
