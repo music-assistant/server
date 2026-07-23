@@ -326,17 +326,6 @@ class FFMpeg(AsyncProcess):
             if not generator_exhausted:
                 await close_async_generator(self.audio_input)
 
-    async def wait_for_stream_info(self, timeout: float = 5.0) -> bool:
-        """Wait until FFmpeg has probed the input stream info (channels, rate, etc.).
-
-        Returns True if stream info was received within the timeout, False otherwise.
-        """
-        try:
-            await asyncio.wait_for(self._input_stream_info_event.wait(), timeout=timeout)
-            return True
-        except TimeoutError:
-            return False
-
     def _apply_input_stream_info(self, info: FFMpegStreamInfo) -> None:
         """Mirror values from a parsed ffmpeg input stream line onto self.input_format."""
         # content_type is the container format; only fill it in if the provider didn't
