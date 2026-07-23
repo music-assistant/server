@@ -46,6 +46,7 @@ from music_assistant.helpers.security import is_safe_path
 
 from .constants import (
     _ALLOWED_IMAGEPROXY_SIZES,
+    _ALLOWED_IMAGEPROXY_SIZES_STR,
     _IMAGE_ID_CACHE_TTL,
     _IMAGE_ID_LRU_MAX,
     _IMAGEPROXY_CONTENT_TYPES,
@@ -335,13 +336,20 @@ class ImageProxyMixin:
             return web.Response(status=400)
         image_id = request.path[len(_IMAGEPROXY_PATH_PREFIX) :].rstrip("/").lower()
         if len(image_id) != 64 or any(c not in "0123456789abcdef" for c in image_id):
-            return web.Response(status=400)
+            return web.Response(status=400, text="Invalid image id")
         try:
             size = int(request.query.get("size", "0"))
         except ValueError:
-            return web.Response(status=400)
+            return web.Response(
+                status=400,
+                text=f"Invalid size parameter: must be one of {_ALLOWED_IMAGEPROXY_SIZES_STR}.",
+            )
         if size not in _ALLOWED_IMAGEPROXY_SIZES:
-            return web.Response(status=400)
+            return web.Response(
+                status=400,
+                text=f"Unsupported size {size}: must be one of {_ALLOWED_IMAGEPROXY_SIZES_STR} "
+                "(0 = original size).",
+            )
         resolved = await self.resolve_image_id(image_id)
         if resolved is None:
             return web.Response(status=404)
