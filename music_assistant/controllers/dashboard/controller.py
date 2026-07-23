@@ -43,7 +43,7 @@ class _RegisteredDashboard:
 
     device: DashboardDevice
     # callbacks set for in-server registrations (e.g. chromecast); API registrations use events
-    on_show: Callable[[DashboardType, str, str | None], Awaitable[None]] | None = None
+    on_show: Callable[[DashboardType, str | None], Awaitable[None]] | None = None
     on_hide: Callable[[], Awaitable[None]] | None = None
     client_id: str | None = None  # websocket connection that owns an API registration
 
@@ -67,7 +67,7 @@ class DashboardController(CoreController):
         dashboard_id: str,
         name: str,
         supported_types: set[DashboardType] | None = None,
-        icon: str | None = None,
+        provider_domain_hint: str | None = None,
     ) -> None:
         """
         Register the calling client as a dashboard endpoint.
@@ -76,7 +76,7 @@ class DashboardController(CoreController):
         :param name: Display name for the dashboard endpoint.
         :param supported_types: Dashboard types this endpoint can show, defaults to all
             when omitted; an explicitly empty set is rejected.
-        :param icon: Optional material design (mdi-*) or MA/lucide icon name.
+        :param provider_domain_hint: Optional provider domain used to resolve the endpoint's icon.
         :raises InvalidCommand: If not called from a websocket client, if supported_types
             is an empty set, or if dashboard_id is already registered by another owner.
         """
@@ -99,7 +99,7 @@ class DashboardController(CoreController):
             supported_types=set(supported_types)
             if supported_types is not None
             else set(ALL_DASHBOARD_TYPES),
-            icon=icon,
+            provider_domain_hint=provider_domain_hint,
         )
         self._dashboards[dashboard_id] = _RegisteredDashboard(device=device, client_id=client_id)
         # don't spam subscribers when a re-registration changed nothing
@@ -185,10 +185,10 @@ class DashboardController(CoreController):
         )
 
         if registration.on_show is not None:
-            # resolve everything that can fail before invoking the callback, so a failure
-            # never leaves a dashboard showing without a tracked session
-            url = await self._resolve_dashboard_url(dashboard, player_id)
-            await registration.on_show(dashboard, url, player_id)
+            # the consumer resolves its own url (via resolve_dashboard_url) if it needs one,
+            # leaving room for clients that render a custom page from the session values.
+            # it raises before showing anything on failure, so no session is left untracked.
+            await registration.on_show(dashboard, player_id)
         else:
             # API registration: fire the event and store an optimistic session; url-based
             # clients are expected to resolve their own url via `dashboard/get_url`
@@ -236,19 +236,19 @@ class DashboardController(CoreController):
         if not self._can_resolve_url_for_caller(dashboard, player_id):
             msg = "Insufficient permissions to resolve a dashboard url"
             raise InsufficientPermissions(msg)
-        return await self._resolve_dashboard_url(dashboard, player_id)
+        return await self.resolve_dashboard_url(dashboard, player_id)
 
     def register_dashboard_handler(
         self,
         device: DashboardDevice,
-        on_show: Callable[[DashboardType, str, str | None], Awaitable[None]],
+        on_show: Callable[[DashboardType, str | None], Awaitable[None]],
         on_hide: Callable[[], Awaitable[None]],
     ) -> Callable[[], None]:
         """
         Register an in-server dashboard endpoint (e.g. chromecast) with show/hide callbacks.
 
         :param device: Metadata for the dashboard endpoint being registered.
-        :param on_show: Called with (dashboard, url, player_id) to show a dashboard.
+        :param on_show: Called with (dashboard, player_id) to show a dashboard.
         :param on_hide: Called to hide whatever dashboard is currently showing.
         :return: Callable that unregisters the endpoint and drops its active session.
         """
@@ -289,37 +289,13 @@ class DashboardController(CoreController):
         if sessions_changed:
             self._signal_sessions_updated()
 
-    def _can_resolve_url_for_caller(self, dashboard: DashboardType, player_id: str | None) -> bool:
+    async def resolve_dashboard_url(self, dashboard: DashboardType, player_id: str | None) -> str:
         """
-        Return whether the current caller may resolve a dashboard url for itself.
-
-        :param dashboard: Dashboard the caller wants a url for.
-        :param player_id: Player the caller wants a url for, when dashboard is NOW_PLAYING.
-        """
-        user = get_current_user()
-        if user is not None and has_scope(user, Scope.USERS_INVITE):
-            return True
-
-        client_id = get_current_client_id()
-        if client_id is None:
-            return False
-        for dashboard_id, registration in self._dashboards.items():
-            if registration.client_id != client_id:
-                continue
-            session = self._sessions.get(dashboard_id)
-            if session is None or session.dashboard != dashboard:
-                continue
-            if dashboard == DashboardType.NOW_PLAYING and session.player_id != player_id:
-                continue
-            return True
-        return False
-
-    async def _resolve_dashboard_url(self, dashboard: DashboardType, player_id: str | None) -> str:
-        """
-        Build the fully-qualified URL a cast receiver should load to show a dashboard.
+        Build the fully-qualified URL a dashboard endpoint should load to show a dashboard.
 
         Prefers an externally-reachable https base url (reverse-proxied server, same origin)
-        over remote access (via the app.music-assistant.io signaling portal).
+        over remote access (via the app.music-assistant.io signaling portal). In-server
+        consumers (e.g. the chromecast provider) call this to resolve the url themselves.
 
         :param dashboard: Dashboard to show.
         :param player_id: Player to show, required when dashboard is NOW_PLAYING.
@@ -346,6 +322,31 @@ class DashboardController(CoreController):
         query = {"remote_id": remote_access.remote_id, "dashboard": dashboard_code, "path": route}
         channel = self._frontend_channel()
         return f"{APP_MA_HOST}/{channel}/?{urlencode(query)}"
+
+    def _can_resolve_url_for_caller(self, dashboard: DashboardType, player_id: str | None) -> bool:
+        """
+        Return whether the current caller may resolve a dashboard url for itself.
+
+        :param dashboard: Dashboard the caller wants a url for.
+        :param player_id: Player the caller wants a url for, when dashboard is NOW_PLAYING.
+        """
+        user = get_current_user()
+        if user is not None and has_scope(user, Scope.USERS_INVITE):
+            return True
+
+        client_id = get_current_client_id()
+        if client_id is None:
+            return False
+        for dashboard_id, registration in self._dashboards.items():
+            if registration.client_id != client_id:
+                continue
+            session = self._sessions.get(dashboard_id)
+            if session is None or session.dashboard != dashboard:
+                continue
+            if dashboard == DashboardType.NOW_PLAYING and session.player_id != player_id:
+                continue
+            return True
+        return False
 
     async def _get_dashboard_code(self) -> str:
         """Mint a fresh one-time code a cast receiver can exchange for a viewer token."""

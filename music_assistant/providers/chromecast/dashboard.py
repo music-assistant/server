@@ -96,7 +96,7 @@ class ChromecastDashboards:
             dashboard_id=f"chromecast_{device_id}",
             name=cast_info.friendly_name or device_id,
             supported_types=SUPPORTED_DASHBOARD_TYPES,
-            icon="cast",
+            provider_domain_hint=self.provider.domain,
         )
         self._unregister_callbacks[device_id] = self.mass.dashboard.register_dashboard_handler(
             device,
@@ -105,14 +105,17 @@ class ChromecastDashboards:
         )
 
     async def _on_show(
-        self, device_id: str, _dashboard: DashboardType, url: str, _player_id: str | None
+        self, device_id: str, dashboard: DashboardType, player_id: str | None
     ) -> None:
         """
         Show a Music Assistant dashboard on a Cast display device.
 
         :param device_id: Cast device uuid (as string) to show the dashboard on.
-        :param url: Fully-qualified dashboard URL for the receiver to load.
+        :param dashboard: Dashboard to show.
+        :param player_id: Player to show, when dashboard is NOW_PLAYING.
         """
+        # resolve the url before touching the device: on failure nothing is shown
+        url = await self.mass.dashboard.resolve_dashboard_url(dashboard, player_id)
         chromecast = await self._get_or_create_chromecast(device_id)
         try:
             await self.mass.loop.run_in_executor(None, send_show_dashboard, chromecast, url)

@@ -71,7 +71,7 @@ async def test_resolve_dashboard_url_uses_https_base_url_when_configured() -> No
     with patch.object(
         DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")
     ):
-        url = await controller._resolve_dashboard_url(DashboardType.PARTY, None)
+        url = await controller.resolve_dashboard_url(DashboardType.PARTY, None)
 
     assert url.startswith("https://mass.example.com?")
     query = _query(url)
@@ -89,7 +89,7 @@ async def test_resolve_dashboard_url_uses_remote_access_when_no_https_base() -> 
     with patch.object(
         DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")
     ):
-        url = await controller._resolve_dashboard_url(DashboardType.PARTY, None)
+        url = await controller.resolve_dashboard_url(DashboardType.PARTY, None)
 
     assert url.startswith("https://app.music-assistant.io/stable/?")
     query = _query(url)
@@ -101,7 +101,7 @@ async def test_resolve_dashboard_url_raises_when_neither_configured() -> None:
     controller = _make_controller()
 
     with pytest.raises(ActionUnavailable):
-        await controller._resolve_dashboard_url(DashboardType.PARTY, None)
+        await controller.resolve_dashboard_url(DashboardType.PARTY, None)
 
 
 async def test_resolve_dashboard_url_now_playing_requires_player_id() -> None:
@@ -110,7 +110,7 @@ async def test_resolve_dashboard_url_now_playing_requires_player_id() -> None:
     controller.mass.webserver.base_url = "https://mass.example.com"  # type: ignore[misc]
 
     with pytest.raises(InvalidCommand):
-        await controller._resolve_dashboard_url(DashboardType.NOW_PLAYING, None)
+        await controller.resolve_dashboard_url(DashboardType.NOW_PLAYING, None)
 
 
 async def test_resolve_dashboard_url_now_playing_embeds_player_id_in_path() -> None:
@@ -121,7 +121,7 @@ async def test_resolve_dashboard_url_now_playing_embeds_player_id_in_path() -> N
     with patch.object(
         DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")
     ):
-        url = await controller._resolve_dashboard_url(DashboardType.NOW_PLAYING, "player1")
+        url = await controller.resolve_dashboard_url(DashboardType.NOW_PLAYING, "player1")
 
     query = _query(url)
     assert query["path"] == "/now-playing?player=player1"
@@ -135,7 +135,7 @@ async def test_resolve_dashboard_url_encodes_player_id() -> None:
     with patch.object(
         DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")
     ):
-        url = await controller._resolve_dashboard_url(DashboardType.NOW_PLAYING, "a&b=c d")
+        url = await controller.resolve_dashboard_url(DashboardType.NOW_PLAYING, "a&b=c d")
 
     query = _query(url)
     assert query["path"] == "/now-playing?player=a%26b%3Dc+d"
@@ -147,7 +147,7 @@ async def test_resolve_dashboard_url_rejects_unknown_dashboard_type() -> None:
     controller.mass.webserver.base_url = "https://mass.example.com"  # type: ignore[misc]
 
     with pytest.raises(InvalidCommand):
-        await controller._resolve_dashboard_url(DashboardType.UNKNOWN, None)
+        await controller.resolve_dashboard_url(DashboardType.UNKNOWN, None)
 
 
 @pytest.mark.parametrize(
@@ -176,14 +176,16 @@ async def test_register_dashboard_stores_registration_and_signals() -> None:
         "music_assistant.controllers.dashboard.controller.get_current_client_id",
         return_value="client1",
     ):
-        await controller.register_dashboard("dash1", "Living Room", icon="apple-tv")
+        await controller.register_dashboard(
+            "dash1", "Living Room", provider_domain_hint="chromecast"
+        )
 
     device = controller._dashboards["dash1"].device
     assert device == DashboardDevice(
         dashboard_id="dash1",
         name="Living Room",
         supported_types=set(ALL_DASHBOARD_TYPES),
-        icon="apple-tv",
+        provider_domain_hint="chromecast",
     )
     controller.mass.signal_event.assert_called_once_with(  # type: ignore[attr-defined]
         EventType.DASHBOARDS_UPDATED, data=[device]
@@ -499,11 +501,9 @@ async def test_show_dashboard_rejects_unsupported_type() -> None:
         await controller.show_dashboard("dash1", DashboardType.PARTY)
 
 
-async def test_show_dashboard_callback_path_resolves_url_and_invokes_on_show() -> None:
-    """A callback registration resolves the url first, then delegates to on_show."""
+async def test_show_dashboard_callback_path_invokes_on_show() -> None:
+    """A callback registration delegates to on_show with the dashboard and player_id only."""
     controller = _make_controller()
-    controller.mass.webserver.remote_access.is_enabled = True  # type: ignore[misc]
-    controller.mass.webserver.remote_access.remote_id = "remote123"  # type: ignore[misc]
     device = DashboardDevice(
         dashboard_id="dash1", name="Living Room", supported_types=set(ALL_DASHBOARD_TYPES)
     )
@@ -512,20 +512,10 @@ async def test_show_dashboard_callback_path_resolves_url_and_invokes_on_show() -
         device=device, on_show=on_show, on_hide=AsyncMock()
     )
 
-    with patch.object(
-        DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")
-    ):
-        await controller.show_dashboard("dash1", DashboardType.PARTY)
+    await controller.show_dashboard("dash1", DashboardType.PARTY)
 
-    on_show.assert_awaited_once()
-    dashboard_arg, url_arg, player_id_arg = on_show.await_args.args  # type: ignore[union-attr]
-    assert dashboard_arg == DashboardType.PARTY
-    assert player_id_arg is None
-    assert _query(url_arg) == {
-        "remote_id": "remote123",
-        "dashboard": "code456",
-        "path": "/party",
-    }
+    # the controller no longer resolves the url; the consumer does that itself
+    on_show.assert_awaited_once_with(DashboardType.PARTY, None)
 
     session = controller._sessions["dash1"]
     assert session == DashboardSession(
@@ -539,18 +529,13 @@ async def test_show_dashboard_callback_path_resolves_url_and_invokes_on_show() -
 async def test_show_dashboard_callback_error_propagates_without_storing_session() -> None:
     """If on_show raises, the error propagates and no session is ever stored."""
     controller = _make_controller()
-    controller.mass.webserver.remote_access.is_enabled = True  # type: ignore[misc]
-    controller.mass.webserver.remote_access.remote_id = "remote123"  # type: ignore[misc]
     device = DashboardDevice(
         dashboard_id="dash1", name="Living Room", supported_types=set(ALL_DASHBOARD_TYPES)
     )
     on_show = AsyncMock(side_effect=MusicAssistantError("cast failed"))
     controller._dashboards["dash1"] = _RegisteredDashboard(device=device, on_show=on_show)
 
-    with (
-        patch.object(DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")),
-        pytest.raises(MusicAssistantError),
-    ):
+    with pytest.raises(MusicAssistantError):
         await controller.show_dashboard("dash1", DashboardType.PARTY)
 
     assert "dash1" not in controller._sessions

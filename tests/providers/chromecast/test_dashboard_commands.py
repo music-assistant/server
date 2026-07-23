@@ -21,6 +21,7 @@ def _make_dashboards() -> ChromecastDashboards:
     """Build a ChromecastDashboards instance with a fully mocked owning provider."""
     provider = MagicMock()
     provider.translation_owner = "provider.chromecast"
+    provider.domain = "chromecast"
     provider.mass.closing = False
     # run_in_executor just calls the function inline, synchronously
     provider.mass.loop.run_in_executor = AsyncMock(
@@ -77,7 +78,7 @@ def test_register_video_capable_device() -> None:
         dashboard_id=f"chromecast_{uuid}",
         name="Living Room TV",
         supported_types={DashboardType.PARTY, DashboardType.NOW_PLAYING},
-        icon="cast",
+        provider_domain_hint="chromecast",
     )
 
 
@@ -130,11 +131,12 @@ async def test_on_show_reuses_connected_player_cc() -> None:
     castplayer.cc = connected_chromecast
     dashboards.mass.players.get_player.return_value = castplayer  # type: ignore[attr-defined]
     url = "https://mass.example.com?path=%2Fparty"
+    dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(return_value=url)  # type: ignore[method-assign]
 
     with patch(
         "music_assistant.providers.chromecast.dashboard.send_show_dashboard"
     ) as mock_send_show_dashboard:
-        await dashboards._on_show(str(device_uuid), DashboardType.PARTY, url, None)
+        await dashboards._on_show(str(device_uuid), DashboardType.PARTY, None)
 
     mock_send_show_dashboard.assert_called_once_with(connected_chromecast, url)
 
@@ -147,11 +149,12 @@ async def test_on_show_reuses_cached_on_demand_connection() -> None:
     connected_chromecast.socket_client.is_connected = True
     dashboards._dashboard_connections[str(device_uuid)] = connected_chromecast
     url = "https://mass.example.com?path=%2Fparty"
+    dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(return_value=url)  # type: ignore[method-assign]
 
     with patch(
         "music_assistant.providers.chromecast.dashboard.send_show_dashboard"
     ) as mock_send_show_dashboard:
-        await dashboards._on_show(str(device_uuid), DashboardType.PARTY, url, None)
+        await dashboards._on_show(str(device_uuid), DashboardType.PARTY, None)
 
     mock_send_show_dashboard.assert_called_once_with(connected_chromecast, url)
 
@@ -160,11 +163,12 @@ async def test_on_show_raises_for_unknown_device() -> None:
     """An unknown device_id (not in the browser's discovered devices) is rejected."""
     dashboards = _make_dashboards()
     dashboards.provider.browser = MagicMock(devices={})
+    dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(  # type: ignore[method-assign]
+        return_value="https://mass.example.com?path=%2Fparty"
+    )
 
     with pytest.raises(PlayerUnavailableError):
-        await dashboards._on_show(
-            str(uuid4()), DashboardType.PARTY, "https://mass.example.com?path=%2Fparty", None
-        )
+        await dashboards._on_show(str(uuid4()), DashboardType.PARTY, None)
 
 
 async def test_on_show_wraps_timeout_error() -> None:
@@ -175,6 +179,9 @@ async def test_on_show_wraps_timeout_error() -> None:
     connected_chromecast.socket_client.is_connected = True
     connected_chromecast.name = "Living Room TV"
     dashboards._dashboard_connections[str(device_uuid)] = connected_chromecast
+    dashboards.mass.dashboard.resolve_dashboard_url = AsyncMock(  # type: ignore[method-assign]
+        return_value="https://mass.example.com?path=%2Fparty"
+    )
 
     with (
         patch(
@@ -183,9 +190,7 @@ async def test_on_show_wraps_timeout_error() -> None:
         ),
         pytest.raises(PlayerUnavailableError) as exc_info,
     ):
-        await dashboards._on_show(
-            str(device_uuid), DashboardType.PARTY, "https://mass.example.com?path=%2Fparty", None
-        )
+        await dashboards._on_show(str(device_uuid), DashboardType.PARTY, None)
 
     assert str(exc_info.value) == "Launching app on Living Room TV failed"
     assert exc_info.value.translation_key == "show_dashboard_failed"
@@ -310,6 +315,7 @@ def test_discovery_registers_device_with_dashboards() -> None:
     castplayer = MagicMock(spec=ChromecastPlayer)
     castplayer.available = True
     castplayer.cast_info = MagicMock(is_audio_group=False)
+    castplayer.cc = MagicMock()  # discovery fast-path reads castplayer.cc.socket_client
     provider.mass.players.get_player.return_value = castplayer  # type: ignore[attr-defined]
 
     provider._on_chromecast_discovered(uuid, "service")
