@@ -1057,12 +1057,16 @@ class ProtocolLinkingMixin:
         target_raw = target_raw if isinstance(target_raw, dict) else {}
         player_config_changed = False
 
-        # only carry an actual user rename, not the auto-generated default name
+        # only carry an actual user rename, not the auto-generated default name;
+        # likewise a name on the native player only counts as a user override when
+        # it differs from the default name (fresh configs store name == default_name)
         custom_name = source_raw.get("name")
+        target_name = target_raw.get("name")
+        target_has_custom_name = bool(target_name) and target_name != target_raw.get("default_name")
         if (
             custom_name
             and custom_name != source_raw.get("default_name")
-            and not target_raw.get("name")
+            and not target_has_custom_name
         ):
             self.mass.config.set(f"{target_key}/name", custom_name)
             player_config_changed = True

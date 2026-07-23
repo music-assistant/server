@@ -5658,7 +5658,14 @@ class TestUniversalPlayerReplacement:
     async def test_replace_carries_over_universal_config(self, mock_mass: MagicMock) -> None:
         """Replacement migrates name, values, DSP and queue settings to the native player."""
         config_store: dict[str, Any] = {
-            "players/cast_1": {"enabled": True, "values": {"volume_control": "native"}},
+            # fresh native configs store name == default_name; that must not
+            # count as a user override blocking the name carry-over
+            "players/cast_1": {
+                "enabled": True,
+                "name": "Soundbar",
+                "default_name": "Soundbar",
+                "values": {"volume_control": "native"},
+            },
             "players/up_old": {
                 "enabled": True,
                 "name": "Living Room",
@@ -5742,7 +5749,7 @@ class TestUniversalPlayerReplacement:
     def test_replace_keeps_native_name_dsp_and_queue_values(self, mock_mass: MagicMock) -> None:
         """Values explicitly set on the native player win over the universal player's."""
         config_store: dict[str, Any] = {
-            "players/cast_1": {"enabled": True, "name": "Kitchen"},
+            "players/cast_1": {"enabled": True, "name": "Kitchen", "default_name": "Soundbar"},
             "players/up_old": {
                 "enabled": True,
                 "name": "Living Room",
