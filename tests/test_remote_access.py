@@ -851,7 +851,7 @@ async def test_send_ma_api_small_message_passthrough(cert_pems: tuple[str, str])
     """A ma-api message within the limit is sent verbatim, not chunked."""
     gateway = _proxy_gateway(cert_pems)
     channel = _FakeDataChannel()
-    await gateway._send_ma_api(channel, '{"event":"player_updated"}')
+    await gateway._send_ma_api(cast("DataChannel", channel), '{"event":"player_updated"}')
     assert channel.sent == ['{"event":"player_updated"}']
 
 
@@ -862,7 +862,7 @@ async def test_send_ma_api_large_message_chunked(cert_pems: tuple[str, str]) -> 
     # multibyte payload so chunk boundaries fall mid-character, exercising the byte-level split
     text = '{"data":"' + "音楽" * MA_API_CHUNK_SIZE + '"}'
 
-    await gateway._send_ma_api(channel, text)
+    await gateway._send_ma_api(cast("DataChannel", channel), text)
 
     assert len(channel.sent) > 1
     assert all(len(m.encode()) < 256 * 1024 for m in channel.sent)
@@ -901,7 +901,7 @@ async def test_ma_api_chunks_survive_real_data_channel(cert_pems: tuple[str, str
         for _ in range(count - 1):
             frames.append(await asyncio.wait_for(dc.recv(), timeout=15))
 
-        reassembled = json.loads(_reassemble_chunks(frames))
+        reassembled = json.loads(_reassemble_chunks(cast("list[str]", frames)))
         assert reassembled["id"] == "wire-req"
         assert bytes.fromhex(reassembled["body"]) == body
     finally:
