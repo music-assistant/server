@@ -18,7 +18,9 @@ def provider() -> MagicMock:
     mock = MagicMock()
     mock.logger = MagicMock()
     mock._first_volume_event_received = False
-    mock._in_use_by_queue = "queue1"
+    # queue_id == player_id in MA: the stop and the follow-up play target the same
+    # player, which is the same-player reconnect scenario the race can actually break.
+    mock._in_use_by_queue = "player1"
     mock._active_player_id = "player1"
     mock._active_session_id = "session1"
     mock._pending_stop_task = None
@@ -98,3 +100,49 @@ async def test_play_proceeds_when_stop_fails(provider: MagicMock) -> None:
     await asyncio.sleep(0.01)
 
     provider.mass.player_queues.play_media.assert_awaited_once_with("player1", "airplay://source")
+
+
+async def test_play_proceeds_when_stop_fails_unexpectedly(provider: MagicMock) -> None:
+    """An unexpected (non-PlayerCommandFailed) stop error must not abort the new session."""
+    provider.mass.players.cmd_stop = AsyncMock(side_effect=RuntimeError("kaboom"))
+    provider.mass.player_queues.play_media = AsyncMock()
+
+    _handle(provider, "stopped")
+    _handle(provider, "playing")
+    await asyncio.sleep(0.01)
+
+    provider.mass.player_queues.play_media.assert_awaited_once_with("player1", "airplay://source")
+    assert provider._pending_stop_task is None
+
+
+async def test_concurrent_starts_all_wait_for_pending_stop(provider: MagicMock) -> None:
+    """Rapid duplicate starts must all await the pending stop, none racing past it."""
+    events: list[str] = []
+    stop_release = asyncio.Event()
+
+    async def slow_stop() -> None:
+        await stop_release.wait()
+        events.append("stop_done")
+
+    async def play_media(_player_id: str, _media: str) -> None:
+        events.append("play")
+
+    provider._pending_stop_task = asyncio.get_event_loop().create_task(slow_stop())
+    provider.mass.player_queues.play_media = play_media
+
+    # two starts before on_source_selected claims _in_use_by_queue
+    starts = [
+        asyncio.ensure_future(AirPlayReceiverProvider._start_playback(provider, "player1"))
+        for _ in range(2)
+    ]
+    for _ in range(5):
+        await asyncio.sleep(0)
+    # neither start may play until the pending stop has finished
+    assert events == []
+
+    stop_release.set()
+    await asyncio.gather(*starts)
+
+    assert events[0] == "stop_done"
+    assert events.count("play") == 2
+    assert provider._pending_stop_task is None
