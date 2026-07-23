@@ -156,6 +156,12 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     if _migrate_local_audio_attribution_stubs(data):
         changed = True
 
+    # Drop ghost players that were discovered from this server's own AirPlay Receiver
+    # (shairport-sync) advertisements before discovery learned to filter them out.
+    # TODO: remove after 2.11 release
+    if _migrate_airplay_receiver_ghost_players(data):
+        changed = True
+
     # Drop the stored value of the removed output limiter player setting; clipping protection
     # is now an explicit Safety Limiter DSP filter instead of a fixed output stage.
     # TODO: remove after 2.10 release
@@ -574,6 +580,91 @@ def _migrate_fully_kiosk_multi_instance(data: dict[str, Any]) -> bool:
         "Devices and their passwords have been preserved, but any Fully Kiosk player "
         "that was part of a universal group will need to be re-added to it. ",
         len(legacy_ids),
+    )
+    return True
+
+
+def _migrate_airplay_receiver_ghost_players(data: dict[str, Any]) -> bool:
+    """
+    Remove ghost players left behind by this server's own AirPlay Receiver instances.
+
+    The AirPlay provider could discover the server's own AirPlay Receiver
+    (shairport-sync) advertisements as regular AirPlay players. shairport-sync
+    derives its device id from the receiver name plus a host interface MAC, which
+    can change per boot (e.g. virtual interface MACs), so every restart could mint
+    a new player id: the previous ids linger as permanently unavailable players and
+    universal player wrappers. Discovery now filters these advertisements out; this
+    migration drops the leftovers.
+    """
+    all_provider_configs = data.get(CONF_PROVIDERS, {})
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_provider_configs, dict) or not isinstance(all_player_configs, dict):
+        return False
+    # the advertised name of every configured receiver instance
+    # (key and default mirror the airplay_receiver provider's config entry)
+    receiver_names: set[str] = set()
+    for provider_cfg in all_provider_configs.values():
+        if not isinstance(provider_cfg, dict) or provider_cfg.get("domain") != "airplay_receiver":
+            continue
+        provider_values = provider_cfg.get("values")
+        airplay_name = (
+            provider_values.get("airplay_name") if isinstance(provider_values, dict) else None
+        )
+        receiver_names.add(str(airplay_name) if airplay_name else "Music Assistant")
+    if not receiver_names:
+        return False
+    # the Sendspin bridge of such a ghost registered under "<name> (AirPlay)"
+    bridge_names = {f"{name} (AirPlay)" for name in receiver_names}
+
+    ghost_ids: set[str] = set()
+    for player_id, player_cfg in all_player_configs.items():
+        if not isinstance(player_cfg, dict):
+            continue
+        default_name = player_cfg.get("default_name")
+        provider = player_cfg.get("provider")
+        if (
+            player_id.startswith("ap") and provider == "airplay" and default_name in receiver_names
+        ) or (
+            player_id.startswith("spb_") and provider == "sendspin" and default_name in bridge_names
+        ):
+            ghost_ids.add(player_id)
+        elif (
+            player_id.startswith("up")
+            and provider == "universal_player"
+            and default_name in receiver_names | bridge_names
+        ):
+            values = player_cfg.get("values")
+            linked = values.get(CONF_LINKED_PROTOCOL_IDS) if isinstance(values, dict) else None
+            # only remove wrappers that exclusively wrap such ghost endpoints
+            if not isinstance(linked, list) or all(
+                isinstance(pid, str) and pid.startswith(("ap", "spb_")) for pid in linked
+            ):
+                ghost_ids.add(player_id)
+    if not ghost_ids:
+        return False
+
+    for player_id in ghost_ids:
+        del all_player_configs[player_id]
+        # drop dead per-queue and DSP state along with the player config
+        for tree_key in (CONF_PLAYER_QUEUES, CONF_PLAYER_DSP):
+            tree = data.get(tree_key)
+            if isinstance(tree, dict):
+                tree.pop(player_id, None)
+    # strip dangling references to the removed ghosts from group configurations
+    for player_cfg in all_player_configs.values():
+        if not isinstance(player_cfg, dict):
+            continue
+        values = player_cfg.get("values")
+        if not isinstance(values, dict):
+            continue
+        for key in ("group_members", "allowed_members"):
+            members = values.get(key)
+            if isinstance(members, list) and any(pid in ghost_ids for pid in members):
+                values[key] = [pid for pid in members if pid not in ghost_ids]
+    LOGGER.info(
+        "Removed %d ghost player config(s) left behind by this server's own "
+        "AirPlay Receiver instances",
+        len(ghost_ids),
     )
     return True
 
