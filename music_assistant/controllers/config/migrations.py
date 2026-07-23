@@ -616,7 +616,9 @@ def _migrate_airplay_receiver_ghost_players(data: dict[str, Any]) -> bool:
     # the Sendspin bridge of such a ghost registered under "<name> (AirPlay)"
     bridge_names = {f"{name} (AirPlay)" for name in receiver_names}
 
-    ghost_ids: set[str] = set()
+    # First identify the ghost protocol endpoints: the discovered AirPlay player and
+    # its Sendspin bridge, each matched by its own advertised (receiver) name.
+    endpoint_ghost_ids: set[str] = set()
     for player_id, player_cfg in all_player_configs.items():
         if not isinstance(player_cfg, dict):
             continue
@@ -627,19 +629,26 @@ def _migrate_airplay_receiver_ghost_players(data: dict[str, Any]) -> bool:
         ) or (
             player_id.startswith("spb_") and provider == "sendspin" and default_name in bridge_names
         ):
-            ghost_ids.add(player_id)
-        elif (
+            endpoint_ghost_ids.add(player_id)
+
+    # Then add the universal player wrappers that exclusively wrap those endpoints.
+    # A wrapper is only removed when it links at least one confirmed ghost endpoint
+    # and nothing else, so a real player that merely shares the receiver name (with
+    # no or different linked protocols) is never deleted.
+    ghost_ids = set(endpoint_ghost_ids)
+    for player_id, player_cfg in all_player_configs.items():
+        if not isinstance(player_cfg, dict):
+            continue
+        if not (
             player_id.startswith("up")
-            and provider == "universal_player"
-            and default_name in receiver_names | bridge_names
+            and player_cfg.get("provider") == "universal_player"
+            and player_cfg.get("default_name") in receiver_names | bridge_names
         ):
-            values = player_cfg.get("values")
-            linked = values.get(CONF_LINKED_PROTOCOL_IDS) if isinstance(values, dict) else None
-            # only remove wrappers that exclusively wrap such ghost endpoints
-            if not isinstance(linked, list) or all(
-                isinstance(pid, str) and pid.startswith(("ap", "spb_")) for pid in linked
-            ):
-                ghost_ids.add(player_id)
+            continue
+        values = player_cfg.get("values")
+        linked = values.get(CONF_LINKED_PROTOCOL_IDS) if isinstance(values, dict) else None
+        if isinstance(linked, list) and linked and all(pid in endpoint_ghost_ids for pid in linked):
+            ghost_ids.add(player_id)
     if not ghost_ids:
         return False
 

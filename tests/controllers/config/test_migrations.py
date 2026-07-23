@@ -131,6 +131,45 @@ def test_migrate_airplay_receiver_ghosts_uses_default_name() -> None:
     assert data["players"] == {}
 
 
+def test_migrate_airplay_receiver_ghosts_keeps_same_name_wrapper_without_ghost_links() -> None:
+    """A wrapper sharing the receiver name is kept unless it links only ghost endpoints."""
+    data: dict[str, Any] = {
+        "providers": {
+            "airplay_receiver--abc1": {
+                "domain": "airplay_receiver",
+                "instance_id": "airplay_receiver--abc1",
+                "values": {"airplay_name": "Garage [AirPlay]"},
+            },
+        },
+        "players": {
+            # empty linked list: must NOT be deleted (all([]) is True)
+            "upemptylinks": {
+                "player_id": "upemptylinks",
+                "provider": "universal_player",
+                "default_name": "Garage [AirPlay]",
+                "values": {"linked_protocol_ids": []},
+            },
+            # no linked_protocol_ids at all: must NOT be deleted
+            "upnolinks": {
+                "player_id": "upnolinks",
+                "provider": "universal_player",
+                "default_name": "Garage [AirPlay]",
+                "values": {},
+            },
+            # links a native (non-ghost) protocol player: must NOT be deleted
+            "upnative": {
+                "player_id": "upnative",
+                "provider": "universal_player",
+                "default_name": "Garage [AirPlay]",
+                "values": {"linked_protocol_ids": ["spb_10b41dc887f8"]},
+            },
+        },
+    }
+
+    assert _migrate_airplay_receiver_ghost_players(data) is False
+    assert set(data["players"]) == {"upemptylinks", "upnolinks", "upnative"}
+
+
 def test_migrate_airplay_receiver_ghosts_noop_without_receivers() -> None:
     """Without configured receiver instances no player config is touched."""
     data: dict[str, Any] = {
