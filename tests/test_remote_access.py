@@ -3,6 +3,7 @@
 import asyncio
 import base64
 import hashlib
+import json
 from collections.abc import AsyncIterator, Callable
 from types import SimpleNamespace
 from typing import Any, cast
@@ -21,6 +22,7 @@ from music_assistant.controllers.webserver.remote_access import (
     RemoteAccessManager,
 )
 from music_assistant.controllers.webserver.remote_access.gateway import (
+    HTTP_PROXY_CHUNK_SIZE,
     WebRTCGateway,
     WebRTCSession,
 )
@@ -1106,6 +1108,121 @@ async def test_session_closes_when_ma_api_channel_closes(cert_pems: tuple[str, s
 
         await _wait_for(lambda: session_id not in gateway.sessions)
         assert session_id not in gateway.sessions
+    finally:
+        await gateway._close_session(session_id)
+        await offerer.aclose()
+
+
+class _FakeDataChannel:
+    """Data channel stand-in that captures outbound messages for proxy tests."""
+
+    def __init__(self) -> None:
+        self.is_open = True
+        self.sent: list[str] = []
+
+    async def send(self, data: str) -> None:
+        self.sent.append(data)
+
+
+def _proxy_gateway(cert_pems: tuple[str, str]) -> WebRTCGateway:
+    cert_pem, key_pem = cert_pems
+    return WebRTCGateway(
+        http_session=Mock(),
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+    )
+
+
+async def test_http_proxy_response_small_body_single_message(
+    cert_pems: tuple[str, str],
+) -> None:
+    """A body within the chunk size is sent as one legacy http-proxy-response message."""
+    gateway = _proxy_gateway(cert_pems)
+    channel = _FakeDataChannel()
+    session = cast("WebRTCSession", SimpleNamespace(data_channel=channel))
+    body = b"\x00\x01\x02small-body"
+
+    await gateway._send_http_proxy_response(session, "req-small", 200, {"X-Test": "y"}, body)
+
+    assert len(channel.sent) == 1
+    msg = json.loads(channel.sent[0])
+    assert msg["type"] == "http-proxy-response"
+    assert msg["id"] == "req-small"
+    assert msg["status"] == 200
+    assert msg["headers"] == {"X-Test": "y"}
+    assert bytes.fromhex(msg["body"]) == body
+
+
+async def test_http_proxy_response_large_body_chunked(cert_pems: tuple[str, str]) -> None:
+    """A body over the chunk size is announced then streamed as reassemblable chunks."""
+    gateway = _proxy_gateway(cert_pems)
+    channel = _FakeDataChannel()
+    session = cast("WebRTCSession", SimpleNamespace(data_channel=channel))
+    # 2.5 chunks worth of data so the final chunk is a partial one.
+    body = bytes(range(256)) * ((HTTP_PROXY_CHUNK_SIZE * 5) // 512)
+    assert len(body) > HTTP_PROXY_CHUNK_SIZE
+
+    await gateway._send_http_proxy_response(session, "req-big", 200, {}, body)
+
+    expected_chunks = -(-len(body) // HTTP_PROXY_CHUNK_SIZE)
+    start = json.loads(channel.sent[0])
+    assert start["type"] == "http-proxy-response-start"
+    assert start["id"] == "req-big"
+    assert start["status"] == 200
+    assert start["chunks"] == expected_chunks
+    assert len(channel.sent) == expected_chunks + 1
+
+    chunks = [json.loads(m) for m in channel.sent[1:]]
+    assert [c["index"] for c in chunks] == list(range(expected_chunks))
+    assert all(c["type"] == "http-proxy-response-chunk" for c in chunks)
+    # Every serialized message must stay under the negotiated 256 KiB data-channel limit.
+    assert all(len(m.encode()) < 256 * 1024 for m in channel.sent)
+
+    reassembled = b"".join(bytes.fromhex(c["body"]) for c in chunks)
+    assert reassembled == body
+
+
+async def test_http_proxy_response_chunks_survive_real_data_channel(
+    cert_pems: tuple[str, str],
+) -> None:
+    """A body too large for one message is chunked over a real libdatachannel session."""
+    cert_pem, key_pem = cert_pems
+    fake_ws = _FakeLocalWS()
+    http_session = Mock()
+    http_session.ws_connect = AsyncMock(
+        return_value=cast("aiohttp.ClientWebSocketResponse", fake_ws)
+    )
+    gateway = WebRTCGateway(
+        http_session=http_session,
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+    )
+    session_id = "chunk-wire-session"
+    with patch.object(gateway, "_get_fresh_ice_servers", AsyncMock(return_value=[])):
+        offerer, dc = await _connect_gateway_session(gateway, session_id)
+    try:
+        # ~293 KiB: as a single hex message this is ~586 KiB, well over the 256 KiB
+        # data-channel limit, so it only arrives at all if chunking works.
+        body = bytes((i * 7) % 256 for i in range(300_000))
+        session = gateway.sessions[session_id]
+        await gateway._send_http_proxy_response(
+            session, "wire-req", 200, {"content-type": "image/jpeg"}, body
+        )
+
+        start = json.loads(await asyncio.wait_for(dc.recv(), timeout=15))
+        assert start["type"] == "http-proxy-response-start"
+        assert start["id"] == "wire-req"
+        assert start["chunks"] > 1
+
+        parts: list[str] = [""] * start["chunks"]
+        for _ in range(start["chunks"]):
+            chunk = json.loads(await asyncio.wait_for(dc.recv(), timeout=15))
+            assert chunk["type"] == "http-proxy-response-chunk"
+            parts[chunk["index"]] = chunk["body"]
+
+        assert bytes.fromhex("".join(parts)) == body
     finally:
         await gateway._close_session(session_id)
         await offerer.aclose()

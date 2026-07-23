@@ -30,6 +30,13 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.remote_access")
 # data channel stays bounded and never blocks the API message pump (see #4889).
 HTTP_PROXY_CONCURRENCY = 6
 
+# Large proxied bodies (album art) are split into chunks before sending: libdatachannel
+# enforces the negotiated 256 KiB data-channel message limit, whereas aiortc silently
+# fragmented any size. 64 KiB raw -> ~128 KiB hex per message stays well under the limit,
+# and keeps messages small enough that API traffic can interleave between image chunks
+# (browsers don't implement SCTP message interleaving, RFC 8260).
+HTTP_PROXY_CHUNK_SIZE = 64 * 1024
+
 
 @dataclass
 class WebRTCSession:
@@ -524,32 +531,82 @@ class WebRTCGateway:
                 async with self.http_session.request(
                     method, local_http_url, headers=headers
                 ) as response:
-                    # Read response body
                     body = await response.read()
-
-                    # Prepare response data
-                    response_data = {
-                        "type": "http-proxy-response",
-                        "id": request_id,
-                        "status": response.status,
-                        "headers": dict(response.headers),
-                        "body": body.hex(),  # Send as hex string to avoid encoding issues
-                    }
-
-                    # Send response back through data channel
-                    await self._send_on_channel(session.data_channel, json.dumps(response_data))
-
+                    await self._send_http_proxy_response(
+                        session, request_id, response.status, dict(response.headers), body
+                    )
             except Exception as err:
                 self.logger.exception("Error handling HTTP proxy request")
-                # Send error response
-                error_response = {
-                    "type": "http-proxy-response",
+                await self._send_http_proxy_response(
+                    session, request_id, 500, {"Content-Type": "text/plain"}, str(err).encode()
+                )
+
+    async def _send_http_proxy_response(
+        self,
+        session: WebRTCSession,
+        request_id: str | None,
+        status: int,
+        headers: dict[str, str],
+        body: bytes,
+    ) -> None:
+        """
+        Send an HTTP-proxy response over the data channel, chunking large bodies.
+
+        :param session: The WebRTC session.
+        :param request_id: The originating request ID.
+        :param status: The HTTP status code.
+        :param headers: The HTTP response headers.
+        :param body: The raw response body.
+        """
+        channel = session.data_channel
+        # Small bodies fit a single message; keep the legacy format so clients that
+        # don't understand chunking still work for everything but large images.
+        if len(body) <= HTTP_PROXY_CHUNK_SIZE:
+            await self._send_on_channel(
+                channel,
+                json.dumps(
+                    {
+                        "type": "http-proxy-response",
+                        "id": request_id,
+                        "status": status,
+                        "headers": headers,
+                        "body": body.hex(),
+                    }
+                ),
+            )
+            return
+
+        # Announce the chunked response, then stream fixed-size hex chunks the client
+        # reassembles by request ID.
+        chunk_count = (len(body) + HTTP_PROXY_CHUNK_SIZE - 1) // HTTP_PROXY_CHUNK_SIZE
+        await self._send_on_channel(
+            channel,
+            json.dumps(
+                {
+                    "type": "http-proxy-response-start",
                     "id": request_id,
-                    "status": 500,
-                    "headers": {"Content-Type": "text/plain"},
-                    "body": str(err).encode().hex(),
+                    "status": status,
+                    "headers": headers,
+                    "chunks": chunk_count,
                 }
-                await self._send_on_channel(session.data_channel, json.dumps(error_response))
+            ),
+        )
+        for index in range(chunk_count):
+            if channel is None or not channel.is_open:
+                return
+            offset = index * HTTP_PROXY_CHUNK_SIZE
+            chunk = body[offset : offset + HTTP_PROXY_CHUNK_SIZE]
+            await self._send_on_channel(
+                channel,
+                json.dumps(
+                    {
+                        "type": "http-proxy-response-chunk",
+                        "id": request_id,
+                        "index": index,
+                        "body": chunk.hex(),
+                    }
+                ),
+            )
 
     async def _close_session(self, session_id: str) -> None:
         """
