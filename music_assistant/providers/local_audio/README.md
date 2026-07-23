@@ -15,6 +15,7 @@ The Local Audio Out provider exposes locally attached soundcards as players in M
 - **Stable Player IDs**: Uses UUIDv5 derived from device name + host API index so players persist across restarts
 - **Volume State Persistence**: Volume level is cached and restored on restart. Mute state is intentionally *not* restored on restart — a player never starts up silently muted
 - **PA Stream Pre-Warming** *(Linux PulseAudio)*: PA streams are opened at provider startup rather than at first play, eliminating the cold-start stream-open latency that causes a fixed sync offset when multiple bridges open their streams simultaneously on the first play in a sync group
+- **Multi-Channel**: Identifies if the player is capable of multi-channel playback and streams the source track in the proper channel order
 
 ## Architecture
 
@@ -179,6 +180,8 @@ After creating the remap-sink topology for a master sink, the provider:
 - If a player provider reload is needed (e.g. after adding or removing PA sinks or ALSA devices), use **Settings → Providers → Local Audio Out → Reload** in the MA UI.
 - PA sinks remain in **RUNNING** state while the provider is active — pre-warmed streams are held open to enable warm stream handoff on play. Sinks return to IDLE when the provider is disabled or MA is stopped. This is intentional: the warm streams are what eliminates cold-start sync offset in sync groups.
 - On ALSA-card master sinks, the provider automatically runs a suspend/resume cycle at topology creation time to reset the ALSA driver state. This prevents silent output caused by driver mmap stalls (notably the `snd_ctxfi`) that can occur after a PA daemon restart or `daemon.conf` rate change. If you experience silent output from an ALSA card after a PA daemon restart without reloading the provider, manually run `pactl suspend-sink <master_sink_name> true && sleep 1 && pactl suspend-sink <master_sink_name> false` as a temporary workaround until the next provider reload.
+- Volume control configured as 'none' is not working correctlym with each album change the volume is reset to 25%
+- There is currently no option to (un)select multi-channel playback for the player, if the player is capable of multi-channel playback and the source is providing multiple channels then it will be offered as such.
 
 ## Related Documentation
 
