@@ -24,6 +24,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 from music_assistant.providers.yousee.api_client import YouSeeAPIClient
 from music_assistant.providers.yousee.auth_manager import YouSeeAuthManager
 from music_assistant.providers.yousee.library import YouSeeLibraryManager
@@ -39,17 +40,23 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import (
         Album,
         Artist,
+        BrowseFolder,
+        ItemMapping,
         MediaItemType,
         Playlist,
         RecommendationFolder,
         SearchResults,
         Track,
+        UniqueList,
     )
     from music_assistant_models.streamdetails import StreamDetails
 
 
-class YouSeeMusikProvider(MusicProvider):
+class YouSeeMusikProvider(MusicProvider, RecommendationPayloadMixin):
     """Provider implementation for YouSee Musik."""
+
+    # the personalized sections barely change intraday; keep the pre-refactor 24h interval
+    recommendation_payload_ttl = 3600 * 24
 
     auth: YouSeeAuthManager
 
@@ -203,12 +210,20 @@ class YouSeeMusikProvider(MusicProvider):
             streamdetails,
         )
 
-    @use_cache(3600 * 24)  # Cache for 1 day
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """
-        Get this provider's recommendations.
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        return await self._recommendation_rows_from_payload()
 
-        Returns an actual (and often personalised) list of recommendations
-        from this provider for the user/account.
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
         """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        return await self._recommendation_items_from_payload(item_id)
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch and parse the full recommendations payload (folders WITH items)."""
         return await self.recommendations_manager.get_recommendations()

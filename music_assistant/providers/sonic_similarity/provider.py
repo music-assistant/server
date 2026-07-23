@@ -22,7 +22,14 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MusicAssistantError, SetupFailedError
-from music_assistant_models.media_items import Album, RecommendationFolder, SearchResults
+from music_assistant_models.media_items import (
+    Album,
+    BrowseFolder,
+    ItemMapping,
+    MediaItemType,
+    RecommendationFolder,
+    SearchResults,
+)
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import DB_TABLE_AUDIO_ANALYSIS
@@ -256,22 +263,60 @@ class SonicSimilarityPlugin(PluginProvider):
             )
         return await self._similar_tracks_via_18dim(track, limit)
 
-    @use_cache(60, base_class=RecommendationFolder, allow_expired_cache=True)
-    async def recommendations(self) -> list[RecommendationFolder]:
+    async def get_recommendations(self) -> list[RecommendationFolder]:
         """
-        Yield an 'Inspired by recently played' folder for the discover page.
+        Get the 'Inspired by recently played' row descriptor, without items.
 
-        Returns [] when the engine isn't ready or when no recent tracks
-        intersect the index — the cross-provider dispatcher then simply
-        omits us from the response (no empty card on the page).
+        Returns [] when the discover row is disabled in the plugin config.
         """
         if not bool(self.config.get_value(CONF_ENABLE_DISCOVER_ROW)):
             return []
+        return [
+            RecommendationFolder(
+                item_id="inspired_by_recently_played",
+                provider=self.instance_id,
+                name="Inspired by recently played",
+                translation_key="inspired_by_recently_played",
+                icon="mdi-shimmer",
+            ),
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for the 'Inspired by recently played' row.
+
+        Returns an empty list for an unknown row, when the row is disabled,
+        when the engine isn't ready or when no recent tracks intersect the
+        index.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id != "inspired_by_recently_played":
+            return UniqueList()
+        folder = await self._get_inspired_recommendations()
+        if folder is None:
+            return UniqueList()
+        return folder.items
+
+    @use_cache(60, base_class=RecommendationFolder, allow_expired_cache=True)
+    async def _get_inspired_recommendations(self) -> RecommendationFolder | None:
+        """
+        Build the 'Inspired by recently played' folder with its items.
+
+        Returns None when the row is disabled, the engine isn't ready or no
+        recent tracks intersect the index. A None result is still cached
+        (a negative hit), matching the previous behavior of caching the
+        empty result for the same TTL.
+        """
+        if not bool(self.config.get_value(CONF_ENABLE_DISCOVER_ROW)):
+            return None
 
         discover_engine = str(self.config.get_value(CONF_DISCOVER_ENGINE) or SIMILAR_ENGINE_18DIM)
         use_clap = discover_engine == SIMILAR_ENGINE_CLAP and self._clap_index is not None
         if not use_clap and (self.corpus_means is None or not self._signature_cache):
-            return []
+            return None
 
         try:
             recent = await self.mass.music.recently_played(
@@ -281,9 +326,9 @@ class SonicSimilarityPlugin(PluginProvider):
             )
         except Exception as err:
             self.logger.debug("recently_played failed: %s", err)
-            return []
+            return None
         if not recent:
-            return []
+            return None
 
         # Walk each recent mapping into a seed item_id our index has analysed.
         # The mapping is library-aggregated; we need the underlying streaming
@@ -305,7 +350,7 @@ class SonicSimilarityPlugin(PluginProvider):
                 seen_seeds.add(seed_id)
 
         if not seeds:
-            return []
+            return None
 
         preset = str(self.config.get_value(CONF_DISCOVER_PRESET) or "discover")
         # The slider is a 0-10 integer; the engine wants a 0.0-1.0 weight.
@@ -350,7 +395,7 @@ class SonicSimilarityPlugin(PluginProvider):
                 break
 
         if not candidate_order:
-            return []
+            return None
 
         async def _resolve(provider: str, item_id: str) -> Track | None:
             try:
@@ -359,20 +404,17 @@ class SonicSimilarityPlugin(PluginProvider):
                 return None
 
         resolved = await asyncio.gather(*[_resolve(p, i) for p, i in candidate_order])
-        items = [t for t in resolved if t is not None]
-        if not items:
-            return []
-
-        return [
-            RecommendationFolder(
-                item_id="inspired_by_recently_played",
-                provider=self.instance_id,
-                name="Inspired by recently played",
-                translation_key="inspired_by_recently_played",
-                icon="mdi-shimmer",
-                items=UniqueList(items),
-            ),
-        ]
+        items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList(
+            [t for t in resolved if t is not None]
+        )
+        return RecommendationFolder(
+            item_id="inspired_by_recently_played",
+            provider=self.instance_id,
+            name="Inspired by recently played",
+            translation_key="inspired_by_recently_played",
+            icon="mdi-shimmer",
+            items=items,
+        )
 
     async def search(
         self,

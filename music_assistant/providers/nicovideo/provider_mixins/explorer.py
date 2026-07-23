@@ -5,7 +5,14 @@ from __future__ import annotations
 from typing import override
 
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import RecommendationFolder, SearchResults, Track
+from music_assistant_models.media_items import (
+    BrowseFolder,
+    ItemMapping,
+    MediaItemType,
+    RecommendationFolder,
+    SearchResults,
+    Track,
+)
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.cache import use_cache
@@ -51,77 +58,88 @@ class NicovideoMusicProviderExplorerMixin(NicovideoMusicProviderMixinBase):
         return search_result
 
     @override
-    @use_cache(1800)  # Cache for 30 minutes
-    async def recommendations(self) -> list[RecommendationFolder]:
+    async def get_recommendations(self) -> list[RecommendationFolder]:
         """
-        Get this provider's recommendations.
+        Get this provider's available recommendation rows, without items.
 
-        Returns an actual (and often personalised) list of recommendations
-        from this provider for the user/account.
+        Must be fast: return static or cached row descriptors only, without
+        live backend calls. The items for a row are fetched separately
+        through get_recommendation_items.
         """
-        recommendation_folders = []
+        return [
+            RecommendationFolder(
+                item_id="nicovideo_recommendations",
+                name="Recommended tracks",
+                translation_key="recommended_tracks",
+                provider=self.instance_id,
+                icon="mdi-star-circle-outline",
+            ),
+            RecommendationFolder(
+                item_id="nicovideo_history",
+                name="Recently played",
+                translation_key="recently_played",
+                provider=self.instance_id,
+                icon="mdi-history",
+            ),
+            RecommendationFolder(
+                item_id="nicovideo_following_activities",
+                name="New Tracks from Followed Users",
+                translation_key="nicovideo_following_activities",
+                provider=self.instance_id,
+                icon="mdi-account-plus-outline",
+            ),
+            RecommendationFolder(
+                item_id="nicovideo_like_history",
+                name="Recently favorited tracks",
+                translation_key="recent_favorite_tracks",
+                provider=self.instance_id,
+                icon="mdi-heart-outline",
+            ),
+        ]
 
-        # Main recommendations (default: 25 tracks)
-        main_recommendation_tracks = await self.service_manager.user.get_recommendations(
-            "video_recommendation_recommend", limit=25
+    @override
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        folder = await self._get_recommendation_folder(item_id)
+        if folder is None:
+            return UniqueList()
+        return folder.items
+
+    @use_cache(1800, base_class=RecommendationFolder)  # Cache for 30 minutes
+    async def _get_recommendation_folder(self, item_id: str) -> RecommendationFolder | None:
+        """
+        Build a single recommendation row with its items fetched (cached per row).
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        :return: The populated folder, or None for an unknown item_id.
+        """
+        items: list[Track]
+        if item_id == "nicovideo_recommendations":
+            items = await self.service_manager.user.get_recommendations(
+                "video_recommendation_recommend", limit=25
+            )
+        elif item_id == "nicovideo_history":
+            items = await self.service_manager.user.get_user_history(limit=50)
+        elif item_id == "nicovideo_following_activities":
+            items = await self.service_manager.user.get_following_activities(limit=30)
+        elif item_id == "nicovideo_like_history":
+            items = await self.service_manager.user.get_like_history(limit=50)
+        else:
+            return None
+        folder = next(
+            (row for row in await self.get_recommendations() if row.item_id == item_id),
+            None,
         )
-        if main_recommendation_tracks:
-            recommendation_folders.append(
-                RecommendationFolder(
-                    item_id="nicovideo_recommendations",
-                    name="Recommended tracks",
-                    translation_key="recommended_tracks",
-                    provider=self.instance_id,
-                    icon="mdi-star-circle-outline",
-                    items=UniqueList(main_recommendation_tracks),
-                )
-            )
-
-        # History Tracks (default: 50 tracks)
-        history_tracks = await self.service_manager.user.get_user_history(limit=50)
-        if history_tracks:
-            recommendation_folders.append(
-                RecommendationFolder(
-                    item_id="nicovideo_history",
-                    name="Recently played",
-                    translation_key="recently_played",
-                    provider=self.instance_id,
-                    icon="mdi-history",
-                    items=UniqueList(history_tracks),
-                )
-            )
-
-        # Following activities recommendations (default: 30 tracks)
-        following_activities_tracks = await self.service_manager.user.get_following_activities(
-            limit=30
-        )
-        if following_activities_tracks:
-            recommendation_folders.append(
-                RecommendationFolder(
-                    item_id="nicovideo_following_activities",
-                    name="New Tracks from Followed Users",
-                    translation_key="nicovideo_following_activities",
-                    provider=self.instance_id,
-                    icon="mdi-account-plus-outline",
-                    items=UniqueList(following_activities_tracks),
-                )
-            )
-
-        # Like History recommendations (default: 50 tracks)
-        like_history_tracks = await self.service_manager.user.get_like_history(limit=50)
-        if like_history_tracks:
-            recommendation_folders.append(
-                RecommendationFolder(
-                    item_id="nicovideo_like_history",
-                    name="Recently favorited tracks",
-                    translation_key="recent_favorite_tracks",
-                    provider=self.instance_id,
-                    icon="mdi-heart-outline",
-                    items=UniqueList(like_history_tracks),
-                )
-            )
-
-        return recommendation_folders
+        if folder is None:
+            return None
+        folder.items = UniqueList(items)
+        return folder
 
     @override
     @use_cache(3600 * 6, allow_expired_cache=True)  # Cache for 6 hours

@@ -1020,6 +1020,12 @@
       "favorite_playlists": {
         "name": "Favorite playlists"
       },
+      "recent_artists": {
+        "name": "Recent artists"
+      },
+      "recent_tracks": {
+        "name": "Recent tracks"
+      },
       "favorite_radio_stations": {
         "name": "Favorite Radio stations"
       }
