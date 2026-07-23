@@ -3882,9 +3882,10 @@ class YandexMusicProvider(MusicProvider):
         :param category: Tag category to pick from ('mood' or 'activity').
         """
         # key mirrors the @use_cache key construction on _get_valid_tags_for_category:
-        # the wrapped function's __name__ plus its positional args, joined by dots
+        # the wrapped function's __name__ (preserved by functools.wraps, so it survives
+        # renames) plus its positional args, joined by dots
         tags, _, found = await self.mass.cache.get_with_freshness(
-            f"_get_valid_tags_for_category.{category}",
+            f"{self._get_valid_tags_for_category.__name__}.{category}",
             provider=self.instance_id,
             include_expired=True,
         )
