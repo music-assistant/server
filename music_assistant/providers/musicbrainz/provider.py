@@ -8,9 +8,10 @@ from typing import TYPE_CHECKING, Any
 
 from mashumaro.exceptions import MissingField
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, ExternalID, LinkType
+from music_assistant_models.enums import ArtistEntityType, ConfigEntryType, ExternalID, LinkType
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import MediaItemLink, MediaItemMetadata
+from music_assistant_models.media_items import MediaItemLink, MediaItemMetadata, UniqueList
+from music_assistant_models.media_items.metadata import LifeSpan
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import compare_strings
@@ -43,7 +44,6 @@ if TYPE_CHECKING:
         MediaItemType,
         RecommendationFolder,
         Track,
-        UniqueList,
     )
     from music_assistant_models.provider import ProviderManifest
 
@@ -107,17 +107,13 @@ class MusicbrainzProvider(MetadataProvider):
         self._recommendations.cancel()
 
     async def get_recommendations(self) -> list[RecommendationFolder]:
-        """Return birthday/memorial recommendation rows, without items."""
+        """Return MusicBrainz recommendation folders (artist birthdays/memorials and group founded/disbanded)."""
         return await self._recommendations.get_recommendations()
 
     async def get_recommendation_items(
         self, item_id: str
     ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
-        """
-        Return the items for a single birthday/memorial recommendation row.
-
-        :param item_id: The item_id of the row, as returned by get_recommendations.
-        """
+        """Get items for a MusicBrainz recommendation folder."""
         return await self._recommendations.get_recommendation_items(item_id)
 
     async def search(
@@ -226,24 +222,39 @@ class MusicbrainzProvider(MetadataProvider):
         return results
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
-        """Surface MusicBrainz URL relations (Wikipedia, official site, socials, ...)."""
+        """Surface MusicBrainz artist type, life span, and URL relations."""
         if not artist.mbid:
             return None
         try:
             details = await self.get_artist_details(artist.mbid)
         except InvalidDataError:
             return None
-        if not details.relations:
-            return None
+        artist_entity_type: ArtistEntityType | None = None
+        if details.type:
+            entity_type = ArtistEntityType(details.type.lower())
+            if entity_type != ArtistEntityType.UNKNOWN:
+                artist_entity_type = entity_type
+        life_span: LifeSpan | None = None
+        if details.life_span:
+            life_span = LifeSpan(
+                begin=details.life_span.begin,
+                end=details.life_span.end,
+                ended=details.life_span.ended,
+            )
         links: set[MediaItemLink] = set()
-        for relation in details.relations:
-            if not relation.url:
-                continue
-            if link_type := self._link_type_for_relation(relation):
-                links.add(MediaItemLink(type=link_type, url=relation.url.resource))
-        if not links:
+        if details.relations:
+            for relation in details.relations:
+                if not relation.url:
+                    continue
+                if link_type := self._link_type_for_relation(relation):
+                    links.add(MediaItemLink(type=link_type, url=relation.url.resource))
+        if not artist_entity_type and not life_span and not links:
             return None
-        return MediaItemMetadata(links=links)
+        return MediaItemMetadata(
+            links=links,
+            artist_entity_type=artist_entity_type,
+            life_span=life_span,
+        )
 
     async def get_recording_details(self, recording_id: str) -> MusicBrainzRecording:
         """Get Recording details by providing a MusicBrainz Recording Id."""
