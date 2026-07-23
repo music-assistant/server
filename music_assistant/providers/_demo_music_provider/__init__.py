@@ -60,6 +60,7 @@ from music_assistant_models.media_items import (
     RecommendationFolder,
     SearchResults,
     Track,
+    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -614,16 +615,57 @@ class MyDemoMusicprovider(MusicProvider):
 
         return []
 
-    async def recommendations(self) -> list[RecommendationFolder]:
+    async def get_recommendations(self) -> list[RecommendationFolder]:
         """
-        Get this provider's recommendations.
+        Get this provider's available recommendation rows, without items.
 
-        Returns an actual (and often personalised) list of recommendations
-        from this provider for the user/account.
+        Must be fast: return static or cached row descriptors only, without
+        live backend calls. The items for a row are fetched separately
+        through get_recommendation_items.
         """
-        # Get this provider's recommendations.
-        # This is only called if you reported the RECOMMENDATIONS feature in the supported_features.
+        # This is only called if you reported the RECOMMENDATIONS feature
+        # in the supported_features.
+        # Return one RecommendationFolder per recommendation row, filling in only
+        # the descriptor fields and leaving 'items' at its (empty) default, e.g.:
+        #     RecommendationFolder(
+        #         item_id="new_releases",
+        #         provider=self.instance_id,
+        #         name="New Releases",
+        #         translation_key="new_releases",
+        #         icon="mdi-album",
+        #     )
+        # Keep each row's item_id STABLE across calls and releases: the frontend
+        # stores user preferences (such as which rows are enabled) keyed on it.
+        # This method must be fast: do NOT perform any backend/network calls here.
+        # Local checks are fine, e.g. omitting rows that require a logged-in account.
+        # If your provider can only fetch its recommendations as one bulk payload,
+        # use the RecommendationPayloadMixin (music_assistant.models.recommendation_payload):
+        # implement _fetch_recommendation_payload() and serve this method from
+        # _recommendation_rows_from_payload().
         return []
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        # This is only called if you reported the RECOMMENDATIONS feature
+        # in the supported_features.
+        # Live backend fetches belong here: match on the given item_id and
+        # fetch/build the items for just that row, e.g.:
+        #     if item_id == "new_releases":
+        #         return UniqueList(await self._fetch_new_releases())
+        # An unknown item_id must return an empty UniqueList (do not raise).
+        # NOTE: It is advised to apply caching here (if possible) to avoid too
+        # many calls to the provider's API. You can use the @use_cache decorator
+        # from music_assistant.controllers.cache: it keys on the item_id argument,
+        # giving each row its own cache entry.
+        # If you use the RecommendationPayloadMixin (see get_recommendations),
+        # serve this method from _recommendation_items_from_payload(item_id) instead.
+        return UniqueList()
 
     async def sync_library(self, media_type: MediaType) -> None:
         """Run library sync for this provider."""

@@ -32,7 +32,9 @@
             { icon: "person", label: "Artists", data: addDeviceParam(BRIDGE + "/msx/artists.json", deviceId) },
             { icon: "queue-music", label: "Playlists", data: addDeviceParam(BRIDGE + "/msx/playlists.json", deviceId) },
             { icon: "audiotrack", label: "Tracks", data: addDeviceParam(BRIDGE + "/msx/tracks.json", deviceId) },
-            { icon: "search", label: "Search", data: buildSearchRequestAction(deviceId) }
+            { icon: "search", label: "Search", data: buildSearchRequestAction(deviceId) },
+            // Static entry: the page itself explains when no party is active
+            { icon: "qr-code", label: "Party", data: addDeviceParam(BRIDGE + "/msx/party.json", deviceId) }
         ];
     }
 
@@ -141,6 +143,11 @@
                     var playlistUrl = BRIDGE + addDeviceParam(msg.url, deviceId);
                     startPositionTimer(0);
                     tvx.InteractionPlugin.executeAction("playlist:" + playlistUrl);
+                } else if (msg.type === "sendspin" && msg.url && typeof tvx.InteractionPlugin.executeAction === "function") {
+                    // Sendspin bridge stream start: open the web kiosk in Sendspin
+                    // mode so its JS client takes over synchronized playback.
+                    stopPositionTimer();
+                    tvx.InteractionPlugin.executeAction("link:" + BRIDGE + msg.url);
                 } else if (msg.type === "seek" && msg.position != null && typeof tvx.InteractionPlugin.executeAction === "function") {
                     var seekSecs = Math.round(msg.position);
                     startPositionTimer(seekSecs);

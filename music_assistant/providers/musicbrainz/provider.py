@@ -35,7 +35,16 @@ from .recommendations import MusicBrainzRecommendationManager
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
-    from music_assistant_models.media_items import Album, Artist, RecommendationFolder, Track
+    from music_assistant_models.media_items import (
+        Album,
+        Artist,
+        BrowseFolder,
+        ItemMapping,
+        MediaItemType,
+        RecommendationFolder,
+        Track,
+        UniqueList,
+    )
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -97,9 +106,19 @@ class MusicbrainzProvider(MetadataProvider):
         """Handle unload/close of the provider."""
         self._recommendations.cancel()
 
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Return birthday/memorial recommendation folders."""
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Return birthday/memorial recommendation rows, without items."""
         return await self._recommendations.get_recommendations()
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Return the items for a single birthday/memorial recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        return await self._recommendations.get_recommendation_items(item_id)
 
     async def search(
         self, artistname: str, albumname: str, trackname: str, trackversion: str | None = None

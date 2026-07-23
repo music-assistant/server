@@ -15,9 +15,11 @@ from music_assistant_models.media_items import (
     RecommendationFolder,
     SearchResults,
     Track,
+    UniqueList,
 )
 
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .api_client import AppleMusicAPIClient
 from .constants import (
@@ -43,7 +45,7 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 
-class AppleMusicProvider(MusicProvider):
+class AppleMusicProvider(MusicProvider, RecommendationPayloadMixin):
     """Implementation of an Apple Music MusicProvider."""
 
     _music_user_token: str | None = None
@@ -110,8 +112,22 @@ class AppleMusicProvider(MusicProvider):
         """Perform search on musicprovider."""
         return await self.media_manager.search(search_query, media_types, limit)
 
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get personalized station recommendations for the Discover page."""
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        return await self._recommendation_rows_from_payload()
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        return await self._recommendation_items_from_payload(item_id)
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch and parse the full recommendations payload (folders with items)."""
         return await self.recommendation_manager.get_personal_recommendations()
 
     # ------------------------------------------------------------------
@@ -139,6 +155,11 @@ class AppleMusicProvider(MusicProvider):
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
         return await self.media_manager.get_album_tracks(prov_album_id)
+
+    async def resolve_image(self, path: str) -> str | bytes:
+        """Resolve an artwork token to a freshly signed artwork URL."""
+        media_type, _, item_id = path.partition("/")
+        return await self.media_manager.get_artwork_url(media_type, item_id) or ""
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get all playlist tracks for given playlist id."""

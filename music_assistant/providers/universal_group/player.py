@@ -595,10 +595,11 @@ class UniversalGroupPlayer(Player):
         }
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
         http_profile = self.get_config_value(CONF_HTTP_PROFILE, "chunked")
-        # prefer the child (protocol) player configuration
-        # (child player_id may be stale/invalid; fall back to the group profile)
+        # prefer the configuration of the player that actually renders the audio
+        # (the member's active protocol player when it outputs via a protocol);
+        # child player_id may be stale/invalid, then fall back to the group profile
         if child_player_id and (child_player := self.mass.players.get_player(child_player_id)):
-            http_profile = child_player.get_config_value(CONF_HTTP_PROFILE, http_profile)
+            http_profile = child_player.get_output_config_value(CONF_HTTP_PROFILE, http_profile)
         if http_profile == "chunked" and request.version < HttpVersion11:
             # chunked encoding is not allowed on HTTP/1.0; fall back to
             # connection-close streaming to avoid raising in resp.prepare()

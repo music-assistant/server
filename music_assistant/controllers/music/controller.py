@@ -41,8 +41,8 @@ from music_assistant_models.media_items import (
     MediaItemType,
     Playlist,
     Podcast,
+    PodcastEpisode,
     ProviderMapping,
-    RecommendationFolder,
     SearchResults,
     SoundEffect,
     Track,
@@ -63,7 +63,6 @@ from music_assistant.controllers.music.constants import (
     DB_SCHEMA_VERSION,
     MUSIC_SYNC_COMPLETION_CHECK_TASK_ID,
     PROVIDER_MAPPING_CORRECTION_TASK_ID,
-    RECOMMENDATIONS_PROVIDER_TIMEOUT,
     SEARCH_CACHE_EXPIRATION_COMBINED,
     SEARCH_CACHE_EXPIRATION_LOCAL_PROVIDER,
     SEARCH_CACHE_EXPIRATION_STREAMING_PROVIDER,
@@ -82,6 +81,9 @@ from music_assistant.controllers.music.media.podcasts import PodcastsController
 from music_assistant.controllers.music.media.radio import RadioController
 from music_assistant.controllers.music.media.tracks import TracksController
 from music_assistant.controllers.music.recency import RecencyEngine
+from music_assistant.controllers.music.recommendations.controller import (
+    RecommendationsController,
+)
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.collections import get_collection_item_media_type_from_item_id
@@ -103,14 +105,12 @@ from music_assistant.models.plugin import PluginProvider
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
     from music_assistant_models.config_entries import CoreConfig
-    from music_assistant_models.media_items import Audiobook, PodcastEpisode
-    from music_assistant_models.unique_list import UniqueList
+    from music_assistant_models.media_items import Audiobook
 
     from music_assistant import MusicAssistant
     from music_assistant.controllers.music.media.base import MediaControllerBase
     from music_assistant.helpers.json import SerializableType
     from music_assistant.models import ProviderInstanceType
-    from music_assistant.models.metadata_provider import MetadataProvider
     from music_assistant.models.provider import Provider
     from music_assistant.providers.builtin import BuiltinProvider
 
@@ -140,6 +140,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         self.audiobooks = AudiobooksController(self.mass)
         self.podcasts = PodcastsController(self.mass)
         self.genres = GenreController(self.mass)
+        self.recommendations = RecommendationsController(self.mass)
         self.recency = RecencyEngine(self.mass)
         self._database: DatabaseConnection | None = None
         self._sync_lock = asyncio.Lock()
@@ -642,6 +643,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         fully_played_only: bool = True,
         user_initiated_only: bool = False,
         played_after_timestamp: int | None = None,
+        *,
+        always_include_media_types: list[MediaType] | None = None,
     ) -> list[ItemMapping]:
         """
         Return a list of the last played items.
@@ -654,22 +657,32 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param user_initiated_only: If True, only return items initiated by the user.
         :param played_after_timestamp: If set, only return items played at or after this
             epoch-seconds timestamp.
+        :param always_include_media_types: Media types to include regardless of
+            user_initiated_only (e.g. podcasts/audiobooks, which have no user-initiated
+            container).
         """
         if media_types is None:
             media_types = MediaType.ALL
         media_types_str = "(" + ",".join(f'"{x}"' for x in media_types) + ")"
         available_providers = ("library", *self.get_unique_providers())
         available_providers_str = "(" + ",".join(f'"{x}"' for x in available_providers) + ")"
+        # user_initiated_only constrains only `media_types`; always_include_media_types are
+        # included regardless (e.g. podcasts/audiobooks have no user-initiated container row).
+        media_type_clause = f"media_type in {media_types_str}"
+        if user_initiated_only:
+            media_type_clause += " AND user_initiated = 1"
+        media_type_clause = f"({media_type_clause})"
+        if always_include_media_types:
+            always_str = "(" + ",".join(f'"{x}"' for x in always_include_media_types) + ")"
+            media_type_clause = f"({media_type_clause} OR media_type in {always_str})"
         query = (
             f"SELECT * FROM {DB_TABLE_PLAYLOG} "
-            f"WHERE media_type in {media_types_str} "
+            f"WHERE {media_type_clause} "
             f"AND provider in {available_providers_str} "
         )
         params: dict[str, Any] = {}
         if fully_played_only:
             query += "AND fully_played = 1 "
-        if user_initiated_only:
-            query += "AND user_initiated = 1 "
         if userid:
             query += "AND userid = :userid "
             params["userid"] = userid
@@ -895,26 +908,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             provider_instance_id_or_domain=provider_instance_id_or_domain,
             allow_update_metadata=allow_update_metadata,
         )
-
-    @api_command("music/recommendations", required_scope=Scope.LIBRARY_READ)
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get all recommendations."""
-        providers_with_recommendations = self.mass.get_providers_supporting_feature(
-            ProviderFeature.RECOMMENDATIONS,
-        )
-        recommendation_providers = self._apply_user_provider_filter(providers_with_recommendations)
-        results_per_provider: list[list[RecommendationFolder]] = await asyncio.gather(
-            self._get_default_recommendations(),
-            *[
-                self._get_provider_recommendations(
-                    cast("MusicProvider | MetadataProvider | PluginProvider", provider_instance)
-                )
-                for provider_instance in recommendation_providers
-            ],
-        )
-        # return result from all providers while keeping index
-        # so the result is sorted as each provider delivered
-        return [item for sublist in zip_longest(*results_per_provider) for item in sublist if item]
 
     @api_command("music/sound_effects", required_scope=Scope.LIBRARY_READ)
     async def sound_effects(self) -> list[SoundEffect]:
@@ -1471,6 +1464,13 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 user_ids=user_ids,
                 queue_id=queue_id,
                 skip_ids=set(skip_artist_ids or ()),
+            )
+        if isinstance(media_item, PodcastEpisode) and media_item.podcast:
+            await self._credit_podcast_play(
+                media_item.podcast,
+                timestamp=timestamp,
+                user_ids=user_ids,
+                queue_id=queue_id,
             )
         await self.database.commit()
 
@@ -2441,146 +2441,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 continue
             self.mass.create_task(provider.import_album_tracks(prov_mapping.item_id, album.name))
 
-    async def _get_default_recommendations(self) -> list[RecommendationFolder]:
-        """Return default recommendations."""
-        return [
-            RecommendationFolder(
-                item_id="in_progress",
-                provider="library",
-                name="In progress",
-                translation_key="in_progress_items",
-                icon="mdi-motion-play",
-                items=cast(
-                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.in_progress_items(limit=10),
-                ),
-            ),
-            RecommendationFolder(
-                item_id="recently_played",
-                provider="library",
-                name="Recently played",
-                translation_key="recently_played",
-                icon="mdi-motion-play",
-                items=cast(
-                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.recently_played(limit=10, user_initiated_only=False),
-                ),
-            ),
-            RecommendationFolder(
-                item_id="recently_added_tracks",
-                provider="library",
-                name="Recently added tracks",
-                translation_key="recently_added_tracks",
-                icon="music-note-plus",
-                items=cast(
-                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.tracks.library_items(
-                        limit=10, order_by="timestamp_added_desc", summary=False
-                    ),
-                ),
-            ),
-            RecommendationFolder(
-                item_id="recently_added_albums",
-                provider="library",
-                name="Recently added albums",
-                translation_key="recently_added_albums",
-                icon="music-note-plus",
-                items=cast(
-                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.albums.library_items(
-                        limit=10, order_by="timestamp_added_desc", summary=False
-                    ),
-                ),
-            ),
-            RecommendationFolder(
-                item_id="random_artists",
-                provider="library",
-                name="Random artists",
-                translation_key="random_artists",
-                icon="mdi-account-music",
-                items=cast(
-                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.artists.library_items(
-                        limit=10, order_by="random_play_count", summary=False
-                    ),
-                ),
-            ),
-            RecommendationFolder(
-                item_id="random_albums",
-                provider="library",
-                name="Random albums",
-                translation_key="random_albums",
-                icon="mdi-album",
-                items=cast(
-                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.albums.library_items(
-                        limit=10, order_by="random_play_count", summary=False
-                    ),
-                ),
-            ),
-            RecommendationFolder(
-                item_id="recent_favorite_tracks",
-                provider="library",
-                name="Recently favorited tracks",
-                translation_key="recent_favorite_tracks",
-                icon="mdi-file-music",
-                items=cast(
-                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.tracks.library_items(
-                        favorite=True, limit=10, order_by="timestamp_modified_desc", summary=False
-                    ),
-                ),
-            ),
-            RecommendationFolder(
-                item_id="favorite_playlists",
-                provider="library",
-                name="Favorite playlists",
-                translation_key="favorite_playlists",
-                icon="mdi-playlist-music",
-                items=cast(
-                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.playlists.library_items(
-                        favorite=True, limit=10, order_by="random", summary=False
-                    ),
-                ),
-            ),
-            RecommendationFolder(
-                item_id="favorite_radio",
-                provider="library",
-                name="Favorite Radio stations",
-                translation_key="favorite_radio_stations",
-                icon="mdi-access-point",
-                items=cast(
-                    "UniqueList[MediaItemType | ItemMapping | BrowseFolder]",
-                    await self.radio.library_items(
-                        favorite=True, limit=10, order_by="play_count_desc", summary=False
-                    ),
-                ),
-            ),
-        ]
-
-    async def _get_provider_recommendations(
-        self, provider: MusicProvider | MetadataProvider | PluginProvider
-    ) -> list[RecommendationFolder]:
-        """Return recommendations from a provider."""
-        try:
-            async with asyncio.timeout(RECOMMENDATIONS_PROVIDER_TIMEOUT):
-                return await provider.recommendations()
-        except TimeoutError:
-            self.logger.warning(
-                "Timeout while fetching recommendations from %s; skipping for this request",
-                provider.name,
-            )
-            return []
-        except Exception as err:
-            self.logger.warning(
-                "Error while fetching recommendations from %s: %s",
-                provider.name,
-                str(err),
-                exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
-            )
-            return []
-
     async def _get_provider_sound_effects(self, provider: MusicProvider) -> list[SoundEffect]:
         """Return all sound effect items from a single provider."""
         try:
@@ -2800,6 +2660,54 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             for user_id in user_ids:
                 playlog_entry["userid"] = user_id
                 await self.database.execute(upsert_query, playlog_entry)
+
+    async def _credit_podcast_play(
+        self,
+        podcast: Podcast | ItemMapping,
+        *,
+        timestamp: float,
+        user_ids: list[str],
+        queue_id: str | None,
+    ) -> None:
+        """Credit the parent podcast with a play so the show surfaces in recently played."""
+        # ON CONFLICT keeps an explicit user-initiated show play sticky across the
+        # repeated side-effect credits its episodes generate.
+        upsert_query = (
+            f"INSERT INTO {DB_TABLE_PLAYLOG} "
+            "(item_id, provider, media_type, name, image, fully_played, "
+            "seconds_played, timestamp, queue_id, user_initiated, userid) "
+            "VALUES (:item_id, :provider, :media_type, :name, :image, :fully_played, "
+            ":seconds_played, :timestamp, :queue_id, :user_initiated, :userid) "
+            "ON CONFLICT(item_id, provider, media_type, userid) DO UPDATE SET "
+            "name = excluded.name, image = excluded.image, "
+            "fully_played = excluded.fully_played, seconds_played = excluded.seconds_played, "
+            "timestamp = excluded.timestamp, queue_id = excluded.queue_id, "
+            f"user_initiated = {DB_TABLE_PLAYLOG}.user_initiated OR excluded.user_initiated"
+        )
+        # Resolve to the library item first, like _credit_artist_plays does, so an episode's
+        # parent-podcast credit lands on the same library-scoped row as an explicit play of the
+        # library show, instead of creating a separate provider-scoped duplicate.
+        db_podcast = await self.podcasts.get_library_item_by_prov_id(
+            podcast.item_id, podcast.provider
+        )
+        credited_podcast: Podcast | ItemMapping = db_podcast if db_podcast else podcast
+        playlog_entry: dict[str, Any] = {
+            "item_id": credited_podcast.item_id,
+            "provider": "library" if db_podcast else podcast.provider,
+            "media_type": MediaType.PODCAST.value,
+            "name": credited_podcast.name,
+            "image": serialize_to_json(credited_podcast.image.to_dict())
+            if credited_podcast.image
+            else None,
+            "fully_played": True,
+            "seconds_played": None,
+            "timestamp": timestamp,
+            "queue_id": queue_id,
+            "user_initiated": False,
+        }
+        for user_id in user_ids:
+            playlog_entry["userid"] = user_id
+            await self.database.execute(upsert_query, playlog_entry)
 
     async def _get_item_by_name(
         self,

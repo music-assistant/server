@@ -910,6 +910,69 @@ class Player(ABC):
         """
         return self.config.get_value(key, default)
 
+    @final
+    def resolve_output_player(self) -> Player:
+        """
+        Return the player that actually renders this player's audio output.
+
+        For a player playing via one of its linked output protocols this is the
+        active protocol player; in all other cases (native output, protocol
+        players themselves, group players serving their own stream) it is the
+        player itself.
+        """
+        active_protocol = self.active_output_protocol
+        if (
+            active_protocol
+            and active_protocol != "native"
+            and (protocol_player := self.mass.players.get_player(active_protocol))
+        ):
+            return protocol_player
+        return self
+
+    @overload
+    def get_output_config_value(
+        self, key: str, default: _ConfigValueT, *, return_type: builtins.type[_ConfigValueT] = ...
+    ) -> _ConfigValueT: ...
+
+    @overload
+    def get_output_config_value(
+        self, key: str, default: ConfigValueType = ..., *, return_type: builtins.type[_ConfigValueT]
+    ) -> _ConfigValueT: ...
+
+    @overload
+    def get_output_config_value(
+        self, key: str, default: ConfigValueType = ..., *, return_type: None = ...
+    ) -> ConfigValueType: ...
+
+    def get_output_config_value(
+        self,
+        key: str,
+        default: ConfigValueType = None,
+        *,
+        return_type: builtins.type[_ConfigValueT | ConfigValueType] | None = None,
+    ) -> _ConfigValueT | ConfigValueType:
+        """
+        Return a config value resolved on the player that renders the audio output.
+
+        Audio/output related settings (output codec, http profile, output channels,
+        sample rates) live on the player(protocol) that actually renders the audio:
+        the active linked protocol player when outputting via a protocol, otherwise
+        this player itself. The output player's value (or its provider's entry
+        default) takes precedence; this player's own value is the fallback for keys
+        the output player has no entry for.
+
+        :param key: The config key to retrieve.
+        :param default: Value to return when the key is not present in any config.
+        :param return_type: Optional type hint for type inference (e.g., str, int, bool).
+            Note: This parameter is used purely for static type checking and does not
+            perform runtime type validation. Callers are responsible for ensuring the
+            specified type matches the actual config value type.
+        """
+        output_player = self.resolve_output_player()
+        if output_player is not self and key in output_player.config.values:
+            return output_player.config.get_value(key, default)
+        return self.get_config_value(key, default)
+
     async def on_config_updated(self) -> None:
         """
         Handle logic when the player is loaded or updated.

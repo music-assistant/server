@@ -789,30 +789,7 @@ async def test_fetch_api_track_login_error(provider: BandcampProvider) -> None:
         await provider._fetch_api_track("123-456-789")
 
 
-# --- Recommendations tests ---
-
-
-async def test_recommendations_returns_feed_and_wishlist(provider: BandcampProvider) -> None:
-    """Test recommendations surfaces the feed and wishlist as folders."""
-    feed_track = Mock()
-    wishlist_album = Mock()
-
-    with (
-        patch.object(provider, "_get_feed_tracks", new_callable=AsyncMock) as mock_feed,
-        patch.object(provider, "_browse_person_content", new_callable=AsyncMock) as mock_wishlist,
-    ):
-        mock_feed.return_value = [feed_track]
-        mock_wishlist.return_value = [wishlist_album]
-
-        folders = await provider.recommendations()
-
-        mock_wishlist.assert_called_once_with(None, CollectionType.WISHLIST)
-        assert [f.name for f in folders] == ["Bandcamp Feed", "Wishlist"]
-        assert feed_track in folders[0].items
-        assert wishlist_album in folders[1].items
-        # Both folders must be playable; browsing their slug resolves to tracks
-        # (see test_browse_feed_returns_tracks and the existing wishlist browse tests).
-        assert all(f.is_playable for f in folders)
+# --- Feed tests (the feed powers a recommendation row and a browse path) ---
 
 
 async def test_browse_feed_returns_tracks(provider: BandcampProvider) -> None:
@@ -824,24 +801,6 @@ async def test_browse_feed_returns_tracks(provider: BandcampProvider) -> None:
         result = await provider.browse("bandcamp_test://feed")
 
         assert result == [feed_track]
-
-
-async def test_recommendations_no_identity(provider: BandcampProvider) -> None:
-    """Test recommendations returns nothing without an identity token."""
-    provider._client.identity = None
-    assert await provider.recommendations() == []
-
-
-async def test_recommendations_omits_empty_folders(provider: BandcampProvider) -> None:
-    """Test that empty feed and wishlist produce no folders."""
-    with (
-        patch.object(provider, "_get_feed_tracks", new_callable=AsyncMock) as mock_feed,
-        patch.object(provider, "_browse_person_content", new_callable=AsyncMock) as mock_wishlist,
-    ):
-        mock_feed.return_value = []
-        mock_wishlist.return_value = []
-
-        assert await provider.recommendations() == []
 
 
 async def test_get_feed_tracks_filters_non_streamable(provider: BandcampProvider) -> None:
