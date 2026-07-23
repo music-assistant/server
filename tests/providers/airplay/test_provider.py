@@ -202,6 +202,38 @@ def _live_ptp_daemon() -> MagicMock:
     return daemon
 
 
+async def test_ptp_daemon_spawn_advertises_dacp_identity() -> None:
+    """The spawned PTP daemon is handed the provider's DACP id as its clock identity."""
+    prov = _ptp_provider()
+    prov.dacp_id = "AABBCCDD11223344"
+    prov.mass = MagicMock()
+    prov.mass.streams.bind_ip = "0.0.0.0"
+
+    def _consume_task(coro: object) -> MagicMock:
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        return MagicMock()
+
+    prov.mass.create_task.side_effect = _consume_task
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.provider.get_cli_binary",
+            AsyncMock(return_value="/bin/cliairplay"),
+        ),
+        patch("music_assistant.providers.airplay.provider.AsyncProcess") as process_cls,
+    ):
+        process_cls.return_value.start = AsyncMock()
+        await prov._start_ptp_daemon()
+
+    assert process_cls.call_args.args[0] == [
+        "/bin/cliairplay",
+        "--ptp-daemon",
+        "--dacp",
+        "AABBCCDD11223344",
+    ]
+
+
 def test_ptp_daemon_ready_event_set_on_daemon_up_line() -> None:
     """The readiness event is set when the daemon prints its 'daemon up' line."""
     prov = _ptp_provider()

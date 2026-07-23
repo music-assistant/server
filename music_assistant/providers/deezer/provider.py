@@ -18,6 +18,7 @@ from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .browse import DeezerBrowseManager
 from .gw_client import DeezerGWError, GWClient
@@ -39,6 +40,7 @@ if TYPE_CHECKING:
         RecommendationFolder,
         SearchResults,
         Track,
+        UniqueList,
     )
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -74,7 +76,7 @@ SUPPORTED_FEATURES = {
 CONF_ARL_TOKEN = "arl_token"
 
 
-class DeezerProvider(MusicProvider):
+class DeezerProvider(MusicProvider, RecommendationPayloadMixin):
     """
     Deezer provider support.
 
@@ -253,9 +255,23 @@ class DeezerProvider(MusicProvider):
         """Browse Deezer content."""
         return await self.browse_manager.browse(path, super().browse)
 
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get Deezer's recommendations including Flow and personalized content."""
-        return await self.browse_manager.recommendations()
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get Deezer's available recommendation rows, without items."""
+        return await self.browse_manager.get_recommendations()
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        return await self.browse_manager.get_recommendation_items(item_id)
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch the recommendation folders fed by the shared gql recommendations payload."""
+        return await self.browse_manager._fetch_recommendation_payload()
 
     # -- Streaming --
 

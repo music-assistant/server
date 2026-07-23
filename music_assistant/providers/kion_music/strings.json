@@ -108,8 +108,8 @@
       "new_releases": { "name": "New Releases" },
       "new_playlists": { "name": "New Playlists" },
       "top_picks": { "name": "Top Picks" },
-      "mood_mix": { "name": "Mood Mix: {0}" },
-      "activity_mix": { "name": "Activity Mix: {0}" },
+      "mood_mix": { "name": "Mood Mix" },
+      "activity_mix": { "name": "Activity Mix" },
       "seasonal_mix": { "name": "Seasonal: {0}" }
     }
   },
