@@ -173,8 +173,7 @@ class DashboardController(CoreController):
         if dashboard not in registration.device.supported_types:
             msg = f"Dashboard {dashboard_id} does not support {dashboard}"
             raise InvalidCommand(msg)
-        # validate intent up-front so both branches below reject it identically,
-        # before any session/event is committed
+        # validate intent up-front so both branches below reject it identically
         self._dashboard_route(dashboard, player_id)
 
         session = DashboardSession(
@@ -185,13 +184,10 @@ class DashboardController(CoreController):
         )
 
         if registration.on_show is not None:
-            # the consumer resolves its own url (via resolve_dashboard_url) if it needs one,
-            # leaving room for clients that render a custom page from the session values.
-            # it raises before showing anything on failure, so no session is left untracked.
+            # the consumer resolves its own url if needed; raises before showing on failure
             await registration.on_show(dashboard, player_id)
         else:
-            # API registration: fire the event and store an optimistic session; url-based
-            # clients are expected to resolve their own url via `dashboard/get_url`
+            # API registration: url-based clients resolve their own url via `dashboard/get_url`
             self.mass.signal_event(EventType.DASHBOARD_SHOW, object_id=dashboard_id, data=session)
 
         self._sessions[dashboard_id] = session

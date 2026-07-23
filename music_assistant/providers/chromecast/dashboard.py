@@ -114,7 +114,6 @@ class ChromecastDashboards:
         :param dashboard: Dashboard to show.
         :param player_id: Player to show, when dashboard is NOW_PLAYING.
         """
-        # resolve the url before touching the device: on failure nothing is shown
         url = await self.mass.dashboard.resolve_dashboard_url(dashboard, player_id)
         chromecast = await self._get_or_create_chromecast(device_id)
         try:
