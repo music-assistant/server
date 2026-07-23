@@ -9,12 +9,11 @@ ARG PYTHON_VERSION=3.14
 # This image forms the base for the final image and is not meant to be used directly
 # NOTE that the dev add-on is also based on this base image
 
-FROM python:${PYTHON_VERSION}-slim-bookworm AS ffmpeg-builder
+FROM python:${PYTHON_VERSION}-slim-trixie AS ffmpeg-builder
 
 # Enable non-free and contrib repositories for FDK-AAC and other codecs
-RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
-    echo "deb http://deb.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
-    echo "deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list
+# (trixie uses the deb822 sources format)
+RUN sed -i 's/^Components: .*/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources
 
 # Install build dependencies for FFmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -107,7 +106,7 @@ RUN set -x \
 ##################################################################################################
 
 # PyAV wheel builder - builds PyAV against the custom FFmpeg
-FROM python:${PYTHON_VERSION}-slim-bookworm AS pyav-builder
+FROM python:${PYTHON_VERSION}-slim-trixie AS pyav-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ python3-dev pkg-config && rm -rf /var/lib/apt/lists/*
@@ -129,12 +128,22 @@ RUN PYAV_VERSION=$(python -c "import json; reqs=json.load(open('/tmp/sendspin_ma
 
 ##################################################################################################
 
-FROM python:${PYTHON_VERSION}-slim-bookworm
+# TEMPORARY: bookworm-era libconfig.so.9 for the prebuilt shairport-sync binaries
+# (trixie only ships libconfig.so.11). The lib only depends on libc, so the bookworm
+# build runs fine on trixie's newer glibc.
+# Remove once shairport-sync is rebuilt statically / against trixie.
+FROM debian:bookworm-slim AS bookworm-compat-libs
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libconfig9 && rm -rf /var/lib/apt/lists/*
+
+##################################################################################################
+
+FROM python:${PYTHON_VERSION}-slim-trixie
 
 # Enable non-free and contrib repositories for codec libraries
-RUN echo "deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
-    echo "deb http://deb.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
-    echo "deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list
+# (trixie uses the deb822 sources format)
+RUN sed -i 's/^Components: .*/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources
 
 # Install runtime dependencies
 RUN set -x \
@@ -146,7 +155,7 @@ RUN set -x \
         wget \
         # cifs utils and libnfs are needed for smb and nfs support (file provider)
         cifs-utils \
-        libnfs13 \
+        libnfs14 \
         nfs-common \
         # airplay libraries
         openssl \
@@ -155,13 +164,15 @@ RUN set -x \
         libcurl4 \
         libsodium23 \
         libconfuse2 \
-        libunistring2 \
         libxml2 \
         libevent-dev \
         libjson-c5 \
-        libplist3 \
         libgcrypt20 \
-        libavfilter8 \
+        # glib is needed by the shairport-sync binary (previously pulled in only
+        # indirectly via the pipewire/pulseaudio utils)
+        libglib2.0-0 \
+        # NOTE: FFmpeg 5.x runtime libs for cliap2 (formerly distro libavfilter8) now come
+        # from the ffmpeg5-compat-builder stage, as trixie only ships FFmpeg 7
         # libsndfile needed for librosa audio file support (smartfades)
         libsndfile1 \
         # libchromaprint needed for AcoustID fingerprinting (acoustid_lookup)
@@ -200,11 +211,11 @@ RUN set -x \
         # Allows pulse audio devices to be detected using pactl. (local audio)
         pulseaudio-utils \
         libvorbisidec1 \
-        libflac12 \
+        libflac14 \
         libavahi-client3 \
         libavahi-common3 \
         # AirPlay receiver dependencies (shairport-sync)
-        libconfig9 \
+        # NOTE: libconfig9 comes from the bookworm-compat-libs stage
         libpopt0 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/* \
@@ -226,9 +237,13 @@ RUN set -x \
     else \
         SNAPCAST_ARCH="amd64"; \
     fi \
-    && wget -q "https://github.com/badaix/snapcast/releases/download/v${SNAPCAST_VERSION}/snapserver_${SNAPCAST_VERSION}-1_${SNAPCAST_ARCH}_bookworm.deb" -O /tmp/snapserver.deb \
-    && wget -q "https://github.com/badaix/snapcast/releases/download/v${SNAPCAST_VERSION}/snapclient_${SNAPCAST_VERSION}-1_${SNAPCAST_ARCH}_bookworm.deb" -O /tmp/snapclient.deb \
-    && dpkg -i /tmp/snapserver.deb /tmp/snapclient.deb \
+    && wget -q "https://github.com/badaix/snapcast/releases/download/v${SNAPCAST_VERSION}/snapserver_${SNAPCAST_VERSION}-1_${SNAPCAST_ARCH}_trixie.deb" -O /tmp/snapserver.deb \
+    && wget -q "https://github.com/badaix/snapcast/releases/download/v${SNAPCAST_VERSION}/snapclient_${SNAPCAST_VERSION}-1_${SNAPCAST_ARCH}_trixie.deb" -O /tmp/snapclient.deb \
+    # install via apt so any missing dependencies of the debs are resolved as well
+    && apt-get update \
+    && apt-get install -y --no-install-recommends /tmp/snapserver.deb /tmp/snapclient.deb \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
     && rm /tmp/snapserver.deb /tmp/snapclient.deb
 
 # Install go-librespot (used by the Spotify Connect provider) from GitHub releases.
@@ -256,6 +271,10 @@ COPY --from=ffmpeg-builder /usr/local/bin/ffprobe /usr/local/bin/
 COPY --from=ffmpeg-builder /usr/local/lib/libav*.so* /usr/local/lib/
 COPY --from=ffmpeg-builder /usr/local/lib/libsw*.so* /usr/local/lib/
 COPY --from=ffmpeg-builder /usr/local/lib/libpostproc.so* /usr/local/lib/
+
+# TEMPORARY: bookworm-era libconfig.so.9 for the prebuilt shairport-sync binaries
+# (see bookworm-compat-libs stage above)
+COPY --from=bookworm-compat-libs /usr/lib/*-linux-gnu/libconfig.so.9* /usr/local/lib/
 
 # Copy pre-built PyAV wheel for use by downstream images
 COPY --from=pyav-builder /wheels/ /usr/local/share/pyav-wheels/

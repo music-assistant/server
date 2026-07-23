@@ -16,6 +16,9 @@ music_assistant/providers/airplay/bin/*
 # Bundled app credentials - injected at build time, or a maintainer's local copy. Never commit.
 music_assistant/helpers/app_secrets.json
 app_vars.json
+
+# Widevine CDM client files - fetched by CI for the base image build, or a maintainer's local copy.
+widevine_cdm/
 .venv
 .venv*
 .mypy_cache/
