@@ -68,6 +68,7 @@ psutil==7.2.2
 py-opensonic==10.1.0
 pyacoustid==1.3.1
 pyamplipi==0.4.12
+pyatv==0.18.0
 pyblu==2.0.8
 PyChromecast==14.0.10
 pycryptodome==3.23.0

@@ -3489,6 +3489,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 filtered_native_remove,
             )
             if filtered_native_add or filtered_native_remove:
+                if PlayerFeature.SET_MEMBERS not in parent_player.state.supported_features:
+                    return
                 self.logger.info(
                     "Calling set_members on native player %s with add=%s, remove=%s",
                     parent_player.state.name,
