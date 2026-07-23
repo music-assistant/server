@@ -430,6 +430,8 @@ class AirPlayStream:
         :param ptp_follow: Whether a solo native AirPlay 2 stream may follow
             the receiver's PTP clock.
         """
+        if use_shared_ptp and ptp_follow:
+            raise ValueError("Shared PTP and receiver clock-follow are mutually exclusive")
         cli_binary = await get_cli_binary()
         prov = cast("AirPlayProvider", self.prov)
         airplay_info = self.player.airplay_discovery_info
