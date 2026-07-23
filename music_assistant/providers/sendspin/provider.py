@@ -321,6 +321,9 @@ class SendspinProvider(PlayerProvider):
             self.server_api.add_event_listener(self.event_cb),
             self.mass.subscribe(self._on_providers_updated, EventType.PROVIDERS_UPDATED),
         ]
+        # seed the hass availability snapshot so the first (un)load is seen as a change
+        hass = self.mass.get_provider("hass")
+        self._hass_available = hass is not None and hass.available
 
     def event_cb(self, server: SendspinServer, event: SendspinEvent) -> None:
         """Event callback registered to the sendspin server."""
