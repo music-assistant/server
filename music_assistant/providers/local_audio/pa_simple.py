@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import ctypes
+import logging
 import os
 import threading
 from typing import Any, ClassVar, Final, Self
 
+import numpy as np
+
 from .constants import volume_pct_to_amplitude
+
+LOGGER = logging.getLogger("local_audio.pa_simple")
 
 PA_STREAM_PLAYBACK: Final = 1
 
@@ -40,6 +45,65 @@ class _PASampleSpec(ctypes.Structure):
         ("rate", ctypes.c_uint32),
         ("channels", ctypes.c_uint8),
     ]
+
+
+class _PAChannelMap(ctypes.Structure):
+    # pa_channel_map: { uint8_t channels; pa_channel_position_t map[32]; }
+    _fields_: ClassVar = [
+        ("channels", ctypes.c_uint8),
+        ("map", ctypes.c_int * 32),
+    ]
+
+
+_pulse_core_lib: ctypes.CDLL | None = None
+
+
+def _get_pulse_core_lib() -> ctypes.CDLL:
+    """libpulse.so.0 handle for channel-map helpers (distinct from libpulse-simple)."""
+    global _pulse_core_lib  # noqa: PLW0603
+    if _pulse_core_lib is None:
+        lib = ctypes.CDLL("libpulse.so.0")
+        lib.pa_channel_map_parse.restype = ctypes.c_void_p
+        lib.pa_channel_map_parse.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        lib.pa_channel_map_valid.restype = ctypes.c_int
+        lib.pa_channel_map_valid.argtypes = [ctypes.c_void_p]
+        _pulse_core_lib = lib
+    return _pulse_core_lib
+
+
+def _build_pa_channel_map(channels: int) -> _PAChannelMap | None:
+    """
+    Build an explicit pa_channel_map declaring MA/FFmpeg slot order.
+
+    Two reasons this exists, both verified against a live PipeWire pulse
+    server: (1) the server rejected an 8-channel stream relying on the
+    client's *defaulted* channel map with PA_ERR_INVALID, while accepting
+    the byte-identical spec with an explicit map; (2) declaring the data's
+    true slot order (MA/FFmpeg order, from _SOURCE_CHANNEL_ORDER) makes the
+    server itself reorder by position name to the sink's map — hardware
+    channel order is then correct by construction on this backend, with no
+    client-side byte remapping.
+
+    The map is built via libpulse's own pa_channel_map_parse from position
+    names rather than hardcoded enum integers, so the numeric positions are
+    always whatever the linked libpulse defines.
+
+    :returns: A validated map, or None when the channel count has no entry
+        in _SOURCE_CHANNEL_ORDER or parsing/validation fails — callers pass
+        no map in that case (previous behavior).
+    """
+    names = _SOURCE_CHANNEL_ORDER.get(channels)
+    if not names:
+        return None
+    cmap = _PAChannelMap()
+    lib = _get_pulse_core_lib()
+    if not lib.pa_channel_map_parse(ctypes.byref(cmap), ",".join(names).encode()):
+        LOGGER.debug("pa_channel_map_parse failed for %s", names)
+        return None
+    if not lib.pa_channel_map_valid(ctypes.byref(cmap)) or cmap.channels != channels:
+        LOGGER.debug("parsed pa_channel_map invalid for %d channels (%s)", channels, names)
+        return None
+    return cmap
 
 
 def _find_pulse_server() -> str:
@@ -436,6 +500,19 @@ class PASimpleStream:
             rate=rate,
             channels=channels,
         )
+        # Explicit channel map declaring the data's slot order (MA/FFmpeg
+        # order). Required: the pulse server has been observed to reject
+        # multichannel streams that rely on the client's defaulted map
+        # (PA_ERR_INVALID at 8ch) while accepting the same spec with an
+        # explicit map — and declaring the true order makes the server
+        # route channels by position name to the sink's own map.
+        self._channel_map = _build_pa_channel_map(channels)
+        if self._channel_map is not None:
+            LOGGER.debug(
+                "PA stream for %s declares %d-channel map (MA/FFmpeg order)",
+                sink_name,
+                channels,
+            )
         error = ctypes.c_int(0)
         self._lib = lib
         self._lock = threading.Lock()
@@ -447,7 +524,7 @@ class PASimpleStream:
             sink_name.encode(),
             b"playback",
             ctypes.byref(spec),
-            None,
+            ctypes.byref(self._channel_map) if self._channel_map is not None else None,
             None,
             ctypes.byref(error),
         )
@@ -547,6 +624,21 @@ def enumerate_alsa_devices() -> list[dict[str, Any]]:
 
         description = _re.sub(r"\s*\(hw:\d+,\d+\)$", "", name).strip()
 
+        # Extract "hw:C,D" so the device can be matched against pactl's
+        # card-port EDID data by card index, and so it can be opened
+        # directly for a chmap query (query_alsa_chmap) even though this
+        # backend never opens a PA sink object — PipeWire still enumerates
+        # the card's ports as long as it's running alongside, regardless of
+        # who actually writes audio.
+        alsa_card_index: int | None = None
+        alsa_hw_string: str | None = None
+        if hw_match := _re.search(r"\(hw:(\d+,\d+)\)$", name):
+            alsa_hw_string = f"hw:{hw_match.group(1)}"
+            try:
+                alsa_card_index = int(hw_match.group(1).split(",")[0])
+            except ValueError:
+                alsa_card_index = None
+
         devices.append(
             {
                 "name": name,  # stable key — includes (hw:C,D) for uniqueness
@@ -559,8 +651,39 @@ def enumerate_alsa_devices() -> list[dict[str, Any]]:
                 "master_device": None,
                 "index": idx,
                 "hostapi": dev.get("hostapi", 0),
+                "alsa_card_index": alsa_card_index,
+                "alsa_hw_string": alsa_hw_string,
             }
         )
+    if devices:
+														   
+        for device_dict in devices:
+						   
+            hw_string = device_dict.get("alsa_hw_string")
+            if hw_string and device_dict.get("max_output_channels", 0) > 2:
+                # Query the driver's own active channel map — the authoritative
+                # source for physical channel order (same mechanism speaker-test
+                # uses). If the driver reports no chmap for this channel count,
+                # physical_channel_map stays unset and no remap is applied.
+                resolved = query_alsa_chmap(
+                    hw_string,
+                    device_dict["max_output_channels"],
+                    int(device_dict.get("sample_rate") or 48000),
+                )
+                if resolved is not None:
+														
+																	  
+				 
+									
+                    device_dict["physical_channel_map"] = resolved
+            if device_dict.get("max_output_channels", 0) > 2:
+                LOGGER.debug(
+                    "ALSA device %s (card=%s, channels=%d): physical_channel_map=%s",
+                    device_dict["name"],
+                    device_dict.get("alsa_card_index"),
+                    device_dict.get("max_output_channels"),
+                    device_dict.get("physical_channel_map"),
+                )
     return devices
 
 
@@ -618,6 +741,16 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
         master_device: str | None = properties.get("device.master_device")
         is_remap = master_device is not None or driver == "module-remap-sink.c"
         alsa_card_name: str | None = properties.get("alsa.card_name")
+        active_port: str | None = sink.get("active_port")
+        _alsa_card_idx_str: str | None = properties.get("api.alsa.pcm.card") or properties.get(
+            "alsa.card"
+        )
+        try:
+            alsa_card_index: int | None = (
+                int(_alsa_card_idx_str) if _alsa_card_idx_str is not None else None
+            )
+        except ValueError:
+            alsa_card_index = None
         # pactl --format=json represents channel_map as a comma-separated
         # string (e.g. "front-left,front-right,rear-left,rear-right,...").
         channel_map_str: str = sink.get("channel_map", "")
@@ -660,9 +793,565 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
                 "driver": driver,
                 "channel_map": channel_map,
                 "alsa_card_name": alsa_card_name,
+                "active_port": active_port,
+                "alsa_card_index": alsa_card_index,
             }
         )
+			 
+														   
+							   
+													   
+											   
+																								
+																					
+									  
+																		   
+															
+															
+																				 
+										
+																
+														   
+							 
+																					   
+									  
+							 
+						 
+														 
+														  
+				 
     return sinks
+
+
+																			
+																			  
+																			
+																			 
+																		   
+																		
+								  
+												  
+					   
+						
+						 
+				 
+					  
+					   
+					  
+					   
+																			  
+					   
+						
+ 
+
+
+													 
+																		 
+																					  
+
+
+																		   
+	   
+																	 
+
+																		   
+																		  
+																	 
+																	
+																		   
+																  
+
+																	 
+																  
+																			 
+																	   
+																		   
+																		  
+																	  
+																		
+																 
+
+																		  
+																			
+																			 
+																			 
+																			
+																		   
+																   
+	   
+								
+								  
+									  
+
+												
+				 
+
+						
+										   
+										  
+
+		
+											  
+														  
+								
+					  
+					  
+					
+						
+		 
+								  
+					 
+										 
+																	  
+				 
+
+													
+					  
+															   
+														 
+									   
+					
+			
+													  
+						  
+					
+															 
+																   
+																	
+							
+						
+																		
+																					  
+						  
+						
+													   
+														   
+			 
+				 
+																			
+		 
+					 
+															  
+																	 
+		 
+					
+
+
+								 
+																				 
+					  
+	   
+																			 
+
+																		
+																		
+																		  
+																		  
+																	  
+																	  
+																	  
+																 
+
+																		
+																			 
+																		 
+									
+	   
+							   
+				   
+																							   
+						 
+					 
+																							 
+		 
+						 
+						
+					 
+																		  
+																				
+							
+						 
+					
+		 
+			   
+
+
+# The channel order MA/FFmpeg actually writes PCM in for each channel count
+# it produces (matches helpers/ffmpeg.py's _CHANNEL_LAYOUT scope — only
+# channel counts with an unambiguous standard layout are covered; anything
+# else has no single correct "default" order to remap from).
+_SOURCE_CHANNEL_ORDER: Final[dict[int, list[str]]] = {
+    1: ["front-center"],
+    2: ["front-left", "front-right"],
+    6: ["front-left", "front-right", "front-center", "lfe", "rear-left", "rear-right"],
+    8: [
+        "front-left", "front-right", "front-center", "lfe",
+        "rear-left", "rear-right", "side-left", "side-right",
+    ],
+}
+
+# Driver-reported positions with no counterpart in _SOURCE_CHANNEL_ORDER's
+# vocabulary, aliased to the source position whose content they should carry.
+# See the comment in build_channel_remap_index for the reasoning.
+_PHYSICAL_POSITION_ALIASES: Final[dict[str, str]] = {
+    "rear-left-of-center": "side-left",
+    "rear-right-of-center": "side-right",
+}
+
+
+def build_channel_remap_index(channels: int, physical_channel_map: list[str] | None) -> list[int] | None:
+    """
+    Build a channel-reorder index remapping MA's standard PCM order to a
+    device's real physical channel order.
+
+    Backend-agnostic: works identically whether the caller then applies it
+    to bytes headed for a PulseAudio/PipeWire sink or a raw ALSA hw: device
+    via PortAudio — this only computes *which source channel goes in which
+    output slot*, independent of how those bytes get written.
+
+    :param channels: Number of channels in the PCM stream being written.
+    :param physical_channel_map: The device's real channel order (from
+																		   
+        query_alsa_chmap()), or None if unknown.
+    :returns: A list where result[i] = source channel index to place at
+        output position i, or None if no remap is needed/possible: physical
+        order unknown, channel count not in the known-source-order table,
+        length mismatch, the physical map contains names outside the
+        source order's set (can't identify a corresponding source channel),
+        or the two orders already match (remapping would be a no-op).
+    """
+    if not physical_channel_map:
+        LOGGER.debug("No remap for %d-channel device: physical order unknown", channels)
+        return None
+    # Translate driver-reported positions that have no counterpart in the
+    # FFmpeg source vocabulary. HDA HDMI devices report the pair beyond 5.1
+    # as rear-left/right-of-center (CEA back-pair naming); FFmpeg 7.1 has no
+    # such positions. Pair them with the side channels so that the chmap's
+    # rear-left/right (matching names) carry the source's rear content and
+    # RLC/RRC carry the side content. For 5.1-in-7.1 sources the side pair
+    # is silent, so this pairing choice is inaudible there; it only matters
+    # for true 7.1 sources, where CEA semantics make it a defensible default.
+    physical_channel_map = [
+        _PHYSICAL_POSITION_ALIASES.get(name, name) for name in physical_channel_map
+    ]
+    source_order = _SOURCE_CHANNEL_ORDER.get(channels)
+    if source_order is None:
+        LOGGER.debug(
+            "No remap for %d-channel device: no known standard source order for this "
+            "channel count (only %s covered)",
+            channels,
+            sorted(_SOURCE_CHANNEL_ORDER),
+        )
+        return None
+    if len(physical_channel_map) != channels:
+        LOGGER.debug(
+            "No remap for %d-channel device: physical map has %d entries (%s) — "
+            "length mismatch, refusing to guess",
+            channels,
+            len(physical_channel_map),
+            physical_channel_map,
+        )
+        return None
+    if set(source_order) != set(physical_channel_map):
+        LOGGER.debug(
+            "No remap for %d-channel device: physical map %s uses different channel "
+            "names than the standard source order %s — can't match, refusing to guess",
+            channels,
+            physical_channel_map,
+            source_order,
+        )
+        return None
+    if source_order == physical_channel_map:
+        LOGGER.debug(
+            "No remap needed for %d-channel device: physical order already matches "
+            "standard source order %s",
+            channels,
+            source_order,
+        )
+        return None
+    index = [source_order.index(name) for name in physical_channel_map]
+    LOGGER.debug(
+        "Remap computed for %d-channel device: source %s -> physical %s (index %s)",
+        channels,
+        source_order,
+        physical_channel_map,
+        index,
+    )
+    return index
+
+
+def remap_pcm_channels(data: bytes, channels: int, bytes_per_sample: int, index: list[int]) -> bytes:
+    """
+    Reorder interleaved PCM channel data per a precomputed remap index.
+
+    :param data: Raw interleaved PCM bytes.
+    :param channels: Channel count (must match len(index)).
+    :param bytes_per_sample: Bytes per sample (e.g. 2 for s16le, 4 for
+        s32le/f32le). Byte-agnostic — reorders whole samples, doesn't
+        interpret their value, so this works for any PCM sample format.
+    :param index: Result of build_channel_remap_index() — index[i] is the
+        source channel to place at output position i.
+    :returns: Reordered PCM bytes, same length as input.
+    """
+    frame_bytes = channels * bytes_per_sample
+    # Truncate to a whole number of frames — a partial trailing frame (can
+    # happen at a stream boundary) can't be meaningfully reordered and is
+    # dropped rather than corrupted; callers write in frame-aligned chunks
+    # in normal operation, so this is a no-op in practice.
+    usable_len = (len(data) // frame_bytes) * frame_bytes
+    arr = np.frombuffer(data[:usable_len], dtype=np.uint8).reshape(-1, channels, bytes_per_sample)
+    remapped = arr[:, index, :]
+    return remapped.tobytes() + data[usable_len:]
+
+
+# ALSA channel position enum values (alsa/pcm.h SND_CHMAP_*), verified against
+# the real libasound.so.2 snd_pcm_chmap_name()/snd_pcm_chmap_long_name() output
+# rather than assumed from documentation. Only values a real consumer 8-channel
+# device can plausibly report are included.
+_ALSA_CHMAP_POSITION: Final[dict[int, str]] = {
+    3: "front-left",
+    4: "front-right",
+    5: "rear-left",
+    6: "rear-right",
+    7: "front-center",
+    8: "lfe",
+    9: "side-left",
+    10: "side-right",
+    11: "rear-center",
+    12: "front-left-of-center",
+    13: "front-right-of-center",
+    14: "rear-left-of-center",
+    15: "rear-right-of-center",
+}
+_ALSA_POSITION_MASK: Final = 0xFFFF  # low 16 bits are the position; upper bits are flags
+
+
+# ALSA channel position enum values (alsa/pcm.h SND_CHMAP_*), verified
+# directly against libasound.so.2's snd_pcm_chmap_name()/
+# snd_pcm_chmap_long_name() output rather than assumed from documentation —
+# confirmed e.g. 14="RLC"/"Rear Left Center", matching speaker-test's own
+# printed labels exactly. Only positions a real consumer device can
+# plausibly report are included.
+_ALSA_CHMAP_POSITION: Final[dict[int, str]] = {
+    3: "front-left",
+    4: "front-right",
+    5: "rear-left",
+    6: "rear-right",
+    7: "front-center",
+    8: "lfe",
+    9: "side-left",
+    10: "side-right",
+    11: "rear-center",
+    12: "front-left-of-center",
+    13: "front-right-of-center",
+    14: "rear-left-of-center",
+    15: "rear-right-of-center",
+}
+_ALSA_POSITION_MASK: Final = 0xFFFF  # low 16 bits are the position; upper bits are flags
+_SND_PCM_STREAM_PLAYBACK: Final = 0
+
+_asound_lib: ctypes.CDLL | None = None
+
+
+def _get_asound_lib() -> ctypes.CDLL:
+    """Load and configure libasound for chmap queries. Cached per-process."""
+    global _asound_lib  # noqa: PLW0603
+    if _asound_lib is None:
+        lib = ctypes.CDLL("libasound.so.2")
+        lib.snd_pcm_open.restype = ctypes.c_int
+        lib.snd_pcm_open.argtypes = [
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_int,
+        ]
+        lib.snd_pcm_close.argtypes = [ctypes.c_void_p]
+        lib.snd_pcm_query_chmaps.restype = ctypes.POINTER(ctypes.c_void_p)
+        lib.snd_pcm_query_chmaps.argtypes = [ctypes.c_void_p]
+        lib.snd_pcm_free_chmaps.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+        lib.snd_pcm_set_params.restype = ctypes.c_int
+        lib.snd_pcm_set_params.argtypes = [
+            ctypes.c_void_p,  # pcm
+            ctypes.c_int,  # format
+            ctypes.c_int,  # access
+            ctypes.c_uint,  # channels
+            ctypes.c_uint,  # rate
+            ctypes.c_int,  # soft_resample
+            ctypes.c_uint,  # latency (us)
+        ]
+        # Returns snd_pcm_chmap_t*: { uint32 channels; uint32 pos[]; } —
+        # note: NO leading type field, unlike snd_pcm_query_chmaps entries.
+        lib.snd_pcm_get_chmap.restype = ctypes.POINTER(ctypes.c_uint32)
+        lib.snd_pcm_get_chmap.argtypes = [ctypes.c_void_p]
+        _asound_lib = lib
+    return _asound_lib
+
+
+_libc: ctypes.CDLL | None = None
+
+
+def _get_libc() -> ctypes.CDLL:
+    """libc handle for free() — snd_pcm_get_chmap results are malloc'd by ALSA."""
+    global _libc  # noqa: PLW0603
+    if _libc is None:
+        _libc = ctypes.CDLL(None)
+        _libc.free.argtypes = [ctypes.c_void_p]
+        _libc.free.restype = None
+    return _libc
+
+
+_SND_PCM_FORMAT_S16_LE: Final = 2
+_SND_PCM_ACCESS_RW_INTERLEAVED: Final = 3
+
+
+def _decode_chmap_positions(
+    u32: Any, offset: int, channels: int, device: str
+) -> list[str] | None:
+    """Decode a run of chmap position codes into long-form names, or None on any unknown."""
+    positions: list[str] = []
+    for j in range(channels):
+        raw_pos = u32[offset + j] & _ALSA_POSITION_MASK
+        name = _ALSA_CHMAP_POSITION.get(raw_pos)
+        if name is None:
+            LOGGER.debug(
+                "ALSA chmap query: %s slot %d has unrecognized position code %d — "
+                "refusing to guess",
+                device,
+                j,
+                raw_pos,
+            )
+            return None
+        positions.append(name)
+    return positions
+
+
+def query_alsa_chmap(
+    device: str, expected_channels: int, sample_rate: int = 48000
+) -> list[str] | None:
+    """
+    Query the channel map actually in effect for a raw ALSA hw: device.
+
+    Primary source is snd_pcm_get_chmap() after configuring the stream at
+    the target channel count — the map the driver will *actually* use for
+    playback, which for HDA HDMI is negotiated from the sink's ELD at
+    prepare time. This is the API speaker-test derives its printed
+    "N - Position Name" labels from, so the result matches what listening
+    tests verify.
+
+    snd_pcm_query_chmaps() (the *available* maps list) is only a fallback:
+    on real hardware its first entry has been observed to be the generic
+    CEA allocation order rather than the active map — using it reproduced
+    an incorrect remap identical to EDID-derived data. Available ≠ active.
+
+    :param device: ALSA device string, e.g. "hw:0,3".
+    :param expected_channels: The channel count playback will use — the
+        active map can differ per channel count, so the stream is
+        configured at exactly this count before asking.
+    :param sample_rate: Rate used for the throwaway configuration; the map
+        depends on channel count, not rate, so any supported rate works.
+    :returns: Ordered list of long-form position names (index 0..N-1), or
+        None if the device couldn't be opened/configured, reported no
+        usable map, or reported a position this module doesn't recognize —
+        callers must treat None as "no physical order known" and fall back
+        accordingly, rather than guessing.
+    """
+    lib = _get_asound_lib()
+    pcm = ctypes.c_void_p()
+    err = lib.snd_pcm_open(ctypes.byref(pcm), device.encode(), _SND_PCM_STREAM_PLAYBACK, 0)
+    if err < 0:
+        LOGGER.debug("ALSA chmap query: couldn't open %s (err=%d)", device, err)
+        return None
+    try:
+        # 1) Active map: configure exactly as playback will, then ask.
+        # Retry once at 48000 if the enumerated rate is rejected — raw hw:
+        # devices don't resample, and a config failure here would silently
+        # drop us to the weaker available-list fallback.
+        err = -1
+        for rate in dict.fromkeys((sample_rate, 48000)):
+            err = lib.snd_pcm_set_params(
+                pcm,
+                _SND_PCM_FORMAT_S16_LE,
+                _SND_PCM_ACCESS_RW_INTERLEAVED,
+                expected_channels,
+                rate,
+                1,  # soft_resample
+                500_000,  # latency us — irrelevant, stream is never started
+            )
+            if err >= 0:
+                break
+        if err >= 0:
+            chmap_ptr = lib.snd_pcm_get_chmap(pcm)
+            if chmap_ptr:
+                try:
+                    channels = chmap_ptr[0]
+                    if channels == expected_channels:
+                        positions = _decode_chmap_positions(chmap_ptr, 1, channels, device)
+                        if positions is not None:
+                            LOGGER.debug(
+                                "ALSA chmap query: %s ACTIVE chmap (%d channels): %s",
+                                device,
+                                channels,
+                                positions,
+                            )
+                            return positions
+                    else:
+                        LOGGER.debug(
+                            "ALSA chmap query: %s active chmap has %d channels, "
+                            "expected %d — ignoring",
+                            device,
+                            channels,
+                            expected_channels,
+                        )
+                finally:
+                    _get_libc().free(chmap_ptr)
+            else:
+                LOGGER.debug("ALSA chmap query: %s reports no active chmap", device)
+        else:
+            LOGGER.debug(
+                "ALSA chmap query: set_params failed on %s (err=%d, %dch@%dHz) — "
+                "can't read active map",
+                device,
+                err,
+                expected_channels,
+                sample_rate,
+            )
+
+        # 2) Fallback: first matching entry from the available-maps list.
+        # Known-weaker source (see docstring) — logged distinctly so a wrong
+        # result is traceable to this path.
+        maps_ptr = lib.snd_pcm_query_chmaps(pcm)
+        if not maps_ptr:
+            LOGGER.debug("ALSA chmap query: %s returned no chmaps", device)
+            return None
+        try:
+            i = 0
+            while maps_ptr[i]:
+                # layout: int32 type; uint32 channels; uint32 pos[channels]
+                u32 = ctypes.cast(maps_ptr[i], ctypes.POINTER(ctypes.c_uint32))
+                channels = u32[1]
+                if channels == expected_channels:
+                    positions = _decode_chmap_positions(u32, 2, channels, device)
+                    if positions is None:
+                        return None
+                    LOGGER.debug(
+                        "ALSA chmap query: %s AVAILABLE-list fallback (%d channels): %s "
+                        "— active map unavailable, this may not reflect actual routing",
+                        device,
+                        channels,
+                        positions,
+                    )
+                    return positions
+                i += 1
+            LOGGER.debug(
+                "ALSA chmap query: %s had no chmap entry for %d channels",
+                device,
+                expected_channels,
+            )
+            return None
+        finally:
+            lib.snd_pcm_free_chmaps(maps_ptr)
+    finally:
+        lib.snd_pcm_close(pcm)
 
 
 def suspend_resume_sink(sink_name: str) -> None:

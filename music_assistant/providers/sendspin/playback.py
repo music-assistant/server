@@ -64,6 +64,9 @@ _LIVE_MEDIA_TYPES: frozenset[MediaType] = frozenset(
 
 # Sample rate ceiling for lossy output codecs — anything above is wasted bandwidth.
 _LOSSY_MAX_SAMPLE_RATE = 48000
+# Ceiling on session PCM channel count derived from a client's advertised
+# format. 8 covers 7.1; anything a client claims beyond this is untrusted.
+_MAX_SESSION_CHANNELS = 8
 # Max PCM slice fed to the producer per iteration.
 _PRODUCER_SLICE_US = 100_000
 # Max pending chunks between producer and committer before the producer blocks.
@@ -733,8 +736,9 @@ class SendspinPlaybackSession:
         self._queue_session_id = get_media_session_id(media)
         self._pipeline_config_cache.clear()
         self.player.logger.debug(
-            "Sendspin session PCM format: %d Hz / F32",
+            "Sendspin session PCM format: %d Hz / F32 / %d channel(s)",
             self._pcm_format.sample_rate,
+            self._pcm_format.channels,
         )
         push_stream = self._create_push_stream()
         is_live = media.media_type in _LIVE_MEDIA_TYPES
@@ -1245,19 +1249,20 @@ class SendspinPlaybackSession:
         except Exception:
             filter_params = ()
             output_plan = None
-        custom_filter_graph = any(param.strip() for param in filter_params)
+        custom_filter_graph = any(
+            param.strip() and not param.strip().startswith("alimiter=") for param in filter_params
+        )
         requires_transform = dsp_enabled or output_channels != "stereo" or custom_filter_graph
-        if (
-            output_plan is not None
-            and self._queue_id is not None
-            and self._queue_session_id is not None
-        ):
-            self.player.mass.streams.audio_processing.update_output(
-                output_plan.output_details.player_ids[0],
-                output_plan,
-                queue_id=self._queue_id,
-                session_id=self._queue_session_id,
-            )
+        if output_plan is not None:
+            if not requires_transform:
+                output_plan.output_details.dsp.output_limiter = False
+            if self._queue_id is not None and self._queue_session_id is not None:
+                self.player.mass.streams.audio_processing.update_output(
+                    output_plan.output_details.player_ids[0],
+                    output_plan,
+                    queue_id=self._queue_id,
+                    session_id=self._queue_session_id,
+                )
         return _PipelineConfig(
             requires_transform=requires_transform,
             output_channels=output_channels,
@@ -1273,21 +1278,43 @@ class SendspinPlaybackSession:
         lossy — higher rates yield no perceivable quality gain there. Member
         clients with a different preferred rate up/down-sample in their own DSP
         step on the receiving side.
+
+        Channel count follows the leader's advertised capability (from its Sendspin
+        ClientHello) instead of being forced to stereo, so multichannel-capable
+        clients (e.g. a 5.1/7.1 ALSA or PipeWire sink) get a session pipeline that
+        can actually carry their native layout. Falls back to stereo when the
+        client hasn't advertised a channel count, and is clamped to a sane ceiling
+        so a malformed/hostile ClientHello can't blow up the pipeline.
         """
         leader_output = self._get_member_output_format(self.player.player_id)
         sample_rate = int(leader_output.sample_rate) or _DEFAULT_PCM_FORMAT.sample_rate
         if leader_output.content_type in (ContentType.OPUS, ContentType.MP3, ContentType.AAC):
             sample_rate = min(sample_rate, _LOSSY_MAX_SAMPLE_RATE)
+        # Channel count follows the leader's advertised multichannel capability
+        # so a 5.1/7.1 client gets a session pipeline carrying its native
+        # layout. This is deliberately conservative: it defaults to stereo and
+        # only raises the count when the leader advertised a concrete, in-range
+        # (>2, <=_MAX_SESSION_CHANNELS) value. Critically, _get_member_output_
+        # format() falls back to returning self._pcm_format when the leader has
+        # no resolved sendspin role yet (e.g. at stream start); reading a
+        # channel count from that self-referential fallback is unsafe, so
+        # anything outside the strict multichannel range leaves the session at
+        # stereo — matching stock behavior — rather than propagating a stray
+        # count into the whole pipeline.
+        session_channels = 2
+        advertised = int(leader_output.channels) if leader_output.channels else 2
+        if 2 < advertised <= _MAX_SESSION_CHANNELS:
+            session_channels = advertised
         pcm_format = AudioFormat(
             content_type=ContentType.PCM_F32LE,
             sample_rate=sample_rate,
             bit_depth=32,
-            channels=2,
+            channels=session_channels,
         )
         sendspin_pcm_format = SendspinAudioFormat(
             sample_rate=sample_rate,
             bit_depth=32,
-            channels=2,
+            channels=session_channels,
             sample_type="float",
         )
         return pcm_format, sendspin_pcm_format

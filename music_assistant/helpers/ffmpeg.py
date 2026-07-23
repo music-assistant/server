@@ -7,7 +7,7 @@ import logging
 import re
 import time
 from collections import deque
-from collections.abc import AsyncGenerator, Sequence
+from collections.abc import AsyncGenerator
 from contextlib import suppress
 from copy import copy
 from dataclasses import dataclass
@@ -19,7 +19,6 @@ from music_assistant_models.helpers import get_global_cache_value, set_global_ca
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 
-from .dsp import ComplexFilter
 from .process import AsyncProcess, check_output
 from .util import close_async_generator
 
@@ -27,6 +26,23 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
 
 LOGGER = logging.getLogger("ffmpeg")
+
+# flac is capped to 8 channels hence no solutions for >8
+_CHANNEL_LAYOUT: Final[dict[int, str]] = {
+    1: "mono",
+    2: "stereo",
+    3: "2.1",
+    4: "quad",
+    5: "5.0",
+    6: "5.1",
+    7: "6.1",
+    8: "7.1",
+}
+
+
+def _channel_layout(channels: int) -> str:
+    """Return the FFmpeg channel layout name for a given channel count."""
+    return _CHANNEL_LAYOUT.get(channels, "stereo")
 MINIMAL_FFMPEG_VERSION = 6
 CACHE_ATTR_LIBSOXR_PRESENT: Final[str] = "libsoxr_present"
 CACHE_ATTR_FFMPEG_VERSION: Final[str] = "ffmpeg_version"
@@ -43,6 +59,33 @@ _FFMPEG_BIT_RATE_RE: Final = re.compile(r"(\d+) kb/s")
 _FFMPEG_EXPLICIT_BIT_DEPTH_RE: Final = re.compile(r"\((\d+) bit\)")
 _FFMPEG_SAMPLE_FMT_RE: Final = re.compile(r"\b(u8p?|s16p?|s24p?|s32p?|fltp?|dblp?)\b")
 _FFMPEG_DURATION_RE: Final = re.compile(r"Duration: (\d+):(\d+):(\d+(?:\.\d+)?)")
+_FFMPEG_CHANNEL_LAYOUT_RE: Final = re.compile(r"\d+ Hz,\s*([^,]+)")
+
+# flac is capped to 8 channels hence no solutions for >8
+_LAYOUT_TO_CHANNELS: Final[dict[str, int]] = {
+    "mono": 1,
+    "stereo": 2,
+    "2.1": 3,
+    "quad": 4,
+    "4.0": 4,
+    "5.0": 5,
+    "5.0(side)": 5,
+    "4.1": 5,
+    "5.1": 6,
+    "5.1(side)": 6,
+    "6.0": 6,
+    "6.0(front)": 6,
+    "hexagonal": 6,
+    "6.1": 7,
+    "6.1(back)": 7,
+    "6.1(front)": 7,
+    "7.0": 7,
+    "7.0(front)": 7,
+    "7.1": 8,
+    "7.1(wide)": 8,
+    "7.1(wide-side)": 8,
+    "octagonal": 8,
+}
 
 # Mapping from ffmpeg sample format token to bit depth.
 # Note: planar variants (suffix 'p') describe memory layout only.
@@ -73,6 +116,7 @@ class FFMpegStreamInfo:
     sample_rate: int | None = None
     bit_depth: int | None = None
     bit_rate: int | None = None
+    channels: int | None = None
 
 
 class FFMpeg(AsyncProcess):
@@ -83,7 +127,7 @@ class FFMpeg(AsyncProcess):
         audio_input: AsyncGenerator[bytes] | str | int,
         input_format: AudioFormat,
         output_format: AudioFormat,
-        filter_params: Sequence[str | ComplexFilter] | None = None,
+        filter_params: list[str] | None = None,
         extra_args: list[str] | None = None,
         extra_input_args: list[str] | None = None,
         extra_output_args: list[str] | None = None,
@@ -114,6 +158,7 @@ class FFMpeg(AsyncProcess):
         # values; output_stream_info is informational (useful for logging / future UI use).
         self.input_stream_info: FFMpegStreamInfo | None = None
         self.output_stream_info: FFMpegStreamInfo | None = None
+        self._input_stream_info_event: asyncio.Event = asyncio.Event()
         # Source duration in (whole) seconds as detected from the ffmpeg input log line,
         # or None if not yet parsed / not reported (e.g. live radio streams).
         self.parsed_duration: int | None = None
@@ -229,6 +274,7 @@ class FFMpeg(AsyncProcess):
                     self.input_stream_info = stream_info
                     self._log_stream_info("input", stream_info)
                     self._apply_input_stream_info(stream_info)
+                    self._input_stream_info_event.set()
             elif self._current_log_section == "output" and self.output_stream_info is None:
                 if stream_info := parse_ffmpeg_stream_info(line):
                     self.output_stream_info = stream_info
@@ -280,6 +326,17 @@ class FFMpeg(AsyncProcess):
             if not generator_exhausted:
                 await close_async_generator(self.audio_input)
 
+    async def wait_for_stream_info(self, timeout: float = 5.0) -> bool:
+        """Wait until FFmpeg has probed the input stream info (channels, rate, etc.).
+
+        Returns True if stream info was received within the timeout, False otherwise.
+        """
+        try:
+            await asyncio.wait_for(self._input_stream_info_event.wait(), timeout=timeout)
+            return True
+        except TimeoutError:
+            return False
+
     def _apply_input_stream_info(self, info: FFMpegStreamInfo) -> None:
         """Mirror values from a parsed ffmpeg input stream line onto self.input_format."""
         # content_type is the container format; only fill it in if the provider didn't
@@ -295,16 +352,19 @@ class FFMpeg(AsyncProcess):
             self.input_format.bit_depth = info.bit_depth
         if info.bit_rate:
             self.input_format.bit_rate = info.bit_rate
+        if info.channels:
+            self.input_format.channels = info.channels
 
     def _log_stream_info(self, label: str, info: FFMpegStreamInfo) -> None:
         """Log a parsed FFMpegStreamInfo object at debug level."""
         self.logger.debug(
-            "Detected %s stream info: codec=%s sample_rate=%s bit_depth=%s bit_rate=%s kb/s",
+            "Detected %s stream info: codec=%s sample_rate=%s bit_depth=%s bit_rate=%s kb/s channels=%s",
             label,
             info.codec,
             info.sample_rate,
             info.bit_depth,
             info.bit_rate,
+            info.channels,
         )
 
 
@@ -338,6 +398,11 @@ def parse_ffmpeg_stream_info(line: str) -> FFMpegStreamInfo | None:
     elif codec.is_lossless() and (match := _FFMPEG_SAMPLE_FMT_RE.search(line)):
         info.bit_depth = _SAMPLE_FMT_BIT_DEPTH.get(match.group(1))
 
+    if match := _FFMPEG_CHANNEL_LAYOUT_RE.search(line):
+        layout = match.group(1).strip()
+        if layout in _LAYOUT_TO_CHANNELS:
+            info.channels = _LAYOUT_TO_CHANNELS[layout]
+
     return info
 
 
@@ -360,7 +425,7 @@ async def get_ffmpeg_stream(
     audio_input: AsyncGenerator[bytes] | str,
     input_format: AudioFormat,
     output_format: AudioFormat,
-    filter_params: Sequence[str | ComplexFilter] | None = None,
+    filter_params: list[str] | None = None,
     extra_args: list[str] | None = None,
     chunk_size: int | None = None,
     extra_input_args: list[str] | None = None,
@@ -391,6 +456,7 @@ async def get_ffmpeg_stream(
             log_lines = -20 if ffmpeg_proc.concat_error else -5
             log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[log_lines:])
             raise AudioError(log_tail)
+
 
 
 async def get_ffmpeg_overlay_stream(
@@ -458,11 +524,10 @@ async def get_ffmpeg_overlay_stream(
             log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[-5:])
             raise AudioError(log_tail)
 
-
 def get_ffmpeg_resample_filter(
     input_format: AudioFormat,
     output_format: AudioFormat,
-    filter_params: Sequence[str | ComplexFilter],
+    filter_params: list[str],
 ) -> str | None:
     """
     Return the resampling and dithering filter required for a format conversion.
@@ -477,9 +542,7 @@ def get_ffmpeg_resample_filter(
         return None
     libsoxr_support = get_global_cache_value(CACHE_ATTR_LIBSOXR_PRESENT)
     # loudnorm and libsoxr cannot be combined due to https://trac.ffmpeg.org/ticket/11323
-    if libsoxr_support and not any(
-        "loudnorm" in value for value in filter_params if isinstance(value, str)
-    ):
+    if libsoxr_support and not any("loudnorm" in value for value in filter_params):
         resample_filter = "aresample=resampler=soxr:precision=30"
     else:
         resample_filter = "aresample=resampler=swr"
@@ -493,7 +556,7 @@ def get_ffmpeg_resample_filter(
 def get_ffmpeg_args(
     input_format: AudioFormat,
     output_format: AudioFormat,
-    filter_params: Sequence[str | ComplexFilter],
+    filter_params: list[str],
     extra_args: list[str] | None = None,
     input_path: str = "-",
     output_path: str = "-",
@@ -562,7 +625,7 @@ def get_ffmpeg_args(
                 "-ac",
                 str(input_format.channels),
                 "-channel_layout",
-                "mono" if input_format.channels == 1 else "stereo",
+                _channel_layout(input_format.channels),
                 "-ar",
                 str(input_format.sample_rate),
                 "-acodec",
@@ -581,7 +644,7 @@ def get_ffmpeg_args(
         "-ac",
         str(output_format.channels),
         "-channel_layout",
-        "mono" if output_format.channels == 1 else "stereo",
+        _channel_layout(output_format.channels),
     ]
     if output_path.upper() == "NULL":
         # devnull stream
@@ -657,7 +720,7 @@ def get_ffmpeg_args(
         filter_params.append(resample_filter)
 
     if filter_params and "-filter_complex" not in extra_args:
-        extra_args += _build_filtergraph_args(filter_params)
+        extra_args += ["-af", ",".join(filter_params)]
 
     return generic_args + input_args + extra_args + output_args
 
@@ -705,55 +768,3 @@ async def check_ffmpeg_version() -> None:
         version,
         "with libsoxr support" if libsoxr_support else "",
     )
-
-
-def _build_filtergraph_args(filter_params: list[str | ComplexFilter]) -> list[str]:
-    """
-    Render a DSP filter chain to FFmpeg command-line arguments.
-
-    :param filter_params: Ordered chain of plain filter strings and/or complex
-        fragments that need extra source inputs.
-    """
-    if not any(isinstance(item, ComplexFilter) for item in filter_params):
-        simple = [item for item in filter_params if isinstance(item, str) and item]
-        return ["-af", ",".join(simple)] if simple else []
-
-    parts: list[str] = []
-    pending: list[str] = []
-    current = "0:a"
-    counter = 0
-
-    def next_label() -> str:
-        nonlocal counter
-        counter += 1
-        return f"dsp{counter}"
-
-    def flush_pending() -> None:
-        nonlocal current
-        if not pending:
-            return
-        label = next_label()
-        parts.append(f"[{current}]{','.join(pending)}[{label}]")
-        current = label
-        pending.clear()
-
-    for item in filter_params:
-        if isinstance(item, str):
-            if item:
-                pending.append(item)
-            continue
-        # a complex fragment closes the current simple run, pulls its own source
-        # inputs into the graph, then consumes the main pad plus those sources
-        flush_pending()
-        source_labels: list[str] = []
-        for source in item.sources:
-            label = next_label()
-            parts.append(f"{source}[{label}]")
-            source_labels.append(label)
-        label = next_label()
-        inputs = f"[{current}]" + "".join(f"[{sl}]" for sl in source_labels)
-        parts.append(f"{inputs}{item.body}[{label}]")
-        current = label
-    flush_pending()
-
-    return ["-filter_complex", ";".join(parts), "-map", f"[{current}]"]
