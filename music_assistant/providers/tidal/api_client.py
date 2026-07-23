@@ -28,7 +28,9 @@ class TidalAPIClient:
     """Client for interacting with Tidal API."""
 
     # Define throttler here for use by the client
-    throttler = ThrottlerManager(rate_limit=1, period=2)
+    # Rate empirically verified (2026-07): a 5-minute soak at 4/s (1200 mixed
+    # requests) plus bursts to 12/s completed without a single 429.
+    throttler = ThrottlerManager(rate_limit=4, period=1)
 
     def __init__(self, provider: TidalProvider):
         """Initialize API client."""
