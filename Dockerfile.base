@@ -148,10 +148,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# Pinned to the tag's commit SHA (git tags are mutable); bump both when changing the version.
 ARG SHAIRPORT_VERSION=4.3.7
+ARG SHAIRPORT_SHA=0b1c4391ffd398e7b145eb4b98416261380adeea
 RUN set -x \
-    && git clone --depth 1 --branch ${SHAIRPORT_VERSION} https://github.com/mikebrady/shairport-sync.git /tmp/shairport-sync \
+    && git init /tmp/shairport-sync \
     && cd /tmp/shairport-sync \
+    && git remote add origin https://github.com/mikebrady/shairport-sync.git \
+    && git fetch --depth 1 origin ${SHAIRPORT_SHA} \
+    && git checkout FETCH_HEAD \
     && autoreconf -fi \
     && ./configure \
         --with-pipe \
