@@ -33,7 +33,6 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import (
     AudioError,
     MediaNotFoundError,
-    PlayerCommandFailed,
     UnsupportedFeaturedException,
 )
 from music_assistant_models.media_items import (
@@ -729,12 +728,20 @@ class AirPlayReceiverProvider(PluginProvider):
 
     async def _start_playback(self, target_player_id: str) -> None:
         """Start playback after any pending stop completes."""
-        if self._pending_stop_task and not self._pending_stop_task.done():
+        pending_stop_task = self._pending_stop_task
+        if pending_stop_task is not None:
+            # Await (even if already done) so a failed stop's exception is retrieved,
+            # and continue regardless of how it failed: a stop that can't complete must
+            # not keep the next session from starting. The reference is cleared only
+            # after the await so concurrent starts (rapid "playing" events before the
+            # stream is claimed) all await the same stop instead of racing past it.
             try:
-                await self._pending_stop_task
-            except PlayerCommandFailed as err:
+                await pending_stop_task
+            except Exception as err:
                 self.logger.warning("Failed to stop previous AirPlay playback: %s", err)
-        self._pending_stop_task = None
+            # Don't clear a newer stop that replaced ours while we were awaiting.
+            if self._pending_stop_task is pending_stop_task:
+                self._pending_stop_task = None
         await self.mass.player_queues.play_media(target_player_id, str(self._audio_source.uri))
 
     def _handle_volume_change(self, volume: int) -> None:
