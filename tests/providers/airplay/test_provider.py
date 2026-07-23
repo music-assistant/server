@@ -520,7 +520,17 @@ async def test_raop_session_resolves_ptp_for_first_ap2_late_joiner() -> None:
         return True
 
     prov.wait_ptp_daemon_ready = AsyncMock(side_effect=_wait_ptp_daemon_ready)
-    with patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start:
+
+    async def _start_client(player: MagicMock, _use_shared_ptp: bool) -> None:
+        player.stream = MagicMock(running=True)
+        player.stream.wait_for_connection = AsyncMock()
+        player.stream.prepare_generation = AsyncMock()
+        player.stream.wait_generation_primed = AsyncMock(return_value=True)
+        player.stream.start_generation = AsyncMock()
+
+    with patch.object(
+        session, "_start_client", new_callable=AsyncMock, side_effect=_start_client
+    ) as mock_start:
         await session.add_client(cast("AirPlayPlayer", ap2_player))
 
     prov.wait_ptp_daemon_ready.assert_awaited_once()
@@ -528,7 +538,7 @@ async def test_raop_session_resolves_ptp_for_first_ap2_late_joiner() -> None:
     assert session._shared_ptp_resolved is True
     await_args = mock_start.await_args
     assert await_args is not None
-    assert await_args.args[2] is True
+    assert await_args.args[1] is True
 
 
 async def test_session_start_applies_uniform_ptp_decision_to_all_members() -> None:
@@ -539,6 +549,9 @@ async def test_session_start_applies_uniform_ptp_decision_to_all_members() -> No
     for player in players:
         player.stream = MagicMock()
         player.stream.wait_for_connection = AsyncMock()
+        player.stream.prepare_generation = AsyncMock()
+        player.stream.wait_generation_primed = AsyncMock(return_value=True)
+        player.stream.start_generation = AsyncMock()
     session = _make_ptp_session(prov, players)
 
     with (
@@ -549,7 +562,7 @@ async def test_session_start_applies_uniform_ptp_decision_to_all_members() -> No
 
     # One start per member, and every member received the same resolved decision.
     assert mock_start.call_count == len(players)
-    ptp_decisions = {call.args[2] for call in mock_start.call_args_list}
+    ptp_decisions = {call.args[1] for call in mock_start.call_args_list}
     assert ptp_decisions == {True}
     assert session.use_shared_ptp is True
 
@@ -561,6 +574,9 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
     for player in players:
         player.stream = MagicMock()
         player.stream.wait_for_connection = AsyncMock()
+        player.stream.prepare_generation = AsyncMock()
+        player.stream.wait_generation_primed = AsyncMock(return_value=True)
+        player.stream.start_generation = AsyncMock()
     session = _make_ptp_session(prov, players)
     now = 100.0
 
@@ -575,13 +591,15 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
             "music_assistant.providers.airplay.stream_session.time.time",
             side_effect=lambda: now,
         ),
-        patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
+        patch.object(session, "_start_client", new_callable=AsyncMock),
         patch.object(session, "_audio_streamer", new_callable=AsyncMock),
     ):
         await session.start(MagicMock())
 
-    assert session.start_unix_ms == 105_500
-    assert {call.args[1] for call in mock_start.call_args_list} == {105_500}
+    assert session.start_unix_ms == 103_750
+    for player in players:
+        player.stream.start_generation.assert_awaited_once()
+        assert player.stream.start_generation.await_args.args[2] == 103_750
 
 
 # --- Session decision reaches the CLI args (overrides bare liveness) ------------
@@ -626,7 +644,7 @@ async def _build_args(player: MagicMock, use_shared_ptp: bool | None) -> list[st
             return_value="192.168.1.5",
         ),
     ):
-        return await stream._build_cli_args(START_UNIX_MS, use_shared_ptp)
+        return await stream._build_cli_args(use_shared_ptp)
 
 
 async def test_build_cli_args_explicit_shared_ptp_overrides_dead_daemon() -> None:

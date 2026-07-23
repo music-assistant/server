@@ -5,7 +5,7 @@ Cover four things, with the Sendspin clock mocked via ``ManualClock`` so the
 tests are deterministic and independent of the host wall-clock:
 
 * the clock-domain conversion turning a Sendspin audible instant (Sendspin's own
-  monotonic clock) into the unix epoch ms the binary expects (``--start-unix-ms``);
+  monotonic clock) into the unix epoch ms used by the generation START command;
 * the start anchor: byte 0 is anchored to the first chunk Sendspin delivers, so a
   fresh track keeps position 0 and a late joiner lands at the group's live position;
 * the write pacing that keeps the device buffered a bounded amount ahead of real
@@ -272,6 +272,43 @@ async def test_failed_cli_write_does_not_advance_pacing_cursor() -> None:
     assert stream.write_audio.await_count == 2
 
 
+# --- Commanded cold start and warm handover ------------------------------------
+
+
+async def test_cold_start_connects_then_prepares_and_starts_generation_zero() -> None:
+    """A fresh bridge stream commands generation 0 only after the CLI connects."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + AP2_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    stream = MagicMock()
+    stream.start = AsyncMock()
+    stream.wait_for_connection = AsyncMock()
+    stream.prepare_generation = AsyncMock()
+    stream.wait_generation_primed = AsyncMock(return_value=True)
+    stream.start_generation = AsyncMock()
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=stream,
+        ),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            return_value=UNIX_NOW_S,
+        ),
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    stream.start.assert_awaited_once_with()
+    stream.wait_for_connection.assert_awaited_once_with()
+    stream.prepare_generation.assert_awaited_once_with(0, "-", 0)
+    stream.wait_generation_primed.assert_awaited_once_with(0)
+    stream.start_generation.assert_awaited_once_with(0, 0, int(UNIX_NOW_S * 1000) + AP2_LEAD_MS)
+    assert bridge._airplay_stream is stream
+    assert bridge.airplay_player.stream is stream
+    assert bridge._generation_started is True
+
+
 # --- Warm handover: a kept stream survives a new stream start and absorbs a generation ---
 
 
@@ -292,6 +329,7 @@ def test_on_bridge_stream_start_keeps_warm_eligible_stream() -> None:
     kept_stream = _make_kept_stream()
     bridge._airplay_stream = kept_stream
     bridge.airplay_player.stream = kept_stream
+    bridge._generation_started = True
 
     bridge._on_bridge_stream_start()
 
@@ -314,12 +352,26 @@ def test_on_bridge_stream_start_replaces_non_eligible_stream() -> None:
     assert bridge.airplay_player.stream is None  # type: ignore[unreachable]
 
 
+def test_on_bridge_stream_start_replaces_uncommitted_stream() -> None:
+    """A connected stream cannot be retained before generation 0 has started."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    old_stream = _make_kept_stream()
+    bridge._airplay_stream = old_stream
+    bridge.airplay_player.stream = old_stream
+
+    bridge._on_bridge_stream_start()
+
+    assert bridge._airplay_stream is None
+    assert bridge.airplay_player.stream is None  # type: ignore[unreachable]
+
+
 def test_on_stream_start_keeps_warm_eligible_stream() -> None:
     """The Sendspin-server-side stream-start callback also keeps a warm-eligible stream."""
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     kept_stream = _make_kept_stream()
     bridge._airplay_stream = kept_stream
     bridge.airplay_player.stream = kept_stream
+    bridge._generation_started = True
 
     bridge._on_stream_start(MagicMock())
 

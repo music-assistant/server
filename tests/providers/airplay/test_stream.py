@@ -75,7 +75,7 @@ async def _build_args(player: MagicMock) -> list[str]:
             return_value="192.168.1.5",
         ),
     ):
-        return await stream._build_cli_args(START_UNIX_MS)
+        return await stream._build_cli_args()
 
 
 def _arg_value(args: list[str], flag: str) -> Any:
@@ -90,7 +90,7 @@ async def test_cli_args_default_auto() -> None:
     args = await _build_args(player)
 
     assert _arg_value(args, "--protocol") == "auto"
-    assert _arg_value(args, "--start-unix-ms") == str(START_UNIX_MS)
+    assert "--start-unix-ms" not in args
     # legacy timing args are gone
     assert "--ntpstart" not in args
     assert "--wait" not in args
@@ -160,6 +160,15 @@ async def test_cli_args_no_ptp_shared_without_daemon() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cli_args_reject_shared_ptp_with_clock_follow() -> None:
+    """Shared PTP and receiver clock-follow cannot be requested together."""
+    stream = AirPlayStream(_make_player())
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        await stream._build_cli_args(use_shared_ptp=True, ptp_follow=True)
+
+
+@pytest.mark.asyncio
 async def test_cli_args_no_latency_override() -> None:
     """The playback lead/buffer is binary-managed; MA never passes --latency."""
     player = _make_player()
@@ -183,7 +192,7 @@ async def test_cli_args_hires_pcm_format() -> None:
             return_value="192.168.1.5",
         ),
     ):
-        args = await stream._build_cli_args(START_UNIX_MS)
+        args = await stream._build_cli_args()
 
     assert _arg_value(args, "--samplerate") == "48000"
     assert _arg_value(args, "--bitdepth") == "24"
@@ -353,7 +362,7 @@ async def test_start_queues_text_metadata_before_connection() -> None:
         patch.object(stream.commands_pipe, "create", side_effect=create_pipe),
         patch.object(stream, "send_metadata", side_effect=send_metadata) as send_metadata_mock,
     ):
-        await stream.start(START_UNIX_MS)
+        await stream.start()
 
     assert operation_order == ["pipe", "process", "metadata"]
     send_metadata_mock.assert_awaited_once_with(12, metadata, send_artwork=False)
@@ -393,12 +402,80 @@ async def test_start_failure_cleans_up_process_and_pipe() -> None:
         ),
         pytest.raises(OSError, match="metadata write failed"),
     ):
-        await stream.start(START_UNIX_MS)
+        await stream.start()
 
     process.kill.assert_awaited_once()
     remove_pipe.assert_awaited_once()
     assert stream._cli_proc is None
     assert stream._cleanup_complete is True
+
+
+@pytest.mark.asyncio
+async def test_generation_zero_uses_prepare_and_start_commands() -> None:
+    """The first generation is prepared, primed, and started over the command pipe."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command:
+        await stream.prepare_generation(0, "-", 12_000)
+        assert stream._handle_status_line("[STATUS] primed generation=0") is False
+        assert await stream.wait_generation_primed(0)
+        await stream.start_generation(0, 12_000, START_UNIX_MS)
+
+    assert [call.args[0] for call in write_command.await_args_list] == [
+        "GENERATION=0\nAUDIO=-\nPOSITION_MS=12000\nACTION=PREPARE",
+        f"GENERATION=0\nSTART_UNIX_MS={START_UNIX_MS}\nACTION=START",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_generation_cannot_start_before_primed() -> None:
+    """A START command is rejected until that generation has reported primed."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with (
+        patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command,
+        pytest.raises(RuntimeError, match="before it is primed"),
+    ):
+        await stream.start_generation(0, 0, START_UNIX_MS)
+
+    write_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_generation_cannot_start_after_process_exit() -> None:
+    """A primed generation is not started after its CLI process exits."""
+    stream = AirPlayStream(_make_player())
+    process = MagicMock(closed=False)
+    stream._cli_proc = process
+    stream._connected.set()
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command:
+        await stream.prepare_generation(0, "-", 0)
+        stream._handle_status_line("[STATUS] primed generation=0")
+        process.closed = True
+        with pytest.raises(RuntimeError, match="without a connected cliairplay process"):
+            await stream.start_generation(0, 0, START_UNIX_MS)
+
+    write_command.assert_awaited_once_with("GENERATION=0\nAUDIO=-\nPOSITION_MS=0\nACTION=PREPARE")
+
+
+def test_generation_zero_elapsed_includes_position_once() -> None:
+    """Generation-0 progress is based on its media position without session offset."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._generation_position = 12.0
+
+    stream._update_elapsed(1.5)
+
+    player.set_state_from_stream.assert_called_once_with(
+        state=PlaybackState.PLAYING,
+        elapsed_time=13.5,
+        stream=stream,
+    )
 
 
 @pytest.mark.asyncio

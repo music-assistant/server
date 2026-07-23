@@ -204,11 +204,7 @@ class AirPlayPlayer(Player):
 
     @property
     def wait_start(self) -> int:
-        """Get the lead time in ms between starting the stream and the audible start."""
-        # the binary owns all lead/buffer handling from the chosen start instant;
-        # MA only budgets a fixed setup lead for spawn + connect + session setup
-        # + receiver pre-fill. Native AirPlay 2 needs a larger budget than RAOP
-        # (its pre-fill is paced), otherwise the start clips intermittently.
+        """Get the setup lead required by an externally timed audio source."""
         if self.protocol == StreamingProtocol.RAOP:
             return AIRPLAY_RAOP_SETUP_LEAD_MS
         return AIRPLAY_AP2_SETUP_LEAD_MS

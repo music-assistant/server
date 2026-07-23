@@ -88,7 +88,6 @@ class AirPlayStream:
         self._metadata_lock = asyncio.Lock()
         self._artwork_render_generations: set[int] = set()
         self._last_progress_sent: int = -1
-        self._elapsed_time_offset: float | None = None
         # Persistent generations: the binary keeps one connection alive and
         # plays numbered media generations over it (seek/next = new generation
         # on a fresh pipe instead of a reconnect).
@@ -125,20 +124,25 @@ class AirPlayStream:
         """Return boolean if the device connection has been established."""
         return self._connected.is_set()
 
-    async def start(self, start_unix_ms: int, use_shared_ptp: bool | None = None) -> None:
+    async def start(
+        self,
+        use_shared_ptp: bool | None = None,
+        ptp_follow: bool = False,
+    ) -> None:
         """
-        Start cliairplay process.
+        Start cliairplay and connect to the receiver.
 
-        :param start_unix_ms: The instant the first sample must be audible,
-            as unix epoch milliseconds. All members of a sync group must
-            receive the same value.
         :param use_shared_ptp: Session-wide decision on whether native AirPlay 2
             members attach to the shared PTP clock daemon. The stream session
             passes the same value to every member so a group never mixes PTP and
             NTP timing. None (single-stream callers) falls back to the daemon's
             live state.
+        :param ptp_follow: Solo-session clock negotiation: the binary may yield
+            the timeline to a receiver that announces itself as a master
+            (Samsung renders only on its own clock). Never combined with the
+            shared daemon.
         """
-        args = await self._build_cli_args(start_unix_ms, use_shared_ptp)
+        args = await self._build_cli_args(use_shared_ptp, ptp_follow)
         self.player.logger.debug("Starting cliairplay for player %s", self.player.player_id)
         self._cli_proc = AsyncProcess(args, stdin=True, stdout=True, stderr=True, name="cliairplay")
         try:
@@ -162,7 +166,7 @@ class AirPlayStream:
     async def wait_for_connection(self) -> None:
         """Wait for device connection to be established."""
         if not self._cli_proc:
-            return
+            raise RuntimeError("cliairplay process is not running")
         await asyncio.wait_for(self._connected.wait(), timeout=10)
         # Send the mute-aware volume right away — audio can start within a
         # second now that metadata goes out immediately — and repeat it after
@@ -175,12 +179,9 @@ class AirPlayStream:
         self._metadata_text_checksum = ""
         self._pending_metadata_checksum = ""
         self._metadata_generation += 1
-        # Push track metadata immediately on connect. Some receivers (notably
-        # Sonos) hold back audio rendering until they receive track metadata
-        # anchored to the stream timeline; the binary anchors that timeline the
-        # instant it reports connected, so a metadata command issued now lands
-        # with a valid anchor. Deferring it kept those devices silent past the
-        # scheduled start, clipping the first seconds of the stream.
+        # Push track metadata before PREPARE/START. Some receivers (notably
+        # Sonos) hold back audio rendering until they receive track metadata;
+        # deferring it can keep them silent past the commanded start.
         self.player._on_player_media_updated()
 
     async def stop(self, force: bool = False) -> None:
@@ -256,12 +257,16 @@ class AirPlayStream:
 
     async def prepare_generation(self, generation: int, audio_path: str, position_ms: int) -> None:
         """
-        Stage the next media generation on the running binary.
+        Stage a media generation on the connected binary.
 
         The binary opens the given FIFO and prefills from it while the current
         generation keeps playing; `primed` is reported once enough audio is
         buffered for an underrun-free start.
         """
+        if not self.running or not self.connected:
+            raise RuntimeError("Cannot prepare a generation without a connected cliairplay process")
+        self._gen_ready.setdefault(generation, asyncio.Event())
+        self._gen_primed.setdefault(generation, asyncio.Event())
         await self._write_cli_command(
             f"GENERATION={generation}\nAUDIO={audio_path}\n"
             f"POSITION_MS={position_ms}\nACTION=PREPARE"
@@ -288,6 +293,11 @@ class AirPlayStream:
         minimum warm lead); a group start passes the same instant to every
         primed member.
         """
+        if not self.running or not self.connected:
+            raise RuntimeError("Cannot start a generation without a connected cliairplay process")
+        primed = self._gen_primed.get(generation)
+        if primed is None or not primed.is_set():
+            raise RuntimeError(f"Cannot start generation {generation} before it is primed")
         self._generation_position = position_ms / 1000
         self._active_generation = generation
         # Stamp the player's elapsed onto the new generation's base right away:
@@ -406,17 +416,22 @@ class AirPlayStream:
                     self._metadata_checksum = metadata_checksum
 
     async def _build_cli_args(  # noqa: PLR0915
-        self, start_unix_ms: int, use_shared_ptp: bool | None = None
+        self,
+        use_shared_ptp: bool | None = None,
+        ptp_follow: bool = False,
     ) -> list[str]:
         """
         Assemble the cliairplay argument list for this stream.
 
-        :param start_unix_ms: The audible-start instant in unix epoch ms.
         :param use_shared_ptp: Whether a native AirPlay 2 stream attaches to the
             shared PTP clock daemon. The stream session passes an explicit
             group-wide decision so members never mix PTP and NTP timing; None
             (single-stream callers) falls back to the daemon's live state.
+        :param ptp_follow: Whether a solo native AirPlay 2 stream may follow
+            the receiver's PTP clock.
         """
+        if use_shared_ptp and ptp_follow:
+            raise ValueError("Shared PTP and receiver clock-follow are mutually exclusive")
         cli_binary = await get_cli_binary()
         prov = cast("AirPlayProvider", self.prov)
         airplay_info = self.player.airplay_discovery_info
@@ -443,8 +458,6 @@ class AirPlayStream:
             self.active_remote_id,
             "--cmdpipe",
             self.commands_pipe.path,
-            "--start-unix-ms",
-            str(start_unix_ms),
             "--samplerate",
             str(self.pcm_format.sample_rate),
             "--bitdepth",
@@ -518,7 +531,12 @@ class AirPlayStream:
         # daemon's live state.
         if target_protocol == StreamingProtocol.AIRPLAY2:
             shared_ptp = prov.ptp_daemon_running if use_shared_ptp is None else use_shared_ptp
-            if shared_ptp:
+            if ptp_follow:
+                # Solo session: negotiate the clock honestly and yield to a
+                # master-or-mute receiver (Samsung); never via the shared
+                # daemon, which always holds grandmaster.
+                args += ["--ptp-follow"]
+            elif shared_ptp:
                 args += ["--ptp-shared"]
 
         # Local interface binding
@@ -740,14 +758,9 @@ class AirPlayStream:
             return -1
 
     def _update_elapsed(self, elapsed_time: float) -> None:
-        """Update elapsed time with session offset compensation."""
-        if self._active_generation > 0:
-            # elapsed restarts per generation; report against its media base
-            elapsed_time += self._generation_position
-        elif self._elapsed_time_offset is None and self.session:
-            self._elapsed_time_offset = max(0, time.time() - self.session.start_time - elapsed_time)
-        if self._active_generation == 0 and self._elapsed_time_offset:
-            elapsed_time += self._elapsed_time_offset
+        """Update elapsed time against the active generation's media position."""
+        # elapsed restarts per generation; report against its media base
+        elapsed_time += self._generation_position
         # The binary only emits this status while actually playing, so it is
         # also the signal that drives the player into the PLAYING state.
         self.player.set_state_from_stream(
