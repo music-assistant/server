@@ -13,7 +13,7 @@ from music_assistant.constants import (
     CONF_USERNAME,
 )
 
-from .constants import SUPPORTED_FEATURES
+from .constants import SIGNIN_BY_API, SUPPORTED_FEATURES
 from .provider import MusicMeProvider
 
 if TYPE_CHECKING:
@@ -48,6 +48,14 @@ async def get_config_entries(
     # ruff: noqa: ARG001
     return (
         CONF_ENTRY_UNOFFICIAL_PROVIDER,
+        ConfigEntry(
+            key=SIGNIN_BY_API,
+            type=ConfigEntryType.BOOLEAN,
+            label="Signin by API",
+            required=False,
+            default_value=False,
+            description="If checked, the signin will be made by API call, if unchecked, login will be made by HTTP authentication.",
+        ),
         ConfigEntry(
             key=CONF_USERNAME,
             type=ConfigEntryType.STRING,

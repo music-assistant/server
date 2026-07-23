@@ -72,7 +72,7 @@ class TestGetRadioTrack:
             return_value={
                 "results": {
                     "tracks": [
-                        {"barcode": "AAA-01_01", "streamable": 1},
+                        {"barcode": "AAA-01_01", "streamable": 0},
                         {"barcode": "BBB-01_01", "streamable": 2},
                         {"barcode": "CCC-01_01", "streamable": 2},
                     ]

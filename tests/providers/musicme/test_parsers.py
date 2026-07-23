@@ -152,8 +152,8 @@ class TestParseAlbum:
         assert mapping.available is True
 
     def test_album_not_streamable(self, provider: MusicMeProvider) -> None:
-        """Test album with streamable != 2 is marked unavailable."""
-        obj = {**ALBUM_OBJ, "streamable": 1}
+        """Test album with streamable != 0 is marked unavailable."""
+        obj = {**ALBUM_OBJ, "streamable": 0}
         album = provider._parse_album(obj)
         mapping = next(iter(album.provider_mappings))
         assert mapping.available is False
