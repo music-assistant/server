@@ -54,6 +54,7 @@ def test_parse_stream_info_mp3() -> None:
         sample_rate=44100,
         bit_depth=None,
         bit_rate=320,
+        channels=2,
     )
 
 
@@ -77,6 +78,7 @@ def test_parse_stream_info_flac_16bit() -> None:
         sample_rate=44100,
         bit_depth=16,
         bit_rate=1024,
+        channels=2,
     )
 
 
@@ -89,6 +91,7 @@ def test_parse_stream_info_flac_24bit_in_s32() -> None:
         sample_rate=96000,
         bit_depth=24,
         bit_rate=None,
+        channels=2,
     )
 
 
@@ -101,6 +104,7 @@ def test_parse_stream_info_flac_24bit_hires_with_bitrate() -> None:
         sample_rate=192000,
         bit_depth=24,
         bit_rate=5644,
+        channels=2,
     )
 
 
@@ -113,6 +117,7 @@ def test_parse_stream_info_pcm_s16le() -> None:
         sample_rate=44100,
         bit_depth=16,
         bit_rate=1411,
+        channels=2,
     )
 
 
@@ -125,6 +130,7 @@ def test_parse_stream_info_opus_without_bitrate() -> None:
         sample_rate=48000,
         bit_depth=None,
         bit_rate=None,
+        channels=2,
     )
 
 

@@ -60,11 +60,28 @@ _FFMPEG_CHANNEL_LAYOUT_RE: Final = re.compile(r"\d+ Hz,\s*([^,]+)")
 
 # flac is capped to 8 channels hence no solutions for >8
 _LAYOUT_TO_CHANNELS: Final[dict[str, int]] = {
-    "mono": 1, "stereo": 2, "2.1": 3, "quad": 4, "4.0": 4, "5.0": 5,
-    "5.0(side)": 5, "4.1": 5, "5.1": 6, "5.1(side)": 6, "6.0": 6,
-    "6.0(front)": 6, "hexagonal": 6, "6.1": 7, "6.1(back)": 7,
-    "6.1(front)": 7, "7.0": 7, "7.0(front)": 7, "7.1": 8,
-    "7.1(wide)": 8, "7.1(wide-side)": 8, "octagonal": 8,
+    "mono": 1,
+    "stereo": 2,
+    "2.1": 3,
+    "quad": 4,
+    "4.0": 4,
+    "5.0": 5,
+    "5.0(side)": 5,
+    "4.1": 5,
+    "5.1": 6,
+    "5.1(side)": 6,
+    "6.0": 6,
+    "6.0(front)": 6,
+    "hexagonal": 6,
+    "6.1": 7,
+    "6.1(back)": 7,
+    "6.1(front)": 7,
+    "7.0": 7,
+    "7.0(front)": 7,
+    "7.1": 8,
+    "7.1(wide)": 8,
+    "7.1(wide-side)": 8,
+    "octagonal": 8,
 }
 _FFMPEG_SAMPLE_RATE_RE: Final = re.compile(r"(\d+) Hz")
 _FFMPEG_BIT_RATE_RE: Final = re.compile(r"(\d+) kb/s")

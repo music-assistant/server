@@ -656,9 +656,9 @@ def enumerate_alsa_devices() -> list[dict[str, Any]]:
             }
         )
     if devices:
-														   
+                 
         for device_dict in devices:
-						   
+         
             hw_string = device_dict.get("alsa_hw_string")
             if hw_string and device_dict.get("max_output_channels", 0) > 2:
                 # Query the driver's own active channel map — the authoritative
@@ -671,10 +671,10 @@ def enumerate_alsa_devices() -> list[dict[str, Any]]:
                     int(device_dict.get("sample_rate") or 48000),
                 )
                 if resolved is not None:
-														
-																	  
-				 
-									
+              
+                   
+     
+         
                     device_dict["physical_channel_map"] = resolved
             if device_dict.get("max_output_channels", 0) > 2:
                 LOGGER.debug(
@@ -797,183 +797,183 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
                 "alsa_card_index": alsa_card_index,
             }
         )
-			 
-														   
-							   
-													   
-											   
-																								
-																					
-									  
-																		   
-															
-															
-																				 
-										
-																
-														   
-							 
-																					   
-									  
-							 
-						 
-														 
-														  
-				 
+
+                 
+          
+                
+              
+                        
+                     
+           
+                     
+               
+               
+                     
+          
+                
+                 
+        
+                        
+           
+        
+       
+               
+                
+     
     return sinks
 
 
-																			
-																			  
-																			
-																			 
-																		   
-																		
-								  
-												  
-					   
-						
-						 
-				 
-					  
-					   
-					  
-					   
-																			  
-					   
-						
+                   
+                     
+                   
+                    
+                     
+                  
+          
+              
+        
+      
+       
+     
+       
+        
+       
+        
+                     
+        
+      
  
 
 
-													 
-																		 
-																					  
+              
+                   
+                       
 
 
-																		   
-	   
-																	 
+                     
+    
+                  
 
-																		   
-																		  
-																	 
-																	
-																		   
-																  
+                     
+                    
+                  
+                 
+                     
+                  
 
-																	 
-																  
-																			 
-																	   
-																		   
-																		  
-																	  
-																		
-																 
+                  
+                  
+                    
+                    
+                     
+                    
+                   
+                  
+                 
 
-																		  
-																			
-																			 
-																			 
-																			
-																		   
-																   
-	   
-								
-								  
-									  
+                    
+                   
+                    
+                    
+                   
+                     
+                   
+    
+        
+          
+           
 
-												
-				 
+            
+     
 
-						
-										   
-										  
+      
+             
+            
 
-		
-											  
-														  
-								
-					  
-					  
-					
-						
-		 
-								  
-					 
-										 
-																	  
-				 
+  
+             
+                
+        
+       
+       
+     
+      
+   
+          
+      
+           
+                   
+     
 
-													
-					  
-															   
-														 
-									   
-					
-			
-													  
-						  
-					
-															 
-																   
-																	
-							
-						
-																		
-																					  
-						  
-						
-													   
-														   
-			 
-				 
-																			
-		 
-					 
-															  
-																	 
-		 
-					
+             
+       
+                  
+               
+            
+     
+   
+               
+        
+     
+                
+                   
+                 
+       
+      
+                  
+                       
+        
+      
+                
+                 
+    
+     
+                   
+   
+      
+                 
+                  
+   
+     
 
 
-								 
-																				 
-					  
-	   
-																			 
+         
+                     
+       
+    
+                    
 
-																		
-																		
-																		  
-																		  
-																	  
-																	  
-																	  
-																 
+                  
+                  
+                    
+                    
+                   
+                   
+                   
+                 
 
-																		
-																			 
-																		 
-									
-	   
-							   
-				   
-																							   
-						 
-					 
-																							 
-		 
-						 
-						
-					 
-																		  
-																				
-							
-						 
-					
-		 
-			   
+                  
+                    
+                   
+         
+    
+          
+       
+                          
+       
+      
+                        
+   
+       
+      
+      
+                    
+                    
+       
+       
+     
+   
+      
 
 
 # The channel order MA/FFmpeg actually writes PCM in for each channel count
@@ -985,8 +985,14 @@ _SOURCE_CHANNEL_ORDER: Final[dict[int, list[str]]] = {
     2: ["front-left", "front-right"],
     6: ["front-left", "front-right", "front-center", "lfe", "rear-left", "rear-right"],
     8: [
-        "front-left", "front-right", "front-center", "lfe",
-        "rear-left", "rear-right", "side-left", "side-right",
+        "front-left",
+        "front-right",
+        "front-center",
+        "lfe",
+        "rear-left",
+        "rear-right",
+        "side-left",
+        "side-right",
     ],
 }
 
@@ -999,10 +1005,14 @@ _PHYSICAL_POSITION_ALIASES: Final[dict[str, str]] = {
 }
 
 
-def build_channel_remap_index(channels: int, physical_channel_map: list[str] | None) -> list[int] | None:
+def build_channel_remap_index(
+    channels: int, physical_channel_map: list[str] | None
+) -> list[int] | None:
     """
-    Build a channel-reorder index remapping MA's standard PCM order to a
-    device's real physical channel order.
+    Build a channel-reorder index mapping standard PCM order to device order.
+
+    Remaps MA's standard PCM channel order onto the device's real physical
+    channel order.
 
     Backend-agnostic: works identically whether the caller then applies it
     to bytes headed for a PulseAudio/PipeWire sink or a raw ALSA hw: device
@@ -1011,7 +1021,7 @@ def build_channel_remap_index(channels: int, physical_channel_map: list[str] | N
 
     :param channels: Number of channels in the PCM stream being written.
     :param physical_channel_map: The device's real channel order (from
-																		   
+
         query_alsa_chmap()), or None if unknown.
     :returns: A list where result[i] = source channel index to place at
         output position i, or None if no remap is needed/possible: physical
@@ -1024,7 +1034,7 @@ def build_channel_remap_index(channels: int, physical_channel_map: list[str] | N
         LOGGER.debug("No remap for %d-channel device: physical order unknown", channels)
         return None
     # Translate driver-reported positions that have no counterpart in the
-    # FFmpeg source vocabulary. HDA HDMI devices report the pair beyond 5.1
+    # FFmpeg source vocabulary. HD Audio HDMI devices report the pair beyond 5.1
     # as rear-left/right-of-center (CEA back-pair naming); FFmpeg 7.1 has no
     # such positions. Pair them with the side channels so that the chmap's
     # rear-left/right (matching names) carry the source's rear content and
@@ -1080,7 +1090,9 @@ def build_channel_remap_index(channels: int, physical_channel_map: list[str] | N
     return index
 
 
-def remap_pcm_channels(data: bytes, channels: int, bytes_per_sample: int, index: list[int]) -> bytes:
+def remap_pcm_channels(
+    data: bytes, channels: int, bytes_per_sample: int, index: list[int]
+) -> bytes:
     """
     Reorder interleaved PCM channel data per a precomputed remap index.
 
@@ -1104,26 +1116,26 @@ def remap_pcm_channels(data: bytes, channels: int, bytes_per_sample: int, index:
     return remapped.tobytes() + data[usable_len:]
 
 
-# ALSA channel position enum values (alsa/pcm.h SND_CHMAP_*), verified against
-# the real libasound.so.2 snd_pcm_chmap_name()/snd_pcm_chmap_long_name() output
-# rather than assumed from documentation. Only values a real consumer 8-channel
-# device can plausibly report are included.
-_ALSA_CHMAP_POSITION: Final[dict[int, str]] = {
-    3: "front-left",
-    4: "front-right",
-    5: "rear-left",
-    6: "rear-right",
-    7: "front-center",
-    8: "lfe",
-    9: "side-left",
-    10: "side-right",
-    11: "rear-center",
-    12: "front-left-of-center",
-    13: "front-right-of-center",
-    14: "rear-left-of-center",
-    15: "rear-right-of-center",
-}
-_ALSA_POSITION_MASK: Final = 0xFFFF  # low 16 bits are the position; upper bits are flags
+                                                                              
+                                                                               
+                                                                               
+                                           
+                                               
+                    
+                     
+                   
+                    
+                      
+             
+                   
+                     
+                      
+                               
+                                
+                              
+                               
+ 
+                                                                                         
 
 
 # ALSA channel position enum values (alsa/pcm.h SND_CHMAP_*), verified
@@ -1191,7 +1203,7 @@ _libc: ctypes.CDLL | None = None
 
 
 def _get_libc() -> ctypes.CDLL:
-    """libc handle for free() — snd_pcm_get_chmap results are malloc'd by ALSA."""
+    """Libc handle for free() — snd_pcm_get_chmap results are malloc'd by ALSA."""
     global _libc  # noqa: PLW0603
     if _libc is None:
         _libc = ctypes.CDLL(None)
@@ -1204,9 +1216,9 @@ _SND_PCM_FORMAT_S16_LE: Final = 2
 _SND_PCM_ACCESS_RW_INTERLEAVED: Final = 3
 
 
-def _decode_chmap_positions(
-    u32: Any, offset: int, channels: int, device: str
-) -> list[str] | None:
+                            
+def _decode_chmap_positions(u32: Any, offset: int, channels: int, device: str) -> list[str] | None:
+                      
     """Decode a run of chmap position codes into long-form names, or None on any unknown."""
     positions: list[str] = []
     for j in range(channels):
@@ -1233,7 +1245,7 @@ def query_alsa_chmap(
 
     Primary source is snd_pcm_get_chmap() after configuring the stream at
     the target channel count — the map the driver will *actually* use for
-    playback, which for HDA HDMI is negotiated from the sink's ELD at
+    playback, which for HD Audio HDMI is negotiated from the sink's ELD at
     prepare time. This is the API speaker-test derives its printed
     "N - Position Name" labels from, so the result matches what listening
     tests verify.

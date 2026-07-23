@@ -83,8 +83,10 @@ def _find_first_nonsilent_frame(
     data: bytes, frame_size: int, fmt: str, silence_threshold: int = 50
 ) -> tuple[int, ...] | None:
     """
-    Return the first frame in `data` where any sample exceeds the silence
-    threshold, or the very first frame if the whole scanned range is silent.
+    Return the first frame in `data` that carries signal.
+
+    Returns the first frame where any sample exceeds the silence threshold,
+    or the very first frame if the whole scanned range is silent.
 
     Diagnostic-only: chunks commonly start with a silent lead-in (encoder
     priming, or genuine silence in the source), which makes logging frame 0
@@ -700,6 +702,45 @@ class SendspinLocalAudioBridge:
             ),
         )
 
+    def _remap_channels(self, data: bytes, bytes_per_sample: int, *, log_first: bool) -> bytes:
+        """
+        Reorder a PCM chunk into the device's physical channel order.
+
+        Shared by both writer backends. When `log_first` is set, the first
+        non-silent frame is logged before and after the reorder, which is the
+        only practical way to tell a wrong channel order apart from wrong
+        incoming data.
+
+        :param data: Raw interleaved PCM for this chunk.
+        :param bytes_per_sample: Sample width the writer is using.
+        :param log_first: Emit the one-time before/after diagnostic.
+        :returns: The reordered PCM, or `data` unchanged if no remap applies.
+        """
+        if self._channel_remap_index is None:
+            return data
+        frame_size = self.pa_channels * bytes_per_sample
+        fmt = f"<{self.pa_channels}{ {2: 'h', 4: 'i'}.get(bytes_per_sample, 'i') }"
+        if log_first:
+            self.logger.debug(
+                "First chunk PRE-remap, first non-silent frame (%d channels, %d-byte): %s",
+                self.pa_channels,
+                bytes_per_sample,
+                _find_first_nonsilent_frame(data, frame_size, fmt),
+            )
+        data = remap_pcm_channels(
+            data, self.pa_channels, bytes_per_sample, self._channel_remap_index
+        )
+        if log_first:
+            self.logger.debug(
+                "First chunk POST-remap, first non-silent frame (%d channels, %d-byte): %s "
+                "(expected physical order %s)",
+                self.pa_channels,
+                bytes_per_sample,
+                _find_first_nonsilent_frame(data, frame_size, fmt),
+                self.physical_channel_map,
+            )
+        return data
+
     async def _audio_writer_pulse(self) -> None:
         """Write queued audio to a PA sink via PASimpleStream (Linux)."""
         stream: PASimpleStream | None = None
@@ -722,40 +763,9 @@ class SendspinLocalAudioBridge:
                     data = self._apply_format_conversion(data)
                 else:
                     data = self._apply_software_volume(data)
-                if self._channel_remap_index is not None:
-                    bytes_per_sample = self.bit_depth // 8
-                    fmt = "<%d%s" % (
-                        self.pa_channels,
-                        {2: "h", 4: "i"}.get(bytes_per_sample, "i"),
-                    )
-                    frame_size = self.pa_channels * bytes_per_sample
-                    if not first_chunk_written:
-                        pre_frame = _find_first_nonsilent_frame(data, frame_size, fmt)
-                        self.logger.debug(
-                            "First chunk PRE-remap, first non-silent frame (%d channels, %d-byte): %s",
-                            self.pa_channels,
-                            bytes_per_sample,
-                            pre_frame,
-                        )
-                    data = remap_pcm_channels(
-                        data, self.pa_channels, bytes_per_sample, self._channel_remap_index
-                    )
-                    if not first_chunk_written:
-                        post_frame = _find_first_nonsilent_frame(data, frame_size, fmt)
-                        self.logger.debug(
-                            "First chunk POST-remap, first non-silent frame (%d channels, %d-byte): %s "
-                            "(expected physical order %s)",
-                            self.pa_channels,
-                            bytes_per_sample,
-                            post_frame,
-                            self.physical_channel_map,
-                        )
-                        self.logger.debug(
-                            "First chunk written for %s with channel remap applied "
-                            "(pulse backend, %d channels)",
-                            self.device_name,
-                            self.pa_channels,
-                        )
+                data = self._remap_channels(
+                    data, self.bit_depth // 8, log_first=not first_chunk_written
+                )
                 write_future = self.mass.loop.run_in_executor(None, stream.write, data)
                 await write_future
                 write_future = None
@@ -817,31 +827,7 @@ class SendspinLocalAudioBridge:
                 if not await self._wait_for_chunk_time(timestamp_us):
                     continue  # late chunk dropped
                 data = self._apply_software_volume(data)
-                if self._channel_remap_index is not None:
-                    if not first_chunk_written:
-                        frame_size = self.pa_channels * 2
-                        sample_frame = _find_first_nonsilent_frame(data, frame_size, "<%dh" % self.pa_channels)
-                        self.logger.debug(
-                            "First chunk PRE-remap, first non-silent frame (%d channels, int16): %s",
-                            self.pa_channels,
-                            sample_frame,
-                        )
-                    data = remap_pcm_channels(data, self.pa_channels, 2, self._channel_remap_index)
-                    if not first_chunk_written:
-                        sample_frame = _find_first_nonsilent_frame(data, frame_size, "<%dh" % self.pa_channels)
-                        self.logger.debug(
-                            "First chunk POST-remap, first non-silent frame (%d channels, int16): %s "
-                            "(expected physical order %s)",
-                            self.pa_channels,
-                            sample_frame,
-                            self.physical_channel_map,
-                        )
-                        self.logger.debug(
-                            "First chunk written for %s with channel remap applied "
-                            "(ALSA/sounddevice backend, %d channels)",
-                            self.device_name,
-                            self.pa_channels,
-                        )
+                data = self._remap_channels(data, 2, log_first=not first_chunk_written)
                 first_chunk_written = True
                 try:
                     await self.mass.loop.run_in_executor(None, self._output_stream.write, data)
