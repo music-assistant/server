@@ -158,7 +158,6 @@ class FFMpeg(AsyncProcess):
         # values; output_stream_info is informational (useful for logging / future UI use).
         self.input_stream_info: FFMpegStreamInfo | None = None
         self.output_stream_info: FFMpegStreamInfo | None = None
-        self._input_stream_info_event: asyncio.Event = asyncio.Event()
         # Source duration in (whole) seconds as detected from the ffmpeg input log line,
         # or None if not yet parsed / not reported (e.g. live radio streams).
         self.parsed_duration: int | None = None
@@ -274,7 +273,6 @@ class FFMpeg(AsyncProcess):
                     self.input_stream_info = stream_info
                     self._log_stream_info("input", stream_info)
                     self._apply_input_stream_info(stream_info)
-                    self._input_stream_info_event.set()
             elif self._current_log_section == "output" and self.output_stream_info is None:
                 if stream_info := parse_ffmpeg_stream_info(line):
                     self.output_stream_info = stream_info
