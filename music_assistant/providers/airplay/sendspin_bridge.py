@@ -18,6 +18,7 @@ Sendspin PushStream → BridgePlayerRole.on_audio_chunk → AirPlay CLI process
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
@@ -62,6 +63,12 @@ if TYPE_CHECKING:
 # seconds of audio ahead of real time -- comfortably above the binary's own
 # prefill need (~wait_start + its ~2 s buffer) yet far below a whole-track backlog.
 MAX_DEVICE_BUFFER_SECONDS: float = 8.0
+
+# How long to keep a connected CLI alive after a sendspin stream ends, waiting
+# for the next stream (seek/next) to reuse it warm. A real stop tears down after
+# this window. Comfortably longer than a sendspin stream restart, short enough
+# that a genuine stop stops the device promptly.
+BRIDGE_WARM_GRACE_SECONDS: float = 4.0
 
 
 def get_bridge_client_id(airplay_player: AirPlayPlayer) -> str | None:
@@ -174,10 +181,18 @@ class SendspinAirPlayBridge:
         # Used to pace writes so the device buffer stays bounded (see _cli_writer).
         self._start_unix_ms: int = 0
         self._write_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
+        # Raw-fd sink for a warm generation's fifo (None = write to the CLI's
+        # stdin via self._airplay_stream.write_audio, i.e. generation 0).
+        self._sink_fd: int | None = None
         self._writer_task: asyncio.Task[None] | None = None
         self._airplay_stream_start_task: asyncio.Task[None] | None = None
         self._airplay_stream_ready = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None
+        # Timer id for the deferred teardown on stream end. A seek/next ends the
+        # sendspin stream and immediately starts a new one; deferring the CLI
+        # teardown across that gap lets the next stream reuse the connected
+        # binary as a warm generation instead of a cold reconnect.
+        self._teardown_timer_id = f"bridge_teardown_{airplay_player.player_id}"
         self._lock = asyncio.Lock()
 
     @property
@@ -265,6 +280,7 @@ class SendspinAirPlayBridge:
 
     async def stop(self) -> None:
         """Stop and unregister the Sendspin bridge."""
+        self.mass.cancel_timer(self._teardown_timer_id)
         async with self._lock:
             await self._stop_streaming()
             if self._sendspin_client and self._bridge_client_id:
@@ -289,6 +305,22 @@ class SendspinAirPlayBridge:
             min_buffer_ms=0,
         )
 
+    def _stream_is_warm_eligible(self) -> bool:
+        """
+        Return whether the current AirPlayStream can absorb a new stream as a generation.
+
+        A kept stream must still be running, already connected, and on an
+        AirPlay 2 route -- RAOP and a not-yet-connected AirPlay 2 stream have
+        no persistent-generation support, so those always pay a cold restart.
+        """
+        stream = self._airplay_stream
+        return (
+            stream is not None
+            and stream.running
+            and stream.connected
+            and stream.active_route.startswith("AirPlay 2")
+        )
+
     def _on_stream_start(self, request: ExternalStreamStartRequest) -> None:
         """
         Handle stream start request from Sendspin server.
@@ -308,19 +340,27 @@ class SendspinAirPlayBridge:
                 self.airplay_player.display_name,
             )
             return
+        # A new stream arrived within the grace window: cancel the deferred
+        # teardown so the previous stream's still-connected CLI survives to be
+        # reused as a warm generation instead of cold-restarting.
+        self.mass.cancel_timer(self._teardown_timer_id)
         # Bridge outlives config changes, so re-read the current timing values.
         self._refresh_bridge_timing()
         # Capture and detach old stream resources before scheduling their cleanup.
         # This prevents the async cleanup from accidentally destroying the new
-        # stream's resources, which reuse the same instance variables.
-        old_stream = self._airplay_stream
+        # stream's resources, which reuse the same instance variables. A warm-
+        # eligible stream is kept out of the snapshot entirely so it survives
+        # into the new stream instead of being torn down.
+        keep_stream = self._stream_is_warm_eligible()
+        old_stream = None if keep_stream else self._airplay_stream
         old_writer_task = self._writer_task
         old_stream_start_task = self._airplay_stream_start_task
 
-        self._airplay_stream = None
+        if not keep_stream:
+            self._airplay_stream = None
+            self.airplay_player.stream = None
         self._writer_task = None
         self._airplay_stream_start_task = None
-        self.airplay_player.stream = None
         self._airplay_stream_ready.clear()
 
         if old_stream or old_writer_task or old_stream_start_task:
@@ -344,15 +384,19 @@ class SendspinAirPlayBridge:
         Called via the BridgePlayerRole.on_stream_start callback when the
         PushStream begins delivering audio chunks.
         """
-        # The stream might not yet be cleaned up completely (on rapid skips for example)
-        old_stream = self._airplay_stream
+        # The stream might not yet be cleaned up completely (on rapid skips for example).
+        # A warm-eligible stream is kept out of the snapshot so it survives into the
+        # new stream instead of being torn down (see _stream_is_warm_eligible).
+        keep_stream = self._stream_is_warm_eligible()
+        old_stream = None if keep_stream else self._airplay_stream
         old_writer_task = self._writer_task
         old_stream_start_task = self._airplay_stream_start_task
 
-        self._airplay_stream = None
+        if not keep_stream:
+            self._airplay_stream = None
+            self.airplay_player.stream = None
         self._writer_task = None
         self._airplay_stream_start_task = None
-        self.airplay_player.stream = None
 
         if old_stream or old_writer_task or old_stream_start_task:
             prev_cleanup = self._cleanup_task
@@ -415,6 +459,20 @@ class SendspinAirPlayBridge:
             # Publish the audible anchor so the writer can pace against it.
             self._start_unix_ms = start_unix_ms
 
+            # A kept, still-connected AirPlay 2 stream (see _stream_is_warm_eligible,
+            # checked by the stream-start callbacks) absorbs the new media as a warm
+            # generation instead of paying a cold reconnect.
+            kept_stream = self._airplay_stream
+            if kept_stream is not None:
+                if await self._start_warm_generation(kept_stream, start_unix_ms):
+                    return
+                # Warm handover failed - tear down the kept stream and fall through
+                # to the cold path below, which spawns a fresh process.
+                with suppress(Exception):
+                    await kept_stream.stop(force=True)
+                self._airplay_stream = None
+                self.airplay_player.stream = None
+
             # On a rapid skip, _on_bridge_stream_start snapshots self._airplay_stream
             # for cleanup. If we assigned it earlier, the new stream would be missed
             # and leaked. Only publish once start() succeeds and this task is current.
@@ -450,6 +508,84 @@ class SendspinAirPlayBridge:
             self._airplay_stream_ready.set()
             self._schedule_cleanup()
 
+    async def _start_warm_generation(self, stream: AirPlayStream, start_unix_ms: int) -> bool:
+        """
+        Stage and commit a new media generation on a kept, still-connected stream.
+
+        The new generation is staged on a fresh fifo while ``stream`` keeps playing
+        its current one, then committed with a single START once primed. Returns
+        True once the switch is committed. Any failure (staging, a prime timeout,
+        or this task being superseded before commit) reverts the writer to the
+        stdin sink and returns False so the caller falls back to a cold restart of
+        the kept stream; the fifo node is never left behind.
+
+        :param stream: The kept AirPlayStream to stage the new generation on.
+        :param start_unix_ms: The audible-start instant to commit the generation at.
+        """
+        gen = stream.next_generation()
+        fifo = f"/tmp/ma-bridge-{self.airplay_player.player_id}-{gen}.pcm"  # noqa: S108
+        opened = False
+        try:
+            with suppress(FileNotFoundError):
+                await asyncio.to_thread(os.unlink, fifo)
+            await asyncio.to_thread(os.mkfifo, fifo)
+            await stream.prepare_generation(gen, fifo, 0)
+            fifo_fd = await asyncio.wait_for(
+                asyncio.to_thread(os.open, fifo, os.O_WRONLY), timeout=5
+            )
+            opened = True
+            # Both ends now hold the fifo open; drop the directory entry right away
+            # so no stale pipe nodes accumulate even if a later step fails.
+            with suppress(OSError):
+                await asyncio.to_thread(os.unlink, fifo)
+            await self._set_sink_fd(fifo_fd)
+            # Unblocks the writer task, which was waiting on this event; it can
+            # now prefill the pipe while the generation primes.
+            self._airplay_stream_ready.set()
+            if not await stream.wait_generation_primed(gen):
+                self.logger.warning(
+                    "Generation prime timed out for %s, falling back to a cold restart",
+                    self.airplay_player.display_name,
+                )
+                with suppress(Exception):
+                    await self._set_sink_fd(None)
+                return False
+            if asyncio.current_task() is not self._airplay_stream_start_task:
+                # A newer stream start already owns the bridge; abandon this
+                # generation. Do NOT close fifo_fd here: it was published as
+                # self._sink_fd above, so it is either still the writer's active
+                # sink (closing it would break the writer with EBADF) or already
+                # closed/replaced by the newer task's _set_sink_fd. The sink fd's
+                # lifecycle is owned by _set_sink_fd / teardown, not this task.
+                # The binary safely collapses a superseded staged generation on
+                # its next PREPARE.
+                return False
+            await stream.start_generation(gen, 0, start_unix_ms)
+            self.logger.info(
+                "Bridge warm handover for %s (generation=%d, start_unix_ms=%d)",
+                self.airplay_player.display_name,
+                gen,
+                start_unix_ms,
+            )
+        except Exception as err:
+            self.logger.warning(
+                "Warm handover failed for %s (%r), falling back to a cold restart",
+                self.airplay_player.display_name,
+                err,
+            )
+            with suppress(Exception):
+                await self._set_sink_fd(None)
+            return False
+        finally:
+            if not opened:
+                # Unblock a writer-open still pending on a failed pipe by briefly
+                # opening the read side, then remove the pipe node either way.
+                with suppress(OSError):
+                    os.close(os.open(fifo, os.O_RDONLY | os.O_NONBLOCK))
+                with suppress(OSError):
+                    await asyncio.to_thread(os.unlink, fifo)
+        return True
+
     async def _wait_for_airplay_connection(self) -> None:
         """Wait for AirPlay connection in the background and log the result."""
         if not self._airplay_stream:
@@ -476,16 +612,20 @@ class SendspinAirPlayBridge:
 
     def _on_bridge_stream_end(self) -> None:
         """
-        Stop the AirPlay protocol immediately when the stream ends.
+        Handle the sendspin stream ending: defer the CLI teardown briefly.
 
-        Rather than just sending EOF (which lets the CLI play out its buffer),
-        we schedule a full cleanup that kills the CLI process immediately.
+        A seek or next-track ends the stream and immediately starts a new one.
+        Tearing the CLI down here would force every such switch through a cold
+        reconnect; instead we keep the connected binary alive for a short grace
+        window so the next stream can reuse it as a warm generation. If no new
+        stream arrives within the window (a real stop), the deferred cleanup
+        kills the CLI so AirPlay stops instead of draining its buffer.
         """
         self._is_streaming = False
         self._next_expected_timestamp_us = None
-        # Schedule full streaming cleanup - this kills the CLI process immediately
-        # so AirPlay stops playing instead of draining its 30s buffer.
-        self._schedule_cleanup()
+        self.mass.call_later(
+            BRIDGE_WARM_GRACE_SECONDS, self._schedule_cleanup, task_id=self._teardown_timer_id
+        )
 
     def _schedule_cleanup(self) -> None:
         """
@@ -642,14 +782,46 @@ class SendspinAirPlayBridge:
         self._write_queue.put_nowait(chunk.data)
         return True
 
+    async def _set_sink_fd(self, fd: int | None) -> None:
+        """
+        Swap the writer's raw-fd sink, closing whatever fd it replaces.
+
+        :param fd: The new warm-generation fifo fd to write to, or None to
+            switch the writer back to the CLI's stdin (cold/generation 0).
+        """
+        old_fd = self._sink_fd
+        self._sink_fd = fd
+        if old_fd is not None:
+            with suppress(OSError):
+                await asyncio.to_thread(os.close, old_fd)
+
+    async def _write_to_sink(self, fd: int, data: bytes) -> None:
+        """
+        Write raw audio bytes to a warm-generation fifo fd, off the event loop.
+
+        :param fd: The fifo fd to write to (a snapshot of self._sink_fd).
+        :param data: Raw audio bytes to write.
+        """
+
+        def _write() -> None:
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view) :]
+
+        await asyncio.to_thread(_write)
+
     async def _cli_writer(self) -> None:
         """
-        Write queued audio data to the CLI process stdin.
+        Write queued audio data to the CLI's stdin, or a warm generation's fifo.
 
         Waits for any pending cleanup and then for the new protocol to be
         ready before writing. Runs as a single task so writes are serialised
         and ordered. A None sentinel signals end-of-stream: write EOF to
         stdin and exit.
+
+        Writes go to self._sink_fd (a warm generation's fifo) when set, else
+        to the CLI's stdin via self._airplay_stream.write_audio -- see
+        _start_warm_generation, which is the only place that sets the sink.
 
         Writes are paced against the audible anchor so the device is never
         buffered more than ``MAX_DEVICE_BUFFER_SECONDS`` ahead of real time.
@@ -698,12 +870,18 @@ class SendspinAirPlayBridge:
                     if ahead > MAX_DEVICE_BUFFER_SECONDS:
                         await asyncio.sleep(ahead - MAX_DEVICE_BUFFER_SECONDS)
                 with suppress(Exception):
-                    await self._airplay_stream.write_audio(data)
+                    if (sink_fd := self._sink_fd) is not None:
+                        await self._write_to_sink(sink_fd, data)
+                    else:
+                        await self._airplay_stream.write_audio(data)
                     bytes_written += len(data)
         finally:
             # Only clear if this writer is still the active one.
             if self._writer_task is asyncio.current_task():
                 self._writer_task = None
+            # Release whatever fifo fd this writer was using, if any.
+            with suppress(Exception):
+                await self._set_sink_fd(None)
 
     async def _stop_streaming(self) -> None:
         """Stop streaming (internal, called with lock held)."""
@@ -726,6 +904,10 @@ class SendspinAirPlayBridge:
             await self._airplay_stream.stop(force=True)
             self._airplay_stream = None
             self.airplay_player.stream = None
+        # Belt-and-suspenders: the writer task closes its own sink fd on exit,
+        # but guard against a leak if it never ran.
+        with suppress(Exception):
+            await self._set_sink_fd(None)
 
 
 class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinAirPlayBridge]):

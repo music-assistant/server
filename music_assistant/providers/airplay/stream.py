@@ -89,6 +89,18 @@ class AirPlayStream:
         self._artwork_render_generations: set[int] = set()
         self._last_progress_sent: int = -1
         self._elapsed_time_offset: float | None = None
+        # Persistent generations: the binary keeps one connection alive and
+        # plays numbered media generations over it (seek/next = new generation
+        # on a fresh pipe instead of a reconnect).
+        # _generation is the latest ALLOCATED id (bumped at PREPARE, while the
+        # previous generation is still playing); _active_generation is the one
+        # actually playing (only advances at START). Elapsed/EOF handling keys
+        # off the active id so a staged generation never skews them mid-handover.
+        self._generation = 0
+        self._active_generation = 0
+        self._generation_position: float = 0.0
+        self._gen_ready: dict[int, asyncio.Event] = {}
+        self._gen_primed: dict[int, asyncio.Event] = {}
         self._stdout_reader_task: asyncio.Task[None] | None = None
         # Device latency info reported by the binary after connect (0 = unreported)
         self.latency_lead_ms: int = 0
@@ -234,6 +246,63 @@ class AirPlayStream:
         if self._stopped or self._stopping:
             return
         await self._write_cli_command(command)
+
+    def next_generation(self) -> int:
+        """Allocate the next media generation number and its status events."""
+        self._generation += 1
+        self._gen_ready[self._generation] = asyncio.Event()
+        self._gen_primed[self._generation] = asyncio.Event()
+        return self._generation
+
+    async def prepare_generation(self, generation: int, audio_path: str, position_ms: int) -> None:
+        """
+        Stage the next media generation on the running binary.
+
+        The binary opens the given FIFO and prefills from it while the current
+        generation keeps playing; `primed` is reported once enough audio is
+        buffered for an underrun-free start.
+        """
+        await self._write_cli_command(
+            f"GENERATION={generation}\nAUDIO={audio_path}\n"
+            f"POSITION_MS={position_ms}\nACTION=PREPARE"
+        )
+
+    async def wait_generation_primed(self, generation: int, timeout: float = 8.0) -> bool:
+        """Wait until the staged generation has buffered enough to start."""
+        event = self._gen_primed.get(generation)
+        if event is None:
+            return False
+        try:
+            await asyncio.wait_for(event.wait(), timeout)
+        except TimeoutError:
+            return False
+        return True
+
+    async def start_generation(
+        self, generation: int, position_ms: int, start_unix_ms: int = 0
+    ) -> None:
+        """
+        Commit the staged generation: warm-flush and start it.
+
+        start_unix_ms 0 means as soon as possible (the binary clamps to its
+        minimum warm lead); a group start passes the same instant to every
+        primed member.
+        """
+        self._generation_position = position_ms / 1000
+        self._active_generation = generation
+        # Stamp the player's elapsed onto the new generation's base right away:
+        # until the binary's first status arrives, interpolation would otherwise
+        # keep extending the SUPERSEDED generation's clock, which briefly maps
+        # onto the new stream log as a bogus position.
+        self.player.set_state_from_stream(elapsed_time=self._generation_position, stream=self)
+        await self._write_cli_command(
+            f"GENERATION={generation}\nSTART_UNIX_MS={start_unix_ms}\nACTION=START"
+        )
+        # drop event bookkeeping for superseded generations
+        for gen in list(self._gen_ready):
+            if gen < generation:
+                self._gen_ready.pop(gen, None)
+                self._gen_primed.pop(gen, None)
 
     async def send_metadata(
         self,
@@ -594,25 +663,9 @@ class AirPlayStream:
         async for line in self._cli_proc.iter_stderr():
             if self._stopped:
                 break
-
-            if "[STATUS] connected" in line:
-                self._connected.set()
-            elif "[STATUS] playing elapsed_ms=" in line:
-                try:
-                    millis = int(line.split("elapsed_ms=")[1])
-                except ValueError, IndexError:
-                    pass
-                else:
-                    self._update_elapsed(millis / 1000)
-            elif "[STATUS] paused" in line:
-                player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
-            elif "[STATUS] eof" in line:
-                logger.debug("End of stream reached")
+            if self._handle_status_line(line):
                 expected_eof = True
                 break
-            elif "[ERROR]" in line:
-                logger.error("cliairplay: %s", line.strip())
-
             logger.log(VERBOSE_LOG_LEVEL, line)
             await asyncio.sleep(0)
 
@@ -637,11 +690,63 @@ class AirPlayStream:
             finally:
                 await self.commands_pipe.remove()
 
+    def _handle_status_line(self, line: str) -> bool:
+        """Dispatch one cliairplay status line; True ends the stderr loop."""
+        player = self.player
+        if "[STATUS] connected" in line:
+            self._connected.set()
+        elif "[STATUS] playing elapsed_ms=" in line:
+            try:
+                millis = int(line.split("elapsed_ms=")[1])
+            except ValueError, IndexError:
+                pass
+            else:
+                self._update_elapsed(millis / 1000)
+        elif "[STATUS] paused" in line:
+            player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
+        elif "[STATUS] ready generation=" in line:
+            if (event := self._gen_ready.get(self._parse_generation(line))) is not None:
+                event.set()
+        elif "[STATUS] primed generation=" in line:
+            if (event := self._gen_primed.get(self._parse_generation(line))) is not None:
+                event.set()
+        elif "[STATUS] input_eof generation=" in line:
+            player.logger.debug("cliairplay: %s", line.strip())
+        elif "[STATUS] eof generation=" in line:
+            # A generation's input finished. Only the ACTIVE generation
+            # ending matters; a retired generation's eof is just noise.
+            # The plain "[STATUS] eof" line that follows drives the
+            # end-of-stream path for the final generation.
+            if self._parse_generation(line) != self._active_generation:
+                player.logger.debug("stale generation eof ignored: %s", line.strip())
+        elif "[STATUS] idle_timeout" in line:
+            # a parked (paused) session outlived the binary's idle cap;
+            # treat it as a normal end of stream
+            player.logger.debug("cliairplay idle timeout reached")
+            return True
+        elif "[STATUS] eof" in line:
+            player.logger.debug("End of stream reached")
+            return True
+        elif "[ERROR]" in line:
+            player.logger.error("cliairplay: %s", line.strip())
+        return False
+
+    @staticmethod
+    def _parse_generation(line: str) -> int:
+        """Extract the generation number from a generation-tagged status line."""
+        try:
+            return int(line.split("generation=")[1].split(maxsplit=1)[0])
+        except ValueError, IndexError:
+            return -1
+
     def _update_elapsed(self, elapsed_time: float) -> None:
         """Update elapsed time with session offset compensation."""
-        if self._elapsed_time_offset is None and self.session:
+        if self._active_generation > 0:
+            # elapsed restarts per generation; report against its media base
+            elapsed_time += self._generation_position
+        elif self._elapsed_time_offset is None and self.session:
             self._elapsed_time_offset = max(0, time.time() - self.session.start_time - elapsed_time)
-        if self._elapsed_time_offset:
+        if self._active_generation == 0 and self._elapsed_time_offset:
             elapsed_time += self._elapsed_time_offset
         # The binary only emits this status while actually playing, so it is
         # also the signal that drives the player into the PLAYING state.

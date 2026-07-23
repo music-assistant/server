@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from collections.abc import AsyncGenerator
 from contextlib import suppress
@@ -108,6 +109,144 @@ class AirPlayStreamSession:
             # playback failed to start, cleanup
             await self.stop()
             raise PlayerCommandFailed("Playback failed to start") from err
+
+    def can_replace(self, sync_clients: list[AirPlayPlayer], pcm_format: AudioFormat) -> bool:
+        """
+        Return whether this live session can absorb a new play_media warm.
+
+        A warm replacement needs the same member set, the same session PCM
+        format and running AirPlay 2 streams on every member; anything else
+        takes the cold path.
+        """
+        if {p.player_id for p in sync_clients} != {p.player_id for p in self.sync_clients}:
+            return False
+        if (
+            pcm_format.sample_rate != self.pcm_format.sample_rate
+            or pcm_format.bit_depth != self.pcm_format.bit_depth
+        ):
+            return False
+        return all(
+            p.stream is not None and p.stream.running and p.protocol == StreamingProtocol.AIRPLAY2
+            for p in self.sync_clients
+        )
+
+    async def replace(self, audio_source: AsyncGenerator[bytes], media: PlayerMedia) -> bool:
+        """
+        Warm-replace the playing media with a new source (seek/next-track).
+
+        Each member stages the new source as its next generation on a fresh
+        pipe while the old audio keeps playing; once every member reports
+        primed, one shared START commits the switch (warm flush + re-anchor)
+        a few hundred milliseconds later. Returns False when anything fails,
+        so the caller can fall back to the cold path.
+        """
+        position_ms = int((media.elapsed_time or 0) * 1000)
+        generations: dict[str, int] = {}
+        fifos: dict[str, str] = {}
+        try:
+            # stage the new generation on every member (old audio unaffected)
+            for player in self.sync_clients:
+                stream = player.stream
+                assert stream
+                gen = stream.next_generation()
+                fifo = f"/tmp/ma-gen-{player.player_id}-{gen}.pcm"  # noqa: S108
+                with suppress(FileNotFoundError):
+                    await asyncio.to_thread(os.unlink, fifo)
+                await asyncio.to_thread(os.mkfifo, fifo)
+                generations[player.player_id] = gen
+                fifos[player.player_id] = fifo
+                await stream.prepare_generation(gen, fifo, position_ms)
+
+            # swap the source: retire the old flow + per-player DSP ffmpegs,
+            # spawn fresh ones writing into the generation pipes
+            if self._audio_source_task and not self._audio_source_task.done():
+                self._audio_source_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await self._audio_source_task
+            for player in self.sync_clients:
+                await self._start_generation_ffmpeg(player, fifos[player.player_id], media)
+            self.media = media
+            # The stream position counter and the late-join prime buffer both
+            # describe the OLD generation's timeline; restart them before the
+            # new source starts pumping.
+            self.seconds_streamed = 0
+            self._pcm_buffer.clear()
+            self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
+
+            # commit once every member is primed: same instant for the group,
+            # ASAP (binary-clamped warm lead) for a standalone player
+            primed = await asyncio.gather(
+                *[
+                    p.stream.wait_generation_primed(generations[p.player_id])
+                    for p in self.sync_clients
+                    if p.stream
+                ]
+            )
+            if not all(primed):
+                raise PlayerCommandFailed("generation prime timeout")
+            # Commit at an explicit shared instant: a lone player gets a hair
+            # above the binary's minimum warm lead, a group extra headroom.
+            warm_lead_ms = 400 if len(self.sync_clients) == 1 else 750
+            start_unix_ms = int(time.time() * 1000) + warm_lead_ms
+            for player in self.sync_clients:
+                member_start = start_unix_ms
+                sync_adjust = player.config.get_value(CONF_SYNC_ADJUST, 0)
+                if isinstance(sync_adjust, int) and sync_adjust:
+                    member_start += sync_adjust
+                stream = player.stream
+                assert stream
+                await stream.start_generation(
+                    generations[player.player_id], position_ms, member_start
+                )
+            # Re-anchor the session on the new generation's timeline so late
+            # joiners map buffered samples to the correct wall-clock instant
+            # (the old anchor died with the warm flush).
+            self.start_unix_ms = start_unix_ms
+            self.start_time = start_unix_ms / 1000
+        except Exception as err:
+            self.prov.logger.warning(
+                "Warm replacement failed (%r); falling back to a cold restart", err
+            )
+            return False
+        finally:
+            for fifo in fifos.values():
+                # Unblock any writer-open still pending on a failed pipe by
+                # briefly opening the read side, then remove the pipe node.
+                with suppress(OSError):
+                    os.close(os.open(fifo, os.O_RDONLY | os.O_NONBLOCK))
+                with suppress(OSError):
+                    await asyncio.to_thread(os.unlink, fifo)
+        return True
+
+    async def standby(self) -> bool:
+        """
+        Park the session: stall every member but keep the connections alive.
+
+        The next play_media (resume or seek) commits a new generation over the
+        live connections — the same coordinated warm restart as seek/next.
+        Returns False when any member lacks a running AirPlay 2 stream (RAOP
+        cannot be parked), so the caller can fall back to a full stop.
+        """
+        if not all(
+            p.stream is not None and p.stream.running and p.protocol == StreamingProtocol.AIRPLAY2
+            for p in self.sync_clients
+        ):
+            return False
+        if self._audio_source_task and not self._audio_source_task.done():
+            self._audio_source_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._audio_source_task
+        for player in self.sync_clients:
+            if ffmpeg := self._player_ffmpeg.pop(player.player_id, None):
+                await ffmpeg.kill()
+            stream = player.stream
+            assert stream
+            await stream.send_cli_command("ACTION=STANDBY")
+            player.set_state_from_stream(state=PlaybackState.PAUSED, stream=stream)
+        # a parked session has no live timeline; the resume re-anchors it
+        self.seconds_streamed = 0
+        self._pcm_buffer.clear()
+        return True
 
     async def stop(self) -> None:
         """Stop playback and cleanup."""
@@ -542,3 +681,48 @@ class AirPlayStreamSession:
         )
         await ffmpeg.start()
         self._player_ffmpeg[airplay_player.player_id] = ffmpeg
+
+    async def _start_generation_ffmpeg(
+        self, player: AirPlayPlayer, fifo: str, media: PlayerMedia
+    ) -> None:
+        """
+        Start the per-player DSP ffmpeg for a staged generation.
+
+        Retires the player's previous ffmpeg and spawns a fresh one writing
+        into the generation's pipe. The pipe's write side is opened here and
+        handed to ffmpeg as an inherited descriptor (like the stdin case in
+        ``_start_client``) because ffmpeg refuses to open an existing path.
+        The open pairs with the read side the binary opened at PREPARE.
+        """
+        if ffmpeg := self._player_ffmpeg.pop(player.player_id, None):
+            # Kill, not close: a graceful close waits for the old ffmpeg to
+            # drain its buffered audio into the binary at playback speed
+            # (seconds), and that audio is superseded anyway. The binary keeps
+            # playing the old generation from its own ring until START lands.
+            await ffmpeg.kill()
+        stream = player.stream
+        assert stream
+        handoff_format = stream.pcm_format
+        output_plan = self.mass.streams.audio.get_player_output_plan(
+            player.player_id,
+            input_format=self.pcm_format,
+            output_format=get_final_output_format(handoff_format, player),
+            handoff_format=handoff_format,
+            queue_id=media.source_id,
+            session_id=get_media_session_id(media),
+        )
+        fifo_fd = await asyncio.wait_for(asyncio.to_thread(os.open, fifo, os.O_WRONLY), timeout=5)
+        try:
+            ffmpeg = FFMpeg(
+                audio_input="-",
+                input_format=self.pcm_format,
+                output_format=handoff_format,
+                filter_params=output_plan.filter_params,
+                audio_output=fifo_fd,
+            )
+            await ffmpeg.start()
+        finally:
+            # the ffmpeg child inherited the descriptor; drop our copy so the
+            # pipe sees EOF when ffmpeg exits
+            os.close(fifo_fd)
+        self._player_ffmpeg[player.player_id] = ffmpeg
