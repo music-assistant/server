@@ -192,6 +192,73 @@ class OpenSonicProvider(MusicProvider):
         """
         return False
 
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """
+        Get this provider's available recommendation rows, without items.
+
+        These can be favorited items, recently added albums, newest podcast episodes,
+        and most played albums.  What is included is configured with the provider.
+        """
+        recos: list[RecommendationFolder] = []
+        if self._enable_podcasts:
+            recos.append(
+                RecommendationFolder(
+                    item_id="subsonic_newest_podcasts",
+                    provider=self.instance_id,
+                    name="Newest Podcast Episodes",
+                    translation_key="episodes_recently_added",
+                )
+            )
+        if self._show_faves:
+            recos.append(
+                RecommendationFolder(
+                    item_id="subsonic_starred_albums",
+                    provider=self.instance_id,
+                    name="Starred Items",
+                    translation_key="starred_items",
+                )
+            )
+        if self._show_new:
+            recos.append(
+                RecommendationFolder(
+                    item_id="subsonic_new_albums",
+                    provider=self.instance_id,
+                    name="New Albums",
+                    translation_key="recently_added_albums",
+                )
+            )
+        if self._show_played:
+            recos.append(
+                RecommendationFolder(
+                    item_id="subsonic_most_played",
+                    provider=self.instance_id,
+                    name="Most Played Albums",
+                    translation_key="most_played_albums",
+                )
+            )
+        return recos
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        folder: RecommendationFolder | None = None
+        if item_id == "subsonic_newest_podcasts" and self._enable_podcasts:
+            folder = await self._podcast_recommendations()
+        elif item_id == "subsonic_starred_albums" and self._show_faves:
+            folder = await self._favorites_recommendation()
+        elif item_id == "subsonic_new_albums" and self._show_new:
+            folder = await self._new_recommendations()
+        elif item_id == "subsonic_most_played" and self._show_played:
+            folder = await self._played_recommendations()
+        if folder is None:
+            return UniqueList()
+        return folder.items
+
     async def _get_podcast_episode(self, eid: str) -> SonicEpisode:
         chan_id, ep_id = eid.split(EP_CHAN_SEP)
         chan = await self.conn.get_podcasts(inc_episodes=True, pid=chan_id)
@@ -898,73 +965,6 @@ class OpenSonicProvider(MusicProvider):
         for sonic_album in albums:
             recent.items.append(parse_album(self.logger, self.instance_id, sonic_album))
         return recent
-
-    async def get_recommendations(self) -> list[RecommendationFolder]:
-        """
-        Get this provider's available recommendation rows, without items.
-
-        These can be favorited items, recently added albums, newest podcast episodes,
-        and most played albums.  What is included is configured with the provider.
-        """
-        recos: list[RecommendationFolder] = []
-        if self._enable_podcasts:
-            recos.append(
-                RecommendationFolder(
-                    item_id="subsonic_newest_podcasts",
-                    provider=self.instance_id,
-                    name="Newest Podcast Episodes",
-                    translation_key="episodes_recently_added",
-                )
-            )
-        if self._show_faves:
-            recos.append(
-                RecommendationFolder(
-                    item_id="subsonic_starred_albums",
-                    provider=self.instance_id,
-                    name="Starred Items",
-                    translation_key="starred_items",
-                )
-            )
-        if self._show_new:
-            recos.append(
-                RecommendationFolder(
-                    item_id="subsonic_new_albums",
-                    provider=self.instance_id,
-                    name="New Albums",
-                    translation_key="recently_added_albums",
-                )
-            )
-        if self._show_played:
-            recos.append(
-                RecommendationFolder(
-                    item_id="subsonic_most_played",
-                    provider=self.instance_id,
-                    name="Most Played Albums",
-                    translation_key="most_played_albums",
-                )
-            )
-        return recos
-
-    async def get_recommendation_items(
-        self, item_id: str
-    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
-        """
-        Get the items for a single recommendation row.
-
-        :param item_id: The item_id of the row, as returned by get_recommendations.
-        """
-        folder: RecommendationFolder | None = None
-        if item_id == "subsonic_newest_podcasts" and self._enable_podcasts:
-            folder = await self._podcast_recommendations()
-        elif item_id == "subsonic_starred_albums" and self._show_faves:
-            folder = await self._favorites_recommendation()
-        elif item_id == "subsonic_new_albums" and self._show_new:
-            folder = await self._new_recommendations()
-        elif item_id == "subsonic_most_played" and self._show_played:
-            folder = await self._played_recommendations()
-        if folder is None:
-            return UniqueList()
-        return folder.items
 
     async def get_track_lyrics(self, track: SonicItem) -> tuple[str, bool] | None:
         """

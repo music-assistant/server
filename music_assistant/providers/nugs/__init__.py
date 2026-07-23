@@ -214,30 +214,6 @@ class NugsProvider(MusicProvider):
         await self._cache_tracks(result)
         return result
 
-    async def _cache_tracks(self, tracks: list[Track]) -> None:
-        """Cache individual tracks persistently for later lookup by get_track."""
-        for track in tracks:
-            await self.mass.cache.set(
-                f"nugs_track_{track.item_id}",
-                track.to_dict(),
-                expiration=3600 * 24 * 14,
-                provider=self.instance_id,
-                persistent=True,
-            )
-
-    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
-        """Return the content details for the given track when it will be streamed."""
-        stream_url = await self._get_stream_url(item_id)
-        return StreamDetails(
-            item_id=item_id,
-            provider=self.instance_id,
-            audio_format=AudioFormat(
-                content_type=ContentType.UNKNOWN,
-            ),
-            stream_type=StreamType.HTTP,
-            path=stream_url,
-        )
-
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """Get this provider's available recommendation rows, without items."""
         return [
@@ -276,33 +252,29 @@ class NugsProvider(MusicProvider):
             return UniqueList()
         return folder.items
 
-    @use_cache(3600 * 4, base_class=RecommendationFolder)  # Cache for 4 hours
-    async def _get_recommendation_folder(self, item_id: str) -> RecommendationFolder | None:
-        """
-        Fetch a single recommendation row, including its items.
+    async def _cache_tracks(self, tracks: list[Track]) -> None:
+        """Cache individual tracks persistently for later lookup by get_track."""
+        for track in tracks:
+            await self.mass.cache.set(
+                f"nugs_track_{track.item_id}",
+                track.to_dict(),
+                expiration=3600 * 24 * 14,
+                provider=self.instance_id,
+                persistent=True,
+            )
 
-        :param item_id: The item_id of the row (unknown ids yield None).
-        """
-        folder = next(
-            (row for row in await self.get_recommendations() if row.item_id == item_id), None
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+        """Return the content details for the given track when it will be streamed."""
+        stream_url = await self._get_stream_url(item_id)
+        return StreamDetails(
+            item_id=item_id,
+            provider=self.instance_id,
+            audio_format=AudioFormat(
+                content_type=ContentType.UNKNOWN,
+            ),
+            stream_type=StreamType.HTTP,
+            path=stream_url,
         )
-        if folder is None:
-            return None
-        albums: list[Album]
-        if item_id == "nugs_popular_shows":
-            popular_data = await self._get_data("catalog", "releases/popular", limit=20)
-            albums = []
-            for item in popular_data["items"]:
-                response = await self._get_data("catalog", f"shows/{item['id']}")
-                albums.append(self._parse_album(response["Response"]))
-        elif item_id == "nugs_recommended_shows":
-            recommended_data = await self._get_data("catalog", "me/releases/recommendations")
-            albums = [self._parse_album(item) for item in recommended_data["items"]]
-        else:  # nugs_recent_shows
-            recent_data = await self._get_data("catalog", "releases/recent", limit=50)
-            albums = [self._parse_album(item) for item in recent_data["items"]]
-        folder.items = UniqueList(albums)
-        return folder
 
     def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:
         """Parse nugs artist object to generic layout."""
@@ -600,3 +572,31 @@ class NugsProvider(MusicProvider):
                 break
             offset += limit
         return all_items
+
+    @use_cache(3600 * 4, base_class=RecommendationFolder)  # Cache for 4 hours
+    async def _get_recommendation_folder(self, item_id: str) -> RecommendationFolder | None:
+        """
+        Fetch a single recommendation row, including its items.
+
+        :param item_id: The item_id of the row (unknown ids yield None).
+        """
+        folder = next(
+            (row for row in await self.get_recommendations() if row.item_id == item_id), None
+        )
+        if folder is None:
+            return None
+        albums: list[Album]
+        if item_id == "nugs_popular_shows":
+            popular_data = await self._get_data("catalog", "releases/popular", limit=20)
+            albums = []
+            for item in popular_data["items"]:
+                response = await self._get_data("catalog", f"shows/{item['id']}")
+                albums.append(self._parse_album(response["Response"]))
+        elif item_id == "nugs_recommended_shows":
+            recommended_data = await self._get_data("catalog", "me/releases/recommendations")
+            albums = [self._parse_album(item) for item in recommended_data["items"]]
+        else:  # nugs_recent_shows
+            recent_data = await self._get_data("catalog", "releases/recent", limit=50)
+            albums = [self._parse_album(item) for item in recent_data["items"]]
+        folder.items = UniqueList(albums)
+        return folder

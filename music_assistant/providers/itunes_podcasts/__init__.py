@@ -182,6 +182,35 @@ class ITunesPodcastsProvider(MusicProvider):
 
         return result
 
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """
+        Get this provider's available recommendation rows, without items.
+
+        A single row with the top podcasts for the configured country.
+        """
+        return [
+            RecommendationFolder(
+                item_id=RECOMMENDATION_ROW_TOP_PODCASTS,
+                name="Trending Podcasts",
+                icon="mdi-trending-up",
+                translation_key="trending_podcasts",
+                provider=self.instance_id,
+            )
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id != RECOMMENDATION_ROW_TOP_PODCASTS:
+            return UniqueList()
+        search_results = await self._cache_get_top_podcasts()
+        return UniqueList(self._get_podcast_list(search_results))
+
     @throttle_with_retries
     async def _perform_search(self, url: str, params: dict[str, str | int]) -> list[Podcast]:
         response = await self.mass.http_session.get(url, params=params)
@@ -336,35 +365,6 @@ class ITunesPodcastsProvider(MusicProvider):
                 )
                 return mass_episode
         raise MediaNotFoundError("Episode not found")
-
-    async def get_recommendations(self) -> list[RecommendationFolder]:
-        """
-        Get this provider's available recommendation rows, without items.
-
-        A single row with the top podcasts for the configured country.
-        """
-        return [
-            RecommendationFolder(
-                item_id=RECOMMENDATION_ROW_TOP_PODCASTS,
-                name="Trending Podcasts",
-                icon="mdi-trending-up",
-                translation_key="trending_podcasts",
-                provider=self.instance_id,
-            )
-        ]
-
-    async def get_recommendation_items(
-        self, item_id: str
-    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
-        """
-        Get the items for a single recommendation row.
-
-        :param item_id: The item_id of the row, as returned by get_recommendations.
-        """
-        if item_id != RECOMMENDATION_ROW_TOP_PODCASTS:
-            return UniqueList()
-        search_results = await self._cache_get_top_podcasts()
-        return UniqueList(self._get_podcast_list(search_results))
 
     async def _get_episode_stream_url(self, podcast_id: str, guid_or_stream_url: str) -> str | None:
         podcast = await self._cache_get_podcast(podcast_id)
