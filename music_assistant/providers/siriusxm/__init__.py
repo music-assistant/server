@@ -312,6 +312,10 @@ class SiriusXMProvider(MusicProvider):
                 image_url = next(
                     (i.url for i in channel.images if i.width == 300 and i.height == 300), None
                 )
+            if image_url and image_url.startswith("http://"):
+                # SiriusXM returns http image urls, upgrade to https to prevent
+                # mixed content blocking when the UI is served over https
+                image_url = "https://" + image_url.removeprefix("http://")
             self._current_stream_details.stream_metadata = StreamMetadata(
                 title=title,
                 artist=artist,
