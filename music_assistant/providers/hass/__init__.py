@@ -13,7 +13,7 @@ import asyncio
 import logging
 import os
 from functools import partial
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 import shortuuid
 from aiohttp import ClientError
@@ -47,6 +47,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.json import SerializableType
+from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.util import try_parse_int
 from music_assistant.models.plugin import PluginProvider
 
@@ -81,6 +82,15 @@ STATE_FETCH_CONCURRENCY = 8
 CONTROL_DOMAINS = ("media_player", "switch", "input_boolean", "number", "input_number")
 # Home Assistant entity domains that back the TTS and AI Task features.
 FEATURE_DOMAINS = ("tts", "ai_task")
+
+
+class DeviceMediaPlayerInfo(TypedDict):
+    """Home Assistant correlation info for a device that is natively connected elsewhere."""
+
+    # user-facing device name in HA (name_by_user or name)
+    name: str | None
+    # first enabled media_player entity of the device that supports announcements
+    announce_entity_id: str | None
 
 
 async def setup(
@@ -404,27 +414,84 @@ class HomeAssistantProvider(PluginProvider):
             "player_controls": len(self._player_controls) if self._player_controls else 0,
         }
 
-    async def get_device_by_connection(
+    async def get_media_player_device_infos(
         self,
-        connection_value: str,
-        connection_type: str = "mac",
-    ) -> Device | None:
+        mac_addresses: Collection[str],
+        platform: str,
+    ) -> dict[str, DeviceMediaPlayerInfo]:
         """
-        Get device details from Home Assistant by connection type and value.
+        Correlate devices (by MAC address) to their HA name and media_player entity.
 
-        :param connection_value: The connection value (e.g. MAC address).
-        :param connection_type: The connection type (default: 'mac').
+        Used for devices that are natively connected to Music Assistant but also
+        present in Home Assistant, to pick up their HA device name and their
+        (announcement-capable) media_player entity.
+
+        :param mac_addresses: Device MAC addresses to look up (case-insensitive).
+        :param platform: The HA integration domain the media_player entities must belong to.
+        :return: Correlation info keyed by lowercased MAC address; devices unknown
+            to Home Assistant are absent from the result.
         """
-        devices = await self.hass.get_device_registry()
-        for device in devices:
-            for connection in device.get("connections", []):
-                if (
-                    len(connection) == 2
-                    and connection[0] == connection_type
-                    and connection[1].lower() == connection_value.lower()
-                ):
-                    return device
-        return None
+        wanted_macs = {mac.lower() for mac in mac_addresses}
+        if not wanted_macs:
+            return {}
+        device_registry = await self.hass.get_device_registry()
+        device_by_mac: dict[str, Device] = {
+            connection[1].lower(): device
+            for device in device_registry
+            for connection in device.get("connections", [])
+            if len(connection) == 2
+            and connection[0] == "mac"
+            and connection[1].lower() in wanted_macs
+        }
+        if not device_by_mac:
+            return {}
+        media_players_by_device: dict[str, list[str]] = {}
+        for entry in await self.hass.get_entity_registry():
+            if (
+                entry["platform"] == platform
+                and entry["entity_id"].startswith("media_player.")
+                and entry.get("disabled_by") is None
+            ):
+                media_players_by_device.setdefault(entry["device_id"], []).append(
+                    entry["entity_id"]
+                )
+        candidates_by_mac = {
+            mac: media_players_by_device.get(device["id"], [])
+            for mac, device in device_by_mac.items()
+        }
+        states = {
+            state["entity_id"]: state
+            for state in await self.get_states(
+                entity_ids=[
+                    entity_id
+                    for entity_ids in candidates_by_mac.values()
+                    for entity_id in entity_ids
+                ]
+            )
+        }
+
+        def _supports_announce(entity_id: str) -> bool:
+            if (state := states.get(entity_id)) is None:
+                return False
+            supported_features = MediaPlayerEntityFeature(
+                state["attributes"].get("supported_features") or 0
+            )
+            return MediaPlayerEntityFeature.MEDIA_ANNOUNCE in supported_features
+
+        return {
+            mac: DeviceMediaPlayerInfo(
+                name=device["name_by_user"] or device["name"],
+                announce_entity_id=next(
+                    (
+                        entity_id
+                        for entity_id in candidates_by_mac[mac]
+                        if _supports_announce(entity_id)
+                    ),
+                    None,
+                ),
+            )
+            for mac, device in device_by_mac.items()
+        }
 
     async def get_user_details(self, ha_user_id: str) -> tuple[str | None, str | None, str | None]:
         """
@@ -580,6 +647,32 @@ class HomeAssistantProvider(PluginProvider):
             msg = f"AI Task returned no data in response: {result}"
             raise MusicAssistantError(msg)
         return str(data)
+
+    async def play_announcement_on_entity(self, entity_id: str, announcement_url: str) -> None:
+        """
+        Play an announcement on a Home Assistant media_player entity.
+
+        Uses Home Assistant's announce feature, so the entity's integration ducks
+        or pauses any running playback and resumes it afterwards. Returns once the
+        announcement has finished playing (approximated by its duration).
+
+        :param entity_id: The media_player entity to play the announcement on.
+        :param announcement_url: URL of the announcement audio to play.
+        """
+        await self.hass.call_service(
+            domain="media_player",
+            service="play_media",
+            service_data={
+                "media_content_id": announcement_url,
+                "media_content_type": "music",
+                "announce": True,
+            },
+            target={"entity_id": entity_id},
+        )
+        # Wait until the announcement is finished playing so callers can play
+        # announcements in a sequence; HA gives no completion signal for announcements.
+        media_info = await async_parse_tags(announcement_url, require_duration=True)
+        await asyncio.sleep(media_info.duration or 5)
 
     async def get_tts_message(self, message: str, language: str | None = None) -> StreamDetails:
         """Handle text-to-speech via Home Assistant's REST API."""

@@ -84,10 +84,12 @@ def _make_control_player(
     config.update.side_effect = values.update
     provider.mass.config.get_base_player_config.return_value = config
     provider.mass.config.save_player_config = AsyncMock()
+    # Real Companion services advertise the flags under the mixed-case key
+    # "rpFl"; zeroconf preserves TXT key casing as sent on the wire.
     companion_info = (
         _service_info(
             COMPANION_DISCOVERY_TYPE,
-            properties={"rpfl": companion_flags},
+            properties={"rpFl": companion_flags},
         )
         if companion_flags is not None
         else None
@@ -148,8 +150,22 @@ def test_companion_pairing_follows_advertised_flags(flags: str, supported: bool)
     player = _make_control_player(companion_flags=flags)
 
     assert player.companion_pairing_supported is supported
-    assert (PlayerFeature.POWER in player.supported_features) is supported
+    # Pairability alone never advertises POWER: without stored credentials or a
+    # connected control channel the command could not be served.
+    assert PlayerFeature.POWER not in player.supported_features
     assert PlayerFeature.NEXT_PREVIOUS not in player.supported_features
+
+
+def test_power_feature_requires_credentials_or_connection() -> None:
+    """POWER is advertised for stored Companion credentials or a live channel."""
+    paired = _make_control_player(config_values={CONF_COMPANION_CREDENTIALS: "companion-creds"})
+    assert PlayerFeature.POWER in paired.supported_features
+
+    connected = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.TurnOn
+    connected._companion_device = device
+    assert PlayerFeature.POWER in connected.supported_features
 
 
 def test_native_transport_features_follow_live_capabilities() -> None:
@@ -247,28 +263,47 @@ def test_duplicate_native_volume_update_is_ignored() -> None:
     update_state.assert_not_called()
 
 
-def test_pairable_companion_service_requires_setup_until_paired() -> None:
-    """Companion and MRP pairing contribute to the player's setup state."""
+def test_control_pairing_is_optional_and_never_requires_setup() -> None:
+    """Optional control pairing never marks the player as requiring setup."""
+    # needs_setup makes a player unavailable for playback, so it must only
+    # reflect the streaming requirements: an Apple TV streams fine without
+    # Companion/MRP credentials and pairing is offered in its settings instead.
     player = _make_control_player()
-    assert player.needs_setup is True
-
-    paired_player = _make_control_player(
-        config_values={CONF_COMPANION_CREDENTIALS: "companion-creds"}
-    )
-    assert paired_player.needs_setup is True
-
-    fully_paired_player = _make_control_player(
-        config_values={
-            CONF_COMPANION_CREDENTIALS: "companion-creds",
-            CONF_MRP_CREDENTIALS: "mrp-creds",
-        }
-    )
-    assert fully_paired_player.needs_setup is False
+    assert player.companion_pairing_supported is True
+    assert player.mrp_pairing_supported is True
+    assert player.needs_setup is False
 
     homepod = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
     assert homepod.companion_pairing_supported is False
     assert homepod.mrp_pairing_supported is False
     assert homepod.needs_setup is False
+
+
+async def test_unpaired_apple_tv_never_attempts_control_connection() -> None:
+    """An Apple TV without stored credentials is never connected (or paired)."""
+    # An unsolicited connect would run pyatv's transient pair-setup, which makes
+    # an Apple TV display the AirPlay pairing dialog. Regression test for the
+    # spontaneous pairing popups: no credentials means no connection attempt,
+    # also while the Companion record is still undiscovered.
+    for companion_flags in ("0x367A2", None):
+        player = _make_control_player(companion_flags=companion_flags)
+        with patch(
+            "music_assistant.providers.airplay.control_player.pyatv.connect",
+        ) as connect:
+            assert await player._connect_companion() is False
+            assert await player._connect_mrp() is False
+        connect.assert_not_awaited()
+
+    # Apple TV detection reads the TXT model key case-insensitively as well.
+    player = _make_control_player(companion_flags=None)
+    assert player.airplay_discovery_info is not None
+    properties = player.airplay_discovery_info.decoded_properties
+    properties["Model"] = properties.pop("model")
+    with patch(
+        "music_assistant.providers.airplay.control_player.pyatv.connect",
+    ) as connect:
+        assert await player._connect_mrp() is False
+    connect.assert_not_awaited()
 
 
 async def test_play_media_wakes_device_before_starting_stream() -> None:
@@ -633,7 +668,7 @@ async def test_provider_selects_player_model_from_device_identity(
     provider._companion_info_by_address = {
         "192.168.1.10": _service_info(
             COMPANION_DISCOVERY_TYPE,
-            properties={"rpfl": "0x367A2"},
+            properties={"rpFl": "0x367A2"},
         )
     }
     provider._mrp_info_by_address = {}
@@ -677,7 +712,7 @@ async def test_apple_device_setup_attaches_discovered_companion_service() -> Non
     provider._mrp_info_by_address = {}
     companion_info = _service_info(
         COMPANION_DISCOVERY_TYPE,
-        properties={"rpfl": "0x367A2"},
+        properties={"rpFl": "0x367A2"},
     )
 
     async def _find_service(
@@ -818,7 +853,7 @@ async def test_late_companion_discovery_never_changes_player_model() -> None:
     provider.mass.players.register = AsyncMock()
     info = _service_info(
         COMPANION_DISCOVERY_TYPE,
-        properties={"rpfl": "0x367A2"},
+        properties={"rpFl": "0x367A2"},
     )
 
     await provider._handle_companion_service_state_change(

@@ -65,6 +65,7 @@ from .constants import (
     FALLBACK_VOLUME,
 )
 from .helpers import (
+    get_decoded_property,
     supports_companion_pairing,
     supports_mrp_service,
     supports_mrp_tunnel,
@@ -164,18 +165,6 @@ class AirPlayControlPlayer(AirPlayPlayer):
         return supports_companion_pairing(self.companion_discovery_info)
 
     @property
-    def needs_setup(self) -> bool:
-        """Return whether streaming or control features still require pairing."""
-        return (
-            super().needs_setup
-            or (
-                self.companion_pairing_supported
-                and not self.config.get_value(CONF_COMPANION_CREDENTIALS)
-            )
-            or (self.mrp_pairing_supported and not self._mrp_credentials)
-        )
-
-    @property
     def mrp_pairing_supported(self) -> bool:
         """Return whether MRP playback monitoring can be paired."""
         endpoint = self._mrp_endpoint
@@ -183,11 +172,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
             return False
         discovery_info, protocol = endpoint
         if protocol == Protocol.MRP:
-            allow_pairing = (
-                discovery_info.decoded_properties.get("AllowPairing")
-                or discovery_info.decoded_properties.get("allowpairing")
-                or "no"
-            )
+            allow_pairing = get_decoded_property(discovery_info, "AllowPairing") or "no"
             return allow_pairing.lower() == "yes"
         return bool(
             not self._uses_transient_mrp
@@ -204,9 +189,11 @@ class AirPlayControlPlayer(AirPlayPlayer):
             FeatureName.Previous
         ):
             features.add(PlayerFeature.NEXT_PREVIOUS)
+        # POWER is advertised only when it can actually be served: a connected
+        # control channel exposing power commands, or stored Companion
+        # credentials (so the feature does not flap while (re)connecting).
         if (
-            self.companion_pairing_supported
-            or self.config.get_value(CONF_COMPANION_CREDENTIALS)
+            self.config.get_value(CONF_COMPANION_CREDENTIALS)
             or self._device_for_feature(FeatureName.TurnOn)
             or self._device_for_feature(FeatureName.TurnOff)
         ):
@@ -634,9 +621,24 @@ class AirPlayControlPlayer(AirPlayPlayer):
     @property
     def _uses_transient_mrp(self) -> bool:
         """Return whether playback monitoring uses transient AirPlay credentials."""
-        return not self.companion_pairing_supported and supports_transient_mrp(
-            self.airplay_discovery_info
-        )
+        # Mirrors pyatv's device rules: Apple TVs only accept real (paired) HAP
+        # credentials on the MRP tunnel and answer a transient pair-setup by
+        # showing the on-screen AirPlay pairing dialog, so they must never take
+        # this path - not even while the Companion record is still undiscovered.
+        # HomePods (and tunnel-capable third-party receivers) accept the
+        # transient handshake silently.
+        if self._is_apple_tv_device:
+            return False
+        return supports_transient_mrp(self.airplay_discovery_info)
+
+    @property
+    def _is_apple_tv_device(self) -> bool:
+        """Return whether the underlying device identifies itself as an Apple TV."""
+        if self.airplay_discovery_info and (
+            model := get_decoded_property(self.airplay_discovery_info, "model")
+        ):
+            return model.startswith("AppleTV")
+        return "apple tv" in self.device_info.model.lower()
 
     def _device_for_feature(self, feature: FeatureName) -> AppleTV | None:
         """Return the preferred connected device facade for a feature."""

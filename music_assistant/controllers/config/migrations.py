@@ -453,7 +453,7 @@ def _absorb_universal_player_config(
         other_values = other_cfg.get("values")
         if not isinstance(other_values, dict):
             continue
-        for key in ("group_members", "dynamic_group_members", "allowed_members"):
+        for key in ("group_members", "allowed_members"):
             members = other_values.get(key)
             if isinstance(members, list) and universal_id in members:
                 other_values[key] = [player_id if pid == universal_id else pid for pid in members]

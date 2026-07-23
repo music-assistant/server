@@ -41,6 +41,7 @@ from music_assistant_models.media_items import (
     Artist,
     Audiobook,
     AudioFormat,
+    BrowseFolder,
     ItemMapping,
     MediaItem,
     MediaItemChapter,
@@ -70,6 +71,7 @@ from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 from music_assistant.providers.plex.constants import (
     AUTH_TOKEN_UNAUTH,
     COLLECTION_ID_PREFIX,
@@ -509,8 +511,11 @@ PlexObjectT = TypeVar("PlexObjectT", bound=PlexObject)
 MediaItemT = TypeVar("MediaItemT", bound=MediaItem)
 
 
-class PlexProvider(MusicProvider):
+class PlexProvider(MusicProvider, RecommendationPayloadMixin):
     """Provider for a plex music library."""
+
+    # keep the pre-refactor 3h refresh interval for the hubs payload
+    recommendation_payload_ttl = 3600 * 3
 
     _plex_server: PlexServer = None
     _plex_library: PlexMusicSection = None
@@ -1269,112 +1274,123 @@ class PlexProvider(MusicProvider):
             self.logger.warning("Error getting similar tracks for %s: %s", prov_track_id, err)
         return []
 
-    @use_cache(3600 * 3, cache_checksum="v3")  # Cache for 3 hours
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get recommendations from Plex hubs."""
-        try:
-            # Get the configured limit for items per hub
-            limit_value = self.config.get_value(CONF_HUB_ITEMS_LIMIT)
-            limit = int(limit_value) if isinstance(limit_value, (int, float, str)) else 10
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        return await self._recommendation_rows_from_payload()
 
-            # Build the hubs key manually because plexapi's hubs() method
-            # doesn't accept a count parameter to limit items per hub.
-            extended = self.config.get_value(CONF_EXTENDED_RECOMMENDATIONS)
-            hub_params = RECOMMENDATIONS_HUB_PARAMS if extended else "includeStations=1"
-            key = f"/hubs/sections/{self._plex_library.key}?count={limit}&{hub_params}"
-            hubs = await self._run_async(self._plex_library.fetchItems, key)
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
 
-            if not hubs:
-                self.logger.debug("No hubs available from Plex")
-                return []
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        return await self._recommendation_items_from_payload(item_id)
 
-            self.logger.debug(
-                "Fetching %d hubs (limit: %d items per hub)",
-                len(hubs),
-                limit,
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch the full recommendations payload (folders with items) from the Plex hubs."""
+        # Let fetch errors propagate: the payload mixin serves the last cached payload
+        # on a failed refresh, and returning [] here would be cached as a valid empty
+        # result for the full TTL.
+        # Get the configured limit for items per hub
+        limit_value = self.config.get_value(CONF_HUB_ITEMS_LIMIT)
+        limit = int(limit_value) if isinstance(limit_value, (int, float, str)) else 10
+
+        # Build the hubs key manually because plexapi's hubs() method
+        # doesn't accept a count parameter to limit items per hub.
+        extended = self.config.get_value(CONF_EXTENDED_RECOMMENDATIONS)
+        hub_params = RECOMMENDATIONS_HUB_PARAMS if extended else "includeStations=1"
+        key = f"/hubs/sections/{self._plex_library.key}?count={limit}&{hub_params}"
+        hubs = await self._run_async(self._plex_library.fetchItems, key)
+
+        if not hubs:
+            self.logger.debug("No hubs available from Plex")
+            return []
+
+        self.logger.debug(
+            "Fetching %d hubs (limit: %d items per hub)",
+            len(hubs),
+            limit,
+        )
+
+        folders = []
+        for hub in hubs:
+            # Create a recommendation folder for each hub
+            folder = RecommendationFolder(
+                name=hub.title,
+                item_id=f"{self.instance_id}_{hub.hubIdentifier}",
+                provider=self.instance_id,
+                icon="mdi-music",
             )
 
-            folders = []
-            for hub in hubs:
-                # Create a recommendation folder for each hub
-                folder = RecommendationFolder(
-                    name=hub.title,
-                    item_id=f"{self.instance_id}_{hub.hubIdentifier}",
-                    provider=self.instance_id,
-                    icon="mdi-music",
+            # Mixes For You are synthetic smart playlists; build them from
+            # their partial hub items (see _mix_playlist_fields).
+            if "music.mixes" in (hub.hubIdentifier or ""):
+                folder.items.extend(
+                    self._build_mix_playlist(*self._mix_playlist_fields(plex_mix))
+                    for plex_mix in hub._partialItems
                 )
+                if folder.items:
+                    folders.append(folder)
+                continue
 
-                # Mixes For You are synthetic smart playlists; build them from
-                # their partial hub items (see _mix_playlist_fields).
-                if "music.mixes" in (hub.hubIdentifier or ""):
-                    folder.items.extend(
-                        self._build_mix_playlist(*self._mix_playlist_fields(plex_mix))
-                        for plex_mix in hub._partialItems
-                    )
-                    if folder.items:
-                        folders.append(folder)
-                    continue
-
-                # Parse each item based on its type (limit to configured max)
-                # Use _partialItems to respect the count limit from the hubs() call
-                # rather than hub.items() which fetches ALL items if more is True
-                # _partialItems is a cached property that's already loaded, so no need for async
-                hub_items = hub._partialItems
-                self.logger.debug(
-                    "Processing hub '%s' (%s) with %d partial items",
-                    hub.title,
-                    hub.hubIdentifier,
-                    len(hub_items),
-                )
-                for item in hub_items:
-                    try:
-                        # Skip items without type attribute
-                        if not hasattr(item, "type"):
-                            self.logger.debug(
-                                "Skipping item in hub '%s': no type attribute",
-                                hub.title,
-                            )
-                            continue
-
-                        if parsed_item := await self._parse(item):
-                            folder.items.append(parsed_item)  # type: ignore[arg-type]
-                        else:
-                            self.logger.debug(
-                                "Skipping unsupported item type '%s' in hub '%s'",
-                                item.type,
-                                hub.title,
-                            )
-                    except Exception as err:
+            # Parse each item based on its type (limit to configured max)
+            # Use _partialItems to respect the count limit from the hubs() call
+            # rather than hub.items() which fetches ALL items if more is True
+            # _partialItems is a cached property that's already loaded, so no need for async
+            hub_items = hub._partialItems
+            self.logger.debug(
+                "Processing hub '%s' (%s) with %d partial items",
+                hub.title,
+                hub.hubIdentifier,
+                len(hub_items),
+            )
+            for item in hub_items:
+                try:
+                    # Skip items without type attribute
+                    if not hasattr(item, "type"):
                         self.logger.debug(
-                            "Failed to parse item (type: %s) in hub '%s': %s",
-                            getattr(item, "type", "unknown"),
+                            "Skipping item in hub '%s': no type attribute",
                             hub.title,
-                            str(err),
                         )
                         continue
 
-                # Only add folder if it has items
-                if folder.items:
-                    folders.append(folder)
+                    if parsed_item := await self._parse(item):
+                        folder.items.append(parsed_item)  # type: ignore[arg-type]
+                    else:
+                        self.logger.debug(
+                            "Skipping unsupported item type '%s' in hub '%s'",
+                            item.type,
+                            hub.title,
+                        )
+                except Exception as err:
                     self.logger.debug(
-                        "Added hub '%s' (%s) with %d items",
+                        "Failed to parse item (type: %s) in hub '%s': %s",
+                        getattr(item, "type", "unknown"),
                         hub.title,
-                        hub.hubIdentifier,
-                        len(folder.items),
+                        str(err),
                     )
-                else:
-                    self.logger.debug(
-                        "Skipping hub '%s' (%s): no items after parsing",
-                        hub.title,
-                        hub.hubIdentifier,
-                    )
+                    continue
 
-            self.logger.debug("Retrieved %d recommendation folders from Plex", len(folders))
-            return folders
+            # Only add folder if it has items
+            if folder.items:
+                folders.append(folder)
+                self.logger.debug(
+                    "Added hub '%s' (%s) with %d items",
+                    hub.title,
+                    hub.hubIdentifier,
+                    len(folder.items),
+                )
+            else:
+                self.logger.debug(
+                    "Skipping hub '%s' (%s): no items after parsing",
+                    hub.title,
+                    hub.hubIdentifier,
+                )
 
-        except Exception as err:
-            self.logger.warning("Error getting recommendations from Plex: %s", err)
-            return []
+        self.logger.debug("Retrieved %d recommendation folders from Plex", len(folders))
+        return folders
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a track/audiobook/podcast episode."""
