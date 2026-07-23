@@ -24,7 +24,7 @@ from music_assistant_models.enums import EventType, TaskStatus
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import CONF_ENTRY_MAX_CONCURRENT_TASKS, CONF_MAX_CONCURRENT_TASKS
-
+from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_scope,
 )
@@ -853,4 +853,3 @@ def _namespaced_translation_key(translation_key: str | None) -> str | None:
     if translation_key and "." not in translation_key:
         return f"background_task.{translation_key}"
     return translation_key
-
