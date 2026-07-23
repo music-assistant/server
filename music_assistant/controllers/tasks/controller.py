@@ -23,7 +23,10 @@ from music_assistant_models.background_task import (
 from music_assistant_models.enums import EventType, TaskStatus
 from music_assistant_models.errors import InvalidDataError
 
-from music_assistant.constants import CONF_ENTRY_MAX_CONCURRENT_TASKS, CONF_MAX_CONCURRENT_TASKS
+from music_assistant.constants import (
+    CONF_ENTRY_MAX_CONCURRENT_TASKS,
+    CONF_MAX_CONCURRENT_TASKS,
+)
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_scope,
@@ -59,7 +62,11 @@ from .helpers import (
 from .models import ManagedTask
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, CoreConfig
+    from music_assistant_models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+        CoreConfig,
+    )
 
     from music_assistant import MusicAssistant
     from music_assistant.helpers.json import SerializableType
@@ -74,7 +81,9 @@ class TasksController(CoreController):
         """Initialize controller."""
         super().__init__(mass)
         self.manifest.name = "Background tasks"
-        self.manifest.description = "Manage long running scheduled, user and system tasks."
+        self.manifest.description = (
+            "Manage long running scheduled, user and system tasks."
+        )
         self.manifest.icon = "playlist-play"
         self._tasks: dict[str, ManagedTask] = {}
         self._pending_task_ids: deque[str] = deque()
@@ -130,7 +139,10 @@ class TasksController(CoreController):
 
     def list_tasks_for_user(self, user: User | None) -> list[BackgroundTask]:
         """Return tasks visible to the given user."""
-        return [managed.task_info for managed in get_visible_tasks(self._tasks.values(), user)]
+        return [
+            managed.task_info
+            for managed in get_visible_tasks(self._tasks.values(), user)
+        ]
 
     @api_command("tasks/get", required_scope=Scope.SYSTEM_READ)
     def get_task(self, task_id: str) -> BackgroundTask:
@@ -140,7 +152,9 @@ class TasksController(CoreController):
     @api_command("tasks/log", required_scope=Scope.SYSTEM_READ)
     def get_task_log(self, task_id: str) -> str:
         """Return the log buffer for a single task."""
-        return "\n".join(self._get_visible_managed_task(task_id, get_current_user()).task_info.logs)
+        return "\n".join(
+            self._get_visible_managed_task(task_id, get_current_user()).task_info.logs
+        )
 
     @api_command("tasks/run", required_scope=Scope.SYSTEM_MANAGE)
     def run_task(self, task_id: str) -> BackgroundTask:
@@ -243,7 +257,9 @@ class TasksController(CoreController):
     @api_command("tasks/clear_finished", required_scope=Scope.SYSTEM_MANAGE)
     def clear_finished_tasks(self) -> None:
         """Remove finished non-scheduled tasks from history."""
-        for task_id in [task_id for task_id, task in self._tasks.items() if task.can_remove]:
+        for task_id in [
+            task_id for task_id, task in self._tasks.items() if task.can_remove
+        ]:
             self._tasks.pop(task_id, None)
         self._schedule_task_update(force=True)
 
@@ -389,7 +405,9 @@ class TasksController(CoreController):
         self._schedule_task_update(force=True)
         return task_info
 
-    def unregister_scheduled_task(self, task_id: str, clear_persisted_state: bool = True) -> None:
+    def unregister_scheduled_task(
+        self, task_id: str, clear_persisted_state: bool = True
+    ) -> None:
         """
         Unregister a recurring scheduled task and cancel any active work.
 
@@ -412,7 +430,9 @@ class TasksController(CoreController):
         :param text: Optional progress description text.
         """
         if get_ident() != self.mass.loop_thread_id:
-            self.mass.loop.call_soon_threadsafe(self.update_task_progress, task_id, progress, text)
+            self.mass.loop.call_soon_threadsafe(
+                self.update_task_progress, task_id, progress, text
+            )
             return
         if not (managed := self._tasks.get(task_id)):
             return
@@ -429,7 +449,9 @@ class TasksController(CoreController):
         :param text: Progress description text or None to clear.
         """
         if get_ident() != self.mass.loop_thread_id:
-            self.mass.loop.call_soon_threadsafe(self.update_task_progress_text, task_id, text)
+            self.mass.loop.call_soon_threadsafe(
+                self.update_task_progress_text, task_id, text
+            )
             return
         if not (managed := self._tasks.get(task_id)):
             return
@@ -437,7 +459,9 @@ class TasksController(CoreController):
         managed.task_info.updated_at = utcnow()
         self._schedule_task_update()
 
-    def update_current_task_progress(self, progress: int | None, text: str | None = None) -> None:
+    def update_current_task_progress(
+        self, progress: int | None, text: str | None = None
+    ) -> None:
         """
         Update progress for the task active in the current async context.
 
@@ -472,7 +496,9 @@ class TasksController(CoreController):
         task_info.updated_at = utcnow()
         self._schedule_task_update()
 
-    def get_tasks_by_metadata(self, **metadata: TaskMetadataValue) -> list[BackgroundTask]:
+    def get_tasks_by_metadata(
+        self, **metadata: TaskMetadataValue
+    ) -> list[BackgroundTask]:
         """
         Return tasks matching the given metadata key/value pairs.
 
@@ -480,11 +506,16 @@ class TasksController(CoreController):
         """
         result: list[BackgroundTask] = []
         for managed in self._tasks.values():
-            if all(managed.task_info.metadata.get(key) == value for key, value in metadata.items()):
+            if all(
+                managed.task_info.metadata.get(key) == value
+                for key, value in metadata.items()
+            ):
                 result.append(managed.task_info)
         return result
 
-    def _unregister_task(self, task_id: str, clear_persisted_state: bool = True) -> None:
+    def _unregister_task(
+        self, task_id: str, clear_persisted_state: bool = True
+    ) -> None:
         """Unregister a managed task and cancel any active work."""
         if not (managed := self._tasks.get(task_id)):
             return
@@ -592,7 +623,9 @@ class TasksController(CoreController):
     ) -> None:
         """Queue a task for execution."""
         if managed.removed:
-            raise InvalidDataError(f"Task {managed.task_info.id} is no longer available")
+            raise InvalidDataError(
+                f"Task {managed.task_info.id} is no longer available"
+            )
         if managed.task_info.status in (TaskStatus.PENDING, TaskStatus.RUNNING):
             return
         self.mass.cancel_timer(get_task_timer_id(managed.task_info.id))
@@ -619,7 +652,10 @@ class TasksController(CoreController):
 
     def _start_pending_tasks(self) -> None:
         """Start queued tasks while concurrency allows it."""
-        while self._running_tasks_count < self._max_concurrent_tasks and self._pending_task_ids:
+        while (
+            self._running_tasks_count < self._max_concurrent_tasks
+            and self._pending_task_ids
+        ):
             task_id = self._pending_task_ids.popleft()
             if not (managed := self._tasks.get(task_id)) or managed.removed:
                 continue
@@ -631,7 +667,9 @@ class TasksController(CoreController):
     def _running_tasks_count(self) -> int:
         """Return count of currently running managed tasks."""
         return sum(
-            1 for managed in self._tasks.values() if managed.task_info.status == TaskStatus.RUNNING
+            1
+            for managed in self._tasks.values()
+            if managed.task_info.status == TaskStatus.RUNNING
         )
 
     async def _run_task(self, managed: ManagedTask) -> None:
@@ -654,7 +692,10 @@ class TasksController(CoreController):
             task_info.last_error = None
             now = utcnow()
             self._append_task_lifecycle_log(
-                task_info.id, level=logging.WARNING, message="Task cancelled", created_at=now
+                task_info.id,
+                level=logging.WARNING,
+                message="Task cancelled",
+                created_at=now,
             )
         except Exception as err:
             task_info.status = TaskStatus.FAILED
@@ -714,7 +755,9 @@ class TasksController(CoreController):
         self._persist_scheduled_task_state(managed)
         self._schedule_task_update(force=True)
 
-    def _schedule_managed_task(self, managed: ManagedTask, delay: float | None = None) -> None:
+    def _schedule_managed_task(
+        self, managed: ManagedTask, delay: float | None = None
+    ) -> None:
         """Schedule the next recurring execution of a task."""
         if managed.removed or not managed.task_info.schedule:
             return
@@ -816,7 +859,9 @@ class TasksController(CoreController):
     def _schedule_task_update(self, *, force: bool = False) -> None:
         """Coalesce task update events while keeping lifecycle updates responsive."""
         if get_ident() != self.mass.loop_thread_id:
-            self.mass.loop.call_soon_threadsafe(partial(self._schedule_task_update, force=force))
+            self.mass.loop.call_soon_threadsafe(
+                partial(self._schedule_task_update, force=force)
+            )
             return
         now = self.mass.loop.time()
         if force:
@@ -833,13 +878,17 @@ class TasksController(CoreController):
         ):
             return
         self._scheduled_task_update_at = scheduled_at
-        self.mass.call_later(delay, self._signal_task_update, task_id=TASK_UPDATE_TIMER_ID)
+        self.mass.call_later(
+            delay, self._signal_task_update, task_id=TASK_UPDATE_TIMER_ID
+        )
 
     def _signal_task_update(self) -> None:
         """Emit the current managed task list."""
         self._scheduled_task_update_at = None
         self._last_task_update_signal = self.mass.loop.time()
-        self.mass.signal_event(EventType.TASKS_UPDATED, data=self.list_tasks_for_user(None))
+        self.mass.signal_event(
+            EventType.TASKS_UPDATED, data=self.list_tasks_for_user(None)
+        )
 
 
 def _namespaced_translation_key(translation_key: str | None) -> str | None:
