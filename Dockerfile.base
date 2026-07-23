@@ -129,7 +129,7 @@ RUN PYAV_VERSION=$(python -c "import json; reqs=json.load(open('/tmp/sendspin_ma
 ##################################################################################################
 
 # Build shairport-sync (airplay receiver provider) from source against this image's
-# libraries, using the same configuration as bin/build_binaries.sh in the server repo:
+# libraries, using the same configuration as music_assistant/providers/airplay_receiver/bin/build_binaries.sh:
 # tinysvcmdns as embedded mDNS backend (no avahi), stdout/pipe outputs and metadata support.
 FROM python:${PYTHON_VERSION}-slim-trixie AS shairport-builder
 
