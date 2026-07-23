@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import socket
 import time
 from contextlib import suppress
@@ -653,6 +654,12 @@ class AirPlayProvider(PlayerProvider):
         bind_ip = str(self.mass.streams.bind_ip)
         if bind_ip not in ("0.0.0.0", "::", ""):
             args += ["--if", bind_ip]
+        # Mirror the per-stream debug level so the daemon's receive side
+        # (peer Announce/Sync/Delay_Req traffic) is visible in the log.
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            args += ["--debug", "10"]
+        elif self.logger.isEnabledFor(logging.DEBUG):
+            args += ["--debug", "5"]
         daemon = AsyncProcess(args, stdout=True, stderr=True, name="cliairplay-ptp-daemon")
         # (Re)gate readiness for this daemon instance: not ready until a reader
         # sees the "daemon up" line (a restart clears any previous readiness).
