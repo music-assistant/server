@@ -635,7 +635,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
     def _is_apple_tv_device(self) -> bool:
         """Return whether the underlying device identifies itself as an Apple TV."""
         if self.airplay_discovery_info and (
-            model := self.airplay_discovery_info.decoded_properties.get("model")
+            model := get_decoded_property(self.airplay_discovery_info, "model")
         ):
             return model.startswith("AppleTV")
         return "apple tv" in self.device_info.model.lower()

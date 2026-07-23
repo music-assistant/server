@@ -294,6 +294,17 @@ async def test_unpaired_apple_tv_never_attempts_control_connection() -> None:
             assert await player._connect_mrp() is False
         connect.assert_not_awaited()
 
+    # Apple TV detection reads the TXT model key case-insensitively as well.
+    player = _make_control_player(companion_flags=None)
+    assert player.airplay_discovery_info is not None
+    properties = player.airplay_discovery_info.decoded_properties
+    properties["Model"] = properties.pop("model")
+    with patch(
+        "music_assistant.providers.airplay.control_player.pyatv.connect",
+    ) as connect:
+        assert await player._connect_mrp() is False
+    connect.assert_not_awaited()
+
 
 async def test_play_media_wakes_device_before_starting_stream() -> None:
     """A sleeping controlled device receives wake before the AirPlay stream starts."""
