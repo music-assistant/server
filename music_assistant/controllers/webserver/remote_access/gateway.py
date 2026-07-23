@@ -9,6 +9,7 @@ bridging them to the local WebSocket API.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import logging
@@ -23,6 +24,7 @@ from aiolibdatachannel import (
     IceServer,
     PeerConnection,
     RTCConfiguration,
+    RTCError,
     RTCState,
     StateChangeEvent,
     install_python_logger,
@@ -39,8 +41,8 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.remote_access")
 # data channel stays bounded and never blocks the API message pump (see #4889).
 HTTP_PROXY_CONCURRENCY = 6
 
-# Chunk proxied bodies larger than this; libdatachannel caps data-channel messages at 256 KiB.
-HTTP_PROXY_CHUNK_SIZE = 64 * 1024
+# Chunk ma-api messages larger than this; libdatachannel caps data-channel messages at 256 KiB.
+MA_API_CHUNK_SIZE = 64 * 1024
 
 
 @dataclass
@@ -134,6 +136,7 @@ class WebRTCGateway:
         self._connecting = False
         # gateway-wide by design: normally a single remote client is connected
         self._http_proxy_semaphore = asyncio.Semaphore(HTTP_PROXY_CONCURRENCY)
+        self._chunk_group_seq = 0
 
     @property
     def is_running(self) -> bool:
@@ -507,53 +510,46 @@ class WebRTCGateway:
         headers: dict[str, str],
         body: bytes,
     ) -> None:
-        """Send an HTTP-proxy response over the data channel, chunking large bodies."""
-        channel = session.data_channel
-        # Small bodies fit a single message; keep the legacy format so clients that
-        # don't understand chunking still work for everything but large images.
-        if len(body) <= HTTP_PROXY_CHUNK_SIZE:
-            await self._send_on_channel(
-                channel,
-                json.dumps(
-                    {
-                        "type": "http-proxy-response",
-                        "id": request_id,
-                        "status": status,
-                        "headers": headers,
-                        "body": body.hex(),
-                    }
-                ),
-            )
-            return
-
-        # Announce the chunked response, then stream fixed-size hex chunks the client
-        # reassembles by request ID.
-        chunk_count = (len(body) + HTTP_PROXY_CHUNK_SIZE - 1) // HTTP_PROXY_CHUNK_SIZE
-        await self._send_on_channel(
-            channel,
+        """Send an HTTP-proxy response over the ma-api channel."""
+        await self._send_ma_api(
+            session.data_channel,
             json.dumps(
                 {
-                    "type": "http-proxy-response-start",
+                    "type": "http-proxy-response",
                     "id": request_id,
                     "status": status,
                     "headers": headers,
-                    "chunks": chunk_count,
+                    "body": body.hex(),
                 }
             ),
         )
-        for index in range(chunk_count):
+
+    async def _send_ma_api(self, channel: DataChannel | None, text: str) -> None:
+        """Send a text message on the ma-api channel, chunking it if it exceeds the size limit."""
+        data = text.encode()
+        if len(data) <= MA_API_CHUNK_SIZE:
+            await self._send_on_channel(channel, text)
+            return
+
+        # libdatachannel enforces the 256 KiB message limit, so oversized messages are split
+        # into base64 frames the client reassembles by group id (base64 keeps each frame's size
+        # predictable regardless of JSON escaping / unicode).
+        self._chunk_group_seq += 1
+        group_id = self._chunk_group_seq
+        count = (len(data) + MA_API_CHUNK_SIZE - 1) // MA_API_CHUNK_SIZE
+        for seq in range(count):
             if channel is None or not channel.is_open:
                 return
-            offset = index * HTTP_PROXY_CHUNK_SIZE
-            chunk = body[offset : offset + HTTP_PROXY_CHUNK_SIZE]
+            piece = data[seq * MA_API_CHUNK_SIZE : (seq + 1) * MA_API_CHUNK_SIZE]
             await self._send_on_channel(
                 channel,
                 json.dumps(
                     {
-                        "type": "http-proxy-response-chunk",
-                        "id": request_id,
-                        "index": index,
-                        "body": chunk.hex(),
+                        "type": "__chunk__",
+                        "id": group_id,
+                        "seq": seq,
+                        "count": count,
+                        "b64": base64.b64encode(piece).decode(),
                     }
                 ),
             )
@@ -615,6 +611,13 @@ class WebRTCGateway:
 
     async def _bridge_ma_api(self, session: WebRTCSession, channel: DataChannel) -> None:
         """Bridge the ma-api data channel to the local WebSocket API."""
+        # wait for the channel to open first, so the local WS's initial server_info (sent
+        # immediately on connect) isn't dropped by _send_on_channel while it's still opening
+        try:
+            await channel.wait_open()
+        except RTCError:
+            self._schedule_close(session.session_id)
+            return
         try:
             # Include session_id in URL so server can track WebRTC sessions
             ws_url = f"{self.local_ws_url}?webrtc_session_id={session.session_id}"
@@ -673,13 +676,16 @@ class WebRTCGateway:
         try:
             async for msg in local_ws:
                 if msg.type == aiohttp.WSMsgType.TEXT:
-                    await self._send_on_channel(channel, msg.data)
+                    await self._send_ma_api(channel, msg.data)
                 elif msg.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSED):
                     break
         except asyncio.CancelledError:
             raise
         except Exception:
             self.logger.exception("Error forwarding from local WebSocket")
+        # the local WS closed: the ma-api session is unusable, so tear it down instead of
+        # leaving the client an open channel that silently drops messages
+        self._schedule_close(session.session_id)
 
     async def _bridge_sendspin(self, session: WebRTCSession, channel: DataChannel) -> None:
         """Bridge the sendspin data channel to the internal sendspin server."""
@@ -738,6 +744,8 @@ class WebRTCGateway:
             raise
         except Exception:
             self.logger.exception("Error forwarding sendspin from local")
+        # the internal sendspin WS closed: close only this bridge, leaving the ma-api session up
+        await self._close_sendspin_bridge(session)
 
     async def _close_sendspin_bridge(self, session: WebRTCSession) -> None:
         """Close the internal Sendspin bridge for a WebRTC session."""
@@ -780,8 +788,13 @@ class WebRTCGateway:
         """Send data on a data channel if it is currently open."""
         if channel is None or not channel.is_open:
             return
-        with contextlib.suppress(ConnectionClosedError):
+        try:
             await channel.send(data)
+        except ConnectionClosedError:
+            pass
+        except RTCError as err:
+            # a single failed send (e.g. an over-limit message) must not tear down the pump
+            self.logger.warning("Dropping %d-byte data channel message: %s", len(data), err)
 
     def _try_extract_sendspin_client_id(self, session: WebRTCSession, message: str) -> None:
         """Try to extract client_id from sendspin auth message and set on websocket client."""

@@ -22,7 +22,7 @@ from music_assistant.controllers.webserver.remote_access import (
     RemoteAccessManager,
 )
 from music_assistant.controllers.webserver.remote_access.gateway import (
-    HTTP_PROXY_CHUNK_SIZE,
+    MA_API_CHUNK_SIZE,
     WebRTCGateway,
     WebRTCSession,
 )
@@ -794,6 +794,18 @@ def _proxy_gateway(cert_pems: tuple[str, str]) -> WebRTCGateway:
     )
 
 
+def _reassemble_chunks(frames: list[str]) -> str:
+    """Reassemble __chunk__ frames back into the original text (base64 -> bytes -> utf-8)."""
+    parsed = [json.loads(f) for f in frames]
+    assert all(f["type"] == "__chunk__" for f in parsed)
+    assert len({f["id"] for f in parsed}) == 1
+    count = parsed[0]["count"]
+    parts: list[bytes] = [b""] * count
+    for frame in parsed:
+        parts[frame["seq"]] = base64.b64decode(frame["b64"])
+    return b"".join(parts).decode()
+
+
 async def test_http_proxy_response_small_body_single_message(
     cert_pems: tuple[str, str],
 ) -> None:
@@ -815,38 +827,50 @@ async def test_http_proxy_response_small_body_single_message(
 
 
 async def test_http_proxy_response_large_body_chunked(cert_pems: tuple[str, str]) -> None:
-    """A body over the chunk size is announced then streamed as reassemblable chunks."""
+    """A large HTTP-proxy response is split into base64 chunk frames the client reassembles."""
     gateway = _proxy_gateway(cert_pems)
     channel = _FakeDataChannel()
     session = cast("WebRTCSession", SimpleNamespace(data_channel=channel))
-    # 2.5 chunks worth of data so the final chunk is a partial one.
-    body = bytes(range(256)) * ((HTTP_PROXY_CHUNK_SIZE * 5) // 512)
-    assert len(body) > HTTP_PROXY_CHUNK_SIZE
+    body = bytes(range(256)) * ((MA_API_CHUNK_SIZE * 5) // 512)  # big body -> big JSON message
 
     await gateway._send_http_proxy_response(session, "req-big", 200, {}, body)
 
-    expected_chunks = -(-len(body) // HTTP_PROXY_CHUNK_SIZE)
-    start = json.loads(channel.sent[0])
-    assert start["type"] == "http-proxy-response-start"
-    assert start["id"] == "req-big"
-    assert start["status"] == 200
-    assert start["chunks"] == expected_chunks
-    assert len(channel.sent) == expected_chunks + 1
-
-    chunks = [json.loads(m) for m in channel.sent[1:]]
-    assert [c["index"] for c in chunks] == list(range(expected_chunks))
-    assert all(c["type"] == "http-proxy-response-chunk" for c in chunks)
-    # Every serialized message must stay under the negotiated 256 KiB data-channel limit.
+    assert len(channel.sent) > 1
+    assert all(json.loads(m)["type"] == "__chunk__" for m in channel.sent)
+    # every serialized frame must stay under the negotiated 256 KiB data-channel limit
     assert all(len(m.encode()) < 256 * 1024 for m in channel.sent)
 
-    reassembled = b"".join(bytes.fromhex(c["body"]) for c in chunks)
-    assert reassembled == body
+    reassembled = json.loads(_reassemble_chunks(channel.sent))
+    assert reassembled["type"] == "http-proxy-response"
+    assert reassembled["id"] == "req-big"
+    assert reassembled["status"] == 200
+    assert bytes.fromhex(reassembled["body"]) == body
 
 
-async def test_http_proxy_response_chunks_survive_real_data_channel(
-    cert_pems: tuple[str, str],
-) -> None:
-    """A body too large for one message is chunked over a real libdatachannel session."""
+async def test_send_ma_api_small_message_passthrough(cert_pems: tuple[str, str]) -> None:
+    """A ma-api message within the limit is sent verbatim, not chunked."""
+    gateway = _proxy_gateway(cert_pems)
+    channel = _FakeDataChannel()
+    await gateway._send_ma_api(channel, '{"event":"player_updated"}')
+    assert channel.sent == ['{"event":"player_updated"}']
+
+
+async def test_send_ma_api_large_message_chunked(cert_pems: tuple[str, str]) -> None:
+    """A large ma-api message is chunked and reassembles byte-identically (multibyte-safe)."""
+    gateway = _proxy_gateway(cert_pems)
+    channel = _FakeDataChannel()
+    # multibyte payload so chunk boundaries fall mid-character, exercising the byte-level split
+    text = '{"data":"' + "音楽" * MA_API_CHUNK_SIZE + '"}'
+
+    await gateway._send_ma_api(channel, text)
+
+    assert len(channel.sent) > 1
+    assert all(len(m.encode()) < 256 * 1024 for m in channel.sent)
+    assert _reassemble_chunks(channel.sent) == text
+
+
+async def test_ma_api_chunks_survive_real_data_channel(cert_pems: tuple[str, str]) -> None:
+    """A body too large for one message round-trips as chunks over a real libdatachannel session."""
     cert_pem, key_pem = cert_pems
     fake_ws = _FakeLocalWS()
     http_session = Mock()
@@ -863,26 +887,23 @@ async def test_http_proxy_response_chunks_survive_real_data_channel(
     with patch.object(gateway, "_get_fresh_ice_servers", AsyncMock(return_value=[])):
         offerer, dc = await _connect_gateway_session(gateway, session_id)
     try:
-        # ~293 KiB: as a single hex message this is ~586 KiB, well over the 256 KiB
-        # data-channel limit, so it only arrives at all if chunking works.
+        # ~293 KiB body -> ~586 KiB hex JSON, well over the 256 KiB limit: only arrives chunked
         body = bytes((i * 7) % 256 for i in range(300_000))
         session = gateway.sessions[session_id]
         await gateway._send_http_proxy_response(
             session, "wire-req", 200, {"content-type": "image/jpeg"}, body
         )
 
-        start = json.loads(await asyncio.wait_for(dc.recv(), timeout=15))
-        assert start["type"] == "http-proxy-response-start"
-        assert start["id"] == "wire-req"
-        assert start["chunks"] > 1
+        first = await asyncio.wait_for(dc.recv(), timeout=15)
+        count = json.loads(first)["count"]
+        assert count > 1
+        frames = [first]
+        for _ in range(count - 1):
+            frames.append(await asyncio.wait_for(dc.recv(), timeout=15))
 
-        parts: list[str] = [""] * start["chunks"]
-        for _ in range(start["chunks"]):
-            chunk = json.loads(await asyncio.wait_for(dc.recv(), timeout=15))
-            assert chunk["type"] == "http-proxy-response-chunk"
-            parts[chunk["index"]] = chunk["body"]
-
-        assert bytes.fromhex("".join(parts)) == body
+        reassembled = json.loads(_reassemble_chunks(frames))
+        assert reassembled["id"] == "wire-req"
+        assert bytes.fromhex(reassembled["body"]) == body
     finally:
         await gateway._close_session(session_id)
         await offerer.aclose()
