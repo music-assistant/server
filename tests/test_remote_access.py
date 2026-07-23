@@ -2,16 +2,17 @@
 
 import asyncio
 import base64
-import contextlib
-import json
-from collections.abc import Callable
-from typing import cast
+import hashlib
+from collections.abc import AsyncIterator, Callable
+from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock, patch
 from urllib.parse import urlparse
 
+import aiohttp
 import pytest
-from aiortc import RTCConfiguration, RTCIceServer, RTCPeerConnection
-from aiortc.rtcdtlstransport import RTCCertificate
+from aiolibdatachannel import DataChannel, IceServer, PeerConnection, RTCConfiguration
+from cryptography.hazmat.primitives import serialization
 
 from music_assistant.controllers.webserver.remote_access import (
     STARTUP_DELAY,
@@ -26,7 +27,6 @@ from music_assistant.controllers.webserver.remote_access.gateway import (
 from music_assistant.helpers.webrtc_certificate import (
     _generate_certificate,
     _remote_id_from_certificate,
-    create_peer_connection_with_certificate,
 )
 
 
@@ -867,128 +867,246 @@ async def test_http_proxy_request_cannot_change_host(
     assert "evil.com" not in (parsed.netloc or "")
 
 
-async def test_http_proxy_request_does_not_block_receive_loop(mock_certificate: Mock) -> None:
-    """A slow proxied image fetch must not stall API messages behind it in the receive loop."""
-    mock_session = Mock()
-    release = asyncio.Event()
+# ---- aiolibdatachannel loopback tests --------------------------------------
+#
+# These exercise the migrated gateway against real loopback PeerConnections
+# (offerer = browser role, answerer = gateway role) rather than mocking the
+# WebRTC layer. ICE servers are stubbed to [] so gathering completes on host
+# candidates only (fast, offline).
 
-    def fake_request(_method: str, _url: str, **_kwargs: object) -> AsyncMock:
-        response = AsyncMock()
-        response.status = 200
-        response.headers = {}
-        response.read = AsyncMock(return_value=b"")
 
-        async def blocking_aenter(*_args: object) -> AsyncMock:
-            await release.wait()
-            return response
+@pytest.fixture(scope="session")
+def cert_pems() -> tuple[str, str]:
+    """Generate a throwaway DTLS cert/key as PEM strings for the gateway."""
+    private_key, cert = _generate_certificate()
+    cert_pem = cert.public_bytes(serialization.Encoding.PEM).decode()
+    key_pem = private_key.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    ).decode()
+    return cert_pem, key_pem
 
-        ctx = AsyncMock()
-        ctx.__aenter__ = blocking_aenter
-        ctx.__aexit__ = AsyncMock(return_value=False)
-        return ctx
 
-    mock_session.request = fake_request
+def _sha256_fingerprint(cert_pem: str) -> str:
+    """Compute the uppercase colon-separated SHA-256 fingerprint of a PEM certificate."""
+    body = "".join(line for line in cert_pem.splitlines() if line and not line.startswith("-----"))
+    der = base64.b64decode(body)
+    digest = hashlib.sha256(der).hexdigest().upper()
+    return ":".join(digest[i : i + 2] for i in range(0, len(digest), 2))
 
+
+class _FakeSignaling:
+    """Signaling WebSocket stand-in that captures outbound JSON messages."""
+
+    def __init__(self) -> None:
+        self.messages: list[dict[str, Any]] = []
+
+    async def send_json(self, data: dict[str, Any]) -> None:
+        self.messages.append(data)
+
+    @property
+    def answers(self) -> list[dict[str, Any]]:
+        return [m for m in self.messages if m.get("type") == "answer"]
+
+
+class _FakeLocalWS:
+    """Minimal aiohttp WebSocket stand-in for channel-bridging tests."""
+
+    def __init__(self) -> None:
+        self.closed = False
+        self.sent: list[str | bytes] = []
+        self._incoming: asyncio.Queue[SimpleNamespace | None] = asyncio.Queue()
+
+    async def send_str(self, data: str) -> None:
+        self.sent.append(data)
+
+    async def send_bytes(self, data: bytes) -> None:
+        self.sent.append(data)
+
+    async def close(self) -> None:
+        self.closed = True
+        self._incoming.put_nowait(None)
+
+    def feed_text(self, data: str) -> None:
+        """Queue a text message as if the local server sent it."""
+        self._incoming.put_nowait(SimpleNamespace(type=aiohttp.WSMsgType.TEXT, data=data))
+
+    def __aiter__(self) -> AsyncIterator[SimpleNamespace]:
+        return self
+
+    async def __anext__(self) -> SimpleNamespace:
+        msg = await self._incoming.get()
+        if msg is None:
+            raise StopAsyncIteration
+        return msg
+
+
+async def _wait_for(predicate: Callable[[], bool], timeout: float = 15.0) -> None:
+    """Poll ``predicate`` until it is true or the timeout elapses."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError("condition not met within timeout")
+
+
+async def _connect_gateway_session(
+    gateway: WebRTCGateway, session_id: str
+) -> tuple[PeerConnection, DataChannel]:
+    """
+    Drive a browser-role offerer through the gateway until the ma-api channel opens.
+
+    :return: Tuple of (offerer PeerConnection, opened ma-api DataChannel).
+    """
+    signaling = _FakeSignaling()
+    gateway._signaling_ws = cast("aiohttp.ClientWebSocketResponse", signaling)
+    offerer = PeerConnection(RTCConfiguration())
+    dc = await offerer.create_data_channel("ma-api")
+    offer = await offerer.create_offer()
+    await gateway._create_session(session_id)
+    await asyncio.wait_for(
+        gateway._handle_offer(session_id, {"sdp": offer.sdp, "type": "offer"}), timeout=15
+    )
+    answer = signaling.answers[-1]
+    await offerer.set_remote_description(answer["data"]["sdp"], "answer")
+    await asyncio.wait_for(dc.wait_open(), timeout=15)
+    return offerer, dc
+
+
+async def test_handle_offer_answers_with_pinned_fingerprint(cert_pems: tuple[str, str]) -> None:
+    """The answer SDP carries the DTLS fingerprint of the configured certificate (pinning)."""
+    cert_pem, key_pem = cert_pems
     gateway = WebRTCGateway(
-        http_session=mock_session,
+        http_session=Mock(),
         remote_id="TEST-REMOTE-ID",
-        certificate=mock_certificate,
-        local_ws_url="ws://localhost:8095/ws",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
     )
-    session = WebRTCSession(session_id="s1", peer_connection=Mock())
-    session.local_ws = Mock()
-    session.local_ws.closed = False
-    session.local_ws.send_str = AsyncMock()
-    session.data_channel = Mock()
-    session.data_channel.readyState = "open"
-    session.data_channel.send = Mock()
-
-    proxy_message = json.dumps(
-        {"type": "http-proxy-request", "id": "1", "method": "GET", "path": "/imageproxy/x"}
-    )
-    api_message = '{"command": "ping"}'
-    session.message_queue.put_nowait(proxy_message)
-    session.message_queue.put_nowait(api_message)
-
-    forward_task = asyncio.create_task(gateway._forward_to_local(session))
-
+    signaling = _FakeSignaling()
+    gateway._signaling_ws = cast("aiohttp.ClientWebSocketResponse", signaling)
+    offerer = PeerConnection(RTCConfiguration())
+    session_id = "fingerprint-session"
     try:
-        # The API message must get through while the proxy fetch is still blocked.
-        for _ in range(20):
-            if session.local_ws.send_str.await_args_list:
-                break
-            await asyncio.sleep(0.05)
-        assert not release.is_set()
-        session.local_ws.send_str.assert_awaited_with(api_message)
+        await offerer.create_data_channel("ma-api")
+        offer = await offerer.create_offer()
+        with patch.object(gateway, "_get_fresh_ice_servers", AsyncMock(return_value=[])):
+            await gateway._create_session(session_id)
+            await asyncio.wait_for(
+                gateway._handle_offer(session_id, {"sdp": offer.sdp, "type": "offer"}),
+                timeout=15,
+            )
 
-        release.set()
-
-        for _ in range(20):
-            if session.data_channel.send.call_args_list:
-                break
-            await asyncio.sleep(0.05)
-        assert session.data_channel.send.call_args is not None
-        response_data = json.loads(session.data_channel.send.call_args[0][0])
-        assert response_data["id"] == "1"
+        assert len(signaling.answers) == 1
+        answer = signaling.answers[0]
+        assert answer["sessionId"] == session_id
+        assert answer["data"]["type"] == "answer"
+        fingerprint_line = next(
+            line
+            for line in answer["data"]["sdp"].splitlines()
+            if line.startswith("a=fingerprint:")
+        )
+        assert _sha256_fingerprint(cert_pem) in fingerprint_line
     finally:
-        # Unblock a still-pending fetch so cleanup can't hang on assertion failure
-        release.set()
-        session.local_ws.closed = True
-        forward_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await forward_task
-        for task in list(session.proxy_tasks):
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+        await gateway._close_session(session_id)
+        await offerer.aclose()
 
 
-async def test_close_data_channel_bridge_cancels_pending_proxy_tasks(
-    mock_certificate: Mock,
-) -> None:
-    """Closing a session's bridge must cancel its still-running proxy fetches."""
-    mock_session = Mock()
-    release = asyncio.Event()
-
-    def fake_request(_method: str, _url: str, **_kwargs: object) -> AsyncMock:
-        async def blocking_aenter(*_args: object) -> AsyncMock:
-            await release.wait()
-            return AsyncMock()
-
-        ctx = AsyncMock()
-        ctx.__aenter__ = blocking_aenter
-        ctx.__aexit__ = AsyncMock(return_value=False)
-        return ctx
-
-    mock_session.request = fake_request
-
+async def test_ma_api_channel_bridges_to_local_ws(cert_pems: tuple[str, str]) -> None:
+    """Messages flow both ways across the ma-api data channel and the local WebSocket."""
+    cert_pem, key_pem = cert_pems
+    fake_ws = _FakeLocalWS()
+    local_ws = cast("aiohttp.ClientWebSocketResponse", fake_ws)
+    http_session = Mock()
+    http_session.ws_connect = AsyncMock(return_value=local_ws)
     gateway = WebRTCGateway(
-        http_session=mock_session,
+        http_session=http_session,
         remote_id="TEST-REMOTE-ID",
-        certificate=mock_certificate,
-        local_ws_url="ws://localhost:8095/ws",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
     )
-    session = WebRTCSession(session_id="s1", peer_connection=Mock())
-    session.local_ws = Mock()
-    session.local_ws.closed = False
-    session.local_ws.close = AsyncMock()
-    session.data_channel = Mock()
-    session.data_channel.readyState = "open"
-
-    session.message_queue.put_nowait(
-        json.dumps({"type": "http-proxy-request", "id": "1", "method": "GET", "path": "/img"})
-    )
-    session.forward_to_local_task = asyncio.create_task(gateway._forward_to_local(session))
-
+    session_id = "bridge-session"
+    with patch.object(gateway, "_get_fresh_ice_servers", AsyncMock(return_value=[])):
+        offerer, dc = await _connect_gateway_session(gateway, session_id)
     try:
-        for _ in range(20):
-            if session.proxy_tasks:
-                break
-            await asyncio.sleep(0.05)
-        proxy_task = next(iter(session.proxy_tasks))
+        await _wait_for(lambda: gateway.sessions[session_id].local_ws is local_ws)
 
-        await gateway._close_data_channel_bridge(session)
+        # browser -> local WebSocket
+        await dc.send("from browser")
+        await _wait_for(lambda: fake_ws.sent == ["from browser"])
 
-        assert proxy_task.cancelled()
-        assert not session.proxy_tasks
+        # local WebSocket -> browser
+        fake_ws.feed_text("from local")
+        msg = await asyncio.wait_for(dc.recv(), timeout=15)
+        assert msg == "from local"
     finally:
-        release.set()
+        await gateway._close_session(session_id)
+        await offerer.aclose()
+
+
+def test_build_ice_servers_maps_dicts() -> None:
+    """ICE server dicts map to one IceServer per url, preserving TURN credentials."""
+    gateway = WebRTCGateway(
+        http_session=Mock(),
+        remote_id="TEST-REMOTE-ID",
+        cert_pem="cert",
+        key_pem="key",
+    )
+    servers: list[dict[str, Any]] = [
+        {"urls": "stun:stun.example.com:3478"},
+        {"urls": "turn:turn.example.com:3478", "username": "user", "credential": "pass"},
+        {
+            "urls": ["stun:a.example.com:3478", "turn:b.example.com:3478"],
+            "username": "u2",
+            "credential": "c2",
+        },
+    ]
+
+    result = gateway._build_ice_servers(servers)
+
+    assert all(isinstance(server, IceServer) for server in result)
+    # the two-url entry fans out, so 1 + 1 + 2 = 4 IceServers
+    assert len(result) == 4
+    assert result[0] == IceServer(url="stun:stun.example.com:3478")
+    assert result[1] == IceServer(
+        url="turn:turn.example.com:3478", username="user", credential="pass"
+    )
+    # to_url() inlines the TURN credentials for libdatachannel
+    assert result[1].to_url() == "turn:user:pass@turn.example.com:3478"
+    # list urls share the entry's credentials
+    assert result[2] == IceServer(url="stun:a.example.com:3478", username="u2", credential="c2")
+    assert result[3] == IceServer(url="turn:b.example.com:3478", username="u2", credential="c2")
+
+
+async def test_session_closes_when_ma_api_channel_closes(cert_pems: tuple[str, str]) -> None:
+    """Closing the browser ma-api channel tears down the whole gateway session."""
+    cert_pem, key_pem = cert_pems
+    fake_ws = _FakeLocalWS()
+    local_ws = cast("aiohttp.ClientWebSocketResponse", fake_ws)
+    http_session = Mock()
+    http_session.ws_connect = AsyncMock(return_value=local_ws)
+    gateway = WebRTCGateway(
+        http_session=http_session,
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+    )
+    session_id = "channel-close-session"
+    with patch.object(gateway, "_get_fresh_ice_servers", AsyncMock(return_value=[])):
+        offerer, dc = await _connect_gateway_session(gateway, session_id)
+    try:
+        await _wait_for(
+            lambda: gateway.sessions.get(session_id) is not None
+            and gateway.sessions[session_id].local_ws is local_ws
+        )
+
+        await dc.aclose()
+
+        await _wait_for(lambda: session_id not in gateway.sessions)
+        assert session_id not in gateway.sessions
+    finally:
+        await gateway._close_session(session_id)
+        await offerer.aclose()
+

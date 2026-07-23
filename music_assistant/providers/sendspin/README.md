@@ -205,7 +205,7 @@ Sendspin players support:
 ## Dependencies
 
 - `aiosendspin` - Async Sendspin protocol implementation
-- `aiortc` - WebRTC implementation for Python (used for WebRTC bridging)
+- `aiolibdatachannel` - WebRTC implementation for Python (used for WebRTC bridging)
 - `PIL/Pillow` - Image processing for artwork
 
 ## External Players (Protocol Bridges)

@@ -45,7 +45,8 @@ dependencies = [
   "torch==2.13.0",
   "torchaudio==2.11.0",
   "gql[all]==4.0.0",
-  "aiortc>=1.6.0",
+  # TEMPORARY test-drive pin — replace with PyPI release before merge (see webrtc_aiolibdatachannel_plan.md Phase C)
+  "aiolibdatachannel @ git+https://github.com/music-assistant/aiolibdatachannel@feat/certpem-testdrive",
   "pyjwt[crypto]>=2.10.1",
 ]
 description = "Music Assistant"
