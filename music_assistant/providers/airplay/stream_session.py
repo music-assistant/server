@@ -653,7 +653,11 @@ class AirPlayStreamSession:
         The open pairs with the read side the binary opened at PREPARE.
         """
         if ffmpeg := self._player_ffmpeg.pop(player.player_id, None):
-            await ffmpeg.close()
+            # Kill, not close: a graceful close waits for the old ffmpeg to
+            # drain its buffered audio into the binary at playback speed
+            # (seconds), and that audio is superseded anyway. The binary keeps
+            # playing the old generation from its own ring until START lands.
+            await ffmpeg.kill()
         stream = player.stream
         assert stream
         handoff_format = stream.pcm_format
