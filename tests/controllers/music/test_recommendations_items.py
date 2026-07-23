@@ -8,9 +8,9 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from music_assistant_models.enums import MediaType, ProviderFeature, ProviderType
 from music_assistant_models.media_items import ItemMapping, RecommendationFolder, UniqueList
 
-from music_assistant.controllers.music.recommendations.library import library_rows
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.recommendations import LibraryRecommendationsProvider
 
 if TYPE_CHECKING:
     import pytest
@@ -100,30 +100,41 @@ async def test_rows_interleaved_builtin_first(
     mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Builtin and provider rows are interleaved one per source per pass, builtin first."""
+    recommendations_provider = mass.get_provider("recommendations")
     prov_a = _build(_RowsProvider, instance_id="prov_a")
     prov_b = _build(_RowsProvider, instance_id="prov_b")
     monkeypatch.setattr(
-        mass, "get_providers_supporting_feature", lambda *_a, **_k: [prov_a, prov_b]
+        mass,
+        "get_providers_supporting_feature",
+        lambda *_a, **_k: [recommendations_provider, prov_a, prov_b],
     )
     folders = await mass.music.recommendations.get_recommendations()
-    assert [f.provider for f in folders[:3]] == ["library", "prov_a", "prov_b"]
-    assert all(f.provider == "library" for f in folders[3:])
+    assert [f.provider for f in folders[:3]] == ["recommendations", "prov_a", "prov_b"]
+    assert all(f.provider == "recommendations" for f in folders[3:])
 
 
 async def test_rows_interleave_uneven_provider_lengths_no_tail_dropped(
     mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Providers with fewer rows than the builtin sources still contribute all their rows."""
+    recommendations_provider = mass.get_provider("recommendations")
     four = _build(_FourRowsProvider, instance_id="four")
     one = _build(_OneRowProvider, instance_id="one")
-    monkeypatch.setattr(mass, "get_providers_supporting_feature", lambda *_a, **_k: [four, one])
+    monkeypatch.setattr(
+        mass,
+        "get_providers_supporting_feature",
+        lambda *_a, **_k: [recommendations_provider, four, one],
+    )
 
     folders = await mass.music.recommendations.get_recommendations()
 
-    builtin_ids = [f.item_id for f in library_rows()]
+    provider = mass.get_provider("recommendations")
+    assert provider is not None
+    assert isinstance(provider, LibraryRecommendationsProvider)
+    builtin_ids = [f.item_id for f in await provider.get_recommendations()]
     expected: list[tuple[str, str]] = []
     for i, builtin_id in enumerate(builtin_ids):
-        expected.append(("library", builtin_id))
+        expected.append(("recommendations", builtin_id))
         if i < 4:
             expected.append(("four", f"four_row_{i}"))
         if i < 1:

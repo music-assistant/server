@@ -1,0 +1,13 @@
+{
+  "type": "plugin",
+  "domain": "recommendations",
+  "stage": "stable",
+  "name": "Library Recommendations",
+  "description": "Provides library-based recommendation rows for the Discover page.",
+  "codeowners": ["@music-assistant"],
+  "requirements": [],
+  "documentation": "",
+  "multi_instance": false,
+  "builtin": true,
+  "allow_disable": false
+}
