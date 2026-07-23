@@ -6,9 +6,47 @@ import pytest
 
 from music_assistant.providers.airplay.helpers import (
     get_cli_binary,
+    get_decoded_property,
     serialize_txt_records,
     supports_airplay2,
+    supports_companion_pairing,
 )
+
+
+def test_get_decoded_property_matches_case_insensitively() -> None:
+    """TXT record keys resolve regardless of the casing advertised on the wire."""
+    discovery_info = MagicMock()
+    discovery_info.decoded_properties = {"rpFl": "0x367A2", "SystemBuildVersion": "21K69"}
+
+    assert get_decoded_property(discovery_info, "rpFl") == "0x367A2"
+    assert get_decoded_property(discovery_info, "rpfl") == "0x367A2"
+    assert get_decoded_property(discovery_info, "systembuildversion") == "21K69"
+    assert get_decoded_property(discovery_info, "missing") is None
+
+
+@pytest.mark.parametrize(
+    ("properties", "expected"),
+    [
+        # Apple TV advertises its flags under the mixed-case wire key "rpFl"
+        ({"rpFl": "0x367A2"}, True),
+        # HomePod: PIN pairing not supported
+        ({"rpFl": "0x62792"}, False),
+        # pairing explicitly disabled
+        ({"rpFl": "0x367A6"}, False),
+        ({"rpFl": "invalid"}, False),
+        ({}, False),
+    ],
+)
+def test_supports_companion_pairing(properties: dict[str, str], expected: bool) -> None:
+    """Companion PIN pairing support is read from the wire-cased rpFl flags."""
+    discovery_info = MagicMock()
+    discovery_info.decoded_properties = properties
+    assert supports_companion_pairing(discovery_info) is expected
+
+
+def test_supports_companion_pairing_without_service() -> None:
+    """A device without a Companion service is never pairable."""
+    assert supports_companion_pairing(None) is False
 
 
 @pytest.mark.parametrize(

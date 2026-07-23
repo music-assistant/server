@@ -516,6 +516,51 @@ def test_player_output_plan_excludes_neutral_filters() -> None:
     assert not any(param.startswith("equalizer=") for param in plan.filter_params)
 
 
+def test_player_output_plan_prefers_rendering_player_channels() -> None:
+    """Output channels stored on the rendering player win over the parent's value."""
+    mass = MagicMock()
+    player = MagicMock(player_id="child-1", protocol_parent_id="parent-1")
+    player.state.active_group = None
+    player.state.synced_to = None
+    mass.players.get_player.return_value = player
+    mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
+    mass.config.get_raw_player_config_value.side_effect = lambda player_id, _key, default: (
+        "left" if player_id == "child-1" else default
+    )
+    audio = StreamsAudio(cast("Any", mass))
+    audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
+
+    plan = audio.get_player_output_plan(
+        "child-1",
+        audio_format,
+        audio_format,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    assert plan.output_details.source_channel == AudioChannel.FL
+    assert "pan=mono|c0=FL" in plan.filter_params
+    # processing attribution still points at the visible parent player
+    assert mass.streams.audio_processing.update_output.call_args.args[0] == "parent-1"
+
+
+@pytest.mark.asyncio
+async def test_output_format_prefers_rendering_player_channels() -> None:
+    """The output format channel count follows the rendering player's own stored value."""
+    mass = MagicMock()
+    player = MagicMock(player_id="child-1", protocol_parent_id="parent-1")
+    player.get_supported_sample_rates.return_value = [(48000, 24)]
+    mass.config.get_raw_player_config_value.side_effect = lambda player_id, _key, default: (
+        "left" if player_id == "child-1" else default
+    )
+    audio = StreamsAudio(cast("Any", mass))
+
+    fmt = await audio.get_output_format("flac", player, 48000, 24, MediaType.TRACK)
+
+    assert fmt.channels == 1
+
+
 @pytest.mark.asyncio
 async def test_single_stream_handler_shares_native_group_members(
     monkeypatch: pytest.MonkeyPatch,
@@ -582,8 +627,11 @@ def test_protocol_output_uses_parent_settings(monkeypatch: pytest.MonkeyPatch) -
     assert plan.output_details.dsp.preset_id == "parent-preset"
     assert plan.dsp_config_id == "player-1"
     assert plan.output_details.source_channel == AudioChannel.FR
+    # the output channels are looked up on the rendering player first (no value
+    # stored there in this scenario), then resolved from the user-facing parent
     assert {call.args[0] for call in mass.config.get_raw_player_config_value.call_args_list} == {
-        "player-1"
+        "player-1",
+        "protocol-1",
     }
     mass.streams.audio_processing.update_output.assert_called_once_with(
         "player-1",

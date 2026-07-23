@@ -1079,6 +1079,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 announcement_url=url,
                 pre_announce=bool(pre_announce),
                 pre_announce_url=pre_announce_url,
+                announce_player_id=(announce_player.player_id if native_announce_support else None),
             )
             announcement = PlayerMedia(
                 uri=self.mass.streams.get_announcement_url(player_id, announce_data=announce_data),

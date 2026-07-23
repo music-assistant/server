@@ -1187,9 +1187,7 @@ class StreamsAudio:
             if dsp.output_gain != 0:
                 filter_params.append(f"volume={dsp.output_gain}dB")
 
-        channel_value = self.mass.config.get_raw_player_config_value(
-            destination_player_id, CONF_OUTPUT_CHANNELS, "stereo"
-        )
+        channel_value = self._get_output_channels(player, player_id)
         source_channel = None
         if channel_value == "left":
             source_channel = AudioChannel.FL
@@ -1266,11 +1264,7 @@ class StreamsAudio:
         if output_format_str == "pcm":
             content_type = ContentType.from_bit_depth(output_bit_depth)
 
-        output_channels_str = self.mass.config.get_raw_player_config_value(
-            player.protocol_parent_id or player.player_id,
-            CONF_OUTPUT_CHANNELS,
-            "stereo",
-        )
+        output_channels_str = self._get_output_channels(player, player.player_id)
         fmt = AudioFormat(
             content_type=content_type,
             sample_rate=output_sample_rate,
@@ -2059,6 +2053,7 @@ class StreamsAudio:
         start_queue_item: QueueItem,
         pcm_format: AudioFormat,
         session_id: str | None = None,
+        protocol_player: Player | None = None,
     ) -> AsyncGenerator[bytes]:
         """
         Get a flow stream of all tracks in the queue as raw PCM audio.
@@ -2069,6 +2064,10 @@ class StreamsAudio:
         :param start_queue_item: First queue item in the flow stream.
         :param pcm_format: Shared PCM format for the complete flow stream.
         :param session_id: Queue session that owns processing-detail updates.
+        :param protocol_player: The protocol player actually consuming the flow stream.
+            Must be the same player that was used to select ``pcm_format`` so
+            restart decisions are made against the correct supported sample rates
+            and flow mode configuration. Falls back to the queue's player when omitted.
         """
         # ruff: noqa: PLR0915
         assert pcm_format.content_type.is_pcm()
@@ -2109,14 +2108,8 @@ class StreamsAudio:
             standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
                 CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
             )
-        flow_mode_sample_rate_conf = self.mass.config.get_raw_player_config_value(
-            queue.queue_id, CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART
-        )
-        flow_player = self.mass.players.get_player(queue.queue_id)
-        flow_supported_sample_rates = (
-            sorted({sr for sr, _ in flow_player.get_supported_sample_rates()})
-            if flow_player
-            else []
+        flow_mode_sample_rate_conf, flow_supported_sample_rates = self._flow_restart_context(
+            queue.queue_id, protocol_player
         )
         # note: get_crossfade_mode() already falls back to standard when smart fades aren't
         # available (no analysis provider / minimal buffer), so crossfade_mode is safe to use.
@@ -3045,6 +3038,22 @@ class StreamsAudio:
             dsp_player_id = child_player.player_id
         return dsp_player_id
 
+    def _get_output_channels(self, player: Player | None, player_id: str) -> str:
+        """
+        Return the configured output channels for the rendering player.
+
+        The value may be stored on the rendering player(protocol) itself (the
+        protocol section of the config UI) or on its visible parent player (the
+        native section); the rendering player's own stored value wins.
+        """
+        parent_id = player.protocol_parent_id if player and player.protocol_parent_id else player_id
+        parent_value = self.mass.config.get_raw_player_config_value(
+            parent_id, CONF_OUTPUT_CHANNELS, "stereo"
+        )
+        return self.mass.config.get_raw_player_config_value(
+            player.player_id if player else player_id, CONF_OUTPUT_CHANNELS, parent_value
+        )
+
     def _pick_pcm_bit_depth(
         self,
         player: Player,
@@ -3106,6 +3115,33 @@ class StreamsAudio:
             bit_depth=bit_depth,
             channels=streamdetails.audio_format.channels,
         )
+
+    def _flow_restart_context(
+        self, queue_id: str, protocol_player: Player | None
+    ) -> tuple[str, list[int]]:
+        """
+        Resolve the flow mode config and supported sample rates for restart decisions.
+
+        Prefers the protocol player actually consuming the flow stream over the
+        queue's (wrapper) player, whose config may lack the audio specific entries.
+        """
+        if protocol_player is None:
+            protocol_player = self.mass.players.get_player(queue_id)
+        if protocol_player is None:
+            flow_mode_sample_rate_conf = self.mass.config.get_raw_player_config_value(
+                queue_id, CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART
+            )
+            return flow_mode_sample_rate_conf, []
+        flow_mode_sample_rate_conf = cast(
+            "str",
+            protocol_player.config.get_value(
+                CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART
+            ),
+        )
+        supported_sample_rates = sorted(
+            {sr for sr, _ in protocol_player.get_supported_sample_rates()}
+        )
+        return flow_mode_sample_rate_conf, supported_sample_rates
 
     def _flow_stream_needs_restart(
         self,
