@@ -449,6 +449,19 @@ class SendspinPlaybackSession:
         async with self._state_lock:
             if player_id in self._members:
                 return
+            if self._pcm_format.channels > 2:
+                # The session PCM format is fixed at stream start and every
+                # member receives that same stream, with no per-member
+                # conversion. Admitting a member to a multichannel session
+                # would push a layout it may be unable to render, so the join
+                # is refused while multichannel is active.
+                self.player.logger.warning(
+                    "Refusing to add %s to a %d-channel session: multichannel "
+                    "playback is limited to ungrouped players",
+                    player_id,
+                    self._pcm_format.channels,
+                )
+                return
             self.pending_join_members.add(player_id)
             # Preserve any channel pre-resolved during add_client so join-time
             # role requirements and prepared audio stay on the same channel.
@@ -1249,20 +1262,19 @@ class SendspinPlaybackSession:
         except Exception:
             filter_params = ()
             output_plan = None
-        custom_filter_graph = any(
-            param.strip() and not param.strip().startswith("alimiter=") for param in filter_params
-        )
+        custom_filter_graph = any(param.strip() for param in filter_params)
         requires_transform = dsp_enabled or output_channels != "stereo" or custom_filter_graph
-        if output_plan is not None:
-            if not requires_transform:
-                output_plan.output_details.dsp.output_limiter = False
-            if self._queue_id is not None and self._queue_session_id is not None:
-                self.player.mass.streams.audio_processing.update_output(
-                    output_plan.output_details.player_ids[0],
-                    output_plan,
-                    queue_id=self._queue_id,
-                    session_id=self._queue_session_id,
-                )
+        if (
+            output_plan is not None
+            and self._queue_id is not None
+            and self._queue_session_id is not None
+        ):
+            self.player.mass.streams.audio_processing.update_output(
+                output_plan.output_details.player_ids[0],
+                output_plan,
+                queue_id=self._queue_id,
+                session_id=self._queue_session_id,
+            )
         return _PipelineConfig(
             requires_transform=requires_transform,
             output_channels=output_channels,
@@ -1279,32 +1291,19 @@ class SendspinPlaybackSession:
         clients with a different preferred rate up/down-sample in their own DSP
         step on the receiving side.
 
-        Channel count follows the leader's advertised capability (from its Sendspin
-        ClientHello) instead of being forced to stereo, so multichannel-capable
-        clients (e.g. a 5.1/7.1 ALSA or PipeWire sink) get a session pipeline that
-        can actually carry their native layout. Falls back to stereo when the
-        client hasn't advertised a channel count, and is clamped to a sane ceiling
-        so a malformed/hostile ClientHello can't blow up the pipeline.
+        Channel count follows the leader's advertised capability (from ClientHello)
+        Multichannel is restricted to ungrouped players.
         """
         leader_output = self._get_member_output_format(self.player.player_id)
         sample_rate = int(leader_output.sample_rate) or _DEFAULT_PCM_FORMAT.sample_rate
         if leader_output.content_type in (ContentType.OPUS, ContentType.MP3, ContentType.AAC):
             sample_rate = min(sample_rate, _LOSSY_MAX_SAMPLE_RATE)
-        # Channel count follows the leader's advertised multichannel capability
-        # so a 5.1/7.1 client gets a session pipeline carrying its native
-        # layout. This is deliberately conservative: it defaults to stereo and
-        # only raises the count when the leader advertised a concrete, in-range
-        # (>2, <=_MAX_SESSION_CHANNELS) value. Critically, _get_member_output_
-        # format() falls back to returning self._pcm_format when the leader has
-        # no resolved sendspin role yet (e.g. at stream start); reading a
-        # channel count from that self-referential fallback is unsafe, so
-        # anything outside the strict multichannel range leaves the session at
-        # stereo — matching stock behavior — rather than propagating a stray
-        # count into the whole pipeline.
         session_channels = 2
-        advertised = int(leader_output.channels) if leader_output.channels else 2
-        if 2 < advertised <= _MAX_SESSION_CHANNELS:
-            session_channels = advertised
+        is_grouped = bool(self._members or self.pending_join_members)
+        if not is_grouped:
+            advertised = int(leader_output.channels) if leader_output.channels else 2
+            if 2 < advertised <= _MAX_SESSION_CHANNELS:
+                session_channels = advertised
         pcm_format = AudioFormat(
             content_type=ContentType.PCM_F32LE,
             sample_rate=sample_rate,

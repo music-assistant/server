@@ -163,14 +163,12 @@ class SendspinLocalAudioBridge:
         # sink's real channel_map can leave the displayed reference_volume
         # updated while soft_volume (real gain) doesn't change.
         self.pa_channels: int = device_info.get("max_output_channels", BRIDGE_CHANNELS)
-        # The device's real physical channel order (from pa_simple's
-        # get_card_port_physical_positions(), EDID-detected where
-        # available), and the resulting remap index against MA's standard
-        # PCM output order — precomputed once here so both writer backends
-        # (_audio_writer_pulse and _audio_writer_sounddevice) apply the
-        # identical correction without recomputing it per chunk. None when
-        # no correction is needed or possible (see build_channel_remap_index
-        # docstring for the specific cases).
+        # The device's real physical channel order, as reported by the ALSA
+        # driver (pa_simple query_alsa_chmap(), via enumerate_alsa_devices()),
+        # and the resulting remap index against MA's standard PCM output order,
+        # computed once here so both writer backends (_audio_writer_pulse and
+        # _audio_writer_sounddevice) apply the identical correction. None when
+        # no correction is needed or possible.
         self.physical_channel_map: list[str] | None = device_info.get("physical_channel_map")
         # Byte-remap applies to the ALSA backend only: raw hw: devices are
         # order-blind, so content must be reordered into the driver's active
@@ -763,9 +761,6 @@ class SendspinLocalAudioBridge:
                     data = self._apply_format_conversion(data)
                 else:
                     data = self._apply_software_volume(data)
-                data = self._remap_channels(
-                    data, self.bit_depth // 8, log_first=not first_chunk_written
-                )
                 write_future = self.mass.loop.run_in_executor(None, stream.write, data)
                 await write_future
                 write_future = None

@@ -168,6 +168,71 @@ def test_parse_stream_info_unknown_codec_still_yields_other_fields() -> None:
     assert info.bit_depth is None
 
 
+def test_parse_stream_info_30() -> None:
+    """3.0 layout yields 3 channels."""
+    line = "Stream #0:0: Audio: flac, 48000 Hz, 3.0, s16, 2304 kb/s"
+    info = parse_ffmpeg_stream_info(line)
+    assert info == FFMpegStreamInfo(
+        codec=ContentType.FLAC,
+        sample_rate=48000,
+        bit_depth=16,
+        bit_rate=2304,
+        channels=3,
+    )
+
+
+def test_parse_stream_info_40() -> None:
+    """4.0 layout yields 4 channels."""
+    line = "Stream #0:0: Audio: flac, 48000 Hz, 4.0, s16, 3072 kb/s"
+    info = parse_ffmpeg_stream_info(line)
+    assert info == FFMpegStreamInfo(
+        codec=ContentType.FLAC,
+        sample_rate=48000,
+        bit_depth=16,
+        bit_rate=3072,
+        channels=4,
+    )
+
+
+def test_parse_stream_info_50() -> None:
+    """5.0 layout yields 5 channels."""
+    line = "Stream #0:0: Audio: flac, 48000 Hz, 5.0, s16, 3840 kb/s"
+    info = parse_ffmpeg_stream_info(line)
+    assert info == FFMpegStreamInfo(
+        codec=ContentType.FLAC,
+        sample_rate=48000,
+        bit_depth=16,
+        bit_rate=3840,
+        channels=5,
+    )
+
+
+def test_parse_stream_info_51() -> None:
+    """5.1 layout yields 6 channels."""
+    line = "Stream #0:0: Audio: flac, 48000 Hz, 5.1, s16, 4608 kb/s"
+    info = parse_ffmpeg_stream_info(line)
+    assert info == FFMpegStreamInfo(
+        codec=ContentType.FLAC,
+        sample_rate=48000,
+        bit_depth=16,
+        bit_rate=4608,
+        channels=6,
+    )
+
+
+def test_parse_stream_info_71() -> None:
+    """7.1 layout yields 8 channels."""
+    line = "Stream #0:0: Audio: flac, 48000 Hz, 7.1, s16, 6144 kb/s"
+    info = parse_ffmpeg_stream_info(line)
+    assert info == FFMpegStreamInfo(
+        codec=ContentType.FLAC,
+        sample_rate=48000,
+        bit_depth=16,
+        bit_rate=6144,
+        channels=8,
+    )
+
+
 # -- parse_ffmpeg_duration --
 
 

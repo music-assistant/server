@@ -796,13 +796,25 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
 
 
 # The channel order MA/FFmpeg actually writes PCM in for each channel count
-# it produces (matches helpers/ffmpeg.py's _CHANNEL_LAYOUT scope — only
-# channel counts with an unambiguous standard layout are covered; anything
-# else has no single correct "default" order to remap from).
+# it produces — the PulseAudio position names for the FFmpeg layout that
+# helpers/ffmpeg.py's _CHANNEL_LAYOUT selects at the same count. The two
+# tables must stay in sync: one writes the order, the other interprets it.
 _SOURCE_CHANNEL_ORDER: Final[dict[int, list[str]]] = {
     1: ["front-center"],
     2: ["front-left", "front-right"],
+    3: ["front-left", "front-right", "lfe"],
+    4: ["front-left", "front-right", "rear-left", "rear-right"],
+    5: ["front-left", "front-right", "front-center", "rear-left", "rear-right"],
     6: ["front-left", "front-right", "front-center", "lfe", "rear-left", "rear-right"],
+    7: [
+        "front-left",
+        "front-right",
+        "front-center",
+        "lfe",
+        "rear-center",
+        "side-left",
+        "side-right",
+    ],
     8: [
         "front-left",
         "front-right",
@@ -925,10 +937,8 @@ def remap_pcm_channels(
     :returns: Reordered PCM bytes, same length as input.
     """
     frame_bytes = channels * bytes_per_sample
-    # Truncate to a whole number of frames — a partial trailing frame (can
-    # happen at a stream boundary) can't be meaningfully reordered and is
-    # dropped rather than corrupted; callers write in frame-aligned chunks
-    # in normal operation, so this is a no-op in practice.
+    # Only whole frames can be reordered; any partial trailing frame is
+    # passed through unchanged so the output length matches the input.
     usable_len = (len(data) // frame_bytes) * frame_bytes
     arr = np.frombuffer(data[:usable_len], dtype=np.uint8).reshape(-1, channels, bytes_per_sample)
     remapped = arr[:, index, :]
