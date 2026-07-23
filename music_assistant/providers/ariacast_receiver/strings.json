@@ -6,6 +6,10 @@
       "options": {
         "__auto__": "Auto (prefer playing player)"
       }
+    },
+    "ariacast_name": {
+      "label": "AriaCast Device Name",
+      "description": "The name shown to AriaCast senders when they discover this receiver on the network."
     }
   },
   "setup_flow": {
