@@ -414,28 +414,6 @@ class HomeAssistantProvider(PluginProvider):
             "player_controls": len(self._player_controls) if self._player_controls else 0,
         }
 
-    async def get_device_by_connection(
-        self,
-        connection_value: str,
-        connection_type: str = "mac",
-    ) -> Device | None:
-        """
-        Get device details from Home Assistant by connection type and value.
-
-        :param connection_value: The connection value (e.g. MAC address).
-        :param connection_type: The connection type (default: 'mac').
-        """
-        devices = await self.hass.get_device_registry()
-        for device in devices:
-            for connection in device.get("connections", []):
-                if (
-                    len(connection) == 2
-                    and connection[0] == connection_type
-                    and connection[1].lower() == connection_value.lower()
-                ):
-                    return device
-        return None
-
     async def get_media_player_device_infos(
         self,
         mac_addresses: Collection[str],
