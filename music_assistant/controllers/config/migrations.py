@@ -32,6 +32,9 @@ from music_assistant.controllers.player_queues.constants import (
 
 LOGGER = logging.getLogger(__name__)
 
+# removed player config key, only referenced by its migration
+LEGACY_CONF_OUTPUT_LIMITER = "output_limiter"
+
 
 async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     """Migrate the persistent settings data in-place; return True if anything changed."""
@@ -151,6 +154,12 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     # their (now obsolete) universal player wrappers back onto them.
     # TODO: remove after 2.11 release
     if _migrate_local_audio_attribution_stubs(data):
+        changed = True
+
+    # Drop the stored value of the removed output limiter player setting; clipping protection
+    # is now an explicit Safety Limiter DSP filter instead of a fixed output stage.
+    # TODO: remove after 2.10 release
+    if _migrate_output_limiter(data):
         changed = True
 
     return changed
@@ -567,3 +576,21 @@ def _migrate_fully_kiosk_multi_instance(data: dict[str, Any]) -> bool:
         len(legacy_ids),
     )
     return True
+
+
+def _migrate_output_limiter(data: dict[str, Any]) -> bool:
+    """Remove the stored values of the removed per-player output limiter setting."""
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    changed = False
+    for player_cfg in all_player_configs.values():
+        if not isinstance(player_cfg, dict):
+            continue
+        player_values = player_cfg.get("values")
+        if isinstance(player_values, dict) and LEGACY_CONF_OUTPUT_LIMITER in player_values:
+            del player_values[LEGACY_CONF_OUTPUT_LIMITER]
+            changed = True
+    if changed:
+        LOGGER.info("Removed the obsolete output limiter setting from the player configuration(s)")
+    return changed

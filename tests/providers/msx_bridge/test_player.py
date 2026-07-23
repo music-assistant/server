@@ -135,6 +135,43 @@ async def test_stop_does_not_clear_media_ready_event(player: MSXPlayer) -> None:
     assert result is None
 
 
+async def test_expect_new_media_arms_wait_for_media(player: MSXPlayer) -> None:
+    """
+    After expect_new_media(), wait_for_media must wait for the NEXT play_media.
+
+    Without arming, the event left set by a previous track would make
+    wait_for_media return the stale current_media immediately — serving the
+    previous track's stream to the TV.
+    """
+    old_media = Mock(spec=PlayerMedia)
+    old_media.uri = "library://track/1"
+    await player.play_media(old_media)
+
+    new_media = Mock(spec=PlayerMedia)
+    new_media.uri = "library://track/2"
+    player.expect_new_media()
+
+    async def delayed_play() -> None:
+        await asyncio.sleep(0.05)
+        await player.play_media(new_media)
+
+    task = asyncio.create_task(delayed_play())
+    result = await player.wait_for_media(timeout=2.0)
+    assert result is new_media
+    await task
+
+
+async def test_expect_new_media_timeout_returns_none(player: MSXPlayer) -> None:
+    """After expect_new_media(), wait_for_media times out with None if no play_media arrives."""
+    old_media = Mock(spec=PlayerMedia)
+    old_media.uri = "library://track/1"
+    await player.play_media(old_media)
+
+    player.expect_new_media()
+    result = await player.wait_for_media(timeout=0.05)
+    assert result is None
+
+
 async def test_play_resume(player: MSXPlayer) -> None:
     """play() when PAUSED should notify MSX to resume and set state to PLAYING."""
     player._attr_playback_state = PlaybackState.PAUSED
@@ -621,12 +658,13 @@ async def test_poll_skips_when_ws_position_recent(player: MSXPlayer) -> None:
     player._attr_playback_state = PlaybackState.PLAYING
     player._attr_elapsed_time = 30.0
     player._attr_elapsed_time_last_updated = 200.0
-    player._last_ws_position = 200.0  # very recent
+    player._last_ws_position = 200.0  # very recent (monotonic)
 
     player.update_state.reset_mock()  # type: ignore[attr-defined]
 
     with patch("music_assistant.providers.msx_bridge.player.time") as mock_time:
-        mock_time.time.return_value = 205.0  # only 5s since last WS (< 10s threshold)
+        mock_time.time.return_value = 205.0
+        mock_time.monotonic.return_value = 205.0  # only 5s since last WS (< 10s threshold)
         await player.poll()
 
     # Should NOT have updated elapsed_time
@@ -639,13 +677,39 @@ async def test_poll_uses_wall_clock_when_ws_stale(player: MSXPlayer) -> None:
     player._attr_playback_state = PlaybackState.PLAYING
     player._attr_elapsed_time = 30.0
     player._attr_elapsed_time_last_updated = 200.0
-    player._last_ws_position = 180.0  # 25s ago
+    player._last_ws_position = 180.0  # 25s ago (monotonic)
 
     with patch("music_assistant.providers.msx_bridge.player.time") as mock_time:
         mock_time.time.return_value = 205.0
+        mock_time.monotonic.return_value = 205.0
         await player.poll()
 
     assert player._attr_elapsed_time == 35.0  # 30 + (205 - 200)
+
+
+async def test_poll_ws_staleness_immune_to_wall_clock_jump(player: MSXPlayer) -> None:
+    """
+    A wall-clock jump (NTP step) must not make a fresh WS position look stale.
+
+    The WS staleness check must use the monotonic clock: with wall-clock, an
+    NTP correction of +1h right after a WS report makes poll() fall back to
+    the wall-clock delta and corrupt elapsed_time by hours.
+    """
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_elapsed_time = 30.0
+
+    with patch("music_assistant.providers.msx_bridge.player.time") as mock_time:
+        mock_time.time.return_value = 200.0
+        mock_time.monotonic.return_value = 1000.0
+        player.update_position(42.0)
+
+        # NTP jumps wall clock forward 1 hour; monotonic advances only 5s
+        mock_time.time.return_value = 200.0 + 3600.0
+        mock_time.monotonic.return_value = 1005.0
+        await player.poll()
+
+    # WS report is 5s old (monotonic) — still fresh, elapsed must be untouched
+    assert player._attr_elapsed_time == 42.0
 
 
 async def test_stop_clears_ws_position(player: MSXPlayer) -> None:

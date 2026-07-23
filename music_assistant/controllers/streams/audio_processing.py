@@ -613,9 +613,7 @@ def _is_bit_perfect(
     dsp_alters_audio = details.dsp.state == DSPState.ENABLED and (
         bool(details.dsp.filters) or details.dsp.input_gain != 0 or details.dsp.output_gain != 0
     )
-    return not (
-        dsp_alters_audio or details.dsp.output_limiter or details.source_channel is not None
-    )
+    return not (dsp_alters_audio or details.source_channel is not None)
 
 
 def _output_details_equal_ignoring_players(
