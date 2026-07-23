@@ -166,7 +166,11 @@ class AirPlayStreamSession:
             for player in self.sync_clients:
                 await self._start_generation_ffmpeg(player, fifos[player.player_id], media)
             self.media = media
+            # The stream position counter and the late-join prime buffer both
+            # describe the OLD generation's timeline; restart them before the
+            # new source starts pumping.
             self.seconds_streamed = 0
+            self._pcm_buffer.clear()
             self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
 
             # commit once every member is primed: same instant for the group,
@@ -180,20 +184,28 @@ class AirPlayStreamSession:
             )
             if not all(primed):
                 raise PlayerCommandFailed("generation prime timeout")
-            start_unix_ms = 0 if len(self.sync_clients) == 1 else int(time.time() * 1000) + 750
+            # Commit at an explicit shared instant: a lone player gets a hair
+            # above the binary's minimum warm lead, a group extra headroom.
+            warm_lead_ms = 400 if len(self.sync_clients) == 1 else 750
+            start_unix_ms = int(time.time() * 1000) + warm_lead_ms
             for player in self.sync_clients:
                 member_start = start_unix_ms
                 sync_adjust = player.config.get_value(CONF_SYNC_ADJUST, 0)
-                if start_unix_ms and isinstance(sync_adjust, int) and sync_adjust:
+                if isinstance(sync_adjust, int) and sync_adjust:
                     member_start += sync_adjust
                 stream = player.stream
                 assert stream
                 await stream.start_generation(
                     generations[player.player_id], position_ms, member_start
                 )
+            # Re-anchor the session on the new generation's timeline so late
+            # joiners map buffered samples to the correct wall-clock instant
+            # (the old anchor died with the warm flush).
+            self.start_unix_ms = start_unix_ms
+            self.start_time = start_unix_ms / 1000
         except Exception as err:
             self.prov.logger.warning(
-                "Warm replacement failed (%s); falling back to a cold restart", err
+                "Warm replacement failed (%r); falling back to a cold restart", err
             )
             return False
         finally:

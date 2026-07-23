@@ -284,6 +284,11 @@ class AirPlayStream:
         primed member.
         """
         self._generation_position = position_ms / 1000
+        # Stamp the player's elapsed onto the new generation's base right away:
+        # until the binary's first status arrives, interpolation would otherwise
+        # keep extending the SUPERSEDED generation's clock, which briefly maps
+        # onto the new stream log as a bogus position.
+        self.player.set_state_from_stream(elapsed_time=self._generation_position, stream=self)
         await self._write_cli_command(
             f"GENERATION={generation}\nSTART_UNIX_MS={start_unix_ms}\nACTION=START"
         )
