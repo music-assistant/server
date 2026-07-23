@@ -1016,10 +1016,15 @@ class SendspinPlayer(SendspinBasePlayer):
 
     def group_event_cb(self, group: SendspinGroup, event: GroupEvent) -> None:
         """Event callback registered to the sendspin group this player belongs to."""
+        # Leader only: a synced follower's self.state.current_media is a reference to
+        # the leader's PlayerMedia object, so the refresh below would mutate the leader's
+        # anchor from every follower. The metadata push (also leader-only) is what these
+        # refreshes exist to serve, so followers have nothing to do here.
         is_resume = (
             isinstance(event, GroupStateChangedEvent)
             and event.state == PlaybackStateType.PLAYING
             and self._attr_playback_state == PlaybackState.PAUSED
+            and self.synced_to is None
         )
         if is_resume:
             # _attr_elapsed_time_last_updated is only advanced by playback.py's commit

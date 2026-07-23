@@ -99,8 +99,14 @@ def test_pause_pushes_progress_without_touching_anchors() -> None:
     send_metadata.assert_called_once()
 
 
-def test_synced_follower_does_not_push_progress() -> None:
-    """A synced (non-leader) player never sends metadata itself."""
+def test_synced_follower_does_no_resume_work() -> None:
+    """
+    A synced (non-leader) player never pushes metadata nor touches any anchor.
+
+    A follower's self.state.current_media is a reference to the leader's object,
+    so touching it here would corrupt the leader's anchor - the resume handling
+    must be leader-only.
+    """
     media = PlayerMedia(
         uri="track-1", media_type=MediaType.TRACK, elapsed_time=14, elapsed_time_last_updated=1.0
     )
@@ -115,6 +121,8 @@ def test_synced_follower_does_not_push_progress() -> None:
         )
 
     send_metadata.assert_not_called()
+    assert player._attr_elapsed_time_last_updated == 1.0
+    assert media.elapsed_time_last_updated == 1.0
 
 
 def test_fresh_play_from_idle_does_not_refresh_anchors() -> None:
