@@ -64,6 +64,12 @@ if TYPE_CHECKING:
 # prefill need (~wait_start + its ~2 s buffer) yet far below a whole-track backlog.
 MAX_DEVICE_BUFFER_SECONDS: float = 8.0
 
+# How long to keep a connected CLI alive after a sendspin stream ends, waiting
+# for the next stream (seek/next) to reuse it warm. A real stop tears down after
+# this window. Comfortably longer than a sendspin stream restart, short enough
+# that a genuine stop stops the device promptly.
+BRIDGE_WARM_GRACE_SECONDS: float = 4.0
+
 
 def get_bridge_client_id(airplay_player: AirPlayPlayer) -> str | None:
     """
@@ -182,6 +188,11 @@ class SendspinAirPlayBridge:
         self._airplay_stream_start_task: asyncio.Task[None] | None = None
         self._airplay_stream_ready = asyncio.Event()
         self._cleanup_task: asyncio.Task[None] | None = None
+        # Timer id for the deferred teardown on stream end. A seek/next ends the
+        # sendspin stream and immediately starts a new one; deferring the CLI
+        # teardown across that gap lets the next stream reuse the connected
+        # binary as a warm generation instead of a cold reconnect.
+        self._teardown_timer_id = f"bridge_teardown_{airplay_player.player_id}"
         self._lock = asyncio.Lock()
 
     @property
@@ -269,6 +280,7 @@ class SendspinAirPlayBridge:
 
     async def stop(self) -> None:
         """Stop and unregister the Sendspin bridge."""
+        self.mass.cancel_timer(self._teardown_timer_id)
         async with self._lock:
             await self._stop_streaming()
             if self._sendspin_client and self._bridge_client_id:
@@ -328,6 +340,10 @@ class SendspinAirPlayBridge:
                 self.airplay_player.display_name,
             )
             return
+        # A new stream arrived within the grace window: cancel the deferred
+        # teardown so the previous stream's still-connected CLI survives to be
+        # reused as a warm generation instead of cold-restarting.
+        self.mass.cancel_timer(self._teardown_timer_id)
         # Bridge outlives config changes, so re-read the current timing values.
         self._refresh_bridge_timing()
         # Capture and detach old stream resources before scheduling their cleanup.
@@ -594,16 +610,20 @@ class SendspinAirPlayBridge:
 
     def _on_bridge_stream_end(self) -> None:
         """
-        Stop the AirPlay protocol immediately when the stream ends.
+        Handle the sendspin stream ending: defer the CLI teardown briefly.
 
-        Rather than just sending EOF (which lets the CLI play out its buffer),
-        we schedule a full cleanup that kills the CLI process immediately.
+        A seek or next-track ends the stream and immediately starts a new one.
+        Tearing the CLI down here would force every such switch through a cold
+        reconnect; instead we keep the connected binary alive for a short grace
+        window so the next stream can reuse it as a warm generation. If no new
+        stream arrives within the window (a real stop), the deferred cleanup
+        kills the CLI so AirPlay stops instead of draining its buffer.
         """
         self._is_streaming = False
         self._next_expected_timestamp_us = None
-        # Schedule full streaming cleanup - this kills the CLI process immediately
-        # so AirPlay stops playing instead of draining its 30s buffer.
-        self._schedule_cleanup()
+        self.mass.call_later(
+            BRIDGE_WARM_GRACE_SECONDS, self._schedule_cleanup, task_id=self._teardown_timer_id
+        )
 
     def _schedule_cleanup(self) -> None:
         """
