@@ -656,9 +656,7 @@ def enumerate_alsa_devices() -> list[dict[str, Any]]:
             }
         )
     if devices:
-                 
         for device_dict in devices:
-         
             hw_string = device_dict.get("alsa_hw_string")
             if hw_string and device_dict.get("max_output_channels", 0) > 2:
                 # Query the driver's own active channel map — the authoritative
@@ -671,10 +669,6 @@ def enumerate_alsa_devices() -> list[dict[str, Any]]:
                     int(device_dict.get("sample_rate") or 48000),
                 )
                 if resolved is not None:
-              
-                   
-     
-         
                     device_dict["physical_channel_map"] = resolved
             if device_dict.get("max_output_channels", 0) > 2:
                 LOGGER.debug(
@@ -798,182 +792,7 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
             }
         )
 
-                 
-          
-                
-              
-                        
-                     
-           
-                     
-               
-               
-                     
-          
-                
-                 
-        
-                        
-           
-        
-       
-               
-                
-     
     return sinks
-
-
-                   
-                     
-                   
-                    
-                     
-                  
-          
-              
-        
-      
-       
-     
-       
-        
-       
-        
-                     
-        
-      
- 
-
-
-              
-                   
-                       
-
-
-                     
-    
-                  
-
-                     
-                    
-                  
-                 
-                     
-                  
-
-                  
-                  
-                    
-                    
-                     
-                    
-                   
-                  
-                 
-
-                    
-                   
-                    
-                    
-                   
-                     
-                   
-    
-        
-          
-           
-
-            
-     
-
-      
-             
-            
-
-  
-             
-                
-        
-       
-       
-     
-      
-   
-          
-      
-           
-                   
-     
-
-             
-       
-                  
-               
-            
-     
-   
-               
-        
-     
-                
-                   
-                 
-       
-      
-                  
-                       
-        
-      
-                
-                 
-    
-     
-                   
-   
-      
-                 
-                  
-   
-     
-
-
-         
-                     
-       
-    
-                    
-
-                  
-                  
-                    
-                    
-                   
-                   
-                   
-                 
-
-                  
-                    
-                   
-         
-    
-          
-       
-                          
-       
-      
-                        
-   
-       
-      
-      
-                    
-                    
-       
-       
-     
-   
-      
 
 
 # The channel order MA/FFmpeg actually writes PCM in for each channel count
@@ -1116,28 +935,6 @@ def remap_pcm_channels(
     return remapped.tobytes() + data[usable_len:]
 
 
-                                                                              
-                                                                               
-                                                                               
-                                           
-                                               
-                    
-                     
-                   
-                    
-                      
-             
-                   
-                     
-                      
-                               
-                                
-                              
-                               
- 
-                                                                                         
-
-
 # ALSA channel position enum values (alsa/pcm.h SND_CHMAP_*), verified
 # directly against libasound.so.2's snd_pcm_chmap_name()/
 # snd_pcm_chmap_long_name() output rather than assumed from documentation —
@@ -1216,9 +1013,7 @@ _SND_PCM_FORMAT_S16_LE: Final = 2
 _SND_PCM_ACCESS_RW_INTERLEAVED: Final = 3
 
 
-                            
 def _decode_chmap_positions(u32: Any, offset: int, channels: int, device: str) -> list[str] | None:
-                      
     """Decode a run of chmap position codes into long-form names, or None on any unknown."""
     positions: list[str] = []
     for j in range(channels):
