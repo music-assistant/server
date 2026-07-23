@@ -209,9 +209,9 @@ class ProtocolLinkingMixin:
             if protocol_player.protocol_parent_id:
                 protocol_player.refresh_state()
                 parent_player.refresh_state()
-                # Copy identifiers from protocol player to universal player on restore.
-                # Restored universal players start with empty identifiers which must be
-                # repopulated from their protocol players so that new protocol players
+                # Merge the protocol player's identifiers into the universal player
+                # so identifiers discovered since the last persist (e.g. an
+                # ARP-resolved MAC) are included and new protocol players
                 # (like Sendspin bridges) can match via identifiers.
                 if parent_player.provider.domain == "universal_player" and isinstance(
                     parent_player, UniversalPlayer
@@ -264,9 +264,8 @@ class ProtocolLinkingMixin:
                         # duplicate domain)
                         if not protocol_player.protocol_parent_id:
                             continue
-                        # Copy identifiers from protocol player to universal player
-                        # This is important for restored universal players which start
-                        # with empty identifiers
+                        # Merge the protocol player's identifiers into the universal
+                        # player so newly discovered identifiers are included as well
                         for conn_type, value in protocol_player.device_info.identifiers.items():
                             native_player.device_info.add_identifier(conn_type, value)
                         # Update model/manufacturer if universal player has generic values
@@ -598,11 +597,12 @@ class ProtocolLinkingMixin:
         """
         Update universal player's device info from protocol player if needed.
 
-        When a universal player is restored from config, it has generic device info
-        (model="Universal Player", manufacturer="Music Assistant"). This method
-        updates those values from a protocol player that has real device info.
+        A universal player carries generic placeholder device info
+        (model="Universal Player", manufacturer="Music Assistant") when no real
+        values are known for it (yet). This method updates those values from a
+        protocol player that has real device info.
         """
-        # Check if universal player has generic device info (from restore)
+        # Check if universal player has generic placeholder device info
         device_info = universal_player.device_info
         protocol_info = protocol_player.device_info
 
@@ -832,7 +832,7 @@ class ProtocolLinkingMixin:
 
             # Carry over the user's configuration and re-point group memberships
             # before the permanent removal below deletes the losing wrapper's config
-            self._migrate_universal_player_config(remove, keep)
+            self._migrate_universal_player_config(remove.player_id, keep.player_id)
             self._repoint_group_memberships(remove.player_id, keep.player_id)
 
             # Stop playback and remove the obsolete player
@@ -1038,29 +1038,25 @@ class ProtocolLinkingMixin:
 
             # Carry over the user's configuration and re-point group memberships
             # before the permanent removal below deletes the universal player's config
-            self._migrate_universal_player_config(player, native_player)
+            self._migrate_universal_player_config(player.player_id, native_player.player_id)
             self._repoint_group_memberships(player.player_id, native_player.player_id)
 
             # Stop playback and remove the now-obsolete universal player
             self.mass.create_task(self._stop_and_unregister(player))
 
-    def _migrate_universal_player_config(
-        self, universal_player: Player, native_player: Player
-    ) -> None:
+    def _migrate_universal_player_config(self, universal_id: str, native_id: str) -> None:
         """
         Carry over user-set configuration from a replaced universal player.
 
         Copies the custom display name, player config values, DSP settings and
         per-queue settings of the (obsolete) universal player onto the native
         player that replaces it, without overwriting values explicitly set on
-        the native player itself. Must be called before the universal player is
-        permanently unregistered, as that deletes its config.
+        the native player itself. Must be called while the universal player's
+        config still exists, as the permanent removal deletes it.
 
-        :param universal_player: The obsolete universal player being replaced.
-        :param native_player: The native player that replaces it.
+        :param universal_id: Player id of the obsolete universal player being replaced.
+        :param native_id: Player id of the native player that replaces it.
         """
-        universal_id = universal_player.player_id
-        native_id = native_player.player_id
         source_raw = self.mass.config.get(f"{CONF_PLAYERS}/{universal_id}")
         source_raw = source_raw if isinstance(source_raw, dict) else {}
         target_key = f"{CONF_PLAYERS}/{native_id}"
