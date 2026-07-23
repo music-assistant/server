@@ -345,7 +345,27 @@ class AirPlayPlayer(Player):
                 raise RuntimeError("Player is synced")
             self._attr_current_media = media
 
-            # Always stop any existing stream
+            sync_clients = self._get_sync_clients()
+            session_pcm_format = self._get_session_pcm_format(sync_clients, media)
+
+            # Warm path: a live, compatible session absorbs the new media as
+            # its next generation (seek/next never pays the reconnect cost).
+            if (
+                self.stream
+                and self.stream.running
+                and self.stream.session
+                and self.stream.session.can_replace(sync_clients, session_pcm_format)
+            ):
+                self._transitioning = True
+                audio_source = self.mass.streams.get_stream(
+                    media, session_pcm_format, self.player_id, use_flow_stream_buffering=True
+                )
+                if await self.stream.session.replace(audio_source, media):
+                    self._transitioning = False
+                    return
+                # warm replacement failed; fall through to a cold restart
+
+            # Cold path: stop any existing stream and set up from scratch
             if self.stream and self.stream.running and self.stream.session:
                 # Set transitioning flag to ignore stale DACP messages (like prevent-playback)
                 self._transitioning = True
@@ -353,8 +373,6 @@ class AirPlayPlayer(Player):
                 self.stream = None
 
             # select audio source
-            sync_clients = self._get_sync_clients()
-            session_pcm_format = self._get_session_pcm_format(sync_clients, media)
             audio_source = self.mass.streams.get_stream(
                 media, session_pcm_format, self.player_id, use_flow_stream_buffering=True
             )
