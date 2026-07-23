@@ -320,7 +320,11 @@ class ShareProvider(PluginProvider):
         if "ytmusic" not in links:
             ytmusic_prov = next(
                 (
-                    p for p in (self.mass.get_provider(pid) for pid in self.mass.music.get_unique_providers())
+                    p
+                    for p in (
+                        self.mass.get_provider(pid)
+                        for pid in self.mass.music.get_unique_providers()
+                    )
                     if p and p.domain == "ytmusic"
                 ),
                 None,
@@ -331,7 +335,9 @@ class ShareProvider(PluginProvider):
                     for track in results.tracks or []:
                         for mapping in track.provider_mappings:
                             if mapping.provider_domain == "ytmusic":
-                                links["ytmusic"] = f"https://music.youtube.com/watch?v={mapping.item_id}"
+                                links["ytmusic"] = (
+                                    f"https://music.youtube.com/watch?v={mapping.item_id}"
+                                )
                                 break
                         if "ytmusic" in links:
                             break
@@ -412,9 +418,7 @@ class ShareProvider(PluginProvider):
         new_playlist = await self.mass.music.playlists.create_playlist(payload.title)
         uris = [t.uri for t in matched if t.uri]
         if uris:
-            await self.mass.music.playlists.add_playlist_tracks(
-                new_playlist.item_id, uris
-            )
+            await self.mass.music.playlists.add_playlist_tracks(new_playlist.item_id, uris)
         return new_playlist
 
     async def _lookup_by_isrc(self, isrc: str) -> MediaItemType | None:

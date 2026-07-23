@@ -4,6 +4,5 @@
   "name": "Share Links",
   "description": "Generate and resolve provider-agnostic share links for tracks, artists and playlists.",
   "codeowners": ["@dmoo500"],
-  "requirements": [],
-  "documentation": "https://music-assistant.io/integration/share/"
+  "requirements": []
 }
