@@ -47,6 +47,11 @@ SENSOR_CHUNK_MS = 50  # how often the sensor samples the source while idle
 TRIGGER_ATTACK_S = 0.3  # signal must stay above threshold this long before we start playback
 TRIGGER_RELEASE_S = 5.0  # signal must stay below threshold this long before we stop playback
 SENSOR_RETRY_S = 5.0  # backoff when the sensor can't open the configured source
+# if an auto-triggered play_media() never results in on_source_selected()
+# claiming the queue within this long (target player unreachable, playback
+# failed to start, etc), drop the pending claim so the sensor can retry
+# instead of being wedged waiting for a start that's never coming
+TRIGGER_PENDING_TIMEOUT_S = 25.0
 
 SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 

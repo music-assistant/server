@@ -31,6 +31,25 @@ class _PASampleSpec(ctypes.Structure):
     ]
 
 
+# pa_buffer_attr — lets us request a small server-side record buffer instead
+# of whatever default latency target pa_simple_new() guesses when attr=NULL,
+# which can be considerably larger than we need for a low-latency capture
+# path. tlength/prebuf/minreq are playback-side knobs; for a record stream
+# they're ignored by the server, so we pass PA's own "don't care" sentinel
+# (uint32 -1) for them rather than guessing meaningful values.
+class _PABufferAttr(ctypes.Structure):
+    _fields_: ClassVar = [
+        ("maxlength", ctypes.c_uint32),
+        ("tlength", ctypes.c_uint32),
+        ("prebuf", ctypes.c_uint32),
+        ("minreq", ctypes.c_uint32),
+        ("fragsize", ctypes.c_uint32),
+    ]
+
+
+_PA_BUFATTR_IGNORED: Final = 0xFFFFFFFF
+
+
 def _find_pulse_server() -> str:
     """Detect the PulseAudio/PipeWire-pulse server socket path."""
     if server := os.environ.get("PULSE_SERVER"):
@@ -123,6 +142,18 @@ class PASimpleRecordStream:
             rate=rate,
             channels=channels,
         )
+        # Target one ~20ms chunk per fragment (matches the provider's own
+        # read chunk size) instead of pa_simple_new()'s default latency
+        # guess, so the server doesn't accumulate more audio server-side
+        # than we're about to consume anyway.
+        fragsize = max(1, int(rate * channels * 2 * 0.02))
+        buffer_attr = _PABufferAttr(
+            maxlength=fragsize * 4,
+            tlength=_PA_BUFATTR_IGNORED,
+            prebuf=_PA_BUFATTR_IGNORED,
+            minreq=_PA_BUFATTR_IGNORED,
+            fragsize=fragsize,
+        )
         error = ctypes.c_int(0)
         self._lib = lib
         self._lock = threading.Lock()
@@ -135,7 +166,7 @@ class PASimpleRecordStream:
             b"record",
             ctypes.byref(spec),
             None,
-            None,
+            ctypes.byref(buffer_attr),
             ctypes.byref(error),
         )
         if not self._conn:
