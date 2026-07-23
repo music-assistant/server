@@ -1994,7 +1994,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     ) -> str:
         cache_key_json_object = f"collection_{self.api_base}"
         json_object = await self.mass.cache.get(key=cache_key_json_object, category=int(summary))
-        json_object = None
         if json_object is None:
             # get column names of base query
             db_rows = await self.mass.music.database.get_rows_from_query(
@@ -2052,8 +2051,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         last_played,
                         play_count,
                         {single_extra_order_keys}
-                        json_extract(iter_coll.value, "$.title") as collection_title,
-                        json_extract(iter_coll.value, "$.sequence") as collection_sequence,
+                        json_extract(iter_coll.value, '$.title') as collection_title,
+                        json_extract(iter_coll.value, '$.sequence') as collection_sequence,
                         {json_object} as media_data
                     FROM (
                         SELECT * FROM joined_table
