@@ -142,9 +142,10 @@ class ChromecastDashboards:
         if not hidden:
             self.logger.debug("No dashboard was showing on %s", chromecast.name)
 
-        if device_id in self._dashboard_connections:
-            del self._dashboard_connections[device_id]
-            await self.mass.loop.run_in_executor(None, chromecast.disconnect, 10)
+        # only tear down a connection we opened on-demand; never an active player's own cc
+        on_demand = self._dashboard_connections.pop(device_id, None)
+        if on_demand is not None:
+            await self.mass.loop.run_in_executor(None, on_demand.disconnect, 10)
 
     async def _get_or_create_chromecast(self, device_id: str) -> pychromecast.Chromecast:
         """Resolve a device_id to a connected Chromecast, reusing an existing connection."""

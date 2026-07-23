@@ -244,6 +244,26 @@ async def test_on_hide_keeps_registered_player_connection() -> None:
     connected_chromecast.disconnect.assert_not_called()
 
 
+async def test_on_hide_with_stale_cache_entry_spares_player_connection() -> None:
+    """A stale on-demand entry alongside a live player must not disconnect the player's cc."""
+    dashboards = _make_dashboards()
+    device_uuid = uuid4()
+    player_cc = MagicMock()
+    player_cc.socket_client.is_connected = True
+    castplayer = MagicMock(spec=ChromecastPlayer)
+    castplayer.cc = player_cc
+    dashboards.mass.players.get_player.return_value = castplayer  # type: ignore[attr-defined]
+    stale = MagicMock()
+    dashboards._dashboard_connections[str(device_uuid)] = stale
+
+    with patch("music_assistant.providers.chromecast.dashboard.send_hide_dashboard"):
+        await dashboards._on_hide(str(device_uuid))
+
+    player_cc.disconnect.assert_not_called()
+    stale.disconnect.assert_called_once_with(10)
+    assert str(device_uuid) not in dashboards._dashboard_connections
+
+
 async def test_on_hide_logs_debug_when_nothing_was_showing() -> None:
     """A False result from send_hide_dashboard is logged at debug, not raised."""
     dashboards = _make_dashboards()
