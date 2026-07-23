@@ -600,11 +600,16 @@ def _migrate_airplay_receiver_ghost_players(data: dict[str, Any]) -> bool:
     all_player_configs = data.get(CONF_PLAYERS, {})
     if not isinstance(all_provider_configs, dict) or not isinstance(all_player_configs, dict):
         return False
-    # the advertised name of every configured receiver instance
-    # (key and default mirror the airplay_receiver provider's config entry)
+    # the advertised name of every enabled receiver instance
+    # (key and default mirror the airplay_receiver provider's config entry).
+    # Disabled instances are skipped, consistent with the discovery filter: they
+    # run no daemon and cannot have produced the ghosts, so their name is too weak
+    # a signal to delete a config on (it could be a legitimate same-named device).
     receiver_names: set[str] = set()
     for provider_cfg in all_provider_configs.values():
         if not isinstance(provider_cfg, dict) or provider_cfg.get("domain") != "airplay_receiver":
+            continue
+        if not provider_cfg.get("enabled", True):
             continue
         provider_values = provider_cfg.get("values")
         airplay_name = (

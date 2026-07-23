@@ -170,6 +170,31 @@ def test_migrate_airplay_receiver_ghosts_keeps_same_name_wrapper_without_ghost_l
     assert set(data["players"]) == {"upemptylinks", "upnolinks", "upnative"}
 
 
+def test_migrate_airplay_receiver_ghosts_ignores_disabled_receiver() -> None:
+    """A disabled receiver's name is not used, so same-named players are kept."""
+    data: dict[str, Any] = {
+        "providers": {
+            "airplay_receiver--abc1": {
+                "domain": "airplay_receiver",
+                "instance_id": "airplay_receiver--abc1",
+                "enabled": False,
+                "values": {"airplay_name": "Garage [AirPlay]"},
+            },
+        },
+        "players": {
+            "ap41cf0e23916f": {
+                "player_id": "ap41cf0e23916f",
+                "provider": "airplay",
+                "default_name": "Garage [AirPlay]",
+                "values": {},
+            },
+        },
+    }
+
+    assert _migrate_airplay_receiver_ghost_players(data) is False
+    assert "ap41cf0e23916f" in data["players"]
+
+
 def test_migrate_airplay_receiver_ghosts_noop_without_receivers() -> None:
     """Without configured receiver instances no player config is touched."""
     data: dict[str, Any] = {
