@@ -158,7 +158,7 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
 
     # Drop ghost players that were discovered from this server's own AirPlay Receiver
     # (shairport-sync) advertisements before discovery learned to filter them out.
-    # TODO: remove after 2.11 release
+    # TODO: remove after 2.10 release
     if _migrate_airplay_receiver_ghost_players(data):
         changed = True
 
