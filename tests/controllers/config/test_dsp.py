@@ -165,9 +165,9 @@ async def test_remove_preset_clears_assignments() -> None:
     assert await config.get_dsp_presets() == []
 
 
-def _wav_bytes(tmp_path: Path) -> bytes:
-    """Generate a short stereo wav and return its raw bytes."""
-    wav_path = tmp_path / "source.wav"
+def _wav_bytes(tmp_path: Path, channels: int = 2) -> bytes:
+    """Generate a short wav with the given channel count and return its raw bytes."""
+    wav_path = tmp_path / f"source_{channels}ch.wav"
     subprocess.run(  # noqa: S603
         [  # noqa: S607
             "ffmpeg",
@@ -177,7 +177,7 @@ def _wav_bytes(tmp_path: Path) -> bytes:
             "-i",
             "sine=frequency=1000:duration=0.1:sample_rate=48000",
             "-ac",
-            "2",
+            str(channels),
             str(wav_path),
         ],
         check=True,
@@ -246,6 +246,19 @@ async def test_upload_ir_rejects_non_audio(tmp_path: Path) -> None:
 
     assert config.get_dsp_irs() == []
     # the transcode failure must not leave a stored wav or upload temp file behind
+    assert list((tmp_path / "dsp_irs").glob("*")) == []
+
+
+async def test_upload_ir_rejects_multichannel_file(tmp_path: Path) -> None:
+    """A file with more than two channels is rejected rather than silently downmixed."""
+    config = _DSPConfigStore()
+    config.mass.storage_path = str(tmp_path)
+
+    data = base64.b64encode(_wav_bytes(tmp_path, channels=4)).decode()
+    with pytest.raises(InvalidDataError, match="only mono and stereo"):
+        await config.upload_dsp_ir("true stereo", data)
+
+    assert config.get_dsp_irs() == []
     assert list((tmp_path / "dsp_irs").glob("*")) == []
 
 

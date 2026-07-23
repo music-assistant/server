@@ -36,6 +36,10 @@ if TYPE_CHECKING:
 _IR_ID_RE: Final = re.compile(r"^[a-z0-9]+$")
 # cap the accepted upload so a caller cannot exhaust memory or disk; IRs are small
 MAX_IR_BYTES: Final = 50 * 1024 * 1024
+# a mono IR is applied to both channels and a stereo one channel per side, but afir
+# would silently downmix anything wider (e.g. a four channel true stereo IR) to match
+# the stream, blending the measurements instead of applying them
+MAX_IR_CHANNELS: Final = 2
 
 
 class DSPConfigMixin:
@@ -202,6 +206,12 @@ class DSPConfigMixin:
                     f"Uploaded file is not valid audio: {output.decode().strip()}"
                 )
             tags = await async_parse_tags(ir_path)
+            if tags.channels > MAX_IR_CHANNELS:
+                await self._remove_file(ir_path)
+                raise InvalidDataError(
+                    f"Impulse response has {tags.channels} channels: "
+                    "only mono and stereo files are supported"
+                )
         finally:
             await self._remove_file(upload_path)
 
