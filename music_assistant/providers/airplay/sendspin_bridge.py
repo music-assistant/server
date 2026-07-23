@@ -200,6 +200,18 @@ class SendspinAirPlayBridge:
         """Return whether the bridge is registered with Sendspin."""
         return self._sendspin_client is not None
 
+    @property
+    def bridge_client_id(self) -> str | None:
+        """Return the Sendspin player ID registered for this bridge."""
+        return self._bridge_client_id
+
+    @property
+    def owns_airplay_stream(self) -> bool:
+        """Return whether this bridge owns the AirPlay player's current stream."""
+        return (
+            self._airplay_stream is not None and self.airplay_player.stream is self._airplay_stream
+        )
+
     async def start(self) -> None:
         """Register the AirPlay player as an external Sendspin client."""
         self._bridge_client_id = get_bridge_client_id(self.airplay_player)
@@ -912,6 +924,30 @@ class SendspinAirPlayBridge:
 
 class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinAirPlayBridge]):
     """Manages Sendspin bridges for all AirPlay players."""
+
+    def get_transport_command_target(self, airplay_player_id: str) -> str | None:
+        """
+        Return the visible Sendspin session player controlling an AirPlay bridge.
+
+        :param airplay_player_id: The AirPlay player reporting the command.
+        :return: The owning Sendspin session player ID, or None when Sendspin does
+            not currently control the AirPlay player.
+        """
+        if not (bridge := self._bridges.get(airplay_player_id)):
+            return None
+        if not bridge.owns_airplay_stream:
+            return None
+        if not (bridge_client_id := bridge.bridge_client_id):
+            return None
+        if not (bridge_player := self.mass.players.get_player(bridge_client_id)):
+            return None
+
+        sync_leader_id = bridge_player.synced_to
+        if sync_leader_id:
+            if sync_leader := self.mass.players.get_player(sync_leader_id):
+                return sync_leader.protocol_parent_id or sync_leader.player_id
+            return sync_leader_id
+        return bridge_player.protocol_parent_id or bridge_player.player_id
 
     def stop_streaming(self, airplay_player_id: str) -> bool:
         """
