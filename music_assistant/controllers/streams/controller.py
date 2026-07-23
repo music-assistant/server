@@ -1090,10 +1090,7 @@ class StreamsController(CoreController):
         fmt = request.match_info["fmt"]
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
 
-        mass_player = self.mass.players.get_player(player_id)
-        http_profile = (
-            mass_player.get_config_value(CONF_HTTP_PROFILE, "default") if mass_player else "default"
-        )
+        http_profile = self._get_announcement_http_profile(player_id, announce_data)
         if http_profile == "forced_content_length":
             # given the fact that an announcement is just a short audio clip,
             # just send it over completely at once so we have a fixed content length
@@ -1583,6 +1580,23 @@ class StreamsController(CoreController):
             ),
             alters_audio=queue_item.streamdetails.fade_in,
         )
+
+    def _get_announcement_http_profile(self, player_id: str, announce_data: AnnounceData) -> str:
+        """
+        Resolve the http profile for serving an announcement stream.
+
+        Announcement urls are registered under the visible player's id, but the
+        stream may be fetched by a linked protocol player; the profile must come
+        from the player that actually performs the fetch.
+        """
+        announce_player = None
+        if announce_player_id := announce_data.get("announce_player_id"):
+            announce_player = self.mass.players.get_player(announce_player_id)
+        if announce_player is None:
+            announce_player = self.mass.players.get_player(player_id)
+        if announce_player is None:
+            return "default"
+        return announce_player.get_output_config_value(CONF_HTTP_PROFILE, "default")
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""
