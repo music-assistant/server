@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from copy import deepcopy
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import (
+    EventType,
     IdentifierType,
     PlaybackState,
     PlayerFeature,
@@ -25,10 +27,15 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import (
+    CONF_CACHED_ARP_MAC,
     CONF_LINKED_PROTOCOL_IDS,
+    CONF_PLAYER_DSP,
+    CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
+    CONF_PROTOCOL_KEY_SPLITTER,
     CONF_PROTOCOL_PARENT_ID,
+    CONF_REPORTED_MAC,
     CONF_UNDERLYING_PLAYER_ID,
     PROTOCOL_PRIORITY,
     VERBOSE_LOG_LEVEL,
@@ -40,12 +47,29 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.models.player import Player
 from music_assistant.providers.universal_player import UniversalPlayer, UniversalPlayerProvider
+from music_assistant.providers.universal_player.constants import (
+    CONF_DEVICE_IDENTIFIERS,
+    CONF_DEVICE_INFO,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Coroutine
     from typing import Any
 
     from music_assistant import MusicAssistant
+
+# Config value keys that are bookkeeping of the universal player wrapper itself
+# (protocol links and device-identity caches) and must never be carried over
+# when a native player replaces a universal player.
+UNIVERSAL_PLAYER_INTERNAL_CONF_KEYS = (
+    CONF_LINKED_PROTOCOL_IDS,
+    CONF_PROTOCOL_PARENT_ID,
+    CONF_UNDERLYING_PLAYER_ID,
+    CONF_DEVICE_IDENTIFIERS,
+    CONF_DEVICE_INFO,
+    CONF_CACHED_ARP_MAC,
+    CONF_REPORTED_MAC,
+)
 
 
 class ProtocolLinkingMixin:
@@ -1002,8 +1026,122 @@ class ProtocolLinkingMixin:
             )
             native_player.refresh_state()
 
+            # Carry over the user's configuration before the permanent removal
+            # below deletes the universal player's config
+            self._migrate_universal_player_config(player, native_player)
+
             # Remove the now-obsolete universal player
             self.mass.create_task(self.unregister(player.player_id, permanent=True))
+
+    def _migrate_universal_player_config(
+        self, universal_player: Player, native_player: Player
+    ) -> None:
+        """
+        Carry over user-set configuration from a replaced universal player.
+
+        Copies the custom display name, player config values, DSP settings and
+        per-queue settings of the (obsolete) universal player onto the native
+        player that replaces it, without overwriting values explicitly set on
+        the native player itself. Must be called before the universal player is
+        permanently unregistered, as that deletes its config.
+
+        :param universal_player: The obsolete universal player being replaced.
+        :param native_player: The native player that replaces it.
+        """
+        universal_id = universal_player.player_id
+        native_id = native_player.player_id
+        source_raw = self.mass.config.get(f"{CONF_PLAYERS}/{universal_id}")
+        source_raw = source_raw if isinstance(source_raw, dict) else {}
+        target_key = f"{CONF_PLAYERS}/{native_id}"
+        target_raw = self.mass.config.get(target_key)
+        target_raw = target_raw if isinstance(target_raw, dict) else {}
+        player_config_changed = False
+
+        # only carry an actual user rename, not the auto-generated default name
+        custom_name = source_raw.get("name")
+        if (
+            custom_name
+            and custom_name != source_raw.get("default_name")
+            and not target_raw.get("name")
+        ):
+            self.mass.config.set(f"{target_key}/name", custom_name)
+            player_config_changed = True
+
+        source_values = source_raw.get("values")
+        source_values = source_values if isinstance(source_values, dict) else {}
+        target_values = target_raw.get("values")
+        target_values = target_values if isinstance(target_values, dict) else {}
+        for key, value in source_values.items():
+            if key in UNIVERSAL_PLAYER_INTERNAL_CONF_KEYS:
+                continue
+            if CONF_PROTOCOL_KEY_SPLITTER in key:
+                # stale virtual mirror of a protocol player's own config
+                continue
+            if key in target_values:
+                continue
+            self.mass.config.set(f"{target_key}/values/{key}", deepcopy(value))
+            player_config_changed = True
+
+        # DSP settings follow wholesale, unless the native player has its own
+        dsp_changed = False
+        source_dsp = self.mass.config.get(f"{CONF_PLAYER_DSP}/{universal_id}")
+        if source_dsp and not self.mass.config.get(f"{CONF_PLAYER_DSP}/{native_id}"):
+            self.mass.config.set(f"{CONF_PLAYER_DSP}/{native_id}", deepcopy(source_dsp))
+            dsp_changed = True
+
+        queue_changed = self._migrate_universal_queue_config(universal_id, native_id)
+
+        if not (player_config_changed or dsp_changed or queue_changed):
+            return
+        self.logger.info(
+            "Carried over configuration of universal player %s to %s", universal_id, native_id
+        )
+        if player_config_changed:
+            # the native player's in-place config was loaded before the carry-over,
+            # so reload it to make the migrated values (e.g. custom name) effective
+            self.mass.create_task(self._reapply_player_config(native_id))
+
+    def _migrate_universal_queue_config(self, universal_id: str, native_id: str) -> bool:
+        """
+        Move the per-queue settings of a replaced universal player to its replacement.
+
+        Queue ids equal player ids. The queue config is not covered by the
+        permanent unregister cleanup, so the source entry is removed here.
+
+        :param universal_id: Player id of the obsolete universal player.
+        :param native_id: Player id of the native player that replaces it.
+        :return: True if any queue setting was carried over.
+        """
+        queue_changed = False
+        source_queue_raw = self.mass.config.get(f"{CONF_PLAYER_QUEUES}/{universal_id}")
+        source_queue_raw = source_queue_raw if isinstance(source_queue_raw, dict) else None
+        if source_queue_values := (source_queue_raw or {}).get("values"):
+            target_queue_key = f"{CONF_PLAYER_QUEUES}/{native_id}"
+            target_queue_raw = self.mass.config.get(target_queue_key)
+            target_queue_raw = (
+                deepcopy(target_queue_raw) if isinstance(target_queue_raw, dict) else {}
+            )
+            target_queue_values = target_queue_raw.setdefault("values", {})
+            for key, value in source_queue_values.items():
+                if key in target_queue_values:
+                    continue
+                target_queue_values[key] = deepcopy(value)
+                queue_changed = True
+            if queue_changed:
+                target_queue_raw["queue_id"] = native_id
+                self.mass.config.set(target_queue_key, target_queue_raw)
+        if source_queue_raw is not None:
+            self.mass.config.remove(f"{CONF_PLAYER_QUEUES}/{universal_id}")
+        return queue_changed
+
+    async def _reapply_player_config(self, player_id: str) -> None:
+        """Reload the stored config onto a registered player and refresh its state."""
+        if not (player := self.get_player(player_id)):
+            return
+        config = await self.mass.config.get_player_config(player_id)
+        player.set_config(config)
+        player.update_state()
+        self.mass.signal_event(EventType.PLAYER_CONFIG_UPDATED, object_id=player_id, data=config)
 
     def _parent_has_active_protocol_from_domain(
         self, parent: Player, domain: str, exclude_player_id: str | None = None
