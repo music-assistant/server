@@ -125,7 +125,12 @@ class AirPlayStream:
         """Return boolean if the device connection has been established."""
         return self._connected.is_set()
 
-    async def start(self, start_unix_ms: int, use_shared_ptp: bool | None = None) -> None:
+    async def start(
+        self,
+        start_unix_ms: int,
+        use_shared_ptp: bool | None = None,
+        ptp_follow: bool = False,
+    ) -> None:
         """
         Start cliairplay process.
 
@@ -137,8 +142,12 @@ class AirPlayStream:
             passes the same value to every member so a group never mixes PTP and
             NTP timing. None (single-stream callers) falls back to the daemon's
             live state.
+        :param ptp_follow: Solo-session clock negotiation: the binary may yield
+            the timeline to a receiver that announces itself as a master
+            (Samsung renders only on its own clock). Never combined with the
+            shared daemon.
         """
-        args = await self._build_cli_args(start_unix_ms, use_shared_ptp)
+        args = await self._build_cli_args(start_unix_ms, use_shared_ptp, ptp_follow)
         self.player.logger.debug("Starting cliairplay for player %s", self.player.player_id)
         self._cli_proc = AsyncProcess(args, stdin=True, stdout=True, stderr=True, name="cliairplay")
         try:
@@ -406,7 +415,10 @@ class AirPlayStream:
                     self._metadata_checksum = metadata_checksum
 
     async def _build_cli_args(  # noqa: PLR0915
-        self, start_unix_ms: int, use_shared_ptp: bool | None = None
+        self,
+        start_unix_ms: int,
+        use_shared_ptp: bool | None = None,
+        ptp_follow: bool = False,
     ) -> list[str]:
         """
         Assemble the cliairplay argument list for this stream.
@@ -518,7 +530,12 @@ class AirPlayStream:
         # daemon's live state.
         if target_protocol == StreamingProtocol.AIRPLAY2:
             shared_ptp = prov.ptp_daemon_running if use_shared_ptp is None else use_shared_ptp
-            if shared_ptp:
+            if ptp_follow:
+                # Solo session: negotiate the clock honestly and yield to a
+                # master-or-mute receiver (Samsung); never via the shared
+                # daemon, which always holds grandmaster.
+                args += ["--ptp-follow"]
+            elif shared_ptp:
                 args += ["--ptp-shared"]
 
         # Local interface binding
