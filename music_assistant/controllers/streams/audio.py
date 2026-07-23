@@ -1187,9 +1187,7 @@ class StreamsAudio:
             if dsp.output_gain != 0:
                 filter_params.append(f"volume={dsp.output_gain}dB")
 
-        channel_value = self.mass.config.get_raw_player_config_value(
-            destination_player_id, CONF_OUTPUT_CHANNELS, "stereo"
-        )
+        channel_value = self._get_output_channels(player, player_id)
         source_channel = None
         if channel_value == "left":
             source_channel = AudioChannel.FL
@@ -1266,11 +1264,7 @@ class StreamsAudio:
         if output_format_str == "pcm":
             content_type = ContentType.from_bit_depth(output_bit_depth)
 
-        output_channels_str = self.mass.config.get_raw_player_config_value(
-            player.protocol_parent_id or player.player_id,
-            CONF_OUTPUT_CHANNELS,
-            "stereo",
-        )
+        output_channels_str = self._get_output_channels(player, player.player_id)
         fmt = AudioFormat(
             content_type=content_type,
             sample_rate=output_sample_rate,
@@ -3043,6 +3037,22 @@ class StreamsAudio:
             assert child_player is not None
             dsp_player_id = child_player.player_id
         return dsp_player_id
+
+    def _get_output_channels(self, player: Player | None, player_id: str) -> str:
+        """
+        Return the configured output channels for the rendering player.
+
+        The value may be stored on the rendering player(protocol) itself (the
+        protocol section of the config UI) or on its visible parent player (the
+        native section); the rendering player's own stored value wins.
+        """
+        parent_id = player.protocol_parent_id if player and player.protocol_parent_id else player_id
+        parent_value = self.mass.config.get_raw_player_config_value(
+            parent_id, CONF_OUTPUT_CHANNELS, "stereo"
+        )
+        return self.mass.config.get_raw_player_config_value(
+            player.player_id if player else player_id, CONF_OUTPUT_CHANNELS, parent_value
+        )
 
     def _pick_pcm_bit_depth(
         self,
