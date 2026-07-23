@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from copy import deepcopy
 from typing import TYPE_CHECKING, cast
 
@@ -23,11 +24,12 @@ from music_assistant_models.enums import (
     PlayerType,
     ProviderType,
 )
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
 from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import (
     CONF_CACHED_ARP_MAC,
+    CONF_GROUP_MEMBERS,
     CONF_LINKED_PROTOCOL_IDS,
     CONF_PLAYER_DSP,
     CONF_PLAYER_QUEUES,
@@ -46,6 +48,7 @@ from music_assistant.helpers.util import (
     normalize_mac_for_matching,
 )
 from music_assistant.models.player import Player
+from music_assistant.providers.sync_group.constants import CONF_ALLOWED_MEMBERS
 from music_assistant.providers.universal_player import UniversalPlayer, UniversalPlayerProvider
 from music_assistant.providers.universal_player.constants import (
     CONF_DEVICE_IDENTIFIERS,
@@ -824,9 +827,16 @@ class ProtocolLinkingMixin:
                 keep.device_info.add_identifier(conn_type, value)
             keep.refresh_state()
 
-            # Persist updated data and remove the obsolete player
+            # Persist updated data before the obsolete player is removed
             self._save_universal_player_data(keep)
-            self.mass.create_task(self.unregister(remove.player_id, permanent=True))
+
+            # Carry over the user's configuration and re-point group memberships
+            # before the permanent removal below deletes the losing wrapper's config
+            self._migrate_universal_player_config(remove, keep)
+            self._repoint_group_memberships(remove.player_id, keep.player_id)
+
+            # Stop playback and remove the obsolete player
+            self.mass.create_task(self._stop_and_unregister(remove))
 
             # Only merge one at a time (re-evaluation will catch cascading merges)
             break
@@ -1026,12 +1036,13 @@ class ProtocolLinkingMixin:
             )
             native_player.refresh_state()
 
-            # Carry over the user's configuration before the permanent removal
-            # below deletes the universal player's config
+            # Carry over the user's configuration and re-point group memberships
+            # before the permanent removal below deletes the universal player's config
             self._migrate_universal_player_config(player, native_player)
+            self._repoint_group_memberships(player.player_id, native_player.player_id)
 
-            # Remove the now-obsolete universal player
-            self.mass.create_task(self.unregister(player.player_id, permanent=True))
+            # Stop playback and remove the now-obsolete universal player
+            self.mass.create_task(self._stop_and_unregister(player))
 
     def _migrate_universal_player_config(
         self, universal_player: Player, native_player: Player
@@ -1146,6 +1157,60 @@ class ProtocolLinkingMixin:
         player.set_config(config)
         player.update_state()
         self.mass.signal_event(EventType.PLAYER_CONFIG_UPDATED, object_id=player_id, data=config)
+
+    def _repoint_group_memberships(self, old_player_id: str, new_player_id: str) -> None:
+        """
+        Re-point group memberships from a removed player to its successor.
+
+        When a universal player is replaced by a native player or merged into
+        another universal player, other players that list the removed player as
+        a group member (or allowed member) must follow its successor so those
+        memberships are not silently lost. Updates the persisted config and keeps
+        any registered player whose membership changed in sync.
+
+        :param old_player_id: Player id that is being removed.
+        :param new_player_id: Player id that replaces it.
+        """
+        all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
+        if not isinstance(all_player_configs, dict):
+            return
+        for other_id, other_cfg in all_player_configs.items():
+            if not isinstance(other_cfg, dict):
+                continue
+            other_values = other_cfg.get("values")
+            if not isinstance(other_values, dict):
+                continue
+            for key in (CONF_GROUP_MEMBERS, CONF_ALLOWED_MEMBERS):
+                members = other_values.get(key)
+                if not isinstance(members, list) or old_player_id not in members:
+                    continue
+                new_members: list[str] = []
+                for member_id in members:
+                    resolved = new_player_id if member_id == old_player_id else member_id
+                    if resolved not in new_members:
+                        new_members.append(resolved)
+                self.mass.config.set(f"{CONF_PLAYERS}/{other_id}/values/{key}", new_members)
+                # keep a registered player's in-place config copy and state in sync
+                if other_player := self.get_player(other_id):
+                    if entry := other_player.config.values.get(key):
+                        entry.value = new_members
+                    other_player.refresh_state()
+
+    async def _stop_and_unregister(self, player: Player) -> None:
+        """
+        Stop active playback on a player and then permanently unregister it.
+
+        Used when an obsolete universal player is replaced or merged away: while
+        it is not idle its protocol child keeps playing the dead queue's stream
+        until the buffer drains, so playback is stopped first. Queue ownership is
+        intentionally not transferred.
+
+        :param player: The obsolete player to stop and permanently remove.
+        """
+        if player.playback_state != PlaybackState.IDLE:
+            with suppress(PlayerCommandFailed, PlayerUnavailableError):
+                await self.mass.player_queues.stop(player.player_id)
+        await self.unregister(player.player_id, permanent=True)
 
     def _parent_has_active_protocol_from_domain(
         self, parent: Player, domain: str, exclude_player_id: str | None = None
