@@ -411,6 +411,7 @@ class WebRTCGateway:
         # PC-owned tasks are cancelled and awaited by pc.aclose() during teardown
         pc.spawn_task(self._monitor_state(session))
         pc.spawn_task(self._accept_channels(session))
+        pc.spawn_task(self._forward_local_candidates(session))
 
     async def _handle_offer(self, session_id: str, offer: dict[str, Any]) -> None:
         """
@@ -434,14 +435,16 @@ class WebRTCGateway:
             return
 
         try:
-            # create_answer waits for ICE gathering-complete and inlines candidates,
-            # so the answer we send already carries our local candidates (non-trickle)
             await pc.set_remote_description(str(sdp), "offer")
 
             if session_id not in self.sessions or pc.closed:
                 return
 
-            answer = await pc.create_answer()
+            # Trickle ICE: set_local_description returns as soon as the SDP is ready
+            # (candidate-less), so we answer immediately instead of blocking on
+            # create_answer() until ICE gathering completes (~20s+ with slow STUN/TURN).
+            # Local candidates are streamed separately by _forward_local_candidates.
+            answer = await pc.set_local_description("answer")
 
             if session_id not in self.sessions or pc.closed:
                 return
@@ -584,6 +587,27 @@ class WebRTCGateway:
             if isinstance(event, StateChangeEvent) and event.state == RTCState.FAILED:
                 self._schedule_close(session.session_id)
                 return
+
+    async def _forward_local_candidates(self, session: WebRTCSession) -> None:
+        """
+        Stream locally-gathered ICE candidates to the remote client (trickle ICE).
+
+        :param session: The WebRTC session.
+        """
+        # The iterator ends on gathering-complete or when the PC closes.
+        async for candidate in session.pc.ice_candidates():
+            if session.session_id not in self.sessions or not self._signaling_ws:
+                return
+            await self._signaling_ws.send_json(
+                {
+                    "type": "ice-candidate",
+                    "sessionId": session.session_id,
+                    "data": {
+                        "candidate": candidate.candidate,
+                        "sdpMid": candidate.mid,
+                    },
+                }
+            )
 
     async def _accept_channels(self, session: WebRTCSession) -> None:
         """
