@@ -197,32 +197,36 @@ def _install_tag_cache(provider: KionMusicProvider, tags_by_category: dict[str, 
 
 
 @pytest.mark.asyncio
-async def test_rows_pin_cached_tag_as_subtitle_and_items_serve_it(
+async def test_rows_subtitle_matches_served_items_tag(
     provider: KionMusicProvider,
 ) -> None:
-    """With a warm tag cache the rows carry the tag as subtitle and items serve that tag."""
-    _install_tag_cache(provider, {"mood": ["chill"], "activity": ["workout"]})
+    """With a warm tag cache the rows subtitle and the items call resolve the same tag."""
+    mood_tags = ["chill", "focus"]
+    _install_tag_cache(provider, {"mood": mood_tags, "activity": ["workout"]})
     client = cast("Mock", provider.client)
 
     result = await provider.get_recommendations()
 
     by_id = {f.item_id: f for f in result}
-    assert by_id["mood_mix"].subtitle == "Chill"
+    mood_tag = provider._rotating_row_tag("mood", mood_tags)
+    assert by_id["mood_mix"].subtitle == mood_tag.title()
     assert by_id["activity_mix"].subtitle == "Workout"
-    assert provider._pinned_row_tags == {"mood": "chill", "activity": "workout"}
+    # deterministic: a second rows call yields the same subtitle
+    again = {f.item_id: f for f in await provider.get_recommendations()}
+    assert again["mood_mix"].subtitle == by_id["mood_mix"].subtitle
     # the tag came from the cache: rows still issue zero backend calls
     assert _awaited_methods(client) == set()
 
     await provider.get_recommendation_items("mood_mix")
 
-    # the items call served the pinned tag: no tag (re)selection via the landing API
-    client.get_tag_playlists.assert_any_await("chill")
+    # the items call independently derived the same tag from the cached list
+    client.get_tag_playlists.assert_any_await(mood_tag)
     assert "get_landing_tags" not in _awaited_methods(client)
 
 
 @pytest.mark.asyncio
 async def test_rows_without_cached_tags_have_no_subtitle(provider: KionMusicProvider) -> None:
-    """With a cold tag cache the mood/activity rows have no subtitle and pin nothing."""
+    """With a cold tag cache the mood/activity rows have no subtitle."""
     _install_cache_mocks(provider)
 
     result = await provider.get_recommendations()
@@ -230,4 +234,3 @@ async def test_rows_without_cached_tags_have_no_subtitle(provider: KionMusicProv
     by_id = {f.item_id: f for f in result}
     assert by_id["mood_mix"].subtitle is None
     assert by_id["activity_mix"].subtitle is None
-    assert provider._pinned_row_tags is None

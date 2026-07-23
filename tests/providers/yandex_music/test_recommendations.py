@@ -840,10 +840,9 @@ def _install_row_helper_mocks(provider_mock: Mock) -> dict[str, AsyncMock]:
         mock = AsyncMock(return_value=folder)
         setattr(provider_mock, attr, mock)
         mocks[item_id] = mock
-    provider_mock._pick_random_tag_for_category = AsyncMock(return_value="test_tag")
-    # run the real pin-aware tag resolution; without a pin it falls through to
-    # _pick_random_tag_for_category so the assertions below stay meaningful
-    provider_mock._pinned_row_tags = None
+    provider_mock._get_valid_tags_for_category = AsyncMock(return_value=["test_tag"])
+    # run the real deterministic tag resolution; with a single valid tag it always
+    # resolves to "test_tag" so the assertions below stay meaningful
     provider_mock._rotating_row_tag = YandexMusicProvider._rotating_row_tag.__get__(
         provider_mock, YandexMusicProvider
     )
@@ -869,7 +868,7 @@ async def test_get_recommendations_returns_static_rows_without_backend_calls(
     assert provider_mock.client.mock_calls == []
     for mock in row_mocks.values():
         mock.assert_not_awaited()
-    provider_mock._pick_random_tag_for_category.assert_not_awaited()
+    provider_mock._get_valid_tags_for_category.assert_not_awaited()
 
     by_id = {f.item_id: f for f in result}
     for item_id in ROW_IDS[:-1]:
@@ -920,12 +919,12 @@ async def test_get_recommendation_items_routes_to_single_row_helper(
 async def test_get_recommendation_items_picks_tag_outside_cached_helper(
     provider_mock: Mock, item_id: str, category: str
 ) -> None:
-    """Mood/Activity items pick their rotating tag first and pass it to the cached helper."""
+    """Mood/Activity items derive their rotating tag and pass it to the cached row helper."""
     row_mocks = _install_row_helper_mocks(provider_mock)
 
     await YandexMusicProvider.get_recommendation_items(provider_mock, item_id)
 
-    provider_mock._pick_random_tag_for_category.assert_awaited_once_with(category)
+    provider_mock._get_valid_tags_for_category.assert_awaited_once_with(category)
     row_mocks[item_id].assert_awaited_once_with("test_tag")
 
 
@@ -933,7 +932,7 @@ async def test_get_recommendation_items_picks_tag_outside_cached_helper(
 async def test_get_recommendation_items_no_tag_returns_empty(provider_mock: Mock) -> None:
     """No valid mood tag yields an empty result without calling the mood helper."""
     row_mocks = _install_row_helper_mocks(provider_mock)
-    provider_mock._pick_random_tag_for_category = AsyncMock(return_value=None)
+    provider_mock._get_valid_tags_for_category = AsyncMock(return_value=[])
 
     result = await YandexMusicProvider.get_recommendation_items(provider_mock, "mood_mix")
 
@@ -1100,40 +1099,37 @@ async def test_get_my_wave_recommendations_with_real_parser(provider_mock: Mock)
 
 
 @pytest.mark.asyncio
-async def test_pin_rotating_row_tag_pins_from_warm_cache(provider_mock: Mock) -> None:
-    """A warm tag-list cache yields a subtitle label and pins the tag for the items call."""
-    provider_mock._pinned_row_tags = None
-    provider_mock.mass.cache.get_with_freshness = AsyncMock(return_value=(["chill"], True, True))
+async def test_rotating_row_tag_subtitle_from_warm_cache(provider_mock: Mock) -> None:
+    """A warm tag-list cache yields the deterministic tag's display label as subtitle."""
+    tags = ["chill", "focus"]
+    provider_mock.mass.cache.get_with_freshness = AsyncMock(return_value=(tags, True, True))
+    provider_mock._rotating_row_tag = YandexMusicProvider._rotating_row_tag.__get__(
+        provider_mock, YandexMusicProvider
+    )
 
-    label = await YandexMusicProvider._pin_rotating_row_tag(provider_mock, "mood")
+    label = await YandexMusicProvider._rotating_row_tag_subtitle(provider_mock, "mood")
 
-    assert label == "Chill"
-    assert provider_mock._pinned_row_tags == {"mood": "chill"}
+    expected = YandexMusicProvider._rotating_row_tag(provider_mock, "mood", tags)
+    assert label == expected.title()
     # cache-only read: no backend client involved
     assert provider_mock.client.mock_calls == []
 
 
 @pytest.mark.asyncio
-async def test_pin_rotating_row_tag_cold_cache_returns_none(provider_mock: Mock) -> None:
-    """A cold tag-list cache yields no subtitle and pins nothing."""
-    provider_mock._pinned_row_tags = None
-
-    label = await YandexMusicProvider._pin_rotating_row_tag(provider_mock, "mood")
+async def test_rotating_row_tag_subtitle_cold_cache_returns_none(provider_mock: Mock) -> None:
+    """A cold tag-list cache yields no subtitle."""
+    label = await YandexMusicProvider._rotating_row_tag_subtitle(provider_mock, "mood")
 
     assert label is None
-    assert provider_mock._pinned_row_tags is None
 
 
 @pytest.mark.asyncio
-async def test_rotating_row_tag_prefers_pin_then_falls_back_to_random(
-    provider_mock: Mock,
-) -> None:
-    """The items-side tag helper serves the pinned tag and only picks randomly without one."""
-    provider_mock._pinned_row_tags = {"mood": "chill"}
-    provider_mock._pick_random_tag_for_category = AsyncMock(return_value="sad")
+async def test_rotating_row_tag_is_deterministic(provider_mock: Mock) -> None:
+    """The tag pick is stable within the hour and always one of the valid tags."""
+    pick = YandexMusicProvider._rotating_row_tag.__get__(provider_mock, YandexMusicProvider)
+    tags = ["chill", "focus", "sad", "romantic"]
 
-    assert await YandexMusicProvider._rotating_row_tag(provider_mock, "mood") == "chill"
-    provider_mock._pick_random_tag_for_category.assert_not_awaited()
+    first = pick("mood", tags)
 
-    assert await YandexMusicProvider._rotating_row_tag(provider_mock, "activity") == "sad"
-    provider_mock._pick_random_tag_for_category.assert_awaited_once_with("activity")
+    assert first in tags
+    assert pick("mood", tags) == first

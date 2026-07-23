@@ -6,6 +6,7 @@ import asyncio
 import logging
 import random
 import uuid
+import zlib
 from collections.abc import AsyncGenerator, Sequence
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
@@ -223,8 +224,6 @@ class YandexMusicProvider(MusicProvider):
     _streaming: YandexMusicStreamingManager | None = None
     _wave_states: dict[str, _WaveState]  # Per-station state (incl. My Wave)
     _wave_bg_colors: dict[str, str]  # image_url -> hex bg color for transparent covers
-    # Tag pinned per category by the rows call so the items call serves matching items
-    _pinned_row_tags: dict[str, str] | None = None
     # Short-lived cache to dedupe the three library syncs (albums/podcasts/audiobooks)
     # that all derive from the same liked-albums endpoint.
     _liked_albums_cache: tuple[float, list[YandexAlbum]] | None = None
@@ -2674,15 +2673,15 @@ class YandexMusicProvider(MusicProvider):
                 translation_key="top_picks",
                 icon="mdi-star",
             ),
-            # Mood/Activity row titles are static; the rotating tag - picked here from
-            # the cached tag list (no backend I/O) and served by the items call - shows
-            # as the row subtitle.
+            # Mood/Activity rows have a static title; the hourly rotating tag - derived
+            # deterministically, so the items call independently computes the same one -
+            # shows as the row subtitle (cache-only tag-list read, no backend I/O).
             RecommendationFolder(
                 item_id="mood_mix",
                 provider=self.instance_id,
                 name="Mood Mix",
                 translation_key="mood_mix",
-                subtitle=await self._pin_rotating_row_tag("mood"),
+                subtitle=await self._rotating_row_tag_subtitle("mood"),
                 icon="mdi-emoticon-outline",
             ),
             RecommendationFolder(
@@ -2690,7 +2689,7 @@ class YandexMusicProvider(MusicProvider):
                 provider=self.instance_id,
                 name="Activity Mix",
                 translation_key="activity_mix",
-                subtitle=await self._pin_rotating_row_tag("activity"),
+                subtitle=await self._rotating_row_tag_subtitle("activity"),
                 icon="mdi-run",
             ),
             RecommendationFolder(
@@ -2725,13 +2724,16 @@ class YandexMusicProvider(MusicProvider):
         elif item_id == "top_picks":
             folder = await self._get_top_picks_recommendations()
         elif item_id == "mood_mix":
-            # Serve the tag the rows call pinned (so items match the row subtitle),
-            # falling back to a fresh random pick outside the cached helper
-            if mood_tag := await self._rotating_row_tag("mood"):
-                folder = await self._get_mood_mix_recommendations(mood_tag)
+            # the deterministic hourly tag keeps the served items matching the row subtitle
+            if mood_tags := await self._get_valid_tags_for_category("mood"):
+                folder = await self._get_mood_mix_recommendations(
+                    self._rotating_row_tag("mood", mood_tags)
+                )
         elif item_id == "activity_mix":
-            if activity_tag := await self._rotating_row_tag("activity"):
-                folder = await self._get_activity_mix_recommendations(activity_tag)
+            if activity_tags := await self._get_valid_tags_for_category("activity"):
+                folder = await self._get_activity_mix_recommendations(
+                    self._rotating_row_tag("activity", activity_tags)
+                )
         elif item_id == "seasonal_mix":
             folder = await self._get_seasonal_mix_recommendations()
         if folder is None:
@@ -2975,18 +2977,6 @@ class YandexMusicProvider(MusicProvider):
             items=UniqueList(items),
             icon="mdi-star",
         )
-
-    async def _pick_random_tag_for_category(self, category: str) -> str | None:
-        """
-        Pick a random valid tag for a category (not cached — enables rotation).
-
-        :param category: Category name ('mood', 'activity', etc.).
-        :return: Random tag slug, or None if no valid tags.
-        """
-        valid_tags = await self._get_valid_tags_for_category(category)
-        if not valid_tags:
-            return None
-        return random.choice(valid_tags)
 
     @use_cache(1800, allow_expired_cache=True)
     async def _get_mood_mix_recommendations(self, mood_tag: str) -> RecommendationFolder | None:
@@ -3872,14 +3862,14 @@ class YandexMusicProvider(MusicProvider):
             end_position_seconds=offset,
         )
 
-    async def _pin_rotating_row_tag(self, category: str) -> str | None:
+    async def _rotating_row_tag_subtitle(self, category: str) -> str | None:
         """
-        Pick and pin the rotating tag for a mood/activity row, returning its display label.
+        Return the display label of the current rotating tag for a mood/activity row.
 
         Cache-only read of the validated tag list (rows must stay free of backend I/O):
         returns None - no subtitle - until an items fetch has warmed that cache.
 
-        :param category: Tag category to pick from ('mood' or 'activity').
+        :param category: Tag category ('mood' or 'activity').
         """
         # key mirrors the @use_cache key construction on _get_valid_tags_for_category:
         # the wrapped function's __name__ (preserved by functools.wraps, so it survives
@@ -3891,18 +3881,21 @@ class YandexMusicProvider(MusicProvider):
         )
         if not found or not tags:
             return None
-        tag = random.choice(tags)
-        if self._pinned_row_tags is None:
-            self._pinned_row_tags = {}
-        self._pinned_row_tags[category] = tag
+        tag = self._rotating_row_tag(category, tags)
         return self._media_label("folder", _media_label_key(tag), tag.title())[0]
 
-    async def _rotating_row_tag(self, category: str) -> str | None:
+    def _rotating_row_tag(self, category: str, valid_tags: list[str]) -> str:
         """
-        Return the tag pinned by the rows call for this category, else a random pick.
+        Deterministically pick the current hour's tag for a mood/activity row.
 
-        :param category: Tag category ('mood' or 'activity').
+        Rows and items derive the same tag independently - no shared state, so
+        concurrent clients (or multiple users on one instance) can never make the
+        served items mismatch the row subtitle. The pick rotates hourly and
+        differs per provider instance.
+
+        :param category: Tag category the tags belong to.
+        :param valid_tags: Non-empty list of valid tag slugs to pick from.
         """
-        if (pins := self._pinned_row_tags) and (pinned := pins.get(category)):
-            return pinned
-        return await self._pick_random_tag_for_category(category)
+        hour_bucket = int(utc().timestamp()) // 3600
+        seed = f"{self.instance_id}.{category}.{hour_bucket}".encode()
+        return sorted(valid_tags)[zlib.crc32(seed) % len(valid_tags)]
