@@ -291,25 +291,6 @@ class MediaResolver:
         )
         return 0 if full_played else resume_position_ms
 
-    async def _set_episode_resume_point(
-        self, episode: PodcastEpisode, userid: str | None, start_from_beginning: bool
-    ) -> None:
-        """
-        Apply the resume point to a resolved podcast episode.
-
-        When start_from_beginning is set the episode starts at position 0 and the resume
-        lookup is skipped; the stored progress itself is left untouched.
-        """
-        if start_from_beginning:
-            episode.fully_played = False
-            episode.resume_position_ms = 0
-            return
-        fully_played, resume_position_ms = await self.mass.music.get_resume_position(
-            episode, userid=userid
-        )
-        episode.fully_played = fully_played
-        episode.resume_position_ms = 0 if fully_played else resume_position_ms
-
     async def get_next_podcast_episodes(
         self,
         podcast: Podcast | None,
@@ -413,6 +394,25 @@ class MediaResolver:
         episode_index = all_episodes.index(resolved_episode)
         # return the (remaining) episode(s) to play
         return UniqueList(all_episodes[episode_index:])
+
+    async def _set_episode_resume_point(
+        self, episode: PodcastEpisode, userid: str | None, start_from_beginning: bool
+    ) -> None:
+        """
+        Apply the resume point to a resolved podcast episode.
+
+        When start_from_beginning is set the episode starts at position 0 and the resume
+        lookup is skipped; the stored progress itself is left untouched.
+        """
+        if start_from_beginning:
+            episode.fully_played = False
+            episode.resume_position_ms = 0
+            return
+        fully_played, resume_position_ms = await self.mass.music.get_resume_position(
+            episode, userid=userid
+        )
+        episode.fully_played = fully_played
+        episode.resume_position_ms = 0 if fully_played else resume_position_ms
 
     async def _resolve_library_artist(self, artist: Artist) -> Artist | None:
         """
