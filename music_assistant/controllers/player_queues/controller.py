@@ -963,6 +963,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     # if we reach this point, loading the item succeeded, break the loop
                     queue.current_index = index
                     queue.current_item = queue_item
+                    # reset the elapsed clock together with the item switch (like
+                    # next/previous do), so queue updates signaled before the player
+                    # reports position don't carry the previous item's elapsed_time
+                    queue.elapsed_time = seek_position if attempt == 0 else 0
+                    queue.elapsed_time_last_updated = time.time()
                     break
                 except (MediaNotFoundError, AudioError) as err:
                     item_name = queue_item.name if queue_item else "unknown"

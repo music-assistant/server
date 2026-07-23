@@ -10,7 +10,7 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer
 from music_assistant_models.enums import PlayerType
 
-from music_assistant.providers.msx_bridge.http_server import MSXHTTPServer
+from music_assistant.providers.msx_bridge.http_server import MSXHTTPServer, _render_qr
 from music_assistant.providers.msx_bridge.player import MSXPlayer
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 
@@ -19,6 +19,12 @@ async def _empty_async_gen() -> AsyncGenerator[Any]:
     """Empty async generator for mocking AsyncGenerator return types."""
     return
     yield  # type: ignore[unreachable]  # pragma: no cover — makes it a generator
+
+
+@pytest.fixture(autouse=True)
+def _reset_render_qr_cache() -> None:
+    """Keep the memoized QR renderer isolated between tests."""
+    _render_qr.cache_clear()
 
 
 @pytest.fixture
@@ -82,6 +88,9 @@ def mass_mock(player_config_mock: Mock) -> Mock:
 
     # Image URLs
     mass.metadata.get_image_url = Mock(return_value=None)
+
+    # Other providers (e.g. the Party plugin) are absent by default
+    mass.get_provider = Mock(return_value=None)
 
     return mass
 

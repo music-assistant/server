@@ -226,10 +226,6 @@
         "wav": "Lossless but uncompressed — highest bandwidth. Only needed for players that can't handle FLAC."
       }
     },
-    "output_limiter": {
-      "label": "Enable limiting to prevent clipping",
-      "description": "Activates a limiter that prevents audio distortion by making loud peaks quieter."
-    },
     "play_media_overrides_group": {
       "label": "Play Media overrides active group",
       "description": "When this player is currently captured by an active group or sync session, an explicit Play Media command (e.g. starting a new playlist or track from Home Assistant) will release this player from the group/sync and play the new media directly on this player. Disable this to keep the legacy behavior where Play Media is redirected to the group leader. Other commands (next/prev/pause/resume) are always forwarded to the group leader as they act on the existing playback."
