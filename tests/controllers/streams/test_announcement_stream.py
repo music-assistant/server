@@ -12,6 +12,7 @@ import pytest
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.controllers.players.helpers import AnnounceData
 from music_assistant.controllers.streams.controller import StreamsController
 
 PCM_FORMAT = AudioFormat(
@@ -69,3 +70,40 @@ async def test_fetch_task_cancelled_when_consumer_abandons() -> None:
     await asyncio.wait_for(ffmpeg_stream_closed.wait(), timeout=1)
     with pytest.raises(asyncio.CancelledError):
         await fetch_tasks[0]
+
+
+def _announce_data(announce_player_id: str | None) -> AnnounceData:
+    return AnnounceData(
+        announcement_url="http://test/announcement.mp3",
+        pre_announce=False,
+        pre_announce_url="",
+        announce_player_id=announce_player_id,
+    )
+
+
+def test_announcement_http_profile_prefers_fetching_player() -> None:
+    """The http profile comes from the player that actually fetches the announcement."""
+    controller = StreamsController.__new__(StreamsController)
+    controller.mass = mass = MagicMock()
+    fetcher = MagicMock()
+    fetcher.get_output_config_value.return_value = "forced_content_length"
+    parent = MagicMock()
+    parent.get_output_config_value.return_value = "chunked"
+    players = {"fetcher": fetcher, "parent": parent}
+    mass.players.get_player = MagicMock(side_effect=lambda pid: players.get(pid))
+
+    # a known fetcher (e.g. a linked protocol player) provides the profile
+    profile = controller._get_announcement_http_profile("parent", _announce_data("fetcher"))
+    assert profile == "forced_content_length"
+
+    # without a recorded fetcher, resolve against the visible player's output path
+    profile = controller._get_announcement_http_profile("parent", _announce_data(None))
+    assert profile == "chunked"
+
+    # a dangling fetcher id falls back to the visible player
+    profile = controller._get_announcement_http_profile("parent", _announce_data("ghost"))
+    assert profile == "chunked"
+
+    # unknown player resolves to the safe default
+    profile = controller._get_announcement_http_profile("unknown", _announce_data(None))
+    assert profile == "default"

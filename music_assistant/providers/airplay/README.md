@@ -6,9 +6,11 @@ The AirPlay provider enables Music Assistant to stream audio to AirPlay-enabled 
 
 ### Key Features
 
-- **Dual Protocol Support**: Automatically selects between RAOP and AirPlay 2 based on device capabilities
-- **Native Pairing**: Supports pairing with Apple devices (Apple TV, HomePod, Mac) using HAP (HomeKit Accessory Protocol) or RAOP pairing
-- **Multi-Room Audio**: Synchronizes playback across multiple AirPlay devices with NTP timestamp precision
+- **Dual Protocol Support**: The cliairplay binary automatically resolves the best route (RAOP, AirPlay 2 RAOP-compat or native AirPlay 2) from the device's mDNS TXT records
+- **Pairing**: Supports pairing with Apple devices (Apple TV, HomePod, Mac) using HAP/HomeKit pair-setup (via the cliairplay binary) or legacy RAOP pairing (native)
+- **Multi-Room Audio**: Synchronizes playback across multiple AirPlay devices from a single wall-clock start instant, with a shared PTP clock daemon for native AirPlay 2 timing
+- **Now-Playing Metadata**: Sends title/artist/album/artwork/progress — as DMAP over the stream for speakers, and additionally as MediaRemote over the native AirPlay 2 flow so an Apple TV renders the now-playing screen
+- **Hi-Res Audio**: Optional 24-bit playback (44.1/48 kHz) over the native AirPlay 2 flow (per-player opt-in)
 - **DACP Remote Control**: Receives remote control commands (play/pause/volume/next/previous) from devices while streaming
 - **Late Join Support**: Allows adding players to an existing playback session without interrupting other players
 - **Flow Mode Streaming**: Provides gapless playback and crossfade support by streaming the queue as one continuous audio stream
@@ -45,9 +47,9 @@ The AirPlay provider enables Music Assistant to stream audio to AirPlay-enabled 
         ┌─────────────────────┼─────────────────────┐
         │                     │                     │
 ┌───────▼──────┐     ┌────────▼────────┐    ┌──────▼──────┐
-│  RaopStream  │     │ AirPlay2Stream  │    │ RaopStream  │
+│AirPlayStream │     │  AirPlayStream  │    │AirPlayStream│
 │ ┌──────────┐ │     │ ┌────────────┐  │    │┌──────────┐ │
-│ │ cliraop  │ │     │ │  cliap2    │  │    ││ cliraop  │ │
+│ │cliairplay│ │     │ │ cliairplay │  │    ││cliairplay│ │
 │ └────▲─────┘ │     │ └─────▲──────┘  │    │└────▲─────┘ │
 │      │       │     │       │         │    │     │       │
 │ ┌────┴─────┐ │     │ ┌─────┴──────┐  │    │┌────┴─────┐ │
@@ -60,19 +62,16 @@ The AirPlay provider enables Music Assistant to stream audio to AirPlay-enabled 
 
 ```
 airplay/
-├── provider.py           # Main provider class, MDNS discovery, DACP server
+├── provider.py           # Main provider class, MDNS discovery, DACP server, PTP daemon
 ├── player.py             # AirPlayPlayer implementation
 ├── stream_session.py     # Manages streaming sessions for synchronized playback
-├── pairing.py           # HAP and RAOP pairing implementations
-├── helpers.py           # Utility functions (NTP conversion, model detection, etc.)
+├── pairing.py           # Pairing: HAP via cliairplay --pair-setup, RAOP native
+├── helpers.py           # Utility functions (binary lookup, TXT serialization, etc.)
 ├── constants.py         # Constants and enums
-├── protocols/
-│   ├── _protocol.py     # Base protocol class with shared logic
-│   ├── raop.py          # RAOP (AirPlay 1) streaming implementation
-│   └── airplay2.py      # AirPlay 2 streaming implementation
-└── bin/                 # Platform-specific CLI binaries
-    ├── cliraop-*        # RAOP streaming binaries
-    └── cliap2-*         # AirPlay 2 streaming binaries
+├── stream.py            # Unified AirPlayStream (RAOP + AirPlay 2) driving cliairplay
+└── bin/                 # Binary documentation and downloaded local artifacts
+    ├── README.md
+    └── cliairplay-*     # Downloaded during container build or local setup; not tracked
 ```
 
 ## Protocol Selection: RAOP vs AirPlay 2
@@ -81,11 +80,10 @@ airplay/
 
 - **Used for**: Older AirPlay devices, some third-party implementations
 - **Features**:
-  - Encryption support (can be disabled for problematic devices)
-  - ALAC compression option to save network bandwidth
+  - Encrypted, ALAC-compressed audio (handled automatically by the binary)
   - Password protection support
   - Device-reported volume feedback via DACP
-- **Binary**: `cliraop` (based on [libraop](https://github.com/music-assistant/libraop))
+- **Binary**: `cliairplay --protocol raop` (based on [libraop](https://github.com/music-assistant/libraop))
 
 ### AirPlay 2
 
@@ -94,14 +92,32 @@ airplay/
   - Better compatibility with newer devices
   - More robust protocol
   - Required for some devices that don't support RAOP
-- **Binary**: `cliap2` (based on [OwnTone](https://github.com/music-assistant/cliairplay))
+  - 24-bit audio support (native AirPlay 2 flow)
+- **Binary**: `cliairplay --protocol airplay2` (native implementation, no OwnTone dependency)
 
 ### Automatic Selection
 
-When protocol is set to "Automatically select" (default):
-- **Prefers AirPlay 2** for known models (e.g., Ubiquiti devices) that work better with it
-- **Falls back to RAOP** for all other devices
-- Users can manually override via player configuration if needed
+Route selection is automatic; there is no protocol picker. The provider passes
+`--protocol auto` together with the device's full `_airplay._tcp` TXT records
+(`--txt`). The **binary** then resolves the route from the advertised feature
+bits: RAOP vs AirPlay 2, native vs RAOP-compatible flow, transient pairing vs
+stored-credential pair-verify, and PTP vs NTP timing.
+
+For MA-side planning decisions (which pairing flavor to run, which service/port
+to target) the same feature-bit test the binary uses is mirrored in
+`supports_airplay2()`: any device advertising AirPlay 2 gets AirPlay 2, RAOP is
+only used for devices that do not support it.
+
+### Force RAOP (escape hatch)
+
+The only user override is the advanced per-player `force_raop` boolean. It is
+offered **only** for AirPlay-2-capable non-Apple receivers that also advertise a
+RAOP service — an escape hatch for a device whose AirPlay 2 implementation
+misbehaves. When enabled, the stream is sent with `--protocol raop`.
+
+The toggle is deliberately not offered where it would be meaningless: genuine
+Apple devices (HomePod / Apple TV) are always AirPlay 2 (a stray persisted value
+is ignored), and RAOP-only / AirPlay-2-only devices have nothing to force.
 
 ## Discovery and Player Setup
 
@@ -141,26 +157,27 @@ Apple TV and Mac devices require pairing before they can be used for streaming.
 ### Pairing Protocols
 
 1. **HAP (HomeKit Accessory Protocol)** - For AirPlay 2
-   - 6-step SRP authentication with TLV encoding
-   - Ed25519 key exchange
-   - ChaCha20-Poly1305 encryption
-   - Produces 192-character hex credentials
+   - Delegated to the cliairplay binary: `cliairplay --pair-setup --port <port> --dacp <id> <ip>`
+   - The binary POSTs `/pair-pin-start` (device shows its PIN), reads the PIN from stdin,
+     performs the SRP/HomeKit exchange and prints `CREDENTIALS: <192 hex chars>` on stdout
+   - Using the binary guarantees the pairing identity is byte-identical to what
+     pair-verify uses at stream time
 
-2. **RAOP Pairing** - For AirPlay 1
+2. **RAOP Pairing** - For AirPlay 1 (native Python implementation)
    - 3-step SRP authentication with plist encoding
    - Ed25519 key derivation from auth secret
    - AES-GCM encryption
-   - Produces `client_id:auth_secret` format credentials
+   - Produces `client_id:auth_secret` format credentials (the secret is passed
+     to the binary via `--secret` at stream time)
 
 ### Pairing Flow
 
-1. **Start pairing** → POST to `/pair-pin-start` (or protocol-specific endpoint)
-2. **Device displays 4-digit PIN** on screen
-3. **User enters PIN** in Music Assistant configuration
-4. **Complete pairing** → SRP authentication and key exchange
-5. **Store credentials** in player config (protocol-specific key: `raop_credentials` or `airplay_credentials`)
+1. **Start pairing** (config action) → the pair-setup process starts and the device displays its 4-digit PIN
+2. **User enters PIN** in Music Assistant configuration
+3. **Complete pairing** (config action) → the PIN is fed to the pairing process/exchange
+4. **Store credentials** in player config (protocol-specific key: `raop_credentials` or `airplay_credentials`)
 
-**Important**: The DACP ID used during pairing must match the ID used during streaming. The provider uses the first 16 hex characters of `server_id` as a persistent DACP ID to ensure compatibility across restarts.
+**Important**: The DACP ID used during pairing must match the ID used during streaming (pair-verify signs with it). The provider uses the first 16 hex characters of `server_id` as a persistent DACP ID to ensure compatibility across restarts.
 
 ## Streaming Architecture
 
@@ -187,9 +204,10 @@ Apple TV and Mac devices require pairing before they can be used for streaming.
 │  filter,     │    │   filter,       │   │  filter,    │
 │  convert)    │    │   convert)      │   │  convert)   │
 └───────┬──────┘    └────────┬────────┘   └──────┬──────┘
-        │ PCM 44.1kHz 16-bit │                    │
+        │ PCM s16le (16-bit) │ or s32le (24-bit hi-res)
+        │                    │                    │
 ┌───────▼──────┐    ┌────────▼────────┐   ┌──────▼──────┐
-│  cliraop     │    │    cliap2       │   │  cliraop    │
+│  cliairplay  │    │   cliairplay    │   │  cliairplay │
 │  (RAOP       │    │  (AirPlay 2     │   │  (RAOP      │
 │   protocol)  │    │   protocol)     │   │   protocol) │
 └───────┬──────┘    └────────┬────────┘   └──────┬──────┘
@@ -207,12 +225,13 @@ Apple TV and Mac devices require pairing before they can be used for streaming.
 The `AirPlayStreamSession` class in [stream_session.py](stream_session.py) manages streaming to one or more synchronized players:
 
 1. **Initialization** (`start()` method)
-   - Calculates start time with connection delay buffer
-   - Converts start time to NTP timestamp for precise synchronization
+   - Calculates the audible start instant (`now + setup lead`) as unix epoch milliseconds
+   - Every member receives the exact same start value (`--start-unix-ms`)
 
 2. **Client Setup** (per player, `_start_client()` method)
-   - Creates protocol instance (`RaopStream` or `AirPlay2Stream`)
-   - Starts CLI process with NTP start timestamp
+   - Creates an `AirPlayStream` instance with the player's PCM format
+     (16-bit default, 24-bit s32le when hi-res is enabled)
+   - Starts the CLI process with the shared start instant
    - Configures FFmpeg for audio format conversion and optional DSP filters
    - Pipes FFmpeg output to CLI process stdin
 
@@ -258,9 +277,9 @@ The provider supports synchronized multi-room audio by:
 
 When adding a player to an already-playing session (`add_client()` in [stream_session.py](stream_session.py)):
 
-1. **Ring buffer**: Session maintains ~8 seconds of recent audio chunks in memory
+1. **Ring buffer**: Session maintains a few seconds of recent audio chunks in memory
 2. **Immediate buffered feed**: Late joiner receives buffered chunks immediately to prime the ffmpeg/CLI pipeline
-3. **Compensated start time**: NTP timestamp accounts for buffer duration: `start_time + (seconds_streamed - buffer_duration)`
+3. **Compensated start time**: The joiner's start instant accounts for the buffer duration: `start_time + (seconds_streamed - buffer_duration)`, shifted forward (with the buffer head trimmed) when it would land in the past
 4. **Fast catch-up**: Device processes buffered audio and catches up to real-time position
 5. **Seamless sync**: Joins live stream perfectly synchronized with other players
 
@@ -307,13 +326,13 @@ Handled in `_handle_dacp_request()` in [provider.py](provider.py):
 | `/ctrl-int/1/volumeup` | Increase volume |
 | `/ctrl-int/1/volumedown` | Decrease volume |
 | `/ctrl-int/1/shuffle_songs` | Toggle shuffle |
-| `dmcp.device-volume=X` | Volume changed by device (RAOP only) |
+| `dmcp.device-volume=X` | Volume changed at the device |
 | `device-prevent-playback=1` | Device switched to another source or powered off |
 | `device-prevent-playback=0` | Device ready for playback again |
 
 ### Volume Feedback
 
-Both **RAOP** and **AirPlay 2** protocols support devices reporting their volume level via DACP.
+Devices can report their own volume changes back over DACP; Music Assistant applies them unless `ignore_volume` is set. Genuine Apple devices are auto-set to ignore these reports (they manage volume internally).
 
 **Config option**: `ignore_volume` (default: `False`, auto-enabled for Apple devices)
 - Useful when device volume reports are unreliable
@@ -340,78 +359,147 @@ Therefore, the provider uses C-based CLI binaries for the actual streaming.
 
 ### Binary Selection
 
-The provider automatically selects the correct binary based on:
+A single `cliairplay-<platform>-<arch>` binary handles both protocols; the
+provider selects it based on:
 - **Platform**: Linux, macOS
 - **Architecture**: x86_64, arm64, aarch64
-- **Protocol**: RAOP (`cliraop-*`) or AirPlay 2 (`cliap2-*`)
 
-Binaries are located in [bin/](bin/) directory and validated on first use.
+The protocol (RAOP or AirPlay 2) is chosen at runtime via the `--protocol`
+flag. Binaries are located in the [bin/](bin/) directory and validated on first use.
+
+The executables are not stored in this source repository or its Python packages.
+Official Linux container builds download the pinned, architecture-specific asset
+from the [airplay-cli releases](https://github.com/music-assistant/airplay-cli/releases)
+and verify it against that release's `SHA256SUMS`. For local source development,
+`scripts/setup.sh` downloads and verifies the same pinned asset when it is absent.
 
 ### Binary Communication
 
 **Input** (stdin):
-- PCM audio data piped from FFmpeg
+- PCM audio data piped from FFmpeg: s16le for 16-bit, raw s32le for 24-bit
+  (the binary truncates 32→24 internally when `--bitdepth 24` is passed)
+- May be written eagerly, ahead of the scheduled start; byte 0 maps to the
+  sample audible at the start instant
 
 **Commands** (named pipe):
 - Interactive commands sent via `AsyncNamedPipeWriter`
 - Examples: `ACTION=PLAY`, `ACTION=PAUSE`, `VOLUME=50`, `TITLE=Song Name`
+- MA creates the pipe and sends text metadata immediately after process start;
+  timeline-anchored metadata and artwork are refreshed once the receiver connects
 
 **Output** (stderr):
-- Status messages and logs
-- Connection state
-- Playback state changes
-- Elapsed time updates
-- Error messages
+- Normalized `[STATUS]` messages (connected/playing/paused/eof), logs and errors
 
-The provider monitors stderr in a separate task (`_stderr_reader()` in [raop.py](protocols/raop.py) and [airplay2.py](protocols/airplay2.py)) to:
+**Output** (stdout):
+- `[STATUS] latency ...` line with the effective lead and the device's
+  reported buffering window (parsed by `_stdout_reader()` for diagnostics)
+
+The provider monitors stderr in a separate task (`_stderr_reader()` in [stream.py](stream.py)) to:
 - Update player state
 - Detect connection completion
 - Handle errors and packet loss
 - Track elapsed time
 
-## NTP Timestamp Synchronization
+## Start Timing and Synchronization
 
-AirPlay uses **NTP (Network Time Protocol)** timestamps for synchronized playback.
+The provider never handles NTP fixed-point formats: the group start is passed
+to the binary as plain unix epoch milliseconds (`--start-unix-ms`), meaning
+"**the first sample is audible exactly at this instant**" on every protocol
+path (RAOP, AirPlay 2 RAOP-compat and native).
 
-### NTP Format
-
-- **64-bit integer**: Upper 32 bits = seconds, lower 32 bits = fractional seconds
-- **NTP epoch**: January 1, 1900 (not Unix epoch 1970)
-- **Precision**: Nanosecond-level timing
-
-### Key Functions
-
-Available in [helpers.py](helpers.py):
-- `get_ntp_timestamp()`: Get current NTP time
-- `ntp_to_unix_time()`: Convert NTP to Unix timestamp
-- `unix_time_to_ntp()`: Convert Unix to NTP timestamp
-- `add_seconds_to_ntp()`: Add offset to NTP timestamp
-
-### Usage in Streaming
-
-1. Calculate desired start time: `current_time + connection_buffer`
-2. Convert to NTP timestamp
-3. Pass to CLI binary via `-ntpstart` argument
-4. All players start at the exact same NTP time
+1. Calculate the start instant: `now + wait_start`, a fixed per-protocol lead
+   (`AIRPLAY_RAOP_SETUP_LEAD_MS` / `AIRPLAY_AP2_SETUP_LEAD_MS`) covering process
+   spawn + connect + session setup + receiver pre-fill; native AirPlay 2 uses
+   the larger budget as its pre-fill is paced
+2. Pass the **same** value to every member of a sync group — the group takes
+   the largest member lead, so mixed RAOP + AirPlay 2 groups align by
+   construction
+3. The binary owns all lead/buffer handling from there: it fills the
+   receiver's buffer ahead of the audible start (clamped to the buffering
+   window the device reports), so the start cannot underrun
+4. Audio may be written to the binary's stdin as soon as it is available -
+   byte 0 of stdin maps to the sample audible at the start instant
 5. Per-player `sync_adjust` config allows fine-tuning (+/- milliseconds)
+
+### Shared PTP Clock Daemon
+
+Native AirPlay 2 receivers that advertise `SupportsPTP` are timed via PTP
+(IEEE 1588/gPTP). Only one process per host can bind the privileged PTP ports
+(UDP 319/320) and every receiver in a sync group must lock to the same
+grandmaster, so the provider runs **one** `cliairplay --ptp-daemon` for its
+whole lifetime (spawned at setup, terminated at unload, restarted once if it
+crashes). Every AirPlay 2-capable stream is started with `--ptp-shared` while
+the daemon runs, attaching it to the daemon's elected clock via shared memory.
+
+The official Music Assistant container runs as root, allowing the daemon to bind
+these ports. A custom container running Music Assistant as a non-root user must
+grant the binary `CAP_NET_BIND_SERVICE` (for example,
+`setcap cap_net_bind_service=+ep <path-to-cliairplay>`) and retain that capability
+in the container's bounding set. UDP 319/320 must also be free on the container's
+network namespace.
+
+If the daemon cannot bind, the binary exits with code 2. The provider logs a
+warning and native AirPlay 2 streams fall back to NTP timing. Playback keeps
+working, but native AirPlay 2 multi-room sync may be degraded.
+
+After connect, the binary reports the effective lead and the device's
+buffering window on stdout (`[STATUS] latency lead_ms=... device_min_frames=...
+device_max_frames=...`), which the stream parses and logs for diagnostics.
 
 ## Player Types
 
-The provider creates players with different types based on whether the device is a native Apple player or a third-party AirPlay receiver.
+The provider uses a shared AirPlay streaming base with separate player models.
 
 ### PlayerType.PLAYER
-- **Devices**: Apple HomePod, Apple TV, Mac
-- **Reason**: These are standalone music players with native AirPlay support
-- **Behavior**: Exposed as top-level players in Music Assistant UI
+- **Devices**: Apple TV, HomePod
+- **Reason**: These are standalone players with a native control and
+  playback-monitoring plane (Companion/MRP) Music Assistant can use
+- **Behavior**: Exposed as top-level players, with external playback monitoring
+  and native controls when the device advertises them
 - **Not merged**: These players are NOT combined with other protocols
 
 ### PlayerType.PROTOCOL
-- **Devices**: Third-party AirPlay receivers (Sonos, receivers, smart speakers, soundbars)
+- **Devices**: All other AirPlay receivers
 - **Reason**: AirPlay is just one output protocol among many for these devices (often supporting Chromecast, DLNA, etc.)
 - **Behavior**: Automatically merged into a **Universal Player** if other protocols are detected for the same device
 - **Example**: A Sonos speaker supporting both AirPlay and Chromecast will appear as a single "Sonos" player with selectable output protocols
 
-**Detection**: Player type is determined in [player.py](player.py) `__init__()` method based on `manufacturer == "Apple"`
+**Detection**: [provider.py](provider.py) selects `AirPlayControlPlayer` for
+Apple TV and HomePod devices (`is_apple_device`); all other endpoints use
+`GenericAirPlayPlayer`. The model is decided from the device's own identity
+only and never changes for a registered player: the model determines the
+player id exposed to API consumers (protocol endpoint behind a parent player
+vs standalone player), which must stay stable for Home Assistant and other API
+clients. Unlike the separate Companion/MRP mDNS records, the identity is
+always available in the very record that creates the player, so the decision
+cannot vary with discovery timing. Which control features are offered on a
+control-capable player is then decided from the advertised capabilities
+(pairable Companion, native MRP service, or AirPlay MRP tunnel), degrading
+gracefully when a device does not advertise them.
+
+### Independent device control
+
+Control-capable receivers keep AirPlay streaming separate from their monitoring
+and control connections:
+
+- **Companion** tracks power state and controls wake, power, native playback,
+  and volume independently of Music Assistant streaming.
+- **AirPlay MRP tunnel** tracks external playback, including the active app,
+  metadata, elapsed time, and transport state.
+- Music Assistant explicitly wakes a sleeping device before starting or
+  resuming an AirPlay stream.
+- AirPlay streaming, Companion control, and MRP playback monitoring keep
+  independent pairing credentials. This lets pyatv retain the complete
+  accessory identity required by MRP without changing the streaming identity.
+  A failed MRP monitor does not interrupt a healthy Companion connection, and
+  vice versa.
+
+Apple TV models generally expose pairable Companion and an AirPlay MRP tunnel.
+Current HomePod firmware advertises Companion without a PIN-pairing path, so
+Companion power/wake control is not available; HomePods instead use AirPlay's
+transient MRP tunnel with no PIN or persisted credentials. Third-party receivers
+remain protocol endpoints regardless of advertised control capabilities, which
+keeps their exposed player id stable and their Universal Player merging intact.
 
 **For more details on output protocols and protocol linking**, see the [Player Controller README](../../controllers/players/README.md), which explains:
 - How multiple protocol players for the same physical device are automatically linked
@@ -422,20 +510,22 @@ The provider creates players with different types based on whether the device is
 ## Configuration Options
 
 ### Protocol Selection
-- **`airplay_protocol`**: Choose RAOP, AirPlay 2, or automatic (default: automatic)
-
-### RAOP-Specific
-- **`encryption`**: Enable/disable encryption (default: enabled)
-- **`alac_encode`**: Enable ALAC compression to save bandwidth (default: enabled)
-- **`ignore_volume`**: Ignore device volume reports (default: false)
+- **`force_raop`**: Advanced per-player escape hatch to force the legacy RAOP protocol (default: off). Only offered for AirPlay 2-capable non-Apple devices that also advertise RAOP; route selection is otherwise fully automatic (the binary resolves it from the mDNS TXT)
 
 ### General
-- **`password`**: Device password if required
-- **`sync_adjust`**: Per-player timing adjustment in milliseconds (default: 0)
+- **`password`**: Device password if required (RAOP)
+- **`ignore_volume`**: Ignore device volume reports (default: false)
+- **`hires_playback`**: Advanced per-player opt-in for 24-bit playback over native AirPlay 2 (default: off; only shown for AirPlay 2-capable devices - some devices accept 24-bit and play silence, hence opt-in)
+- **`sync_adjust`**: Per-player audio synchronization delay correction in milliseconds (default: 0; negative = play earlier, e.g. to compensate for a TV/AV receiver that adds latency). The playback lead/buffer is handled automatically by the binary.
 
-### Pairing (Apple devices only)
+### Pairing
 - **`raop_credentials`**: Stored RAOP pairing credentials (hidden)
 - **`airplay_credentials`**: Stored AirPlay 2 pairing credentials (hidden)
+- **`companion_credentials`**: Stored Companion credentials (hidden and paired
+  separately)
+- **`mrp_credentials`**: Stored AirPlay-tunneled MRP credentials (hidden;
+  transient MRP requires none)
+- **`native_mrp_credentials`**: Stored native MRP credentials (hidden)
 
 ## Known Issues
 
@@ -447,23 +537,27 @@ Some devices have known broken AirPlay implementations (see `BROKEN_AIRPLAY_MODE
 
 ### Limitations
 
-1. **DACP remote control**: Only active while streaming (not when idle)
+1. **DACP remote control**: Only active while streaming; controlled devices use
+   Companion/MRP for idle and external playback control
 2. **Pause while synced**: Not supported; uses stop instead
-3. **Companion protocol**: Not yet implemented for idle state monitoring
+3. **HomePod power control**: Current HomePod firmware does not advertise
+   Companion PIN pairing, so explicit power/wake control is unavailable
+4. **External artwork**: MRP exposes external playback metadata but its artwork
+   is not currently published through the Music Assistant image proxy
+5. **Apple TV artwork for non-public images**: Cover art only reachable through the imageproxy (e.g. filesystem-provider images with no public URL) does not currently render on the Apple TV's now-playing screen, while externally-hosted art does
 
 ## Development Notes
 
 ### Testing CLI Binaries
 
-Each binary can be validated with a test command:
-- **cliraop**: `cliraop -check` (should output "cliraop check")
-- **cliap2**: `cliap2 --testrun` (should output "cliap2 check")
+The binary can be validated with a test command:
+- **cliairplay**: `cliairplay --check` (should output "cliairplay check")
 
 ### Adding New CLI Commands
 
-To add a new command to the CLI binaries:
-1. Update the CLI binary source code (external repositories)
-2. Update `send_cli_command()` method in [_protocol.py](protocols/_protocol.py)
+To add a new command to the CLI binary:
+1. Update the cliairplay binary source code (external repository)
+2. Handle the command in `send_cli_command()` in [stream.py](stream.py)
 3. Send command via named pipe: `await stream.send_cli_command("YOUR_COMMAND=value")`
 
 ### Debugging Streaming Issues
@@ -477,9 +571,9 @@ Enable verbose logging in Music Assistant to see:
 
 ## Credits
 
-- **libraop**: RAOP streaming implementation - https://github.com/music-assistant/libraop
-- **OwnTone**: AirPlay 2 implementation - https://github.com/OwnTone
-- **pyatv**: Reference for HAP pairing protocol - https://github.com/postlund/pyatv
+- **libraop**: foundation for the cliairplay binary (RAOP + AirPlay 2) - https://github.com/music-assistant/libraop
+- **OwnTone**: reference for the AirPlay 2 / HAP implementation - https://github.com/OwnTone
+- **pyatv**: Apple Companion and MRP implementation - https://github.com/postlund/pyatv
 
 ## Sendspin Bridge
 
@@ -527,8 +621,3 @@ The bridge consists of:
 | File | Description |
 |------|-------------|
 | `sendspin_bridge.py` | Bridge implementation for Sendspin to AirPlay integration |
-
-## Future Enhancements
-
-- **Companion protocol**: Implement idle state monitoring for Apple devices
-- **AirPlay 2 volume feedback**: Add DACP volume support for AirPlay 2

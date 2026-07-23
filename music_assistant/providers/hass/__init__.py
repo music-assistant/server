@@ -13,9 +13,10 @@ import asyncio
 import logging
 import os
 from functools import partial
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 import shortuuid
+from aiohttp import ClientError
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import (
@@ -46,12 +47,15 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.json import SerializableType
+from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.util import try_parse_int
 from music_assistant.models.plugin import PluginProvider
 
 from .constants import OFF_STATES, MediaPlayerEntityFeature
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
+
     from aiohttp import ClientSession
     from hass_client.models import CompressedState, Device, EntityStateEvent, State
     from music_assistant_models.config_entries import ProviderConfig
@@ -71,6 +75,22 @@ CONF_VOLUME_CONTROLS = "volume_controls"
 CONF_TTS_ENTITY = "tts_entity"
 CONF_AI_TASK_ENTITY = "ai_task_entity"
 FEATURE_DISCOVERY_TIMEOUT = 30
+STATE_FETCH_TIMEOUT = 30
+STATE_FETCH_CONCURRENCY = 8
+
+# Home Assistant entity domains Music Assistant can offer as player controls.
+CONTROL_DOMAINS = ("media_player", "switch", "input_boolean", "number", "input_number")
+# Home Assistant entity domains that back the TTS and AI Task features.
+FEATURE_DOMAINS = ("tts", "ai_task")
+
+
+class DeviceMediaPlayerInfo(TypedDict):
+    """Home Assistant correlation info for a device that is natively connected elsewhere."""
+
+    # user-facing device name in HA (name_by_user or name)
+    name: str | None
+    # first enabled media_player entity of the device that supports announcements
+    announce_entity_id: str | None
 
 
 async def setup(
@@ -190,7 +210,7 @@ async def get_config_entries(
         hass_prov = cast("HomeAssistantProvider", hass_prov)
         return (
             *base_entries,
-            *(await _get_config_entries(hass_prov.hass)),
+            *(await _get_config_entries(hass_prov)),
         )
 
     return (
@@ -231,14 +251,14 @@ async def get_config_entries(
     )
 
 
-async def _get_config_entries(hass: HomeAssistantClient) -> tuple[ConfigEntry, ...]:
+async def _get_config_entries(hass_prov: HomeAssistantProvider) -> tuple[ConfigEntry, ...]:
     """Return the (entity based) config entries."""
     all_power_entities: list[ConfigValueOption] = []
     all_mute_entities: list[ConfigValueOption] = []
     all_volume_entities: list[ConfigValueOption] = []
-    if not hass.connected:
+    if not hass_prov.hass.connected:
         return ()
-    states = await hass.get_states()
+    states = await hass_prov.get_states(domains=(*CONTROL_DOMAINS, *FEATURE_DOMAINS))
     tts_entities, ai_task_entities = _get_feature_entity_options(states)
     for state in states:
         entity_platform = state["entity_id"].split(".")[0]
@@ -394,27 +414,84 @@ class HomeAssistantProvider(PluginProvider):
             "player_controls": len(self._player_controls) if self._player_controls else 0,
         }
 
-    async def get_device_by_connection(
+    async def get_media_player_device_infos(
         self,
-        connection_value: str,
-        connection_type: str = "mac",
-    ) -> Device | None:
+        mac_addresses: Collection[str],
+        platform: str,
+    ) -> dict[str, DeviceMediaPlayerInfo]:
         """
-        Get device details from Home Assistant by connection type and value.
+        Correlate devices (by MAC address) to their HA name and media_player entity.
 
-        :param connection_value: The connection value (e.g. MAC address).
-        :param connection_type: The connection type (default: 'mac').
+        Used for devices that are natively connected to Music Assistant but also
+        present in Home Assistant, to pick up their HA device name and their
+        (announcement-capable) media_player entity.
+
+        :param mac_addresses: Device MAC addresses to look up (case-insensitive).
+        :param platform: The HA integration domain the media_player entities must belong to.
+        :return: Correlation info keyed by lowercased MAC address; devices unknown
+            to Home Assistant are absent from the result.
         """
-        devices = await self.hass.get_device_registry()
-        for device in devices:
-            for connection in device.get("connections", []):
-                if (
-                    len(connection) == 2
-                    and connection[0] == connection_type
-                    and connection[1].lower() == connection_value.lower()
-                ):
-                    return device
-        return None
+        wanted_macs = {mac.lower() for mac in mac_addresses}
+        if not wanted_macs:
+            return {}
+        device_registry = await self.hass.get_device_registry()
+        device_by_mac: dict[str, Device] = {
+            connection[1].lower(): device
+            for device in device_registry
+            for connection in device.get("connections", [])
+            if len(connection) == 2
+            and connection[0] == "mac"
+            and connection[1].lower() in wanted_macs
+        }
+        if not device_by_mac:
+            return {}
+        media_players_by_device: dict[str, list[str]] = {}
+        for entry in await self.hass.get_entity_registry():
+            if (
+                entry["platform"] == platform
+                and entry["entity_id"].startswith("media_player.")
+                and entry.get("disabled_by") is None
+            ):
+                media_players_by_device.setdefault(entry["device_id"], []).append(
+                    entry["entity_id"]
+                )
+        candidates_by_mac = {
+            mac: media_players_by_device.get(device["id"], [])
+            for mac, device in device_by_mac.items()
+        }
+        states = {
+            state["entity_id"]: state
+            for state in await self.get_states(
+                entity_ids=[
+                    entity_id
+                    for entity_ids in candidates_by_mac.values()
+                    for entity_id in entity_ids
+                ]
+            )
+        }
+
+        def _supports_announce(entity_id: str) -> bool:
+            if (state := states.get(entity_id)) is None:
+                return False
+            supported_features = MediaPlayerEntityFeature(
+                state["attributes"].get("supported_features") or 0
+            )
+            return MediaPlayerEntityFeature.MEDIA_ANNOUNCE in supported_features
+
+        return {
+            mac: DeviceMediaPlayerInfo(
+                name=device["name_by_user"] or device["name"],
+                announce_entity_id=next(
+                    (
+                        entity_id
+                        for entity_id in candidates_by_mac[mac]
+                        if _supports_announce(entity_id)
+                    ),
+                    None,
+                ),
+            )
+            for mac, device in device_by_mac.items()
+        }
 
     async def get_user_details(self, ha_user_id: str) -> tuple[str | None, str | None, str | None]:
         """
@@ -482,6 +559,66 @@ class HomeAssistantProvider(PluginProvider):
             self.logger.warning("Failed to get HA user details: %s", err)
             return None, None, None
 
+    async def get_states(
+        self,
+        *,
+        entity_ids: list[str] | None = None,
+        domains: Collection[str] | None = None,
+    ) -> list[State]:
+        """
+        Return the current Home Assistant state for the requested entities.
+
+        Provide explicit entity IDs and/or a set of domains; only those entities
+        are fetched.
+
+        :param entity_ids: Explicit entity IDs to fetch the current state for.
+        :param domains: Entity domains whose entities should be fetched.
+        """
+        ids: set[str] = set(entity_ids or ())
+        if domains:
+            # resolve domains to entity_ids via the registry, which is far smaller
+            # than a full state dump (it carries no attributes)
+            registry = await self.hass.get_entity_registry()
+            ids.update(
+                entry["entity_id"]
+                for entry in registry
+                if entry["entity_id"].split(".", 1)[0] in domains
+            )
+        if not ids:
+            return []
+        # fetch each state via the REST api rather than the websocket: it is not subject
+        # to the websocket message size limit and lets us request individual entities
+        ha_url, headers, http_session = self._get_ha_http()
+        semaphore = asyncio.Semaphore(STATE_FETCH_CONCURRENCY)
+
+        async def _fetch_state(entity_id: str) -> State | None:
+            try:
+                async with (
+                    semaphore,
+                    http_session.get(
+                        f"{ha_url}/api/states/{entity_id}", headers=headers
+                    ) as response,
+                ):
+                    if response.status == 404:
+                        # entity currently has no state (e.g. not available)
+                        return None
+                    if response.status != 200:
+                        self.logger.warning(
+                            "Unexpected status %s fetching state for %s",
+                            response.status,
+                            entity_id,
+                        )
+                        return None
+                    return cast("State", await response.json())
+            except (ClientError, ValueError) as err:
+                # ValueError covers a malformed JSON body
+                self.logger.warning("Failed to fetch state for %s: %s", entity_id, err)
+                return None
+
+        async with asyncio.timeout(STATE_FETCH_TIMEOUT):
+            states = await asyncio.gather(*(_fetch_state(entity_id) for entity_id in ids))
+        return [state for state in states if state is not None]
+
     async def resolve_image(self, path: str) -> bytes:
         """Resolve an image from an image path."""
         ha_url, headers, http_session = self._get_ha_http()
@@ -510,6 +647,32 @@ class HomeAssistantProvider(PluginProvider):
             msg = f"AI Task returned no data in response: {result}"
             raise MusicAssistantError(msg)
         return str(data)
+
+    async def play_announcement_on_entity(self, entity_id: str, announcement_url: str) -> None:
+        """
+        Play an announcement on a Home Assistant media_player entity.
+
+        Uses Home Assistant's announce feature, so the entity's integration ducks
+        or pauses any running playback and resumes it afterwards. Returns once the
+        announcement has finished playing (approximated by its duration).
+
+        :param entity_id: The media_player entity to play the announcement on.
+        :param announcement_url: URL of the announcement audio to play.
+        """
+        await self.hass.call_service(
+            domain="media_player",
+            service="play_media",
+            service_data={
+                "media_content_id": announcement_url,
+                "media_content_type": "music",
+                "announce": True,
+            },
+            target={"entity_id": entity_id},
+        )
+        # Wait until the announcement is finished playing so callers can play
+        # announcements in a sequence; HA gives no completion signal for announcements.
+        media_info = await async_parse_tags(announcement_url, require_duration=True)
+        await asyncio.sleep(media_info.duration or 5)
 
     async def get_tts_message(self, message: str, language: str | None = None) -> StreamDetails:
         """Handle text-to-speech via Home Assistant's REST API."""
@@ -571,8 +734,7 @@ class HomeAssistantProvider(PluginProvider):
         }
         hass_states = {
             state["entity_id"]: state
-            for state in await self.hass.get_states()
-            if state["entity_id"] in control_entity_ids
+            for state in await self.get_states(entity_ids=list(control_entity_ids))
         }
         assert self._player_controls is not None  # for type checking
         for entity_id in control_entity_ids:
@@ -760,7 +922,8 @@ class HomeAssistantProvider(PluginProvider):
 
     async def _resolve_feature_entities(self) -> None:
         """Resolve configured or default Home Assistant feature entities."""
-        tts_entities, ai_task_entities = _get_feature_entity_options(await self.hass.get_states())
+        states = await self.get_states(domains=FEATURE_DOMAINS)
+        tts_entities, ai_task_entities = _get_feature_entity_options(states)
         self._tts_entity_id = _select_feature_entity(
             self.config.get_value(CONF_TTS_ENTITY), tts_entities
         )

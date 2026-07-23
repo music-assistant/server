@@ -497,7 +497,7 @@ def parse_value(  # noqa: PLR0911
     if value is None and value_type is NoneType:
         return None
     origin = get_origin(value_type)
-    if origin in (tuple, list, Sequence, Iterable):
+    if origin in (tuple, list, set, frozenset, Sequence, Iterable):
         # For abstract types like Sequence and Iterable, use list as the concrete type
         concrete_type = list if origin in (Sequence, Iterable) else origin
         return concrete_type(

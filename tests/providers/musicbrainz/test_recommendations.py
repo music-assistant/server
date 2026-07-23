@@ -368,22 +368,36 @@ def test_build_artist_folders_empty_returns_empty(
 
 
 # ---------------------------------------------------------------------------
-# get_recommendations — cache-backed hot path (stale-while-revalidate)
+# get_recommendations — rows without items (stale-while-revalidate cache read)
 # ---------------------------------------------------------------------------
 
 
-async def test_get_recommendations_returns_fresh(
+async def test_get_recommendations_returns_rows_without_items(
     manager: MusicBrainzRecommendationManager,
     provider_mock: Mock,
 ) -> None:
-    """A fresh cache hit is built into folders without triggering a refresh."""
-    matches = [_match_entry("birthday", 0, _make_artist("1", "Cached"))]
+    """A fresh cache hit yields row descriptors with empty items and zero MB API calls."""
+    matches = [
+        _match_entry("memoriam", -1, _make_artist("1", "Late Star")),
+        _match_entry("birthday", 0, _make_artist("2", "Birthday Star")),
+        _match_entry("memoriam", 0, _make_artist("3", "Other Late Star")),
+        _match_entry("birthday", 2, _make_artist("4", "Future Star")),
+    ]
     provider_mock.mass.cache.get = AsyncMock(return_value=matches)
+    provider_mock.get_artist_details = AsyncMock(side_effect=AssertionError("no backend calls"))
 
-    result = await manager.get_recommendations()
+    rows = await manager.get_recommendations()
 
-    assert len(result) == 1
-    assert result[0].translation_key == "artist_birthdays_today"
+    assert [row.item_id for row in rows] == [
+        "memoriam_-1",
+        "birthdays_0",
+        "memoriam_0",
+        "birthdays_2",
+    ]
+    assert rows[1].translation_key == "artist_birthdays_today"
+    assert rows[1].icon == "mdi-cake-variant"
+    assert rows[0].icon == "mdi-candle"
+    assert all(row.items == [] for row in rows)
     provider_mock.mass.cache.get.assert_awaited_once()
     provider_mock.mass.create_task.assert_not_called()
 
@@ -392,15 +406,15 @@ async def test_get_recommendations_serves_stale_and_schedules(
     manager: MusicBrainzRecommendationManager,
     provider_mock: Mock,
 ) -> None:
-    """When nothing fresh is cached, stale data is served and a refresh is scheduled."""
+    """When nothing fresh is cached, stale rows are served and a refresh is scheduled."""
     matches = [_match_entry("birthday", 0, _make_artist("1", "Stale-but-shown"))]
     # first (fresh) lookup misses, second (allow_expired) returns stale data
     provider_mock.mass.cache.get = AsyncMock(side_effect=[None, matches])
 
-    result = await manager.get_recommendations()
+    rows = await manager.get_recommendations()
 
-    assert len(result) == 1
-    assert [a.name for a in result[0].items] == ["Stale-but-shown"]
+    assert [row.item_id for row in rows] == ["birthdays_0"]
+    assert rows[0].items == []
     provider_mock.mass.create_task.assert_called_once()
     assert provider_mock.mass.cache.get.await_count == 2
 
@@ -409,13 +423,47 @@ async def test_get_recommendations_empty_when_no_cache(
     manager: MusicBrainzRecommendationManager,
     provider_mock: Mock,
 ) -> None:
-    """With no cached data at all, the hot path returns empty and schedules a refresh."""
+    """With no cached data at all, the rows call returns empty and schedules a refresh."""
     provider_mock.mass.cache.get = AsyncMock(return_value=None)
 
     result = await manager.get_recommendations()
 
     assert result == []
     provider_mock.mass.create_task.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# get_recommendation_items — one row's items from the cached scan
+# ---------------------------------------------------------------------------
+
+
+async def test_get_recommendation_items_returns_matching_row(
+    manager: MusicBrainzRecommendationManager,
+    provider_mock: Mock,
+) -> None:
+    """Items for one row come from the cached scan; other rows' artists are excluded."""
+    matches = [
+        _match_entry("birthday", 0, _make_artist("1", "Birthday Star")),
+        _match_entry("memoriam", 0, _make_artist("2", "Late Star")),
+    ]
+    provider_mock.mass.cache.get = AsyncMock(return_value=matches)
+    provider_mock.get_artist_details = AsyncMock(side_effect=AssertionError("no backend calls"))
+
+    items = await manager.get_recommendation_items("birthdays_0")
+
+    assert [a.name for a in items] == ["Birthday Star"]
+    provider_mock.mass.create_task.assert_not_called()
+
+
+async def test_get_recommendation_items_unknown_id_empty(
+    manager: MusicBrainzRecommendationManager,
+    provider_mock: Mock,
+) -> None:
+    """An unknown row id returns an empty list."""
+    matches = [_match_entry("birthday", 0, _make_artist("1", "Cached"))]
+    provider_mock.mass.cache.get = AsyncMock(return_value=matches)
+
+    assert await manager.get_recommendation_items("birthdays_5") == []
 
 
 # ---------------------------------------------------------------------------

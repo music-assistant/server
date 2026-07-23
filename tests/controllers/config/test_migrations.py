@@ -1,0 +1,213 @@
+"""Tests for (settings.json) config migrations."""
+
+from typing import Any
+
+from music_assistant.controllers.config.migrations import (
+    _migrate_airplay_receiver_ghost_players,
+    _migrate_output_limiter,
+)
+
+
+def test_migrate_output_limiter_drops_stored_values() -> None:
+    """The removed output limiter setting is dropped, other player values are kept."""
+    data: dict[str, Any] = {
+        "players": {
+            "p1": {"player_id": "p1", "values": {"output_limiter": False, "flow_mode": True}},
+            "p2": {"player_id": "p2", "values": {"output_limiter": True}},
+            "p3": {"player_id": "p3", "values": {}},
+        }
+    }
+    assert _migrate_output_limiter(data) is True
+    assert data["players"]["p1"]["values"] == {"flow_mode": True}
+    assert data["players"]["p2"]["values"] == {}
+    assert data["players"]["p3"]["values"] == {}
+
+
+def test_migrate_output_limiter_noop_when_absent() -> None:
+    """Migration reports no change when no player stored the setting."""
+    data: dict[str, Any] = {"players": {"p1": {"player_id": "p1", "values": {"flow_mode": True}}}}
+    assert _migrate_output_limiter(data) is False
+
+
+def _airplay_receiver_ghost_data() -> dict[str, Any]:
+    """Build a config store with AirPlay Receiver ghost players next to real players."""
+    return {
+        "providers": {
+            "airplay_receiver--abc1": {
+                "domain": "airplay_receiver",
+                "instance_id": "airplay_receiver--abc1",
+                "values": {"airplay_name": "Garage [AirPlay]"},
+            },
+            "airplay": {"domain": "airplay", "instance_id": "airplay", "values": {}},
+        },
+        "players": {
+            # ghosts of the receiver: airplay player + sendspin bridge + universal wrapper
+            "ap41cf0e23916f": {
+                "player_id": "ap41cf0e23916f",
+                "provider": "airplay",
+                "default_name": "Garage [AirPlay]",
+                "values": {},
+            },
+            "spb_41cf0e23916f": {
+                "player_id": "spb_41cf0e23916f",
+                "provider": "sendspin",
+                "default_name": "Garage [AirPlay] (AirPlay)",
+                "values": {},
+            },
+            "up41cf0e23916f": {
+                "player_id": "up41cf0e23916f",
+                "provider": "universal_player",
+                "default_name": "Garage [AirPlay]",
+                "values": {"linked_protocol_ids": ["ap41cf0e23916f", "spb_41cf0e23916f"]},
+            },
+            # a real airplay player with another name must be kept
+            "apaabbccddeeff": {
+                "player_id": "apaabbccddeeff",
+                "provider": "airplay",
+                "default_name": "Kitchen",
+                "values": {},
+            },
+            # a universal player with a matching name wrapping a native (non-ghost)
+            # protocol player must be kept
+            "up10b41dc887f8": {
+                "player_id": "up10b41dc887f8",
+                "provider": "universal_player",
+                "default_name": "Garage [AirPlay]",
+                "values": {"linked_protocol_ids": ["10:B4:1D:C8:87:F8", "spb_10b41dc887f8"]},
+            },
+            # a group referencing a ghost keeps its other members
+            "syncgroup1": {
+                "player_id": "syncgroup1",
+                "provider": "sync_group",
+                "default_name": "All Speakers",
+                "values": {"group_members": ["up41cf0e23916f", "apaabbccddeeff"]},
+            },
+        },
+        "player_queues": {"up41cf0e23916f": {"queue_id": "up41cf0e23916f"}},
+        "player_dsp": {"up41cf0e23916f": {"enabled": True}},
+    }
+
+
+def test_migrate_airplay_receiver_ghosts_removes_matching_players() -> None:
+    """Ghost ap/spb/up players of an own receiver are removed with their leftover state."""
+    data = _airplay_receiver_ghost_data()
+
+    assert _migrate_airplay_receiver_ghost_players(data) is True
+
+    players = data["players"]
+    assert "ap41cf0e23916f" not in players
+    assert "spb_41cf0e23916f" not in players
+    assert "up41cf0e23916f" not in players
+    # real players survive, including the same-name wrapper of a native player
+    assert "apaabbccddeeff" in players
+    assert "up10b41dc887f8" in players
+    # ghost references are stripped from group membership and per-player state trees
+    assert players["syncgroup1"]["values"]["group_members"] == ["apaabbccddeeff"]
+    assert data["player_queues"] == {}
+    assert data["player_dsp"] == {}
+
+
+def test_migrate_airplay_receiver_ghosts_uses_default_name() -> None:
+    """A receiver without an explicit airplay_name matches ghosts of the default name."""
+    data: dict[str, Any] = {
+        "providers": {
+            "airplay_receiver--abc1": {
+                "domain": "airplay_receiver",
+                "instance_id": "airplay_receiver--abc1",
+                "values": {},
+            },
+        },
+        "players": {
+            "apdb1ff0aae80e": {
+                "player_id": "apdb1ff0aae80e",
+                "provider": "airplay",
+                "default_name": "Music Assistant",
+                "values": {},
+            },
+        },
+    }
+
+    assert _migrate_airplay_receiver_ghost_players(data) is True
+    assert data["players"] == {}
+
+
+def test_migrate_airplay_receiver_ghosts_keeps_same_name_wrapper_without_ghost_links() -> None:
+    """A wrapper sharing the receiver name is kept unless it links only ghost endpoints."""
+    data: dict[str, Any] = {
+        "providers": {
+            "airplay_receiver--abc1": {
+                "domain": "airplay_receiver",
+                "instance_id": "airplay_receiver--abc1",
+                "values": {"airplay_name": "Garage [AirPlay]"},
+            },
+        },
+        "players": {
+            # empty linked list: must NOT be deleted (all([]) is True)
+            "upemptylinks": {
+                "player_id": "upemptylinks",
+                "provider": "universal_player",
+                "default_name": "Garage [AirPlay]",
+                "values": {"linked_protocol_ids": []},
+            },
+            # no linked_protocol_ids at all: must NOT be deleted
+            "upnolinks": {
+                "player_id": "upnolinks",
+                "provider": "universal_player",
+                "default_name": "Garage [AirPlay]",
+                "values": {},
+            },
+            # links a native (non-ghost) protocol player: must NOT be deleted
+            "upnative": {
+                "player_id": "upnative",
+                "provider": "universal_player",
+                "default_name": "Garage [AirPlay]",
+                "values": {"linked_protocol_ids": ["spb_10b41dc887f8"]},
+            },
+        },
+    }
+
+    assert _migrate_airplay_receiver_ghost_players(data) is False
+    assert set(data["players"]) == {"upemptylinks", "upnolinks", "upnative"}
+
+
+def test_migrate_airplay_receiver_ghosts_ignores_disabled_receiver() -> None:
+    """A disabled receiver's name is not used, so same-named players are kept."""
+    data: dict[str, Any] = {
+        "providers": {
+            "airplay_receiver--abc1": {
+                "domain": "airplay_receiver",
+                "instance_id": "airplay_receiver--abc1",
+                "enabled": False,
+                "values": {"airplay_name": "Garage [AirPlay]"},
+            },
+        },
+        "players": {
+            "ap41cf0e23916f": {
+                "player_id": "ap41cf0e23916f",
+                "provider": "airplay",
+                "default_name": "Garage [AirPlay]",
+                "values": {},
+            },
+        },
+    }
+
+    assert _migrate_airplay_receiver_ghost_players(data) is False
+    assert "ap41cf0e23916f" in data["players"]
+
+
+def test_migrate_airplay_receiver_ghosts_noop_without_receivers() -> None:
+    """Without configured receiver instances no player config is touched."""
+    data: dict[str, Any] = {
+        "providers": {"airplay": {"domain": "airplay", "instance_id": "airplay", "values": {}}},
+        "players": {
+            "apdb1ff0aae80e": {
+                "player_id": "apdb1ff0aae80e",
+                "provider": "airplay",
+                "default_name": "Music Assistant",
+                "values": {},
+            },
+        },
+    }
+
+    assert _migrate_airplay_receiver_ghost_players(data) is False
+    assert "apdb1ff0aae80e" in data["players"]

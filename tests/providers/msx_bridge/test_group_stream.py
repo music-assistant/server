@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from typing import TYPE_CHECKING
 
 import pytest
 
 from music_assistant.providers.msx_bridge.provider import SharedGroupStream
+
+if TYPE_CHECKING:
+    from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 
 
 async def _chunks(*data: bytes) -> AsyncIterator[bytes]:
@@ -81,6 +85,38 @@ async def test_concurrent_subscribers_receive_live_chunks() -> None:
     )
     assert results[0] == results[1]
     assert len(results[0]) == 3
+
+
+async def test_concurrent_replace_yields_single_stream(provider: MSXBridgeProvider) -> None:
+    """
+    Concurrent replacing get_or_create_shared_stream calls must yield ONE stream.
+
+    Without serialization, both callers pass the "existing" check while the old
+    producer is being awaited, each creates its own stream, and the loser's
+    ffmpeg producer is orphaned — consuming audio with zero subscribers.
+    """
+
+    async def infinite_source() -> AsyncIterator[bytes]:
+        while True:
+            await asyncio.sleep(0.01)
+            yield b"chunk"
+
+    old = await provider.get_or_create_shared_stream("g1", "uri://old", infinite_source())
+    try:
+        results = await asyncio.gather(
+            provider.get_or_create_shared_stream("g1", "uri://new", infinite_source()),
+            provider.get_or_create_shared_stream("g1", "uri://new", infinite_source()),
+        )
+        assert results[0] is results[1]
+        assert provider._shared_streams["g1"] is results[0]
+    finally:
+        await old.stop()
+        for stream in {id(s): s for s in provider._shared_streams.values()}.values():
+            await stream.stop()
+        await asyncio.gather(
+            *(s.stop() for s in results),
+            return_exceptions=True,
+        )
 
 
 async def test_cancel_stops_subscription() -> None:
