@@ -303,6 +303,7 @@ CONFIGURABLE_CORE_CONTROLLERS = (
     "cache",
     "music",
     "player_queues",
+    "tasks",
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
 PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music", "deezer")
@@ -326,8 +327,21 @@ CONF_ENTRY_LOG_LEVEL = ConfigEntry(
     requires_reload=False,  # applied dynamically via _set_logger()
 )
 
+CONF_MAX_CONCURRENT_TASKS = "max_concurrent_tasks"
+CONF_ENTRY_MAX_CONCURRENT_TASKS = ConfigEntry(
+    key=CONF_MAX_CONCURRENT_TASKS,
+    type=ConfigEntryType.INTEGER,
+    range=(1, 10),
+    default_value=2,
+    advanced=True,
+    requires_reload=False,
+)
+
 DEFAULT_PROVIDER_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
-DEFAULT_CORE_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
+DEFAULT_CORE_CONFIG_ENTRIES = (
+    CONF_ENTRY_LOG_LEVEL,
+    CONF_ENTRY_MAX_CONCURRENT_TASKS,
+)
 
 # some reusable player config entries
 
