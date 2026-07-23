@@ -6,7 +6,7 @@ import time
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
-from music_assistant.constants import CONF_SYNC_ADJUST
+from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.providers.airplay.constants import (
     CONF_FORCE_RAOP,
     CONF_LEGACY_AIRPLAY_PROTOCOL,
@@ -238,8 +238,8 @@ async def test_ptp_daemon_spawn_advertises_dacp_identity() -> None:
     ]
 
 
-async def test_ptp_daemon_spawn_mirrors_debug_level() -> None:
-    """A debug-level provider logger passes a debug flag through to the daemon."""
+async def test_ptp_daemon_spawn_quiet_at_debug_level() -> None:
+    """A normal debug session keeps the daemon quiet (no per-packet tracing)."""
     prov = _ptp_provider()
     prov.dacp_id = "AABBCCDD11223344"
     prov.mass = MagicMock()
@@ -263,7 +263,35 @@ async def test_ptp_daemon_spawn_mirrors_debug_level() -> None:
         process_cls.return_value.start = AsyncMock()
         await prov._start_ptp_daemon()
 
-    assert process_cls.call_args.args[0][-2:] == ["--debug", "5"]
+    assert "--debug" not in process_cls.call_args.args[0]
+
+
+async def test_ptp_daemon_spawn_traces_at_verbose_level() -> None:
+    """A verbose session turns on the daemon's per-packet timing trace."""
+    prov = _ptp_provider()
+    prov.dacp_id = "AABBCCDD11223344"
+    prov.mass = MagicMock()
+    prov.mass.streams.bind_ip = "0.0.0.0"
+    prov.logger.setLevel(VERBOSE_LOG_LEVEL)
+
+    def _consume_task(coro: object) -> MagicMock:
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        return MagicMock()
+
+    prov.mass.create_task.side_effect = _consume_task
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.provider.get_cli_binary",
+            AsyncMock(return_value="/bin/cliairplay"),
+        ),
+        patch("music_assistant.providers.airplay.provider.AsyncProcess") as process_cls,
+    ):
+        process_cls.return_value.start = AsyncMock()
+        await prov._start_ptp_daemon()
+
+    assert process_cls.call_args.args[0][-2:] == ["--debug", "10"]
 
 
 def test_ptp_daemon_ready_event_set_on_daemon_up_line() -> None:

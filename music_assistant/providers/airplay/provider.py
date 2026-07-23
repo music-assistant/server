@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-import logging
 import socket
 import time
 from contextlib import suppress
@@ -654,12 +653,11 @@ class AirPlayProvider(PlayerProvider):
         bind_ip = str(self.mass.streams.bind_ip)
         if bind_ip not in ("0.0.0.0", "::", ""):
             args += ["--if", bind_ip]
-        # Mirror the per-stream debug level so the daemon's receive side
-        # (peer Announce/Sync/Delay_Req traffic) is visible in the log.
+        # The daemon runs quiet by default; only a verbose session turns on its
+        # per-packet PTP tracing (Announce/Sync/Delay_Req), so a normal debug
+        # session does not flood the log with timing chatter.
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             args += ["--debug", "10"]
-        elif self.logger.isEnabledFor(logging.DEBUG):
-            args += ["--debug", "5"]
         daemon = AsyncProcess(args, stdout=True, stderr=True, name="cliairplay-ptp-daemon")
         # (Re)gate readiness for this daemon instance: not ready until a reader
         # sees the "daemon up" line (a restart clears any previous readiness).
@@ -690,8 +688,16 @@ class AirPlayProvider(PlayerProvider):
                     self._handle_ptp_daemon_line(line)
 
     def _handle_ptp_daemon_line(self, line: str) -> None:
-        """Debug-log a PTP daemon output line and detect its readiness signal."""
-        self.logger.debug("PTP daemon: %s", line)
+        """Log a PTP daemon output line and detect its readiness signal."""
+        # Routine daemon output is verbose-only so it never floods a user's log
+        # (the per-packet timing trace only runs at verbose in the first place).
+        # The daemon tags no log levels, so a genuine problem is recognised by
+        # keyword and promoted to a warning that stays visible at normal levels.
+        lowered = line.lower()
+        if any(marker in lowered for marker in ("error", "cannot", "failed", "unable")):
+            self.logger.warning("PTP daemon: %s", line)
+        else:
+            self.logger.log(VERBOSE_LOG_LEVEL, "PTP daemon: %s", line)
         # The readiness marker is matched on either pipe: the daemon's diagnostic
         # output is not contractually stdout-vs-stderr, so both readers feed this
         # handler and setting the event is idempotent.
