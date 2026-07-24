@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
+import zlib
 from collections.abc import AsyncGenerator, Coroutine, Sequence
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
@@ -218,12 +218,15 @@ class KionMusicProvider(MusicProvider):
                 translation_key="top_picks",
                 icon="mdi-star",
             ),
-            # Mood/Activity rows have a static title; the rotating tag is picked at items time.
+            # Mood/Activity rows have a static title; the hourly rotating tag - derived
+            # deterministically, so the items call independently computes the same one -
+            # shows as the row subtitle (cache-only tag-list read, no backend I/O).
             RecommendationFolder(
                 item_id="mood_mix",
                 provider=self.instance_id,
                 name="Mood Mix",
                 translation_key="mood_mix",
+                subtitle=await self._rotating_row_tag_subtitle("mood"),
                 icon="mdi-emoticon-outline",
             ),
             RecommendationFolder(
@@ -231,6 +234,7 @@ class KionMusicProvider(MusicProvider):
                 provider=self.instance_id,
                 name="Activity Mix",
                 translation_key="activity_mix",
+                subtitle=await self._rotating_row_tag_subtitle("activity"),
                 icon="mdi-run",
             ),
             RecommendationFolder(
@@ -265,12 +269,16 @@ class KionMusicProvider(MusicProvider):
         elif item_id == "top_picks":
             folder = await self._get_top_picks_recommendations()
         elif item_id == "mood_mix":
-            # Pick the tag outside the cached helper so rotation actually works
-            if mood_tag := await self._pick_random_tag_for_category("mood"):
-                folder = await self._get_mood_mix_recommendations(mood_tag)
+            # the deterministic hourly tag keeps the served items matching the row subtitle
+            if mood_tags := await self._get_valid_tags_for_category("mood"):
+                folder = await self._get_mood_mix_recommendations(
+                    self._rotating_row_tag("mood", mood_tags)
+                )
         elif item_id == "activity_mix":
-            if activity_tag := await self._pick_random_tag_for_category("activity"):
-                folder = await self._get_activity_mix_recommendations(activity_tag)
+            if activity_tags := await self._get_valid_tags_for_category("activity"):
+                folder = await self._get_activity_mix_recommendations(
+                    self._rotating_row_tag("activity", activity_tags)
+                )
         elif item_id == "seasonal_mix":
             folder = await self._get_seasonal_mix_recommendations()
         if folder is None:
@@ -692,7 +700,9 @@ class KionMusicProvider(MusicProvider):
             self.logger.debug("Tag validation failed for %s: %s", tag_slug, err)
             return False
 
-    @use_cache(3600)
+    # allow_expired_cache keeps the items call serving the same (possibly stale) tag
+    # list the rows subtitle was derived from, while a background refresh runs
+    @use_cache(3600, allow_expired_cache=True)
     async def _get_valid_tags_for_category(self, category: str) -> list[str]:
         """
         Get validated tags for a category (only those with playlists).
@@ -2218,18 +2228,6 @@ class KionMusicProvider(MusicProvider):
             icon="mdi-star",
         )
 
-    async def _pick_random_tag_for_category(self, category: str) -> str | None:
-        """
-        Pick a random valid tag for a category (not cached — enables rotation).
-
-        :param category: Category name ('mood', 'activity', etc.).
-        :return: Random tag slug, or None if no valid tags.
-        """
-        valid_tags = await self._get_valid_tags_for_category(category)
-        if not valid_tags:
-            return None
-        return random.choice(valid_tags)
-
     @use_cache(1800)
     async def _get_mood_mix_recommendations(self, mood_tag: str) -> RecommendationFolder | None:
         """
@@ -2747,3 +2745,41 @@ class KionMusicProvider(MusicProvider):
             total_played_seconds=seconds,
             batch_id=batch_id,
         )
+
+    async def _rotating_row_tag_subtitle(self, category: str) -> str | None:
+        """
+        Return the display label of the current rotating tag for a mood/activity row.
+
+        Cache-only read of the validated tag list (rows must stay free of backend I/O):
+        returns None - no subtitle - until an items fetch has warmed that cache.
+
+        :param category: Tag category ('mood' or 'activity').
+        """
+        # key mirrors the @use_cache key construction on _get_valid_tags_for_category:
+        # the wrapped function's __name__ (preserved by functools.wraps, so it survives
+        # renames) plus its positional args, joined by dots
+        tags, _, found = await self.mass.cache.get_with_freshness(
+            f"{self._get_valid_tags_for_category.__name__}.{category}",
+            provider=self.instance_id,
+            include_expired=True,
+        )
+        if not found or not tags:
+            return None
+        tag = self._rotating_row_tag(category, tags)
+        return self._media_source_name("folder", _media_label_key(tag)) or tag.title()
+
+    def _rotating_row_tag(self, category: str, valid_tags: list[str]) -> str:
+        """
+        Deterministically pick the current hour's tag for a mood/activity row.
+
+        Rows and items derive the same tag independently - no shared state, so
+        concurrent clients (or multiple users on one instance) can never make the
+        served items mismatch the row subtitle. The pick rotates hourly and
+        differs per provider instance.
+
+        :param category: Tag category the tags belong to.
+        :param valid_tags: Non-empty list of valid tag slugs to pick from.
+        """
+        hour_bucket = int(utc().timestamp()) // 3600
+        seed = f"{self.instance_id}.{category}.{hour_bucket}".encode()
+        return sorted(valid_tags)[zlib.crc32(seed) % len(valid_tags)]

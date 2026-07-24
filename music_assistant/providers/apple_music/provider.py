@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 
-class AppleMusicProvider(MusicProvider, RecommendationPayloadMixin):
+class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
     """Implementation of an Apple Music MusicProvider."""
 
     _music_user_token: str | None = None
