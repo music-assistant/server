@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 from typing import Final
 
@@ -13,6 +14,8 @@ from music_assistant.providers.local_audio.pa_simple import (
     build_channel_remap_index,
     remap_pcm_channels,
 )
+
+_LOGGER: Final = logging.getLogger(__name__)
 
 # FFmpeg channel token -> PulseAudio position name.
 _TOKEN_TO_PULSE_NAME: Final[dict[str, str]] = {
@@ -77,29 +80,29 @@ def test_source_channel_order_is_well_formed(channels: int) -> None:
 
 def test_remap_index_none_when_physical_order_unknown() -> None:
     """No physical map means no remap can be computed."""
-    assert build_channel_remap_index(6, None) is None
-    assert build_channel_remap_index(6, []) is None
+    assert build_channel_remap_index(6, None, logger=_LOGGER) is None
+    assert build_channel_remap_index(6, [], logger=_LOGGER) is None
 
 
 def test_remap_index_none_when_orders_already_match() -> None:
     """An identical physical order needs no remap."""
-    assert build_channel_remap_index(6, list(_SOURCE_CHANNEL_ORDER[6])) is None
+    assert build_channel_remap_index(6, list(_SOURCE_CHANNEL_ORDER[6]), logger=_LOGGER) is None
 
 
 def test_remap_index_none_for_unknown_channel_count() -> None:
     """A channel count with no known source order is refused rather than guessed."""
-    assert build_channel_remap_index(9, ["front-left"] * 9) is None
+    assert build_channel_remap_index(9, ["front-left"] * 9, logger=_LOGGER) is None
 
 
 def test_remap_index_none_on_length_mismatch() -> None:
     """A physical map of the wrong length is refused rather than guessed."""
-    assert build_channel_remap_index(6, ["front-left", "front-right"]) is None
+    assert build_channel_remap_index(6, ["front-left", "front-right"], logger=_LOGGER) is None
 
 
 def test_remap_index_none_on_unknown_position_names() -> None:
     """Positions outside the source vocabulary can't be matched up."""
     physical = ["front-left", "front-right", "front-center", "lfe", "side-left", "side-right"]
-    assert build_channel_remap_index(6, physical) is None
+    assert build_channel_remap_index(6, physical, logger=_LOGGER) is None
 
 
 def test_remap_index_swapped_centre_and_lfe() -> None:
@@ -112,7 +115,7 @@ def test_remap_index_swapped_centre_and_lfe() -> None:
         "rear-left",
         "rear-right",
     ]
-    assert build_channel_remap_index(6, physical) == [0, 1, 3, 2, 4, 5]
+    assert build_channel_remap_index(6, physical, logger=_LOGGER) == [0, 1, 3, 2, 4, 5]
 
 
 def test_remap_index_applies_physical_position_aliases() -> None:
@@ -127,7 +130,7 @@ def test_remap_index_applies_physical_position_aliases() -> None:
         "rear-left",
         "rear-right",
     ]
-    assert build_channel_remap_index(8, physical) == [0, 1, 2, 3, 6, 7, 4, 5]
+    assert build_channel_remap_index(8, physical, logger=_LOGGER) == [0, 1, 2, 3, 6, 7, 4, 5]
 
 
 def test_remap_index_aliases_can_still_be_a_no_op() -> None:
@@ -142,14 +145,14 @@ def test_remap_index_aliases_can_still_be_a_no_op() -> None:
         "rear-left-of-center",
         "rear-right-of-center",
     ]
-    assert build_channel_remap_index(8, physical) is None
+    assert build_channel_remap_index(8, physical, logger=_LOGGER) is None
 
 
 @pytest.mark.parametrize("channels", sorted(_SOURCE_CHANNEL_ORDER))
 def test_remap_index_is_a_permutation(channels: int) -> None:
     """A reversed physical order produces a full permutation of the source slots."""
     reversed_order = list(reversed(_SOURCE_CHANNEL_ORDER[channels]))
-    index = build_channel_remap_index(channels, reversed_order)
+    index = build_channel_remap_index(channels, reversed_order, logger=_LOGGER)
     if channels == 1:
         # a single channel can never be reordered
         assert index is None

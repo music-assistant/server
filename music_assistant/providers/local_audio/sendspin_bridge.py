@@ -27,7 +27,10 @@ from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_SAMPLE_RATE,
     BridgePlayerRole,
 )
-from music_assistant.providers.sendspin.helpers import bridge_client_id_from_uuid
+from music_assistant.providers.sendspin.helpers import (
+    bridge_client_id_from_uuid,
+    resolve_channel_count,
+)
 
 from .constants import (
     AUDIO_BACKEND_ALSA,
@@ -60,6 +63,8 @@ if sys.platform == "linux":
     )
 
 if TYPE_CHECKING:
+    import logging
+
     import sounddevice as sd  # noqa: F401
     from aiosendspin.server import (
         ExternalStreamStartRequest,
@@ -153,6 +158,7 @@ class SendspinLocalAudioBridge:
         self.device_info = device_info
         self.device_name: str = device_info["name"]
         self.display_name: str = device_info.get("description", self.device_name)
+        self.logger = provider.logger.getChild(f"bridge.{self.display_name}")
         self.pa_sink_name: str | None = device_info.get("pa_sink_name")
         self.sample_rate: int = device_info.get("sample_rate", BRIDGE_SAMPLE_RATE)
         self.bit_depth: int = device_info.get("bit_depth", BRIDGE_BIT_DEPTH)
@@ -162,7 +168,9 @@ class SendspinLocalAudioBridge:
         # pa_cvolume_set in PAVolumeController calls — a mismatch against the
         # sink's real channel_map can leave the displayed reference_volume
         # updated while soft_volume (real gain) doesn't change.
-        self.pa_channels: int = device_info.get("max_output_channels", BRIDGE_CHANNELS)
+        self.pa_channels: int = resolve_channel_count(
+            device_info.get("max_output_channels", BRIDGE_CHANNELS)
+        )
         # The device's real physical channel order, as reported by the ALSA
         # driver (pa_simple query_alsa_chmap(), via enumerate_alsa_devices()),
         # and the resulting remap index against MA's standard PCM output order,
@@ -178,13 +186,14 @@ class SendspinLocalAudioBridge:
         # — byte-remapping as well would mislabel the declared order and
         # double-remap. physical_channel_map is still kept for logging.
         self._channel_remap_index: list[int] | None = (
-            build_channel_remap_index(self.pa_channels, self.physical_channel_map)
+            build_channel_remap_index(
+                self.pa_channels, self.physical_channel_map, logger=self.logger
+            )
             if backend != "pulse"
             else None
         )
         self.device_index: int | None = device_info.get("index")
         self.backend: str = backend
-        self.logger = provider.logger.getChild(f"bridge.{self.display_name}")
         self.logger.debug(
             "%s: pa_channels=%d physical_channel_map=%s remap_index=%s",
             self.device_name,
@@ -904,7 +913,7 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
             )
             try:
                 resolved_backend, devices = await self.mass.loop.run_in_executor(
-                    None, self._enumerate_output_devices, configured_backend
+                    None, self._enumerate_output_devices, configured_backend, self.logger
                 )
             except Exception as err:
                 self.logger.warning("Failed to enumerate audio devices: %s", err)
@@ -1217,13 +1226,16 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
         return new_devices
 
     @staticmethod
-    def _enumerate_output_devices(backend: str) -> tuple[str, list[dict[str, Any]]]:
+    def _enumerate_output_devices(
+        backend: str, logger: logging.Logger
+    ) -> tuple[str, list[dict[str, Any]]]:
         """
         Enumerate available audio output devices for the given backend.
 
         :param backend: One of AUDIO_BACKEND_AUTO / AUDIO_BACKEND_PULSEAUDIO /
             AUDIO_BACKEND_ALSA (from constants).  On non-Linux the backend is
             always resolved to "sounddevice".
+        :param logger: The provider's logger, forwarded to the pa_simple helpers
         :returns: Tuple of (resolved_backend, device_list).
         """
         if sys.platform != "linux":
@@ -1250,7 +1262,7 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
 
         # Linux — dispatch by configured backend
         if backend == AUDIO_BACKEND_ALSA:
-            return "alsa", enumerate_alsa_devices()
+            return "alsa", enumerate_alsa_devices(logger=logger)
 
         if backend == AUDIO_BACKEND_PULSEAUDIO:
             return "pulse", enumerate_pa_sinks()
@@ -1262,4 +1274,4 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
                 return "pulse", sinks
         except (FileNotFoundError, RuntimeError):  # fmt: skip
             pass
-        return "alsa", enumerate_alsa_devices()
+        return "alsa", enumerate_alsa_devices(logger=logger)

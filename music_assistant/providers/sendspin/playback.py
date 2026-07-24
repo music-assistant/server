@@ -29,6 +29,8 @@ from music_assistant.providers.sendspin.bridge_role import (
     BridgePlayerRole,
 )
 
+from .helpers import resolve_channel_count
+
 if TYPE_CHECKING:
     from .player import SendspinPlayer
     from .provider import SendspinProvider
@@ -64,9 +66,6 @@ _LIVE_MEDIA_TYPES: frozenset[MediaType] = frozenset(
 
 # Sample rate ceiling for lossy output codecs — anything above is wasted bandwidth.
 _LOSSY_MAX_SAMPLE_RATE = 48000
-# Ceiling on session PCM channel count derived from a client's advertised
-# format. 8 covers 7.1; anything a client claims beyond this is untrusted.
-_MAX_SESSION_CHANNELS = 8
 # Max PCM slice fed to the producer per iteration.
 _PRODUCER_SLICE_US = 100_000
 # Max pending chunks between producer and committer before the producer blocks.
@@ -1302,8 +1301,7 @@ class SendspinPlaybackSession:
         is_grouped = bool(self._members or self.pending_join_members)
         if not is_grouped:
             advertised = int(leader_output.channels) if leader_output.channels else 2
-            if 2 < advertised <= _MAX_SESSION_CHANNELS:
-                session_channels = advertised
+            session_channels = resolve_channel_count(advertised)
         pcm_format = AudioFormat(
             content_type=ContentType.PCM_F32LE,
             sample_rate=sample_rate,

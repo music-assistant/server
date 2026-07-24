@@ -12,8 +12,6 @@ import numpy as np
 
 from .constants import volume_pct_to_amplitude
 
-LOGGER = logging.getLogger("local_audio.pa_simple")
-
 PA_STREAM_PLAYBACK: Final = 1
 
 PA_SAMPLE_S16LE: Final = 3
@@ -98,10 +96,8 @@ def _build_pa_channel_map(channels: int) -> _PAChannelMap | None:
     cmap = _PAChannelMap()
     lib = _get_pulse_core_lib()
     if not lib.pa_channel_map_parse(ctypes.byref(cmap), ",".join(names).encode()):
-        LOGGER.debug("pa_channel_map_parse failed for %s", names)
         return None
     if not lib.pa_channel_map_valid(ctypes.byref(cmap)) or cmap.channels != channels:
-        LOGGER.debug("parsed pa_channel_map invalid for %d channels (%s)", channels, names)
         return None
     return cmap
 
@@ -507,12 +503,6 @@ class PASimpleStream:
         # explicit map — and declaring the true order makes the server
         # route channels by position name to the sink's own map.
         self._channel_map = _build_pa_channel_map(channels)
-        if self._channel_map is not None:
-            LOGGER.debug(
-                "PA stream for %s declares %d-channel map (MA/FFmpeg order)",
-                sink_name,
-                channels,
-            )
         error = ctypes.c_int(0)
         self._lib = lib
         self._lock = threading.Lock()
@@ -574,7 +564,7 @@ class PASimpleStream:
         self.close()
 
 
-def enumerate_alsa_devices() -> list[dict[str, Any]]:
+def enumerate_alsa_devices(*, logger: logging.Logger) -> list[dict[str, Any]]:
     """
     Enumerate stereo-capable ALSA output devices via PortAudio.
 
@@ -667,11 +657,12 @@ def enumerate_alsa_devices() -> list[dict[str, Any]]:
                     hw_string,
                     device_dict["max_output_channels"],
                     int(device_dict.get("sample_rate") or 48000),
+                    logger=logger,
                 )
                 if resolved is not None:
                     device_dict["physical_channel_map"] = resolved
             if device_dict.get("max_output_channels", 0) > 2:
-                LOGGER.debug(
+                logger.debug(
                     "ALSA device %s (card=%s, channels=%d): physical_channel_map=%s",
                     device_dict["name"],
                     device_dict.get("alsa_card_index"),
@@ -837,7 +828,7 @@ _PHYSICAL_POSITION_ALIASES: Final[dict[str, str]] = {
 
 
 def build_channel_remap_index(
-    channels: int, physical_channel_map: list[str] | None
+    channels: int, physical_channel_map: list[str] | None, *, logger: logging.Logger
 ) -> list[int] | None:
     """
     Build a channel-reorder index mapping standard PCM order to device order.
@@ -854,6 +845,8 @@ def build_channel_remap_index(
     :param physical_channel_map: The device's real channel order (from
 
         query_alsa_chmap()), or None if unknown.
+    :param logger: The calling provider's logger, so debug output follows the
+        log level configured for the provider in Music Assistant.
     :returns: A list where result[i] = source channel index to place at
         output position i, or None if no remap is needed/possible: physical
         order unknown, channel count not in the known-source-order table,
@@ -862,7 +855,7 @@ def build_channel_remap_index(
         or the two orders already match (remapping would be a no-op).
     """
     if not physical_channel_map:
-        LOGGER.debug("No remap for %d-channel device: physical order unknown", channels)
+        logger.debug("No remap for %d-channel device: physical order unknown", channels)
         return None
     # Translate driver-reported positions that have no counterpart in the
     # FFmpeg source vocabulary. HD Audio HDMI devices report the pair beyond 5.1
@@ -877,7 +870,7 @@ def build_channel_remap_index(
     ]
     source_order = _SOURCE_CHANNEL_ORDER.get(channels)
     if source_order is None:
-        LOGGER.debug(
+        logger.debug(
             "No remap for %d-channel device: no known standard source order for this "
             "channel count (only %s covered)",
             channels,
@@ -885,7 +878,7 @@ def build_channel_remap_index(
         )
         return None
     if len(physical_channel_map) != channels:
-        LOGGER.debug(
+        logger.debug(
             "No remap for %d-channel device: physical map has %d entries (%s) — "
             "length mismatch, refusing to guess",
             channels,
@@ -894,7 +887,7 @@ def build_channel_remap_index(
         )
         return None
     if set(source_order) != set(physical_channel_map):
-        LOGGER.debug(
+        logger.debug(
             "No remap for %d-channel device: physical map %s uses different channel "
             "names than the standard source order %s — can't match, refusing to guess",
             channels,
@@ -903,7 +896,7 @@ def build_channel_remap_index(
         )
         return None
     if source_order == physical_channel_map:
-        LOGGER.debug(
+        logger.debug(
             "No remap needed for %d-channel device: physical order already matches "
             "standard source order %s",
             channels,
@@ -911,7 +904,7 @@ def build_channel_remap_index(
         )
         return None
     index = [source_order.index(name) for name in physical_channel_map]
-    LOGGER.debug(
+    logger.debug(
         "Remap computed for %d-channel device: source %s -> physical %s (index %s)",
         channels,
         source_order,
@@ -1023,14 +1016,16 @@ _SND_PCM_FORMAT_S16_LE: Final = 2
 _SND_PCM_ACCESS_RW_INTERLEAVED: Final = 3
 
 
-def _decode_chmap_positions(u32: Any, offset: int, channels: int, device: str) -> list[str] | None:
+def _decode_chmap_positions(
+    u32: Any, offset: int, channels: int, device: str, *, logger: logging.Logger
+) -> list[str] | None:
     """Decode a run of chmap position codes into long-form names, or None on any unknown."""
     positions: list[str] = []
     for j in range(channels):
         raw_pos = u32[offset + j] & _ALSA_POSITION_MASK
         name = _ALSA_CHMAP_POSITION.get(raw_pos)
         if name is None:
-            LOGGER.debug(
+            logger.debug(
                 "ALSA chmap query: %s slot %d has unrecognized position code %d — "
                 "refusing to guess",
                 device,
@@ -1043,7 +1038,7 @@ def _decode_chmap_positions(u32: Any, offset: int, channels: int, device: str) -
 
 
 def query_alsa_chmap(
-    device: str, expected_channels: int, sample_rate: int = 48000
+    device: str, expected_channels: int, sample_rate: int = 48000, *, logger: logging.Logger
 ) -> list[str] | None:
     """
     Query the channel map actually in effect for a raw ALSA hw: device.
@@ -1076,7 +1071,7 @@ def query_alsa_chmap(
     pcm = ctypes.c_void_p()
     err = lib.snd_pcm_open(ctypes.byref(pcm), device.encode(), _SND_PCM_STREAM_PLAYBACK, 0)
     if err < 0:
-        LOGGER.debug("ALSA chmap query: couldn't open %s (err=%d)", device, err)
+        logger.debug("ALSA chmap query: couldn't open %s (err=%d)", device, err)
         return None
     try:
         # 1) Active map: configure exactly as playback will, then ask.
@@ -1102,9 +1097,11 @@ def query_alsa_chmap(
                 try:
                     channels = chmap_ptr[0]
                     if channels == expected_channels:
-                        positions = _decode_chmap_positions(chmap_ptr, 1, channels, device)
+                        positions = _decode_chmap_positions(
+                            chmap_ptr, 1, channels, device, logger=logger
+                        )
                         if positions is not None:
-                            LOGGER.debug(
+                            logger.debug(
                                 "ALSA chmap query: %s ACTIVE chmap (%d channels): %s",
                                 device,
                                 channels,
@@ -1112,7 +1109,7 @@ def query_alsa_chmap(
                             )
                             return positions
                     else:
-                        LOGGER.debug(
+                        logger.debug(
                             "ALSA chmap query: %s active chmap has %d channels, "
                             "expected %d — ignoring",
                             device,
@@ -1122,9 +1119,9 @@ def query_alsa_chmap(
                 finally:
                     _get_libc().free(chmap_ptr)
             else:
-                LOGGER.debug("ALSA chmap query: %s reports no active chmap", device)
+                logger.debug("ALSA chmap query: %s reports no active chmap", device)
         else:
-            LOGGER.debug(
+            logger.debug(
                 "ALSA chmap query: set_params failed on %s (err=%d, %dch@%dHz) — "
                 "can't read active map",
                 device,
@@ -1138,7 +1135,7 @@ def query_alsa_chmap(
         # result is traceable to this path.
         maps_ptr = lib.snd_pcm_query_chmaps(pcm)
         if not maps_ptr:
-            LOGGER.debug("ALSA chmap query: %s returned no chmaps", device)
+            logger.debug("ALSA chmap query: %s returned no chmaps", device)
             return None
         try:
             i = 0
@@ -1147,10 +1144,10 @@ def query_alsa_chmap(
                 u32 = ctypes.cast(maps_ptr[i], ctypes.POINTER(ctypes.c_uint32))
                 channels = u32[1]
                 if channels == expected_channels:
-                    positions = _decode_chmap_positions(u32, 2, channels, device)
+                    positions = _decode_chmap_positions(u32, 2, channels, device, logger=logger)
                     if positions is None:
                         return None
-                    LOGGER.debug(
+                    logger.debug(
                         "ALSA chmap query: %s AVAILABLE-list fallback (%d channels): %s "
                         "— active map unavailable, this may not reflect actual routing",
                         device,
@@ -1159,7 +1156,7 @@ def query_alsa_chmap(
                     )
                     return positions
                 i += 1
-            LOGGER.debug(
+            logger.debug(
                 "ALSA chmap query: %s had no chmap entry for %d channels",
                 device,
                 expected_channels,
