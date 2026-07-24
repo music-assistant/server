@@ -29,6 +29,7 @@ class AsyncNamedPipeWriter:
         self._pipe_path = pipe_path
         self._owner_id = owner_id
         self._write_fd: int | None = None
+        self._write_lock = asyncio.Lock()
 
     @property
     def path(self) -> str:
@@ -52,7 +53,7 @@ class AsyncNamedPipeWriter:
 
         :param data: Data to write.
         :return: True for a complete write, False when no reader is available,
-            the reader closes, or the write is incomplete.
+            the reader closes, or the write cannot make progress.
         :raises OSError: If writing fails for another reason.
         """
 
@@ -65,18 +66,23 @@ class AsyncNamedPipeWriter:
                     len(data),
                 )
                 return False
+            data_view = memoryview(data)
+            total_bytes_written = 0
             try:
                 assert self._write_fd is not None
-                bytes_written = os.write(self._write_fd, data)
-                if bytes_written != len(data):
-                    _LOGGER.debug(
-                        "Named pipe write incomplete on %s (owner=%s, %d of %d bytes written)",
-                        self._pipe_path,
-                        self._log_owner,
-                        bytes_written,
-                        len(data),
-                    )
-                    return False
+                while total_bytes_written < len(data_view):
+                    bytes_written = os.write(self._write_fd, data_view[total_bytes_written:])
+                    if bytes_written == 0:
+                        _LOGGER.debug(
+                            "Named pipe write made no progress on %s "
+                            "(owner=%s, %d of %d bytes written)",
+                            self._pipe_path,
+                            self._log_owner,
+                            total_bytes_written,
+                            len(data),
+                        )
+                        return False
+                    total_bytes_written += bytes_written
                 return True
             except OSError as e:
                 if e.errno == errno_module.EPIPE:
@@ -86,15 +92,18 @@ class AsyncNamedPipeWriter:
                             os.close(self._write_fd)
                         self._write_fd = None
                     _LOGGER.debug(
-                        "Named pipe write failed (EPIPE) on %s (owner=%s, %d bytes dropped): reader closed",
+                        "Named pipe write failed (EPIPE) on %s "
+                        "(owner=%s, %d of %d bytes written): reader closed",
                         self._pipe_path,
                         self._log_owner,
+                        total_bytes_written,
                         len(data),
                     )
                     return False
                 raise
 
-        return await asyncio.to_thread(_write)
+        async with self._write_lock:
+            return await asyncio.to_thread(_write)
 
     async def remove(self) -> None:
         """Close write fd and remove the pipe."""

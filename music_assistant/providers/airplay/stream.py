@@ -823,7 +823,9 @@ class AirPlayStream:
         """Write an interactive command regardless of stream teardown state."""
         if not self._cli_proc or self._cli_proc.closed:
             return False
-        self.player.last_command_sent = time.time()
         if not command.endswith("\n"):
             command += "\n"
-        return await self.commands_pipe.write(command.encode("utf-8"))
+        command_delivered = await self.commands_pipe.write(command.encode("utf-8"))
+        if command_delivered:
+            self.player.last_command_sent = time.time()
+        return command_delivered
