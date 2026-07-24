@@ -286,6 +286,7 @@ class MusicQuizPlugin(PluginProvider):
             ("music_quiz/info", self.get_game_info),
             ("music_quiz/join", self.join_game),
             ("music_quiz/state", self.get_player_state),
+            ("music_quiz/public_state", self.get_public_state),
             ("music_quiz/heartbeat", self.heartbeat),
             ("music_quiz/submit_answer", self.submit_answer),
             ("music_quiz/answer", self.answer),
@@ -616,6 +617,22 @@ class MusicQuizPlugin(PluginProvider):
             player = _get_player(game, player_id)
             self._refresh_player_presence(player)
             return _player_state(game, player, answer_type)
+
+    async def get_public_state(self) -> dict[str, Any] | None:
+        """
+        Return the guest-safe public game state for a non-participant display.
+
+        Mirrors the ``game_updated`` broadcast payload so a display client (e.g. a
+        lobby dashboard) can render the full current state on cold launch without
+        joining as a player.
+
+        :return: The full public game state, or None when no game is active.
+        """
+        async with self._game_lock:
+            if self._game is None:
+                return None
+            game, _, answer_type = self._require_game_strategies()
+            return _public_state(game, answer_type)
 
     async def heartbeat(self, player_id: str) -> bool:
         """
