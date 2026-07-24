@@ -398,6 +398,9 @@ for more details.
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         is_removed will be set to True when the provider is removed from the configuration.
         """
+        # run the unload chain first: RecommendationPayloadMixin cancels and awaits its
+        # payload tasks, so no fetch is still running against the clients logging out below
+        await super().unload(is_removed)
         try:
             await self._client.logout()
             await self._client_socket.logout()
@@ -405,8 +408,6 @@ for more details.
             self.logger.debug("Ignoring error during logout: %s", err)
         for callback in self._on_unload_callbacks:
             callback()
-        # continue the unload chain (RecommendationPayloadMixin cancels its payload tasks)
-        await super().unload(is_removed)
 
     @property
     def is_streaming_provider(self) -> bool:
