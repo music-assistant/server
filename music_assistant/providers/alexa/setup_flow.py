@@ -121,7 +121,6 @@ async def _proxy_login(session: SetupSession, login: AlexaLogin) -> bool:
     :param login: The AlexaLogin the reverse proxy autofills and captures cookies into.
     """
     proxy_path = f"/setup_flow/alexa_proxy/{session.flow_id}/"
-    post_path = f"{proxy_path}ap/signin/*"
     proxy_url = f"{session.mass.webserver.base_url.rstrip('/')}{proxy_path}"
     proxy = AlexaProxy(login, proxy_url)
 
@@ -134,11 +133,13 @@ async def _proxy_login(session: SetupSession, login: AlexaLogin) -> bool:
             return web.Response(text=_SUCCESS_HTML, content_type="text/html")
         return cast("web.StreamResponse", response)
 
-    session.mass.webserver.register_dynamic_route(proxy_path, proxy_handler, "GET")
-    session.mass.webserver.register_dynamic_route(post_path, proxy_handler, "POST")
+    # one wildcard route (all methods) so every proxied Amazon path under the base
+    # resolves: the login traverses assets and multiple /ap/* pages (mfa, cvf, ...)
+    unregister_proxy_route = session.mass.webserver.register_dynamic_route(
+        f"{proxy_path}*", proxy_handler
+    )
     try:
         await session.external(proxy_url, step_id="amazon_login", expires_in=300)
         return bool(await login.test_loggedin())
     finally:
-        session.mass.webserver.unregister_dynamic_route(proxy_path, "GET")
-        session.mass.webserver.unregister_dynamic_route(post_path, "POST")
+        unregister_proxy_route()
