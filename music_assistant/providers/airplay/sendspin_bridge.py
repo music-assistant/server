@@ -895,7 +895,7 @@ class SendspinAirPlayBridge:
         try:
             await self._set_sink_fd(fd)
         except BaseException:
-            if self._sink_fd is fd:
+            if self._sink_fd == fd:
                 await self._release_sink_fd(fd)
             else:
                 _close_fd(fd)
@@ -903,7 +903,7 @@ class SendspinAirPlayBridge:
 
     async def _release_sink_fd(self, fd: int) -> None:
         """Release a fifo descriptor currently owned by the bridge sink."""
-        if self._sink_fd is not fd:
+        if self._sink_fd != fd:
             return
         try:
             await self._set_sink_fd(None)
@@ -913,7 +913,7 @@ class SendspinAirPlayBridge:
                 self.airplay_player.display_name,
                 err,
             )
-            if self._sink_fd is fd:
+            if self._sink_fd == fd:
                 self._sink_fd = None
                 _close_fd(fd)
 

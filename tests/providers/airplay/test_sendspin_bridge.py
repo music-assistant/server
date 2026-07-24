@@ -665,8 +665,9 @@ async def test_warm_generation_cancellation_after_sink_publication_releases_fd()
 
     async def publish_then_cancel(fd: int | None) -> None:
         old_fd = bridge._sink_fd
-        bridge._sink_fd = fd
-        if fd == 77:
+        bridge._sink_fd = int(str(fd)) if fd is not None else None
+        if fd == 1000:
+            assert bridge._sink_fd is not fd
             raise asyncio.CancelledError
         if old_fd is not None:
             os.close(old_fd)
@@ -677,7 +678,7 @@ async def test_warm_generation_cancellation_after_sink_publication_releases_fd()
         patch(
             "music_assistant.providers.airplay.sendspin_bridge.open_named_pipe_writer",
             new_callable=AsyncMock,
-            return_value=77,
+            return_value=1000,
         ),
         patch.object(
             bridge,
@@ -692,7 +693,7 @@ async def test_warm_generation_cancellation_after_sink_publication_releases_fd()
         await bridge._start_warm_generation(kept_stream, 1_784_000_000_000)
 
     assert bridge._sink_fd is None
-    assert sum(call.args == (77,) for call in close_fd.call_args_list) == 1
+    assert sum(call.args == (1000,) for call in close_fd.call_args_list) == 1
     kept_stream.discard_generation.assert_awaited_once_with(1)
 
 
@@ -742,8 +743,9 @@ async def test_warm_generation_exception_after_sink_publication_releases_fd() ->
 
     async def publish_then_fail(fd: int | None) -> None:
         old_fd = bridge._sink_fd
-        bridge._sink_fd = fd
-        if fd == 77:
+        bridge._sink_fd = int(str(fd)) if fd is not None else None
+        if fd == 1000:
+            assert bridge._sink_fd is not fd
             raise RuntimeError("swap failed")
         if old_fd is not None:
             os.close(old_fd)
@@ -754,7 +756,7 @@ async def test_warm_generation_exception_after_sink_publication_releases_fd() ->
         patch(
             "music_assistant.providers.airplay.sendspin_bridge.open_named_pipe_writer",
             new_callable=AsyncMock,
-            return_value=77,
+            return_value=1000,
         ),
         patch.object(
             bridge,
@@ -768,5 +770,5 @@ async def test_warm_generation_exception_after_sink_publication_releases_fd() ->
         assert await bridge._start_warm_generation(kept_stream, 1_784_000_000_000) is False
 
     assert bridge._sink_fd is None
-    assert sum(call.args == (77,) for call in close_fd.call_args_list) == 1
+    assert sum(call.args == (1000,) for call in close_fd.call_args_list) == 1
     kept_stream.discard_generation.assert_awaited_once_with(1)
