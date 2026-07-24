@@ -115,8 +115,8 @@ def _make_mock_mass() -> MagicMock:
     mass.get_providers = MagicMock(return_value=[])
     mass.config.set_raw_provider_config_value = MagicMock()
     # Auth values now live in setup_data; the provider reads them via
-    # get_setup_value. Empty setup_data + no raw value routes those reads
-    # through the legacy fallback to config.get_value (the seeded stub above).
+    # get_setup_value. Empty setup_data routes those reads through to
+    # config.get_value (via get_config_value; the seeded stub above).
     mass.config.get = MagicMock(return_value={})
     mass.config.get_raw_provider_config_value = MagicMock(return_value=None)
 

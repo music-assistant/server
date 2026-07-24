@@ -855,6 +855,8 @@ async def test_real_provider_flow_retry_on_error(flow_mass: MusicAssistant) -> N
         )
     assert finish_step.type == FlowStepType.FINISH
     assert flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}") is not None
+
+
 async def test_spotify_flow_hosted_bounce_roundtrip(
     flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:

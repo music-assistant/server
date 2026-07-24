@@ -1,12 +1,25 @@
 """Tests for (settings.json) config migrations."""
 
-from typing import Any
+from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
+from music_assistant.constants import ENCRYPT_SUFFIX
 from music_assistant.controllers.config.migrations import (
+    PROVIDER_SETUP_FLOW_KEYS,
     _migrate_airplay_apple_power_control,
     _migrate_airplay_receiver_ghost_players,
     _migrate_output_limiter,
+    migrate_provider_setup_data,
 )
+
+if TYPE_CHECKING:
+    import pytest
+
+
+def _fake_encrypt(value: str) -> str:
+    """Mirror ConfigController.encrypt_string: prefix once, idempotent for encrypted values."""
+    return value if value.startswith(ENCRYPT_SUFFIX) else ENCRYPT_SUFFIX + value
 
 
 def test_migrate_output_limiter_drops_stored_values() -> None:
@@ -242,3 +255,109 @@ def test_migrate_airplay_apple_power_control_flips_stale_default() -> None:
     assert values["cast_x"]["values"]["power_control"] == "none"
     # idempotent: nothing left to migrate on a second pass
     assert _migrate_airplay_apple_power_control(data) is False
+
+
+def test_migrate_provider_setup_data_moves_and_encrypts(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Owned string keys move to setup_data encrypted; non-strings move raw; options stay."""
+    monkeypatch.setitem(PROVIDER_SETUP_FLOW_KEYS, "demo", ("username", "password", "port"))
+    data: dict[str, Any] = {
+        "providers": {
+            "demo": {
+                "domain": "demo",
+                "values": {
+                    "username": "bob",
+                    "password": "sekret",
+                    "port": 8096,
+                    "quality": "high",
+                },
+            }
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    cfg = data["providers"]["demo"]
+    # the (non-owned) option key stays untouched in values
+    assert cfg["values"] == {"quality": "high"}
+    # owned string values are encrypted at rest, non-string values move as-is
+    assert cfg["setup_data"]["username"] == ENCRYPT_SUFFIX + "bob"
+    assert cfg["setup_data"]["password"] == ENCRYPT_SUFFIX + "sekret"
+    assert cfg["setup_data"]["port"] == 8096
+
+
+def test_migrate_provider_setup_data_idempotent_and_preserves_existing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Already-encrypted values move unchanged, existing setup_data wins, second run is a no-op."""
+    monkeypatch.setitem(PROVIDER_SETUP_FLOW_KEYS, "demo", ("token", "secret"))
+    data: dict[str, Any] = {
+        "providers": {
+            "demo": {
+                "domain": "demo",
+                "values": {"token": ENCRYPT_SUFFIX + "abc", "secret": "raw"},
+                # a value already collected into setup_data must not be clobbered
+                "setup_data": {"secret": ENCRYPT_SUFFIX + "kept"},
+            }
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    cfg = data["providers"]["demo"]
+    # an already-encrypted value is moved without re-encrypting (no double prefix)
+    assert cfg["setup_data"]["token"] == ENCRYPT_SUFFIX + "abc"
+    # the pre-existing setup_data value survives; the stale values copy is dropped
+    assert cfg["setup_data"]["secret"] == ENCRYPT_SUFFIX + "kept"
+    assert cfg["values"] == {}
+    # a second pass finds nothing left to move
+    assert migrate_provider_setup_data(data, _fake_encrypt) is False
+
+
+def test_migrate_provider_setup_data_multi_instance_and_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All instances of a mapped domain migrate; unmapped domains are left untouched."""
+    monkeypatch.setitem(PROVIDER_SETUP_FLOW_KEYS, "demo", ("host",))
+    data: dict[str, Any] = {
+        "providers": {
+            "demo--a": {"domain": "demo", "values": {"host": "h1"}},
+            "demo--b": {"domain": "demo", "values": {"host": "h2", "quality": "x"}},
+            "other": {"domain": "other", "values": {"host": "keep"}},
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    prov = data["providers"]
+    assert prov["demo--a"]["setup_data"]["host"] == ENCRYPT_SUFFIX + "h1"
+    assert prov["demo--a"]["values"] == {}
+    assert prov["demo--b"]["setup_data"]["host"] == ENCRYPT_SUFFIX + "h2"
+    assert prov["demo--b"]["values"] == {"quality": "x"}
+    # a provider whose domain is not in the map is never touched
+    assert prov["other"]["values"] == {"host": "keep"}
+    assert "setup_data" not in prov["other"]
+
+
+def test_migrate_provider_setup_data_noop() -> None:
+    """Missing or empty provider config store reports no change."""
+    assert migrate_provider_setup_data({}, _fake_encrypt) is False
+    assert migrate_provider_setup_data({"providers": {}}, _fake_encrypt) is False
+
+
+def test_migrate_provider_setup_data_real_domain_opensubsonic() -> None:
+    """A real mapped domain moves its setup keys (incl. the redefined baseURL literal)."""
+    data: dict[str, Any] = {
+        "providers": {
+            "opensubsonic--x": {
+                "domain": "opensubsonic",
+                "values": {
+                    "username": "alice",
+                    "password": "pw",
+                    "baseURL": "https://music.example",
+                    "port": 4533,
+                    "enable_podcasts": True,
+                },
+            }
+        }
+    }
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    cfg = data["providers"]["opensubsonic--x"]
+    assert cfg["setup_data"]["username"] == ENCRYPT_SUFFIX + "alice"
+    assert cfg["setup_data"]["baseURL"] == ENCRYPT_SUFFIX + "https://music.example"
+    assert cfg["setup_data"]["port"] == 4533
+    # a genuine provider option is not part of the setup-flow key set and stays put
+    assert cfg["values"] == {"enable_podcasts": True}

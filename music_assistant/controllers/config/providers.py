@@ -398,20 +398,17 @@ class ProviderConfigMixin:
         """
         Return a single (decrypted) setup_data value for a provider from storage.
 
-        Falls back to the legacy raw config values for installs configured before
-        setup flows existed. Works without a loaded provider instance.
+        Returns the given default when the key is not present in setup_data.
+        Works without a loaded provider instance.
 
         :param instance_id: The provider instance ID.
         :param key: The setup data key to retrieve.
-        :param default: Value to return when the key is not present anywhere.
+        :param default: Value to return when the key is not present in setup_data.
         """
         setup_data = self.get(f"{CONF_PROVIDERS}/{instance_id}/setup_data") or {}
-        # presence check (not None check): an explicitly cleared value must not
-        # fall back to (and resurrect) a stale legacy config value
-        if key in setup_data:
-            value = cast("ConfigValueType", setup_data[key])
-        else:
-            value = self.get_raw_provider_config_value(instance_id, key, default)
+        if key not in setup_data:
+            return default
+        value = cast("ConfigValueType", setup_data[key])
         if isinstance(value, str):
             return self.decrypt_string(value)
         return value
