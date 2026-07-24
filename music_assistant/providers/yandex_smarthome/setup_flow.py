@@ -325,7 +325,9 @@ async def _provision_skill(
         raise SetupFlowError(str(err)) from err
 
     async def _track(updated: SkillCreationArtifacts) -> None:
-        # persist intermediate state so a reconfigure can resume the pipeline
+        # keep the latest artifacts in the collected values: they are persisted at
+        # finish, so a later reconfigure skips pieces that were already created
+        # (an aborted flow persists nothing - no config exists yet during setup)
         collected[CONF_AUTO_CREATE_ARTIFACTS] = dump_artifacts(updated)
 
     artifacts_raw = collected.get(CONF_AUTO_CREATE_ARTIFACTS)

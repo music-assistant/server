@@ -6,7 +6,7 @@ import pathlib
 import re
 from typing import TYPE_CHECKING
 
-from aiohttp import ClientTimeout, web
+from aiohttp import ClientError, ClientTimeout, web
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
@@ -118,13 +118,18 @@ async def _app_token_valid(mass: MusicAssistant, app_token: str) -> bool:
     """
     if not app_token:
         return False
-    async with mass.http_session.get(
-        "https://api.music.apple.com/v1/test",
-        headers={"Authorization": f"Bearer {app_token}"},
-        ssl=True,
-        timeout=ClientTimeout(total=10),
-    ) as response:
-        return response.status == 200
+    try:
+        async with mass.http_session.get(
+            "https://api.music.apple.com/v1/test",
+            headers={"Authorization": f"Bearer {app_token}"},
+            ssl=True,
+            timeout=ClientTimeout(total=10),
+        ) as response:
+            return response.status == 200
+    except ClientError, TimeoutError:
+        # a transient network error must not abort the flow; treat the token as
+        # invalid so the user lands on the manual app-token form and can retry
+        return False
 
 
 def _validate_user_token(token: ConfigValueType) -> bool:

@@ -8,6 +8,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from aiohttp.test_utils import make_mocked_request
@@ -871,8 +872,9 @@ async def test_gdrive_flow_form_then_hosted_bounce(
         )
         assert external_step.type == FlowStepType.EXTERNAL
         assert external_step.url is not None
-        assert "accounts.google.com" in external_step.url
-        assert "music-assistant.io%2Fcallback" in external_step.url
+        auth_url = urlsplit(external_step.url)
+        assert auth_url.netloc == "accounts.google.com"
+        assert parse_qs(auth_url.query)["redirect_uri"] == ["https://music-assistant.io/callback"]
         await _fire_callback(flow_mass, step.flow_id, "code=auth_code")
         await _wait_for(lambda: session.finished)
     raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}")
