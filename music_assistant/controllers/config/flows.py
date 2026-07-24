@@ -404,9 +404,17 @@ class SetupFlowMixin:
         raw_conf = self.get(conf_key)
         if not raw_conf:
             raise SetupFlowError(f"No config found for player {player_id}")
-        existing_setup_data = dict(raw_conf.get("setup_data") or {})
-        self.set(f"{conf_key}/setup_data", {**existing_setup_data, **self._encrypt_values(values)})
-        config = await self.get_player_config(player_id)
+        snapshot = dict(raw_conf.get("setup_data") or {})
+        self.set(f"{conf_key}/setup_data", {**snapshot, **self._encrypt_values(values)})
+        try:
+            config = await self.get_player_config(player_id)
+        except asyncio.CancelledError:
+            self.set(f"{conf_key}/setup_data", snapshot)
+            raise
+        except Exception as err:
+            # reading back the just-updated config failed: restore the previous setup_data
+            self.set(f"{conf_key}/setup_data", snapshot)
+            raise SetupFlowError(str(err) or err.__class__.__name__) from err
         self.mass.signal_event(EventType.PLAYER_CONFIG_UPDATED, object_id=player_id, data=config)
         return {"player_id": player_id}
 

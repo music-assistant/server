@@ -622,6 +622,47 @@ async def test_player_setup_without_flow_aborts(flow_mass: MusicAssistant) -> No
     assert step.reason == "nothing_to_configure"
 
 
+async def test_player_setup_abort_mid_finish_restores_setup_data(
+    flow_mass: MusicAssistant,
+) -> None:
+    """Aborting a player flow while finish() is in flight restores the previous setup_data."""
+    player_id = "test_player_1"
+    provider = MockProvider("test_players", instance_id="test_players--1")
+    player = _FlowPlayer(provider, player_id, "Player One")
+    original_setup_data = {"pin": flow_mass.config.encrypt_string("0000")}
+    flow_mass.config.set(
+        f"{CONF_PLAYERS}/{player_id}",
+        {
+            "player_id": player_id,
+            "provider": provider.instance_id,
+            "enabled": True,
+            "setup_data": dict(original_setup_data),
+        },
+    )
+    finish_reached = asyncio.Event()
+
+    async def hanging_get_player_config(_player_id: str) -> Any:
+        finish_reached.set()
+        await asyncio.sleep(3600)
+
+    with (
+        patch.object(flow_mass.players, "get_player", return_value=player),
+        patch.object(flow_mass.config, "get_player_config", hanging_get_player_config),
+    ):
+        step = await flow_mass.config.setup_player(player_id)
+        assert step.type == FlowStepType.FORM
+        submit_task = asyncio.create_task(
+            flow_mass.config.submit_setup_flow(step.flow_id, {"pin": "1234"})
+        )
+        await asyncio.wait_for(finish_reached.wait(), timeout=5)
+        await flow_mass.config.abort_setup_flow(step.flow_id)
+        submit_step = await submit_task
+    # the abort interrupted finish(): the previous setup_data was restored
+    raw_conf = flow_mass.config.get(f"{CONF_PLAYERS}/{player_id}")
+    assert raw_conf["setup_data"] == original_setup_data
+    assert submit_step.type == FlowStepType.ABORT
+
+
 async def test_player_setup_reaches_unavailable_player(flow_mass: MusicAssistant) -> None:
     """
     Player setup must not gate on player availability.
