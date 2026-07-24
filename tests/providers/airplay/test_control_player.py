@@ -699,6 +699,7 @@ async def test_provider_selects_player_model_from_device_identity(
     provider.config.instance_id = "airplay"
     provider._bridge_manager = MagicMock()
     provider._bridge_manager.evaluate_bridge = AsyncMock()
+    provider.dashboards = MagicMock()
     provider._companion_info_by_address = {
         "192.168.1.10": _service_info(
             COMPANION_DISCOVERY_TYPE,
@@ -742,6 +743,7 @@ async def test_apple_device_setup_attaches_discovered_companion_service() -> Non
     provider.config.instance_id = "airplay"
     provider._bridge_manager = MagicMock()
     provider._bridge_manager.evaluate_bridge = AsyncMock()
+    provider.dashboards = MagicMock()
     provider._companion_info_by_address = {}
     provider._mrp_info_by_address = {}
     companion_info = _service_info(
@@ -909,6 +911,7 @@ async def test_generic_device_setup_skips_control_discovery() -> None:
     provider.config.instance_id = "airplay"
     provider._bridge_manager = MagicMock()
     provider._bridge_manager.evaluate_bridge = AsyncMock()
+    provider.dashboards = MagicMock()
     provider._companion_info_by_address = {}
     provider._mrp_info_by_address = {}
     provider.mass.discovery.async_find_mdns_service = AsyncMock(return_value=None)

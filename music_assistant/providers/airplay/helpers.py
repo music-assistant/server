@@ -172,6 +172,17 @@ def is_apple_device(manufacturer: str, model: str) -> bool:
     )
 
 
+def is_apple_tv(manufacturer: str, model: str) -> bool:
+    """
+    Check if a device identifies as an Apple TV (and not a HomePod).
+
+    Only Apple TVs run the tvOS dashboard app, so this narrows :func:`is_apple_device`
+    to the Apple TV family. The model strings come from :func:`get_model_info`
+    (e.g. "Apple TV 4K", "Apple TV Gen4").
+    """
+    return manufacturer.lower().startswith("apple") and "apple tv" in model.lower()
+
+
 def get_decoded_property(discovery_info: AsyncServiceInfo, key: str) -> str | None:
     """
     Return an mDNS TXT property value by case-insensitive key.
