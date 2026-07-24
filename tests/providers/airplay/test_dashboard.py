@@ -9,7 +9,7 @@ from music_assistant_models.enums import DashboardType
 from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
 
 from music_assistant.controllers.dashboard.controller import DashboardController
-from music_assistant.providers.airplay.constants import CONF_EXPOSE_DASHBOARD, TVOS_APP_BUNDLE_ID
+from music_assistant.providers.airplay.constants import TVOS_APP_BUNDLE_ID
 from music_assistant.providers.airplay.control_player import AirPlayControlPlayer
 from music_assistant.providers.airplay.dashboard import AirPlayDashboards
 from music_assistant.providers.airplay.player import GenericAirPlayPlayer
@@ -23,7 +23,6 @@ def _make_dashboards() -> AirPlayDashboards:
     provider.domain = "airplay"
     provider.translation_owner = "provider.airplay"
     provider.mass.players.get_player.return_value = None
-    provider.mass.config.get_raw_player_config_value.return_value = True
     provider.mass.dashboard.register_dashboard_handler.return_value = MagicMock()
     return AirPlayDashboards(provider)
 
@@ -86,20 +85,6 @@ async def test_eligibility_matrix(kwargs: dict[str, object], eligible: bool) -> 
     await dashboards._async_reconcile(PLAYER_ID)
 
     assert (PLAYER_ID in dashboards._unregister_callbacks) is eligible
-
-
-async def test_config_disabled_is_ineligible() -> None:
-    """Disabling dashboard exposure in the player config unregisters the endpoint."""
-    dashboards = _make_dashboards()
-    player = _make_player()
-    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
-    dashboards.mass.config.get_raw_player_config_value.side_effect = (  # type: ignore[attr-defined]
-        lambda _player_id, key, default=None: False if key == CONF_EXPOSE_DASHBOARD else default
-    )
-
-    await dashboards._async_reconcile(PLAYER_ID)
-
-    assert PLAYER_ID not in dashboards._unregister_callbacks
 
 
 async def test_protocol_player_is_ineligible() -> None:

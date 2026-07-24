@@ -10,7 +10,7 @@ from music_assistant_models.dashboard import DashboardDevice
 from music_assistant_models.enums import DashboardType
 from music_assistant_models.errors import PlayerCommandFailed, PlayerUnavailableError
 
-from .constants import CONF_EXPOSE_DASHBOARD, TVOS_APP_BUNDLE_ID
+from .constants import TVOS_APP_BUNDLE_ID
 from .control_player import AirPlayControlPlayer
 from .helpers import is_apple_tv
 
@@ -38,10 +38,10 @@ class AirPlayDashboards:
         self.mass = provider.mass
         self.logger = provider.logger.getChild("dashboard")
         self._unregister_callbacks: dict[str, Callable[[], None]] = {}
-        # cached installed-app bundle ids per player: a frozenset when known, None when a
-        # fetch failed, and absent until first fetched (refreshed on a Companion edge)
+        # installed-app bundle ids per player: frozenset when known, None on fetch
+        # failure, absent until first fetched
         self._installed_apps: dict[str, frozenset[str] | None] = {}
-        # last-seen Companion connection state per player, to detect (re)connect edges
+        # last-seen Companion connection state, to detect (re)connect edges
         self._companion_connected: dict[str, bool] = {}
         self._unloaded = False
 
@@ -98,8 +98,7 @@ class AirPlayDashboards:
         if not isinstance(player, AirPlayControlPlayer):
             self.unregister(player_id)
             return
-        # refresh the installed-app cache whenever the Companion connection edge flips,
-        # so a (re)connect re-checks whether the tvOS app is installed
+        # a Companion (re)connect re-checks whether the tvOS app is installed
         connected = player.companion_connected
         if connected != self._companion_connected.get(player_id, False):
             self._companion_connected[player_id] = connected
@@ -114,8 +113,6 @@ class AirPlayDashboards:
         if not player.available or not player.enabled:
             return False
         if not is_apple_tv(player.device_info.manufacturer, player.device_info.model):
-            return False
-        if not self._dashboard_exposed(player.player_id):
             return False
         if not player.companion_connected:
             return False
@@ -196,16 +193,9 @@ class AirPlayDashboards:
 
         :param player_id: The Apple TV endpoint the dashboard was showing on.
         """
-        # hide is session-driven: the running app sees its session disappear (via
-        # DASHBOARD_SESSIONS_UPDATED) and returns to idle itself. pyatv exposes no
-        # foreground-app control, so there is no device action to take here.
+        # hide is session-driven: the app returns to idle when its session disappears.
+        # pyatv has no foreground-app control, so there is nothing to do on the device.
         self.logger.debug("Hide requested for dashboard %s (session-driven)", player_id)
-
-    def _dashboard_exposed(self, player_id: str) -> bool:
-        """Return whether dashboard exposure is enabled in the player config."""
-        return bool(
-            self.mass.config.get_raw_player_config_value(player_id, CONF_EXPOSE_DASHBOARD, True)
-        )
 
     def _build_launch_uri(
         self, dashboard: DashboardType, target_url: str, dashboard_id: str

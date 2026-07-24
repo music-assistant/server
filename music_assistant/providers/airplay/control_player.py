@@ -58,7 +58,6 @@ from .constants import (
     CONF_ACTION_START_MRP_PAIRING,
     CONF_COMPANION_CREDENTIALS,
     CONF_COMPANION_PAIRING_PIN,
-    CONF_EXPOSE_DASHBOARD,
     CONF_MRP_CREDENTIALS,
     CONF_MRP_PAIRING_PIN,
     CONF_NATIVE_MRP_CREDENTIALS,
@@ -67,7 +66,6 @@ from .constants import (
 )
 from .helpers import (
     get_decoded_property,
-    is_apple_tv,
     supports_companion_pairing,
     supports_mrp_service,
     supports_mrp_tunnel,
@@ -242,15 +240,6 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
         entries.extend(self._get_companion_config_entries(values))
         entries.extend(self._get_mrp_config_entries(values))
-        if is_apple_tv(self.device_info.manufacturer, self.device_info.model):
-            # only Apple TVs can run the tvOS dashboard app, so the toggle is Apple-TV-only
-            entries.append(
-                ConfigEntry(
-                    key=CONF_EXPOSE_DASHBOARD,
-                    type=ConfigEntryType.BOOLEAN,
-                    default_value=True,
-                )
-            )
         return entries
 
     async def power(self, powered: bool) -> None:

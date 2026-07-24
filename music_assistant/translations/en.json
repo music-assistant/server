@@ -803,8 +803,6 @@
   "provider.airplay.config_entries.companion_pairing_status.label": "Companion controls are paired and ready.",
   "provider.airplay.config_entries.encryption.description": "Enable encrypted communication with the player, some (3rd party) players require this to be disabled.",
   "provider.airplay.config_entries.encryption.label": "Enable encryption",
-  "provider.airplay.config_entries.expose_dashboard.description": "Allow Music Assistant to show dashboards (such as Now Playing) on this Apple TV using the Music Assistant tvOS app. The app must be installed on the Apple TV.",
-  "provider.airplay.config_entries.expose_dashboard.label": "Show dashboards on this Apple TV",
   "provider.airplay.config_entries.finish_companion_pairing.label": "Complete Companion pairing",
   "provider.airplay.config_entries.finish_mrp_pairing.label": "Complete playback monitoring pairing",
   "provider.airplay.config_entries.finish_pairing_password.label": "Complete {0} pairing with the password",

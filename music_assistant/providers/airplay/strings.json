@@ -83,10 +83,6 @@
     },
     "reset_mrp_pairing": {
       "label": "Reset MRP playback monitoring"
-    },
-    "expose_dashboard": {
-      "label": "Show dashboards on this Apple TV",
-      "description": "Allow Music Assistant to show dashboards (such as Now Playing) on this Apple TV using the Music Assistant tvOS app. The app must be installed on the Apple TV."
     }
   },
   "manifest": {
