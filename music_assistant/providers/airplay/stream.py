@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 from music_assistant_models.enums import PlaybackState
+from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.images import get_image_thumb_path
@@ -311,6 +312,7 @@ class AirPlayStream:
             clamps to its minimum lead).
         :param position_ms: Media position mapped to that first sample, used as
             the base for elapsed reporting.
+        :raises PlayerCommandFailed: If the START command cannot be delivered.
         """
         if not self.running or not self.connected:
             raise RuntimeError("Cannot start playback without a connected cliairplay process")
@@ -319,7 +321,12 @@ class AirPlayStream:
         # the binary's first status arrives, interpolation would otherwise keep
         # extending the previous anchor's clock, briefly mapping a bogus position.
         self.player.set_state_from_stream(elapsed_time=self._start_position, stream=self)
-        await self._write_cli_command(f"START_UNIX_MS={start_unix_ms}\nACTION=START")
+        if not await self._write_cli_command(f"START_UNIX_MS={start_unix_ms}\nACTION=START"):
+            # Surfacing the dropped delivery lets the session fall back to a
+            # cold restart instead of waiting on an anchor that never happens.
+            raise PlayerCommandFailed(
+                f"Could not deliver START to AirPlay player {self.player.player_id}"
+            )
 
     async def send_metadata(
         self,

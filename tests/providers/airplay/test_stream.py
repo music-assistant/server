@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.enums import ContentType, PlaybackState
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter, open_named_pipe_writer
@@ -659,6 +660,20 @@ async def test_flush_returns_false_when_command_not_delivered() -> None:
 
     with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=False):
         assert await stream.flush() is False
+
+
+@pytest.mark.asyncio
+async def test_start_raises_when_command_not_delivered() -> None:
+    """A dropped START surfaces as an error so the caller can fall back cold."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with (
+        patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=False),
+        pytest.raises(PlayerCommandFailed, match="Could not deliver START"),
+    ):
+        await stream.start(1_750_000_000_000, 0)
 
 
 @pytest.mark.asyncio
