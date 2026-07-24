@@ -128,7 +128,9 @@ def mock_mass(mock_user: MagicMock) -> MagicMock:
     mass.music.search = AsyncMock()
     mass.music.recently_added_tracks = AsyncMock(return_value=[])
     mass.music.recently_played = AsyncMock(return_value=[])
-    mass.music.recommendations = AsyncMock(return_value=[])
+    mass.music.recommendations = MagicMock()
+    mass.music.recommendations.get_recommendations = AsyncMock(return_value=[])
+    mass.music.recommendations.get_recommendation_items = AsyncMock(return_value=[])
     mass.music.get_item_by_uri = AsyncMock()
 
     mass.music.tracks.library_items = AsyncMock(return_value=[])
@@ -171,6 +173,10 @@ def mock_mass(mock_user: MagicMock) -> MagicMock:
     mass.player_queues.set_repeat = MagicMock()
     mass.player_queues.transfer_queue = AsyncMock()
     mass.player_queues.clear = MagicMock()
+    mass.player_queues.delete_item = MagicMock()
+    mass.player_queues.move_item = MagicMock()
+    mass.player_queues.move_item_end = MagicMock()
+    mass.player_queues.index_by_id = MagicMock(return_value=None)
 
     mass.players = MagicMock()
     mass.players.all_players = MagicMock(return_value=[])
@@ -289,6 +295,18 @@ def fake_event_emitter(mock_mass: MagicMock) -> Any:
             holder["cb"](event)
 
     return _Emitter()
+
+
+@pytest.fixture
+def mounted_queue(mock_mass: Any) -> Any:
+    """Build a root FastMCP with the queue sub-server mounted, no confirmation gate."""
+    from fastmcp import FastMCP
+
+    from music_assistant.providers.fastmcp_server.tools.queue import build_queue_server
+
+    mcp = FastMCP(name="test")
+    mcp.mount(build_queue_server(mock_mass, require_confirmation=False), namespace="queue")
+    return mcp
 
 
 @pytest.fixture

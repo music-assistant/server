@@ -7,6 +7,7 @@ import contextlib
 import logging
 import os
 import os.path
+import posixpath
 import urllib.parse
 from collections.abc import AsyncGenerator, Sequence
 from datetime import UTC, datetime
@@ -127,6 +128,7 @@ from .helpers import (
     recursive_iter,
     sorted_scandir,
 )
+from .parsers import parse_album_nfo
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
@@ -402,6 +404,23 @@ class LocalFileSystemProvider(MusicProvider):
                         name=item.filename,
                     )
                 )
+        if self.media_content_type == "music":
+            track_indexes = [
+                index
+                for index, item in enumerate(items)
+                if isinstance(item, ItemMapping) and item.media_type == MediaType.TRACK
+            ]
+            library_tracks = await asyncio.gather(
+                *(
+                    self.mass.music.tracks.get_library_item_by_prov_id(
+                        items[index].item_id, self.instance_id
+                    )
+                    for index in track_indexes
+                )
+            )
+            for index, library_track in zip(track_indexes, library_tracks, strict=True):
+                if library_track:
+                    items[index] = library_track
         return items
 
     async def sync_library(self, media_type: MediaType) -> None:
@@ -1322,22 +1341,21 @@ class LocalFileSystemProvider(MusicProvider):
         try:
             line = line.replace("file://", "").strip()
             # try to resolve the filename (both normal and url decoded):
-            # - as an absolute path
-            # - relative to the playlist path
-            # - relative to our base path
-            # - relative to the playlist path with a leading slash
+            # - relative to the playlist folder (normpath resolves parent .. references)
+            # - as-is: an absolute path, or relative to our base path
+            # candidates stay relative so subclasses with virtual paths (cloud,
+            # webdav) resolve them too, instead of leaking the server CWD
             for _line in (line, urllib.parse.unquote(line)):
-                for filename in (
-                    # try to resolve the line by resolving it against the (absolute) playlist path
-                    # use the path.resolve step in between to auto-resolve parent item references
-                    (Path(self.get_absolute_path(playlist_path)) / _line).resolve().as_posix(),
-                    # try to resolve the line as a full absolute (or relative to music dir) path
-                    _line,
-                ):
-                    with contextlib.suppress(FileNotFoundError):
-                        file_item = await self.resolve(filename)
+                if playlist_path:
+                    normalized = posixpath.normpath(f"{playlist_path}/{_line}")
+                    with contextlib.suppress(FileNotFoundError, MediaNotFoundError):
+                        file_item = await self.resolve(normalized)
                         tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
                         return await self._parse_track(file_item, tags)
+                with contextlib.suppress(FileNotFoundError, MediaNotFoundError):
+                    file_item = await self.resolve(_line)
+                    tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
+                    return await self._parse_track(file_item, tags)
             # all attempts failed
             raise MediaNotFoundError("Invalid path/uri")
 
@@ -1707,7 +1725,7 @@ class LocalFileSystemProvider(MusicProvider):
         elif not tags.chapters:
             # No track tag and no embedded chapters -
             # assume part of a multi-file audiobook, only process the first file alphabetically
-            items = await self._scandir(file_item.parent_path)
+            items = await self._scandir(file_item.relative_parent_path)
             # Sort by filename for alphabetical ordering
             items.sort(key=lambda x: x.filename.lower())
             for item in items:
@@ -1789,7 +1807,7 @@ class LocalFileSystemProvider(MusicProvider):
         # try to fetch additional metadata from the folder
         if not audio_book.image or not audio_book.metadata.description:
             # try to get an image by traversing files in the same folder
-            for _item in await self._scandir(file_item.parent_path):
+            for _item in await self._scandir(file_item.relative_parent_path):
                 if "." not in _item.relative_path or _item.is_dir:
                     continue
                 if _item.ext in IMAGE_EXTENSIONS and not audio_book.image:
@@ -1910,9 +1928,9 @@ class LocalFileSystemProvider(MusicProvider):
 
         # try to fetch additional Podcast metadata from the folder
         assert isinstance(episode.podcast, Podcast)
-        if images := await self._get_local_images(file_item.parent_path):
+        if images := await self._get_local_images(file_item.relative_parent_path):
             episode.podcast.metadata.images = images
-        if metadata := await self._get_podcast_metadata(file_item.parent_path):
+        if metadata := await self._get_podcast_metadata(file_item.relative_parent_path):
             if title := metadata.get("title"):
                 episode.podcast.name = title
             if sort_name := metadata.get("sorttitle"):
@@ -2151,37 +2169,21 @@ class LocalFileSystemProvider(MusicProvider):
                 try:
                     data = (await self._read_file(nfo_file)).decode("utf-8")
                     info = await asyncio.to_thread(xmltodict.parse, data)
-                    info = info["album"]
-                    album.name = info.get("title", info.get("name", name))
-                    if sort_name := info.get("sortname"):
-                        album.sort_name = sort_name
-                    if releasegroup_id := info.get("musicbrainzreleasegroupid"):
-                        album.add_external_id(ExternalID.MB_RELEASEGROUP, releasegroup_id)
-                    if album_id := info.get("musicbrainzalbumid"):
-                        album.add_external_id(ExternalID.MB_ALBUM, album_id)
-                    if mb_artist_id := info.get("musicbrainzalbumartistid"):
-                        if album.artists and not album.artists[0].mbid:
-                            album.artists[0].mbid = mb_artist_id
-                    if description := info.get("review"):
-                        album.metadata.description = description
-                    if year := info.get("year"):
-                        album.year = int(year)
-                    if genre := info.get("genre"):
-                        album.metadata.genres = set(split_items(genre))
+                    parse_album_nfo(album, info["album"])
                 except (ExpatError, KeyError) as err:
                     self.logger.warning(
                         "Failed to parse album NFO file %s: %s",
                         nfo_file,
                         str(err),
                     )
-            # parse name/version
-            album.name, album.version = parse_title_and_version(album.name)
+
             # find local images
             if images := await self._get_local_images(folder_path, extra_thumb_names=("album",)):
                 if album.metadata.images is None:
                     album.metadata.images = UniqueList(images)
                 else:
                     album.metadata.images += images
+
         await self.cache.set(
             key=album_dir,
             data=album.to_dict(),
@@ -2418,7 +2420,7 @@ class LocalFileSystemProvider(MusicProvider):
         chapter_file_items: list[tuple[FileSystemItem, AudioTags]] = []
         untagged_file_items: list[tuple[FileSystemItem, AudioTags]] = []
 
-        items = await self._scandir(audiobook_file_item.parent_path)
+        items = await self._scandir(audiobook_file_item.relative_parent_path)
         # Sort by filename for consistent alphabetical ordering
         items.sort(key=lambda x: x.filename.lower())
 
@@ -2536,9 +2538,11 @@ class LocalFileSystemProvider(MusicProvider):
         return data
 
     async def _scandir(self, path: str) -> list[FileSystemItem]:
-        """List directory contents."""
+        """List directory contents in natural sort order."""
+        # raw scandir order depends on the underlying filesystem (e.g. hash order
+        # on ext4) so sort to make browse and folder playback order deterministic
         abs_path = self.get_absolute_path(path)
-        return await asyncio.to_thread(sorted_scandir, self.base_path, abs_path)
+        return await asyncio.to_thread(sorted_scandir, self.base_path, abs_path, sort=True)
 
     async def _read_file(self, path: str) -> bytes:
         """Read file contents. Override for network storage."""

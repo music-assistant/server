@@ -106,9 +106,13 @@ Supporting modules in `helpers/`:
 - **Stream acquisition**: `get_media_stream`, `get_stream_details`, radio/HTTP/file stream helpers
 - **Queue streaming**: `get_queue_item_stream`, `get_queue_item_stream_with_smartfade`, `get_queue_flow_stream`
 - **Format selection**: `get_output_format`, `select_pcm_format`, `select_flow_format`
-- **DSP and filters**: `get_player_filter_params`, `get_player_dsp_details`, `get_stream_dsp_details`
+- **DSP and output plans**: `get_player_output_plan`, `get_player_dsp_details`, `get_stream_dsp_details`
 - **Crossfade management**: `crossfade_allowed`, `clear_crossfade_data`
 - **Loudness analysis**: `attach_loudness_analyzer` (via buffer callbacks)
+
+`AudioProcessingManager`, initialized as `self.audio_processing` on the
+StreamsController, combines queue processing and per-player output plans into complete
+`AudioProcessingChain` snapshots attached to `StreamDetails`.
 
 ## Streaming Pipeline
 

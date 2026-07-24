@@ -11,7 +11,7 @@ import sys
 import time
 from collections.abc import AsyncGenerator, Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
-from math import inf
+from math import isfinite
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.audio_analysis import AudioAnalysisCoverage
@@ -67,6 +67,10 @@ ANALYSIS_THREAD_NICE = 10
 # Rapid track skipping would otherwise spawn an analysis per abandoned track; the oldest is
 # evicted to keep the count bounded.
 REALTIME_ANALYSIS_MAX_SESSIONS = 2
+# Minimum fraction of the expected track duration that must have been received before an
+# ended stream is finalized. A source that ends far short of it (e.g. a stream that died
+# without raising an error) is discarded instead, so no truncated analysis is persisted.
+ANALYSIS_MIN_COMPLETENESS_RATIO = 0.9
 # Free the heavy analysis models after this long with no analysis activity; they are reloaded
 # on the next track. Long enough that gaps between tracks/sessions don't thrash the reload.
 MODEL_IDLE_UNLOAD_SECONDS = 300
@@ -89,17 +93,41 @@ if TYPE_CHECKING:
     from music_assistant.controllers.streams.controller import StreamsController
 
 
-def _parse_row(row: Mapping[str, Any]) -> AudioAnalysisData | None:
-    """Parse a single audio_analysis row's analysis_data, logging and skipping on error."""
+def _get_row_value(row: Mapping[str, Any], key: str) -> Any:
+    """Return a database row value without assuming dict-only helpers."""
+    try:
+        return row[key]
+    except IndexError, KeyError, TypeError:
+        return None
+
+
+def _parse_row(
+    row: Mapping[str, Any],
+    unparsable_ids: list[Any] | None = None,
+) -> AudioAnalysisData | None:
+    """
+    Parse a single audio_analysis row's analysis_data, logging and skipping on error.
+
+    :param row: The audio_analysis row to parse.
+    :param unparsable_ids: When given, the id of a row that fails to parse is appended.
+    """
     try:
         return AudioAnalysisData.from_dict(json_loads(row["analysis_data"]))
-    except (ValueError, TypeError, KeyError) as err:
+    except (IndexError, KeyError, TypeError, ValueError) as err:
+        row_id = _get_row_value(row, "id")
+        # the error itself may embed the full (huge) field value, so log only
+        # the error type plus the offending field name when available
+        error_detail = type(err).__name__
+        if field_name := getattr(err, "field_name", None):
+            error_detail = f"{error_detail} in field {field_name}"
         LOGGER.warning(
-            "Skipping unparsable audio_analysis row (id=%s, aa_provider_domain=%s): %s",
-            row.get("id"),
-            row.get("aa_provider_domain"),
-            err,
+            "Skipping unparsable audio_analysis row (id=%s, domain=%s, error=%s)",
+            row_id,
+            _get_row_value(row, "aa_provider_domain"),
+            error_detail,
         )
+        if unparsable_ids is not None and row_id is not None:
+            unparsable_ids.append(row_id)
         return None
 
 
@@ -107,6 +135,7 @@ def _merged_from_rows(
     rows: Iterable[Mapping[str, Any]],
     available_aa_domains: set[str],
     priority: tuple[str, ...] | None = None,
+    unparsable_ids: list[Any] | None = None,
 ) -> AudioAnalysisData | None:
     """
     Fold audio_analysis rows into one merged result.
@@ -120,6 +149,8 @@ def _merged_from_rows(
     :param priority: When None, merge all available providers' rows with latest-write-wins
         (non-None fields). When a tuple of AA provider domains is given, only those domains
         are considered and the first-listed domain wins each per-field conflict.
+    :param unparsable_ids: When given, ids of rows whose analysis_data fails to parse
+        are appended.
     """
     merged = AudioAnalysisData()
     found = False
@@ -127,7 +158,7 @@ def _merged_from_rows(
         for row in rows:
             if row["aa_provider_domain"] not in available_aa_domains:
                 continue
-            if (row_data := _parse_row(row)) is None:
+            if (row_data := _parse_row(row, unparsable_ids)) is None:
                 continue
             merged.update(row_data)
             found = True
@@ -141,7 +172,7 @@ def _merged_from_rows(
         domain = row["aa_provider_domain"]
         if domain not in wanted_set or domain in by_domain:
             continue
-        if (row_data := _parse_row(row)) is None:
+        if (row_data := _parse_row(row, unparsable_ids)) is None:
             continue
         by_domain[domain] = row_data
     for domain in reversed(wanted):
@@ -149,6 +180,20 @@ def _merged_from_rows(
             merged.update(row_data)
             found = True
     return merged if found else None
+
+
+def _first_non_finite_field(analysis: AudioAnalysisData) -> str | None:
+    """Return the name of the first float field holding a non-finite value, if any."""
+    for fld in dataclasses.fields(analysis):
+        value = getattr(analysis, fld.name)
+        if isinstance(value, float):
+            if not isfinite(value):
+                return fld.name
+        elif isinstance(value, list) and any(
+            isinstance(item, float) and not isfinite(item) for item in value
+        ):
+            return fld.name
+    return None
 
 
 def _nice_analysis_worker() -> None:
@@ -346,7 +391,9 @@ class AudioAnalysisController:
 
         self._active_sessions[session_key] = provider_ids
         self._session_queues[session_key] = queue_id
-        worker = self.mass.create_task(self._buffer_reader_worker(session_key, audio_buffer))
+        worker = self.mass.create_task(
+            self._buffer_reader_worker(session_key, audio_buffer, streamdetails.duration)
+        )
         self._workers[session_key] = worker
 
         def _on_cancel() -> None:
@@ -373,7 +420,14 @@ class AudioAnalysisController:
         :param analysis: The analysis data to store.
         :param analysis_version: Version of the AA provider's algorithm.
         :param media_type: The media type of the item being analyzed.
+        :raises ValueError: When a float field of the analysis holds a non-finite value.
         """
+        # non-finite floats serialize to JSON null, which corrupts the stored row;
+        # refuse them here so a bad payload can never poison the database
+        if (field_name := _first_non_finite_field(analysis)) is not None:
+            raise ValueError(
+                f"audio analysis for {item_id} contains a non-finite value in {field_name}"
+            )
         provider = self.mass.get_provider(provider_instance_id_or_domain)
         if not isinstance(provider, MusicProvider):
             return
@@ -487,7 +541,8 @@ class AudioAnalysisController:
         """
         Get merged audio analysis data for a track.
 
-        Only rows from currently available AA providers are included.
+        Only rows from currently available AA providers are included. Rows that fail
+        to parse are deleted, so the track can be re-analyzed.
 
         :param item_id: Provider-native item ID from streamdetails.item_id.
         :param provider_instance_id_or_domain: Music provider instance ID or domain.
@@ -518,7 +573,21 @@ class AudioAnalysisController:
         available_aa_domains = {
             p.domain for p in self.mass.get_providers(ProviderType.AUDIO_ANALYSIS) if p.available
         }
-        return _merged_from_rows(rows, available_aa_domains, priority)
+        unparsable_ids: list[Any] = []
+        merged = _merged_from_rows(rows, available_aa_domains, priority, unparsable_ids)
+        # corrupt rows would otherwise block re-analysis forever (their stored
+        # analysis_version still gates new sessions), so drop them right away
+        for row_id in unparsable_ids:
+            await self.mass.music.database.delete(DB_TABLE_AUDIO_ANALYSIS, {"id": row_id})
+        if unparsable_ids:
+            self.logger.info(
+                "Deleted %d corrupt audio_analysis row(s) for %s/%s; "
+                "the item is eligible for re-analysis",
+                len(unparsable_ids),
+                prov_key,
+                item_id,
+            )
+        return merged
 
     async def get_track_audio_metadata(self, track: Track) -> AudioMetadata | None:
         """
@@ -587,11 +656,11 @@ class AudioAnalysisController:
         :param loudness_album: Optional album-level integrated loudness in LUFS.
         :param media_type: The media type of the item.
         """
-        if loudness in (None, inf, -inf) or loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
+        if loudness is None or not isfinite(loudness) or loudness <= LOUDNESS_MEASUREMENT_MIN_LUFS:
             return
         if (
             loudness_album is None
-            or loudness_album in (inf, -inf)
+            or not isfinite(loudness_album)
             or loudness_album <= LOUDNESS_MEASUREMENT_MIN_LUFS
         ):
             loudness_album = None
@@ -1381,18 +1450,27 @@ class AudioAnalysisController:
             if not provider_ids:
                 self._active_sessions.pop(session_key, None)
 
-    async def _buffer_reader_worker(self, session_key: str, audio_buffer: AudioBuffer) -> None:
+    async def _buffer_reader_worker(
+        self,
+        session_key: str,
+        audio_buffer: AudioBuffer,
+        expected_duration: float | None,
+    ) -> None:
         """
         Read PCM straight from the shared playback buffer and distribute it to providers.
 
         Reads at its own pace from the buffer's retained window. On clean end-of-stream the
-        providers are finalized; if the reader falls a full window behind playback (the chunk
-        it needs has been evicted) or the buffer is torn down first, the session is dropped.
+        providers are finalized, unless the source ended far short of the expected duration.
+        If the reader falls a full window behind playback (the chunk it needs has been
+        evicted) or the buffer is torn down first, the session is dropped.
 
         :param session_key: Active-session key for this worker.
         :param audio_buffer: The shared playback buffer to read PCM from.
+        :param expected_duration: Expected track duration in seconds (None when unknown,
+            e.g. radio), used to discard sessions of streams that ended prematurely.
         """
-        cursor = audio_buffer.first_buffered_chunk
+        start_chunk = audio_buffer.first_buffered_chunk
+        cursor = start_chunk
         completed = False
         try:
             while session_key in self._active_sessions:
@@ -1419,6 +1497,21 @@ class AudioAnalysisController:
         finally:
             self._workers.pop(session_key, None)
             self._session_queues.pop(session_key, None)
+            # one chunk equals one second of audio
+            received_seconds = cursor - start_chunk
+            if (
+                completed
+                and expected_duration
+                and received_seconds < expected_duration * ANALYSIS_MIN_COMPLETENESS_RATIO
+            ):
+                self.logger.debug(
+                    "Analysis received only %ds of the expected %ds for %s; "
+                    "discarding incomplete session",
+                    received_seconds,
+                    expected_duration,
+                    session_key,
+                )
+                completed = False
             if completed:
                 self._finalize_providers(session_key)
             else:

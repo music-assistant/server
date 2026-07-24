@@ -68,5 +68,17 @@
   "provider.builtin.media.playlist.all_favorite_tracks.name": "All favourited tracks",
   "provider.builtin.media.playlist.infinite_mix_favorites.description": "Like Infinite Mix, but limited to your favourited tracks. 25 fresh random favourites are added whenever the queue is nearly empty.",
   "provider.builtin.media.playlist.infinite_mix_favorites.name": "Infinite Mix (favourites)",
-  "provider.deezer.media.folder.mixes.name": "Personalised Playlists"
+  "provider.deezer.media.folder.mixes.name": "Personalised Playlists",
+  "provider.fastmcp_server.config_entries.delete_favorites.description": "Remove items from favourites.",
+  "provider.fastmcp_server.config_entries.delete_favorites.label": "Remove from favourites",
+  "provider.fastmcp_server.config_entries.edit_favorites.description": "Mark items as favourites.",
+  "provider.fastmcp_server.config_entries.edit_favorites.label": "Add to favourites",
+  "provider.music_quiz.config_entries.use_ai_distractors.description": "When enabled, the quiz uses a configured AI provider (such as Home Assistant, which provides LLM access) to enhance the experience — for example, generating more convincing fake answers for each round. Falls back to the built-in behaviour when no AI provider is available.",
+  "common.page.device_code.failed_title": "Authorisation failed",
+  "common.page.device_code.success_title": "Authorisation successful",
+  "provider.yandex_music.page.device_code.failed_title": "Authorisation failed",
+  "provider.yandex_music.page.device_code.success_title": "Authorisation successful",
+  "provider.filesystem_google_drive.config_entries.auth.label": "Authorise with Google",
+  "provider.filesystem_onedrive.config_entries.auth.label": "Authorise with Microsoft",
+  "provider.yandex_station.config_entries.voice_control.description": "Auto-resume MA queue after voice commands like 'Алиса, стоп' or 'Алиса, дальше'. Experimental — may cause unexpected behaviour."
 }

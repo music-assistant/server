@@ -33,6 +33,7 @@ from music_assistant.constants import (
     CONF_OUTPUT_CODEC,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import TaskManager
 from music_assistant.models.player import (
@@ -66,15 +67,23 @@ CACHE_CATEGORY_PREV_STATE = (
     1  # category for caching previous player state (bumped to invalidate old format)
 )
 
-PLAYER_DEVICE_TYPES = {
-    # list of device types that are considered real hardware players
-    "squeezebox",
-    "squeezebox2",
-    "transporter",
-    "receiver",
-    "controller",
-    "boom",
-}
+PROTOCOL_ONLY_MODELS = (
+    # Device models where slimproto is only a secondary protocol on a device with
+    # its own (native) identity: WiiM/LinkPlay devices (ModelName=WiiM Player) and
+    # the LMS bridge tools that expose AirPlay/Chromecast/UPnP devices as
+    # squeezelite players. These register as PlayerType.PROTOCOL and get linked
+    # to the device's visible player.
+    "wiim",
+    "raopbridge",
+    "castbridge",
+    "upnpbridge",
+)
+
+
+def is_protocol_only_device(device_model: str) -> bool:
+    """Return True if the device uses squeezelite as a secondary protocol only."""
+    device_model_lower = device_model.lower()
+    return any(model.lower() in device_model_lower for model in PROTOCOL_ONLY_MODELS)
 
 
 class SqueezelitePlayer(Player):
@@ -100,6 +109,14 @@ class SqueezelitePlayer(Player):
             PlayerFeature.ENQUEUE,
             PlayerFeature.GAPLESS_PLAYBACK,
         }
+        # Protocol players are powered on/off with the stream and expose no power
+        # control; full players get native power support (slimproto power can e.g.
+        # drive a GPIO/script wired to an amplifier).
+        if is_protocol_only_device(client.device_model):
+            self._attr_type = PlayerType.PROTOCOL
+        else:
+            self._attr_type = PlayerType.PLAYER
+            self._attr_supported_features.add(PlayerFeature.POWER)
         self._attr_can_group_with = {provider.instance_id}
         max_sr = int(self.client.max_sample_rate)
         self._attr_supported_sample_rates = [
@@ -294,7 +311,10 @@ class SqueezelitePlayer(Player):
 
         # start the stream task
         self.multi_client_stream = stream = MultiClientStream(
-            audio_source=audio_source, audio_format=master_audio_format
+            audio_source=audio_source,
+            audio_format=master_audio_format,
+            queue_id=media.source_id,
+            session_id=get_media_session_id(media),
         )
         base_url = f"{self.mass.streams.base_url}/slimproto/multi?player_id={self.player_id}"
 
@@ -413,17 +433,9 @@ class SqueezelitePlayer(Player):
     def update_attributes(self) -> None:
         """Update player attributes from slim player."""
         # Update player state from slim player
-        self._attr_type = (
-            PlayerType.PLAYER
-            if self.client.device_type in PLAYER_DEVICE_TYPES
-            else PlayerType.PROTOCOL
-        )
-        if self.type == PlayerType.PLAYER:
-            self._attr_supported_features.add(PlayerFeature.POWER)
-        else:
-            self._attr_supported_features.discard(PlayerFeature.POWER)
         self._attr_available = self.client.connected
         self._attr_name = self.client.name
+        self._attr_powered = self.client.powered
         old_state = self._attr_playback_state
         self._attr_playback_state = STATE_MAP[self.client.state]
         self._attr_volume_level = self.client.volume_level

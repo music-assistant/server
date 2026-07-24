@@ -7,8 +7,9 @@ import logging
 import re
 import time
 from collections import deque
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from contextlib import suppress
+from copy import copy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Final
 
@@ -18,6 +19,7 @@ from music_assistant_models.helpers import get_global_cache_value, set_global_ca
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 
+from .dsp import ComplexFilter
 from .process import AsyncProcess, check_output
 from .util import close_async_generator
 
@@ -28,6 +30,7 @@ LOGGER = logging.getLogger("ffmpeg")
 MINIMAL_FFMPEG_VERSION = 6
 CACHE_ATTR_LIBSOXR_PRESENT: Final[str] = "libsoxr_present"
 CACHE_ATTR_FFMPEG_VERSION: Final[str] = "ffmpeg_version"
+DEFAULT_MP3_BIT_RATE: Final[int] = 320
 
 # Regex patterns to extract audio format details from ffmpeg's stderr output.
 # Examples of the lines we parse:
@@ -80,7 +83,7 @@ class FFMpeg(AsyncProcess):
         audio_input: AsyncGenerator[bytes] | str | int,
         input_format: AudioFormat,
         output_format: AudioFormat,
-        filter_params: list[str] | None = None,
+        filter_params: Sequence[str | ComplexFilter] | None = None,
         extra_args: list[str] | None = None,
         extra_input_args: list[str] | None = None,
         extra_output_args: list[str] | None = None,
@@ -116,6 +119,9 @@ class FFMpeg(AsyncProcess):
         self.parsed_duration: int | None = None
         self._stdin_feeder_task: asyncio.Task[None] | None = None
         self._stderr_reader_task: asyncio.Task[None] | None = None
+        # holds the detached abort-on-corrupt-stream task from _log_reader_task so it
+        # isn't garbage collected mid-flight; not otherwise awaited
+        self._abort_task: asyncio.Task[None] | None = None
         # ffmpeg emits 'Input #N, ...' and 'Output #N, ...' headers before each block of
         # 'Stream #' lines; we track which block the next stream line belongs to.
         # Defaults to "input" so a stray Stream # line before any header still routes there.
@@ -187,6 +193,7 @@ class FFMpeg(AsyncProcess):
     async def _log_reader_task(self) -> None:
         """Read ffmpeg log from stderr."""
         decode_errors = 0
+        decode_errors_reported = False
         async for line in self.iter_stderr():
             if self.collect_log_history:
                 self.log_history.append(line)
@@ -199,8 +206,17 @@ class FFMpeg(AsyncProcess):
 
             if "Invalid data found when processing input" in line:
                 decode_errors += 1
-            if decode_errors >= 50:
-                self.logger.error(line)
+            if decode_errors >= 50 and not decode_errors_reported:
+                # stream is too corrupted to bother decoding further: report once (instead
+                # of promoting every remaining line to ERROR) and abort. close() awaits
+                # this very stderr reader task, and a task awaiting itself raises
+                # RuntimeError, so the abort must run as a detached task rather than be
+                # awaited here.
+                decode_errors_reported = True
+                self.logger.error(
+                    "Excessive decode errors (%d+) for this stream; aborting", decode_errors
+                )
+                self._abort_task = asyncio.create_task(self.close())
 
             # Log reconnection events for radio streams
             if "Opening" in line or "Reconnect" in line or "reconnect" in line:
@@ -357,7 +373,7 @@ async def get_ffmpeg_stream(
     audio_input: AsyncGenerator[bytes] | str,
     input_format: AudioFormat,
     output_format: AudioFormat,
-    filter_params: list[str] | None = None,
+    filter_params: Sequence[str | ComplexFilter] | None = None,
     extra_args: list[str] | None = None,
     chunk_size: int | None = None,
     extra_input_args: list[str] | None = None,
@@ -383,6 +399,11 @@ async def get_ffmpeg_stream(
         iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
         async for chunk in iterator:
             yield chunk
+        # reap the process before trusting returncode: a stream aborted mid-decode (e.g.
+        # excessive decode errors) closes stdout early, which ends the loop above before
+        # the OS process has actually exited, leaving returncode as None if checked directly
+        with suppress(TimeoutError):
+            await ffmpeg_proc.wait_with_timeout(5)
         if ffmpeg_proc.returncode not in (None, 0) or ffmpeg_proc.concat_error:
             # unclean exit of ffmpeg - raise error with log tail
             log_lines = -20 if ffmpeg_proc.concat_error else -5
@@ -426,15 +447,22 @@ async def get_ffmpeg_overlay_stream(
         ]
     overlay_input_args += ["-stream_loop", "-1", "-i", overlay_input]
     channel_layout = "mono" if pcm_format.channels == 1 else "stereo"
+    # silenceremove strips a near-silent intro from the overlay source (e.g. a soft
+    # fade-in) so it becomes audible right away; it is a no-op for sources that
+    # already start at full level. It runs before volume so detection is based on
+    # the source's own levels rather than the scaled output.
     filter_complex = (
-        f"[0:a]volume={overlay_volume / 100},"
+        f"[0:a]silenceremove=start_periods=1:start_threshold=-40dB,"
+        f"volume={overlay_volume / 100},"
         f"aresample={pcm_format.sample_rate},"
         f"aformat=channel_layouts={channel_layout}[overlay];"
         "[1:a][overlay]amix=inputs=2:duration=first:normalize=0[mixed]"
     )
     async with FFMpeg(
         audio_input=audio_input,
-        input_format=pcm_format,
+        # The overlay is input 0, so ffmpeg probes it before the PCM input and
+        # mutates input_format with its metadata. Keep that mutation local.
+        input_format=copy(pcm_format),
         output_format=pcm_format,
         extra_input_args=overlay_input_args,
         extra_output_args=["-filter_complex", filter_complex, "-map", "[mixed]"],
@@ -443,16 +471,52 @@ async def get_ffmpeg_overlay_stream(
         iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
         async for chunk in iterator:
             yield chunk
+        # reap the process before trusting returncode: a stream aborted mid-decode (e.g.
+        # excessive decode errors) closes stdout early, which ends the loop above before
+        # the OS process has actually exited, leaving returncode as None if checked directly
+        with suppress(TimeoutError):
+            await ffmpeg_proc.wait_with_timeout(5)
         if ffmpeg_proc.returncode not in (None, 0):
             # unclean exit of ffmpeg - raise error with log tail
             log_tail = "\n" + "\n".join(list(ffmpeg_proc.log_history)[-5:])
             raise AudioError(log_tail)
 
 
-def get_ffmpeg_args(  # noqa: PLR0915
+def get_ffmpeg_resample_filter(
     input_format: AudioFormat,
     output_format: AudioFormat,
-    filter_params: list[str],
+    filter_params: Sequence[str | ComplexFilter],
+) -> str | None:
+    """
+    Return the resampling and dithering filter required for a format conversion.
+
+    :param input_format: Format entering FFmpeg.
+    :param output_format: Requested FFmpeg output format.
+    :param filter_params: Filters that run before resampling.
+    """
+    if input_format.sample_rate == output_format.sample_rate and not (
+        input_format.bit_depth > 16 and output_format.bit_depth == 16
+    ):
+        return None
+    libsoxr_support = get_global_cache_value(CACHE_ATTR_LIBSOXR_PRESENT)
+    # loudnorm and libsoxr cannot be combined due to https://trac.ffmpeg.org/ticket/11323
+    if libsoxr_support and not any(
+        "loudnorm" in value for value in filter_params if isinstance(value, str)
+    ):
+        resample_filter = "aresample=resampler=soxr:precision=30"
+    else:
+        resample_filter = "aresample=resampler=swr"
+    if input_format.sample_rate != output_format.sample_rate:
+        resample_filter += f":osr={output_format.sample_rate}"
+    if output_format.bit_depth == 16 and input_format.bit_depth > 16:
+        resample_filter += ":osf=s16:dither_method=triangular_hp"
+    return resample_filter
+
+
+def get_ffmpeg_args(
+    input_format: AudioFormat,
+    output_format: AudioFormat,
+    filter_params: Sequence[str | ComplexFilter],
     extra_args: list[str] | None = None,
     input_path: str = "-",
     output_path: str = "-",
@@ -461,6 +525,7 @@ def get_ffmpeg_args(  # noqa: PLR0915
     loglevel: str = "error",
 ) -> list[str]:
     """Collect all args to send to the ffmpeg process."""
+    filter_params = list(filter_params)
     if extra_args is None:
         extra_args = []
     if extra_input_args is None:
@@ -508,6 +573,13 @@ def get_ffmpeg_args(  # noqa: PLR0915
                 "-reconnect_on_http_error",
                 "5xx,429",
             ]
+            if "-post_data" in extra_input_args:
+                # ffmpeg does not include Range headers on POST reconnects, so byte-range
+                # seeking via reconnect is not available. Mark the stream non-seekable so
+                # demuxers do not attempt end-of-file probes (e.g. OGG duration detection)
+                # that would trigger Range-less restarts from byte 0. MA-initiated seeks
+                # still work via -ss decode-and-discard.
+                input_args += ["-seekable", "0"]
         if input_format.content_type.is_pcm():
             input_args += [
                 "-ac",
@@ -562,7 +634,7 @@ def get_ffmpeg_args(  # noqa: PLR0915
     elif output_format.content_type == ContentType.AAC:
         output_args = ["-f", "adts", "-c:a", "aac", "-b:a", "256k"]
     elif output_format.content_type == ContentType.MP3:
-        output_args = ["-f", "mp3", "-b:a", "320k"]
+        output_args = ["-f", "mp3", "-b:a", f"{DEFAULT_MP3_BIT_RATE}k"]
     elif output_format.content_type == ContentType.WAV:
         pcm_format = ContentType.from_bit_depth(output_format.bit_depth)
         output_args = [
@@ -600,34 +672,15 @@ def get_ffmpeg_args(  # noqa: PLR0915
             *filter_params,
         ]
 
-    # determine if we need to do resampling (or dithering)
-    if input_format.sample_rate != output_format.sample_rate or (
-        input_format.bit_depth > 16 and output_format.bit_depth == 16
+    if resample_filter := get_ffmpeg_resample_filter(
+        input_format,
+        output_format,
+        filter_params,
     ):
-        libsoxr_support = get_global_cache_value(CACHE_ATTR_LIBSOXR_PRESENT)
-        # prefer resampling with libsoxr due to its high quality
-        # but skip if loudnorm filter is present, due to this bug:
-        # https://trac.ffmpeg.org/ticket/11323
-        loudnorm_present = any("loudnorm" in f for f in filter_params)
-        if libsoxr_support and not loudnorm_present:
-            resample_filter = "aresample=resampler=soxr:precision=30"
-        else:
-            resample_filter = "aresample=resampler=swr"
-
-        # sample rate conversion
-        if input_format.sample_rate != output_format.sample_rate:
-            resample_filter += f":osr={output_format.sample_rate}"
-
-        # bit depth conversion: apply dithering when going down to 16 bits
-        # this is only needed when we need to back to 16 bits
-        # when going from 32bits FP to 24 bits no dithering is needed
-        if output_format.bit_depth == 16 and input_format.bit_depth > 16:
-            resample_filter += ":osf=s16:dither_method=triangular_hp"
-
         filter_params.append(resample_filter)
 
     if filter_params and "-filter_complex" not in extra_args:
-        extra_args += ["-af", ",".join(filter_params)]
+        extra_args += _build_filtergraph_args(filter_params)
 
     return generic_args + input_args + extra_args + output_args
 
@@ -675,3 +728,55 @@ async def check_ffmpeg_version() -> None:
         version,
         "with libsoxr support" if libsoxr_support else "",
     )
+
+
+def _build_filtergraph_args(filter_params: list[str | ComplexFilter]) -> list[str]:
+    """
+    Render a DSP filter chain to FFmpeg command-line arguments.
+
+    :param filter_params: Ordered chain of plain filter strings and/or complex
+        fragments that need extra source inputs.
+    """
+    if not any(isinstance(item, ComplexFilter) for item in filter_params):
+        simple = [item for item in filter_params if isinstance(item, str) and item]
+        return ["-af", ",".join(simple)] if simple else []
+
+    parts: list[str] = []
+    pending: list[str] = []
+    current = "0:a"
+    counter = 0
+
+    def next_label() -> str:
+        nonlocal counter
+        counter += 1
+        return f"dsp{counter}"
+
+    def flush_pending() -> None:
+        nonlocal current
+        if not pending:
+            return
+        label = next_label()
+        parts.append(f"[{current}]{','.join(pending)}[{label}]")
+        current = label
+        pending.clear()
+
+    for item in filter_params:
+        if isinstance(item, str):
+            if item:
+                pending.append(item)
+            continue
+        # a complex fragment closes the current simple run, pulls its own source
+        # inputs into the graph, then consumes the main pad plus those sources
+        flush_pending()
+        source_labels: list[str] = []
+        for source in item.sources:
+            label = next_label()
+            parts.append(f"{source}[{label}]")
+            source_labels.append(label)
+        label = next_label()
+        inputs = f"[{current}]" + "".join(f"[{sl}]" for sl in source_labels)
+        parts.append(f"{inputs}{item.body}[{label}]")
+        current = label
+    flush_pending()
+
+    return ["-filter_complex", ";".join(parts), "-map", f"[{current}]"]

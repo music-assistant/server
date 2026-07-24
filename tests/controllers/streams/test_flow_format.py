@@ -5,7 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import pytest
-from music_assistant_models.enums import MediaType, VolumeNormalizationMode
+from music_assistant_models.enums import ContentType, MediaType, VolumeNormalizationMode
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
@@ -211,6 +211,30 @@ async def test_select_flow_pcm_format_uses_f32_when_overlay_active() -> None:
         player, start_streamdetails=streamdetails, overlay_active=True
     )
     assert fmt.bit_depth == 32
+
+
+@pytest.mark.asyncio
+async def test_select_pcm_format_uses_stereo_f32_for_radio_overlay() -> None:
+    """A mixed radio overlay gets float headroom and a stereo pivot."""
+    audio = _make_streams_audio()
+    player = _make_player(
+        supported=[(44100, 16), (48000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    streamdetails = _make_streamdetails(sample_rate=44100, bit_depth=16)
+    streamdetails.media_type = MediaType.RADIO
+    streamdetails.audio_format.channels = 1
+
+    fmt = await audio.select_pcm_format(
+        player,
+        streamdetails,
+        crossfade_enabled=False,
+        overlay_active=True,
+    )
+
+    assert fmt.content_type == ContentType.PCM_F32LE
+    assert fmt.bit_depth == 32
+    assert fmt.channels == 2
 
 
 @pytest.mark.asyncio
@@ -484,6 +508,60 @@ def test_needs_restart_returns_false_when_streamdetails_missing() -> None:
         )
         is False
     )
+
+
+# --- _flow_restart_context ---
+
+
+def test_flow_restart_context_prefers_protocol_player() -> None:
+    """The given (protocol) player's config and rates win over the queue player's."""
+    audio = _make_streams_audio()
+    protocol_player = _make_player(
+        supported=[(44100, 16), (96000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
+    )
+    # queue (wrapper) player without audio config entries: 44100-only fallback
+    wrapper_player = _make_player(supported=[(44100, 16)])
+    audio.mass.players.get_player = MagicMock(  # type: ignore[method-assign]
+        return_value=wrapper_player
+    )
+
+    conf, rates = audio._flow_restart_context("queue-1", protocol_player)
+
+    assert conf == FLOW_MODE_SAMPLE_RATE_BIT_PERFECT
+    assert rates == [44100, 96000]
+    audio.mass.players.get_player.assert_not_called()
+
+
+def test_flow_restart_context_falls_back_to_queue_player() -> None:
+    """Without a protocol player, the queue's own player is used."""
+    audio = _make_streams_audio()
+    queue_player = _make_player(
+        supported=[(48000, 16)], flow_mode=FLOW_MODE_SAMPLE_RATE_BIT_PERFECT
+    )
+    audio.mass.players.get_player = MagicMock(  # type: ignore[method-assign]
+        return_value=queue_player
+    )
+
+    conf, rates = audio._flow_restart_context("queue-1", None)
+
+    assert conf == FLOW_MODE_SAMPLE_RATE_BIT_PERFECT
+    assert rates == [48000]
+    audio.mass.players.get_player.assert_called_once_with("queue-1")
+
+
+def test_flow_restart_context_without_any_player() -> None:
+    """When no player can be resolved, the raw queue config and empty rates are used."""
+    audio = _make_streams_audio()
+    audio.mass.players.get_player = MagicMock(return_value=None)  # type: ignore[method-assign]
+    audio.mass.config.get_raw_player_config_value = MagicMock(  # type: ignore[method-assign]
+        return_value=FLOW_MODE_SAMPLE_RATE_SMART
+    )
+
+    conf, rates = audio._flow_restart_context("queue-1", None)
+
+    assert conf == FLOW_MODE_SAMPLE_RATE_SMART
+    assert rates == []
 
 
 # --- helpers ---

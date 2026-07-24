@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
@@ -10,6 +11,7 @@ from music_assistant_models.enums import ExternalID
 from music_assistant_models.errors import MusicAssistantError
 
 from music_assistant.constants import (
+    DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_PLAYLOG,
     DB_TABLE_SETTINGS,
@@ -278,6 +280,55 @@ async def test_migrate_database_backfills_external_id_lookup(
     await music.database.close()
 
 
+async def test_migration_repairs_null_smart_fades_centroids(
+    database: DatabaseConnection,
+) -> None:
+    """Null spectral centroid values in legacy Smart Fades analysis rows become 0.0."""
+    await database.execute(
+        f"""CREATE TABLE {DB_TABLE_AUDIO_ANALYSIS}(
+            [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [aa_provider_domain] TEXT NOT NULL,
+            [analysis_data] json NOT NULL)"""
+    )
+    rows = {
+        1: ("smart_fades", '{"spectral_centroid": [1.5, null, 2.5, null], "bpm": 120}'),
+        2: ("smart_fades", '{"spectral_centroid": [1.0, 2.0], "bpm": 100}'),
+        # null centroids from another analysis provider must not be touched
+        3: ("other_domain", '{"spectral_centroid": [null], "bpm": 100}'),
+        # a corrupt payload must not abort the migration
+        4: ("smart_fades", '{"spectral_centroid": [null'),
+        # a non-array centroid value must not be touched
+        5: ("smart_fades", '{"spectral_centroid": null, "bpm": 90}'),
+        # "null" appearing only inside a string value must not trigger a rewrite
+        6: ("smart_fades", '{"spectral_centroid": [3.5], "key": "nullish"}'),
+    }
+    for row_id, (domain, analysis_data) in rows.items():
+        await database.execute(
+            f"INSERT INTO {DB_TABLE_AUDIO_ANALYSIS} (id, aa_provider_domain, analysis_data) "
+            "VALUES (:id, :domain, :analysis_data)",
+            {"id": row_id, "domain": domain, "analysis_data": analysis_data},
+        )
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    await migrate_database(
+        mass,
+        database,
+        MagicMock(),
+        prev_version=52,
+        create_tables=AsyncMock(),
+    )
+
+    repaired = {
+        row["id"]: row["analysis_data"] for row in await database.get_rows(DB_TABLE_AUDIO_ANALYSIS)
+    }
+    assert json.loads(repaired[1]) == {"spectral_centroid": [1.5, 0.0, 2.5, 0.0], "bpm": 120}
+    # untouched rows must not be rewritten at all, hence the exact-string compare
+    for untouched_id in (2, 3, 4, 5, 6):
+        assert repaired[untouched_id] == rows[untouched_id][1]
+
+
 async def test_migration_populates_fts_tables(database: DatabaseConnection) -> None:
     """Migrating a pre-FTS database builds and fills the FTS search tables."""
     await database.execute("DROP TABLE tracks")
@@ -310,3 +361,76 @@ async def test_migration_populates_fts_tables(database: DatabaseConnection) -> N
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'albums_fts'"
     )
     assert not rows
+
+
+async def test_migration_rewrites_apple_music_artwork_to_tokens(
+    database: DatabaseConnection,
+) -> None:
+    """Persisted (expired) blobstore artwork URLs are rewritten to resolvable tokens."""
+    await database.execute("ALTER TABLE albums ADD COLUMN metadata json")
+    await database.execute(
+        "CREATE TABLE provider_mappings([media_type] TEXT, [item_id] INTEGER, "
+        "[provider_domain] TEXT, [provider_instance] TEXT, [provider_item_id] TEXT)"
+    )
+    signed_url = "https://store-033.blobstore.apple.com/pic/image?X-Amz-Signature=dead"
+    metadata = {
+        "images": [
+            {
+                "type": "thumb",
+                "path": signed_url,
+                "provider": "apple_music--1",
+                "remotely_accessible": True,
+            },
+            {
+                "type": "fanart",
+                "path": "https://tadb/fanart.jpg",
+                "provider": "theaudiodb",
+                "remotely_accessible": True,
+            },
+            {
+                "type": "thumb",
+                "path": signed_url,
+                "provider": "apple_music--removed",
+                "remotely_accessible": True,
+            },
+        ]
+    }
+    await database.execute(
+        "INSERT INTO albums (item_id, metadata) VALUES (1, :metadata)",
+        {"metadata": json.dumps(metadata)},
+    )
+    # an unrelated row without apple artwork must be left untouched
+    await database.execute(
+        "INSERT INTO albums (item_id, metadata) VALUES (2, :metadata)",
+        {"metadata": json.dumps({"images": [{"path": "https://x/y.jpg", "provider": "spotify"}]})},
+    )
+    await database.execute(
+        "INSERT INTO provider_mappings "
+        "(media_type, item_id, provider_domain, provider_instance, provider_item_id) "
+        "VALUES ('album', 1, 'apple_music', 'apple_music--1', 'l.abc123')"
+    )
+    await database.commit()
+
+    mass = MagicMock()
+    mass.cache.clear = AsyncMock()
+    await migrate_database(
+        mass,
+        database,
+        MagicMock(),
+        prev_version=54,
+        create_tables=AsyncMock(),
+    )
+
+    rows = await database.get_rows_from_query(
+        "SELECT item_id, metadata FROM albums ORDER BY item_id"
+    )
+    images = json.loads(rows[0]["metadata"])["images"]
+    # the mapped entry became a token, the metadata-provider entry survived and
+    # the entry whose apple instance no longer exists was dropped
+    assert [(img["path"], img["provider"], img["remotely_accessible"]) for img in images] == [
+        ("album/l.abc123", "apple_music--1", False),
+        ("https://tadb/fanart.jpg", "theaudiodb", True),
+    ]
+    assert json.loads(rows[1]["metadata"])["images"] == [
+        {"path": "https://x/y.jpg", "provider": "spotify"}
+    ]

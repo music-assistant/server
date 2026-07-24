@@ -307,7 +307,8 @@ Key scenarios to test:
 1. **Single protocol device** - Should create Universal Player
 2. **Multi-protocol device** - All protocols linked to one Universal Player
 3. **Late protocol discovery** - New protocol added to existing Universal Player
-4. **Native player appears** - Universal Player replaced by native
+4. **Native player appears** - Universal Player replaced by native; its user
+   settings (name, config values, DSP and queue settings) carry over
 5. **Permanent parent removal** - Protocol links reset and discovery is re-scheduled
 6. **Protocol disappears** - Handle graceful degradation
 

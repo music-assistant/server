@@ -92,3 +92,11 @@ class MusicQuizUnknownSuggestionError(InvalidDataError):
     error_code = 1010
     translation_key = "music_quiz_unknown_suggestion"
     translation_owner = TRANSLATION_OWNER
+
+
+class MusicQuizInvalidAnswerError(InvalidDataError):
+    """Raised when an answer submission is malformed or mismatched."""
+
+    error_code = 1011
+    translation_key = "music_quiz_invalid_answer"
+    translation_owner = TRANSLATION_OWNER

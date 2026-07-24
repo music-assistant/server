@@ -5,24 +5,24 @@ Syncs Philips Hue lights to music using the Entertainment API. Each entertainmen
 ## Architecture
 
 ```
-Sendspin Server (PushStream → VisualizerV1Role → FFT/spectrum)
+Sendspin Server (PushStream → group visualizer/color roles → FFT/spectrum + beats + palette)
        │
-       ▼ (WebSocket, buffer-tracked delivery)
-SendspinClient (VISUALIZER role, small buffer for near-realtime)
+       ▼ (in-process bridge roles subscribe to the group's visualizer/color roles)
+Bridge visualizer + color roles (features keyed to playback timestamp)
        │
-       ▼ (VisualizerFrame callbacks: spectrum / peaks / beats)
-HueAudioAnalyzer (bass beat detection, color cycling, energy pulse)   ← this provider
+       ▼ (frame / beats / color callbacks)
+HueAudioAnalyzer (queues by timestamp; bass beat detection, color cycling, energy pulse)   ← this provider
        │
-       ▼ (LightColorCommand frames)
+       ▼ (30 Hz render loop drains at server-clock + Hue-latency lead → LightColorCommand frames)
 EntertainmentSession → HueDtlsStreamer (DTLS 1.2 PSK + HueStream v2)   ← hue-entertainment lib
        │
        ▼ (encrypted UDP port 2100)
 Hue Bridge → Entertainment Area Lights
 ```
 
-The bridge connects as a Sendspin WebSocket client with the VISUALIZER role and a small buffer capacity (2048 bytes) so frames arrive near playback time rather than seconds ahead. A fixed-rate render loop maps the current playhead onto the server timeline with `compute_server_time()` (plus a configurable Hue-latency lead) and samples the analyzer for each DTLS frame.
+The bridge registers with the local Sendspin server as an **in-process external visualizer client** (`register_external_player`) — no WebSocket is involved. Its bridge visualizer and color roles subscribe directly to the playing group's visualizer/color roles and receive extracted features (spectrum, onset peaks, beat schedule, colour palette) through callbacks. Because in-process delivery follows the audio push, features arrive **ahead of the playhead** (audio is buffered seconds in advance); the analyzer queues them by playback timestamp and drains them at render time. A fixed-rate 30 Hz render loop samples the analyzer at the current server clock plus a configurable Hue-latency lead and sends one DTLS frame per tick.
 
-Entertainment areas are discovered at plugin (re)load from the Hue bridge REST API. Each area gets its own Sendspin client and `EntertainmentSession`.
+Entertainment areas are discovered at plugin (re)load from the Hue bridge REST API. Each area gets its own in-process Sendspin client and `EntertainmentSession`.
 
 ## Effect Modes
 

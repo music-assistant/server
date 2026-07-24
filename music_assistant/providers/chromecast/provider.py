@@ -23,6 +23,7 @@ from music_assistant.helpers.json import SerializableType
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import MULTICHANNEL_RECHECK_INTERVAL
+from .dashboard import ChromecastDashboards
 from .helpers import ChromecastInfo
 from .player import ChromecastPlayer
 from .sendspin_bridge import SendspinBridgeManager
@@ -68,6 +69,7 @@ class ChromecastProvider(PlayerProvider):
         )
         self._discovery_running = False
         self.bridge_manager = SendspinBridgeManager(self)
+        self.dashboards = ChromecastDashboards(self)
         # set-up pychromecast logging
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             logging.getLogger("pychromecast").setLevel(logging.DEBUG)
@@ -84,6 +86,8 @@ class ChromecastProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
+        await self.dashboards.unload()
+
         # Stop all Sendspin bridges and remove listeners
         await self.bridge_manager.close()
 
@@ -147,14 +151,23 @@ class ChromecastProvider(PlayerProvider):
             if disc_info.uuid is None:
                 self.logger.error("Discovered chromecast without uuid %s", disc_info)  # type: ignore[unreachable]
                 return
+            disc_uuid: UUID = disc_info.uuid
 
-            player_id = str(disc_info.uuid)
+            player_id = str(disc_uuid)
+
+            # (Re-)register as a dashboard endpoint; includes devices disabled as a
+            # player, since dashboard casting targets a display, not a MA player.
+            self.mass.loop.call_soon_threadsafe(self.dashboards.register, disc_uuid, disc_info)
 
             # If player already registered, just update cast info (fast path)
             castplayer = self.mass.players.get_player(player_id)
             if castplayer:
                 assert isinstance(castplayer, ChromecastPlayer)  # for type checking
                 castplayer.cast_info.update(disc_info)
+                socket_client = castplayer.cc.socket_client
+                if socket_client.services != disc_info.services:
+                    socket_client.services.clear()
+                    socket_client.services.update(disc_info.services)
                 self.mass.loop.call_soon_threadsafe(castplayer.update_state)
                 # An unavailable player may be a passive multichannel endpoint that
                 # slipped past the discovery filter (e.g. incomplete multizone info
@@ -238,7 +251,9 @@ class ChromecastProvider(PlayerProvider):
         """Handle zeroconf discovery of a removed Chromecast."""
         player_id = str(uuid)
         self.logger.debug("Chromecast removed: %s - %s", cast_info.friendly_name, player_id)
-        # we ignore this event completely as the Chromecast socket client handles this itself
+        # we ignore this for the player itself, as the Chromecast socket client handles that,
+        # but the dashboard registration has no such fallback and must be dropped explicitly
+        self.mass.loop.call_soon_threadsafe(self.dashboards.unregister, uuid)
 
     def _should_recheck_multichannel_child(
         self, castplayer: ChromecastPlayer, player_id: str

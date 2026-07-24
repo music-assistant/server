@@ -34,11 +34,14 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     AudioFormat,
+    BrowseFolder,
     ItemMapping,
+    MediaItemType,
     Playlist,
     RecommendationFolder,
     SearchResults,
     Track,
+    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 from pydantic import ValidationError
@@ -553,6 +556,81 @@ class QQMusicProvider(MusicProvider):
         self.logger.info("QQ Music authenticated for uin %s", self._musicid)
         # Persist complete credential once on init so legacy configs gain refresh fields.
         self._persist_credential()
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get the available QQ Music recommendation rows, without items."""
+        return [
+            RecommendationFolder(
+                item_id="guess_recommend",
+                provider=self.instance_id,
+                name="Recommended tracks",
+                translation_key="recommended_tracks",
+                icon="mdi-lightbulb-on-outline",
+            ),
+            RecommendationFolder(
+                item_id="new_songs",
+                provider=self.instance_id,
+                name="Recommended new tracks",
+                translation_key="recommended_new_tracks",
+                icon="mdi-music-note-plus",
+            ),
+            RecommendationFolder(
+                item_id="recommended_playlists",
+                provider=self.instance_id,
+                name="Recommended playlists",
+                translation_key="recommended_playlists",
+                icon="mdi-playlist-music",
+            ),
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single QQ Music recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList()
+        if item_id == "guess_recommend":
+            guess_response = await self._get_recommend_payload_cached(
+                "guess_recommend",
+                _RECOMMEND_GUESS_TTL,
+                lambda: self._qq_recommend.get_guess_recommend(credential=self._credential),
+            )
+            for item in extract_guess_recommend_tracks(self._to_dict(guess_response)):
+                with suppress(InvalidDataError, TypeError, ValueError):
+                    items.append(self._parse_track(item))
+            if not items:
+                # Fall back to radar recommendations when the personalised
+                # guess endpoint yields no usable tracks.
+                radar_response = await self._get_recommend_payload_cached(
+                    "guess_recommend_radar",
+                    _RECOMMEND_GUESS_TTL,
+                    self._qq_recommend.get_radar_recommend,
+                )
+                for item in extract_radar_recommend_tracks(self._to_dict(radar_response)):
+                    with suppress(InvalidDataError, TypeError, ValueError):
+                        items.append(self._parse_track(item))
+        elif item_id == "new_songs":
+            new_song_response = await self._get_recommend_payload_cached(
+                "new_songs",
+                _RECOMMEND_NEWSONG_TTL,
+                self._qq_recommend.get_recommend_newsong,
+            )
+            for item in extract_newsong_tracks(self._to_dict(new_song_response)):
+                with suppress(InvalidDataError, TypeError, ValueError):
+                    items.append(self._parse_track(item))
+        elif item_id == "recommended_playlists":
+            playlist_response = await self._get_recommend_payload_cached(
+                "recommended_playlists",
+                _RECOMMEND_PLAYLIST_TTL,
+                self._qq_recommend.get_recommend_songlist,
+            )
+            for item in extract_recommend_songlists(self._to_dict(playlist_response)):
+                with suppress(InvalidDataError, TypeError, ValueError):
+                    items.append(self._parse_playlist(item))
+        return items
 
     def _persist_credential(self) -> None:
         """Persist current credential into provider config values."""
@@ -1448,118 +1526,6 @@ class QQMusicProvider(MusicProvider):
             except InvalidDataError, TypeError, ValueError:
                 continue
         return results
-
-    async def recommendations(self) -> list[RecommendationFolder]:  # noqa: PLR0915
-        """Get recommendations from QQ Music endpoints."""
-        folders: list[RecommendationFolder] = []
-
-        def _resolve_recommend_track(item: dict[str, Any]) -> Track | None:
-            """Map recommendation track directly from raw response item."""
-            with suppress(InvalidDataError, TypeError, ValueError):
-                return self._parse_track(item)
-            return None
-
-        def _add_playlist_folder_items(
-            folder: RecommendationFolder, playlist_items: list[dict[str, Any]]
-        ) -> None:
-            """Parse playlist candidates in original API order."""
-            for item in playlist_items:
-                with suppress(InvalidDataError, TypeError, ValueError):
-                    playlist = self._parse_playlist(item)
-                    folder.items.append(playlist)
-
-        try:
-            guess_response = await self._get_recommend_payload_cached(
-                "guess_recommend",
-                _RECOMMEND_GUESS_TTL,
-                lambda: self._qq_recommend.get_guess_recommend(credential=self._credential),
-            )
-            guess_tracks = extract_guess_recommend_tracks(self._to_dict(guess_response))
-            guess_folder = RecommendationFolder(
-                item_id="guess_recommend",
-                provider=self.instance_id,
-                name="Recommended tracks",
-                translation_key="recommended_tracks",
-                icon="mdi-lightbulb-on-outline",
-            )
-            for item in guess_tracks:
-                track = _resolve_recommend_track(item)
-                if track:
-                    guess_folder.items.append(track)
-            if not guess_folder.items:
-                radar_response = await self._get_recommend_payload_cached(
-                    "guess_recommend_radar",
-                    _RECOMMEND_GUESS_TTL,
-                    self._qq_recommend.get_radar_recommend,
-                )
-                for item in extract_radar_recommend_tracks(self._to_dict(radar_response)):
-                    track = _resolve_recommend_track(item)
-                    if track:
-                        guess_folder.items.append(track)
-            if guess_folder.items:
-                self.logger.debug(
-                    "QQ recommendations: guess_recommend resolved %s items",
-                    len(guess_folder.items),
-                )
-                folders.append(guess_folder)
-        except Exception as err:
-            self.logger.warning("QQ recommendations guess_recommend failed: %s", err)
-
-        try:
-            new_song_response = await self._get_recommend_payload_cached(
-                "new_songs",
-                _RECOMMEND_NEWSONG_TTL,
-                self._qq_recommend.get_recommend_newsong,
-            )
-            new_tracks = extract_newsong_tracks(self._to_dict(new_song_response))
-            if new_tracks:
-                new_song_folder = RecommendationFolder(
-                    item_id="new_songs",
-                    provider=self.instance_id,
-                    name="Recommended new tracks",
-                    translation_key="recommended_new_tracks",
-                    icon="mdi-music-note-plus",
-                )
-                for item in new_tracks:
-                    track = _resolve_recommend_track(item)
-                    if track:
-                        new_song_folder.items.append(track)
-                if new_song_folder.items:
-                    self.logger.debug(
-                        "QQ recommendations: new_songs resolved %s items",
-                        len(new_song_folder.items),
-                    )
-                    folders.append(new_song_folder)
-        except Exception as err:
-            self.logger.warning("QQ recommendations new_songs failed: %s", err)
-
-        try:
-            playlist_response = await self._get_recommend_payload_cached(
-                "recommended_playlists",
-                _RECOMMEND_PLAYLIST_TTL,
-                self._qq_recommend.get_recommend_songlist,
-            )
-            playlist_items = extract_recommend_songlists(self._to_dict(playlist_response))
-            if playlist_items:
-                playlist_folder = RecommendationFolder(
-                    item_id="recommended_playlists",
-                    provider=self.instance_id,
-                    name="Recommended playlists",
-                    translation_key="recommended_playlists",
-                    icon="mdi-playlist-music",
-                )
-                _add_playlist_folder_items(playlist_folder, playlist_items)
-                if playlist_folder.items:
-                    self.logger.debug(
-                        "QQ recommendations: recommended_playlists resolved %s items",
-                        len(playlist_folder.items),
-                    )
-                    folders.append(playlist_folder)
-        except Exception as err:
-            self.logger.warning("QQ recommendations songlist failed: %s", err)
-
-        self.logger.debug("QQ recommendations returned %s folder(s)", len(folders))
-        return folders
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""

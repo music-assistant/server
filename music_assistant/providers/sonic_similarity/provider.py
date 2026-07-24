@@ -22,7 +22,14 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import MusicAssistantError, SetupFailedError
-from music_assistant_models.media_items import Album, RecommendationFolder, SearchResults
+from music_assistant_models.media_items import (
+    Album,
+    BrowseFolder,
+    ItemMapping,
+    MediaItemType,
+    RecommendationFolder,
+    SearchResults,
+)
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import DB_TABLE_AUDIO_ANALYSIS
@@ -256,22 +263,60 @@ class SonicSimilarityPlugin(PluginProvider):
             )
         return await self._similar_tracks_via_18dim(track, limit)
 
-    @use_cache(60, base_class=RecommendationFolder, allow_expired_cache=True)
-    async def recommendations(self) -> list[RecommendationFolder]:
+    async def get_recommendations(self) -> list[RecommendationFolder]:
         """
-        Yield an 'Inspired by recently played' folder for the discover page.
+        Get the 'Inspired by recently played' row descriptor, without items.
 
-        Returns [] when the engine isn't ready or when no recent tracks
-        intersect the index — the cross-provider dispatcher then simply
-        omits us from the response (no empty card on the page).
+        Returns [] when the discover row is disabled in the plugin config.
         """
         if not bool(self.config.get_value(CONF_ENABLE_DISCOVER_ROW)):
             return []
+        return [
+            RecommendationFolder(
+                item_id="inspired_by_recently_played",
+                provider=self.instance_id,
+                name="Inspired by recently played",
+                translation_key="inspired_by_recently_played",
+                icon="mdi-shimmer",
+            ),
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for the 'Inspired by recently played' row.
+
+        Returns an empty list for an unknown row, when the row is disabled,
+        when the engine isn't ready or when no recent tracks intersect the
+        index.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id != "inspired_by_recently_played":
+            return UniqueList()
+        folder = await self._get_inspired_recommendations()
+        if folder is None:
+            return UniqueList()
+        return folder.items
+
+    @use_cache(60, base_class=RecommendationFolder, allow_expired_cache=True)
+    async def _get_inspired_recommendations(self) -> RecommendationFolder | None:
+        """
+        Build the 'Inspired by recently played' folder with its items.
+
+        Returns None when the row is disabled, the engine isn't ready or no
+        recent tracks intersect the index. A None result is still cached
+        (a negative hit), matching the previous behavior of caching the
+        empty result for the same TTL.
+        """
+        if not bool(self.config.get_value(CONF_ENABLE_DISCOVER_ROW)):
+            return None
 
         discover_engine = str(self.config.get_value(CONF_DISCOVER_ENGINE) or SIMILAR_ENGINE_18DIM)
         use_clap = discover_engine == SIMILAR_ENGINE_CLAP and self._clap_index is not None
         if not use_clap and (self.corpus_means is None or not self._signature_cache):
-            return []
+            return None
 
         try:
             recent = await self.mass.music.recently_played(
@@ -281,9 +326,9 @@ class SonicSimilarityPlugin(PluginProvider):
             )
         except Exception as err:
             self.logger.debug("recently_played failed: %s", err)
-            return []
+            return None
         if not recent:
-            return []
+            return None
 
         # Walk each recent mapping into a seed item_id our index has analysed.
         # The mapping is library-aggregated; we need the underlying streaming
@@ -305,7 +350,7 @@ class SonicSimilarityPlugin(PluginProvider):
                 seen_seeds.add(seed_id)
 
         if not seeds:
-            return []
+            return None
 
         preset = str(self.config.get_value(CONF_DISCOVER_PRESET) or "discover")
         # The slider is a 0-10 integer; the engine wants a 0.0-1.0 weight.
@@ -350,7 +395,7 @@ class SonicSimilarityPlugin(PluginProvider):
                 break
 
         if not candidate_order:
-            return []
+            return None
 
         async def _resolve(provider: str, item_id: str) -> Track | None:
             try:
@@ -359,20 +404,17 @@ class SonicSimilarityPlugin(PluginProvider):
                 return None
 
         resolved = await asyncio.gather(*[_resolve(p, i) for p, i in candidate_order])
-        items = [t for t in resolved if t is not None]
-        if not items:
-            return []
-
-        return [
-            RecommendationFolder(
-                item_id="inspired_by_recently_played",
-                provider=self.instance_id,
-                name="Inspired by recently played",
-                translation_key="inspired_by_recently_played",
-                icon="mdi-shimmer",
-                items=UniqueList(items),
-            ),
-        ]
+        items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList(
+            [t for t in resolved if t is not None]
+        )
+        return RecommendationFolder(
+            item_id="inspired_by_recently_played",
+            provider=self.instance_id,
+            name="Inspired by recently played",
+            translation_key="inspired_by_recently_played",
+            icon="mdi-shimmer",
+            items=items,
+        )
 
     async def search(
         self,
@@ -660,15 +702,23 @@ class SonicSimilarityPlugin(PluginProvider):
         self, ctx: _SearchContext, candidates: list[Candidate]
     ) -> list[Candidate]:
         """Apply genre/artist filters and metadata reranking when configured."""
-        if ctx.params.filter_genres or ctx.params.exclude_artists:
+        needs_filter = bool(ctx.params.filter_genres or ctx.params.exclude_artists)
+        needs_rerank = ctx.weights.get("genre", 0.0) > 0 or ctx.weights.get("era", 0.0) > 0
+        if not (needs_filter or needs_rerank):
+            return candidates
+        # Resolve each candidate's track once; filter and rerank share this map
+        # so a filtered call no longer resolves its survivors twice.
+        resolved = await self._resolve_candidate_track_map(candidates)
+        if needs_filter:
             candidates = await self._apply_metadata_filters(
                 candidates,
+                resolved,
                 filter_genres=ctx.params.filter_genres,
                 exclude_artists=ctx.params.exclude_artists,
             )
-        if ctx.weights.get("genre", 0.0) > 0 or ctx.weights.get("era", 0.0) > 0:
+        if needs_rerank:
             candidates = await self._apply_metadata_reranking(
-                ctx.valid_seed_ids, candidates, ctx.weights
+                ctx.valid_seed_ids, candidates, ctx.weights, resolved
             )
         return candidates
 
@@ -1121,38 +1171,50 @@ class SonicSimilarityPlugin(PluginProvider):
             return set()
         return {g.lower() for g in track.metadata.genres}
 
-    async def _resolve_candidate_tracks(
-        self, candidates: list[Candidate], log_context: str
-    ) -> list[tuple[Candidate, Track | None]]:
+    async def _resolve_candidate_track_map(
+        self, candidates: list[Candidate]
+    ) -> dict[tuple[str, str], Track]:
         """
-        Resolve every candidate's Track concurrently; None marks a lookup miss.
+        Resolve the library Track for each candidate, keyed by (item_id, provider).
 
-        Used by metadata-driven filters and rerank — bulk scoring, never
-        display. allow_update_metadata=False prevents this from queuing
-        ~50-250 background metadata-refresh tasks per /similar call.
+        Candidates with no library match are omitted; a missing key means
+        unresolved (no rerank bonus, and dropped when filtering).
+
+        :param candidates: The ANN candidates to resolve for metadata scoring.
         """
+        # Scoring reads only genres/artists/year, so resolve library items in one
+        # query per provider rather than a tracks.get() per candidate. Stay
+        # library-only: sonic_analysis also indexes streamed-but-not-added tracks,
+        # and resolving those via the provider would burst a rate-limited API for a
+        # soft ranking bonus, so non-library candidates are left unresolved.
+        # Dedupe (item_id, provider) and group item ids by provider for one query each.
+        ids_by_provider: dict[str, list[str]] = {}
+        seen: set[tuple[str, str]] = set()
+        for cand in candidates:
+            key = (cand.item_id, cand.provider)
+            if key in seen:
+                continue
+            seen.add(key)
+            ids_by_provider.setdefault(cand.provider, []).append(cand.item_id)
 
-        async def _one(cand: Candidate) -> tuple[Candidate, Track | None]:
-            try:
-                track = await self.mass.music.tracks.get(
-                    cand.item_id, cand.provider, allow_update_metadata=False
-                )
-            except MusicAssistantError as err:
-                self.logger.debug(
-                    "%s lookup failed for %s/%s: %s",
-                    log_context,
-                    cand.provider,
-                    cand.item_id,
-                    err,
-                )
-                return (cand, None)
-            return (cand, track)
+        resolved: dict[tuple[str, str], Track] = {}
+        for provider, item_ids in ids_by_provider.items():
+            library_tracks = await self.mass.music.tracks.get_library_items_by_prov_id(
+                provider_instance_id_or_domain=provider,
+                provider_item_ids=item_ids,
+                limit=len(item_ids),
+            )
+            for track in library_tracks:
+                for mapping in track.provider_mappings:
+                    if provider in (mapping.provider_instance, mapping.provider_domain):
+                        resolved[(mapping.item_id, provider)] = track
 
-        return list(await asyncio.gather(*(_one(c) for c in candidates)))
+        return resolved
 
     async def _apply_metadata_filters(
         self,
         results: list[Candidate],
+        resolved: dict[tuple[str, str], Track],
         filter_genres: list[str] | None = None,
         exclude_artists: list[str] | None = None,
     ) -> list[Candidate]:
@@ -1164,7 +1226,8 @@ class SonicSimilarityPlugin(PluginProvider):
         artist_set = {a.lower() for a in exclude_artists} if exclude_artists else None
 
         filtered: list[Candidate] = []
-        for cand, track in await self._resolve_candidate_tracks(results, "filter"):
+        for cand in results:
+            track = resolved.get((cand.item_id, cand.provider))
             if track is None:
                 continue
 
@@ -1185,6 +1248,7 @@ class SonicSimilarityPlugin(PluginProvider):
         seed_item_ids: list[str],
         results: list[Candidate],
         weights: dict[str, float],
+        resolved: dict[tuple[str, str], Track],
     ) -> list[Candidate]:
         """
         Apply genre and year bonuses to re-rank candidates.
@@ -1194,6 +1258,9 @@ class SonicSimilarityPlugin(PluginProvider):
             single-seed behavior; with N seeds the metadata bonus reflects
             the centroid of the seed set, matching how the audio-distance
             blend already works.
+        :param resolved: Bulk-resolved candidate library tracks keyed by
+            (item_id, provider); a missing key marks an unresolved candidate,
+            which receives no bonus.
         """
         seed_lookups = [self._resolve_seed_track(sid) for sid in seed_item_ids]
         seed_tracks = [t for t in await asyncio.gather(*seed_lookups) if t is not None]
@@ -1209,7 +1276,8 @@ class SonicSimilarityPlugin(PluginProvider):
         seed_year_avg = sum(seed_years) / len(seed_years) if seed_years else None
 
         scored: list[Candidate] = []
-        for cand, cand_track in await self._resolve_candidate_tracks(results, "rerank"):
+        for cand in results:
+            cand_track = resolved.get((cand.item_id, cand.provider))
             bonus = 0.0
             if cand_track is None:
                 scored.append(cand)

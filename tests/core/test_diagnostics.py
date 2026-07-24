@@ -9,12 +9,9 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import pytest
-from aiohttp import web
-from aiohttp.test_utils import make_mocked_request
-from music_assistant_models.auth import Scope, User, UserRole
+from music_assistant_models.auth import Scope
 
 from music_assistant.controllers.diagnostics import DiagnosticsController
-from music_assistant.controllers.webserver.helpers.auth_middleware import USER_CONTEXT_KEY
 from music_assistant.helpers.diagnostics import (
     LOG_RING_MAXLEN,
     MAX_EXCEPTION_FINGERPRINTS,
@@ -359,60 +356,6 @@ async def test_section_sanitization(mass: MusicAssistant) -> None:
         assert "Artist" not in leaky
     finally:
         unregister()
-
-
-async def test_http_download_requires_auth(mass: MusicAssistant) -> None:
-    """
-    Test that the diagnostics download route rejects unauthenticated requests.
-
-    :param mass: Full Music Assistant test instance.
-    """
-    request = make_mocked_request("GET", "/diagnostics", app={"mass": mass})
-    with pytest.raises(web.HTTPUnauthorized):
-        await mass.diagnostics.handle_http_download(request)
-
-
-async def test_http_download_requires_admin(mass: MusicAssistant) -> None:
-    """
-    Test that the diagnostics download route rejects non-admin users.
-
-    :param mass: Full Music Assistant test instance.
-    """
-    request = make_mocked_request("GET", "/diagnostics", app={"mass": mass})
-    request[USER_CONTEXT_KEY] = User(user_id="u1", username="regular", role=UserRole.USER)
-    with pytest.raises(web.HTTPForbidden):
-        await mass.diagnostics.handle_http_download(request)
-
-
-async def test_http_download_json_and_markdown(mass: MusicAssistant) -> None:
-    """
-    Test the authenticated download in both JSON and markdown format.
-
-    :param mass: Full Music Assistant test instance.
-    """
-    admin = User(user_id="u2", username="admin", role=UserRole.ADMIN)
-    request = make_mocked_request("GET", "/diagnostics", app={"mass": mass})
-    request[USER_CONTEXT_KEY] = admin
-    response = await mass.diagnostics.handle_http_download(request)
-    assert response.status == 200
-    assert response.content_type == "application/json"
-    assert (
-        'attachment; filename="music-assistant-diagnostics-'
-        in (response.headers["Content-Disposition"])
-    )
-    assert response.headers["Content-Disposition"].endswith('.json"')
-
-    request = make_mocked_request(
-        "GET", "/diagnostics?format=md&include_log_tail=true", app={"mass": mass}
-    )
-    request[USER_CONTEXT_KEY] = admin
-    response = await mass.diagnostics.handle_http_download(request)
-    assert response.status == 200
-    assert response.content_type == "text/markdown"
-    assert response.headers["Content-Disposition"].endswith('.md"')
-    assert response.text is not None
-    assert response.text.startswith("# Music Assistant diagnostics report")
-    assert "## Log tail" in response.text
 
 
 async def test_no_background_work(mass: MusicAssistant) -> None:

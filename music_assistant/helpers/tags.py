@@ -1282,7 +1282,7 @@ def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
 
     result: dict[str, Any] = {}
     try:
-        audio = mutagen.File(input_file)  # type: ignore[attr-defined]
+        audio = mutagen.File(input_file)
         if audio is None or not audio.tags:
             return result
 
@@ -1338,7 +1338,7 @@ def get_apev2_image(input_file: str) -> bytes | None:
     """
     import mutagen  # noqa: PLC0415
 
-    audio = mutagen.File(input_file)  # type: ignore[attr-defined]
+    audio = mutagen.File(input_file)
     if audio is None or not hasattr(audio, "tags") or audio.tags is None:
         return None
 
@@ -1424,11 +1424,11 @@ def _write_replaygain_track_gain_sync(path: str, track_gain_db: float) -> bool:
     # TXXX and UFID are ID3 frame classes pulled into mutagen.id3 via a dynamic
     # frames-table import that mypy's stubs do not follow, hence the attr-defined
     # ignores on the mutagen.id3 imports here and below.
-    from mutagen.id3 import ID3, TXXX  # type: ignore[attr-defined]  # noqa: PLC0415
+    from mutagen.id3 import ID3, TXXX  # noqa: PLC0415
     from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags  # noqa: PLC0415
 
     try:
-        audio = mutagen.File(path)  # type: ignore[attr-defined]
+        audio = mutagen.File(path)
     except Exception as err:
         LOGGER.debug("mutagen could not open %s: %s", path, err)
         return False
@@ -1511,7 +1511,7 @@ def _open_mutagen_for_write(path: str) -> Any | None:
     import mutagen  # noqa: PLC0415
 
     try:
-        audio = mutagen.File(path)  # type: ignore[attr-defined]
+        audio = mutagen.File(path)
     # Broad: mutagen.File can raise format-specific parse errors, struct errors,
     # and IOError variants whose hierarchy is not stable across mutagen versions.
     except Exception as err:
@@ -1571,7 +1571,7 @@ def _write_identifier_tags_sync(
 def _apply_mbid_tag(tags: Any, mbid: str) -> bool:
     from mutagen._vorbis import VCommentDict  # noqa: PLC0415
     from mutagen.apev2 import APEv2  # noqa: PLC0415
-    from mutagen.id3 import ID3, UFID  # type: ignore[attr-defined]  # noqa: PLC0415
+    from mutagen.id3 import ID3, UFID  # noqa: PLC0415
     from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags  # noqa: PLC0415
 
     try:
@@ -1605,7 +1605,7 @@ def _apply_mbid_tag(tags: Any, mbid: str) -> bool:
 def _apply_acoustid_tag(tags: Any, acoustid: str) -> bool:
     from mutagen._vorbis import VCommentDict  # noqa: PLC0415
     from mutagen.apev2 import APEv2  # noqa: PLC0415
-    from mutagen.id3 import ID3, TXXX  # type: ignore[attr-defined]  # noqa: PLC0415
+    from mutagen.id3 import ID3, TXXX  # noqa: PLC0415
     from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags  # noqa: PLC0415
 
     try:
@@ -1636,7 +1636,7 @@ def _apply_acoustid_tag(tags: Any, acoustid: str) -> bool:
 def _apply_isrc_tag(tags: Any, isrcs: list[str]) -> bool:
     from mutagen._vorbis import VCommentDict  # noqa: PLC0415
     from mutagen.apev2 import APEv2  # noqa: PLC0415
-    from mutagen.id3 import ID3, TSRC  # type: ignore[attr-defined]  # noqa: PLC0415
+    from mutagen.id3 import ID3, TSRC  # noqa: PLC0415
     from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags  # noqa: PLC0415
 
     try:
@@ -1664,7 +1664,7 @@ def _apply_isrc_tag(tags: Any, isrcs: list[str]) -> bool:
 def _apply_artist_mbid_tag(tags: Any, artist_mbids: list[str]) -> bool:
     from mutagen._vorbis import VCommentDict  # noqa: PLC0415
     from mutagen.apev2 import APEv2  # noqa: PLC0415
-    from mutagen.id3 import ID3, TXXX  # type: ignore[attr-defined]  # noqa: PLC0415
+    from mutagen.id3 import ID3, TXXX  # noqa: PLC0415
     from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags  # noqa: PLC0415
 
     try:

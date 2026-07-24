@@ -20,6 +20,7 @@ LOCALES = {
     "bg_BG": "Bulgarian",
     "cs_CZ": "Czech",
     "zh_CN": "Chinese",
+    "zh_TW": "Chinese (Traditional)",
     "hr_HR": "Croatian",
     "da_DK": "Danish",
     "de_DE": "German",
@@ -106,5 +107,8 @@ _IMAGE_ID_CACHE_TTL = 86400 * 365
 # Sizes accepted by the imageproxy. 0 means "no resize". The set is small enough
 # to bound PIL memory + thumbnail cache cardinality; expand if a real use case appears.
 _ALLOWED_IMAGEPROXY_SIZES = frozenset({0, 80, 160, 256, 512, 1024})
+
+# Human-readable form of the allowed sizes, used in error responses.
+_ALLOWED_IMAGEPROXY_SIZES_STR = ", ".join(str(size) for size in sorted(_ALLOWED_IMAGEPROXY_SIZES))
 
 _IMAGEPROXY_PATH_PREFIX = "/imageproxy/"

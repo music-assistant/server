@@ -46,7 +46,6 @@ from music_assistant.constants import (
     CONF_ENTRY_MIN_VOLUME,
     CONF_ENTRY_OUTPUT_CHANNELS,
     CONF_ENTRY_OUTPUT_CODEC,
-    CONF_ENTRY_OUTPUT_LIMITER,
     CONF_ENTRY_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
@@ -618,10 +617,6 @@ class PlayerConfigMixin:
         # some base entries for all player types
         # note that these may NOT be playback/audio related
         entries += [
-            # the output limiter is applied per-player in the output filter chain (DSP stage), so
-            # unlike the other playback settings (crossfade/volume normalization) which moved to the
-            # queue config, it stays a player setting
-            CONF_ENTRY_OUTPUT_LIMITER,
             CONF_ENTRY_TTS_PRE_ANNOUNCE,
             ConfigEntry(
                 key=CONF_PRE_ANNOUNCE_CHIME_URL,
@@ -735,7 +730,9 @@ class PlayerConfigMixin:
             ConfigValueOption(PLAYER_CONTROL_NONE),
         ]
         mute_options.append(ConfigValueOption(PLAYER_CONTROL_NONE))
-        if player.supports_feature(PlayerFeature.VOLUME_SET):
+        # fake mute drives the volume control, so offer it when the player has any
+        # usable volume path (native or via a linked protocol player)
+        if player.supports_feature(PlayerFeature.VOLUME_SET) or auto_option in volume_options:
             mute_options.append(ConfigValueOption(PLAYER_CONTROL_FAKE))
 
         # return final config entries for all options
