@@ -532,8 +532,8 @@ class ProviderConfigMixin:
         """
         Create, persist and load a new provider instance.
 
-        Shared creation tail used by both the (legacy) provider config save path and
-        the setup flow finish path. The created config is removed again when loading
+        Shared creation tail used by both the provider config save path and the
+        setup flow finish path. The created config is removed again when loading
         the provider with it fails.
 
         :param provider_domain: Domain of the provider to create an instance of.
