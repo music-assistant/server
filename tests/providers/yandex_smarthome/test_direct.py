@@ -51,6 +51,11 @@ def mock_mass() -> MagicMock:
     mass.webserver.register_dynamic_route = MagicMock(return_value=MagicMock())
     mass.players = []
     mass.http_session = MagicMock()
+    # No setup_data / raw values persisted on the mock config store, so get_setup_value
+    # exercises its legacy fallback and reads straight from the provided ProviderConfig
+    # (the "install configured before setup flows existed" path).
+    mass.config.get = MagicMock(return_value=None)
+    mass.config.get_raw_provider_config_value = MagicMock(return_value=None)
     return mass
 
 
@@ -778,7 +783,9 @@ def _make_direct_config(**overrides: Any) -> MagicMock:
     }
     defaults.update(overrides)
     config = MagicMock()
-    config.get_value = MagicMock(side_effect=lambda key: defaults.get(key, ""))
+    # accept the optional default arg too: get_setup_value's fallback reads via
+    # get_config_value(key, default), a two-argument call
+    config.get_value = MagicMock(side_effect=lambda key, *_: defaults.get(key, ""))
     return config
 
 

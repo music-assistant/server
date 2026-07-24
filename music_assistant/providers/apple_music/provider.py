@@ -26,6 +26,7 @@ from .constants import (
     CONF_MUSIC_APP_TOKEN,
     CONF_MUSIC_USER_MANUAL_TOKEN,
     CONF_MUSIC_USER_TOKEN,
+    MUSIC_APP_TOKEN,
     SUPPORTED_FEATURES,
 )
 from .helpers import browse_playlists
@@ -70,10 +71,13 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         """Handle async initialization of the provider."""
         self._music_user_token = cast(
             "str | None",
-            self.config.get_value(CONF_MUSIC_USER_MANUAL_TOKEN)
-            or self.config.get_value(CONF_MUSIC_USER_TOKEN),
+            self.get_setup_value(CONF_MUSIC_USER_MANUAL_TOKEN)
+            or self.get_setup_value(CONF_MUSIC_USER_TOKEN),
         )
-        self._music_app_token = cast("str | None", self.config.get_value(CONF_MUSIC_APP_TOKEN))
+        # prefer the live bundled developer token, falling back to a stored/manual one
+        self._music_app_token = MUSIC_APP_TOKEN or cast(
+            "str | None", self.get_setup_value(CONF_MUSIC_APP_TOKEN)
+        )
         self._storefront = await self.api_client.get_user_storefront()
         await self.streaming_manager.initialize()
 
