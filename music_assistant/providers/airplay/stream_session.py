@@ -680,7 +680,7 @@ class AirPlayStreamSession:
     async def _start_members(
         self,
         position_ms: int,
-        start_unix_ms: int | None = None,
+        start_unix_ms: int,
         *,
         reanchor_session: bool = True,
     ) -> None:
@@ -688,12 +688,9 @@ class AirPlayStreamSession:
         Anchor every member's playback at one shared audible instant.
 
         :param position_ms: Media position mapped to the first sample of the anchor.
-        :param start_unix_ms: Shared audible-start instant in unix epoch ms; when
-            None it is derived from now plus the session setup lead.
+        :param start_unix_ms: Shared audible-start instant in unix epoch ms.
         :param reanchor_session: Whether this start becomes the session timeline anchor.
         """
-        if start_unix_ms is None:
-            start_unix_ms = int(time.time() * 1000) + int(self.wait_start * 1000)
         async with asyncio.TaskGroup() as task_group:
             for player in self.sync_clients:
                 stream = player.stream
