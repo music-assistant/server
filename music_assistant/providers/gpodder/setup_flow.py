@@ -100,6 +100,7 @@ async def _run_gpodder(session: SetupSession) -> None:
                     type=ConfigEntryType.BOOLEAN,
                     required=False,
                     default_value=True,
+                    value=prefill.get(CONF_VERIFY_SSL),
                 ),
             ],
             step_id="gpodder",
@@ -138,6 +139,7 @@ async def _run_nextcloud(session: SetupSession) -> None:
                     type=ConfigEntryType.BOOLEAN,
                     required=False,
                     default_value=True,
+                    value=prefill.get(CONF_VERIFY_SSL),
                 ),
             ],
             step_id="nextcloud",
@@ -190,12 +192,12 @@ async def _run_nextcloud(session: SetupSession) -> None:
 
 async def _nc_start(session: ClientSession, url_nc: str, verify_ssl: bool) -> tuple[str, str, str]:
     """Start the Nextcloud Login Flow v2, returning (login_url, poll_endpoint, poll_token)."""
-    response = await session.post(
+    async with session.post(
         url_nc.rstrip("/") + "/index.php/login/v2",
         headers={"User-Agent": "Music Assistant"},
         ssl=verify_ssl,
-    )
-    data = await response.json()
+    ) as response:
+        data = await response.json()
     return data["login"], data["poll"]["endpoint"], data["poll"]["token"]
 
 
@@ -204,10 +206,12 @@ async def _nc_poll(
 ) -> str:
     """Poll the Nextcloud login endpoint until the user approves, returning the app password."""
     while True:
-        response = await session.post(poll_endpoint, data={"token": poll_token}, ssl=verify_ssl)
-        if response.status not in (200, 404):
-            raise LoginFailed("The specified url seems not to belong to a nextcloud instance.")
-        if response.status == 200:
-            data = await response.json()
-            return str(data["appPassword"])
+        async with session.post(
+            poll_endpoint, data={"token": poll_token}, ssl=verify_ssl
+        ) as response:
+            if response.status not in (200, 404):
+                raise LoginFailed("The specified url seems not to belong to a nextcloud instance.")
+            if response.status == 200:
+                data = await response.json()
+                return str(data["appPassword"])
         await asyncio.sleep(1)
