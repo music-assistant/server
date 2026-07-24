@@ -6,6 +6,7 @@ import asyncio
 import time
 from collections.abc import Callable
 from contextlib import suppress
+from copy import deepcopy
 from io import BytesIO
 from typing import TYPE_CHECKING, ClassVar, cast
 
@@ -70,7 +71,10 @@ from music_assistant_models.media_items import Album, Artist, is_track
 from music_assistant_models.player import DeviceInfo
 from PIL import Image
 
-from music_assistant.constants import HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES
+from music_assistant.constants import (
+    CONF_ENTRY_OUTPUT_CHANNELS,
+    HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES,
+)
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player, PlayerMedia
@@ -104,6 +108,7 @@ from .constants import (
     DEFAULT_SENDSPIN_STATIC_DELAY,
 )
 from .helpers import (
+    OUTPUT_CHANNELS_MULTICHANNEL,
     AlertText,
     SecurityActionError,
     action_entry,
@@ -1826,6 +1831,33 @@ class SendspinPlayer(SendspinBasePlayer):
             if self._beat_retry_queue_item_id == queue_item_id:
                 self._beat_retry_queue_item_id = None
 
+    def _multichannel_config_entries(self) -> list[ConfigEntry]:
+        """
+        Return an output-channel entry extended with a multichannel option.
+
+        Overrides MA's default output-channel entry (same key) to add one option,
+        but only when the client's hello advertises a layout with more than two
+        channels — stereo-only devices keep the default four options. The default
+        stays "stereo", so nothing changes until the user selects multichannel.
+        """
+        info = self.api.info_or_none
+        support = info.player_support if info is not None else None
+        formats = support.supported_formats if support is not None else None
+        if not formats or not any(fmt.channels > 2 for fmt in formats):
+            return []
+        max_channels = max(fmt.channels for fmt in formats)
+        # Derived from the default entry so type, default, category and reload
+        # behaviour stay in step with it; only the extra option is ours.
+        entry = deepcopy(CONF_ENTRY_OUTPUT_CHANNELS)
+        entry.options = [
+            *(entry.options or []),
+            ConfigValueOption(
+                OUTPUT_CHANNELS_MULTICHANNEL,
+                title=f"Multichannel ({max_channels} channels)",
+            ),
+        ]
+        return [entry]
+
     async def get_config_entries(
         self,
         action: str | None = None,
@@ -1847,6 +1879,8 @@ class SendspinPlayer(SendspinBasePlayer):
         entries.extend(await super().get_config_entries(action, values))
         # Build dynamic format options from player's supported formats
         player_role = self._player_role
+        entries.extend(self._multichannel_config_entries())
+
         if player_role is not None:
             supported_formats = player_role.get_supported_formats()
             if supported_formats:

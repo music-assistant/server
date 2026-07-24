@@ -18,6 +18,7 @@ from aiosendspin.models.types import AudioCodec, PlayerCommand
 from music_assistant_models.enums import IdentifierType
 from music_assistant_models.player import DeviceInfo
 
+from music_assistant.constants import CONF_OUTPUT_CHANNELS
 from music_assistant.models.player import Player
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
 from music_assistant.providers.sendspin.bridge_role import (
@@ -28,6 +29,7 @@ from music_assistant.providers.sendspin.bridge_role import (
     BridgePlayerRole,
 )
 from music_assistant.providers.sendspin.helpers import (
+    OUTPUT_CHANNELS_MULTICHANNEL,
     bridge_client_id_from_uuid,
     resolve_channel_count,
 )
@@ -168,9 +170,29 @@ class SendspinLocalAudioBridge:
         # pa_cvolume_set in PAVolumeController calls — a mismatch against the
         # sink's real channel_map can leave the displayed reference_volume
         # updated while soft_volume (real gain) doesn't change.
-        self.pa_channels: int = resolve_channel_count(
+        # What the device can do, clamped by the same rule the session format
+        # uses so the two can never disagree.
+        self.device_channels: int = resolve_channel_count(
             device_info.get("max_output_channels", BRIDGE_CHANNELS)
         )
+        # What this bridge actually runs at. Multichannel is opt-in and off by
+        # default, so nothing changes on upgrade. The toggle lives on the protocol
+        # (Sendspin) player, which is where the device's advertised capability is
+
+        # visible. The client id is derived here rather than reused from start():
+        # this read runs during construction, before start() assigns _device_uuid.
+        _config_client_id = bridge_client_id_from_uuid(
+            get_device_uuid(self.device_name, device_info.get("hostapi", 0))
+        )
+        self.pa_channels: int = (
+            self.device_channels
+            if self.mass.config.get_raw_player_config_value(
+                _config_client_id, CONF_OUTPUT_CHANNELS, "stereo"
+            )
+            == OUTPUT_CHANNELS_MULTICHANNEL
+            else BRIDGE_CHANNELS
+        )
+
         # The device's real physical channel order, as reported by the ALSA
         # driver (pa_simple query_alsa_chmap(), via enumerate_alsa_devices()),
         # and the resulting remap index against MA's standard PCM output order,
@@ -293,13 +315,20 @@ class SendspinLocalAudioBridge:
 
         # On Linux advertise the sink's native format so MA transcodes correctly.
         _depths = sorted({self.bit_depth, BRIDGE_BIT_DEPTH}, reverse=True)
+        # Advertise stereo plus the device's native layout when it has one, so the
+        # player's preferred-format setting offers a real multichannel choice for
+        # capable devices and a single stereo option for everything else.
+        _channel_counts = [BRIDGE_CHANNELS]
+        if self.device_channels > BRIDGE_CHANNELS:
+            _channel_counts.append(self.device_channels)
         supported_formats = [
             SupportedAudioFormat(
                 codec=AudioCodec.PCM,
-                channels=self.pa_channels,
+                channels=c,
                 sample_rate=self.sample_rate,
                 bit_depth=d,
             )
+            for c in _channel_counts
             for d in _depths
         ]
 

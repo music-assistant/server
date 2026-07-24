@@ -130,6 +130,12 @@ def effective_unpaired_access(
     return info is not None and info.unpaired_access.enabled
 
 
+# Extra option value for MA's per-player output-channel setting, offered only to
+# clients whose hello advertises a layout with more than two channels. Selecting
+# it sends audio at the device's native channel count instead of stereo.
+OUTPUT_CHANNELS_MULTICHANNEL = "multichannel"
+
+
 def resolve_channel_count(advertised: int) -> int:
     """
     Resolve an advertised channel count to one this pipeline can carry.
