@@ -310,17 +310,13 @@ class SendspinAirPlayBridge:
         """
         Return whether the current AirPlayStream can absorb a new stream as a generation.
 
-        A kept stream must still be running, already connected, and on an
-        AirPlay 2 route -- RAOP and a not-yet-connected AirPlay 2 stream have
-        no persistent-generation support, so those always pay a cold restart.
+        A kept stream must still be running, already connected, and have a
+        committed generation. Every streaming route supports persistent
+        generations.
         """
         stream = self._airplay_stream
         return (
-            stream is not None
-            and stream.running
-            and stream.connected
-            and self._generation_started
-            and stream.active_route.startswith("AirPlay 2")
+            stream is not None and stream.running and stream.connected and self._generation_started
         )
 
     def _on_stream_start(self, request: ExternalStreamStartRequest) -> None:
@@ -378,7 +374,7 @@ class SendspinAirPlayBridge:
         self._drop_until_us = 0
         self._start_aligned = False
         self._start_unix_ms = 0
-        self._generation_started = False
+        self._generation_started = keep_stream
 
     def _on_bridge_stream_start(self) -> None:
         """
@@ -415,7 +411,7 @@ class SendspinAirPlayBridge:
         self._drop_until_us = 0
         self._start_aligned = False
         self._start_unix_ms = 0
-        self._generation_started = False
+        self._generation_started = keep_stream
         # Drain stale audio data from the previous stream
         while not self._write_queue.empty():
             self._write_queue.get_nowait()
@@ -463,9 +459,9 @@ class SendspinAirPlayBridge:
             # Publish the audible anchor so the writer can pace against it.
             self._start_unix_ms = start_unix_ms
 
-            # A kept, still-connected AirPlay 2 stream (see _stream_is_warm_eligible,
-            # checked by the stream-start callbacks) absorbs the new media as a warm
-            # generation instead of paying a cold reconnect.
+            # A kept, still-connected stream (see _stream_is_warm_eligible,
+            # checked by the stream-start callbacks) absorbs the new media as a
+            # warm generation instead of paying a cold reconnect.
             kept_stream = self._airplay_stream
             if kept_stream is not None:
                 if await self._start_warm_generation(kept_stream, start_unix_ms):

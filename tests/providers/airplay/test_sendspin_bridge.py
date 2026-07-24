@@ -10,8 +10,8 @@ tests are deterministic and independent of the host wall-clock:
   fresh track keeps position 0 and a late joiner lands at the group's live position;
 * the write pacing that keeps the device buffered a bounded amount ahead of real
   time so a late-join catch-up backlog is not dumped into the CLI;
-* the warm handover: a running, connected AirPlay 2 stream is kept (not torn down)
-  across a new Sendspin stream, and stages/commits a new generation on itself
+* the warm handover: a running, connected stream is kept (not torn down) across
+  a new Sendspin stream, and stages/commits a new generation on itself
   instead of a cold reconnect -- with prime-timeout and superseded-task fallback.
 """
 
@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from aiosendspin.clock import ManualClock
 from aiosendspin.server.roles import AudioChunk
 
+from music_assistant.providers.airplay.constants import StreamingProtocol
 from music_assistant.providers.airplay.sendspin_bridge import (
     MAX_DEVICE_BUFFER_SECONDS,
     SendspinAirPlayBridge,
@@ -153,7 +154,11 @@ def test_anchor_already_in_the_past_maps_to_a_past_unix_instant() -> None:
 # --- Start anchor: fresh keeps position 0, late join lands at live position ---
 
 
-def _make_bridge(clock_now_us: int, wait_start_ms: int = AP2_LEAD_MS) -> SendspinAirPlayBridge:
+def _make_bridge(
+    clock_now_us: int,
+    wait_start_ms: int = AP2_LEAD_MS,
+    protocol: StreamingProtocol = StreamingProtocol.AIRPLAY2,
+) -> SendspinAirPlayBridge:
     """Build a bridge with mocked provider/player/server and a ManualClock."""
     provider = MagicMock()
     provider.mass = MagicMock()
@@ -161,6 +166,7 @@ def _make_bridge(clock_now_us: int, wait_start_ms: int = AP2_LEAD_MS) -> Sendspi
     airplay_player.player_id = "apc43875e9e53a"
     airplay_player.display_name = "Test Player"
     airplay_player.wait_start = wait_start_ms
+    airplay_player.protocol = protocol
     sendspin_server = MagicMock()
     sendspin_server.clock = ManualClock(now_us_value=clock_now_us)
     bridge = SendspinAirPlayBridge(provider, airplay_player, sendspin_server)
@@ -312,14 +318,11 @@ async def test_cold_start_connects_then_prepares_and_starts_generation_zero() ->
 # --- Warm handover: a kept stream survives a new stream start and absorbs a generation ---
 
 
-def _make_kept_stream(
-    *, route: str = "AirPlay 2 (realtime, PTP)", running: bool = True, connected: bool = True
-) -> MagicMock:
-    """Build a mock AirPlayStream reporting the given running/connected/route state."""
+def _make_kept_stream(*, running: bool = True, connected: bool = True) -> MagicMock:
+    """Build a mock AirPlayStream reporting the given running/connected state."""
     stream = MagicMock()
     stream.running = running
     stream.connected = connected
-    stream.active_route = route
     return stream
 
 
@@ -335,21 +338,44 @@ def test_on_bridge_stream_start_keeps_warm_eligible_stream() -> None:
 
     assert bridge._airplay_stream is kept_stream
     assert bridge.airplay_player.stream is kept_stream
+    assert bridge._stream_is_warm_eligible()
 
 
-def test_on_bridge_stream_start_replaces_non_eligible_stream() -> None:
-    """A RAOP stream is cleared on a new Sendspin stream start so a fresh one is built."""
-    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
-    old_stream = _make_kept_stream(route="RAOP")
+def test_on_bridge_stream_start_keeps_raop_stream() -> None:
+    """A committed legacy RAOP stream is eligible for warm Sendspin generations."""
+    bridge = _make_bridge(
+        clock_now_us=SENDSPIN_EPOCH_US,
+        wait_start_ms=RAOP_LEAD_MS,
+        protocol=StreamingProtocol.RAOP,
+    )
+    old_stream = _make_kept_stream()
     bridge._airplay_stream = old_stream
     bridge.airplay_player.stream = old_stream
+    bridge._generation_started = True
 
     bridge._on_bridge_stream_start()
 
-    assert bridge._airplay_stream is None
-    # mypy narrows this attribute to MagicMock from the assignment above and doesn't
-    # know _on_bridge_stream_start() resets it, so it (wrongly) considers this unreachable.
-    assert bridge.airplay_player.stream is None  # type: ignore[unreachable]
+    assert bridge._airplay_stream is old_stream
+    assert bridge.airplay_player.stream is old_stream
+
+
+def test_sendspin_callbacks_keep_raop_stream_until_warm_handover() -> None:
+    """Both Sendspin start callbacks preserve a reusable legacy RAOP session."""
+    bridge = _make_bridge(
+        clock_now_us=SENDSPIN_EPOCH_US,
+        wait_start_ms=RAOP_LEAD_MS,
+        protocol=StreamingProtocol.RAOP,
+    )
+    kept_stream = _make_kept_stream()
+    bridge._airplay_stream = kept_stream
+    bridge.airplay_player.stream = kept_stream
+    bridge._generation_started = True
+
+    bridge._on_stream_start(MagicMock())
+    bridge._on_bridge_stream_start()
+
+    assert bridge._airplay_stream is kept_stream
+    assert bridge.airplay_player.stream is kept_stream
 
 
 def test_on_bridge_stream_start_replaces_uncommitted_stream() -> None:

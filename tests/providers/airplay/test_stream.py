@@ -117,8 +117,10 @@ async def test_cli_args_default_auto() -> None:
     # networking
     assert _arg_value(args, "--if") == "192.168.1.5"
     assert _arg_value(args, "--publish-ip") == "192.168.1.99"
-    # positional args: device address + stdin
-    assert args[-2:] == ["192.168.1.50", "-"]
+    # the target is the only positional argument; PREPARE selects stdin
+    assert args[-1] == "192.168.1.50"
+    assert "-" not in args
+    assert "--cmdpipe" in args
 
 
 @pytest.mark.asyncio
@@ -202,7 +204,7 @@ async def test_cli_args_hires_pcm_format() -> None:
 
 @pytest.mark.asyncio
 async def test_cli_args_raop_only_device() -> None:
-    """A device without an _airplay._tcp service targets the RAOP service, no --txt."""
+    """True legacy RAOP uses the command pipe and has no positional audio source."""
     player = _make_player()
     player.airplay_discovery_info = None
     player.protocol = StreamingProtocol.RAOP
@@ -213,6 +215,9 @@ async def test_cli_args_raop_only_device() -> None:
     assert "--txt" not in args
     assert "--name" not in args
     assert "--encrypt" in args
+    assert "--cmdpipe" in args
+    assert args[-1] == "192.168.1.50"
+    assert "-" not in args
 
 
 @pytest.mark.asyncio

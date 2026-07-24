@@ -124,8 +124,8 @@ class AirPlayStreamSession:
         Return whether this live session can absorb a new play_media warm.
 
         A warm replacement needs the same member set, the same session PCM
-        format and running AirPlay 2 streams on every member; anything else
-        takes the cold path.
+        format and a connected stream on every member; anything else takes the
+        cold path.
         """
         if {p.player_id for p in sync_clients} != {p.player_id for p in self.sync_clients}:
             return False
@@ -135,7 +135,7 @@ class AirPlayStreamSession:
         ):
             return False
         return all(
-            p.stream is not None and p.stream.running and p.protocol == StreamingProtocol.AIRPLAY2
+            p.stream is not None and p.stream.running and p.stream.connected
             for p in self.sync_clients
         )
 

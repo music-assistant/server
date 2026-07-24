@@ -259,9 +259,9 @@ class AirPlayStream:
         """
         Stage a media generation on the connected binary.
 
-        The binary opens the given FIFO and prefills from it while the current
-        generation keeps playing; `primed` is reported once enough audio is
-        buffered for an underrun-free start.
+        The binary opens the given audio source and prefills from it while the
+        current generation keeps playing; `primed` is reported once enough
+        audio is buffered for an underrun-free start.
         """
         if not self.running or not self.connected:
             raise RuntimeError("Cannot prepare a generation without a connected cliairplay process")
@@ -571,8 +571,9 @@ class AirPlayStream:
         elif self.prov.logger.isEnabledFor(logging.DEBUG):
             args += ["--debug", "5"]
 
-        # Positional args: device address + stdin for audio
-        args += [self.player.address, "-"]
+        # Audio is supplied only by command-pipe PREPARE. Keep process stdin
+        # connected because AUDIO=- selects it for generation 0.
+        args.append(self.player.address)
         return args
 
     async def _stdout_reader(self) -> None:
