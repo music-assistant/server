@@ -449,11 +449,18 @@ async def test_standby_returns_false_when_command_is_not_delivered() -> None:
     dropped_player = MagicMock(player_id="dropped", protocol=StreamingProtocol.RAOP)
     dropped_player.stream = MagicMock(running=True, connected=True)
     dropped_player.stream.send_cli_command = AsyncMock(return_value=False)
-    session.sync_clients = [delivered_player, dropped_player]
+    pending_player = MagicMock(player_id="pending", protocol=StreamingProtocol.AIRPLAY2)
+    pending_player.stream = MagicMock(running=True, connected=True)
+    pending_player.stream.send_cli_command = AsyncMock(return_value=True)
+    session.sync_clients = [delivered_player, dropped_player, pending_player]
 
     assert await session.standby() is False
+    delivered_player.stream.send_cli_command.assert_awaited_once_with("ACTION=STANDBY")
     delivered_player.set_state_from_stream.assert_called_once()
+    dropped_player.stream.send_cli_command.assert_awaited_once_with("ACTION=STANDBY")
     dropped_player.set_state_from_stream.assert_not_called()
+    pending_player.stream.send_cli_command.assert_not_awaited()
+    pending_player.set_state_from_stream.assert_not_called()
     logger.warning.assert_called_once()
 
 

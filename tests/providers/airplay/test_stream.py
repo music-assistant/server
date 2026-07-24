@@ -346,6 +346,30 @@ async def test_command_pipe_write_returns_false_without_reader(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
+async def test_command_pipe_write_returns_true_for_complete_write() -> None:
+    """A complete command pipe write reports successful delivery."""
+    data = b"ACTION=STANDBY\n"
+    writer = AsyncNamedPipeWriter("/tmp/commands")  # noqa: S108
+    writer._write_fd = 42
+
+    with patch("music_assistant.helpers.named_pipe.os.write", return_value=len(data)) as write:
+        assert await writer.write(data) is True
+
+    write.assert_called_once_with(42, data)
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_write_returns_false_for_short_write() -> None:
+    """An incomplete command pipe write reports failed delivery."""
+    data = b"ACTION=STANDBY\n"
+    writer = AsyncNamedPipeWriter("/tmp/commands")  # noqa: S108
+    writer._write_fd = 42
+
+    with patch("music_assistant.helpers.named_pipe.os.write", return_value=len(data) - 1):
+        assert await writer.write(data) is False
+
+
+@pytest.mark.asyncio
 async def test_command_pipe_write_returns_false_and_resets_fd_on_epipe() -> None:
     """A closed command pipe reader resets the writer for a later retry."""
     writer = AsyncNamedPipeWriter("/tmp/commands")  # noqa: S108
@@ -362,6 +386,22 @@ async def test_command_pipe_write_returns_false_and_resets_fd_on_epipe() -> None
 
     close_fd.assert_called_once_with(42)
     assert writer._write_fd is None
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_write_propagates_non_epipe_errors() -> None:
+    """An unexpected command pipe write error remains visible to the caller."""
+    writer = AsyncNamedPipeWriter("/tmp/commands")  # noqa: S108
+    writer._write_fd = 42
+
+    with (
+        patch(
+            "music_assistant.helpers.named_pipe.os.write",
+            side_effect=OSError(errno.EBADF, "bad file descriptor"),
+        ),
+        pytest.raises(OSError, match="bad file descriptor"),
+    ):
+        await writer.write(b"ACTION=STANDBY\n")
 
 
 @pytest.mark.asyncio

@@ -60,7 +60,16 @@ class AsyncNamedPipeWriter:
                 return False
             try:
                 assert self._write_fd is not None
-                os.write(self._write_fd, data)
+                bytes_written = os.write(self._write_fd, data)
+                if bytes_written != len(data):
+                    _LOGGER.debug(
+                        "Named pipe write incomplete on %s (owner=%s, %d of %d bytes written)",
+                        self._pipe_path,
+                        self._log_owner,
+                        bytes_written,
+                        len(data),
+                    )
+                    return False
                 return True
             except OSError as e:
                 if e.errno == errno_module.EPIPE:
