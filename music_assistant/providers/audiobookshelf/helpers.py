@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from aioaudiobookshelf.schema.media_progress import MediaProgress
 
     from . import Audiobookshelf
-    from .mixins.mixin_base import MixinBase
+    from .mixins.mixin_base import AbsMixinBase
 
 
 R = TypeVar("R")
@@ -31,7 +31,7 @@ def handle_refresh_token(
 
     @functools.wraps(method)
     async def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-        _class = cast("Audiobookshelf | MixinBase", args[0])
+        _class = cast("Audiobookshelf | AbsMixinBase", args[0])
         try:
             return await method(*args, **kwargs)
         except RefreshTokenExpiredError:

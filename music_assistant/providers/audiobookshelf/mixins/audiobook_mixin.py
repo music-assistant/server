@@ -10,7 +10,7 @@ from music_assistant_models.enums import MediaType
 
 from music_assistant.providers.audiobookshelf.constants import CONF_URL
 from music_assistant.providers.audiobookshelf.helpers import NarratorHelper, handle_refresh_token
-from music_assistant.providers.audiobookshelf.mixins.mixin_base import MixinBase
+from music_assistant.providers.audiobookshelf.mixins.mixin_base import AbsMixinBase
 from music_assistant.providers.audiobookshelf.parsers import parse_audiobook
 
 if TYPE_CHECKING:
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import Audiobook
 
 
-class AudiobooksMixin(MixinBase):
+class AbsAudiobooksMixin(AbsMixinBase):
     """Audiobooks handling for Audiobookshelf."""
 
     if TYPE_CHECKING:

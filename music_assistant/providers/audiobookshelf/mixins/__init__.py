@@ -1,21 +1,21 @@
 """Mixins for Audiobookshelf."""
 
-from .artist_mixin import ArtistsMixin
-from .audiobook_mixin import AudiobooksMixin
-from .browse_mixin import BrowseMixin
-from .playlist_mixin import PlaylistMixin
-from .podcast_mixin import PodcastsMixin
-from .recommendations_mixin import RecommendationsMixin
-from .socket_mixin import SocketMixin
-from .streams_mixin import StreamsMixin
+from .artist_mixin import AbsArtistsMixin
+from .audiobook_mixin import AbsAudiobooksMixin
+from .browse_mixin import AbsBrowseMixin
+from .playlist_mixin import AbsPlaylistMixin
+from .podcast_mixin import AbsPodcastsMixin
+from .recommendations_mixin import AbsRecommendationsMixin
+from .socket_mixin import AbsSocketMixin
+from .streams_mixin import AbsStreamsMixin
 
 __all__ = [
-    "ArtistsMixin",
-    "AudiobooksMixin",
-    "BrowseMixin",
-    "PlaylistMixin",
-    "PodcastsMixin",
-    "RecommendationsMixin",
-    "SocketMixin",
-    "StreamsMixin",
+    "AbsArtistsMixin",
+    "AbsAudiobooksMixin",
+    "AbsBrowseMixin",
+    "AbsPlaylistMixin",
+    "AbsPodcastsMixin",
+    "AbsRecommendationsMixin",
+    "AbsSocketMixin",
+    "AbsStreamsMixin",
 ]

@@ -16,7 +16,7 @@ from music_assistant.providers.audiobookshelf.constants import (
     CONF_URL,
 )
 from music_assistant.providers.audiobookshelf.helpers import handle_refresh_token
-from music_assistant.providers.audiobookshelf.mixins.mixin_base import MixinBase
+from music_assistant.providers.audiobookshelf.mixins.mixin_base import AbsMixinBase
 from music_assistant.providers.audiobookshelf.parsers import (
     parse_podcast,
     parse_podcast_episode,
@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import Podcast, PodcastEpisode
 
 
-class PodcastsMixin(MixinBase):
+class AbsPodcastsMixin(AbsMixinBase):
     """PodcastMixin for Audiobookshelf."""
 
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:

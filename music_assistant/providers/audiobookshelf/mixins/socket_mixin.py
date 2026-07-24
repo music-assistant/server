@@ -19,7 +19,7 @@ from music_assistant.providers.audiobookshelf.constants import (
     CONF_URL,
 )
 from music_assistant.providers.audiobookshelf.helpers import NarratorHelper
-from music_assistant.providers.audiobookshelf.mixins.mixin_base import MixinBase
+from music_assistant.providers.audiobookshelf.mixins.mixin_base import AbsMixinBase
 from music_assistant.providers.audiobookshelf.parsers import (
     parse_audiobook,
     parse_playlist,
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     from aioaudiobookshelf.schema.playlist import PlaylistExpanded as AbsPlaylistExpanded
 
 
-class SocketMixin(MixinBase):
+class AbsSocketMixin(AbsMixinBase):
     """Event-based mixin for Audiobookshelf."""
 
     if TYPE_CHECKING:

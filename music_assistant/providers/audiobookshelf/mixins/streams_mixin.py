@@ -35,10 +35,10 @@ from music_assistant.constants import PLAYBACK_REPORT_INTERVAL_SECONDS
 from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.providers.audiobookshelf.constants import CONF_URL
 from music_assistant.providers.audiobookshelf.helpers import SessionHelper, handle_refresh_token
-from music_assistant.providers.audiobookshelf.mixins.mixin_base import MixinBase
+from music_assistant.providers.audiobookshelf.mixins.mixin_base import AbsMixinBase
 
 
-class StreamsMixin(MixinBase):
+class AbsStreamsMixin(AbsMixinBase):
     """StreamsMixin for Audiobookshelf."""
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:

@@ -13,7 +13,7 @@ from music_assistant_models.enums import MediaType
 
 from music_assistant.providers.audiobookshelf.constants import CONF_URL
 from music_assistant.providers.audiobookshelf.helpers import NarratorHelper, handle_refresh_token
-from music_assistant.providers.audiobookshelf.mixins.mixin_base import MixinBase
+from music_assistant.providers.audiobookshelf.mixins.mixin_base import AbsMixinBase
 from music_assistant.providers.audiobookshelf.parsers import (
     parse_author,
     parse_narrator,
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     )
 
 
-class ArtistsMixin(MixinBase):
+class AbsArtistsMixin(AbsMixinBase):
     """ArtistsMixin for Audiobookshelf."""
 
     if TYPE_CHECKING:

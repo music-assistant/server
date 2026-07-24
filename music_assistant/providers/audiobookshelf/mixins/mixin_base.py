@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     )
 
 
-class MixinBase:
+class AbsMixinBase:
     """MixinBase."""
 
     if TYPE_CHECKING:

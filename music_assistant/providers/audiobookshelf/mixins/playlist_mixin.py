@@ -26,7 +26,7 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant.constants import PlaylistPlayableItem
 from music_assistant.providers.audiobookshelf.constants import CONF_URL
 from music_assistant.providers.audiobookshelf.helpers import NarratorHelper, handle_refresh_token
-from music_assistant.providers.audiobookshelf.mixins.mixin_base import MixinBase
+from music_assistant.providers.audiobookshelf.mixins.mixin_base import AbsMixinBase
 from music_assistant.providers.audiobookshelf.parsers import (
     parse_audiobook,
     parse_playlist,
@@ -43,7 +43,7 @@ if TYPE_CHECKING:
     )
 
 
-class PlaylistMixin(MixinBase):
+class AbsPlaylistMixin(AbsMixinBase):
     """PlaylistMixin for Audiobookshelf."""
 
     if TYPE_CHECKING:

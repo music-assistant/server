@@ -37,11 +37,11 @@ from music_assistant.providers.audiobookshelf.constants import (
     AbsBrowsePaths,
 )
 from music_assistant.providers.audiobookshelf.helpers import handle_refresh_token
-from music_assistant.providers.audiobookshelf.mixins.mixin_base import MixinBase
+from music_assistant.providers.audiobookshelf.mixins.mixin_base import AbsMixinBase
 from music_assistant.providers.audiobookshelf.parsers import parse_podcast_episode
 
 
-class RecommendationsMixin(MixinBase):
+class AbsRecommendationsMixin(AbsMixinBase):
     """RecommendationsMixin for Audiobookshelf."""
 
     if TYPE_CHECKING:

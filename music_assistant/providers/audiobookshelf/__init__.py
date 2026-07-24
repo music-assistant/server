@@ -33,14 +33,14 @@ from music_assistant.constants import PLAYBACK_REPORT_INTERVAL_SECONDS
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 from music_assistant.providers.audiobookshelf.mixins import (
-    ArtistsMixin,
-    AudiobooksMixin,
-    BrowseMixin,
-    PlaylistMixin,
-    PodcastsMixin,
-    RecommendationsMixin,
-    SocketMixin,
-    StreamsMixin,
+    AbsArtistsMixin,
+    AbsAudiobooksMixin,
+    AbsBrowseMixin,
+    AbsPlaylistMixin,
+    AbsPodcastsMixin,
+    AbsRecommendationsMixin,
+    AbsSocketMixin,
+    AbsStreamsMixin,
 )
 
 from .constants import (
@@ -155,14 +155,14 @@ async def get_config_entries(
 # BaseMixin class overrides domain & instance_id only when type checking.
 # Overriding @final is not allowed, and handled as misc error in mypy.
 class Audiobookshelf(  # type: ignore[misc]
-    ArtistsMixin,
-    AudiobooksMixin,
-    BrowseMixin,
-    PlaylistMixin,
-    PodcastsMixin,
-    RecommendationsMixin,
-    SocketMixin,
-    StreamsMixin,
+    AbsArtistsMixin,
+    AbsAudiobooksMixin,
+    AbsBrowseMixin,
+    AbsPlaylistMixin,
+    AbsPodcastsMixin,
+    AbsRecommendationsMixin,
+    AbsSocketMixin,
+    AbsStreamsMixin,
     RecommendationPayloadMixin,
     MusicProvider,
 ):

@@ -25,10 +25,10 @@ from music_assistant.providers.audiobookshelf.constants import (
     AbsBrowsePaths,
 )
 from music_assistant.providers.audiobookshelf.helpers import handle_refresh_token
-from music_assistant.providers.audiobookshelf.mixins.mixin_base import MixinBase
+from music_assistant.providers.audiobookshelf.mixins.mixin_base import AbsMixinBase
 
 
-class BrowseMixin(MixinBase):
+class AbsBrowseMixin(AbsMixinBase):
     """Browse Mixin for Audiobookshelf."""
 
     @handle_refresh_token
