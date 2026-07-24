@@ -378,11 +378,7 @@ class MammamiradioProvider(MusicProvider):
             stream_details.data = {}
         # Namespace our per-stream state so it can never collide with keys MA core
         # stashes in StreamDetails.data (e.g. hls_media_playlist_url for HLS).
-        state = stream_details.data.setdefault("mammamiradio", {})
-        await self._update_from_v1(stream_details, state)
-
-    async def _update_from_v1(self, stream_details: StreamDetails, data: dict[str, Any]) -> None:
-        """Poll the now-playing contract and map the response onto the stream."""
+        data = stream_details.data.setdefault("mammamiradio", {})
         payload = await self._fetch_now_playing(data)
         if payload is None:
             return
