@@ -5,17 +5,19 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import socket
 import time
 from contextlib import suppress
 from ipaddress import IPv4Address, IPv6Address, ip_address
-from typing import Final, cast
+from typing import TYPE_CHECKING, Final, cast
 
 from music_assistant_models.enums import PlaybackState
 from zeroconf import ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import (
+    CONF_LOG_LEVEL,
     CONF_PLAYERS,
     CONF_PROVIDERS,
     CONF_SYNC_ADJUST,
@@ -59,6 +61,9 @@ from .helpers import (
 )
 from .player import AirPlayPlayer, GenericAirPlayPlayer
 from .sendspin_bridge import SendspinBridgeManager
+
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ProviderConfig
 
 # Marker the `cliairplay --ptp-daemon` process prints once it has bound the
 # privileged PTP ports (UDP 319/320) and opened its control channel. Until this
@@ -171,6 +176,7 @@ class AirPlayProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        self._set_pyatv_log_level()
         self._companion_info_by_address: dict[str, AsyncServiceInfo] = {}
         self._mrp_info_by_address: dict[str, AsyncServiceInfo] = {}
 
@@ -208,6 +214,14 @@ class AirPlayProvider(PlayerProvider):
         # AirPlay 2 streams attach to it (--ptp-shared) so multi-room sync groups
         # lock to a single grandmaster while UDP 319/320 is bound only once.
         await self._start_ptp_daemon()
+
+    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        await super().update_config(config, changed_keys)
+        # a log level(-only) change does not reload the provider,
+        # so realign pyatv's logger here
+        if f"values/{CONF_LOG_LEVEL}" in changed_keys:
+            self._set_pyatv_log_level()
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
@@ -301,6 +315,16 @@ class AirPlayProvider(PlayerProvider):
     def get_player(self, player_id: str) -> AirPlayPlayer | None:
         """Return AirplayPlayer by id."""
         return cast("AirPlayPlayer | None", self.mass.players.get_player(player_id))
+
+    def _set_pyatv_log_level(self) -> None:
+        """Keep pyatv's (very chatty) logging quiet unless verbose logging is enabled."""
+        # pyatv is extremely chatty at debug level (it logs every protocol
+        # message and heartbeat of each control connection), so only pass
+        # through its debug logging when verbose logging is enabled
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            logging.getLogger("pyatv").setLevel(logging.DEBUG)
+        else:
+            logging.getLogger("pyatv").setLevel(self.logger.level + 10)
 
     async def _setup_player(
         self, player_id: str, display_name: str, discovery_info: AsyncServiceInfo
