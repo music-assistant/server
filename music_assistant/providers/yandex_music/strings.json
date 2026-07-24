@@ -41,34 +41,17 @@
     "wave_presets_data": {
       "label": "Saved presets (internal)"
     },
-    "auth_device": {
-      "label": "Login with device code",
-      "description": "Open a verification URL on any device and enter the short code.",
-      "action_label": "Login with device code"
-    },
-    "auth_qr": {
-      "label": "Login with QR code",
-      "description": "Opens a QR code page — scan it with the Yandex app on your phone.",
-      "action_label": "Login with QR code"
+    "method": {
+      "label": "Login method",
+      "description": "Sign in with a short device code, or by scanning a QR code with the Yandex app on your phone.",
+      "options": {
+        "device": "Device code",
+        "qr": "QR code"
+      }
     },
     "remember_session": {
       "label": "Remember session (auto-refresh token)",
       "description": "When enabled, stores a long-lived session token to automatically refresh your music token when it expires. When disabled, you must re-authenticate manually when the token expires."
-    },
-    "clear_auth": {
-      "label": "[%key:common::config_entries::clear_auth::label%]",
-      "description": "[%key:common::config_entries::clear_auth::description%]",
-      "action_label": "[%key:common::config_entries::clear_auth::action_label%]"
-    },
-    "token": {
-      "label": "Yandex Music Token (manual)",
-      "description": "Advanced: manually enter a music token. See the documentation for how to obtain it."
-    },
-    "x_token": {
-      "label": "Session token"
-    },
-    "refresh_token": {
-      "label": "Refresh token"
     },
     "quality": {
       "label": "Audio quality",
@@ -95,16 +78,29 @@
     "restrictive_rate_limits": {
       "label": "Restrictive rate limits (datacenter / VPN safe mode)",
       "description": "Enable when Music Assistant runs on a VPS, NAS-behind-VPN, or any datacenter IP. Caps total in-flight requests to Yandex below the edge concurrency limit observed for those IPs (~6 simultaneous), trading some browse / recommendations responsiveness for fewer captcha trips. Residential users do not need this — Yandex tolerates much higher concurrency from regular ISPs."
-    },
-    "auth_status_unauthenticated": {
-      "label": "Open a verification URL on any device and enter the short code, or scan a QR code with the Yandex app on your phone.\n\nAlternatively, you can enter a music token manually in the advanced settings."
-    },
-    "auth_status_save_required": {
-      "label": "⚠ Authenticated to Yandex Music — click Save now to finish, otherwise the login will be lost."
-    },
-    "auth_status_authenticated": {
-      "label": "Authenticated to Yandex Music."
     }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Log in to Yandex Music",
+      "description": "Choose a login method and whether to keep the session so tokens refresh automatically."
+    },
+    "scan_qr": {
+      "title": "Scan to sign in",
+      "description": "Scan the QR code with the Yandex app and confirm the login. A fresh code is shown automatically if it expires.",
+      "progress_text": "Waiting for you to scan and confirm in the Yandex app..."
+    },
+    "device_login": {
+      "title": "Enter the code",
+      "description": "Open the verification URL and enter the code shown. A fresh code is shown automatically if it expires.",
+      "progress_text": "Waiting for you to confirm the code in the Yandex app..."
+    },
+    "abort": {
+      "login_denied": "The login request was denied in the Yandex app."
+    }
+  },
+  "errors": {
+    "no_music_token": "Login succeeded but Yandex returned no music token. Please try again."
   },
   "media": {
     "folder": {

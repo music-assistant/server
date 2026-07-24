@@ -68,8 +68,8 @@ class HueEntertainmentProvider(PluginProvider):
         if stored_mode is not None and str(stored_mode) not in COLOR_MODES:
             self._update_config_value(CONF_COLOR_MODE, DEFAULT_COLOR_MODE)
 
-        host = self.config.get_value(CONF_BRIDGE_HOST)
-        username = self.config.get_value(CONF_USERNAME)
+        host = self.get_setup_value(CONF_BRIDGE_HOST)
+        username = self.get_setup_value(CONF_USERNAME)
 
         if not host or not username:
             self.logger.warning("Hue bridge not configured, provider inactive")
@@ -122,7 +122,7 @@ class HueEntertainmentProvider(PluginProvider):
         if not bridge_id:
             return
 
-        configured_bridge_id = self.config.get_value(CONF_BRIDGE_ID) or ""
+        configured_bridge_id = self.get_setup_value(CONF_BRIDGE_ID) or ""
 
         if state_change == ServiceStateChange.Removed:
             if bridge_id == configured_bridge_id:
@@ -149,7 +149,7 @@ class HueEntertainmentProvider(PluginProvider):
             return
 
         # Update the host if it changed
-        current_host = self.config.get_value(CONF_BRIDGE_HOST) or ""
+        current_host = self.get_setup_value(CONF_BRIDGE_HOST) or ""
         if new_host != current_host:
             self.logger.info(
                 "Hue bridge %s IP changed from %s to %s",
@@ -160,7 +160,7 @@ class HueEntertainmentProvider(PluginProvider):
             if self._hue_api:
                 self._hue_api.host = new_host
             # Persist the new IP
-            self._update_config_value(CONF_BRIDGE_HOST, new_host)
+            self._update_setup_data(CONF_BRIDGE_HOST, new_host)
 
         if not self.available:
             self.available = True

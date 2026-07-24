@@ -763,3 +763,197 @@ async def test_secure_values_never_echoed_on_step(flow_mass: MusicAssistant) -> 
         )
         assert received["password"] == "sssh"
         await flow_mass.config.abort_setup_flow(step.flow_id)
+
+
+async def test_tidal_flow_pkce_url_paste(
+    flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real Tidal flow: paste the redirect URL, exchange it, store the tokens."""
+    from music_assistant.providers.tidal.auth_manager import TidalAuthManager  # noqa: PLC0415
+    from music_assistant.providers.tidal.constants import (  # noqa: PLC0415
+        CONF_AUTH_TOKEN,
+        CONF_OOPS_URL,
+        CONF_REFRESH_TOKEN,
+        CONF_USER_ID,
+    )
+    from music_assistant.providers.tidal.setup_flow import run_setup  # noqa: PLC0415
+
+    monkeypatch.setattr(flow_mass, "_http_session", MagicMock())
+    auth_data = {
+        "access_token": "at-123",
+        "refresh_token": "rt-456",
+        "expires_at": 4102444800.0,
+        "userId": 42,
+    }
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(
+            TidalAuthManager,
+            "build_pkce_login",
+            return_value=("https://login.tidal.com/authorize?x=1", {"code_verifier": "v"}),
+        ),
+        patch.object(
+            TidalAuthManager, "process_pkce_login", AsyncMock(return_value=auth_data)
+        ) as mock_exchange,
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        assert step.type == FlowStepType.FORM
+        assert step.step_id == "user"
+        # the authorize link rides along on the instructions label
+        instructions = next(x for x in step.entries if x.key == "auth_instructions")
+        assert instructions.help_link == "https://login.tidal.com/authorize?x=1"
+        finish_step = await flow_mass.config.submit_setup_flow(
+            step.flow_id,
+            {CONF_OOPS_URL: "https://tidal.com/android/login/auth?code=abc"},
+        )
+    assert finish_step.type == FlowStepType.FINISH
+    # the pasted redirect URL was handed to the token exchange
+    assert mock_exchange.await_args is not None
+    assert mock_exchange.await_args.args[2] == "https://tidal.com/android/login/auth?code=abc"
+    raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}")
+    setup_data = raw_conf["setup_data"]
+    assert flow_mass.config.decrypt_string(setup_data[CONF_AUTH_TOKEN]) == "at-123"
+    assert flow_mass.config.decrypt_string(setup_data[CONF_REFRESH_TOKEN]) == "rt-456"
+    assert setup_data["expiry_time"] == 4102444800.0
+    assert flow_mass.config.decrypt_string(setup_data[CONF_USER_ID]) == "42"
+
+
+async def test_tidal_flow_exchange_error_retries(
+    flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed token exchange re-renders the form with an error, then succeeds on retry."""
+    from music_assistant_models.errors import LoginFailed  # noqa: PLC0415
+
+    from music_assistant.providers.tidal.auth_manager import TidalAuthManager  # noqa: PLC0415
+    from music_assistant.providers.tidal.constants import CONF_OOPS_URL  # noqa: PLC0415
+    from music_assistant.providers.tidal.setup_flow import run_setup  # noqa: PLC0415
+
+    monkeypatch.setattr(flow_mass, "_http_session", MagicMock())
+    exchange = AsyncMock(
+        side_effect=[
+            LoginFailed("No authorization code found in redirect URL"),
+            {
+                "access_token": "at",
+                "refresh_token": "rt",
+                "expires_at": 1.0,
+                "userId": "u",
+            },
+        ]
+    )
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(
+            TidalAuthManager, "build_pkce_login", return_value=("https://login.tidal.com/x", {})
+        ),
+        patch.object(TidalAuthManager, "process_pkce_login", exchange),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        retry_step = await flow_mass.config.submit_setup_flow(
+            step.flow_id, {CONF_OOPS_URL: "https://tidal.com/android/login/auth"}
+        )
+        assert retry_step.type == FlowStepType.FORM
+        # the canonical retry pattern surfaces the error's translation key
+        assert retry_step.errors == {"base": "login_failed"}
+        finish_step = await flow_mass.config.submit_setup_flow(
+            step.flow_id, {CONF_OOPS_URL: "https://tidal.com/android/login/auth?code=abc"}
+        )
+    assert finish_step.type == FlowStepType.FINISH
+
+
+async def test_hue_pairing_flow_retry_then_success(
+    flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real Hue flow: a missed button press re-forms, then pairing succeeds."""
+    from music_assistant.providers.hue_entertainment.constants import (  # noqa: PLC0415
+        CONF_BRIDGE_HOST,
+        CONF_BRIDGE_ID,
+        CONF_CLIENTKEY,
+        CONF_USERNAME,
+    )
+    from music_assistant.providers.hue_entertainment.setup_flow import run_setup  # noqa: PLC0415
+
+    api_instance = MagicMock()
+    # first pair attempt times out (button not pressed), second succeeds
+    api_instance.pair = AsyncMock(
+        side_effect=[TimeoutError("not pressed"), {"username": "abc", "clientkey": "def"}]
+    )
+    api_instance.get_bridge_id = AsyncMock(return_value="bridge-1")
+    api_instance.close = AsyncMock()
+    monkeypatch.setattr(
+        "music_assistant.providers.hue_entertainment.setup_flow.HueEntertainmentAPI",
+        MagicMock(return_value=api_instance),
+    )
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        assert step.type == FlowStepType.FORM
+        assert step.step_id == "user"
+        session = flow_mass.config._setup_flows[step.flow_id].session
+        await flow_mass.config.submit_setup_flow(step.flow_id, {CONF_BRIDGE_HOST: "1.2.3.4"})
+        # the missed button press loops back to the user form with an error
+        retry = await _wait_for(
+            lambda: (
+                session.current_step
+                if session.current_step
+                and session.current_step.step_id == "user"
+                and session.current_step.errors
+                else None
+            )
+        )
+        assert retry.errors == {"base": "button_not_pressed"}
+        await flow_mass.config.submit_setup_flow(step.flow_id, {CONF_BRIDGE_HOST: "1.2.3.4"})
+        await _wait_for(lambda: session.finished)
+    setup_data = flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}")["setup_data"]
+    assert flow_mass.config.decrypt_string(setup_data[CONF_USERNAME]) == "abc"
+    assert flow_mass.config.decrypt_string(setup_data[CONF_CLIENTKEY]) == "def"
+    assert flow_mass.config.decrypt_string(setup_data[CONF_BRIDGE_HOST]) == "1.2.3.4"
+    assert flow_mass.config.decrypt_string(setup_data[CONF_BRIDGE_ID]) == "bridge-1"
+
+
+async def test_netease_qr_flow_expiry_then_confirm(
+    flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real NetEase QR flow: the first shown QR expires and is refreshed, then confirmed."""
+    from music_assistant.models.setup_flow import StepExpiredError  # noqa: PLC0415
+    from music_assistant.providers.neteasecloudmusic import setup_flow as nc_flow  # noqa: PLC0415
+    from music_assistant.providers.neteasecloudmusic.constants import (  # noqa: PLC0415
+        CONF_API_BASE_URL,
+        CONF_COOKIE,
+        CONF_UID,
+    )
+
+    monkeypatch.setattr(flow_mass, "_http_session", MagicMock())
+    monkeypatch.setattr(nc_flow, "NcmApiClient", MagicMock())
+    # a fresh QR is minted for the initial show and again after the first one expires
+    create_qr = AsyncMock(
+        side_effect=[("key1", "data:image/png;base64,AAA"), ("key2", "data:image/png;base64,BBB")]
+    )
+    monkeypatch.setattr(nc_flow, "_create_qr", create_qr)
+    # first poll hits the expiry deadline, the second (refreshed) QR is confirmed
+    monkeypatch.setattr(
+        nc_flow,
+        "_poll_qr_login",
+        AsyncMock(side_effect=[StepExpiredError(), ("cookie-xyz", "42")]),
+    )
+    with (
+        _use_flow(flow_mass, nc_flow.run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        assert step.type == FlowStepType.FORM
+        assert step.step_id == "user"
+        session = flow_mass.config._setup_flows[step.flow_id].session
+        await flow_mass.config.submit_setup_flow(
+            step.flow_id, {CONF_API_BASE_URL: "http://127.0.0.1:3000"}
+        )
+        await _wait_for(lambda: session.finished)
+    # the QR was minted twice (initial + one in-place refresh after expiry)
+    assert create_qr.await_count == 2
+    setup_data = flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}")["setup_data"]
+    assert flow_mass.config.decrypt_string(setup_data[CONF_COOKIE]) == "cookie-xyz"
+    assert flow_mass.config.decrypt_string(setup_data[CONF_UID]) == "42"
+    assert flow_mass.config.decrypt_string(setup_data[CONF_API_BASE_URL]) == "http://127.0.0.1:3000"

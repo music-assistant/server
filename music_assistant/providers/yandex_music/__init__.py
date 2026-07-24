@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
@@ -11,29 +11,20 @@ from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 
-from .auth import perform_device_auth, perform_qr_auth
 from .constants import (
-    CONF_ACTION_AUTH_DEVICE,
-    CONF_ACTION_AUTH_QR,
-    CONF_ACTION_CLEAR_AUTH,
     CONF_ACTION_DELETE_WAVE_PRESET,
     CONF_ACTION_SAVE_WAVE_PRESET,
     CONF_BASE_URL,
     CONF_LIKED_TRACKS_MAX_TRACKS,
     CONF_MY_WAVE_MAX_TRACKS,
     CONF_QUALITY,
-    CONF_REFRESH_TOKEN,
-    CONF_REMEMBER_SESSION,
     CONF_RESTRICTIVE_RATE_LIMITS,
-    CONF_SESSION_ID,
-    CONF_TOKEN,
     CONF_WAVE_PRESET_DRAFT_DIVERSITY,
     CONF_WAVE_PRESET_DRAFT_LANGUAGE,
     CONF_WAVE_PRESET_DRAFT_MOOD,
     CONF_WAVE_PRESET_DRAFT_NAME,
     CONF_WAVE_PRESET_TO_DELETE,
     CONF_WAVE_PRESETS_DATA,
-    CONF_X_TOKEN,
     DEFAULT_BASE_URL,
     QUALITY_BALANCED,
     QUALITY_EFFICIENT,
@@ -250,50 +241,20 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant,
+    mass: MusicAssistant,  # noqa: ARG001
     instance_id: str | None = None,  # noqa: ARG001
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
+    """
+    Return Config entries to configure this provider.
+
+    Authentication runs in the interactive setup flow (see setup_flow.py); this
+    surface only exposes the genuine playback options and the My Wave preset builder
+    (whose save/delete actions are handled here).
+    """
     if values is None:
         values = {}
-
-    # Handle QR auth action
-    if action == CONF_ACTION_AUTH_QR:
-        session_id = values.get(CONF_SESSION_ID)
-        if not session_id:
-            raise InvalidDataError("Missing session_id for QR authentication")
-        x_token, music_token = await perform_qr_auth(mass, str(session_id))
-        values[CONF_TOKEN] = music_token
-        if values.get(CONF_REMEMBER_SESSION, True):
-            values[CONF_X_TOKEN] = x_token
-        else:
-            values[CONF_X_TOKEN] = None
-        # QR flow never yields a refresh_token — clear any stale one from a
-        # prior device-flow login so we don't leave dead credentials behind
-        values[CONF_REFRESH_TOKEN] = None
-
-    # Handle Device Flow auth action (yields x_token + refresh_token,
-    # so we get silent auto-refresh on music-token AND x_token expiry)
-    if action == CONF_ACTION_AUTH_DEVICE:
-        session_id = values.get(CONF_SESSION_ID)
-        if not session_id:
-            raise InvalidDataError("Missing session_id for device authentication")
-        x_token, music_token, refresh_token = await perform_device_auth(mass, str(session_id))
-        values[CONF_TOKEN] = music_token
-        if values.get(CONF_REMEMBER_SESSION, True):
-            values[CONF_X_TOKEN] = x_token
-            values[CONF_REFRESH_TOKEN] = refresh_token
-        else:
-            values[CONF_X_TOKEN] = None
-            values[CONF_REFRESH_TOKEN] = None
-
-    # Handle clear auth action
-    if action == CONF_ACTION_CLEAR_AUTH:
-        values[CONF_TOKEN] = None
-        values[CONF_X_TOKEN] = None
-        values[CONF_REFRESH_TOKEN] = None
 
     # Wave-preset save/delete actions mutate the hidden JSON store and clear
     # the draft / selection fields so the UI re-renders in a clean state.
@@ -302,90 +263,8 @@ async def get_config_entries(
     if action == CONF_ACTION_DELETE_WAVE_PRESET:
         _delete_wave_preset_action(values)
 
-    # Check if user is authenticated
-    is_authenticated = bool(values.get(CONF_TOKEN))
-
-    # Dynamic status label: English fallback in code, localized via the
-    # per-state translation key authored in strings.json.
-    if not is_authenticated:
-        label_text = (
-            "Open a verification URL on any device and enter the short code, "
-            "or scan a QR code with the Yandex app on your phone.\n\n"
-            "Alternatively, you can enter a music token manually in the advanced settings."
-        )
-        label_translation_key = "auth_status_unauthenticated"
-    elif action in (CONF_ACTION_AUTH_QR, CONF_ACTION_AUTH_DEVICE):
-        label_text = (
-            "⚠ Authenticated to Yandex Music — click Save now to finish, "
-            "otherwise the login will be lost."
-        )
-        label_translation_key = "auth_status_save_required"
-    else:
-        label_text = "Authenticated to Yandex Music."
-        label_translation_key = "auth_status_authenticated"
-
     return (
         CONF_ENTRY_UNOFFICIAL_PROVIDER,
-        # Status label
-        ConfigEntry(
-            key="label_text",
-            type=ConfigEntryType.LABEL,
-            label=label_text,
-            translation_key=label_translation_key,
-        ),
-        # Device Flow authentication (primary)
-        ConfigEntry(
-            key=CONF_ACTION_AUTH_DEVICE,
-            type=ConfigEntryType.ACTION,
-            action=CONF_ACTION_AUTH_DEVICE,
-            hidden=is_authenticated,
-        ),
-        # QR authentication (alternative)
-        ConfigEntry(
-            key=CONF_ACTION_AUTH_QR,
-            type=ConfigEntryType.ACTION,
-            action=CONF_ACTION_AUTH_QR,
-            hidden=is_authenticated,
-        ),
-        # Remember session toggle
-        ConfigEntry(
-            key=CONF_REMEMBER_SESSION,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-            hidden=is_authenticated,
-        ),
-        # Clear auth
-        ConfigEntry(
-            key=CONF_ACTION_CLEAR_AUTH,
-            type=ConfigEntryType.ACTION,
-            action=CONF_ACTION_CLEAR_AUTH,
-            hidden=not is_authenticated,
-        ),
-        # Token storage (populated by QR action or manual entry)
-        ConfigEntry(
-            key=CONF_TOKEN,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-            hidden=is_authenticated,
-            advanced=True,
-            value=cast("str", values.get(CONF_TOKEN)) if values else None,
-        ),
-        # x_token (internal storage, always hidden)
-        ConfigEntry(
-            key=CONF_X_TOKEN,
-            type=ConfigEntryType.SECURE_STRING,
-            hidden=True,
-            required=False,
-            value=cast("str", values.get(CONF_X_TOKEN)) if values else None,
-        ),
-        # refresh_token (internal storage, always hidden — device flow only)
-        ConfigEntry(
-            key=CONF_REFRESH_TOKEN,
-            type=ConfigEntryType.SECURE_STRING,
-            hidden=True,
-            required=False,
-            value=cast("str", values.get(CONF_REFRESH_TOKEN)) if values else None,
-        ),
         # Quality
         ConfigEntry(
             key=CONF_QUALITY,

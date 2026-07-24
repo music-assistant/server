@@ -89,18 +89,18 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         self.streaming = TidalStreamingManager(self)
 
     def _update_auth_config(self, auth_info: dict[str, Any]) -> None:
-        """Update auth config with new auth info."""
-        self._update_config_value(CONF_AUTH_TOKEN, auth_info["access_token"], encrypted=True)
-        self._update_config_value(CONF_REFRESH_TOKEN, auth_info["refresh_token"], encrypted=True)
-        self._update_config_value(CONF_EXPIRY_TIME, auth_info["expires_at"])
-        self._update_config_value(CONF_USER_ID, auth_info["userId"])
+        """Update the persisted auth setup data with new (rotated) auth info."""
+        self._update_setup_data(CONF_AUTH_TOKEN, auth_info["access_token"])
+        self._update_setup_data(CONF_REFRESH_TOKEN, auth_info["refresh_token"])
+        self._update_setup_data(CONF_EXPIRY_TIME, auth_info["expires_at"])
+        self._update_setup_data(CONF_USER_ID, auth_info["userId"])
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        access_token = self.config.get_value(CONF_AUTH_TOKEN)
-        refresh_token = self.config.get_value(CONF_REFRESH_TOKEN)
-        expires_at = self.config.get_value(CONF_EXPIRY_TIME)
-        user_id = self.config.get_value(CONF_USER_ID)
+        access_token = self.get_setup_value(CONF_AUTH_TOKEN)
+        refresh_token = self.get_setup_value(CONF_REFRESH_TOKEN)
+        expires_at = self.get_setup_value(CONF_EXPIRY_TIME)
+        user_id = self.get_setup_value(CONF_USER_ID)
 
         if not access_token or not refresh_token:
             raise LoginFailed("Missing authentication data")
@@ -109,7 +109,7 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
             try:
                 dt = datetime.fromisoformat(expires_at)
                 expires_at = dt.timestamp()
-                self._update_config_value(CONF_EXPIRY_TIME, expires_at)
+                self._update_setup_data(CONF_EXPIRY_TIME, expires_at)
             except ValueError:
                 expires_at = 0
 

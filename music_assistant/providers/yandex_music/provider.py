@@ -293,26 +293,24 @@ class YandexMusicProvider(MusicProvider):
             ) from err2
         except LoginFailed as err2:
             self.logger.warning("Session and refresh tokens are both expired")
-            self._update_config_value(CONF_TOKEN, None, encrypted=True)
-            self._update_config_value(CONF_X_TOKEN, None, encrypted=True)
-            self._update_config_value(CONF_REFRESH_TOKEN, None, encrypted=True)
+            self._update_setup_data(CONF_TOKEN, None)
+            self._update_setup_data(CONF_X_TOKEN, None)
+            self._update_setup_data(CONF_REFRESH_TOKEN, None)
             raise LoginFailed("Session expired. Please re-authenticate.") from err2
 
         new_music_token = new_creds.music_token
         new_refresh_token = new_creds.refresh_token
         if new_music_token is None or new_refresh_token is None:
-            self._update_config_value(CONF_TOKEN, None, encrypted=True)
-            self._update_config_value(CONF_X_TOKEN, None, encrypted=True)
-            self._update_config_value(CONF_REFRESH_TOKEN, None, encrypted=True)
+            self._update_setup_data(CONF_TOKEN, None)
+            self._update_setup_data(CONF_X_TOKEN, None)
+            self._update_setup_data(CONF_REFRESH_TOKEN, None)
             raise LoginFailed(
                 "Credential refresh returned an incomplete response."
             ) from original_err
 
-        self._update_config_value(CONF_TOKEN, new_music_token.get_secret(), encrypted=True)
-        self._update_config_value(CONF_X_TOKEN, new_creds.x_token.get_secret(), encrypted=True)
-        self._update_config_value(
-            CONF_REFRESH_TOKEN, new_refresh_token.get_secret(), encrypted=True
-        )
+        self._update_setup_data(CONF_TOKEN, new_music_token.get_secret())
+        self._update_setup_data(CONF_X_TOKEN, new_creds.x_token.get_secret())
+        self._update_setup_data(CONF_REFRESH_TOKEN, new_refresh_token.get_secret())
         restrictive = bool(self.config.get_value(CONF_RESTRICTIVE_RATE_LIMITS, False))
         self._client = YandexMusicClient(
             new_music_token, base_url=base_url, restrictive_rate_limits=restrictive
@@ -322,9 +320,9 @@ class YandexMusicProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        token = self.config.get_value(CONF_TOKEN)
-        x_token = self.config.get_value(CONF_X_TOKEN)
-        refresh_token = self.config.get_value(CONF_REFRESH_TOKEN)
+        token = self.get_setup_value(CONF_TOKEN)
+        x_token = self.get_setup_value(CONF_X_TOKEN)
+        refresh_token = self.get_setup_value(CONF_REFRESH_TOKEN)
         base_url = self.config.get_value(CONF_BASE_URL, DEFAULT_BASE_URL)
         restrictive = bool(self.config.get_value(CONF_RESTRICTIVE_RATE_LIMITS, False))
 
@@ -343,7 +341,7 @@ class YandexMusicProvider(MusicProvider):
             except LoginFailed:
                 self.logger.warning("Music token is invalid or expired")
                 # Clear the dead token so restarts go straight to refresh
-                self._update_config_value(CONF_TOKEN, None, encrypted=True)
+                self._update_setup_data(CONF_TOKEN, None)
                 if x_token:
                     self.logger.info("Attempting to refresh from session token")
                     token = None
@@ -355,7 +353,7 @@ class YandexMusicProvider(MusicProvider):
         if not token and x_token:
             try:
                 new_music_token = await refresh_music_token(SecretStr(str(x_token)))
-                self._update_config_value(CONF_TOKEN, new_music_token.get_secret(), encrypted=True)
+                self._update_setup_data(CONF_TOKEN, new_music_token.get_secret())
                 self._client = YandexMusicClient(
                     new_music_token,
                     base_url=str(base_url),
@@ -374,8 +372,8 @@ class YandexMusicProvider(MusicProvider):
                 else:
                     # Definitive auth failure — clear dead credentials
                     self.logger.warning("Session token is invalid or expired")
-                    self._update_config_value(CONF_TOKEN, None, encrypted=True)
-                    self._update_config_value(CONF_X_TOKEN, None, encrypted=True)
+                    self._update_setup_data(CONF_TOKEN, None)
+                    self._update_setup_data(CONF_X_TOKEN, None)
                     raise LoginFailed("Session token expired. Please re-authenticate.") from err
             except asyncio.CancelledError:
                 raise

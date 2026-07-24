@@ -189,7 +189,7 @@ class YandexYnisonProvider(PluginProvider):
 
         # Token source — None = own (manually entered CONF_TOKEN);
         # otherwise the instance_id of a linked yandex_music provider to borrow from.
-        ym_instance_value = cast("str | None", self.config.get_value(CONF_YM_INSTANCE))
+        ym_instance_value = cast("str | None", self.get_setup_value(CONF_YM_INSTANCE))
         self._ym_instance_id: str | None = (
             ym_instance_value
             if ym_instance_value and ym_instance_value != YM_INSTANCE_OWN
@@ -903,10 +903,10 @@ class YandexYnisonProvider(PluginProvider):
         if self._borrow_source is not None:
             return await self._borrow_source.resolve_music_token()
 
-        token = cast("str | None", self.config.get_value(CONF_TOKEN))
+        token = cast("str | None", self.get_setup_value(CONF_TOKEN))
         if token:
             return SecretStr(token)
-        x_token = cast("str | None", self.config.get_value(CONF_X_TOKEN))
+        x_token = cast("str | None", self.get_setup_value(CONF_X_TOKEN))
         if x_token:
             self.logger.debug("Own-mode token not present — refreshing from stored x_token")
             return await self._refresh_via_x_token(x_token)
@@ -942,7 +942,7 @@ class YandexYnisonProvider(PluginProvider):
             self.logger.info("Refreshing Yandex Music token for Ynison reconnect (borrow mode)")
             return await self._borrow_source.resolve_music_token()
 
-        x_token = cast("str | None", self.config.get_value(CONF_X_TOKEN))
+        x_token = cast("str | None", self.get_setup_value(CONF_X_TOKEN))
         if x_token:
             self._invalidate_cached_token(x_token)
             self.logger.info("Refreshing Yandex Music token for Ynison reconnect (own mode)")

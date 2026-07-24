@@ -38,13 +38,8 @@ def _load_strings() -> dict[str, dict[str, object]]:
 
 
 async def _get_entries() -> tuple[ConfigEntry, ...]:
-    """Collect config entries with auth flows stubbed out."""
-    mock_mass = mock.MagicMock()
-    with mock.patch(
-        "music_assistant.providers.yandex_music.perform_device_auth",
-        new=mock.AsyncMock(return_value=("x", "m", "r")),
-    ):
-        return await get_config_entries(mock_mass, None, None, {})
+    """Collect the provider option config entries (auth now lives in the setup flow)."""
+    return await get_config_entries(mock.MagicMock(), None, None, {})
 
 
 async def test_strings_json_covers_config_entries() -> None:
@@ -94,27 +89,6 @@ async def test_quality_options_use_value_first_signature() -> None:
         QUALITY_HIGH,
         QUALITY_SUPERB,
     }
-
-
-async def test_auth_status_label_localized_via_translation_key() -> None:
-    """
-    The dynamic auth status label carries a per-state translation key.
-
-    The post-login "click Save" warning (spec 0002) must be authored in
-    strings.json so Lokalise localizes it like everything else.
-    """
-    strings = _load_strings()
-    mock_mass = mock.MagicMock()
-    with mock.patch(
-        "music_assistant.providers.yandex_music.perform_device_auth",
-        new=mock.AsyncMock(return_value=("x", "m", "r")),
-    ):
-        entries = await get_config_entries(mock_mass, None, "auth_device", {"session_id": "s1"})
-    label = next(e for e in entries if e.key == "label_text")
-    assert label.translation_key is not None
-    authored = strings["config_entries"][label.translation_key]
-    assert isinstance(authored, dict)
-    assert "label" in authored
 
 
 async def test_strings_json_authors_device_page_keys() -> None:
