@@ -389,8 +389,8 @@ class MammamiradioProvider(MusicProvider):
         # alternation back to "Now" mid-segment.
         now = payload.get("now_playing")
         now = now if isinstance(now, dict) else {}
-        # started_at is absent from current payloads but kept in the key so an
-        # addon that later adds it gains true per-segment identity.
+        # started_at is a stable per-segment start timestamp when the addon
+        # knows it (None otherwise); including it gives true per-segment identity.
         seg_key = (
             now.get("segment_type"),
             now.get("title"),
@@ -437,7 +437,11 @@ class MammamiradioProvider(MusicProvider):
                     raise ProviderUnavailableError(requires_msg)
                 schema = payload.get("schema_version")
                 if not _supports_v1_schema(schema):
-                    if schema is None or not isinstance(schema, (str, int)):
+                    if (
+                        schema is None
+                        or isinstance(schema, bool)
+                        or not isinstance(schema, (str, int))
+                    ):
                         # No usable version field: treat as a pre-2.13 addon (or
                         # some other service answering on this port).
                         raise ProviderUnavailableError(requires_msg)
@@ -464,6 +468,8 @@ class MammamiradioProvider(MusicProvider):
         Sends a conditional request with the stored ETag; a 304 reuses the cached
         payload. A 200 without an ETag header drops the stored validator so
         polling becomes unconditional.
+
+        :param data: Per-stream state (ETag validator and cached payload).
         """
         url = f"{self._base_url}{NOWPLAYING_PATH}"
         headers: dict[str, str] = {}

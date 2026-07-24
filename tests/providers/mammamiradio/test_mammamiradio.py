@@ -28,10 +28,13 @@ from music_assistant.providers.mammamiradio import (
     SUPPORTED_FEATURES,
     MammamiradioProvider,
     _audio_format_from_contract,
+    _host_display_names,
     _normalize_base_url,
+    _stream_path_from_contract,
     _supports_v1_schema,
     _v1_to_stream_metadata,
     get_config_entries,
+    setup,
 )
 
 
@@ -198,6 +201,26 @@ async def test_get_config_entries_returns_single_url_field() -> None:
     assert entry.type.value == "string"
 
 
+async def test_setup_returns_provider_instance(mass_mock: MagicMock) -> None:
+    """The module-level setup() entrypoint constructs a MammamiradioProvider."""
+    manifest = MagicMock()
+    manifest.domain = "mammamiradio"
+    manifest.name = "mammamiradio"
+    config = MagicMock()
+    config.instance_id = "mammamiradio_test"
+
+    def _get_value(key: str, default: Any = None) -> Any:
+        if key == CONF_MAMMAMIRADIO_URL:
+            return "http://localhost:8000"
+        if key == "log_level":
+            return "GLOBAL"
+        return default
+
+    config.get_value.side_effect = _get_value
+    prov = await setup(mass_mock, manifest, config)
+    assert isinstance(prov, MammamiradioProvider)
+
+
 # ---------------------------------------------------------------------------
 # handle_async_init — the v1 now-playing contract probe
 # ---------------------------------------------------------------------------
@@ -310,6 +333,43 @@ async def test_handle_async_init_unsupported_schema_names_version(
     with pytest.raises(ProviderUnavailableError) as excinfo:
         await provider.handle_async_init()
     assert "schema_version '2'" in str(excinfo.value)
+
+
+async def test_handle_async_init_numeric_schema_version_accepted(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """schema_version arriving as the JSON number 1 is accepted at init."""
+    payload = {**_V1_MUSIC, "schema_version": 1}
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(payload))
+    await provider.handle_async_init()
+    assert provider._audio_format_dict == _V1_AUDIO_FORMAT
+    assert provider._stream_path == "/stream"
+
+
+async def test_handle_async_init_bool_schema_version_raises_addon_too_old(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A bool schema_version is junk, not a version: init fails with the 2.13 message."""
+    payload = {**_V1_MUSIC, "schema_version": True}
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(payload))
+    with pytest.raises(ProviderUnavailableError, match=r"2\.13") as excinfo:
+        await provider.handle_async_init()
+    assert "True" not in str(excinfo.value)
+
+
+async def test_handle_async_init_without_stream_block_uses_defaults(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A contract without a stream block still initializes with the published defaults."""
+    contract = {k: v for k, v in _V1_MUSIC.items() if k != "stream"}
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(contract))
+    await provider.handle_async_init()
+    details = await provider.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
+    assert details.path == "http://localhost:8000/stream"
+    assert details.audio_format.content_type == ContentType.MP3
+    assert details.audio_format.bit_rate == 192
+    assert details.audio_format.sample_rate == 48000
+    assert details.audio_format.channels == 2
 
 
 async def test_handle_async_init_raises_when_unreachable(
@@ -505,6 +565,17 @@ async def test_get_stream_details_uses_contract_relative_stream_path(
     assert details.path == "http://localhost:8000/radio/live.mp3"
 
 
+async def test_get_stream_details_defaults_path_when_relative_url_absent(
+    provider: MammamiradioProvider, mass_mock: MagicMock
+) -> None:
+    """A contract stream block without relative_url falls back to the default /stream path."""
+    contract = {**_V1_MUSIC, "stream": {"audio_format": _V1_AUDIO_FORMAT}}
+    mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(contract))
+    await provider.handle_async_init()
+    details = await provider.get_stream_details(RADIO_ITEM_ID, MediaType.RADIO)
+    assert details.path == "http://localhost:8000/stream"
+
+
 async def test_get_stream_details_ignores_unsafe_contract_stream_path(
     provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
@@ -693,6 +764,44 @@ def test_normalize_base_url_rejects_non_strings(raw: Any) -> None:
         _normalize_base_url(raw)
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("1", True),
+        (1, True),
+        (True, False),
+        (1.0, False),
+        ("2", False),
+        (None, False),
+    ],
+)
+def test_supports_v1_schema(value: Any, expected: bool) -> None:
+    """Only a supported version as a string or int counts; bools and floats never do."""
+    assert _supports_v1_schema(value) is expected
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["//evil/stream", "radio/live.mp3", "/", None, ""],
+)
+def test_stream_path_from_contract_rejects_unsafe_values(value: Any) -> None:
+    """Protocol-relative, schemeless-relative, or unusable values fall back to /stream."""
+    assert _stream_path_from_contract(value) == "/stream"
+
+
+@pytest.mark.parametrize(
+    ("hosts", "expected"),
+    [
+        ("Gianni", None),
+        ({"display_name": "Gianni"}, None),
+        ([{"engine_host": "gianni"}], "gianni"),
+    ],
+)
+def test_host_display_names_variants(hosts: Any, expected: str | None) -> None:
+    """Non-list hosts yield no byline; a dict host without display_name uses engine_host."""
+    assert _host_display_names(hosts) == expected
+
+
 async def test_invalid_base_url_fails_setup_before_http(mass_mock: MagicMock) -> None:
     """A schemeless URL raises a provider-localized SetupFailedError before any request."""
     prov = _build_provider_with_url(mass_mock, "localhost:8000")
@@ -764,6 +873,13 @@ def test_audio_format_from_contract_honors_alternate_codec() -> None:
     assert fmt.bit_rate == 256
     assert fmt.sample_rate == 44100
     assert fmt.channels == 1
+
+
+@pytest.mark.parametrize("bitrate", [True, 0, -5])
+def test_audio_format_from_contract_non_positive_bitrate_defaults(bitrate: Any) -> None:
+    """A bool / zero / negative bitrate_kbps falls back to the published 192 default."""
+    fmt = _audio_format_from_contract({"codec": "mp3", "bitrate_kbps": bitrate})
+    assert fmt.bit_rate == 192
 
 
 # ---------------------------------------------------------------------------
@@ -895,6 +1011,14 @@ def test_v1_banter_string_hosts_join() -> None:
     assert sm.artist == "Gianni, Lucia"
 
 
+def test_v1_voice_empty_hosts_falls_back_to_station_name() -> None:
+    """A voice segment with an empty hosts roster and no host byline uses the station name."""
+    now = {"segment_class": "voice", "segment_type": "banter", "title": None}
+    sm = _v1_to_stream_metadata(_v1_payload(now), show_upcoming=False)
+    assert sm.title == "Host banter"
+    assert sm.artist == "mammamiradio"
+
+
 def test_v1_interstitial_titles_with_station_artist() -> None:
     """An interstitial (ad / station id) carries its label and the station as artist."""
     now = {"segment_class": "interstitial", "segment_type": "ad", "title": "Ad break"}
@@ -953,6 +1077,16 @@ def test_v1_up_next_unavailable_entry_suppressed() -> None:
         _v1_payload(_V1_MUSIC["now_playing"], up_next=up_next), show_upcoming=True
     )
     assert sm.title == "Volare"
+    assert sm.description is None
+
+
+@pytest.mark.parametrize("up_title", [None, ""])
+def test_v1_up_next_missing_title_suppresses_description(up_title: str | None) -> None:
+    """An up-next entry without a usable title renders no 'Up next' line."""
+    up_next = [{"segment_class": "music", "segment_type": "music", "title": up_title}]
+    sm = _v1_to_stream_metadata(
+        _v1_payload(_V1_MUSIC["now_playing"], up_next=up_next), show_upcoming=True
+    )
     assert sm.description is None
 
 
@@ -1029,16 +1163,20 @@ async def test_v1_callback_304_reuses_cache_and_keeps_alternating(
 async def test_v1_callback_swallows_unreachable_keeps_prior(
     initialized_provider: MammamiradioProvider, mass_mock: MagicMock
 ) -> None:
-    """A mid-stream connection failure must not raise and keeps the prior frame."""
+    """A mid-stream connection failure must not raise, keeps the prior frame, drops the ETag."""
     details = await _details_for(initialized_provider)
     mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(_V1_MUSIC, etag='W/"v1"'))
     await initialized_provider._update_stream_metadata(details, 0)
     prior = details.stream_metadata
+    assert details.data["mammamiradio"]["v1_etag"] == 'W/"v1"'
     mass_mock.http_session.get = MagicMock(
         return_value=_make_failing_ctx(aiohttp.ClientConnectionError("nope"))
     )
     await initialized_provider._update_stream_metadata(details, 0)  # must not raise
     assert details.stream_metadata is prior
+    # The stored validator is dropped on the ClientError leg too (mirrors the
+    # poisoned-ETag recovery on the ValueError leg).
+    assert "v1_etag" not in details.data["mammamiradio"]
 
 
 async def test_v1_callback_swallows_timeout_keeps_prior(
@@ -1128,11 +1266,13 @@ async def test_v1_callback_mapper_exception_propagates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
-    A mapper raise escapes the callback (MA core contains task exceptions).
+    A mapper raise escapes the callback instead of being swallowed.
 
-    The mapper is total by construction, so any raise is a genuine bug; it must
-    propagate instead of being swallowed, and the show_upcoming flip is skipped
-    so the next successful tick renders the frame the failed tick would have.
+    The mapper is total by construction, so any raise is a genuine bug. The
+    raise escapes into MA's fire-and-forget callback task, where asyncio
+    reports an unretrieved task exception at the default log level and nothing
+    crashes. The show_upcoming flip is skipped so the next successful tick
+    renders the frame the failed tick would have.
     """
     details = await _details_for(initialized_provider)
     mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(_V1_MUSIC, etag='W/"a"'))
@@ -1225,8 +1365,8 @@ async def test_v1_callback_without_etag_polls_unconditionally(
     """
     If the addon omits the ETag header, the provider degrades gracefully.
 
-    Each tick is a fresh 200 with no If-None-Match sent — the 304 optimization is
-    simply unavailable, not a failure.
+    Each tick is a fresh 200 with no If-None-Match sent; polling keeps working
+    without the 304 optimization.
     """
     details = await _details_for(initialized_provider)
     mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(_V1_MUSIC))  # no etag
@@ -1243,9 +1383,9 @@ async def test_v1_callback_resets_on_artist_change_same_title(
     """
     Segment identity includes artist/host, not just type+title.
 
-    The v1 payload carries no ``started_at``, so two consecutive segments sharing
-    type and title (e.g. a same-title cover) must still be told apart by the
-    other contract fields.
+    ``started_at`` is None when the addon does not know the segment start, so
+    two consecutive segments sharing type and title (e.g. a same-title cover)
+    must still be told apart by the other contract fields.
     """
     details = await _details_for(initialized_provider)
     cover = {**_V1_MUSIC, "now_playing": {**_V1_MUSIC["now_playing"], "artist": "Cover Band"}}
@@ -1289,8 +1429,8 @@ async def test_v1_callback_unsupported_schema_keeps_prior(
     """
     A drifted now-playing schema is ignored mid-stream instead of mapped loosely.
 
-    Pins the deliberate init/callback asymmetry: init raises on an unsupported
-    schema, the mid-stream callback swallows it and keeps the prior frame.
+    Init raises on an unsupported schema; the mid-stream callback instead
+    ignores the response and keeps the prior frame.
     """
     details = await _details_for(initialized_provider)
     mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(_V1_MUSIC))
@@ -1318,9 +1458,16 @@ def test_golden_fixture_maps_cleanly() -> None:
     fixture = Path(__file__).parent / "fixtures" / "v1_now_playing.json"
     payload = json.loads(fixture.read_text(encoding="utf-8"))
     assert _supports_v1_schema(payload["schema_version"])
-    for show_upcoming in (False, True):
-        stream_metadata = _v1_to_stream_metadata(payload, show_upcoming=show_upcoming)
-        assert stream_metadata.title
+
+    now_frame = _v1_to_stream_metadata(payload, show_upcoming=False)
+    assert now_frame.title == "Volare"
+    assert now_frame.artist == "Domenico Modugno"
+    assert now_frame.album == "Mr Volare"
+    assert now_frame.image_url == "https://example.test/art.jpg"
+    assert now_frame.description is None
+
+    upcoming_frame = _v1_to_stream_metadata(payload, show_upcoming=True)
+    assert upcoming_frame.description == "Up next: Sapore di Sale — Gino Paoli"
 
 
 # ---------------------------------------------------------------------------
@@ -1333,8 +1480,9 @@ async def test_live_stream_smoke() -> None:
     Live smoke test against a running mammamiradio addon. Skipped by default.
 
     Opt in by setting ``MAMMAMIRADIO_LIVE_URL`` (e.g. ``http://localhost:8000``).
-    Verifies handle_async_init, browse, and get_stream_details against a real
-    Icecast endpoint.
+    Verifies the init probe, browse, stream-details resolution, and the
+    metadata fetch/mapping against a live addon; the audio path itself is not
+    exercised.
     """
     live_url = os.environ.get("MAMMAMIRADIO_LIVE_URL")
     if not live_url:
