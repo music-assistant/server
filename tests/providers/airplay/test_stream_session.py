@@ -763,6 +763,7 @@ async def test_generation_writer_fd_closes_when_old_ffmpeg_kill_fails() -> None:
         await session._start_generation_ffmpeg(player, 42, MagicMock())
 
     close_fd.assert_called_once_with(42)
+    assert session._player_ffmpeg[player.player_id] is old_ffmpeg
 
 
 @pytest.mark.asyncio
