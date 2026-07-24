@@ -676,12 +676,12 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
     ):
         await session.start(MagicMock())
 
-    # anchor = now (103_000 ms) + the group start lead (750 ms); readiness is
+    # anchor = now (103_000 ms) + the group start lead (500 ms); readiness is
     # event-confirmed, so no setup-time guess is added on top.
-    assert session.start_unix_ms == 103_750
+    assert session.start_unix_ms == 103_500
     for player in players:
         player.stream.start.assert_awaited_once()
-        assert player.stream.start.await_args.args[0] == 103_750
+        assert player.stream.start.await_args.args[0] == 103_500
 
 
 # --- Session decision reaches the CLI args (overrides bare liveness) ------------

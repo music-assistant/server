@@ -65,10 +65,10 @@ AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 2000
 # connected) and the new audio flowing ([STATUS] audio), so the lead no longer
 # guesses at setup or transcoder spin-up time. It covers just the receiver
 # re-anchor (accepted down to ~150 ms in the flush-ladder measurements; the
-# binary clamps below its own 350 ms floor) plus, for groups, fanning the
+# binary clamps below its own 250 ms floor) plus, for groups, fanning the
 # shared instant out to every member.
-AIRPLAY_START_LEAD_MS: Final[int] = 500
-AIRPLAY_GROUP_START_LEAD_MS: Final[int] = 750
+AIRPLAY_START_LEAD_MS: Final[int] = 250
+AIRPLAY_GROUP_START_LEAD_MS: Final[int] = 500
 
 # Cover art is rendered to a local JPEG for the binary to embed (the binary
 # does not fetch URLs). 512px keeps the SET_PARAMETER payload small while still

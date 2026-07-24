@@ -306,9 +306,9 @@ class AirPlayStreamSession:
            resulting start anchor is in the past, shift it forward to
            ``now + min_headroom`` and trim that many seconds from the buffer
            head so timing stays aligned with the rest of the group.
-        3. Feed the (possibly trimmed) buffer into the joiner's stdin and add
+        3. Anchor the joiner with a single START at the computed group-aligned
+           time, then feed the (possibly trimmed) buffer into its stdin and add
            the client so the live stream continues priming it.
-        4. Anchor the joiner with a single START at the computed group-aligned time.
         """
         await self._resolve_late_joiner_ptp(airplay_player)
         async with self._lock:
@@ -414,20 +414,26 @@ class AirPlayStreamSession:
             )
 
             try:
-                # The binary buffers stdin into its ring from process start, so
-                # the prime buffer is fed straight in; START anchors it later.
+                # Anchor the joiner BEFORE feeding the prime: pre-START the
+                # binary only buffers stdin into its bounded ring and sends
+                # nothing, so a prime longer than that ring would wedge the
+                # write here — and, through the session lock, stall the whole
+                # group's feed. Anchored, the binary drains the prime as it
+                # streams in. The START does not re-anchor the session
+                # timeline (the group keeps playing).
+                await stream.start(start_unix_ms, position_ms)
                 if buffered_pcm:
                     await self._write_chunk_to_player(airplay_player, buffered_pcm)
             except asyncio.CancelledError:
-                await self.stop_client(airplay_player, reason="late joiner prime cancelled")
+                await self.stop_client(airplay_player, reason="late joiner start cancelled")
                 raise
             except Exception as err:
                 self.prov.logger.warning(
-                    "Late joiner %s: failed to prime pipeline: %s",
+                    "Late joiner %s: failed to start/prime pipeline: %r",
                     airplay_player.player_id,
                     err,
                 )
-                await self.stop_client(airplay_player, reason="late joiner prime failed")
+                await self.stop_client(airplay_player, reason="late joiner start/prime failed")
                 return
 
             if airplay_player not in self.sync_clients:
@@ -440,21 +446,6 @@ class AirPlayStreamSession:
                 )
                 self._warn_degraded_shared_ptp(ap2_members)
 
-        try:
-            # A single START anchors the joiner at the group-aligned instant;
-            # it does not re-anchor the session timeline (the group keeps playing).
-            await stream.start(start_unix_ms, position_ms)
-        except asyncio.CancelledError:
-            await self.remove_client(airplay_player, reason="late joiner start cancelled")
-            raise
-        except Exception as err:
-            self.prov.logger.warning(
-                "Late joiner %s: failed to start: %s",
-                airplay_player.player_id,
-                err,
-            )
-            await self.remove_client(airplay_player, reason="late joiner start failed")
-            return
         self.prov.logger.debug(
             "Late joiner %s: started after %.2fs",
             airplay_player.player_id,

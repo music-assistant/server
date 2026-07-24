@@ -179,9 +179,9 @@ async def test_initial_group_waits_for_every_member_before_shared_start(
     last_connected = max(i for i, op in enumerate(operations) if op.startswith("connected:"))
     first_start = min(i for i, op in enumerate(operations) if op.startswith("started:"))
     assert last_connected < first_start
-    # start = now (100_000 ms) + the group start lead (750 ms), one shared instant
+    # start = now (100_000 ms) + the group start lead (500 ms), one shared instant
     starts = {int(op.rsplit(":", 1)[1]) for op in operations if op.startswith("started:")}
-    assert starts == {100_750}
+    assert starts == {100_500}
 
 
 @pytest.mark.asyncio
@@ -216,8 +216,8 @@ async def test_initial_single_player_starts_after_connect(
     ):
         await session.start(MagicMock())
 
-    # start = now (200_000 ms) + the solo start lead (500 ms), position 0
-    stream.start.assert_awaited_once_with(200_500, 0)
+    # start = now (200_000 ms) + the solo start lead (250 ms), position 0
+    stream.start.assert_awaited_once_with(200_250, 0)
 
 
 @pytest.mark.asyncio
@@ -385,7 +385,7 @@ async def test_standby_resumes_warm_on_existing_streams(
         assert await session.replace(MagicMock(), media)
 
     # start = now (100_000 ms) + solo/group start lead, position 10s
-    expected_start = 100_000 + (500 if len(protocols) == 1 else 750)
+    expected_start = 100_000 + (250 if len(protocols) == 1 else 500)
     for player in players:
         stream = original_streams[player.player_id]
         assert player.stream is stream
@@ -434,8 +434,8 @@ async def test_warm_replace_flushes_all_before_starting_any() -> None:
 
     for player in players:
         player.stream.flush.assert_awaited_once_with()
-        # start = now (100_000 ms) + the group start lead (750 ms), position 0
-        player.stream.start.assert_awaited_once_with(100_750, 0)
+        # start = now (100_000 ms) + the group start lead (500 ms), position 0
+        player.stream.start.assert_awaited_once_with(100_500, 0)
 
 
 @pytest.mark.asyncio
@@ -707,8 +707,8 @@ async def test_late_join_adds_to_sync_clients() -> None:
 
 
 @pytest.mark.asyncio
-async def test_late_join_start_failure_removes_client() -> None:
-    """A late joiner whose START fails is removed from the session."""
+async def test_late_join_start_failure_stops_client() -> None:
+    """A late joiner whose START fails is torn down before joining the session."""
     session = _make_session(time.time() - 10, 12.5)
     player = _make_late_joiner()
 
@@ -718,12 +718,15 @@ async def test_late_join_start_failure_removes_client() -> None:
 
     with (
         patch.object(session, "_start_client", side_effect=setup_failing_start),
-        patch.object(session, "remove_client", new_callable=AsyncMock) as remove_client,
+        patch.object(session, "stop_client", new_callable=AsyncMock) as stop_client,
     ):
         await session.add_client(player)
 
     player.stream.start.assert_awaited_once()
-    remove_client.assert_awaited_once_with(player, reason="late joiner start failed")
+    # START precedes the prime feed and the sync_clients append, so a failed
+    # joiner is stopped without ever having joined the session.
+    assert player not in session.sync_clients
+    stop_client.assert_awaited_once_with(player, reason="late joiner start/prime failed")
 
 
 @pytest.mark.asyncio
