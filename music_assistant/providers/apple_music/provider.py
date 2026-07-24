@@ -126,10 +126,6 @@ class AppleMusicProvider(MusicProvider, RecommendationPayloadMixin):
         """
         return await self._recommendation_items_from_payload(item_id)
 
-    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
-        """Fetch and parse the full recommendations payload (folders with items)."""
-        return await self.recommendation_manager.get_personal_recommendations()
-
     # ------------------------------------------------------------------
     # Media item getters
     # ------------------------------------------------------------------
@@ -240,3 +236,7 @@ class AppleMusicProvider(MusicProvider, RecommendationPayloadMixin):
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         return await self.streaming_manager.get_stream_details(item_id)
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch and parse the full recommendations payload (folders with items)."""
+        return await self.recommendation_manager.get_personal_recommendations()

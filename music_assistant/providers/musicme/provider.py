@@ -198,6 +198,62 @@ class MusicMeProvider(MusicProvider):
             return await self._browse_radio_themes(sub_id)
         return []
 
+    # ---- recommendations ----
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        return [
+            RecommendationFolder(
+                name="Featured",
+                translation_key="featured",
+                item_id=f"{self.instance_id}_home",
+                provider=self.instance_id,
+                icon="mdi-star",
+            ),
+            RecommendationFolder(
+                name="New releases",
+                translation_key="new_releases",
+                item_id=f"{self.instance_id}_news",
+                provider=self.instance_id,
+                icon="mdi-new-box",
+            ),
+            RecommendationFolder(
+                name="Top artists",
+                translation_key="top_artists",
+                item_id=f"{self.instance_id}_tops",
+                provider=self.instance_id,
+                icon="mdi-trending-up",
+            ),
+            RecommendationFolder(
+                name="Radios",
+                translation_key="radios",
+                item_id=f"{self.instance_id}_radios",
+                provider=self.instance_id,
+                icon="mdi-radio",
+            ),
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        folder: RecommendationFolder | None = None
+        if item_id == f"{self.instance_id}_home":
+            folder = await self._get_home_recommendations()
+        elif item_id == f"{self.instance_id}_news":
+            folder = await self._get_news_recommendations()
+        elif item_id == f"{self.instance_id}_tops":
+            folder = await self._get_tops_recommendations()
+        elif item_id == f"{self.instance_id}_radios":
+            folder = await self._get_radios_recommendations()
+        if folder is None:
+            return UniqueList()
+        return folder.items
+
     @use_cache(3600)
     async def _browse_home(self) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse the MusicMe homepage."""
@@ -288,156 +344,6 @@ class MusicMeProvider(MusicProvider):
             if item.get("id"):
                 results.append(self._parse_radio(item))
         return results
-
-    # ---- recommendations ----
-
-    async def get_recommendations(self) -> list[RecommendationFolder]:
-        """Get this provider's available recommendation rows, without items."""
-        return [
-            RecommendationFolder(
-                name="Featured",
-                translation_key="featured",
-                item_id=f"{self.instance_id}_home",
-                provider=self.instance_id,
-                icon="mdi-star",
-            ),
-            RecommendationFolder(
-                name="New releases",
-                translation_key="new_releases",
-                item_id=f"{self.instance_id}_news",
-                provider=self.instance_id,
-                icon="mdi-new-box",
-            ),
-            RecommendationFolder(
-                name="Top artists",
-                translation_key="top_artists",
-                item_id=f"{self.instance_id}_tops",
-                provider=self.instance_id,
-                icon="mdi-trending-up",
-            ),
-            RecommendationFolder(
-                name="Radios",
-                translation_key="radios",
-                item_id=f"{self.instance_id}_radios",
-                provider=self.instance_id,
-                icon="mdi-radio",
-            ),
-        ]
-
-    async def get_recommendation_items(
-        self, item_id: str
-    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
-        """
-        Get the items for a single recommendation row.
-
-        :param item_id: The item_id of the row, as returned by get_recommendations.
-        """
-        folder: RecommendationFolder | None = None
-        if item_id == f"{self.instance_id}_home":
-            folder = await self._get_home_recommendations()
-        elif item_id == f"{self.instance_id}_news":
-            folder = await self._get_news_recommendations()
-        elif item_id == f"{self.instance_id}_tops":
-            folder = await self._get_tops_recommendations()
-        elif item_id == f"{self.instance_id}_radios":
-            folder = await self._get_radios_recommendations()
-        if folder is None:
-            return UniqueList()
-        return folder.items
-
-    @use_cache(3600 * 3, base_class=RecommendationFolder)
-    async def _get_home_recommendations(self) -> RecommendationFolder | None:
-        """Get the Featured recommendation folder, or None when unavailable."""
-        data = await self._api_get("/home")
-        if not data:
-            return None
-        items: list[MediaItemType | ItemMapping | BrowseFolder] = [
-            self._parse_radio(entry)
-            for entry in data.get("results", {}).get("items", [])
-            if entry.get("id")
-        ]
-        if not items:
-            return None
-        return RecommendationFolder(
-            name="Featured",
-            translation_key="featured",
-            item_id=f"{self.instance_id}_home",
-            provider=self.instance_id,
-            icon="mdi-star",
-            items=UniqueList(items),
-        )
-
-    @use_cache(3600 * 3, base_class=RecommendationFolder)
-    async def _get_news_recommendations(self) -> RecommendationFolder | None:
-        """Get the New releases recommendation folder, or None when unavailable."""
-        data = await self._api_get(
-            "/news/0?filters={style:0}&resources=albums{maxResults:10},focus-albums,styles"
-        )
-        if not data:
-            return None
-        items: list[MediaItemType | ItemMapping | BrowseFolder] = [
-            self._parse_album(album_obj)
-            for album_obj in data.get("results", {}).get("albums", [])
-            if album_obj.get("barcode") and album_obj.get("streamable", 0) == 2
-        ]
-        if not items:
-            return None
-        return RecommendationFolder(
-            name="New releases",
-            translation_key="new_releases",
-            item_id=f"{self.instance_id}_news",
-            provider=self.instance_id,
-            icon="mdi-new-box",
-            items=UniqueList(items),
-        )
-
-    @use_cache(3600 * 3, base_class=RecommendationFolder)
-    async def _get_tops_recommendations(self) -> RecommendationFolder | None:
-        """Get the Top artists recommendation folder, or None when unavailable."""
-        data = await self._api_get(
-            "/tops?filters={style:0}&resources=styles,artists{maxResults:10},videos{maxResults:0}"
-        )
-        if not data:
-            return None
-        items: list[MediaItemType | ItemMapping | BrowseFolder] = [
-            self._parse_artist(artist_obj)
-            for artist_obj in data.get("results", {}).get("artists", [])
-            if artist_obj.get("id")
-        ]
-        if not items:
-            return None
-        return RecommendationFolder(
-            name="Top artists",
-            translation_key="top_artists",
-            item_id=f"{self.instance_id}_tops",
-            provider=self.instance_id,
-            icon="mdi-trending-up",
-            items=UniqueList(items),
-        )
-
-    @use_cache(3600 * 3, base_class=RecommendationFolder)
-    async def _get_radios_recommendations(self) -> RecommendationFolder | None:
-        """Get the Radios recommendation folder, or None when unavailable."""
-        data = await self._api_get(
-            "/radios?filters={theme:0}&resources=themes,theme-airplays{maxResults:10},home"
-        )
-        if not data:
-            return None
-        items: list[MediaItemType | ItemMapping | BrowseFolder] = [
-            self._parse_radio(item)
-            for item in data.get("results", {}).get("theme-airplays", [])[:10]
-            if item.get("id")
-        ]
-        if not items:
-            return None
-        return RecommendationFolder(
-            name="Radios",
-            translation_key="radios",
-            item_id=f"{self.instance_id}_radios",
-            provider=self.instance_id,
-            icon="mdi-radio",
-            items=UniqueList(items),
-        )
 
     # ---- library ----
 
@@ -973,3 +879,97 @@ class MusicMeProvider(MusicProvider):
             msg = f"Unable to decode streaming ticket for {track_barcode}"
             raise MediaNotFoundError(msg) from err
         return f"{STREAM_BASE}/{PARTNER_ID}/{ticket}.mp4"
+
+    @use_cache(3600 * 3, base_class=RecommendationFolder)
+    async def _get_home_recommendations(self) -> RecommendationFolder | None:
+        """Get the Featured recommendation folder, or None when unavailable."""
+        data = await self._api_get("/home")
+        if not data:
+            return None
+        items: list[MediaItemType | ItemMapping | BrowseFolder] = [
+            self._parse_radio(entry)
+            for entry in data.get("results", {}).get("items", [])
+            if entry.get("id")
+        ]
+        if not items:
+            return None
+        return RecommendationFolder(
+            name="Featured",
+            translation_key="featured",
+            item_id=f"{self.instance_id}_home",
+            provider=self.instance_id,
+            icon="mdi-star",
+            items=UniqueList(items),
+        )
+
+    @use_cache(3600 * 3, base_class=RecommendationFolder)
+    async def _get_news_recommendations(self) -> RecommendationFolder | None:
+        """Get the New releases recommendation folder, or None when unavailable."""
+        data = await self._api_get(
+            "/news/0?filters={style:0}&resources=albums{maxResults:10},focus-albums,styles"
+        )
+        if not data:
+            return None
+        items: list[MediaItemType | ItemMapping | BrowseFolder] = [
+            self._parse_album(album_obj)
+            for album_obj in data.get("results", {}).get("albums", [])
+            if album_obj.get("barcode") and album_obj.get("streamable", 0) == 2
+        ]
+        if not items:
+            return None
+        return RecommendationFolder(
+            name="New releases",
+            translation_key="new_releases",
+            item_id=f"{self.instance_id}_news",
+            provider=self.instance_id,
+            icon="mdi-new-box",
+            items=UniqueList(items),
+        )
+
+    @use_cache(3600 * 3, base_class=RecommendationFolder)
+    async def _get_tops_recommendations(self) -> RecommendationFolder | None:
+        """Get the Top artists recommendation folder, or None when unavailable."""
+        data = await self._api_get(
+            "/tops?filters={style:0}&resources=styles,artists{maxResults:10},videos{maxResults:0}"
+        )
+        if not data:
+            return None
+        items: list[MediaItemType | ItemMapping | BrowseFolder] = [
+            self._parse_artist(artist_obj)
+            for artist_obj in data.get("results", {}).get("artists", [])
+            if artist_obj.get("id")
+        ]
+        if not items:
+            return None
+        return RecommendationFolder(
+            name="Top artists",
+            translation_key="top_artists",
+            item_id=f"{self.instance_id}_tops",
+            provider=self.instance_id,
+            icon="mdi-trending-up",
+            items=UniqueList(items),
+        )
+
+    @use_cache(3600 * 3, base_class=RecommendationFolder)
+    async def _get_radios_recommendations(self) -> RecommendationFolder | None:
+        """Get the Radios recommendation folder, or None when unavailable."""
+        data = await self._api_get(
+            "/radios?filters={theme:0}&resources=themes,theme-airplays{maxResults:10},home"
+        )
+        if not data:
+            return None
+        items: list[MediaItemType | ItemMapping | BrowseFolder] = [
+            self._parse_radio(item)
+            for item in data.get("results", {}).get("theme-airplays", [])[:10]
+            if item.get("id")
+        ]
+        if not items:
+            return None
+        return RecommendationFolder(
+            name="Radios",
+            translation_key="radios",
+            item_id=f"{self.instance_id}_radios",
+            provider=self.instance_id,
+            icon="mdi-radio",
+            items=UniqueList(items),
+        )

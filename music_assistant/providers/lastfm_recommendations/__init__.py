@@ -173,32 +173,6 @@ class LastFMRecommendationsProvider(MetadataProvider):
             clear_persisted_state=is_removed,
         )
 
-    async def _refresh_recommendations(self) -> None:
-        """Rebuild recommendation folders."""
-        # Build into a local list and swap it in atomically at the end, so a slow,
-        # rate-limited rebuild keeps serving the previous generation's rows instead of
-        # returning empty for folders that haven't been rebuilt yet.
-        new_folders: list[RecommendationFolder] = []
-
-        try:
-            self.logger.info("Building Last.fm recommendations")
-            async for folder in self.recommendations_manager.build_recommendation_folders():
-                new_folders.append(folder)
-            self._recommendation_folders = new_folders
-            self.logger.info(
-                "Last.fm recommendations built (%d folders)",
-                len(self._recommendation_folders),
-            )
-        except (AuthenticationFailed, InvalidToken) as err:
-            self.logger.error(
-                "Last.fm authentication failed — check your API key in the provider settings: %s",
-                err,
-            )
-        except ResourceTemporarilyUnavailable as err:
-            self.logger.warning("Last.fm rate-limited the refresh, will retry later: %s", err)
-        except MusicAssistantError as err:
-            self.logger.warning("Failed to build recommendations: %s", err)
-
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """Get this provider's available recommendation rows, without items."""
         # rows come from the precomputed in-memory folders: no backend I/O
@@ -227,6 +201,32 @@ class LastFMRecommendationsProvider(MetadataProvider):
             if folder.item_id == item_id:
                 return folder.items
         return UniqueList()
+
+    async def _refresh_recommendations(self) -> None:
+        """Rebuild recommendation folders."""
+        # Build into a local list and swap it in atomically at the end, so a slow,
+        # rate-limited rebuild keeps serving the previous generation's rows instead of
+        # returning empty for folders that haven't been rebuilt yet.
+        new_folders: list[RecommendationFolder] = []
+
+        try:
+            self.logger.info("Building Last.fm recommendations")
+            async for folder in self.recommendations_manager.build_recommendation_folders():
+                new_folders.append(folder)
+            self._recommendation_folders = new_folders
+            self.logger.info(
+                "Last.fm recommendations built (%d folders)",
+                len(self._recommendation_folders),
+            )
+        except (AuthenticationFailed, InvalidToken) as err:
+            self.logger.error(
+                "Last.fm authentication failed — check your API key in the provider settings: %s",
+                err,
+            )
+        except ResourceTemporarilyUnavailable as err:
+            self.logger.warning("Last.fm rate-limited the refresh, will retry later: %s", err)
+        except MusicAssistantError as err:
+            self.logger.warning("Failed to build recommendations: %s", err)
 
     async def get_similar_artists(self, artist: Artist, limit: int = 25) -> list[Artist]:
         """
