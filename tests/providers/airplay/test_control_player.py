@@ -156,6 +156,40 @@ def test_companion_pairing_follows_advertised_flags(flags: str, supported: bool)
     assert PlayerFeature.NEXT_PREVIOUS not in player.supported_features
 
 
+def test_playback_state_churn_does_not_force_control_reconnect() -> None:
+    """A receiver toggling volatile TXT state must not change the reconnect signature."""
+    idle = _service_info(
+        AIRPLAY_DISCOVERY_TYPE,
+        properties={"deviceid": DEVICE_ID, "pk": "device-key", "flags": "0x4"},
+    )
+    # Same device while receiving a stream: only the session `flags` bit differs.
+    streaming = _service_info(
+        AIRPLAY_DISCOVERY_TYPE,
+        properties={"deviceid": DEVICE_ID, "pk": "device-key", "flags": "0x404"},
+    )
+    assert AirPlayControlPlayer._service_signature(idle) == AirPlayControlPlayer._service_signature(
+        streaming
+    )
+
+    # TXT keys are case-insensitive (RFC 6763): re-casing keys is not a change.
+    recased = _service_info(
+        AIRPLAY_DISCOVERY_TYPE,
+        properties={"DeviceID": DEVICE_ID, "PK": "device-key", "Flags": "0x4"},
+    )
+    assert AirPlayControlPlayer._service_signature(idle) == AirPlayControlPlayer._service_signature(
+        recased
+    )
+
+    # A change to a connection-relevant field still forces a reconnect.
+    rekeyed = _service_info(
+        AIRPLAY_DISCOVERY_TYPE,
+        properties={"deviceid": DEVICE_ID, "pk": "rotated-key", "flags": "0x4"},
+    )
+    assert AirPlayControlPlayer._service_signature(idle) != AirPlayControlPlayer._service_signature(
+        rekeyed
+    )
+
+
 def test_power_feature_requires_credentials_or_connection() -> None:
     """POWER is advertised for stored Companion credentials or a live channel."""
     paired = _make_control_player(config_values={CONF_COMPANION_CREDENTIALS: "companion-creds"})

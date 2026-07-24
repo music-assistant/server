@@ -479,6 +479,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         radio_mode: bool = False,
         start_item: PlayableMediaItemType | str | None = None,
         sort_by: str | None = None,
+        start_from_beginning: bool = False,
     ) -> None:
         """
         Play media item(s) on the given queue.
@@ -490,12 +491,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             prefer enqueuing that URI directly.
         :param start_item: Optional item to start the playlist or album from.
         :param sort_by: Optional sort key to order tracks before applying start_item.
+        :param start_from_beginning: Start a podcast episode at position 0, ignoring any
+            saved resume position. The stored progress itself is left untouched.
         """
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         # Lock is acquired by the @handle_play_action decorator on the internal handler
-        await self._handle_play_media(queue_id, media, option, radio_mode, start_item, sort_by)
+        await self._handle_play_media(
+            queue_id, media, option, radio_mode, start_item, sort_by, start_from_beginning
+        )
 
     @api_command("player_queues/move_item", required_scope=Scope.QUEUES_CONTROL)
     def move_item(self, queue_id: str, queue_item_id: str, pos_shift: int = 1) -> None:

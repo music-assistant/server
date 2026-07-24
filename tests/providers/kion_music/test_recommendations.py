@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
@@ -100,6 +101,9 @@ def provider() -> KionMusicProvider:
     mass = Mock()
     mass.metadata.locale = "en_US"
     mass.translations.get_translation = Mock(return_value=None)
+    # default: every cache lookup is a miss (tests override to simulate warm entries)
+    mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
+    mass.cache.set = AsyncMock()
     manifest = Mock()
     manifest.domain = "kion_music"
     config = Mock()
@@ -126,7 +130,8 @@ async def test_get_recommendations_returns_static_rows_without_backend_calls(
     assert [f.item_id for f in result] == ROW_IDS
     assert _awaited_methods(client) == set()
     assert all(not f.items for f in result)
-    # Mood/Activity row titles are static; the rotating tag is only picked at items time.
+    # Mood/Activity row titles are static; the rotating tag only shows as subtitle
+    # once the tag-list cache is warm (cold here, so no subtitle).
     by_id = {f.item_id: f for f in result}
     assert by_id["mood_mix"].name == "Mood Mix"
     assert by_id["mood_mix"].translation_key == "mood_mix"
@@ -175,3 +180,63 @@ async def test_get_recommendation_items_unknown_id_returns_empty(
 
     assert list(result) == []
     assert _awaited_methods(client) == set()
+
+
+def _install_tag_cache(provider: KionMusicProvider, tags_by_category: dict[str, list[str]]) -> None:
+    """Serve the validated-tag-list cache entries as warm hits, everything else as a miss."""
+
+    async def _cache_get(key: str, **_kwargs: Any) -> tuple[Any, bool, bool]:
+        for category, tags in tags_by_category.items():
+            if key == f"_get_valid_tags_for_category.{category}":
+                return tags, True, True
+        return None, False, False
+
+    provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
+        side_effect=_cache_get
+    )
+    provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
+
+
+@pytest.mark.asyncio
+async def test_rows_subtitle_matches_served_items_tag(
+    provider: KionMusicProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With a warm tag cache the rows subtitle and the items call resolve the same tag."""
+    # freeze the clock so the hourly tag bucket cannot flip mid-test
+    monkeypatch.setattr(
+        "music_assistant.providers.kion_music.provider.utc",
+        lambda: datetime(2026, 7, 24, 12, 30, tzinfo=UTC),
+    )
+    mood_tags = ["chill", "focus"]
+    _install_tag_cache(provider, {"mood": mood_tags, "activity": ["workout"]})
+    client = cast("Mock", provider.client)
+
+    result = await provider.get_recommendations()
+
+    by_id = {f.item_id: f for f in result}
+    mood_tag = provider._rotating_row_tag("mood", mood_tags)
+    assert by_id["mood_mix"].subtitle == mood_tag.title()
+    assert by_id["activity_mix"].subtitle == "Workout"
+    # deterministic: a second rows call yields the same subtitle
+    again = {f.item_id: f for f in await provider.get_recommendations()}
+    assert again["mood_mix"].subtitle == by_id["mood_mix"].subtitle
+    # the tag came from the cache: rows still issue zero backend calls
+    assert _awaited_methods(client) == set()
+
+    await provider.get_recommendation_items("mood_mix")
+
+    # the items call independently derived the same tag from the cached list
+    client.get_tag_playlists.assert_any_await(mood_tag)
+    assert "get_landing_tags" not in _awaited_methods(client)
+
+
+@pytest.mark.asyncio
+async def test_rows_without_cached_tags_have_no_subtitle(provider: KionMusicProvider) -> None:
+    """With a cold tag cache the mood/activity rows have no subtitle."""
+    _install_cache_mocks(provider)
+
+    result = await provider.get_recommendations()
+
+    by_id = {f.item_id: f for f in result}
+    assert by_id["mood_mix"].subtitle is None
+    assert by_id["activity_mix"].subtitle is None

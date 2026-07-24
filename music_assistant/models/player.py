@@ -71,6 +71,7 @@ if TYPE_CHECKING:
     from music_assistant_models.player_queue import PlayerQueue
 
     from .player_provider import PlayerProvider
+    from .setup_flow import SetupSession
 
 # TypeVar for config value type inference
 _ConfigValueT = TypeVar("_ConfigValueT", bound=ConfigValueType)
@@ -872,6 +873,17 @@ class Player(ABC):
         # To override the default config entries, simply define an entry with the same key
         # and it will be used instead of the default one.
         return []
+
+    async def run_setup_flow(self, session: SetupSession) -> None:
+        """
+        Run the interactive setup flow for this player (e.g. pairing).
+
+        Override in player implementations that require user interaction to become
+        usable; players without an override report that there is nothing to set up.
+
+        :param session: The setup flow session used to interact with the user.
+        """
+        raise NotImplementedError
 
     @overload
     def get_config_value(

@@ -557,6 +557,81 @@ class QQMusicProvider(MusicProvider):
         # Persist complete credential once on init so legacy configs gain refresh fields.
         self._persist_credential()
 
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get the available QQ Music recommendation rows, without items."""
+        return [
+            RecommendationFolder(
+                item_id="guess_recommend",
+                provider=self.instance_id,
+                name="Recommended tracks",
+                translation_key="recommended_tracks",
+                icon="mdi-lightbulb-on-outline",
+            ),
+            RecommendationFolder(
+                item_id="new_songs",
+                provider=self.instance_id,
+                name="Recommended new tracks",
+                translation_key="recommended_new_tracks",
+                icon="mdi-music-note-plus",
+            ),
+            RecommendationFolder(
+                item_id="recommended_playlists",
+                provider=self.instance_id,
+                name="Recommended playlists",
+                translation_key="recommended_playlists",
+                icon="mdi-playlist-music",
+            ),
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single QQ Music recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList()
+        if item_id == "guess_recommend":
+            guess_response = await self._get_recommend_payload_cached(
+                "guess_recommend",
+                _RECOMMEND_GUESS_TTL,
+                lambda: self._qq_recommend.get_guess_recommend(credential=self._credential),
+            )
+            for item in extract_guess_recommend_tracks(self._to_dict(guess_response)):
+                with suppress(InvalidDataError, TypeError, ValueError):
+                    items.append(self._parse_track(item))
+            if not items:
+                # Fall back to radar recommendations when the personalised
+                # guess endpoint yields no usable tracks.
+                radar_response = await self._get_recommend_payload_cached(
+                    "guess_recommend_radar",
+                    _RECOMMEND_GUESS_TTL,
+                    self._qq_recommend.get_radar_recommend,
+                )
+                for item in extract_radar_recommend_tracks(self._to_dict(radar_response)):
+                    with suppress(InvalidDataError, TypeError, ValueError):
+                        items.append(self._parse_track(item))
+        elif item_id == "new_songs":
+            new_song_response = await self._get_recommend_payload_cached(
+                "new_songs",
+                _RECOMMEND_NEWSONG_TTL,
+                self._qq_recommend.get_recommend_newsong,
+            )
+            for item in extract_newsong_tracks(self._to_dict(new_song_response)):
+                with suppress(InvalidDataError, TypeError, ValueError):
+                    items.append(self._parse_track(item))
+        elif item_id == "recommended_playlists":
+            playlist_response = await self._get_recommend_payload_cached(
+                "recommended_playlists",
+                _RECOMMEND_PLAYLIST_TTL,
+                self._qq_recommend.get_recommend_songlist,
+            )
+            for item in extract_recommend_songlists(self._to_dict(playlist_response)):
+                with suppress(InvalidDataError, TypeError, ValueError):
+                    items.append(self._parse_playlist(item))
+        return items
+
     def _persist_credential(self) -> None:
         """Persist current credential into provider config values."""
         if not self._credential:
@@ -1451,81 +1526,6 @@ class QQMusicProvider(MusicProvider):
             except InvalidDataError, TypeError, ValueError:
                 continue
         return results
-
-    async def get_recommendations(self) -> list[RecommendationFolder]:
-        """Get the available QQ Music recommendation rows, without items."""
-        return [
-            RecommendationFolder(
-                item_id="guess_recommend",
-                provider=self.instance_id,
-                name="Recommended tracks",
-                translation_key="recommended_tracks",
-                icon="mdi-lightbulb-on-outline",
-            ),
-            RecommendationFolder(
-                item_id="new_songs",
-                provider=self.instance_id,
-                name="Recommended new tracks",
-                translation_key="recommended_new_tracks",
-                icon="mdi-music-note-plus",
-            ),
-            RecommendationFolder(
-                item_id="recommended_playlists",
-                provider=self.instance_id,
-                name="Recommended playlists",
-                translation_key="recommended_playlists",
-                icon="mdi-playlist-music",
-            ),
-        ]
-
-    async def get_recommendation_items(
-        self, item_id: str
-    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
-        """
-        Get the items for a single QQ Music recommendation row.
-
-        :param item_id: The item_id of the row, as returned by get_recommendations.
-        """
-        items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList()
-        if item_id == "guess_recommend":
-            guess_response = await self._get_recommend_payload_cached(
-                "guess_recommend",
-                _RECOMMEND_GUESS_TTL,
-                lambda: self._qq_recommend.get_guess_recommend(credential=self._credential),
-            )
-            for item in extract_guess_recommend_tracks(self._to_dict(guess_response)):
-                with suppress(InvalidDataError, TypeError, ValueError):
-                    items.append(self._parse_track(item))
-            if not items:
-                # Fall back to radar recommendations when the personalised
-                # guess endpoint yields no usable tracks.
-                radar_response = await self._get_recommend_payload_cached(
-                    "guess_recommend_radar",
-                    _RECOMMEND_GUESS_TTL,
-                    self._qq_recommend.get_radar_recommend,
-                )
-                for item in extract_radar_recommend_tracks(self._to_dict(radar_response)):
-                    with suppress(InvalidDataError, TypeError, ValueError):
-                        items.append(self._parse_track(item))
-        elif item_id == "new_songs":
-            new_song_response = await self._get_recommend_payload_cached(
-                "new_songs",
-                _RECOMMEND_NEWSONG_TTL,
-                self._qq_recommend.get_recommend_newsong,
-            )
-            for item in extract_newsong_tracks(self._to_dict(new_song_response)):
-                with suppress(InvalidDataError, TypeError, ValueError):
-                    items.append(self._parse_track(item))
-        elif item_id == "recommended_playlists":
-            playlist_response = await self._get_recommend_payload_cached(
-                "recommended_playlists",
-                _RECOMMEND_PLAYLIST_TTL,
-                self._qq_recommend.get_recommend_songlist,
-            )
-            for item in extract_recommend_songlists(self._to_dict(playlist_response)):
-                with suppress(InvalidDataError, TypeError, ValueError):
-                    items.append(self._parse_playlist(item))
-        return items
 
     async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""

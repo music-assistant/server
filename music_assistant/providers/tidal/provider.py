@@ -70,7 +70,7 @@ SUPPORTED_FEATURES = {
 }
 
 
-class TidalProvider(MusicProvider, RecommendationPayloadMixin):
+class TidalProvider(RecommendationPayloadMixin, MusicProvider):
     """Implementation of a Tidal MusicProvider."""
 
     def __init__(self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig):

@@ -6,6 +6,7 @@ import hashlib
 import platform
 import re
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -20,7 +21,7 @@ BINARY_DIR = Path("music_assistant/providers/airplay/bin")
 
 def fetch_airplay_cli(root: Path) -> Path | None:
     """
-    Download the container-pinned cliairplay binary when it is not present.
+    Install the container-pinned cliairplay binary when missing or outdated.
 
     :param root: Music Assistant server repository root.
     :return: Local binary path, or None when the current platform is unsupported.
@@ -39,11 +40,15 @@ def fetch_airplay_cli(root: Path) -> Path | None:
         if not destination.is_file():
             msg = f"cliairplay destination is not a file: {destination}"
             raise RuntimeError(msg)
-        print(f"Using existing AirPlay development binary: {destination}")
-        return destination
 
     dockerfile = root / "Dockerfile"
     version = _read_docker_arg(dockerfile, "CLIAIRPLAY_VERSION")
+    if destination.exists():
+        if not _binary_is_outdated(destination, version):
+            print(f"Using existing AirPlay development binary: {destination}")
+            return destination
+        print(f"Updating AirPlay development binary to {version}: {destination}")
+
     manifest_digest = _read_docker_arg(dockerfile, "CLIAIRPLAY_CHECKSUMS_SHA256")
     release_url = f"{RELEASE_BASE_URL}/{version}"
 
@@ -116,6 +121,56 @@ def _read_docker_arg(dockerfile: Path, name: str) -> str:
         msg = f"Unable to find {name} in {dockerfile}"
         raise RuntimeError(msg)
     return match.group(1)
+
+
+def _binary_is_outdated(binary_path: Path, pinned_version: str) -> bool:
+    """
+    Return whether an existing release binary predates the Docker pin.
+
+    Unknown versions are treated as local development builds and preserved.
+
+    :param binary_path: Existing cliairplay executable.
+    :param pinned_version: Release version configured in the Dockerfile.
+    """
+    current = _read_binary_version(binary_path)
+    pinned = _parse_release_version(pinned_version)
+    return current is not None and pinned is not None and current < pinned
+
+
+def _read_binary_version(binary_path: Path) -> tuple[int, int, int] | None:
+    """
+    Return the semantic version reported by a cliairplay executable.
+
+    :param binary_path: cliairplay executable to inspect.
+    """
+    try:
+        result = subprocess.run(  # noqa: S603
+            [binary_path, "--check"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=5,
+        )
+    except OSError, subprocess.TimeoutExpired:
+        return None
+    if result.returncode != 0:
+        return None
+    match = re.search(r"\bcliairplay\s+(v?\d+\.\d+\.\d+)\s+check\b", result.stdout)
+    if match is None:
+        return None
+    return _parse_release_version(match.group(1))
+
+
+def _parse_release_version(value: str) -> tuple[int, int, int] | None:
+    """
+    Parse a three-part cliairplay release version.
+
+    :param value: Version with an optional ``v`` prefix.
+    """
+    match = re.fullmatch(r"v?(\d+)\.(\d+)\.(\d+)", value.strip())
+    if match is None:
+        return None
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
 
 
 def _binary_digest(manifest: bytes, asset_name: str) -> str:

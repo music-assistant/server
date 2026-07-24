@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -34,11 +34,22 @@ def _payload_dicts(payload: list[RecommendationFolder]) -> list[dict[str, Any]]:
     return [folder.to_dict() for folder in payload]
 
 
-class _PayloadProvider(RecommendationPayloadMixin):
+class _UnloadableBase:
+    """Stands in for the Provider base at the end of the cooperative unload chain."""
+
+    unload_chain_called = False
+
+    async def unload(self, is_removed: bool = False) -> None:
+        self.unload_chain_called = True
+
+
+class _PayloadProvider(RecommendationPayloadMixin, _UnloadableBase):
     """Minimal host implementing the mixin's requirements, with a dict-backed fake cache."""
 
-    domain = "test_payload"
-    instance_id = INSTANCE_ID
+    # the mixin is typed against the real Provider base; the fake overrides its
+    # (final) identity properties with plain values, which is fine at runtime
+    domain = "test_payload"  # type: ignore[misc]
+    instance_id = INSTANCE_ID  # type: ignore[misc]
 
     def __init__(self, fetch: AsyncMock) -> None:
         self.logger = logging.getLogger(__name__)
@@ -205,7 +216,7 @@ async def test_cold_start_rows_then_items_before_store_lands_fetches_once() -> N
         await store_gate.wait()
         await plain_set(key, data, **kwargs)
 
-    provider.mass.cache.set = AsyncMock(side_effect=_gated_set)
+    provider.mass.cache.set = AsyncMock(side_effect=_gated_set)  # type: ignore[method-assign]
 
     rows = await provider._recommendation_rows_from_payload()
     items = await provider._recommendation_items_from_payload(f"{INSTANCE_ID}_editorial")
@@ -333,7 +344,7 @@ async def test_fresh_persistent_entry_serves_cold_instance_without_fetch() -> No
 
     fetch.assert_not_awaited()
     # the cache db was read exactly once; the items call was served from memory
-    provider.mass.cache.get_with_freshness.assert_awaited_once()
+    cast("AsyncMock", provider.mass.cache.get_with_freshness).assert_awaited_once()
     assert [row.item_id for row in rows] == [folder.item_id for folder in payload]
     assert [item.item_id for item in items] == ["t1"]
 
@@ -372,14 +383,14 @@ async def test_refresh_raising_fetch_does_not_store_and_does_not_poison_retry() 
     # warm memory and the persistent cache with the stale payload
     await provider._recommendation_payload()
     await _drain_background(provider)
-    provider.mass.cache.set.reset_mock()
+    cast("AsyncMock", provider.mass.cache.set).reset_mock()
 
     fetch.side_effect = RuntimeError("backend down")
 
     with pytest.raises(RuntimeError, match="backend down"):
         await provider._refresh_recommendation_payload()
 
-    provider.mass.cache.set.assert_not_awaited()
+    cast("AsyncMock", provider.mass.cache.set).assert_not_awaited()
     # the previously fetched payload still serves from memory
     assert await provider._recommendation_payload() == stale
     assert fetch.await_count == 2
@@ -392,7 +403,7 @@ async def test_refresh_raising_fetch_does_not_store_and_does_not_poison_retry() 
 
     assert result == fresh
     await _drain_background(provider)
-    provider.mass.cache.set.assert_awaited_once()
+    cast("AsyncMock", provider.mass.cache.set).assert_awaited_once()
     assert await provider._recommendation_payload() == fresh
     assert fetch.await_count == 3
 
@@ -506,3 +517,67 @@ async def test_failed_fetch_propagates_to_all_waiters_and_retries() -> None:
     fetch.return_value = payload
     assert await provider._recommendation_payload() == payload
     assert fetch.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_unload_cancels_inflight_cold_fetch_and_continues_chain() -> None:
+    """unload() cancels a hanging cold fetch and still runs the provider unload chain."""
+    started = asyncio.Event()
+
+    async def _hanging_fetch() -> list[RecommendationFolder]:
+        started.set()
+        await asyncio.Event().wait()
+        return []
+
+    provider = _PayloadProvider(AsyncMock(side_effect=_hanging_fetch))
+    caller = asyncio.create_task(provider._recommendation_payload())
+    await started.wait()
+    task = provider._recommendation_payload_task
+    assert task is not None
+
+    await provider.unload()
+
+    assert provider.unload_chain_called is True
+    # the fetch was cancelled, awaited and its handle cleared before the chain continued
+    assert task.cancelled()
+    assert provider._recommendation_payload_task is None
+    with pytest.raises(asyncio.CancelledError):
+        await caller
+
+
+@pytest.mark.asyncio
+async def test_unload_cancels_background_refresh() -> None:
+    """unload() cancels an in-flight stale-payload background refresh."""
+    stale = _make_payload()
+    started = asyncio.Event()
+
+    async def _hanging_fetch() -> list[RecommendationFolder]:
+        started.set()
+        await asyncio.Event().wait()
+        return []
+
+    provider = _PayloadProvider(AsyncMock(side_effect=_hanging_fetch))
+    provider.seed_cache(stale)
+    provider.cache_is_fresh = False
+
+    # serves the stale payload and schedules the (hanging) background refresh
+    assert _payload_dicts(await provider._recommendation_payload()) == _payload_dicts(stale)
+    await started.wait()
+    task = provider._recommendation_refresh_task
+    assert task is not None
+
+    await provider.unload()
+
+    assert provider.unload_chain_called is True
+    assert task.cancelled()
+    assert provider._recommendation_refresh_task is None
+
+
+@pytest.mark.asyncio
+async def test_unload_without_inflight_tasks_is_a_noop() -> None:
+    """unload() on an idle provider just continues the unload chain."""
+    provider = _PayloadProvider(AsyncMock(return_value=[]))
+
+    await provider.unload()
+
+    assert provider.unload_chain_called is True

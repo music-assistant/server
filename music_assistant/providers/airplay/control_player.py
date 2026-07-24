@@ -81,6 +81,14 @@ if TYPE_CHECKING:
 _CONTROL_RECONNECT_DELAY: Final[float] = 30.0
 _WAKE_TIMEOUT: Final[float] = 10.0
 
+# mDNS TXT keys whose values change with transient playback, session or group
+# state - most notably `flags`, which a receiver toggles while it is receiving a
+# stream. They never affect how the control connection is established, so a
+# change must not force a reconnect: doing so made Apple TVs tear down and
+# re-establish the control channel on every stream start and stop, each time
+# surfacing the on-screen pairing code. Compared case-insensitively (RFC 6763).
+_VOLATILE_DISCOVERY_KEYS: Final = frozenset({"flags", "gcgl", "gid", "igl", "gpn", "pgcgl"})
+
 _CONNECTION_ERRORS = (
     pyatv_exceptions.AuthenticationError,
     pyatv_exceptions.BackOffError,
@@ -269,9 +277,15 @@ class AirPlayControlPlayer(AirPlayPlayer):
         await self._run_control_command(device.remote_control.pause(), "pause")
 
     async def stop(self) -> None:
-        """Stop Music Assistant or external playback."""
+        """Stop Music Assistant playback, or return the device to its home screen."""
         if self._stream_active:
             await super().stop()
+            return
+        # For external playback there is no real "stop"; returning to the home
+        # screen backgrounds the current app, which is the closest equivalent.
+        device = self._device_for_feature(FeatureName.Home)
+        if device is not None:
+            await self._run_control_command(device.remote_control.home(), "stop")
             return
         device = self._device_for_feature(FeatureName.Stop)
         if device is not None:
@@ -297,7 +311,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         if device is None:
             await super().volume_set(volume_level)
             return
-        await self._run_control_command(device.audio.set_volume(volume_level), "set volume")
+        await self._run_volume_command(device.audio.set_volume(volume_level), "set volume")
         self._handle_volume_update("command", volume_level)
 
     async def volume_mute(self, muted: bool) -> None:
@@ -313,13 +327,13 @@ class AirPlayControlPlayer(AirPlayPlayer):
                 return
             if self.volume_level and self.volume_level > 0:
                 self._volume_before_mute = self.volume_level
-            await self._run_control_command(device.audio.set_volume(0), "mute")
+            await self._run_volume_command(device.audio.set_volume(0), "mute")
             self._handle_volume_update("command", 0)
             return
         if not self.volume_muted:
             return
         volume = self._volume_before_mute or self.volume_level or FALLBACK_VOLUME
-        await self._run_control_command(device.audio.set_volume(volume), "unmute")
+        await self._run_volume_command(device.audio.set_volume(volume), "unmute")
         self._handle_volume_update("command", volume)
 
     async def next_track(self) -> None:
@@ -676,6 +690,25 @@ class AirPlayControlPlayer(AirPlayPlayer):
         """Run a pyatv command and expose failures as player command errors."""
         try:
             await command
+        except _COMMAND_ERRORS as err:
+            raise PlayerCommandFailed(
+                f"Unable to {description} {self.display_name}: {err}"
+            ) from err
+
+    async def _run_volume_command(self, command: Awaitable[None], description: str) -> None:
+        """Run a native volume command, tolerating a missing confirmation event."""
+        # pyatv waits (up to 5s) for a pushed volume confirmation after a Companion
+        # volume command. Apple TVs that pass volume through to an HDMI-CEC amplifier
+        # apply the change but never emit that event, so the call times out even
+        # though it succeeded. Treat the timeout as success and let the caller apply
+        # the requested level; genuine command failures still surface.
+        try:
+            await command
+        except TimeoutError:
+            self.logger.debug(
+                "No volume confirmation from %s; assuming the change was applied",
+                self.display_name,
+            )
         except _COMMAND_ERRORS as err:
             raise PlayerCommandFailed(
                 f"Unable to {description} {self.display_name}: {err}"
@@ -1111,12 +1144,23 @@ class AirPlayControlPlayer(AirPlayPlayer):
         """Apply external playback state received over the MRP tunnel."""
         if self._stream_active:
             return
+        app = self._mrp_device.metadata.app if self._mrp_device else None
         playback_state = {
             DeviceState.Playing: PlaybackState.PLAYING,
             DeviceState.Loading: PlaybackState.PLAYING,
             DeviceState.Seeking: PlaybackState.PLAYING,
             DeviceState.Paused: PlaybackState.PAUSED,
         }.get(playing.device_state, PlaybackState.IDLE)
+        # Many tvOS apps (e.g. Netflix) report Idle rather than Paused when
+        # paused. While the same app stays the active source, keep it paused
+        # instead of going idle so transport controls resume the app itself
+        # rather than falling back to the Music Assistant queue.
+        if (
+            playback_state == PlaybackState.IDLE
+            and app is not None
+            and self._attr_active_source == app.identifier
+        ):
+            playback_state = PlaybackState.PAUSED
         self._attr_playback_state = playback_state
         if playback_state == PlaybackState.IDLE:
             self._attr_active_source = None
@@ -1124,7 +1168,6 @@ class AirPlayControlPlayer(AirPlayPlayer):
             self.update_state()
             return
 
-        app = self._mrp_device.metadata.app if self._mrp_device else None
         source_id = app.identifier if app else "airplay_control"
         source_name = (app.name or app.identifier) if app else "AirPlay device"
         self._attr_active_source = source_id
@@ -1206,11 +1249,20 @@ class AirPlayControlPlayer(AirPlayPlayer):
         """Return fields that require a pyatv reconnection when changed."""
         if info is None:
             return None
+        # TXT keys are case-insensitive (RFC 6763); casefold them so a re-cased
+        # key is never mistaken for a connection-relevant change.
+        stable_properties = tuple(
+            sorted(
+                (key.casefold(), value)
+                for key, value in info.decoded_properties.items()
+                if key.casefold() not in _VOLATILE_DISCOVERY_KEYS
+            )
+        )
         return (
             info.name,
             info.port,
             tuple(info.addresses),
-            tuple(sorted(info.decoded_properties.items())),
+            stable_properties,
         )
 
 
