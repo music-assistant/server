@@ -1,8 +1,12 @@
 """Unit tests for the AirPlay stream CLI argument assembly."""
 
 import asyncio
+import errno
 import logging
+import os
+import threading
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -10,6 +14,7 @@ import pytest
 from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
     CONF_ENCRYPTION,
@@ -319,6 +324,184 @@ def test_command_pipe_paths_are_unique_per_stream() -> None:
     first_stream = AirPlayStream(player)
     second_stream = AirPlayStream(player)
     assert first_stream.commands_pipe.path != second_stream.commands_pipe.path
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_write_returns_false_without_reader(tmp_path: Path) -> None:
+    """A command pipe write reports when no reader can receive the command."""
+    pipe_path = tmp_path / "commands"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+
+    with patch("music_assistant.helpers.named_pipe.time.sleep"):
+        assert await writer.write(b"ACTION=STANDBY\n") is False
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_write_returns_true_for_complete_write() -> None:
+    """A complete command pipe write reports successful delivery."""
+    data = b"ACTION=STANDBY\n"
+    writer = AsyncNamedPipeWriter("/tmp/commands")  # noqa: S108
+    writer._write_fd = 42
+
+    with patch("music_assistant.helpers.named_pipe.os.write", return_value=len(data)) as write:
+        assert await writer.write(data) is True
+
+    write.assert_called_once_with(42, data)
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_write_completes_short_write() -> None:
+    """A short command pipe write continues with the remaining data."""
+    data = b"ACTION=STANDBY\n"
+    writer = AsyncNamedPipeWriter("/tmp/commands")  # noqa: S108
+    writer._write_fd = 42
+
+    with patch(
+        "music_assistant.helpers.named_pipe.os.write",
+        side_effect=[5, len(data) - 5],
+    ) as write:
+        assert await writer.write(data) is True
+
+    assert write.call_args_list == [call(42, memoryview(data)), call(42, memoryview(data)[5:])]
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_write_returns_false_and_resets_fd_on_epipe() -> None:
+    """A closed command pipe reader resets the writer for a later retry."""
+    writer = AsyncNamedPipeWriter("/tmp/commands")  # noqa: S108
+    writer._write_fd = 42
+
+    with (
+        patch(
+            "music_assistant.helpers.named_pipe.os.write",
+            side_effect=OSError(errno.EPIPE, "reader closed"),
+        ),
+        patch("music_assistant.helpers.named_pipe.os.close") as close_fd,
+    ):
+        assert await writer.write(b"ACTION=STANDBY\n") is False
+
+    close_fd.assert_called_once_with(42)
+    assert writer._write_fd is None
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_write_resets_fd_when_epipe_follows_partial_write() -> None:
+    """An EPIPE after a short write reports failure and resets the writer."""
+    data = b"ACTION=STANDBY\n"
+    writer = AsyncNamedPipeWriter("/tmp/commands")  # noqa: S108
+    writer._write_fd = 42
+
+    with (
+        patch(
+            "music_assistant.helpers.named_pipe.os.write",
+            side_effect=[5, OSError(errno.EPIPE, "reader closed")],
+        ) as write,
+        patch("music_assistant.helpers.named_pipe.os.close") as close_fd,
+    ):
+        assert await writer.write(data) is False
+
+    assert write.call_args_list == [call(42, memoryview(data)), call(42, memoryview(data)[5:])]
+    close_fd.assert_called_once_with(42)
+    assert writer._write_fd is None
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_writes_are_serialized() -> None:
+    """Concurrent command writes cannot interleave after a short write."""
+    writer = AsyncNamedPipeWriter("/tmp/commands")  # noqa: S108
+    writer._write_fd = 42
+    written_chunks: list[bytes] = []
+    first_chunk_written = threading.Event()
+    release_first_write = threading.Event()
+
+    def write_chunk(_fd: int, data: memoryview) -> int:
+        chunk = bytes(data)
+        if not written_chunks:
+            written_chunks.append(chunk[:2])
+            first_chunk_written.set()
+            assert release_first_write.wait(timeout=1)
+            return 2
+        written_chunks.append(chunk)
+        return len(chunk)
+
+    with patch("music_assistant.helpers.named_pipe.os.write", side_effect=write_chunk):
+        first_write = asyncio.create_task(writer.write(b"FIRST\n"))
+        assert await asyncio.to_thread(first_chunk_written.wait, 1)
+        second_write = asyncio.create_task(writer.write(b"SECOND\n"))
+        await asyncio.sleep(0)
+        release_first_write.set()
+        assert all(await asyncio.gather(first_write, second_write))
+
+    assert b"".join(written_chunks) == b"FIRST\nSECOND\n"
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_write_propagates_non_epipe_errors() -> None:
+    """An unexpected command pipe write error remains visible to the caller."""
+    writer = AsyncNamedPipeWriter("/tmp/commands")  # noqa: S108
+    writer._write_fd = 42
+
+    with (
+        patch(
+            "music_assistant.helpers.named_pipe.os.write",
+            side_effect=OSError(errno.EBADF, "bad file descriptor"),
+        ),
+        pytest.raises(OSError, match="bad file descriptor"),
+    ):
+        await writer.write(b"ACTION=STANDBY\n")
+
+
+@pytest.mark.asyncio
+async def test_cli_command_updates_timestamp_after_successful_delivery() -> None:
+    """A delivered command updates the player's last command timestamp."""
+    player = _make_player()
+    player.last_command_sent = 10.0
+    stream = AirPlayStream(player)
+    stream._cli_proc = MagicMock(closed=False)
+
+    with (
+        patch.object(stream.commands_pipe, "write", new=AsyncMock(return_value=True)),
+        patch("music_assistant.providers.airplay.stream.time.time", return_value=20.0),
+    ):
+        assert await stream.send_cli_command("ACTION=STANDBY") is True
+
+    assert player.last_command_sent == 20.0
+
+
+@pytest.mark.asyncio
+async def test_cli_command_preserves_timestamp_when_delivery_fails() -> None:
+    """A dropped command leaves the player's last command timestamp unchanged."""
+    player = _make_player()
+    player.last_command_sent = 10.0
+    stream = AirPlayStream(player)
+    stream._cli_proc = MagicMock(closed=False)
+
+    with patch.object(stream.commands_pipe, "write", new=AsyncMock(return_value=False)):
+        assert await stream.send_cli_command("ACTION=STANDBY") is False
+
+    assert player.last_command_sent == 10.0
+
+
+@pytest.mark.asyncio
+async def test_cli_command_preserves_timestamp_when_delivery_raises() -> None:
+    """A command write error leaves the player's last command timestamp unchanged."""
+    player = _make_player()
+    player.last_command_sent = 10.0
+    stream = AirPlayStream(player)
+    stream._cli_proc = MagicMock(closed=False)
+
+    with (
+        patch.object(
+            stream.commands_pipe,
+            "write",
+            new=AsyncMock(side_effect=OSError("command pipe failed")),
+        ),
+        pytest.raises(OSError, match="command pipe failed"),
+    ):
+        await stream.send_cli_command("ACTION=STANDBY")
+
+    assert player.last_command_sent == 10.0
 
 
 @pytest.mark.asyncio

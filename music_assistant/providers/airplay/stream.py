@@ -237,11 +237,17 @@ class AirPlayStream:
             return
         await self._cli_proc.write_eof()
 
-    async def send_cli_command(self, command: str) -> None:
-        """Send an interactive command to the running CLI binary."""
+    async def send_cli_command(self, command: str) -> bool:
+        """
+        Send an interactive command to the running CLI binary.
+
+        :param command: Command to send.
+        :return: True when the complete command is delivered, False when the
+            command is ignored, the CLI is unavailable, or the write is dropped.
+        """
         if self._stopped or self._stopping:
-            return
-        await self._write_cli_command(command)
+            return False
+        return await self._write_cli_command(command)
 
     def next_generation(self) -> int:
         """Allocate the next media generation number and its status events."""
@@ -798,11 +804,13 @@ class AirPlayStream:
             self._cleanup_complete = True
             self._cli_proc = None
 
-    async def _write_cli_command(self, command: str) -> None:
+    async def _write_cli_command(self, command: str) -> bool:
         """Write an interactive command regardless of stream teardown state."""
         if not self._cli_proc or self._cli_proc.closed:
-            return
-        self.player.last_command_sent = time.time()
+            return False
         if not command.endswith("\n"):
             command += "\n"
-        await self.commands_pipe.write(command.encode("utf-8"))
+        command_delivered = await self.commands_pipe.write(command.encode("utf-8"))
+        if command_delivered:
+            self.player.last_command_sent = time.time()
+        return command_delivered

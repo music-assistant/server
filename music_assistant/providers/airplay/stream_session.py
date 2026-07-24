@@ -208,8 +208,9 @@ class AirPlayStreamSession:
 
         The next play_media (resume or seek) commits a new generation over the
         live connections — the same coordinated warm restart as seek/next.
-        Returns False when any member lacks a running, connected stream so the
-        caller can fall back to a full stop.
+        Returns False when any member lacks a running, connected stream or its
+        standby command cannot be delivered so the caller can fall back to a
+        full stop.
         """
         if not all(
             p.stream is not None and p.stream.running and p.stream.connected
@@ -225,7 +226,19 @@ class AirPlayStreamSession:
                 await ffmpeg.kill()
             stream = player.stream
             assert stream
-            await stream.send_cli_command("ACTION=STANDBY")
+            try:
+                command_delivered = await stream.send_cli_command("ACTION=STANDBY")
+            except Exception as err:
+                self.prov.logger.warning(
+                    "Could not park AirPlay player %s: %s", player.player_id, err
+                )
+                return False
+            if not command_delivered:
+                self.prov.logger.warning(
+                    "Could not park AirPlay player %s: standby command was not delivered",
+                    player.player_id,
+                )
+                return False
             player.set_state_from_stream(state=PlaybackState.PAUSED, stream=stream)
         # a parked session has no live timeline; the resume re-anchors it
         self.seconds_streamed = 0
