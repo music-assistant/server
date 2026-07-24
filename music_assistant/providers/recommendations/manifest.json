@@ -3,7 +3,7 @@
   "domain": "recommendations",
   "stage": "stable",
   "name": "Library Recommendations",
-  "description": "Provides library-based recommendation rows for the Discover page.",
+  "description": "Provides standard library-based recommendation rows.",
   "codeowners": ["@music-assistant"],
   "requirements": [],
   "documentation": "",

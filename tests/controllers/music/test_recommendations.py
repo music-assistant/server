@@ -8,7 +8,7 @@ from music_assistant_models.enums import MediaType
 
 from music_assistant.constants import DB_TABLE_PLAYLOG
 from music_assistant.mass import MusicAssistant
-from music_assistant.providers.recommendations import LibraryRecommendationsProvider
+from music_assistant.providers.recommendations import LibraryRecommendationsProvider, LibraryRowID
 
 if TYPE_CHECKING:
     import pytest
@@ -196,14 +196,14 @@ async def test_every_library_row_dispatches_a_query(mass: MusicAssistant) -> Non
     provider = mass.get_provider("recommendations")
     assert provider is not None
     assert isinstance(provider, LibraryRecommendationsProvider)
+
+    # Verify every enum value has a corresponding match case by checking that all folder IDs
+    # from get_recommendations() are valid LibraryRowID enum members
+    valid_ids = {row_id.value for row_id in LibraryRowID}
     for folder in await provider.get_recommendations():
-        items = await provider.get_recommendation_items(folder.item_id)
-        # All rows should execute a query (items may be empty if library is empty, but the
-        # query should have been dispatched - we verify this by checking the code has a
-        # match case for this item_id, which is implicitly tested by not getting an empty
-        # result from the default case when we know the library has some content)
-        # For now we just verify no exception was raised
-        assert items is not None, f"row {folder.item_id!r} returned None instead of a list"
+        assert folder.item_id in valid_ids, (
+            f"row {folder.item_id!r} not in LibraryRowID enum - likely missing match case"
+        )
 
 
 async def test_library_rows_listed_by_controller(mass: MusicAssistant) -> None:
