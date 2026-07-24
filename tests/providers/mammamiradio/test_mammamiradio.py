@@ -749,6 +749,7 @@ def test_normalize_base_url_accepts(raw: str, expected: str) -> None:
         "http://localhost:notaport",
         "http://local host:8000",
         "http://local\thost:8000",
+        "http://host\\evil:8000",
     ],
 )
 def test_normalize_base_url_rejects_bad_urls(raw: str) -> None:
@@ -782,10 +783,10 @@ def test_supports_v1_schema(value: Any, expected: bool) -> None:
 
 @pytest.mark.parametrize(
     "value",
-    ["//evil/stream", "radio/live.mp3", "/", None, ""],
+    ["//evil/stream", "radio/live.mp3", "/", None, "", "//["],
 )
 def test_stream_path_from_contract_rejects_unsafe_values(value: Any) -> None:
-    """Protocol-relative, schemeless-relative, or unusable values fall back to /stream."""
+    """Protocol-relative, schemeless-relative, or unparsable values fall back to /stream."""
     assert _stream_path_from_contract(value) == "/stream"
 
 
@@ -940,8 +941,12 @@ def test_v1_music_non_string_fields_coerced() -> None:
         ("javascript:alert(1)", None),
         ("file:///etc/passwd", None),
         ("relative/art.jpg", None),
+        ("http://", None),
+        ("http:///pathonly.jpg", None),
+        ("http://[bad/art.jpg", None),
         ("http://art/ok.jpg", "http://art/ok.jpg"),
         ("https://art/ok.jpg", "https://art/ok.jpg"),
+        ("HTTPS://art/ok.jpg", "HTTPS://art/ok.jpg"),
     ],
 )
 def test_v1_artwork_non_http_scheme_dropped(artwork: str, expected: str | None) -> None:
@@ -1093,6 +1098,19 @@ def test_v1_up_next_missing_title_suppresses_description(up_title: str | None) -
 def test_v1_mapper_is_total_against_malformed_payload() -> None:
     """Non-dict now_playing / non-list up_next / non-dict station never raise."""
     payload = {"station": ["x"], "now_playing": ["not", "a", "dict"], "up_next": {"bad": 1}}
+    sm = _v1_to_stream_metadata(payload, show_upcoming=True)
+    assert sm.title == "Mamma Mi Radio"
+    assert sm.description is None
+
+
+@pytest.mark.parametrize("seg_class", [[], {}, 7, None, True])
+def test_v1_mapper_non_string_segment_class_never_raises(seg_class: Any) -> None:
+    """A non-str segment_class renders the station frame (unhashable values must not raise)."""
+    payload = {
+        "station": {"name": "Mamma Mi Radio"},
+        "now_playing": {"segment_class": seg_class, "title": "x"},
+        "up_next": [{"segment_class": "music", "title": "Next"}],
+    }
     sm = _v1_to_stream_metadata(payload, show_upcoming=True)
     assert sm.title == "Mamma Mi Radio"
     assert sm.description is None

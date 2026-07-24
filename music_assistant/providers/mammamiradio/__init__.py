@@ -11,6 +11,7 @@ See: https://github.com/florianhorner/mammamiradio
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit, urlunsplit
 
@@ -145,6 +146,11 @@ def _normalize_base_url(value: Any) -> str:
     if not hostname:
         raise ValueError("base URL has no hostname")
     netloc = parts.netloc.rsplit("@", 1)[-1]
+    # urlsplit accepts characters aiohttp later rejects (e.g. a backslash);
+    # rejecting them here keeps that mistake a localized setup error instead
+    # of a misleading probe failure.
+    if not re.fullmatch(r"[A-Za-z0-9._\-:\[\]]+", netloc):
+        raise ValueError("base URL host contains invalid characters")
     return urlunsplit((parts.scheme, netloc, parts.path.rstrip("/"), "", ""))
 
 
@@ -153,7 +159,13 @@ def _stream_path_from_contract(value: Any) -> str:
     raw = _clean_str(value)
     if raw is None:
         return STREAM_PATH
-    parts = urlsplit(raw)
+    try:
+        parts = urlsplit(raw)
+    except ValueError:
+        # e.g. an invalid IPv6-looking value; a malformed contract field must
+        # never escape init as a non-MusicAssistantError (that would skip
+        # MA's automatic load retry).
+        return STREAM_PATH
     path = parts.path.rstrip("/")
     if parts.scheme or parts.netloc or not path.startswith("/") or not path:
         return STREAM_PATH
@@ -214,7 +226,10 @@ def _v1_to_stream_metadata(payload: dict[str, Any], *, show_upcoming: bool) -> S
     seg_class: Any = None
 
     if now is not None:
+        # Only string classes are meaningful; a non-str value must not reach the
+        # set-membership test below (unhashable types would raise).
         seg_class = now.get("segment_class")
+        seg_class = seg_class if isinstance(seg_class, str) else None
         np_title = _clean_str(now.get("title"))
         if seg_class == "music":
             title = np_title
@@ -241,9 +256,15 @@ def _v1_to_stream_metadata(payload: dict[str, Any], *, show_upcoming: bool) -> S
     # Ensure title is never empty.
     title = _clean_str(title) or station_name
 
-    # Only http(s) artwork may reach MA media surfaces.
-    if image_url is not None and not image_url.startswith(("http://", "https://")):
-        image_url = None
+    # Only http(s) artwork with a host may reach MA media surfaces.
+    if image_url is not None:
+        try:
+            art = urlsplit(image_url)
+        except ValueError:
+            image_url = None
+        else:
+            if art.scheme.lower() not in ("http", "https") or not art.netloc:
+                image_url = None
 
     description: str | None = None
     if now is not None and seg_class in _V1_ACTIVE_CLASSES and show_upcoming and up_next:
