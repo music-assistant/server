@@ -2010,9 +2010,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 key=cache_key_json_object, category=int(summary), data=json_object
             )
 
-        collections_column = (
-            "collections" if summary else 'json_extract("metadata", "$.collections")'
-        )
+        collections_column = "collections" if summary else "json_extract(metadata, '$.collections')"
 
         supported_order_keys = [
             "name",
