@@ -15,7 +15,12 @@ from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.ffmpeg import FFMpeg
 
-from .constants import AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS, StreamingProtocol
+from .constants import (
+    AIRPLAY_GROUP_START_LEAD_MS,
+    AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
+    AIRPLAY_START_LEAD_MS,
+    StreamingProtocol,
+)
 from .helpers import get_final_output_format
 from .stream import AirPlayStream
 
@@ -99,11 +104,14 @@ class AirPlayStreamSession:
             await asyncio.gather(
                 *[p.stream.wait_for_connection() for p in self.sync_clients if p.stream]
             )
-            # The binary buffers stdin into its ring from process start; feed audio
-            # first, then anchor. The setup lead plus deadline pacing fill the
-            # receiver before the commanded start (no PREPARE / prime barrier).
+            # The binary buffers stdin into its ring from process start; feed
+            # audio first and wait for every member to confirm it flowing, then
+            # anchor with a short lead. Readiness is fully event-driven
+            # (connected + audio), so no guessed setup time is needed; the
+            # binary bursts the receiver pre-fill after START.
             self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
-            await self._start_members(position_ms)
+            await self._wait_members_audio_present()
+            await self._start_members(position_ms, self._anchor_start_unix_ms())
         except asyncio.CancelledError:
             await self.stop()
             raise
@@ -170,7 +178,11 @@ class AirPlayStreamSession:
             self.seconds_streamed = 0
             self._pcm_buffer.clear()
             self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
-            await self._start_members(position_ms)
+            # Anchor only after every member confirms the new audio flowing;
+            # the live connection and clock survive the flush, so a short
+            # re-anchor lead replaces the full setup lead.
+            await self._wait_members_audio_present()
+            await self._start_members(position_ms, self._anchor_start_unix_ms())
         except asyncio.CancelledError:
             raise
         except Exception as err:
@@ -658,6 +670,21 @@ class AirPlayStreamSession:
         airplay_player.stream.session = self
         await airplay_player.stream.connect(use_shared_ptp)
         await self._start_player_ffmpeg(airplay_player, self.media)
+
+    def _anchor_start_unix_ms(self) -> int:
+        """Return the shared audible-start instant for a readiness-confirmed start."""
+        lead_ms = (
+            AIRPLAY_START_LEAD_MS if len(self.sync_clients) == 1 else AIRPLAY_GROUP_START_LEAD_MS
+        )
+        return int(time.time() * 1000) + lead_ms
+
+    async def _wait_members_audio_present(self) -> None:
+        """Wait until every member's binary reports the new audio flowing."""
+        results = await asyncio.gather(
+            *[p.stream.wait_audio_present() for p in self.sync_clients if p.stream]
+        )
+        if not all(results):
+            raise PlayerCommandFailed("audio feed was not confirmed")
 
     async def _start_members(
         self,

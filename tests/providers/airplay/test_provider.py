@@ -630,6 +630,7 @@ async def test_session_start_applies_uniform_ptp_decision_to_all_members() -> No
     for player in players:
         player.stream = MagicMock()
         player.stream.wait_for_connection = AsyncMock()
+        player.stream.wait_audio_present = AsyncMock(return_value=True)
         player.stream.start = AsyncMock()
     session = _make_ptp_session(prov, players)
 
@@ -653,6 +654,7 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
     for player in players:
         player.stream = MagicMock()
         player.stream.wait_for_connection = AsyncMock()
+        player.stream.wait_audio_present = AsyncMock(return_value=True)
         player.stream.start = AsyncMock()
         player.config.get_value = MagicMock(return_value=0)
     session = _make_ptp_session(prov, players)
@@ -674,11 +676,12 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
     ):
         await session.start(MagicMock())
 
-    # anchor = now (103_000 ms) + max member setup lead (AP2 = 2500 ms)
-    assert session.start_unix_ms == 105_500
+    # anchor = now (103_000 ms) + the group start lead (750 ms); readiness is
+    # event-confirmed, so no setup-time guess is added on top.
+    assert session.start_unix_ms == 103_750
     for player in players:
         player.stream.start.assert_awaited_once()
-        assert player.stream.start.await_args.args[0] == 105_500
+        assert player.stream.start.await_args.args[0] == 103_750
 
 
 # --- Session decision reaches the CLI args (overrides bare liveness) ------------

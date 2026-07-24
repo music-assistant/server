@@ -39,6 +39,7 @@ def _make_session(
     leader.stream = MagicMock()
     leader.stream.running = True
     leader.stream.connected = True
+    leader.stream.wait_audio_present = AsyncMock(return_value=True)
     leader.config.get_value = MagicMock(return_value=0)
 
     session = AirPlayStreamSession(prov, [leader], pcm_format, MagicMock(elapsed_time=0))
@@ -70,6 +71,7 @@ def _setup_stream(player: MagicMock) -> Any:
         player.stream.running = True
         player.stream.connected = True
         player.stream.wait_for_connection = AsyncMock()
+        player.stream.wait_audio_present = AsyncMock(return_value=True)
         player.stream.flush = AsyncMock(return_value=True)
         player.stream.start = AsyncMock()
 
@@ -162,6 +164,7 @@ async def test_initial_group_waits_for_every_member_before_shared_start(
             operations.append(f"started:{player.player_id}:{start_unix_ms}")
 
         stream.wait_for_connection = AsyncMock(side_effect=wait_for_connection)
+        stream.wait_audio_present = AsyncMock(return_value=True)
         stream.start = AsyncMock(side_effect=start)
         player.stream = stream
 
@@ -176,9 +179,9 @@ async def test_initial_group_waits_for_every_member_before_shared_start(
     last_connected = max(i for i, op in enumerate(operations) if op.startswith("connected:"))
     first_start = min(i for i, op in enumerate(operations) if op.startswith("started:"))
     assert last_connected < first_start
-    # start = now (100_000 ms) + max member setup lead (2500 ms), one shared instant
+    # start = now (100_000 ms) + the group start lead (750 ms), one shared instant
     starts = {int(op.rsplit(":", 1)[1]) for op in operations if op.startswith("started:")}
-    assert starts == {102_500}
+    assert starts == {100_750}
 
 
 @pytest.mark.asyncio
@@ -198,6 +201,7 @@ async def test_initial_single_player_starts_after_connect(
     player.config.get_value = MagicMock(return_value=0)
     stream = MagicMock(running=True)
     stream.wait_for_connection = AsyncMock()
+    stream.wait_audio_present = AsyncMock(return_value=True)
     stream.flush = AsyncMock(return_value=True)
     stream.start = AsyncMock()
 
@@ -212,8 +216,8 @@ async def test_initial_single_player_starts_after_connect(
     ):
         await session.start(MagicMock())
 
-    # start = now (200_000 ms) + the player's setup lead (2500 ms), position 0
-    stream.start.assert_awaited_once_with(202_500, 0)
+    # start = now (200_000 ms) + the solo start lead (500 ms), position 0
+    stream.start.assert_awaited_once_with(200_500, 0)
 
 
 @pytest.mark.asyncio
@@ -363,6 +367,7 @@ async def test_standby_resumes_warm_on_existing_streams(
         player.config.get_value = MagicMock(return_value=0)
         player.stream = MagicMock(running=True, connected=True)
         player.stream.send_cli_command = AsyncMock(return_value=True)
+        player.stream.wait_audio_present = AsyncMock(return_value=True)
         player.stream.flush = AsyncMock(return_value=True)
         player.stream.start = AsyncMock()
         players.append(player)
@@ -379,12 +384,13 @@ async def test_standby_resumes_warm_on_existing_streams(
     ):
         assert await session.replace(MagicMock(), media)
 
+    # start = now (100_000 ms) + solo/group start lead, position 10s
+    expected_start = 100_000 + (500 if len(protocols) == 1 else 750)
     for player in players:
         stream = original_streams[player.player_id]
         assert player.stream is stream
         stream.flush.assert_awaited_once_with()
-        # start = now (100_000 ms) + session lead (wait_start 2.0s), position 10s
-        stream.start.assert_awaited_once_with(102_000, 10_000)
+        stream.start.assert_awaited_once_with(expected_start, 10_000)
 
 
 @pytest.mark.asyncio
@@ -407,6 +413,7 @@ async def test_warm_replace_flushes_all_before_starting_any() -> None:
             return True
 
         stream.flush = AsyncMock(side_effect=flush)
+        stream.wait_audio_present = AsyncMock(return_value=True)
         stream.start = AsyncMock()
         player.stream = stream
         players.append(player)
@@ -427,8 +434,8 @@ async def test_warm_replace_flushes_all_before_starting_any() -> None:
 
     for player in players:
         player.stream.flush.assert_awaited_once_with()
-        # start = now (100_000 ms) + session lead (wait_start 2.0s), position 0
-        player.stream.start.assert_awaited_once_with(102_000, 0)
+        # start = now (100_000 ms) + the group start lead (750 ms), position 0
+        player.stream.start.assert_awaited_once_with(100_750, 0)
 
 
 @pytest.mark.asyncio

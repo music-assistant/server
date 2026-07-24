@@ -83,6 +83,11 @@ class AirPlayStream:
         self._connected = asyncio.Event()
         # Set when the binary acknowledges an in-place FLUSH ([STATUS] flushed).
         self._flushed = asyncio.Event()
+        # Set when the binary reports the first audio bytes of the current
+        # start cycle arriving on its stdin ([STATUS] audio). Together with
+        # `connected` this makes readiness fully event-driven, so START can
+        # use a short re-anchor lead instead of a guessed setup time.
+        self._audio_present = asyncio.Event()
         self._metadata_checksum = ""
         self._metadata_text_checksum = ""
         self._pending_metadata_checksum = ""
@@ -265,10 +270,31 @@ class AirPlayStream:
         if not self.running or not self.connected:
             return False
         self._flushed.clear()
+        # The flush drain re-arms the binary's one-shot audio signal; the next
+        # [STATUS] audio belongs to the new track.
+        self._audio_present.clear()
         if not await self._write_cli_command("ACTION=FLUSH"):
             return False
         try:
             await asyncio.wait_for(self._flushed.wait(), timeout)
+        except TimeoutError:
+            return False
+        return True
+
+    async def wait_audio_present(self, timeout: float = 5.0) -> bool:
+        """
+        Wait until the binary reports the current start cycle's audio arriving.
+
+        The binary emits a one-shot ``[STATUS] audio`` when the first bytes of
+        a start cycle land on its stdin (re-armed by each flush). Waiting for
+        it before commanding START removes source/transcoder spin-up from the
+        start lead.
+
+        :param timeout: Seconds to wait for the signal.
+        :return: True once audio is flowing; False on timeout.
+        """
+        try:
+            await asyncio.wait_for(self._audio_present.wait(), timeout)
         except TimeoutError:
             return False
         return True
@@ -697,6 +723,8 @@ class AirPlayStream:
             player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
         elif "[STATUS] flushed" in line:
             self._flushed.set()
+        elif "[STATUS] audio " in line:
+            self._audio_present.set()
         elif "[STATUS] idle_timeout" in line:
             # a parked (paused) session outlived the binary's idle cap;
             # treat it as a normal end of stream
