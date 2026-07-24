@@ -772,3 +772,28 @@ async def test_warm_generation_exception_after_sink_publication_releases_fd() ->
     assert bridge._sink_fd is None
     assert sum(call.args == (1000,) for call in close_fd.call_args_list) == 1
     kept_stream.discard_generation.assert_awaited_once_with(1)
+
+
+async def test_release_sink_fd_propagates_cancellation_after_clearing_owner() -> None:
+    """Sink cleanup closes its fd and propagates cancellation."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._sink_fd = 1000
+
+    async def clear_then_cancel(fd: int | None) -> None:
+        bridge._sink_fd = fd
+        raise asyncio.CancelledError
+
+    with (
+        patch.object(
+            bridge,
+            "_set_sink_fd",
+            new_callable=AsyncMock,
+            side_effect=clear_then_cancel,
+        ),
+        patch("music_assistant.providers.airplay.sendspin_bridge.os.close") as close_fd,
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await bridge._release_sink_fd(1000)
+
+    close_fd.assert_called_once_with(1000)
+    assert bridge._sink_fd is None
