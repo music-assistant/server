@@ -227,8 +227,10 @@ The `AirPlayStreamSession` class in [stream_session.py](stream_session.py) manag
 1. **Initialization** (`start()` method)
    - Connects every member before anchoring playback
    - Wires each member's ffmpeg into its persistent CLI stdin and starts feeding audio
-   - Sends one shared audible start instant to every member; the setup lead plus
-     the binary's deadline pacing fill the receiver before that instant
+   - Waits until every member's binary confirms the feed flowing (`[STATUS] audio`),
+     then sends one shared audible start instant with a short anchor lead
+     (250 ms solo / 500 ms group); readiness is fully event-driven, so no
+     setup time is guessed and the binary bursts the receiver pre-fill after START
 
 2. **Client Setup** (per player, `_start_client()` method)
    - Creates an `AirPlayStream` instance with the player's PCM format
@@ -244,7 +246,7 @@ The `AirPlayStreamSession` class in [stream_session.py](stream_session.py) manag
    - Handles silence padding if audio source is slow (watchdog mechanism)
 
 4. **Connection Monitoring**
-   - Waits for all devices to connect and prime before starting playback
+   - Waits for all devices to connect and confirm audio flowing before anchoring playback
    - Monitors CLI stderr for connection status and errors
    - Removes players that fail to keep up (write timeouts)
 
@@ -280,8 +282,8 @@ The provider supports synchronized multi-room audio by:
 When adding a player to an already-playing session (`add_client()` in [stream_session.py](stream_session.py)):
 
 1. **Ring buffer**: Session maintains a few seconds of recent audio chunks in memory
-2. **Immediate buffered feed**: Late joiner receives buffered chunks immediately to prime the ffmpeg/CLI pipeline
-3. **Compensated start time**: The joiner's start instant accounts for the buffer duration: `start_time + (seconds_streamed - buffer_duration)`, shifted forward (with the buffer head trimmed) when it would land in the past
+2. **Compensated start time**: The joiner's start instant accounts for the buffer duration: `start_time + (seconds_streamed - buffer_duration)`, shifted forward (with the buffer head trimmed) when it would land in the past
+3. **Anchor first, then prime**: The joiner's START is sent before the buffered chunks; pre-START the binary only buffers its bounded ring and sends nothing, so anchoring first lets it drain the prime as it streams in
 4. **Fast catch-up**: Device processes buffered audio and catches up to real-time position
 5. **Seamless sync**: Joins live stream perfectly synchronized with other players
 
@@ -396,7 +398,9 @@ and verify it against that release's `SHA256SUMS`. For local source development,
   timeline-anchored metadata and artwork are refreshed once the receiver connects
 
 **Output** (stderr):
-- Normalized `[STATUS]` messages (connected/playing/paused/flushed/eof), logs and errors
+- Normalized `[STATUS]` messages (connected/playing/paused/flushed/audio/eof), logs
+  and errors. `[STATUS] audio` is a one-shot per start cycle (re-armed by each
+  FLUSH) reporting the first stdin bytes arriving; MA anchors START only after it
 
 **Output** (stdout):
 - `[STATUS] latency ...` line with the effective lead and the device's
@@ -416,14 +420,16 @@ the command pipe. `START_UNIX_MS` is a plain unix epoch millisecond meaning
 protocol path (RAOP, AirPlay 2 RAOP-compat and native).
 
 1. Start every CLI and wait until every group member reports connected
-2. Wire each member's ffmpeg into its persistent stdin and begin feeding PCM
-3. Send one shared `START` (now + the per-protocol setup lead) to every member;
-   the lead plus the binary's deadline pacing fill the receiver before the
-   commanded instant, so the start cannot race connection or pre-fill
+2. Wire each member's ffmpeg into its persistent stdin, begin feeding PCM and
+   wait until every member confirms the feed flowing (`[STATUS] audio`)
+3. Send one shared `START` (now + 250 ms solo / 500 ms group) to every member;
+   readiness is event-confirmed so the anchor covers only the receiver re-anchor,
+   and the binary bursts the receiver pre-fill from START
 4. **Warm seek / next-track / grouped resume** reuse the live connections: MA
    stops feeding old audio, kills the per-seek ffmpeg (never the persistent
    stdin), sends `ACTION=FLUSH` to every member and awaits `[STATUS] flushed`,
-   then feeds a fresh ffmpeg into the same stdin and sends one shared `START`.
+   then feeds a fresh ffmpeg into the same stdin, awaits `[STATUS] audio` and
+   sends one shared `START`.
    Standby keeps each protocol connection alive for the same flush-refill resume
 5. Sendspin starts preserve its externally supplied audible instant, riding the
    same persistent-stdin flush-refill (cold connect + `START`, warm `FLUSH` +
