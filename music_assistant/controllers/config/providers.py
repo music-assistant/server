@@ -74,6 +74,8 @@ class ProviderConfigMixin:
 
         def encrypt_string(self, str_value: str) -> str: ...  # noqa: D102
 
+        def decrypt_string(self, encrypted_str: str) -> str: ...  # noqa: D102
+
         async def set_onboard_complete(self) -> None: ...  # noqa: D102
 
     @api_command("config/providers", required_scope=Scope.CONFIG_PROVIDERS_READ)
@@ -389,6 +391,27 @@ class ProviderConfigMixin:
                 self.get(f"{CONF_PROVIDERS}/{provider_instance}/{key}", default),
             ),
         )
+
+    def get_provider_setup_value(
+        self, instance_id: str, key: str, default: ConfigValueType = None
+    ) -> ConfigValueType:
+        """
+        Return a single (decrypted) setup_data value for a provider from storage.
+
+        Falls back to the legacy raw config values for installs configured before
+        setup flows existed. Works without a loaded provider instance.
+
+        :param instance_id: The provider instance ID.
+        :param key: The setup data key to retrieve.
+        :param default: Value to return when the key is not present anywhere.
+        """
+        setup_data = self.get(f"{CONF_PROVIDERS}/{instance_id}/setup_data") or {}
+        value = setup_data.get(key)
+        if value is None:
+            value = self.get_raw_provider_config_value(instance_id, key, default)
+        if isinstance(value, str):
+            return self.decrypt_string(value)
+        return value
 
     def set_raw_provider_config_value(
         self,

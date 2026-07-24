@@ -54,8 +54,12 @@ async def get_config_entries(
     # connection details and content type are collected by the setup flow; surface the
     # (immutable) content type read-only so the sync options' depends_on chains resolve
     content_type = "music"
-    if instance_id and (prov := mass.get_provider(instance_id, return_unavailable=True)):
-        content_type = getattr(prov, "media_content_type", content_type)
+    if instance_id:
+        # read the persisted value so the depends_on chains resolve correctly
+        # even when the provider (instance) is not currently loaded
+        content_type = str(
+            mass.config.get_provider_setup_value(instance_id, CONF_CONTENT_TYPE, "music")
+        )
     return (
         ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
         CONF_ENTRY_MISSING_ALBUM_ARTIST,
