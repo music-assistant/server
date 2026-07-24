@@ -240,6 +240,46 @@ async def test_failing_library_row_items_isolated(
     assert items == []
 
 
+async def test_forgotten_tracks_row_callable(mass: MusicAssistant) -> None:
+    """Forgotten Tracks row can be called and uses played_only parameter."""
+    items = await mass.music.recommendations.get_recommendation_items(
+        "recommendations", "forgotten_tracks"
+    )
+    assert isinstance(items, list)
+
+
+async def test_forgotten_albums_row_callable(mass: MusicAssistant) -> None:
+    """Forgotten Albums row can be called and uses played_only parameter."""
+    items = await mass.music.recommendations.get_recommendation_items(
+        "recommendations", "forgotten_albums"
+    )
+    assert isinstance(items, list)
+
+
+async def test_forgotten_artists_row_callable(mass: MusicAssistant) -> None:
+    """Forgotten Artists row can be called and uses played_only parameter."""
+    items = await mass.music.recommendations.get_recommendation_items(
+        "recommendations", "forgotten_artists"
+    )
+    assert isinstance(items, list)
+
+
+async def test_most_played_tracks_row_callable(mass: MusicAssistant) -> None:
+    """Most Played Tracks row can be called and uses play_count_desc ordering."""
+    items = await mass.music.recommendations.get_recommendation_items(
+        "recommendations", "most_played_tracks"
+    )
+    assert isinstance(items, list)
+
+
+async def test_never_played_tracks_row_callable(mass: MusicAssistant) -> None:
+    """Never / Rarely Played row can be called and uses play_count ordering."""
+    items = await mass.music.recommendations.get_recommendation_items(
+        "recommendations", "never_played_tracks"
+    )
+    assert isinstance(items, list)
+
+
 async def _add_playlog_row(
     mass: MusicAssistant,
     *,
