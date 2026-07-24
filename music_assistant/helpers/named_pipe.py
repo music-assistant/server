@@ -46,10 +46,10 @@ class AsyncNamedPipeWriter:
 
         await asyncio.to_thread(_create)
 
-    async def write(self, data: bytes) -> None:
+    async def write(self, data: bytes) -> bool:
         """Write data to the named pipe."""
 
-        def _write() -> None:
+        def _write() -> bool:
             if not self._ensure_write_fd():
                 _LOGGER.debug(
                     "Named pipe write failed: no writable fd for pipe %s (owner=%s, %d bytes dropped)",
@@ -57,10 +57,11 @@ class AsyncNamedPipeWriter:
                     self._log_owner,
                     len(data),
                 )
-                return
+                return False
             try:
                 assert self._write_fd is not None
                 os.write(self._write_fd, data)
+                return True
             except OSError as e:
                 if e.errno == errno_module.EPIPE:
                     # Reader closed, reset fd for next attempt
@@ -74,10 +75,10 @@ class AsyncNamedPipeWriter:
                         self._log_owner,
                         len(data),
                     )
-                else:
-                    raise
+                    return False
+                raise
 
-        await asyncio.to_thread(_write)
+        return await asyncio.to_thread(_write)
 
     async def remove(self) -> None:
         """Close write fd and remove the pipe."""

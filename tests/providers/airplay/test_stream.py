@@ -1,8 +1,11 @@
 """Unit tests for the AirPlay stream CLI argument assembly."""
 
 import asyncio
+import errno
 import logging
+import os
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
@@ -10,6 +13,7 @@ import pytest
 from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
     CONF_ENCRYPTION,
@@ -328,6 +332,36 @@ def test_command_pipe_paths_are_unique_per_stream() -> None:
     first_stream = AirPlayStream(player)
     second_stream = AirPlayStream(player)
     assert first_stream.commands_pipe.path != second_stream.commands_pipe.path
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_write_returns_false_without_reader(tmp_path: Path) -> None:
+    """A command pipe write reports when no reader can receive the command."""
+    pipe_path = tmp_path / "commands"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+
+    with patch("music_assistant.helpers.named_pipe.time.sleep"):
+        assert await writer.write(b"ACTION=STANDBY\n") is False
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_write_returns_false_and_resets_fd_on_epipe() -> None:
+    """A closed command pipe reader resets the writer for a later retry."""
+    writer = AsyncNamedPipeWriter("/tmp/commands")  # noqa: S108
+    writer._write_fd = 42
+
+    with (
+        patch(
+            "music_assistant.helpers.named_pipe.os.write",
+            side_effect=OSError(errno.EPIPE, "reader closed"),
+        ),
+        patch("music_assistant.helpers.named_pipe.os.close") as close_fd,
+    ):
+        assert await writer.write(b"ACTION=STANDBY\n") is False
+
+    close_fd.assert_called_once_with(42)
+    assert writer._write_fd is None
 
 
 @pytest.mark.asyncio

@@ -343,7 +343,7 @@ async def test_standby_supports_every_connected_streaming_protocol(
         player.player_id = f"player-{index}"
         player.protocol = protocol
         player.stream = MagicMock(running=True, connected=True)
-        player.stream.send_cli_command = AsyncMock()
+        player.stream.send_cli_command = AsyncMock(return_value=True)
         players.append(player)
     session.sync_clients = players
 
@@ -374,7 +374,7 @@ async def test_standby_resumes_next_generation_on_existing_streams(
         player.protocol = protocol
         player.config.get_value = MagicMock(return_value=0)
         player.stream = MagicMock(running=True, connected=True)
-        player.stream.send_cli_command = AsyncMock()
+        player.stream.send_cli_command = AsyncMock(return_value=True)
         player.stream.next_generation = MagicMock(return_value=1)
         player.stream.prepare_generation = AsyncMock()
         player.stream.wait_generation_primed = AsyncMock(return_value=True)
@@ -435,6 +435,42 @@ async def test_standby_requires_every_member_running_and_connected(stream_state:
     if unavailable_player.stream:
         unavailable_player.stream.send_cli_command.assert_not_awaited()
         unavailable_player.set_state_from_stream.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_standby_returns_false_when_command_is_not_delivered() -> None:
+    """Standby fails without changing state for a member that misses the command."""
+    session = _make_session(0, 0)
+    logger = MagicMock()
+    session.prov.logger = logger
+    delivered_player = MagicMock(player_id="delivered", protocol=StreamingProtocol.AIRPLAY2)
+    delivered_player.stream = MagicMock(running=True, connected=True)
+    delivered_player.stream.send_cli_command = AsyncMock(return_value=True)
+    dropped_player = MagicMock(player_id="dropped", protocol=StreamingProtocol.RAOP)
+    dropped_player.stream = MagicMock(running=True, connected=True)
+    dropped_player.stream.send_cli_command = AsyncMock(return_value=False)
+    session.sync_clients = [delivered_player, dropped_player]
+
+    assert await session.standby() is False
+    delivered_player.set_state_from_stream.assert_called_once()
+    dropped_player.set_state_from_stream.assert_not_called()
+    logger.warning.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_standby_returns_false_when_command_raises() -> None:
+    """Standby fails without changing state when command delivery raises."""
+    session = _make_session(0, 0)
+    logger = MagicMock()
+    session.prov.logger = logger
+    player = MagicMock(player_id="failed", protocol=StreamingProtocol.AIRPLAY2)
+    player.stream = MagicMock(running=True, connected=True)
+    player.stream.send_cli_command = AsyncMock(side_effect=OSError("command pipe failed"))
+    session.sync_clients = [player]
+
+    assert await session.standby() is False
+    player.set_state_from_stream.assert_not_called()
+    logger.warning.assert_called_once()
 
 
 @pytest.mark.asyncio
