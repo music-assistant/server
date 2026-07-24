@@ -72,6 +72,7 @@ def _setup_stream(player: MagicMock) -> Any:
         player.stream.wait_for_connection = AsyncMock()
         player.stream.prepare_generation = AsyncMock()
         player.stream.wait_generation_ready = AsyncMock(return_value=True)
+        player.stream.discard_generation = AsyncMock()
         player.stream.wait_generation_primed = AsyncMock(return_value=True)
         player.stream.start_generation = AsyncMock()
 
@@ -256,6 +257,7 @@ async def test_initial_prime_timeout_never_starts_partial_group() -> None:
         stream.wait_for_connection = AsyncMock()
         stream.prepare_generation = AsyncMock()
         stream.wait_generation_ready = AsyncMock(return_value=True)
+        stream.discard_generation = AsyncMock()
         stream.wait_generation_primed = AsyncMock(return_value=player is not second_player)
         stream.start_generation = AsyncMock()
         player.stream = stream
@@ -270,6 +272,7 @@ async def test_initial_prime_timeout_never_starts_partial_group() -> None:
 
     for player in session.sync_clients:
         stream: Any = player.stream
+        stream.discard_generation.assert_awaited_once_with(0)
         stream.start_generation.assert_not_awaited()
     stop_session.assert_awaited_once()
 
@@ -500,6 +503,59 @@ async def test_warm_replace_waits_for_every_reader_before_old_teardown() -> None
     last_ready = max(i for i, operation in enumerate(operations) if operation.startswith("ready:"))
     assert last_ready < operations.index("old-audio-cancelled")
     assert last_ready < operations.index("ffmpeg-switched")
+
+
+@pytest.mark.asyncio
+async def test_warm_replace_cancellation_discards_before_old_teardown() -> None:
+    """Cancellation while awaiting ready FLUSHes staging without touching old audio."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    stream = player.stream
+    ready_waiting = asyncio.Event()
+    old_audio_cancelled = asyncio.Event()
+    stream.next_generation = MagicMock(return_value=1)
+    stream.prepare_generation = AsyncMock()
+
+    async def wait_ready(_generation: int) -> bool:
+        ready_waiting.set()
+        await asyncio.Event().wait()
+        return True
+
+    stream.wait_generation_ready = AsyncMock(side_effect=wait_ready)
+    stream.discard_generation = AsyncMock()
+
+    async def old_audio() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            old_audio_cancelled.set()
+            raise
+
+    session._audio_source_task = asyncio.create_task(old_audio())
+    with (
+        patch(
+            "music_assistant.providers.airplay.stream_session.open_named_pipe_writer",
+            new_callable=AsyncMock,
+        ) as open_writer,
+        patch("music_assistant.providers.airplay.stream_session.os.unlink"),
+        patch("music_assistant.providers.airplay.stream_session.os.mkfifo"),
+        patch(
+            "music_assistant.providers.airplay.stream_session.os.open",
+            side_effect=OSError(errno.ENXIO, "no reader"),
+        ),
+    ):
+        replace_task = asyncio.create_task(session.replace(MagicMock(), MagicMock(elapsed_time=0)))
+        await ready_waiting.wait()
+        replace_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await replace_task
+
+    stream.discard_generation.assert_awaited_once_with(1)
+    open_writer.assert_not_awaited()
+    assert not old_audio_cancelled.is_set()
+    session._audio_source_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await session._audio_source_task
 
 
 @pytest.mark.asyncio
@@ -839,6 +895,27 @@ async def test_late_join_adds_to_sync_clients() -> None:
         await session.add_client(player)
 
     assert player in session.sync_clients
+
+
+@pytest.mark.asyncio
+async def test_late_join_ready_timeout_discards_generation_zero() -> None:
+    """A late joiner FLUSHes its staged generation before transport teardown."""
+    session = _make_session(time.time() - 10, 12.5)
+    player = _make_late_joiner()
+
+    def setup_unready_stream(*_args: Any, **_kwargs: Any) -> None:
+        _setup_stream(player)()
+        player.stream.wait_generation_ready = AsyncMock(return_value=False)
+
+    with (
+        patch.object(session, "_start_client", side_effect=setup_unready_stream),
+        patch.object(session, "stop_client", new_callable=AsyncMock) as stop_client,
+    ):
+        await session.add_client(player)
+
+    player.stream.discard_generation.assert_awaited_once_with(0)
+    stop_client.assert_awaited_once_with(player, reason="late joiner start/prime failed")
+    assert player not in session.sync_clients
 
 
 @pytest.mark.asyncio

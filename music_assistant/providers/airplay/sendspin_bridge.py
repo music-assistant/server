@@ -490,29 +490,8 @@ class SendspinAirPlayBridge:
             # for cleanup. If we assigned it earlier, the new stream would be missed
             # and leaked. Only publish once start() succeeds and this task is current.
             new_stream = AirPlayStream(self.airplay_player)
-            try:
-                await new_stream.start()
-                await new_stream.wait_for_connection()
-                if asyncio.current_task() is not self._airplay_stream_start_task:
-                    await new_stream.stop(force=True)
-                    return
-                self._airplay_stream = new_stream
-                self.airplay_player.stream = new_stream
-                await new_stream.prepare_generation(0, "-", 0)
-                if not await new_stream.wait_generation_ready(0):
-                    raise RuntimeError("generation 0 reader ready timed out")
-                self._airplay_stream_ready.set()
-                if not await new_stream.wait_generation_primed(0):
-                    raise RuntimeError("generation 0 prime timed out")
-                if asyncio.current_task() is not self._airplay_stream_start_task:
-                    await new_stream.stop(force=True)
-                    return
-                await new_stream.start_generation(0, 0, start_unix_ms)
-                self._generation_started = True
-            except BaseException:
-                with suppress(Exception):
-                    await new_stream.stop(force=True)
-                raise
+            if not await self._start_cold_generation(new_stream, start_unix_ms):
+                return
             self.logger.info(
                 "Bridge protocol started for %s (start_unix_ms=%s, lookahead=%.0fms)",
                 self.airplay_player.display_name,
@@ -529,6 +508,46 @@ class SendspinAirPlayBridge:
             self._is_streaming = False
             self._airplay_stream_ready.set()
             self._schedule_cleanup()
+
+    async def _start_cold_generation(self, stream: AirPlayStream, start_unix_ms: int) -> bool:
+        """
+        Connect and commit generation 0 for a new bridge transport.
+
+        :param stream: New AirPlay stream to start.
+        :param start_unix_ms: Audible-start instant for generation 0.
+        :return: True when generation 0 commits, False when superseded.
+        """
+        generation_prepared = False
+        commit_attempted = False
+        try:
+            await stream.start()
+            await stream.wait_for_connection()
+            if asyncio.current_task() is not self._airplay_stream_start_task:
+                await stream.stop(force=True)
+                return False
+            self._airplay_stream = stream
+            self.airplay_player.stream = stream
+            generation_prepared = True
+            await stream.prepare_generation(0, "-", 0)
+            if not await stream.wait_generation_ready(0):
+                raise RuntimeError("generation 0 reader ready timed out")
+            self._airplay_stream_ready.set()
+            if not await stream.wait_generation_primed(0):
+                raise RuntimeError("generation 0 prime timed out")
+            if asyncio.current_task() is not self._airplay_stream_start_task:
+                await self._discard_generation(stream, 0)
+                await stream.stop(force=True)
+                return False
+            commit_attempted = True
+            await stream.start_generation(0, 0, start_unix_ms)
+            self._generation_started = True
+        except BaseException:
+            if generation_prepared and not commit_attempted:
+                await self._discard_generation(stream, 0)
+            with suppress(Exception):
+                await stream.stop(force=True)
+            raise
+        return True
 
     async def _start_warm_generation(self, stream: AirPlayStream, start_unix_ms: int) -> bool:
         """
@@ -579,7 +598,7 @@ class SendspinAirPlayBridge:
                 # lifecycle is owned by _set_sink_fd / teardown, not this task.
                 # The binary safely collapses a superseded staged generation on
                 # its next PREPARE.
-                await self._discard_warm_generation(stream, gen, started_at)
+                await self._discard_generation(stream, gen, started_at)
                 return False
             commit_attempted = True
             await stream.start_generation(gen, 0, start_unix_ms)
@@ -591,6 +610,12 @@ class SendspinAirPlayBridge:
                 gen,
                 start_unix_ms,
             )
+        except asyncio.CancelledError:
+            if not commit_attempted:
+                await self._discard_generation(stream, gen, started_at)
+            with suppress(Exception):
+                await self._set_sink_fd(None)
+            raise
         except Exception as err:
             self.logger.warning(
                 "Warm handover failed for %s (%r), falling back to a cold restart",
@@ -598,7 +623,7 @@ class SendspinAirPlayBridge:
                 err,
             )
             if not commit_attempted:
-                await self._discard_warm_generation(stream, gen, started_at)
+                await self._discard_generation(stream, gen, started_at)
             with suppress(Exception):
                 await self._set_sink_fd(None)
             return False
@@ -609,8 +634,11 @@ class SendspinAirPlayBridge:
                 await asyncio.to_thread(os.unlink, fifo)
         return True
 
-    async def _discard_warm_generation(
-        self, stream: AirPlayStream, generation: int, started_at: float
+    async def _discard_generation(
+        self,
+        stream: AirPlayStream,
+        generation: int,
+        started_at: float | None = None,
     ) -> None:
         """Best-effort discard a bridge generation staged before START."""
         try:
@@ -623,7 +651,8 @@ class SendspinAirPlayBridge:
                 err,
             )
             return
-        self._log_generation_phase(generation, "discard", started_at)
+        if started_at is not None:
+            self._log_generation_phase(generation, "discard", started_at)
 
     def _log_generation_phase(self, generation: int, phase: str, started_at: float) -> None:
         """Log a bridge generation phase with elapsed staging time."""

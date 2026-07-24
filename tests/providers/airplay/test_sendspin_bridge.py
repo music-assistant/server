@@ -19,6 +19,7 @@ import asyncio
 import errno
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from aiosendspin.clock import ManualClock
 from aiosendspin.server.roles import AudioChunk
 
@@ -293,6 +294,7 @@ async def test_cold_start_connects_then_prepares_and_starts_generation_zero() ->
     stream.prepare_generation = AsyncMock()
     stream.wait_generation_ready = AsyncMock(return_value=True)
     stream.wait_generation_primed = AsyncMock(return_value=True)
+    stream.discard_generation = AsyncMock()
     stream.start_generation = AsyncMock()
 
     with (
@@ -316,6 +318,37 @@ async def test_cold_start_connects_then_prepares_and_starts_generation_zero() ->
     assert bridge._airplay_stream is stream
     assert bridge.airplay_player.stream is stream
     assert bridge._generation_started is True
+
+
+async def test_cold_start_ready_timeout_discards_generation_zero() -> None:
+    """A cold bridge start FLUSHes generation 0 before stopping its transport."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + AP2_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    stream = MagicMock()
+    stream.start = AsyncMock()
+    stream.stop = AsyncMock()
+    stream.wait_for_connection = AsyncMock()
+    stream.prepare_generation = AsyncMock()
+    stream.wait_generation_ready = AsyncMock(return_value=False)
+    stream.discard_generation = AsyncMock()
+    stream.start_generation = AsyncMock()
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=stream,
+        ),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            return_value=UNIX_NOW_S,
+        ),
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    stream.discard_generation.assert_awaited_once_with(0)
+    stream.start_generation.assert_not_awaited()
+    stream.stop.assert_awaited_once_with(force=True)
 
 
 # --- Warm handover: a kept stream survives a new stream start and absorbs a generation ---
@@ -544,4 +577,41 @@ async def test_warm_generation_ready_timeout_does_not_open_writer() -> None:
     open_writer.assert_not_awaited()
     kept_stream.discard_generation.assert_awaited_once_with(1)
     kept_stream.start_generation.assert_not_awaited()
+    assert bridge._sink_fd is None
+
+
+async def test_warm_generation_cancellation_discards_staging() -> None:
+    """Cancellation while awaiting ready FLUSHes the bridge generation."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    kept_stream = MagicMock()
+    kept_stream.next_generation = MagicMock(return_value=1)
+    kept_stream.prepare_generation = AsyncMock()
+    ready_waiting = asyncio.Event()
+
+    async def wait_ready(_generation: int) -> bool:
+        ready_waiting.set()
+        await asyncio.Event().wait()
+        return True
+
+    kept_stream.wait_generation_ready = AsyncMock(side_effect=wait_ready)
+    kept_stream.discard_generation = AsyncMock()
+    bridge._airplay_stream = kept_stream
+
+    with (
+        patch("music_assistant.providers.airplay.sendspin_bridge.os.unlink"),
+        patch("music_assistant.providers.airplay.sendspin_bridge.os.mkfifo"),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.os.open",
+            side_effect=OSError(errno.ENXIO, "no reader"),
+        ),
+    ):
+        warm_task = asyncio.create_task(
+            bridge._start_warm_generation(kept_stream, 1_784_000_000_000)
+        )
+        await ready_waiting.wait()
+        warm_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await warm_task
+
+    kept_stream.discard_generation.assert_awaited_once_with(1)
     assert bridge._sink_fd is None

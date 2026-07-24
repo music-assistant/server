@@ -97,7 +97,7 @@ class AirPlayStream:
         # actually playing (only advances at START). Elapsed/EOF handling keys
         # off the active id so a staged generation never skews them mid-handover.
         self._generation = 0
-        self._active_generation = 0
+        self._active_generation: int | None = None
         self._generation_position: float = 0.0
         self._gen_ready: dict[int, asyncio.Event] = {}
         self._gen_primed: dict[int, asyncio.Event] = {}
@@ -269,13 +269,16 @@ class AirPlayStream:
             raise RuntimeError("Cannot prepare a generation without a connected cliairplay process")
         self._gen_ready.setdefault(generation, asyncio.Event())
         self._gen_primed.setdefault(generation, asyncio.Event())
-        command_delivered = await self._write_cli_command(
-            f"GENERATION={generation}\nAUDIO={audio_path}\n"
-            f"POSITION_MS={position_ms}\nACTION=PREPARE"
-        )
+        try:
+            command_delivered = await self._write_cli_command(
+                f"GENERATION={generation}\nAUDIO={audio_path}\n"
+                f"POSITION_MS={position_ms}\nACTION=PREPARE"
+            )
+        except BaseException:
+            self._remove_generation_events(generation)
+            raise
         if not command_delivered:
-            self._gen_ready.pop(generation, None)
-            self._gen_primed.pop(generation, None)
+            self._remove_generation_events(generation)
             raise PlayerCommandFailed(
                 f"Could not deliver PREPARE for generation {generation} "
                 f"to AirPlay player {self.player.player_id}"
@@ -301,14 +304,17 @@ class AirPlayStream:
         """
         if generation == self._active_generation:
             raise RuntimeError(f"Cannot discard active generation {generation}")
-        command_delivered = await self._write_cli_command(f"GENERATION={generation}\nACTION=FLUSH")
-        if not command_delivered:
-            raise PlayerCommandFailed(
-                f"Could not deliver FLUSH for generation {generation} "
-                f"to AirPlay player {self.player.player_id}"
+        try:
+            command_delivered = await self._write_cli_command(
+                f"GENERATION={generation}\nACTION=FLUSH"
             )
-        self._gen_ready.pop(generation, None)
-        self._gen_primed.pop(generation, None)
+            if not command_delivered:
+                raise PlayerCommandFailed(
+                    f"Could not deliver FLUSH for generation {generation} "
+                    f"to AirPlay player {self.player.player_id}"
+                )
+        finally:
+            self._remove_generation_events(generation)
 
     async def wait_generation_primed(self, generation: int, timeout: float = 8.0) -> bool:
         """Wait until the staged generation has buffered enough to start."""
@@ -785,6 +791,11 @@ class AirPlayStream:
             return int(line.split("generation=")[1].split(maxsplit=1)[0])
         except ValueError, IndexError:
             return -1
+
+    def _remove_generation_events(self, generation: int) -> None:
+        """Remove readiness bookkeeping for a generation that cannot be used."""
+        self._gen_ready.pop(generation, None)
+        self._gen_primed.pop(generation, None)
 
     def _update_elapsed(self, elapsed_time: float) -> None:
         """Update elapsed time against the active generation's media position."""

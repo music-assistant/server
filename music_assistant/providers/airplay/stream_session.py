@@ -87,7 +87,8 @@ class AirPlayStreamSession:
             self._shared_ptp_resolved = True
         self.wait_start = max(p.wait_start for p in self.sync_clients) / 1000
         position_ms = int((self.media.elapsed_time or 0) * 1000)
-        generations = {player.player_id: 0 for player in self.sync_clients}
+        generations: dict[str, int] = {}
+        commit_attempted = False
         try:
             async with asyncio.TaskGroup() as task_group:
                 for player in self.sync_clients:
@@ -95,11 +96,7 @@ class AirPlayStreamSession:
             await asyncio.gather(
                 *[p.stream.wait_for_connection() for p in self.sync_clients if p.stream]
             )
-            async with asyncio.TaskGroup() as task_group:
-                for player in self.sync_clients:
-                    stream = player.stream
-                    assert stream
-                    task_group.create_task(stream.prepare_generation(0, "-", position_ms))
+            await self._prepare_initial_generations(generations, position_ms)
             ready = await asyncio.gather(
                 *[p.stream.wait_generation_ready(0) for p in self.sync_clients if p.stream]
             )
@@ -111,12 +108,17 @@ class AirPlayStreamSession:
             )
             if not all(primed):
                 raise PlayerCommandFailed("generation prime timeout")
+            commit_attempted = True
             await self._commit_generations(generations, position_ms)
         except asyncio.CancelledError:
+            if not commit_attempted:
+                await self._discard_generations(generations)
             await self.stop()
             raise
         except Exception as err:
             # playback failed to start, cleanup
+            if not commit_attempted:
+                await self._discard_generations(generations)
             await self.stop()
             raise PlayerCommandFailed("Playback failed to start") from err
 
@@ -210,12 +212,16 @@ class AirPlayStreamSession:
             for player_id, generation in generations.items():
                 self._log_generation_phase(player_id, generation, "commit", started_at)
             committed = True
+        except asyncio.CancelledError:
+            if not commit_attempted:
+                await self._discard_generations(generations, started_at)
+            raise
         except Exception as err:
             self.prov.logger.warning(
                 "Warm replacement failed (%r); falling back to a cold restart", err
             )
             if not commit_attempted:
-                await self._discard_warm_generations(generations, started_at)
+                await self._discard_generations(generations, started_at)
             return False
         finally:
             for fifo_fd in writer_fds.values():
@@ -456,6 +462,7 @@ class AirPlayStreamSession:
                 if buffered_pcm:
                     await self._write_chunk_to_player(airplay_player, buffered_pcm)
             except asyncio.CancelledError:
+                await self._discard_generation(airplay_player, stream, 0)
                 await self.stop_client(airplay_player, reason="late joiner prepare cancelled")
                 raise
             except Exception as err:
@@ -464,6 +471,7 @@ class AirPlayStreamSession:
                     airplay_player.player_id,
                     err,
                 )
+                await self._discard_generation(airplay_player, stream, 0)
                 await self.stop_client(airplay_player, reason="late joiner start/prime failed")
                 return
 
@@ -477,9 +485,11 @@ class AirPlayStreamSession:
                 )
                 self._warn_degraded_shared_ptp(ap2_members)
 
+        commit_attempted = False
         try:
             if not await stream.wait_generation_primed(0):
                 raise PlayerCommandFailed("generation prime timeout")
+            commit_attempted = True
             await self._commit_generations(
                 {airplay_player.player_id: 0},
                 position_ms,
@@ -487,6 +497,8 @@ class AirPlayStreamSession:
                 reanchor_session=False,
             )
         except asyncio.CancelledError:
+            if not commit_attempted:
+                await self._discard_generation(airplay_player, stream, 0)
             await self.remove_client(airplay_player, reason="late joiner prime cancelled")
             raise
         except Exception as err:
@@ -495,6 +507,8 @@ class AirPlayStreamSession:
                 airplay_player.player_id,
                 err,
             )
+            if not commit_attempted:
+                await self._discard_generation(airplay_player, stream, 0)
             await self.remove_client(airplay_player, reason="late joiner prime failed")
             return
         self.prov.logger.debug(
@@ -836,6 +850,24 @@ class AirPlayStreamSession:
             generations[player.player_id] = generation
             fifos[player.player_id] = fifo
 
+    async def _prepare_initial_generations(
+        self, generations: dict[str, int], position_ms: int
+    ) -> None:
+        """Deliver every generation-0 PREPARE before surfacing a startup failure."""
+        streams: list[AirPlayStream] = []
+        for player in self.sync_clients:
+            stream = player.stream
+            assert stream
+            generations[player.player_id] = 0
+            streams.append(stream)
+        results = await asyncio.gather(
+            *[stream.prepare_generation(0, "-", position_ms) for stream in streams],
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+
     async def _prepare_warm_generations(
         self,
         generations: dict[str, int],
@@ -899,31 +931,46 @@ class AirPlayStreamSession:
             )
         self._log_generation_phase(player.player_id, generation, "primed", started_at)
 
-    async def _discard_warm_generations(
-        self, generations: dict[str, int], started_at: float
+    async def _discard_generations(
+        self, generations: dict[str, int], started_at: float | None = None
     ) -> None:
         """Best-effort discard every generation staged before shared START."""
-        streams: dict[str, AirPlayStream] = {}
+        members: dict[str, tuple[AirPlayPlayer, AirPlayStream]] = {}
         for player in self.sync_clients:
             if player.stream is not None:
-                streams[player.player_id] = player.stream
-        player_ids = [player_id for player_id in generations if player_id in streams]
-        results = await asyncio.gather(
+                members[player.player_id] = (player, player.stream)
+        player_ids = [player_id for player_id in generations if player_id in members]
+        await asyncio.gather(
             *[
-                streams[player_id].discard_generation(generations[player_id])
-                for player_id in player_ids
-            ],
-            return_exceptions=True,
-        )
-        for player_id, result in zip(player_ids, results, strict=True):
-            if isinstance(result, BaseException):
-                self.prov.logger.warning(
-                    "Could not discard staged AirPlay generation for player %s: %s",
-                    player_id,
-                    result,
+                self._discard_generation(
+                    members[player_id][0],
+                    members[player_id][1],
+                    generations[player_id],
+                    started_at,
                 )
-                continue
-            self._log_generation_phase(player_id, generations[player_id], "discard", started_at)
+                for player_id in player_ids
+            ]
+        )
+
+    async def _discard_generation(
+        self,
+        player: AirPlayPlayer,
+        stream: AirPlayStream,
+        generation: int,
+        started_at: float | None = None,
+    ) -> None:
+        """Best-effort discard one generation staged before START."""
+        try:
+            await stream.discard_generation(generation)
+        except Exception as err:
+            self.prov.logger.warning(
+                "Could not discard staged AirPlay generation for player %s: %s",
+                player.player_id,
+                err,
+            )
+            return
+        if started_at is not None:
+            self._log_generation_phase(player.player_id, generation, "discard", started_at)
 
     def _log_generation_phase(
         self, player_id: str, generation: int, phase: str, started_at: float

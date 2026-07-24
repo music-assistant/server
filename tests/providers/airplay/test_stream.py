@@ -612,25 +612,27 @@ async def test_generation_zero_uses_prepare_and_start_commands() -> None:
 
 
 @pytest.mark.asyncio
-async def test_prepare_generation_raises_when_command_is_dropped() -> None:
-    """A dropped PREPARE command is surfaced before its generation can be awaited."""
+async def test_repeated_prepare_failures_do_not_grow_generation_events() -> None:
+    """Dropped and failed PREPARE writes always remove their generation events."""
     stream = AirPlayStream(_make_player())
     stream._cli_proc = MagicMock(closed=False)
     stream._connected.set()
 
-    with (
-        patch.object(
-            stream,
-            "_write_cli_command",
-            new_callable=AsyncMock,
-            return_value=False,
-        ),
-        pytest.raises(PlayerCommandFailed, match="Could not deliver PREPARE"),
+    with patch.object(
+        stream,
+        "_write_cli_command",
+        new_callable=AsyncMock,
+        side_effect=[False, OSError("write failed"), False],
     ):
-        await stream.prepare_generation(1, "/tmp/generation.pcm", 0)  # noqa: S108
-
-    assert 1 not in stream._gen_ready
-    assert 1 not in stream._gen_primed
+        for generation in range(1, 4):
+            with pytest.raises((PlayerCommandFailed, OSError)):
+                await stream.prepare_generation(
+                    generation,
+                    "/tmp/generation.pcm",  # noqa: S108
+                    0,
+                )
+            assert stream._gen_ready == {}
+            assert stream._gen_primed == {}
 
 
 @pytest.mark.asyncio
@@ -652,19 +654,23 @@ async def test_discard_generation_propagates_flush_delivery() -> None:
         stream,
         "_write_cli_command",
         new_callable=AsyncMock,
-        side_effect=[True, False],
+        side_effect=[True, False, OSError("write failed")],
     ) as write_command:
         await stream.discard_generation(1)
         stream.next_generation()
         with pytest.raises(PlayerCommandFailed, match="Could not deliver FLUSH"):
             await stream.discard_generation(2)
+        stream.next_generation()
+        with pytest.raises(OSError, match="write failed"):
+            await stream.discard_generation(3)
 
     assert write_command.await_args_list == [
         call("GENERATION=1\nACTION=FLUSH"),
         call("GENERATION=2\nACTION=FLUSH"),
+        call("GENERATION=3\nACTION=FLUSH"),
     ]
-    assert 1 not in stream._gen_ready
-    assert 2 in stream._gen_ready
+    assert stream._gen_ready == {}
+    assert stream._gen_primed == {}
 
 
 @pytest.mark.asyncio
