@@ -151,7 +151,9 @@ class AirPlayProvider(PlayerProvider):
 
     def handle_remote_command(self, player: AirPlayPlayer, command: AirPlayRemoteCommand) -> None:
         """Dispatch a transport command received from an AirPlay receiver."""
-        player_id = player.player_id
+        player_id = (
+            self.bridge_manager.get_transport_command_target(player.player_id) or player.player_id
+        )
         match command:
             case AirPlayRemoteCommand.PLAY:
                 # Some receivers echo play as confirmation of a command from MA.
