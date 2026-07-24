@@ -54,7 +54,7 @@ def test_parse_artist(
     example: pathlib.Path, provider_mock: Mock, snapshot: SnapshotAssertion
 ) -> None:
     """Test we can parse artists."""
-    with open(example) as f:
+    with open(example, encoding="utf-8") as f:
         data = json.load(f)
     parsed = parse_artist(provider_mock, data).to_dict()
     assert snapshot == parsed
@@ -65,7 +65,7 @@ def test_parse_album(
     example: pathlib.Path, provider_mock: Mock, snapshot: SnapshotAssertion
 ) -> None:
     """Test we can parse albums."""
-    with open(example) as f:
+    with open(example, encoding="utf-8") as f:
         data = json.load(f)
     parsed = parse_album(provider_mock, data).to_dict()
     assert snapshot == parsed
@@ -76,7 +76,7 @@ def test_parse_track(
     example: pathlib.Path, provider_mock: Mock, snapshot: SnapshotAssertion
 ) -> None:
     """Test we can parse tracks."""
-    with open(example) as f:
+    with open(example, encoding="utf-8") as f:
         data = json.load(f)
     parsed = parse_track(provider_mock, data).to_dict()
     assert snapshot == parsed
@@ -87,9 +87,31 @@ def test_parse_playlist(
     example: pathlib.Path, provider_mock: Mock, snapshot: SnapshotAssertion
 ) -> None:
     """Test we can parse playlists."""
-    with open(example) as f:
+    with open(example, encoding="utf-8") as f:
         data = json.load(f)
 
     is_mix = "mix" in example.name
     parsed = parse_playlist(provider_mock, data, is_mix=is_mix).to_dict()
     assert snapshot == parsed
+
+
+def test_parse_track_partial_album(provider_mock: Mock) -> None:
+    """Test track parsing tolerates partial album objects."""
+    track_obj = {
+        "id": 123,
+        "title": "Test Track",
+        "duration": 100,
+        "artists": [{"id": 1, "name": "Test Artist", "picture": None}],
+        "album": {"id": 456},  # No title or cover
+    }
+
+    track = parse_track(provider_mock, track_obj)
+
+    assert track.album is not None
+    assert track.album.item_id == "456"
+    assert track.album.name == ""
+
+    # An album without an id is useless: no mapping should be created
+    track_obj["album"] = {"title": "Test Album"}
+    track = parse_track(provider_mock, track_obj)
+    assert track.album is None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import TYPE_CHECKING, Any
 
 import shortuuid
@@ -27,6 +28,8 @@ class DSPConfigMixin:
 
         def set(self, key: str, value: Any) -> None: ...  # noqa: D102
 
+        def remove(self, key: str) -> None: ...  # noqa: D102
+
     @api_command("config/players/dsp/get", required_scope=Scope.CONFIG_PLAYERS_READ)
     def get_player_dsp_config(self, player_id: str) -> DSPConfig:
         """
@@ -49,21 +52,24 @@ class DSPConfigMixin:
 
         This method will validate the config and apply it to the player.
         """
-        # validate the new config
-        config.validate()
+        config = deepcopy(config)
+        config.preset_id = None
+        return await self._save_dsp_config(player_id, config)
 
-        old_dsp_enabled = self.get_player_dsp_config(player_id).enabled
-        # Save and apply the new config to the player
-        self.set(f"{CONF_PLAYER_DSP}/{player_id}", config.to_dict())
-        if old_dsp_enabled or config.enabled:
-            await self.mass.players.on_player_dsp_change(player_id)
-        # send the dsp config updated event
-        self.mass.signal_event(
-            EventType.PLAYER_DSP_CONFIG_UPDATED,
-            object_id=player_id,
-            data=config,
-        )
-        return config
+    @api_command("config/players/dsp/apply_preset", required_scope=Scope.CONFIG_PLAYERS_WRITE)
+    async def apply_dsp_preset(self, player_id: str, preset_id: str) -> DSPConfig:
+        """
+        Apply a persisted DSP preset to a player.
+
+        :param player_id: Player that should use the preset.
+        :param preset_id: Preset identifier to apply.
+        """
+        if (preset := self._get_dsp_preset(preset_id)) is None:
+            msg = f"DSP preset {preset_id} not found"
+            raise KeyError(msg)
+        config = deepcopy(preset.config)
+        config.preset_id = preset_id
+        return await self._save_dsp_config(player_id, config)
 
     @api_command("config/dsp_presets/get", required_scope=Scope.CONFIG_PLAYERS_READ)
     async def get_dsp_presets(self) -> list[DSPConfigPreset]:
@@ -78,14 +84,22 @@ class DSPConfigMixin:
 
         This method will validate the config before saving it to the persistent storage.
         """
+        preset = deepcopy(preset)
+        preset.config.preset_id = None
         preset.validate()
 
+        previous = self._get_dsp_preset(preset.preset_id) if preset.preset_id else None
         if preset.preset_id is None:
             # Generate a new preset_id if it does not exist
             preset.preset_id = shortuuid.random(8).lower()
 
         # Save the preset to the persistent storage
         self.set(f"{CONF_PLAYER_DSP_PRESETS}/preset_{preset.preset_id}", preset.to_dict())
+        if previous:
+            previous_config = deepcopy(previous.config)
+            previous_config.preset_id = None
+            if previous_config != preset.config:
+                self._clear_dsp_preset_assignments(preset.preset_id)
 
         all_presets = await self.get_dsp_presets()
 
@@ -99,7 +113,8 @@ class DSPConfigMixin:
     @api_command("config/dsp_presets/remove", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def remove_dsp_preset(self, preset_id: str) -> None:
         """Remove a user-defined DSP preset."""
-        self.mass.config.remove(f"{CONF_PLAYER_DSP_PRESETS}/preset_{preset_id}")
+        self.remove(f"{CONF_PLAYER_DSP_PRESETS}/preset_{preset_id}")
+        self._clear_dsp_preset_assignments(preset_id)
 
         all_presets = await self.get_dsp_presets()
 
@@ -107,3 +122,46 @@ class DSPConfigMixin:
             EventType.DSP_PRESETS_UPDATED,
             data=all_presets,
         )
+
+    def _get_dsp_preset(self, preset_id: str | None) -> DSPConfigPreset | None:
+        """Return a DSP preset by identifier."""
+        if preset_id is None:
+            return None
+        if raw_preset := self.get(f"{CONF_PLAYER_DSP_PRESETS}/preset_{preset_id}"):
+            return DSPConfigPreset.from_dict(raw_preset)
+        return None
+
+    async def _save_dsp_config(self, player_id: str, config: DSPConfig) -> DSPConfig:
+        """Persist and apply a validated DSP configuration."""
+        config.validate()
+        previous = self.get_player_dsp_config(player_id)
+        self.set(f"{CONF_PLAYER_DSP}/{player_id}", config.to_dict())
+        if previous.enabled or config.enabled:
+            await self.mass.players.on_player_dsp_change(player_id)
+        elif previous.preset_id != config.preset_id:
+            self.mass.streams.audio_processing.update_player_dsp_preset(
+                player_id,
+                config.preset_id,
+            )
+        self.mass.signal_event(
+            EventType.PLAYER_DSP_CONFIG_UPDATED,
+            object_id=player_id,
+            data=config,
+        )
+        return config
+
+    def _clear_dsp_preset_assignments(self, preset_id: str) -> None:
+        """Clear a preset selection without changing player DSP values."""
+        raw_configs: dict[str, dict[str, Any]] = self.get(CONF_PLAYER_DSP, {})
+        for player_id, raw_config in tuple(raw_configs.items()):
+            config = DSPConfig.from_dict(raw_config)
+            if config.preset_id != preset_id:
+                continue
+            config.preset_id = None
+            self.set(f"{CONF_PLAYER_DSP}/{player_id}", config.to_dict())
+            self.mass.streams.audio_processing.update_player_dsp_preset(player_id, None)
+            self.mass.signal_event(
+                EventType.PLAYER_DSP_CONFIG_UPDATED,
+                object_id=player_id,
+                data=config,
+            )

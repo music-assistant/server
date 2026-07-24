@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Callable
+from contextlib import suppress
 from copy import deepcopy
+from dataclasses import dataclass, field
 from ipaddress import ip_address
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -14,7 +17,23 @@ from uuid import uuid4
 from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
-from aiosendspin.models.types import AudioCodec, PlayerCommand
+from aiosendspin.models.types import (
+    AudioCodec,
+    ManagementResult,
+    PairAbortReason,
+    PairMethod,
+    PlayerCommand,
+    role_family,
+)
+from aiosendspin.noise.driver import HandshakeAbortedError
+from aiosendspin.noise.pairing import (
+    LocalPairingAbortError,
+    PairingAbortError,
+    PairingAttempt,
+    PairingError,
+)
+from aiosendspin.noise.pairing_token import decode_token
+from aiosendspin.noise.trust_store import FileServerPairingStore
 from aiosendspin.server import (
     ClientAddedEvent,
     ClientRemovedEvent,
@@ -49,18 +68,37 @@ from music_assistant.providers.sendspin.bridge_role import (
     BridgePlayerRole,
 )
 from music_assistant.providers.sendspin.constants import (
+    CONF_ALLOW_UNENCRYPTED,
+    CONF_MIN_PIN_LENGTH,
     CONF_SENDSPIN_STATIC_DELAY,
     CONF_VIRTUAL_PLAYER_OWNER,
+    DEFAULT_MIN_PIN_LENGTH,
     VIRTUAL_PLAYER_ID_PREFIX,
+)
+from music_assistant.providers.sendspin.helpers import (
+    SecurityActionError,
+    effective_pair_methods,
 )
 from music_assistant.providers.sendspin.player import (
     SendspinBasePlayer,
     SendspinPlayer,
     SendspinVisualizerPlayer,
 )
+from music_assistant.providers.sendspin.security import (
+    IDENTITY_FILENAME,
+    get_or_create_server_identity,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Sequence
+
+    from aiosendspin.models.core import PairMethodDescriptor
+    from aiosendspin.models.management import (
+        ManagementResultData,
+        ManagementSetPairingConfigPayload,
+    )
     from aiosendspin.server.client import SendspinClient
+    from aiosendspin.server.connection import SendspinConnection
     from aiosendspin.server.server import ExternalStreamStartRequest
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.event import MassEvent
@@ -74,6 +112,89 @@ DEFAULT_SENDSPIN_CLIENT_PATH = "/sendspin"
 VIRTUAL_PLAYER_REGISTER_TIMEOUT = 10.0
 VIRTUAL_PLAYER_CLEANUP_DELAYS = (0.0, 0.5, 2.0)
 VIRTUAL_PLAYER_CLEANUP_TIMEOUT = 2.0
+
+PIN_REQUEST_FEEDBACK_TIMEOUT = 2
+PIN_SUBMIT_FEEDBACK_TIMEOUT = 10
+PIN_RETRY_IDLE_TIMEOUT = 300
+MANAGEMENT_REQUEST_TIMEOUT = 10
+MANAGEMENT_IDLE_TIMEOUT = 300
+
+
+@dataclass
+class PinPairingSession:
+    """State of an operator PIN pairing session for one client, across retry-in-place attempts."""
+
+    client_id: str
+    method: PairMethod
+    pin_future: asyncio.Future[str]
+    verify: bool = False
+    task: asyncio.Task[None] | None = None
+    pin_request_event: asyncio.Event = field(default_factory=asyncio.Event)
+    error: Exception | None = None
+    retryable: bool = False
+
+    @property
+    def attempt_running(self) -> bool:
+        """Whether an attempt is currently in flight."""
+        return self.task is not None and not self.task.done()
+
+    @property
+    def awaiting_gesture(self) -> bool:
+        """Whether the attempt is still waiting for the client to enter pairing."""
+        return self.attempt_running and not self.pin_request_event.is_set()
+
+    @property
+    def awaiting_pin(self) -> bool:
+        """Whether the attempt is waiting for the operator to submit a PIN."""
+        return self.attempt_running and not self.pin_future.done()
+
+    @property
+    def can_retry(self) -> bool:
+        """Whether a failed attempt can be retried in place."""
+        return self.task is not None and self.task.done() and self.retryable
+
+    @property
+    def finished(self) -> bool:
+        """Whether the session reached a terminal outcome (no retry possible)."""
+        return self.task is not None and self.task.done() and not self.retryable
+
+
+@dataclass
+class ManagementSession:
+    """State of an operator device-management session for one client."""
+
+    client_id: str
+    connection: SendspinConnection
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+def _pin_idle_task_id(client_id: str) -> str:
+    """Timer/task id for a client's pairing-retry idle timeout."""
+    return f"sendspin_pin_idle_{client_id}"
+
+
+def _management_idle_task_id(client_id: str) -> str:
+    """Timer/task id for a client's management-session idle timeout."""
+    return f"sendspin_management_idle_{client_id}"
+
+
+_MANAGEMENT_RESULT_ALERTS = {
+    ManagementResult.PERMISSION_DENIED: "management_error_permission_denied",
+    ManagementResult.ALREADY_EXISTS: "management_error_already_exists",
+    ManagementResult.INVALID: "management_error_invalid",
+    ManagementResult.NOT_FOUND: "management_error_not_found",
+    ManagementResult.STORAGE_EXHAUSTED: "management_error_storage_exhausted",
+}
+
+
+def _check_management_result(result: ManagementResult) -> None:
+    """Raise a structured error for a non-ok management result."""
+    if result is ManagementResult.OK:
+        return
+    alert_key = _MANAGEMENT_RESULT_ALERTS.get(result)
+    if alert_key is None:
+        raise SecurityActionError("management_error_generic", detail=result.value)
+    raise SecurityActionError(alert_key)
 
 
 def _manual_client_url(address: str) -> str:
@@ -120,6 +241,7 @@ class SendspinProvider(PlayerProvider):
     _manual_ip_config: tuple[str, ...]
     _virtual_players: dict[str, str]
     _unloading: bool
+    _hass_available: bool
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -129,13 +251,6 @@ class SendspinProvider(PlayerProvider):
         # Handle config option for manual IP's
         manual_ip_config = cast("list[str]", config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key))
         self._manual_ip_config = tuple(address for address in manual_ip_config if address.strip())
-        self.server_api = SendspinServer(
-            self.mass.loop, mass.server_id, "Music Assistant", self.mass.http_session
-        )
-        # Pitch (YINFFT) is the heaviest visualizer DSP and result quality is
-        # still very mixed, needs more testing. Disable it globally for now to
-        # spare low-power hosts.
-        self.server_api.set_visualizer_pitch_enabled(enabled=False)
         self._pending_unregisters = {}
         self._bridge_identifiers = {}
         self._bridge_underlying_players = {}
@@ -144,11 +259,71 @@ class SendspinProvider(PlayerProvider):
         self._client_event_versions = {}
         self._client_event_task_counts = {}
         self._virtual_players = {}
+        self._pin_sessions: dict[str, PinPairingSession] = {}
+        self._token_pairing: set[str] = set()
+        self._management_sessions: dict[str, ManagementSession] = {}
+        self._pairing_config_snapshots: dict[
+            str, tuple[SendspinConnection, ManagementResultData]
+        ] = {}
         self._unloading = False
+        self._hass_available = False
+        self.unregister_cbs = []
+
+    async def handle_async_init(self) -> None:
+        """Load the persistent server identity and pairing store, then create the server."""
+        storage_dir = Path(self.mass.storage_path) / "sendspin"
+        identity_path = storage_dir / IDENTITY_FILENAME
+        try:
+            identity = await asyncio.to_thread(get_or_create_server_identity, storage_dir)
+        except ValueError as err:
+            raise SetupFailedError(
+                f"The Sendspin server identity at {identity_path} is corrupt: {err}. Restore it "
+                "from a backup, or remove the file to start fresh - every paired device will "
+                "then need to be re-paired."
+            ) from err
+        except OSError as err:
+            raise SetupFailedError(
+                f"Could not read the Sendspin server identity at {identity_path}: {err}. Fix the "
+                "file-access problem and reload; do not delete the file or every paired device "
+                "will need to be re-paired."
+            ) from err
+        pairing_store_path = storage_dir / "pairing_store.json"
+        try:
+            pairing_store = await FileServerPairingStore.open(pairing_store_path)
+        except (ValueError, TypeError, KeyError) as err:
+            raise SetupFailedError(
+                f"The Sendspin pairing store at {pairing_store_path} is corrupt: {err}. Restore it "
+                "from a backup, or remove the file to start fresh - this discards all pairings and "
+                "unpaired-access approvals."
+            ) from err
+        except OSError as err:
+            raise SetupFailedError(
+                f"Could not read the Sendspin pairing store at {pairing_store_path}: {err}. Fix the "
+                "file-access problem and reload; do not delete the file or all pairings will be "
+                "lost."
+            ) from err
+        self.server_api = SendspinServer(
+            self.mass.loop,
+            identity,
+            "Music Assistant",
+            self.mass.http_session,
+            pairing_store=pairing_store,
+            allow_unencrypted=cast("bool", self.config.get_value(CONF_ALLOW_UNENCRYPTED, True)),
+            min_pin_length=cast(
+                "int", self.config.get_value(CONF_MIN_PIN_LENGTH, DEFAULT_MIN_PIN_LENGTH)
+            ),
+        )
+        # Pitch (YINFFT) is the heaviest visualizer DSP and result quality is
+        # still very mixed, needs more testing. Disable it globally for now to
+        # spare low-power hosts.
+        self.server_api.set_visualizer_pitch_enabled(enabled=False)
         self.unregister_cbs = [
             self.server_api.add_event_listener(self.event_cb),
             self.mass.subscribe(self._on_providers_updated, EventType.PROVIDERS_UPDATED),
         ]
+        # seed the hass availability snapshot so the first (un)load is seen as a change
+        hass = self.mass.get_provider("hass")
+        self._hass_available = hass is not None and hass.available
 
     def event_cb(self, server: SendspinServer, event: SendspinEvent) -> None:
         """Event callback registered to the sendspin server."""
@@ -164,6 +339,19 @@ class SendspinProvider(PlayerProvider):
                 self.mass.create_task(self._handle_client_updated(client_id, event_version))
             case _:
                 self.logger.error("Unknown sendspin event: %s", event)
+
+    def on_player_enabled(self, player_id: str) -> None:
+        """Call (by config manager) when a player gets enabled."""
+        # A client that connected while disabled has no player object;
+        # replay the add event so re-enabling takes effect immediately.
+        if (
+            self.server_api.get_client(player_id) is not None
+            and self.mass.players.get_player(player_id) is None
+        ):
+            event_version = self._begin_client_event(player_id)
+            self.mass.create_task(self._handle_client_added(player_id, event_version))
+            return
+        super().on_player_enabled(player_id)
 
     def register_bridge_identifiers(
         self, client_id: str, identifiers: dict[IdentifierType, str]
@@ -379,6 +567,207 @@ class SendspinProvider(PlayerProvider):
         """Return whether the given player_id belongs to a registered virtual player."""
         return player_id in self._virtual_players
 
+    def get_pin_session(self, client_id: str) -> PinPairingSession | None:
+        """Return the in-flight or just-finished PIN pairing session for a client."""
+        return self._pin_sessions.get(client_id)
+
+    def clear_pin_session(self, client_id: str) -> None:
+        """Drop a finished PIN pairing session (after its outcome has been shown)."""
+        session = self._pin_sessions.get(client_id)
+        if session is not None and session.finished:
+            self._cancel_pin_idle_timeout(client_id)
+            self._pin_sessions.pop(client_id, None)
+
+    def is_token_pairing(self, client_id: str) -> bool:
+        """Whether the operator is in the token-entry pairing submenu for a client."""
+        return client_id in self._token_pairing
+
+    def open_token_pairing(self, client_id: str) -> None:
+        """Enter the token-entry pairing submenu for a client."""
+        self._token_pairing.add(client_id)
+
+    def close_token_pairing(self, client_id: str) -> None:
+        """Leave the token-entry pairing submenu for a client."""
+        self._token_pairing.discard(client_id)
+
+    async def start_pin_pairing(
+        self, client_id: str, *, verify: bool = False, static: bool = False
+    ) -> PinPairingSession:
+        """
+        Begin (or retry in place) an operator PIN pairing attempt with a connected client.
+
+        Returns once the client has asked for the PIN, the attempt has failed, or a short
+        feedback window has elapsed, so the caller's first render reflects whether the
+        device-side pairing gesture is still pending. The attempt keeps running until the PIN
+        is supplied via submit_pin (or it times out / is cancelled). A session left retryable
+        by a failed attempt is resumed in place, preserving the chosen method and verify mode.
+
+        :param verify: Re-verify an already-paired device's presence (dynamic PIN only).
+        :param static: Pair with the static PIN even when a dynamic PIN is offered.
+        """
+        session = self._pin_sessions.get(client_id)
+        if session is not None and session.can_retry:
+            self._begin_pin_attempt(session)
+            await self._pin_request_feedback(session)
+            return session
+        if session is not None and session.attempt_running:
+            return session
+        client = self.server_api.get_client(client_id)
+        info = client.info_or_none if client is not None else None
+        if info is None:
+            raise SecurityActionError("pairing_error_not_connected")
+        method = self._pick_pin_method(
+            effective_pair_methods(info, self.pairing_config_snapshot(client_id)),
+            verify=verify,
+            static=static,
+        )
+        session = PinPairingSession(
+            client_id=client_id,
+            method=method,
+            pin_future=self.mass.loop.create_future(),
+            verify=verify,
+        )
+        self._pin_sessions[client_id] = session
+        self._begin_pin_attempt(session)
+        await self._pin_request_feedback(session)
+        return session
+
+    async def submit_pin(self, client_id: str, pin: str) -> None:
+        """Deliver the operator-entered PIN and wait briefly for the outcome."""
+        session = self._pin_sessions.get(client_id)
+        if session is None or session.task is None:
+            raise SecurityActionError("pairing_error_no_pin_session")
+        if not session.pin_future.done():
+            session.pin_future.set_result(pin.strip())
+        with suppress(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(session.task), PIN_SUBMIT_FEEDBACK_TIMEOUT)
+
+    async def cancel_pin_pairing(self, client_id: str) -> None:
+        """Abort an in-flight or parked PIN pairing session, restoring normal service."""
+        session = self._pin_sessions.pop(client_id, None)
+        if session is None:
+            return
+        self._cancel_pin_idle_timeout(client_id)
+        await self._end_pairing_quietly(client_id)
+        if session.task is not None:
+            with suppress(Exception):
+                await session.task
+        await self._refresh_player(client_id)
+
+    async def pair_with_token(self, client_id: str, token_value: str) -> None:
+        """Pair a connected client using its pasted pairing token."""
+        session = self._pin_sessions.get(client_id)
+        if session is not None and session.attempt_running:
+            raise SecurityActionError("pairing_error_concurrent")
+        try:
+            token = decode_token(token_value)
+        except ValueError as err:
+            raise SecurityActionError("pairing_error_token_invalid") from err
+        if token.client_id != client_id:
+            raise SecurityActionError("pairing_error_token_mismatch")
+        try:
+            await self.server_api.initiate_pairing(
+                client_id,
+                PairingAttempt(PairMethod.PAIRING_PSK, pairing_psk=token.pairing_psk),
+            )
+        except PairingAbortError:
+            # Token pairing is single-shot; unpark the connection before surfacing the failure.
+            await self._end_pairing_quietly(client_id)
+            raise
+        except HandshakeAbortedError as err:
+            # A client that does not recognize the token's PSK closes the connection
+            # without an application-level error (spec); the server has disconnected it.
+            raise PairingError(
+                "the token was rejected by the device; make sure it is correct"
+            ) from err
+        await self._refresh_player(client_id)
+
+    async def unpair_client(self, client_id: str) -> None:
+        """Drop the pairing with a connected client (both sides forget the credential)."""
+        await self.server_api.unpair(client_id)
+        await self._refresh_player(client_id)
+
+    async def set_trusted_unpaired(self, client_id: str, enabled: bool) -> None:
+        """Approve or revoke unpaired (unauthenticated) playback for a client."""
+        if enabled:
+            await self.server_api.trust_unpaired(client_id)
+        else:
+            await self.server_api.untrust_unpaired(client_id)
+        await self._refresh_player(client_id)
+
+    def get_management_session(self, client_id: str) -> ManagementSession | None:
+        """Return the client's management session, dropping one whose connection is gone."""
+        session = self._management_sessions.get(client_id)
+        if session is None:
+            return None
+        client = self.server_api.get_client(client_id)
+        if client is None or client.connection is not session.connection:
+            self._drop_management_session(session)
+            return None
+        return session
+
+    def enter_management(self, client_id: str) -> ManagementSession:
+        """Open (or refresh) the operator management session for a paired connected client."""
+        if (session := self.get_management_session(client_id)) is not None:
+            self._arm_management_idle_timeout(session)
+            return session
+        try:
+            connection = self.server_api.enable_management(client_id)
+        except RuntimeError as err:
+            raise SecurityActionError("management_error_generic", detail=str(err)) from err
+        session = ManagementSession(client_id=client_id, connection=connection)
+        self._management_sessions[client_id] = session
+        self._arm_management_idle_timeout(session)
+        return session
+
+    def exit_management(self, client_id: str) -> None:
+        """Close the client's management session, restoring normal server admission."""
+        if (session := self._management_sessions.get(client_id)) is not None:
+            self._drop_management_session(session)
+
+    async def management_get_pairing_config(self, client_id: str) -> ManagementResultData:
+        """Fetch the device's pairing configuration over its management session."""
+        session = self._management_session_or_raise(client_id)
+        async with session.lock:
+            self._arm_management_idle_timeout(session)
+            result, data, _ = await self._management_call(
+                session.connection, session.connection.get_pairing_config()
+            )
+        _check_management_result(result)
+        self._pairing_config_snapshots[client_id] = (session.connection, data)
+        return data
+
+    def pairing_config_snapshot(self, client_id: str) -> ManagementResultData | None:
+        """
+        Return the last management-fetched pairing config for the client's current connection.
+
+        While the connection it was fetched on is still the active one, the snapshot is
+        fresher than the hello advertisement (which cannot change until reconnect); after a
+        reconnect the new hello is authoritative and the snapshot is dropped.
+        """
+        snapshot = self._pairing_config_snapshots.get(client_id)
+        if snapshot is None:
+            return None
+        connection, data = snapshot
+        client = self.server_api.get_client(client_id)
+        if client is None or client.connection is not connection:
+            self._pairing_config_snapshots.pop(client_id, None)
+            return None
+        return data
+
+    async def management_set_pairing_config(
+        self, client_id: str, patch: ManagementSetPairingConfigPayload
+    ) -> None:
+        """Apply a pairing-config patch on the device and refresh the cached snapshot."""
+        session = self._management_session_or_raise(client_id)
+        async with session.lock:
+            self._arm_management_idle_timeout(session)
+            result = await self._management_call(
+                session.connection, session.connection.set_pairing_config(patch)
+            )
+        _check_management_result(result)
+        await self.management_get_pairing_config(client_id)
+
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this Provider."""
@@ -421,24 +810,18 @@ class SendspinProvider(PlayerProvider):
         :param is_removed: True when the provider is removed from the configuration.
         """
         self._unloading = True
+        # call_later timers are not swept by mass.stop(), so cancel them explicitly here.
+        for session in self._pin_sessions.values():
+            if session.task is not None:
+                session.task.cancel()
+            self._cancel_pin_idle_timeout(session.client_id)
+        self._pin_sessions.clear()
+        self._token_pairing.clear()
+        for management_session in self._management_sessions.values():
+            self.mass.cancel_timer(_management_idle_task_id(management_session.client_id))
+        self._management_sessions.clear()
+        self._pairing_config_snapshots.clear()
         player_ids = [player.player_id for player in self.players]
-        # Disconnect all clients before stopping the server
-        clients = list(self.server_api.clients)
-        connected_clients = []
-        disconnect_tasks = []
-        for client in clients:
-            if client.connection is None:
-                continue
-            connected_clients.append(client)
-            disconnect_tasks.append(client.connection.disconnect(retry_connection=False))
-        if disconnect_tasks:
-            results = await asyncio.gather(*disconnect_tasks, return_exceptions=True)
-            for client, result in zip(connected_clients, results, strict=True):
-                if isinstance(result, Exception):
-                    self.logger.warning(
-                        "Error disconnecting client %s: %s", client.client_id, result
-                    )
-
         # Stop the Sendspin server
         await self.server_api.close()
 
@@ -478,15 +861,56 @@ class SendspinProvider(PlayerProvider):
         """Return True if the event version is still the latest for the client."""
         return self._client_event_versions.get(client_id) == event_version
 
-    async def _apply_hass_name_override(self, player: SendspinBasePlayer, client_id: str) -> None:
-        """Apply Home Assistant display name for ESPHome-backed Sendspin players."""
-        if player.device_info.manufacturer != "ESPHome":
+    async def _apply_hass_esphome_enrichment(self, players: Sequence[SendspinBasePlayer]) -> None:
+        """
+        Apply Home Assistant-sourced enrichment to ESPHome-backed Sendspin players.
+
+        Applies the HA display name and resolves the HA media_player entity that
+        announcements are relayed to: ESPHome devices support announcements
+        natively, but that capability is only reachable through the HA API.
+        Players are correlated by MAC address (the Sendspin client id).
+        """
+        esphome_players = [
+            player for player in players if player.device_info.manufacturer == "ESPHome"
+        ]
+        if not esphome_players:
             return
-        if not (hass := self.mass.get_provider("hass")):
+        hass = cast("HomeAssistantProvider | None", self.mass.get_provider("hass"))
+        if hass is None or not hass.available:
+            for player in esphome_players:
+                if isinstance(player, SendspinPlayer):
+                    player.set_hass_announce_entity(None)
             return
-        hass = cast("HomeAssistantProvider", hass)
-        if hass_device := await hass.get_device_by_connection(client_id):
-            player._attr_name = hass_device["name_by_user"] or hass_device["name"] or player.name
+        try:
+            device_infos = await hass.get_media_player_device_infos(
+                [player.player_id for player in esphome_players], platform="esphome"
+            )
+        except Exception as err:
+            self.logger.warning("Failed to apply Home Assistant enrichment: %s", err)
+            return
+        for player in esphome_players:
+            device_info = device_infos.get(player.player_id.lower())
+            if device_info is not None and device_info["name"]:
+                player._attr_name = device_info["name"]
+            if isinstance(player, SendspinPlayer):
+                player.set_hass_announce_entity(
+                    device_info["announce_entity_id"] if device_info is not None else None
+                )
+
+    async def _refresh_hass_esphome_enrichment(self) -> None:
+        """Re-apply the HA enrichment to all registered ESPHome players (in place)."""
+        players = [
+            player
+            for player in self.players
+            if isinstance(player, SendspinBasePlayer)
+            and player.device_info.manufacturer == "ESPHome"
+        ]
+        if not players:
+            return
+        await self._apply_hass_esphome_enrichment(players)
+        for player in players:
+            if player.initialized.is_set():
+                player.update_state()
 
     def _create_player(
         self,
@@ -510,9 +934,14 @@ class SendspinProvider(PlayerProvider):
         if static_delay_default_ms is None and isinstance(existing_player, SendspinPlayer):
             static_delay_default_ms = existing_player.static_delay_default_ms
 
-        has_player_role = bool(sendspin_client.roles_by_family("player"))
-        has_metadata_role = bool(sendspin_client.roles_by_family("metadata"))
-        has_visualizer_role = bool(sendspin_client.roles_by_family("visualizer"))
+        # Select on negotiated (not active) roles: activation follows pairing/trust state,
+        # which must not change the player class.
+        negotiated_families = {
+            role_family(role_id) for role_id in sendspin_client.negotiated_role_ids
+        }
+        has_player_role = "player" in negotiated_families
+        has_metadata_role = "metadata" in negotiated_families
+        has_visualizer_role = "visualizer" in negotiated_families
 
         if has_player_role:
             audio_player = SendspinPlayer(self, client_id, initial_hello=initial_hello)
@@ -539,6 +968,173 @@ class SendspinProvider(PlayerProvider):
             player.static_delay_default_ms = static_delay_default_ms
         return player
 
+    @staticmethod
+    def _pick_pin_method(
+        offered: list[PairMethodDescriptor], *, verify: bool = False, static: bool = False
+    ) -> PairMethod:
+        """
+        Select the preferred usable PIN method from the client's offer.
+
+        :param verify: Restrict to dynamic PIN, the only method that proves device presence.
+        :param static: Restrict to static PIN, overriding the dynamic-first default.
+        """
+        wanted: tuple[PairMethod, ...]
+        if verify:
+            wanted = (PairMethod.DYNAMIC_PIN,)
+        elif static:
+            wanted = (PairMethod.STATIC_PIN,)
+        else:
+            wanted = (PairMethod.DYNAMIC_PIN, PairMethod.STATIC_PIN)
+        pin_methods = [descriptor for descriptor in offered if descriptor.method in wanted]
+        for method in wanted:
+            for descriptor in pin_methods:
+                if descriptor.method is method and not descriptor.locked_out:
+                    return descriptor.method
+        if pin_methods:
+            raise SecurityActionError("pairing_error_locked_out")
+        raise SecurityActionError("pairing_error_no_pin_method")
+
+    def _begin_pin_attempt(self, session: PinPairingSession) -> None:
+        """Start or restart a pairing attempt for the session, resetting per-attempt state."""
+        self._cancel_pin_idle_timeout(session.client_id)
+        session.error = None
+        session.retryable = False
+        session.pin_request_event.clear()
+        if session.pin_future.done():
+            session.pin_future = self.mass.loop.create_future()
+        session.task = self.mass.create_task(self._run_pin_pairing(session))
+
+    async def _pin_request_feedback(self, session: PinPairingSession) -> None:
+        """Wait briefly for the attempt to reach the PIN wait (or end), for an accurate render."""
+        if session.task is None:
+            return
+
+        async def pin_requested() -> None:
+            await session.pin_request_event.wait()
+
+        waiter = self.mass.create_task(pin_requested())
+        try:
+            await asyncio.wait(
+                {waiter, session.task},
+                timeout=PIN_REQUEST_FEEDBACK_TIMEOUT,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            waiter.cancel()
+
+    async def _run_pin_pairing(self, session: PinPairingSession) -> None:
+        """Run one PIN pairing attempt, classifying the outcome for the UI."""
+
+        def pin_provider() -> asyncio.Future[str]:
+            # Invoked only once the client's pair-init has arrived (post-gesture).
+            session.pin_request_event.set()
+            return session.pin_future
+
+        try:
+            await self.server_api.initiate_pairing(
+                session.client_id,
+                PairingAttempt(session.method, pin_provider=pin_provider, verify=session.verify),
+            )
+        except PairingAbortError as err:
+            if (
+                isinstance(err, LocalPairingAbortError)
+                and err.reason is PairAbortReason.USER_CANCELLED
+            ):
+                # Our own end_pairing cancelled this attempt; the connection is already restored.
+                return
+            session.error = err
+            self.logger.debug("PIN pairing with %s aborted: %s", session.client_id, err)
+            if err.reason is PairAbortReason.LOCKED_OUT:
+                # Retrying is pointless once locked out; unpark the connection.
+                await self._end_pairing_quietly(session.client_id)
+            else:
+                session.retryable = True
+                self._arm_pin_idle_timeout(session)
+        except Exception as err:
+            # A non-abort failure: the server has already disconnected the client.
+            session.error = err
+            self.logger.debug("PIN pairing with %s failed: %s", session.client_id, err)
+        else:
+            await self._refresh_player(session.client_id)
+        finally:
+            if not session.pin_future.done():
+                session.pin_future.cancel()
+
+    def _arm_pin_idle_timeout(self, session: PinPairingSession) -> None:
+        """Schedule restoration of the connection if a failed attempt is left unretried."""
+        self.mass.call_later(
+            PIN_RETRY_IDLE_TIMEOUT,
+            self._pin_idle_timeout,
+            session,
+            task_id=_pin_idle_task_id(session.client_id),
+        )
+
+    def _cancel_pin_idle_timeout(self, client_id: str) -> None:
+        """Cancel a pairing idle timeout, whether still pending or already firing."""
+        task_id = _pin_idle_task_id(client_id)
+        self.mass.cancel_timer(task_id)
+        self.mass.cancel_task(task_id)
+
+    async def _pin_idle_timeout(self, session: PinPairingSession) -> None:
+        """Terminate an abandoned retryable session, restoring the connection to service."""
+        session.retryable = False
+        session.error = TimeoutError("timed out waiting for a pairing retry")
+        await self._end_pairing_quietly(session.client_id)
+        await self._refresh_player(session.client_id)
+
+    async def _end_pairing_quietly(self, client_id: str) -> None:
+        """End pairing on a client, tolerating an already-gone connection."""
+        try:
+            await self.server_api.end_pairing(client_id)
+        except Exception as err:
+            self.logger.debug("Ending pairing for %s failed: %s", client_id, err)
+
+    def _management_session_or_raise(self, client_id: str) -> ManagementSession:
+        """Return the client's management session or raise if none is open."""
+        session = self.get_management_session(client_id)
+        if session is None:
+            raise SecurityActionError("management_error_no_session")
+        return session
+
+    async def _management_call[T](self, connection: SendspinConnection, request: Awaitable[T]) -> T:
+        """Run a management request with a timeout, mapping transport failures to SecurityActionError."""
+        try:
+            async with asyncio.timeout(MANAGEMENT_REQUEST_TIMEOUT):
+                return await request
+        except TimeoutError as err:
+            # Replies match requests by order with no id, so a timed-out request left in
+            # flight would desync the next one; drop the connection to reset the channel.
+            await connection.disconnect()
+            raise SecurityActionError("management_error_timeout") from err
+        except RuntimeError as err:
+            raise SecurityActionError("management_error_generic", detail=str(err)) from err
+
+    def _arm_management_idle_timeout(self, session: ManagementSession) -> None:
+        """(Re)start the idle countdown that closes an abandoned management session."""
+        self.mass.call_later(
+            MANAGEMENT_IDLE_TIMEOUT,
+            self._drop_management_session,
+            session,
+            task_id=_management_idle_task_id(session.client_id),
+        )
+
+    def _drop_management_session(self, session: ManagementSession) -> None:
+        """Remove a management session, releasing its hold on the connection."""
+        self.mass.cancel_timer(_management_idle_task_id(session.client_id))
+        self._management_sessions.pop(session.client_id, None)
+        with suppress(Exception):
+            session.connection.disable_management()
+
+    async def _refresh_player(self, client_id: str) -> None:
+        """Re-evaluate a registered player after a pairing/trust change (in place)."""
+        player = self.mass.players.get_player(client_id)
+        if not isinstance(player, SendspinBasePlayer) or not player.initialized.is_set():
+            return
+        # A trust change (de)activates roles; role instances are recreated on activation,
+        # so pushed config (preferred format, static delay) must be re-applied.
+        await player.on_config_updated()
+        player.update_state()
+
     async def _handle_client_added(self, client_id: str, event_version: int) -> None:
         """Handle a new client connection asynchronously."""
         try:
@@ -549,9 +1145,12 @@ class SendspinProvider(PlayerProvider):
                 self.logger.debug("Client %s disconnected before add handling started", client_id)
                 return
             bridge_hello_snapshot = None
-            if client_id in self._bridge_identifiers and sendspin_client._info is not None:
+            if (
+                client_id in self._bridge_identifiers
+                and (bridge_hello := sendspin_client.info_or_none) is not None
+            ):
                 # Snapshot the bridges hello before a reconnect can overwrite it
-                bridge_hello_snapshot = deepcopy(sendspin_client._info)
+                bridge_hello_snapshot = deepcopy(bridge_hello)
             if pending_event := self._pending_unregisters.get(client_id):
                 self.logger.debug(
                     "Waiting for pending unregister of %s before registering", client_id
@@ -568,7 +1167,7 @@ class SendspinProvider(PlayerProvider):
             # Wait for client hello to be processed (info becomes available)
             # ClientAddedEvent fires before the hello handshake completes
             for _ in range(50):  # Wait up to 5 seconds
-                if sendspin_client._info is not None:
+                if sendspin_client.info_or_none is not None:
                     break
                 await asyncio.sleep(0.1)
             else:
@@ -601,9 +1200,9 @@ class SendspinProvider(PlayerProvider):
             for id_type, id_value in preserved_identifiers.items():
                 player.device_info.add_identifier(id_type, id_value)
             self.logger.debug("Client %s connected", client_id)
-            await self._apply_hass_name_override(player, client_id)
+            await self._apply_hass_esphome_enrichment([player])
             if not self._is_current_client_event(client_id, event_version):
-                self.logger.debug("Skipping stale add event for %s after name override", client_id)
+                self.logger.debug("Skipping stale add event for %s after HA enrichment", client_id)
                 player._unsubscribe_client_callbacks()
                 return
             try:
@@ -660,7 +1259,7 @@ class SendspinProvider(PlayerProvider):
             existing_player._refresh_client_info(sendspin_client)
             if isinstance(existing_player, SendspinPlayer):
                 existing_player.restore_bridge_identity(previous_device_info, previous_type)
-            await self._apply_hass_name_override(existing_player, client_id)
+            await self._apply_hass_esphome_enrichment([existing_player])
             if not self._is_current_client_event(client_id, event_version):
                 self.logger.debug("Skipping stale update event for %s after refresh", client_id)
                 return
@@ -762,11 +1361,12 @@ class SendspinProvider(PlayerProvider):
         """Accept stream start requests for virtual players (nothing to connect)."""
 
     async def _on_providers_updated(self, event: MassEvent) -> None:
-        """Remove virtual players whose owning provider is no longer loaded."""
+        """Handle a change in the loaded providers."""
         # during (server) shutdown all providers unload; the startup sweep
         # takes care of configs whose owner is really gone
         if self._unloading or self.mass.closing:
             return
+        # remove virtual players whose owning provider is no longer loaded
         for player_id, owner_instance_id in list(self._virtual_players.items()):
             if self.mass.get_provider(owner_instance_id) is not None:
                 continue
@@ -774,6 +1374,12 @@ class SendspinProvider(PlayerProvider):
                 "Removing virtual player %s: owner %s unloaded", player_id, owner_instance_id
             )
             await self.remove_virtual_player(player_id)
+        # (re)apply the HA-backed enrichment when the hass plugin (un)loads
+        hass = self.mass.get_provider("hass")
+        hass_available = hass is not None and hass.available
+        if hass_available != self._hass_available:
+            self._hass_available = hass_available
+            await self._refresh_hass_esphome_enrichment()
 
     def _remove_orphan_virtual_player_configs(self) -> None:
         """Delete stored configs of virtual players whose owner provider is gone."""

@@ -175,10 +175,18 @@ class TestPowerlessLifecycle:
         )
 
         with patch.object(ugp, "update_state"):
-            await ugp.play_media(MagicMock(uri="track://x", source_id="src"))
+            await ugp.play_media(
+                MagicMock(
+                    uri="track://x",
+                    source_id="src",
+                    custom_data={"session_id": "session-1"},
+                )
+            )
 
         assert ugp.stream is not None
         assert mass.players._handle_play_media.await_count == 2
+        for call in mass.players._handle_play_media.await_args_list:
+            assert call.args[1].custom_data["session_id"] == "session-1"
         # power command was NOT used to capture the members
         mass.players.cmd_power.assert_not_awaited()
 

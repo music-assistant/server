@@ -35,6 +35,19 @@ class TidalPageParser:
         self._page_path: str | None = None
         self._parsed_at: int = 0
 
+    @property
+    def modules(self) -> list[dict[str, Any]]:
+        """Return the parsed page modules."""
+        return self._module_map
+
+    def to_cache(self) -> dict[str, Any]:
+        """Return the parsed page state as a cacheable dict."""
+        return {
+            "module_map": self._module_map,
+            "content_map": self._content_map,
+            "parsed_at": self._parsed_at,
+        }
+
     def parse_page_structure(self, page_data: dict[str, Any], page_path: str) -> None:
         """Parse Tidal page structure into indexed modules."""
         self._page_path = page_path

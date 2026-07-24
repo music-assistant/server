@@ -26,6 +26,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.config.constants import DEFAULT_SAVE_DELAY
 from music_assistant.controllers.config.core import CoreConfigMixin
 from music_assistant.controllers.config.dsp import DSPConfigMixin
+from music_assistant.controllers.config.flows import SetupFlowMixin
 from music_assistant.controllers.config.migrations import migrate
 from music_assistant.controllers.config.players import PlayerConfigMixin
 from music_assistant.controllers.config.providers import ProviderConfigMixin
@@ -49,6 +50,7 @@ class ConfigController(
     PlayerQueueConfigMixin,
     DSPConfigMixin,
     CoreConfigMixin,
+    SetupFlowMixin,
 ):
     """Controller that handles storage of persistent configuration settings."""
 

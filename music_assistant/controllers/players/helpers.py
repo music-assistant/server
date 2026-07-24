@@ -33,6 +33,9 @@ class AnnounceData(TypedDict):
     announcement_url: str
     pre_announce: bool
     pre_announce_url: str
+    # player that fetches the announcement stream when it is not the
+    # visible player itself (e.g. a linked protocol player)
+    announce_player_id: str | None
 
 
 @overload

@@ -43,7 +43,7 @@ SUPPORTED_FEATURES = {
     ProviderFeature.RECOMMENDATIONS,
 }
 
-# recommendations() folder tunables: seed fan-out bound and visible row length.
+# get_recommendation_items() folder tunables: seed fan-out bound and visible row length.
 RECOMMEND_SEED_COUNT: int = 5
 RECOMMEND_PER_SEED_LIMIT: int = 10
 RECOMMEND_ITEM_LIMIT: int = 12

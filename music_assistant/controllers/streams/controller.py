@@ -19,6 +19,7 @@ from uuid import uuid4
 
 from aiofiles.os import wrap
 from aiohttp import web
+from music_assistant_models.audio_processing import AudioQueueProcessing
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -68,6 +69,9 @@ from music_assistant.constants import (
 from music_assistant.controllers.players.helpers import AnnounceData
 from music_assistant.controllers.streams.audio import StreamsAudio, overlay_active
 from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
+from music_assistant.controllers.streams.audio_processing import (
+    AudioProcessingManager,
+)
 from music_assistant.controllers.streams.constants import (
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
     CONF_BUFFER_SIZE,
@@ -168,6 +172,7 @@ class StreamsController(CoreController):
         self.announcements: dict[str, AnnounceData] = {}
         self._bind_ip: str = "0.0.0.0"
         self.audio = StreamsAudio(mass)
+        self.audio_processing = AudioProcessingManager(mass)
         self._audio_analysis = AudioAnalysisController(self)
         # Number of queue streams (single item or flow) actively serving a player right now.
         # Audio analysis reads this (via audio_analysis.playback_active) to yield CPU while a
@@ -534,7 +539,7 @@ class StreamsController(CoreController):
             raise web.HTTPNotFound(reason=f"Unknown Queue: {queue_id}")
         session_id = request.match_info["session_id"]
         pq_data = self.mass.player_queues.queue_data(queue.queue_id)
-        if pq_data.session_id and session_id != pq_data.session_id:
+        if pq_data.session_id is None or session_id != pq_data.session_id:
             raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
         if not (player := self.mass.players.get_player(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
@@ -651,9 +656,30 @@ class StreamsController(CoreController):
                         reason=f"No streamdetails for Queue item: {queue_item_id}"
                     )
 
+            standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
+                CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
+            )
+            if queue_item.media_type != MediaType.TRACK:
+                crossfade_mode = CrossfadeMode.DISABLED
+            else:
+                crossfade_mode = self.get_crossfade_mode(queue)
+            if (
+                crossfade_mode != CrossfadeMode.DISABLED
+                and PlayerFeature.GAPLESS_PLAYBACK not in player.state.supported_features
+            ):
+                self.logger.warning(
+                    "Crossfade disabled: Player %s does not support gapless playback, "
+                    "consider enabling flow mode to enable crossfade on this player.",
+                    player.state.name,
+                )
+                crossfade_mode = CrossfadeMode.DISABLED
+
             # pick output format based on the streamdetails and player capabilities
             pcm_format = await self.audio.select_pcm_format(
-                player=player, streamdetails=queue_item.streamdetails, crossfade_enabled=True
+                player=player,
+                streamdetails=queue_item.streamdetails,
+                crossfade_enabled=crossfade_mode != CrossfadeMode.DISABLED,
+                overlay_active=(queue_item.media_type == MediaType.RADIO and overlay_active(queue)),
             )
             output_format = await self.audio.get_output_format(
                 output_format_str=request.match_info["fmt"],
@@ -705,26 +731,16 @@ class StreamsController(CoreController):
             if request.method != "GET":
                 return resp
 
-            if queue_item.media_type != MediaType.TRACK:
-                # no crossfade on non-tracks
-                crossfade_mode = CrossfadeMode.DISABLED
-            else:
-                crossfade_mode = self.get_crossfade_mode(queue)
-                # crossfade duration is a global (queue controller) setting; fallback matches
-                # CONF_ENTRY_CROSSFADE_DURATION's default
-                standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
-                    CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
-                )
-            if (
-                crossfade_mode != CrossfadeMode.DISABLED
-                and PlayerFeature.GAPLESS_PLAYBACK not in player.state.supported_features
-            ):
-                self.logger.warning(
-                    "Crossfade disabled: Player %s does not support gapless playback, "
-                    "consider enabling flow mode to enable crossfade on this player.",
-                    player.state.name if player else "Unknown Player",
-                )
-                crossfade_mode = CrossfadeMode.DISABLED
+            self._update_audio_processing_context(
+                queue=queue,
+                queue_item=queue_item,
+                pcm_format=pcm_format,
+                crossfade_mode=crossfade_mode,
+                overlay_enabled=(
+                    queue_item.media_type == MediaType.RADIO and overlay_active(queue)
+                ),
+                session_id=session_id,
+            )
 
             if crossfade_mode != CrossfadeMode.DISABLED:
                 # crossfade is enabled, use special crossfaded single item stream
@@ -736,6 +752,7 @@ class StreamsController(CoreController):
                     pcm_format=pcm_format,
                     crossfade_mode=crossfade_mode,
                     standard_crossfade_duration=standard_crossfade_duration,
+                    session_id=session_id,
                 )
             else:
                 # no crossfade, just a regular single item stream
@@ -746,6 +763,7 @@ class StreamsController(CoreController):
                     playback_speed=cast(
                         "float", queue_item.extra_attributes.get("playback_speed", 1.0)
                     ),
+                    session_id=session_id,
                 )
             if queue_item.media_type == MediaType.RADIO and overlay_active(queue):
                 # radio plays as a single long-lived stream (never in flow mode),
@@ -756,11 +774,16 @@ class StreamsController(CoreController):
             # the desired output format for the player including any player specific
             # filter params such as channels mixing, DSP, resampling and, only if
             # needed, encoding to lossy formats
-            filter_params = self.audio.get_player_filter_params(
+            output_plan = self.audio.get_player_output_plan(
                 player_id=player.player_id,
                 input_format=pcm_format,
                 output_format=output_format,
+                shared_player_ids=player.state.group_members,
+                queue_id=queue_id,
+                session_id=session_id,
+                queue_item_id=queue_item.queue_item_id,
             )
+            filter_params = output_plan.filter_params
             # Fast path for live AudioSource: when the player accepts WAV at the
             # source's exact PCM rate/depth/channels and no filters apply, we
             # skip the encode ffmpeg entirely and just stream a WAV header
@@ -886,6 +909,10 @@ class StreamsController(CoreController):
         player_id = request.match_info["player_id"]
         if not (queue := self.mass.player_queues.get(queue_id)):
             raise web.HTTPNotFound(reason=f"Unknown Queue: {queue_id}")
+        session_id = request.match_info["session_id"]
+        queue_data = self.mass.player_queues.queue_data(queue_id)
+        if queue_data.session_id is None or session_id != queue_data.session_id:
+            raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
         if not (player := self.mass.players.get_player(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
         start_queue_item_id = request.match_info["queue_item_id"]
@@ -951,6 +978,23 @@ class StreamsController(CoreController):
         if request.method != "GET":
             return resp
 
+        self._update_audio_processing_context(
+            queue=queue,
+            queue_item=start_queue_item,
+            pcm_format=flow_pcm_format,
+            crossfade_mode=crossfade_mode,
+            overlay_enabled=overlay_active(queue),
+            session_id=session_id,
+        )
+        output_plan = self.audio.get_player_output_plan(
+            player.player_id,
+            flow_pcm_format,
+            output_format,
+            shared_player_ids=player.state.group_members,
+            queue_id=queue_id,
+            session_id=session_id,
+        )
+
         # all checks passed, start streaming!
         # this final ffmpeg process in the chain will convert the raw, lossless PCM audio into
         # the desired output format for the player including any player specific filter params
@@ -961,7 +1005,11 @@ class StreamsController(CoreController):
         # for the duration of the flow stream (see audio_analysis.playback_active).
         self._active_output_streams += 1
         flow_stream = self.audio.get_queue_flow_stream(
-            queue=queue, start_queue_item=start_queue_item, pcm_format=flow_pcm_format
+            queue=queue,
+            start_queue_item=start_queue_item,
+            pcm_format=flow_pcm_format,
+            session_id=session_id,
+            protocol_player=player,
         )
         if overlay_active(queue):
             flow_stream = self.audio.get_overlay_mixed_stream(queue, flow_stream, flow_pcm_format)
@@ -969,9 +1017,7 @@ class StreamsController(CoreController):
             audio_input=flow_stream,
             input_format=flow_pcm_format,
             output_format=output_format,
-            filter_params=self.audio.get_player_filter_params(
-                player.player_id, flow_pcm_format, output_format
-            ),
+            filter_params=output_plan.filter_params,
             # we need to slowly feed the music to avoid the player stopping and later
             # restarting (or completely failing) the audio stream by keeping the buffer short.
             # this is reported to be an issue especially with Chromecast players.
@@ -1045,10 +1091,7 @@ class StreamsController(CoreController):
         fmt = request.match_info["fmt"]
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
 
-        mass_player = self.mass.players.get_player(player_id)
-        http_profile = (
-            mass_player.get_config_value(CONF_HTTP_PROFILE, "default") if mass_player else "default"
-        )
+        http_profile = self._get_announcement_http_profile(player_id, announce_data)
         if http_profile == "forced_content_length":
             # given the fact that an announcement is just a short audio clip,
             # just send it over completely at once so we have a fixed content length
@@ -1185,6 +1228,10 @@ class StreamsController(CoreController):
             protocol_player = self.mass.players.get_player(player_id) if player_id else None
             queue_id = media.source_id
             queue = self.mass.player_queues.get(queue_id)
+            queue_session_id = cast(
+                "str | None",
+                (media.custom_data or {}).get("session_id"),
+            )
             crossfade_needs_flow_mode = (
                 # crossfade only applies to tracks; if the queue has it enabled but the
                 # player(protocol) does not support gapless playback, we need to enforce flow mode
@@ -1213,8 +1260,25 @@ class StreamsController(CoreController):
                     media.source_id, media.queue_item_id
                 )
                 assert start_queue_item
+                crossfade_mode = (
+                    self.get_crossfade_mode(queue)
+                    if start_queue_item.media_type == MediaType.TRACK
+                    else CrossfadeMode.DISABLED
+                )
+                self._update_audio_processing_context(
+                    queue=queue,
+                    queue_item=start_queue_item,
+                    pcm_format=pcm_format,
+                    crossfade_mode=crossfade_mode,
+                    overlay_enabled=overlay_active(queue),
+                    session_id=queue_session_id,
+                )
                 flow_stream = self.audio.get_queue_flow_stream(
-                    queue=queue, start_queue_item=start_queue_item, pcm_format=pcm_format
+                    queue=queue,
+                    start_queue_item=start_queue_item,
+                    pcm_format=pcm_format,
+                    session_id=queue_session_id,
+                    protocol_player=protocol_player,
                 )
                 if overlay_active(queue):
                     flow_stream = self.audio.get_overlay_mixed_stream(
@@ -1226,12 +1290,28 @@ class StreamsController(CoreController):
             # single item stream (e.g. radio or non-flow mode)
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
             assert queue_item
+            if queue is not None:
+                self._update_audio_processing_context(
+                    queue=queue,
+                    queue_item=queue_item,
+                    pcm_format=pcm_format,
+                    crossfade_mode=(
+                        self.get_crossfade_mode(queue)
+                        if queue_item.media_type == MediaType.TRACK
+                        else CrossfadeMode.DISABLED
+                    ),
+                    overlay_enabled=(
+                        queue_item.media_type == MediaType.RADIO and overlay_active(queue)
+                    ),
+                    session_id=queue_session_id,
+                )
             inner_stream = self.audio.get_queue_item_stream(
                 queue_item=queue_item,
                 pcm_format=pcm_format,
                 playback_speed=cast(
                     "float", queue_item.extra_attributes.get("playback_speed", 1.0)
                 ),
+                session_id=queue_session_id,
             )
             if (
                 queue is not None
@@ -1457,6 +1537,68 @@ class StreamsController(CoreController):
                     queue_id,
                     err,
                 )
+
+    def _update_audio_processing_context(
+        self,
+        queue: PlayerQueue,
+        queue_item: QueueItem,
+        pcm_format: AudioFormat,
+        crossfade_mode: CrossfadeMode,
+        overlay_enabled: bool,
+        session_id: str | None = None,
+    ) -> None:
+        """
+        Store the shared processing context selected for a queue item.
+
+        :param queue: Active player queue.
+        :param queue_item: Queue item being prepared.
+        :param pcm_format: Shared PCM format leaving queue processing.
+        :param crossfade_mode: Effective crossfade mode for the item.
+        :param overlay_enabled: Whether an overlay is mixed into this stream.
+        :param session_id: Queue session that owns processing-detail updates.
+        """
+        if queue_item.streamdetails is None:
+            return
+        queue_data = self.mass.player_queues.queue_data_or_none(queue.queue_id)
+        if (
+            queue_data is None
+            or (processing_session_id := session_id or queue_data.session_id) is None
+            or queue_data.session_id != processing_session_id
+        ):
+            return
+        self.audio_processing.start_session(queue.queue_id, processing_session_id)
+        self.audio_processing.update_item_context(
+            queue_id=queue.queue_id,
+            session_id=processing_session_id,
+            queue_item_id=queue_item.queue_item_id,
+            queue_processing=AudioQueueProcessing(
+                pcm_format=pcm_format,
+                playback_speed=cast(
+                    "float",
+                    queue_item.extra_attributes.get("playback_speed", 1.0),
+                ),
+                crossfade_mode=crossfade_mode,
+                overlay_active=overlay_enabled,
+            ),
+            alters_audio=queue_item.streamdetails.fade_in,
+        )
+
+    def _get_announcement_http_profile(self, player_id: str, announce_data: AnnounceData) -> str:
+        """
+        Resolve the http profile for serving an announcement stream.
+
+        Announcement urls are registered under the visible player's id, but the
+        stream may be fetched by a linked protocol player; the profile must come
+        from the player that actually performs the fetch.
+        """
+        announce_player = None
+        if announce_player_id := announce_data.get("announce_player_id"):
+            announce_player = self.mass.players.get_player(announce_player_id)
+        if announce_player is None:
+            announce_player = self.mass.players.get_player(player_id)
+        if announce_player is None:
+            return "default"
+        return announce_player.get_output_config_value(CONF_HTTP_PROFILE, "default")
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""

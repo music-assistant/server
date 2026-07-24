@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import platform
-import time
+import re
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ContentType
@@ -14,12 +14,6 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant.constants import CONF_ZEROCONF_INTERFACES
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.util import get_source_ip_for_target
-from music_assistant.providers.airplay.constants import (
-    AIRPLAY_2_DEFAULT_MODELS,
-    BROKEN_AIRPLAY_MODELS,
-    CONF_ALAC_ENCODE,
-    StreamingProtocol,
-)
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
@@ -28,14 +22,18 @@ if TYPE_CHECKING:
     from music_assistant.providers.airplay.player import AirPlayPlayer
 
 _LOGGER = logging.getLogger(__name__)
-
-# NTP epoch delta: difference between Unix epoch (1970) and NTP epoch (1900)
-NTP_EPOCH_DELTA = 0x83AA7E80  # 2208988800 seconds
+_COMPANION_PAIRING_DISABLED = 0x04
+_COMPANION_PAIRING_WITH_PIN = 0x4000
+# Bound the binary's `--check` probe. It normally answers instantly, but the first
+# execution of a freshly-fetched binary can stall (e.g. macOS Gatekeeper verification
+# of an unsigned download), and a wedged binary would otherwise block provider load or
+# a stream start indefinitely.
+_CLI_BINARY_CHECK_TIMEOUT = 15.0
 
 
 async def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
     """
-    Resolve best local interface IP for cliraop's -if argument.
+    Resolve best local interface IP for cliairplay's --if argument.
 
     :param mass: The MusicAssistant instance.
     :param target_ip: The IP address of the target AirPlay device.
@@ -131,20 +129,33 @@ def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:  # noqa: PLR0911
     return (manufacturer or "AirPlay", model)
 
 
-def is_broken_airplay_model(manufacturer: str, model: str) -> bool:
-    """Check if a model is known to have broken AirPlay support."""
-    for broken_manufacturer, broken_model in BROKEN_AIRPLAY_MODELS:
-        if broken_manufacturer in (manufacturer, "*") and broken_model in (model, "*"):
-            return True
-    return False
+def parse_airplay_features(features_value: str | None) -> int:
+    """Return an AirPlay features bitmask, or zero for an invalid value."""
+    if not features_value:
+        return 0
+    try:
+        parts = features_value.split(",")
+        features = int(parts[0], 16)
+        if len(parts) > 1:
+            features |= int(parts[1], 16) << 32
+    except TypeError, ValueError:
+        return 0
+    return features
 
 
-def is_airplay2_preferred_model(manufacturer: str, model: str) -> bool:
-    """Check if a model is known to work better with AirPlay 2 protocol."""
-    for ap2_manufacturer, ap2_model in AIRPLAY_2_DEFAULT_MODELS:
-        if ap2_manufacturer in (manufacturer, "*") and ap2_model in (model, "*"):
-            return True
-    return False
+def supports_airplay2(features_value: str | None) -> bool:
+    """
+    Check if a device advertises AirPlay 2 support in its features bitmask.
+
+    :param features_value: Raw features value from the mDNS TXT records
+        (``features`` on the _airplay service or ``ft`` on the _raop service),
+        formatted as ``0xLOW`` or ``0xLOW,0xHIGH``.
+    """
+    features = parse_airplay_features(features_value)
+    # SupportsUnifiedMediaControl (bit 38) / SupportsCoreUtilsPairingAndEncryption
+    # (bit 48): either one means the device speaks AirPlay 2. This mirrors the
+    # test the cliairplay binary uses for its automatic route selection.
+    return bool((features >> 38) & 1 or (features >> 48) & 1)
 
 
 def is_apple_device(manufacturer: str, model: str) -> bool:
@@ -161,147 +172,108 @@ def is_apple_device(manufacturer: str, model: str) -> bool:
     )
 
 
-async def get_cli_binary(protocol: StreamingProtocol) -> str:
+def get_decoded_property(discovery_info: AsyncServiceInfo, key: str) -> str | None:
     """
-    Find the correct raop/airplay binary belonging to the platform.
+    Return an mDNS TXT property value by case-insensitive key.
 
-    Args:
-        protocol: The streaming protocol (RAOP or AIRPLAY2)
+    TXT record keys are case-insensitive (RFC 6763) and zeroconf preserves the
+    casing as advertised on the wire, which differs per device (e.g. Companion
+    services advertise ``rpFl``, MRP services ``SystemBuildVersion``).
 
-    Returns:
-        Path to the CLI binary
-
-    Raises:
-        RuntimeError: If the binary cannot be found
+    :param discovery_info: The mDNS service info to read the property from.
+    :param key: The TXT record key to look up (any casing).
     """
+    decoded_properties = discovery_info.decoded_properties
+    if (value := decoded_properties.get(key)) is not None:
+        return value
+    folded_key = key.casefold()
+    for prop_key, prop_value in decoded_properties.items():
+        if prop_key.casefold() == folded_key:
+            return prop_value
+    return None
 
-    async def check_binary(cli_path: str) -> str | None:
-        try:
-            if protocol == StreamingProtocol.RAOP:
-                args = [
-                    cli_path,
-                    "-check",
-                ]
-                passing_output = "cliraop check"
-            else:
-                args = [
-                    cli_path,
-                    "--testrun",
-                ]
-                passing_output = "cliap2 check"
 
-            returncode, output = await check_output(*args)
-            _LOGGER.debug("%s returned %d with output: %s", cli_path, int(returncode), str(output))
-            if returncode == 0 and output.strip().decode() == passing_output:
-                return cli_path
-        except OSError:
-            pass
-        return None
-
-    base_path = os.path.join(os.path.dirname(__file__), "bin")
-    system = platform.system().lower().replace("darwin", "macos")
-    architecture = platform.machine().lower()
-
-    if protocol == StreamingProtocol.RAOP:
-        package = "cliraop"
-    elif protocol == StreamingProtocol.AIRPLAY2:
-        package = "cliap2"
-    else:
-        raise RuntimeError(f"Unsupported streaming protocol requested: {protocol}")
-
-    if bridge_binary := await check_binary(
-        os.path.join(base_path, f"{package}-{system}-{architecture}")
-    ):
-        return bridge_binary
-
-    msg = (
-        f"Unable to locate {protocol.name} CLI stream binary {package} for {system}/{architecture}"
+def supports_companion_pairing(discovery_info: AsyncServiceInfo | None) -> bool:
+    """Return whether a Companion service supports PIN pairing."""
+    if discovery_info is None:
+        return False
+    raw_flags = get_decoded_property(discovery_info, "rpFl")
+    if raw_flags is None:
+        return False
+    try:
+        flags = int(raw_flags, 16)
+    except TypeError, ValueError:
+        return False
+    return bool(flags & _COMPANION_PAIRING_WITH_PIN) and not bool(
+        flags & _COMPANION_PAIRING_DISABLED
     )
+
+
+def supports_mrp_tunnel(discovery_info: AsyncServiceInfo | None) -> bool:
+    """Return whether an AirPlay service advertises tunneled MRP control."""
+    if discovery_info is None:
+        return False
+    features = parse_airplay_features(
+        discovery_info.decoded_properties.get("features")
+        or discovery_info.decoded_properties.get("ft")
+    )
+    return bool((features >> 58) & 1)
+
+
+def supports_transient_mrp(discovery_info: AsyncServiceInfo | None) -> bool:
+    """Return whether an AirPlay MRP tunnel supports transient authentication."""
+    if not supports_mrp_tunnel(discovery_info):
+        return False
+    assert discovery_info is not None
+    features = parse_airplay_features(
+        discovery_info.decoded_properties.get("features")
+        or discovery_info.decoded_properties.get("ft")
+    )
+    return bool((features >> 43) & 1 or (features >> 48) & 1)
+
+
+def supports_mrp_service(discovery_info: AsyncServiceInfo | None) -> bool:
+    """Return whether a native MRP service is usable."""
+    if discovery_info is None or discovery_info.port is None:
+        return False
+    build = get_decoded_property(discovery_info, "SystemBuildVersion") or ""
+    match = re.match(r"^(\d+)[A-Z]", build)
+    return match is None or int(match.group(1)) < 19
+
+
+async def get_cli_binary() -> str:
+    """
+    Find the cliairplay binary for the current platform.
+
+    :raises RuntimeError: If the binary cannot be found.
+    """
+    system = platform.system()
+    architecture = platform.machine()
+    binary_name = _get_cli_binary_name(system, architecture)
+    if binary_name is None:
+        msg = f"Unsupported cliairplay platform: {system.lower()}/{architecture.lower()}"
+        raise RuntimeError(msg)
+    base_path = os.path.join(os.path.dirname(__file__), "bin")
+    binary_path = os.path.join(base_path, binary_name)
+
+    try:
+        returncode, output = await check_output(
+            binary_path, "--check", timeout=_CLI_BINARY_CHECK_TIMEOUT
+        )
+        output_str = output.strip().decode()
+        if returncode == 0 and "cliairplay" in output_str and "check" in output_str:
+            return binary_path
+    except TimeoutError:
+        msg = (
+            f"{binary_name} did not respond to --check within "
+            f"{_CLI_BINARY_CHECK_TIMEOUT:.0f}s (first-run verification or a wedged binary)"
+        )
+        raise RuntimeError(msg) from None
+    except OSError:
+        pass
+
+    msg = f"Unable to locate {binary_name} for {system.lower()}/{architecture.lower()}"
     raise RuntimeError(msg)
-
-
-def get_ntp_timestamp() -> int:
-    """
-    Get current NTP timestamp (64-bit).
-
-    Returns:
-        int: 64-bit NTP timestamp (upper 32 bits = seconds, lower 32 bits = fraction)
-    """
-    # Get current Unix timestamp with microsecond precision
-    current_time = time.time()
-
-    # Split into seconds and microseconds
-    seconds = int(current_time)
-    microseconds = int((current_time - seconds) * 1_000_000)
-
-    # Convert to NTP epoch (add offset from 1970 to 1900)
-    ntp_seconds = seconds + NTP_EPOCH_DELTA
-
-    # Convert microseconds to NTP fraction (2^32 parts per second)
-    # fraction = (microseconds * 2^32) / 1_000_000
-    ntp_fraction = int((microseconds << 32) / 1_000_000)
-
-    # Combine into 64-bit value
-    return (ntp_seconds << 32) | ntp_fraction
-
-
-def ntp_to_seconds_fraction(ntp_timestamp: int) -> tuple[int, int]:
-    """
-    Split NTP timestamp into seconds and fraction components.
-
-    Args:
-        ntp_timestamp: 64-bit NTP timestamp
-
-    Returns:
-        tuple: (seconds, fraction)
-    """
-    seconds = ntp_timestamp >> 32
-    fraction = ntp_timestamp & 0xFFFFFFFF
-    return seconds, fraction
-
-
-def ntp_to_unix_time(ntp_timestamp: int) -> float:
-    """
-    Convert NTP timestamp to Unix timestamp (float).
-
-    Args:
-        ntp_timestamp: 64-bit NTP timestamp
-
-    Returns:
-        float: Unix timestamp (seconds since 1970-01-01)
-    """
-    seconds = ntp_timestamp >> 32
-    fraction = ntp_timestamp & 0xFFFFFFFF
-
-    # Convert back to Unix epoch
-    unix_seconds = seconds - NTP_EPOCH_DELTA
-
-    # Convert fraction to microseconds
-    microseconds = (fraction * 1_000_000) >> 32
-
-    return unix_seconds + (microseconds / 1_000_000)
-
-
-def unix_time_to_ntp(unix_timestamp: float) -> int:
-    """
-    Convert Unix timestamp (float) to NTP timestamp.
-
-    Args:
-        unix_timestamp: Unix timestamp (seconds since 1970-01-01)
-
-    Returns:
-        int: 64-bit NTP timestamp
-    """
-    seconds = int(unix_timestamp)
-    microseconds = int((unix_timestamp - seconds) * 1_000_000)
-
-    # Convert to NTP epoch
-    ntp_seconds = seconds + NTP_EPOCH_DELTA
-
-    # Convert microseconds to NTP fraction
-    ntp_fraction = int((microseconds << 32) / 1_000_000)
-
-    return (ntp_seconds << 32) | ntp_fraction
 
 
 def player_id_to_mac_address(player_id: str) -> str:
@@ -330,45 +302,56 @@ def generate_active_remote_id(mac_address: str) -> str:
     return str(device_id_u32)
 
 
-def add_seconds_to_ntp(ntp_timestamp: int, seconds: float) -> int:
+def serialize_txt_records(discovery_info: AsyncServiceInfo) -> str:
     """
-    Add seconds to an NTP timestamp.
+    Serialize mDNS TXT records for cliairplay's --txt argument.
 
-    Args:
-        ntp_timestamp: 64-bit NTP timestamp
-        seconds: Number of seconds to add (can be fractional)
+    The binary receives the full _airplay._tcp TXT as a single
+    space-separated "key=value key=value ..." argument and uses it for
+    automatic route selection (RAOP vs AirPlay 2, native vs RAOP-compat,
+    PTP vs NTP). Pairs containing whitespace are skipped as the binary
+    splits the blob on spaces.
 
-    Returns:
-        int: New NTP timestamp with seconds added
+    :param discovery_info: The _airplay._tcp discovery info of the device.
     """
-    # Extract whole seconds and fraction
-    whole_seconds = int(seconds)
-    fraction = seconds - whole_seconds
-
-    # Convert to NTP format (upper 32 bits = seconds, lower 32 bits = fraction)
-    ntp_seconds = whole_seconds << 32
-    ntp_fraction = int(fraction * (1 << 32))
-
-    return ntp_timestamp + ntp_seconds + ntp_fraction
+    pairs: list[str] = []
+    for key, value in discovery_info.decoded_properties.items():
+        if value is None:
+            continue
+        if any(char.isspace() for char in key) or any(char.isspace() for char in value):
+            continue
+        pairs.append(f"{key}={value}")
+    return " ".join(pairs)
 
 
 def get_final_output_format(
     audio_format: AudioFormat,
-    airplay_player: AirPlayPlayer,
+    airplay_player: AirPlayPlayer,  # noqa: ARG001
 ) -> AudioFormat:
     """
-    Determine final output format based on stream and player capabilities.
+    Determine final output format for display purposes.
 
-    This is for the UI only, so it correctly displays ALAC/PCM support.
+    The cliairplay binary always uses ALAC encoding internally.
     """
-    content_type = audio_format.content_type
-    if airplay_player.protocol == StreamingProtocol.AIRPLAY2:
-        content_type = ContentType.ALAC
-    if airplay_player.config.get_value(CONF_ALAC_ENCODE, True):
-        content_type = ContentType.ALAC
     return AudioFormat(
-        content_type=content_type,
+        content_type=ContentType.ALAC,
         sample_rate=audio_format.sample_rate,
         bit_depth=audio_format.bit_depth,
         channels=audio_format.channels,
     )
+
+
+def _get_cli_binary_name(system: str, machine: str) -> str | None:
+    """Return the cliairplay release asset name for a platform."""
+    normalized_system = system.lower().replace("darwin", "macos")
+    normalized_machine = machine.lower()
+
+    if normalized_machine in ("amd64", "x86_64"):
+        architecture = "x86_64"
+    elif normalized_machine in ("aarch64", "arm64"):
+        architecture = "arm64" if normalized_system == "macos" else "aarch64"
+    else:
+        return None
+    if normalized_system not in ("linux", "macos"):
+        return None
+    return f"cliairplay-{normalized_system}-{architecture}"

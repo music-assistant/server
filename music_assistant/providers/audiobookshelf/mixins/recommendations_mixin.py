@@ -24,12 +24,12 @@ from aioaudiobookshelf.schema.shelf import ShelfType as AbsShelfType
 from music_assistant_models.enums import MediaType
 from music_assistant_models.media_items import (
     BrowseFolder,
+    ItemMapping,
     MediaItemType,
     UniqueList,
 )
 from music_assistant_models.media_items.media_item import RecommendationFolder
 
-from music_assistant.controllers.cache import use_cache
 from music_assistant.providers.audiobookshelf.constants import (
     ABS_SHELF_ID_ICONS,
     ABS_SHELF_ID_TRANSLATION_KEY,
@@ -49,10 +49,36 @@ class RecommendationsMixin(MixinBase):
         def _browse_root(self, append_mediatype_suffix: bool = True) -> Sequence[BrowseFolder]: ...
         def _browse_lib_audiobooks(self, current_path: str) -> Sequence[BrowseFolder]: ...
 
-    @use_cache(3600, base_class=RecommendationFolder, allow_expired_cache=True)
+        # part of RecommendationPayloadMixin
+        async def _recommendation_rows_from_payload(self) -> list[RecommendationFolder]: ...
+        async def _recommendation_items_from_payload(
+            self, item_id: str
+        ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]: ...
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get the available recommendation rows, without items."""
+        if len(self.libraries.audiobooks) + len(self.libraries.podcasts) == 0:
+            self._log_no_libraries()
+            return []
+        rows = await self._recommendation_rows_from_payload()
+        rows.append(self._browse_recommendation_row())
+        return rows
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id == "browse":
+            return self._browse_recommendation_items()
+        return await self._recommendation_items_from_payload(item_id)
+
     @handle_refresh_token
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get recommendations."""
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch the personalized views of all libraries and parse them into shelf folders."""
         # We have to avoid "flooding" the home page, which becomes especially troublesome if users
         # have multiple libraries. Instead we collect per ShelfId, and make sure, that we always get
         # roughly the same amount of items per row, no matter the amount of libraries
@@ -102,17 +128,32 @@ class RecommendationsMixin(MixinBase):
                 )
             )
 
+        return folders
+
+    def _browse_recommendation_row(self) -> RecommendationFolder:
+        """Build the static browse row descriptor, without items."""
+        translation_key = "libraries"
+        if len(self.libraries.audiobooks) <= 1 and len(self.libraries.podcasts) == 0:
+            translation_key = "library"
+        return RecommendationFolder(
+            item_id="browse",
+            name="Libraries",
+            icon="mdi-bookshelf",
+            translation_key=translation_key,
+            provider=self.instance_id,
+        )
+
+    def _browse_recommendation_items(
+        self,
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """Build the items of the browse row from the known libraries."""
         # Browse "recommendation" for convenience. If the user has
         # multiple audiobook libraries, we return a listing of them.
         # If there is only a single audiobook library, we add the folders
         # from _browse_lib_audiobooks, i.e. Authors, Narrators etc.
         # Podcast libs do not have filter folders, so always the root folders.
         browse_items: list[MediaItemType | BrowseFolder] = []
-        translation_key = "libraries"
         if len(self.libraries.audiobooks) <= 1:
-            if len(self.libraries.podcasts) == 0:
-                translation_key = "library"
-
             # audiobooklibs are first, and we have at max 1 audiobook lib
             _browse_root = self._browse_root(append_mediatype_suffix=False)
             if len(self.libraries.audiobooks) == 0:
@@ -125,19 +166,7 @@ class RecommendationsMixin(MixinBase):
                 browse_items.extend(_browse_root[1:])
         else:
             browse_items = list(self._browse_root())
-
-        folders.append(
-            RecommendationFolder(
-                item_id="browse",
-                name="Libraries",
-                icon="mdi-bookshelf",
-                translation_key=translation_key,
-                items=UniqueList(browse_items),
-                provider=self.instance_id,
-            )
-        )
-
-        return folders
+        return UniqueList(browse_items)
 
     async def _recommendations_iter_shelves(
         self,

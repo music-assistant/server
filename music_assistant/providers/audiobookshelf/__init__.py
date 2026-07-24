@@ -31,6 +31,7 @@ from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 
 from music_assistant.constants import PLAYBACK_REPORT_INTERVAL_SECONDS
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 from music_assistant.providers.audiobookshelf.mixins import (
     ArtistsMixin,
     AudiobooksMixin,
@@ -162,6 +163,7 @@ class Audiobookshelf(  # type: ignore[misc]
     RecommendationsMixin,
     SocketMixin,
     StreamsMixin,
+    RecommendationPayloadMixin,
     MusicProvider,
 ):
     """Audiobookshelf MusicProvider."""
@@ -290,6 +292,9 @@ for more details.
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         is_removed will be set to True when the provider is removed from the configuration.
         """
+        # run the unload chain first: RecommendationPayloadMixin cancels and awaits its
+        # payload tasks, so no fetch is still running against the clients logging out below
+        await super().unload(is_removed)
         try:
             await self._client.logout()
             await self._client_socket.logout()

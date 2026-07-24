@@ -2,17 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
+import math
+from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 import numpy as np
 import pytest
+import torch
 from music_assistant_models.enums import ContentType, MediaType
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.providers.smart_fades.provider import SmartFadesProvider
+from music_assistant.providers.smart_fades.vocal_activity import infer_firered_chunk
 
 FIXTURE_DIR = Path(__file__).parent / "fixtures"
 # Synthetic 120 BPM drum pattern (kick-hat-snare-hat): 44100 Hz, stereo, float32, ~15.7s
@@ -214,6 +220,7 @@ async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock:
 
     set_aa_mock = mass_mock.streams.audio_analysis.set_audio_analysis
     analysis = set_aa_mock.call_args.kwargs["analysis"]
+    assert set_aa_mock.call_args.kwargs["analysis_version"] == 3
 
     # Energy curve should be 1800 bins, normalized to [0, 1]
     assert analysis.rms_energy is not None
@@ -259,6 +266,10 @@ async def test_extended_analysis_fields(provider: SmartFadesProvider, mass_mock:
     # music with drums has real low-band content; bands are lists (JSON-safe)
     assert isinstance(band_rms["low"], list)
     assert max(band_rms["low"]) > 0.05
+
+    vocal_probabilities = analysis.extra_data["vocal_activity"]
+    assert len(vocal_probabilities) == 1800
+    assert all(math.isfinite(value) and 0.0 <= value <= 1.0 for value in vocal_probabilities)
 
 
 async def test_finalize_returns_audio_analysis_data(provider: SmartFadesProvider) -> None:
@@ -368,6 +379,291 @@ async def test_setup_raises_when_requirements_not_met(
         await smart_fades.setup(mass_mock, manifest_mock, config_mock)
 
 
-async def test_analysis_version_is_2(provider: SmartFadesProvider) -> None:
-    """v2 = anti-aliased bins + band_rms extra_data + beats_per_bar."""
-    assert provider.analysis_version == 2
+async def test_analysis_version_is_3(provider: SmartFadesProvider) -> None:
+    """v3 adds FireRed AED vocal activity."""
+    assert provider.analysis_version == 3
+
+
+async def test_cancel_clears_all_session_state(provider: SmartFadesProvider) -> None:
+    """Cancellation releases every retained PCM and feature block."""
+    audio_format = AudioFormat(
+        content_type=ContentType.PCM_F32LE,
+        bit_depth=32,
+        sample_rate=44100,
+        channels=2,
+    )
+    stream_details = Mock(
+        item_id="cancel",
+        provider="test",
+        media_type=MediaType.TRACK,
+        duration=120,
+    )
+    session_id = "test:test:cancel"
+    await provider.start_analysis(session_id, stream_details, audio_format)
+    data = provider._data[session_id]
+    data.pcm_buffer.append(np.ones(10, dtype=np.float32))
+    data.beats_feature_blocks.append(np.ones((1, 128), dtype=np.float32))
+    data.energy_chunks.append(np.ones(1, dtype=np.float32))
+    data.centroid_chunks.append(np.ones(1, dtype=np.float32))
+    data.frequency_band_chunks["low"] = [np.ones(1, dtype=np.float32)]
+    data.musical_key_feature_blocks.append(torch.ones((1, 1, 84, 1)))
+    data.vocal_feature_blocks.append(np.ones((1, 80), dtype=np.float32))
+
+    await provider.cancel(session_id)
+
+    assert session_id not in provider._data
+    assert not data.pcm_buffer
+    assert not data.beats_feature_blocks
+    assert not data.energy_chunks
+    assert not data.centroid_chunks
+    assert not data.frequency_band_chunks
+    assert not data.musical_key_feature_blocks
+    assert not data.vocal_feature_blocks
+    assert data.resampler is None
+    assert data.vocal_resampler is None
+    assert data.vocal_fbank is None
+
+
+async def test_finalize_error_clears_all_session_state(
+    provider: SmartFadesProvider,
+) -> None:
+    """Finalization errors release the popped session state."""
+    audio_format = AudioFormat(
+        content_type=ContentType.PCM_F32LE,
+        bit_depth=32,
+        sample_rate=22050,
+        channels=1,
+    )
+    stream_details = Mock(
+        item_id="finalize_error",
+        provider="test",
+        media_type=MediaType.TRACK,
+        duration=120,
+    )
+    session_id = "test:test:finalize_error"
+    await provider.start_analysis(session_id, stream_details, audio_format)
+    data = provider._data[session_id]
+    data.beats_feature_blocks.append(np.ones((1, 128), dtype=np.float32))
+
+    with (
+        patch.object(provider, "_process_block", new=AsyncMock()),
+        patch.object(data.features, "finalize", new=AsyncMock(return_value=np.empty((0, 128)))),
+        patch.object(
+            provider,
+            "_run_final_inference",
+            new=AsyncMock(side_effect=RuntimeError("inference failed")),
+        ),
+        pytest.raises(RuntimeError, match="inference failed"),
+    ):
+        await provider._finalize(session_id)
+
+    assert session_id not in provider._data
+    assert not data.beats_feature_blocks
+    assert data.vocal_fbank is None
+
+
+@pytest.mark.parametrize(("frame_count", "model_calls"), [(100, 1), (30_001, 2)])
+async def test_vocal_inference_uses_bounded_model_calls(
+    provider: SmartFadesProvider,
+    frame_count: int,
+    model_calls: int,
+) -> None:
+    """Normal inputs use one model call while long inputs use bounded chunks."""
+    features = np.zeros((frame_count, 80), dtype=np.float32)
+
+    with patch(
+        "music_assistant.providers.smart_fades.provider.infer_firered_chunk",
+        side_effect=lambda _model, chunk, _device: np.zeros((len(chunk), 3), dtype=np.float32),
+    ) as infer:
+        probabilities = await provider._infer_vocal_activity(features, frame_count / 100)
+
+    assert infer.call_count == model_calls
+    assert len(probabilities) == math.ceil((frame_count / 100) / 0.1)
+
+
+async def test_vocal_inference_starts_before_beat_finishes(
+    provider: SmartFadesProvider,
+) -> None:
+    """FireRed starts concurrently while key inference remains behind beat inference."""
+    beat_started = asyncio.Event()
+    vocal_started = asyncio.Event()
+    beat_finished = False
+
+    async def run_offloaded(func: Callable[..., object], *args: object) -> object:
+        nonlocal beat_finished
+        if func.__name__ == "_infer_beat_timings":
+            beat_started.set()
+            await asyncio.wait_for(vocal_started.wait(), timeout=1)
+            beat_finished = True
+            return np.array([0.0, 0.5]), np.array([0.0]), 4
+        if func is infer_firered_chunk:
+            assert beat_started.is_set()
+            vocal_started.set()
+            features = args[1]
+            assert isinstance(features, np.ndarray)
+            return np.zeros((len(features), 3), dtype=np.float32)
+        if func.__name__ == "_infer_musical_key":
+            assert beat_finished
+            return "C", "major"
+        raise AssertionError(f"unexpected offload: {func}")
+
+    async def run_offloaded_timed(func: Callable[..., object], *args: object) -> object:
+        return await run_offloaded(func, *args), 0.0
+
+    with (
+        patch.object(provider, "_run_offloaded", side_effect=run_offloaded),
+        patch.object(provider, "_run_offloaded_timed", side_effect=run_offloaded_timed),
+    ):
+        beat_key, vocal = await provider._run_final_inference(
+            np.zeros((10, 128), dtype=np.float32),
+            None,
+            np.zeros((10, 80), dtype=np.float32),
+            0.1,
+        )
+
+    assert vocal_started.is_set()
+    assert beat_key[3:] == ("C", "major")
+    assert vocal.shape == (1,)
+
+
+async def test_final_inference_cancellation_stops_long_vocal_loop(
+    provider: SmartFadesProvider,
+) -> None:
+    """Cancelling finalization prevents dispatch of later FireRed chunks."""
+    vocal_started = asyncio.Event()
+    never_finish = asyncio.Event()
+    vocal_calls = 0
+
+    async def run_offloaded(func: Callable[..., object], *_args: object) -> object:
+        nonlocal vocal_calls
+        if func is infer_firered_chunk:
+            vocal_calls += 1
+            vocal_started.set()
+        await never_finish.wait()
+        raise AssertionError("unreachable")
+
+    async def run_offloaded_timed(func: Callable[..., object], *args: object) -> object:
+        return await run_offloaded(func, *args), 0.0
+
+    with (
+        patch.object(provider, "_run_offloaded", side_effect=run_offloaded),
+        patch.object(provider, "_run_offloaded_timed", side_effect=run_offloaded_timed),
+    ):
+        task = asyncio.create_task(
+            provider._run_final_inference(
+                np.zeros((10, 128), dtype=np.float32),
+                None,
+                np.zeros((60_001, 80), dtype=np.float32),
+                600.01,
+            )
+        )
+        await asyncio.wait_for(vocal_started.wait(), timeout=1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert vocal_calls == 1
+
+
+async def test_beat_failure_cancels_vocal_inference(
+    provider: SmartFadesProvider,
+) -> None:
+    """An early beat failure cancels the FireRed branch instead of awaiting it."""
+    vocal_started = asyncio.Event()
+    vocal_cancelled = asyncio.Event()
+    never_finish = asyncio.Event()
+
+    async def run_offloaded(func: Callable[..., object], *_args: object) -> object:
+        if func.__name__ == "_infer_beat_timings":
+            # Fail only once the vocal branch is in flight, so cancellation is observable.
+            await asyncio.wait_for(vocal_started.wait(), timeout=1)
+            return np.array([0.0]), np.array([]), 0
+        if func is infer_firered_chunk:
+            vocal_started.set()
+            try:
+                await never_finish.wait()
+            except asyncio.CancelledError:
+                vocal_cancelled.set()
+                raise
+        raise AssertionError(f"unexpected offload: {func}")
+
+    async def run_offloaded_timed(func: Callable[..., object], *args: object) -> object:
+        return await run_offloaded(func, *args), 0.0
+
+    with (
+        patch.object(provider, "_run_offloaded", side_effect=run_offloaded),
+        patch.object(provider, "_run_offloaded_timed", side_effect=run_offloaded_timed),
+        pytest.raises(AudioAnalysisError, match="no rhythmic beat"),
+    ):
+        await asyncio.wait_for(
+            provider._run_final_inference(
+                np.zeros((10, 128), dtype=np.float32),
+                None,
+                np.zeros((10, 80), dtype=np.float32),
+                0.1,
+            ),
+            timeout=1,
+        )
+
+    assert vocal_cancelled.is_set()
+
+
+async def test_vocal_worker_keeps_local_state_during_cancel_cleanup(
+    provider: SmartFadesProvider,
+) -> None:
+    """A worker keeps valid resampler and fbank references while session fields clear."""
+    data = Mock()
+    data.vocal_feature_blocks = []
+    fbank = Mock()
+    fbank.process.return_value = np.ones((1, 80), dtype=np.float32)
+    fbank.finalize.return_value = np.ones((1, 80), dtype=np.float32)
+    resampler = Mock()
+
+    def resample_chunk(pcm: np.ndarray, _last: bool) -> np.ndarray:
+        data.vocal_resampler = None
+        data.vocal_fbank = None
+        return pcm
+
+    resampler.resample_chunk.side_effect = resample_chunk
+    data.vocal_resampler = resampler
+    data.vocal_fbank = fbank
+
+    provider._compute_vocal_features(
+        np.ones(1600, dtype=np.float32),
+        data,
+        True,
+    )
+
+    assert len(data.vocal_feature_blocks) == 2
+    fbank.process.assert_called_once()
+    fbank.finalize.assert_called_once()
+
+
+async def test_vocal_inference_failure_is_retryable(provider: SmartFadesProvider) -> None:
+    """A torch/hardware FireRed failure records a retryable error, never a permanent row."""
+    features = np.zeros((100, 80), dtype=np.float32)
+
+    with (
+        patch.object(
+            provider,
+            "_run_offloaded",
+            new=AsyncMock(side_effect=RuntimeError("torch kernel crashed")),
+        ),
+        pytest.raises(AudioAnalysisError, match="FireRed vocal inference failed") as excinfo,
+    ):
+        await provider._infer_vocal_activity(features, 1.0)
+
+    assert excinfo.value.retry_at is not None
+    assert excinfo.value.retry_at > datetime.now(UTC)
+
+
+async def test_vocal_inference_with_unloaded_model_is_retryable(
+    provider: SmartFadesProvider,
+) -> None:
+    """The idle-unload race (models freed mid-finalize) must not poison the track forever."""
+    provider._firered_model = None
+
+    with pytest.raises(AudioAnalysisError) as excinfo:
+        await provider._infer_vocal_activity(np.zeros((10, 80), dtype=np.float32), 0.1)
+
+    assert excinfo.value.retry_at is not None

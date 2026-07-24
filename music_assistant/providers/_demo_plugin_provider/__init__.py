@@ -50,6 +50,7 @@ from music_assistant_models.media_items import (
     Playlist,
     ProviderMapping,
     SearchResults,
+    UniqueList,
 )
 from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
@@ -397,14 +398,33 @@ class MyDemoPluginprovider(PluginProvider):
         # existing music providers so MA's playback path resolves normally.
         return []
 
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Retrieve a list of recommendation folders from this plugin."""
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this plugin's available recommendation rows, without items."""
         # OPTIONAL
         # Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
-        # Folders may contain Playlist items pointing back to this plugin via
-        # their provider_mappings. Users can add such a Playlist to their
-        # library through the standard add-to-library flow.
+        # Return the recommendation rows this plugin offers as
+        # RecommendationFolder objects WITHOUT items (leave the default empty
+        # items list). This must be fast: hardcoded or locally cached row
+        # descriptors only, no backend calls — MA uses it to instantly render
+        # the row shells and the recommendations settings page.
+        # Keep each row's item_id stable across calls and restarts: the user's
+        # per-row preferences (enabled/hidden, order) are keyed on it.
         return []
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """Get the items for a single recommendation row."""
+        # OPTIONAL
+        # Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
+        # Called separately (possibly in parallel) for each enabled row
+        # returned by get_recommendations; any (slow) backend fetching belongs
+        # here, not in get_recommendations. Rows may contain Playlist items
+        # pointing back to this plugin via their provider_mappings; users can
+        # add such a Playlist to their library through the standard
+        # add-to-library flow.
+        # Return an empty UniqueList for an unknown item_id.
+        return UniqueList()
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this plugin's contents."""

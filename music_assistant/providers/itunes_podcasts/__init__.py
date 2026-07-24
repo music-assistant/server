@@ -21,7 +21,10 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import (
     AudioFormat,
+    BrowseFolder,
+    ItemMapping,
     MediaItemImage,
+    MediaItemType,
     Podcast,
     PodcastEpisode,
     ProviderMapping,
@@ -63,6 +66,7 @@ CONF_NUM_EPISODES = "num_episodes"
 CACHE_CATEGORY_PODCASTS = 0
 CACHE_CATEGORY_RECOMMENDATIONS = 1
 CACHE_KEY_TOP_PODCASTS = "top-podcasts"
+RECOMMENDATION_ROW_TOP_PODCASTS = "itunes-top-podcasts"
 
 SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
@@ -177,6 +181,35 @@ class ITunesPodcastsProvider(MusicProvider):
         result.podcasts = await self._perform_search(url, params)
 
         return result
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """
+        Get this provider's available recommendation rows, without items.
+
+        A single row with the top podcasts for the configured country.
+        """
+        return [
+            RecommendationFolder(
+                item_id=RECOMMENDATION_ROW_TOP_PODCASTS,
+                name="Trending Podcasts",
+                icon="mdi-trending-up",
+                translation_key="trending_podcasts",
+                provider=self.instance_id,
+            )
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id != RECOMMENDATION_ROW_TOP_PODCASTS:
+            return UniqueList()
+        search_results = await self._cache_get_top_podcasts()
+        return UniqueList(self._get_podcast_list(search_results))
 
     @throttle_with_retries
     async def _perform_search(self, url: str, params: dict[str, str | int]) -> list[Podcast]:
@@ -332,25 +365,6 @@ class ITunesPodcastsProvider(MusicProvider):
                 )
                 return mass_episode
         raise MediaNotFoundError("Episode not found")
-
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """
-        Get recommendations.
-
-        This provider uses a list of top podcasts for the configured country.
-        """
-        search_results = await self._cache_get_top_podcasts()
-        podcast_list = self._get_podcast_list(search_results)
-        return [
-            RecommendationFolder(
-                item_id="itunes-top-podcasts",
-                name="Trending Podcasts",
-                icon="mdi-trending-up",
-                translation_key="trending_podcasts",
-                items=UniqueList(podcast_list),
-                provider=self.instance_id,
-            )
-        ]
 
     async def _get_episode_stream_url(self, podcast_id: str, guid_or_stream_url: str) -> str | None:
         podcast = await self._cache_get_podcast(podcast_id)

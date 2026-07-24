@@ -9,6 +9,7 @@ import itertools
 import os
 import random
 import re
+import tempfile
 import time
 import urllib.parse
 from base64 import b64decode
@@ -19,7 +20,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import aiofiles
+import aiofiles.os
 from aiohttp.client_exceptions import ClientError
+from music_assistant_models.enums import ProviderIconVariant
 from music_assistant_models.errors import MusicAssistantError
 from PIL import Image, UnidentifiedImageError
 
@@ -111,7 +114,10 @@ def create_thumb_hash(provider: str, path_or_url: str) -> str:
 
 
 def _thumb_cache_filename(
-    thumb_hash: str, size: int | None, image_format: str, flatten_transparency: bool = False
+    thumb_hash: str,
+    size: int | None,
+    image_format: str,
+    flatten_transparency: bool = False,
 ) -> str:
     """Build the cache filename for a thumbnail."""
     ext = image_format.lower()
@@ -472,6 +478,69 @@ async def get_image_thumb(
     :param flatten_transparency: When True, alpha is composited onto white and
         kept as JPEG; when False, transparent sources are emitted as PNG.
     """
+    thumb_data, _cache_filepath = await _get_image_thumb(
+        mass,
+        path_or_url,
+        size,
+        provider,
+        image_format,
+        flatten_transparency,
+    )
+    return thumb_data
+
+
+async def get_image_thumb_path(
+    mass: MusicAssistant,
+    path_or_url: str,
+    size: int | None,
+    provider: str,
+    image_format: str = "PNG",
+    flatten_transparency: bool = False,
+) -> str:
+    """
+    Get the absolute on-disk cache path for a thumbnail.
+
+    Unlike :func:`get_image_thumb`, cache persistence is required and any
+    filesystem error is raised to the caller.
+
+    :param mass: The MusicAssistant instance.
+    :param path_or_url: Path or URL to the source image.
+    :param size: Target thumbnail size (square), or None for original.
+    :param provider: Provider identifier for the image source.
+    :param image_format: Output format (PNG or JPEG/JPG).
+    :param flatten_transparency: When True, alpha is composited onto white and
+        kept as JPEG; when False, transparent sources are emitted as PNG.
+    """
+    thumb_data, cache_filepath = await _get_image_thumb(
+        mass,
+        path_or_url,
+        size,
+        provider,
+        image_format,
+        flatten_transparency,
+    )
+    await _ensure_thumb_on_disk(mass, cache_filepath, thumb_data)
+    return cache_filepath
+
+
+async def _get_image_thumb(
+    mass: MusicAssistant,
+    path_or_url: str,
+    size: int | None,
+    provider: str,
+    image_format: str,
+    flatten_transparency: bool,
+) -> tuple[bytes, str]:
+    """
+    Resolve thumbnail bytes and their validated cache path.
+
+    :param mass: The MusicAssistant instance.
+    :param path_or_url: Path or URL to the source image.
+    :param size: Target thumbnail size (square), or None for original.
+    :param provider: Provider identifier for the image source.
+    :param image_format: Output format (PNG or JPEG/JPG).
+    :param flatten_transparency: Whether to flatten alpha onto white for JPEG output.
+    """
     image_format = image_format.upper()
     if image_format == "JPG":
         image_format = "JPEG"
@@ -488,21 +557,22 @@ async def get_image_thumb(
         msg = f"Refusing to use unexpected cache filename: {cache_filename!r}"
         raise OSError(msg)
 
+    cache_filepath = _thumb_cache_filepath(mass, cache_filename)
+
     # 1. Check in-memory FIFO cache
-    if cached := _get_from_memory_cache(cache_filename):
-        return cached
+    if (cached := _get_from_memory_cache(cache_filename)) is not None:
+        return cached, cache_filepath
 
     # 2. Check on-disk cache
-    thumb_dir_resolved = os.path.realpath(os.path.join(mass.cache_path, _THUMB_CACHE_DIR))
-    cache_filepath = os.path.realpath(os.path.join(thumb_dir_resolved, cache_filename))
-    if not cache_filepath.startswith(thumb_dir_resolved + os.sep):
-        msg = f"Cache path escapes thumbnail directory: {cache_filepath}"
-        raise OSError(msg)
     if await asyncio.to_thread(os.path.isfile, cache_filepath):
-        async with aiofiles.open(cache_filepath, "rb") as f:
-            thumb_data = cast("bytes", await f.read())
-        _put_in_memory_cache(cache_filename, thumb_data)
-        return thumb_data
+        try:
+            async with aiofiles.open(cache_filepath, "rb") as f:
+                thumb_data = cast("bytes", await f.read())
+        except FileNotFoundError:
+            pass
+        else:
+            _put_in_memory_cache(cache_filename, thumb_data)
+            return thumb_data, cache_filepath
 
     # 3. Generate thumbnail (de-duplicated across concurrent requests)
     task: asyncio.Task[bytes] = mass.create_task(
@@ -519,7 +589,7 @@ async def get_image_thumb(
     )
     thumb_data = await asyncio.shield(task)
     _put_in_memory_cache(cache_filename, thumb_data)
-    return thumb_data
+    return thumb_data, cache_filepath
 
 
 async def _generate_and_cache_thumb(
@@ -572,25 +642,18 @@ async def _generate_and_cache_thumb(
                 else:
                     target_format = "PNG"
             mode = "RGBA" if target_format == "PNG" else "RGB"
+            converted = img.convert(mode)
             if target_format == "JPEG":
-                img.convert(mode).save(data, target_format, quality=95, optimize=False)
+                converted.save(data, target_format, quality=95, optimize=False)
             else:
-                img.convert(mode).save(data, target_format, optimize=False)
+                converted.save(data, target_format, optimize=False)
             return data.getvalue()
 
         thumb_data = await asyncio.to_thread(_create_image)
 
-    # Persist to disk cache (best-effort, don't fail on I/O errors)
-    try:
-        resolved = os.path.realpath(cache_filepath)
-        thumb_dir = os.path.realpath(os.path.join(mass.cache_path, _THUMB_CACHE_DIR))
-        if not resolved.startswith(thumb_dir + os.sep):
-            raise OSError("Cache path escapes thumbnail directory")
-        await asyncio.to_thread(os.makedirs, os.path.dirname(cache_filepath), exist_ok=True)
-        async with aiofiles.open(cache_filepath, "wb") as f:
-            await f.write(thumb_data)
-    except OSError:
-        pass
+    # Persist to disk cache (best-effort, don't fail on I/O errors).
+    with contextlib.suppress(OSError):
+        await _write_thumb_to_disk(mass, cache_filepath, thumb_data)
 
     return thumb_data
 
@@ -725,11 +788,109 @@ async def create_collage(
     return await asyncio.to_thread(_save_collage)
 
 
-async def get_icon_string(icon_path: str) -> str:
-    """Get svg icon as string."""
-    ext = icon_path.rsplit(".", maxsplit=1)[-1]
-    assert ext == "svg"
-    async with aiofiles.open(icon_path) as _file:
-        xml_data = await _file.read()
-        assert isinstance(xml_data, str)  # for type checking
-        return xml_data.replace("\n", "").strip()
+async def load_provider_icon(icon_path: str) -> tuple[str, bytes]:
+    """
+    Load a provider icon file and return its mime type and bytes.
+
+    :param icon_path: Path to an svg or (transparent) png icon file.
+    """
+    ext = icon_path.rsplit(".", maxsplit=1)[-1].lower()
+    if ext == "svg":
+        async with aiofiles.open(icon_path, encoding="utf-8") as svg_file:
+            xml_data = (await svg_file.read()).replace("\n", "").strip()
+        return "image/svg+xml", xml_data.encode("utf-8")
+    if ext == "png":
+        async with aiofiles.open(icon_path, "rb") as png_file:
+            return "image/png", await png_file.read()
+    msg = f"Unsupported provider icon format: {ext}"
+    raise ValueError(msg)
+
+
+async def detect_provider_icons(
+    provider_path: str,
+) -> dict[ProviderIconVariant, tuple[str, bytes]]:
+    """
+    Detect the provider icon variants present in a provider directory.
+
+    Svg is preferred over png when both exist for the same variant.
+
+    :param provider_path: Path to the provider directory to scan.
+    """
+    variant_files = {
+        ProviderIconVariant.DEFAULT: ("icon.svg", "icon.png"),
+        ProviderIconVariant.DARK: ("icon_dark.svg", "icon_dark.png"),
+        ProviderIconVariant.MONOCHROME: ("icon_monochrome.svg", "icon_monochrome.png"),
+    }
+    icons: dict[ProviderIconVariant, tuple[str, bytes]] = {}
+    for variant, filenames in variant_files.items():
+        for filename in filenames:  # svg first -> preferred
+            icon_path = os.path.join(provider_path, filename)
+            if await aiofiles.os.path.isfile(icon_path):
+                icons[variant] = await load_provider_icon(icon_path)
+                break
+    return icons
+
+
+def _thumb_cache_filepath(mass: MusicAssistant, cache_filename: str) -> str:
+    """Return a validated absolute path for a thumbnail cache filename."""
+    thumb_dir = os.path.realpath(os.path.join(mass.cache_path, _THUMB_CACHE_DIR))
+    cache_filepath = os.path.realpath(os.path.join(thumb_dir, cache_filename))
+    if not cache_filepath.startswith(thumb_dir + os.sep):
+        msg = f"Cache path escapes thumbnail directory: {cache_filepath}"
+        raise OSError(msg)
+    return cache_filepath
+
+
+async def _ensure_thumb_on_disk(
+    mass: MusicAssistant, cache_filepath: str, thumb_data: bytes
+) -> None:
+    """
+    Ensure thumbnail bytes are fully persisted at their cache path.
+
+    :param mass: The MusicAssistant instance.
+    :param cache_filepath: Validated absolute thumbnail cache path.
+    :param thumb_data: Complete encoded thumbnail bytes.
+    """
+
+    def _is_complete() -> bool:
+        path = Path(cache_filepath)
+        try:
+            return path.is_file() and path.stat().st_size == len(thumb_data)
+        except OSError:
+            return False
+
+    if await asyncio.to_thread(_is_complete):
+        return
+    await _write_thumb_to_disk(mass, cache_filepath, thumb_data)
+    if not await asyncio.to_thread(_is_complete):
+        msg = f"Thumbnail cache file was not persisted: {cache_filepath}"
+        raise OSError(msg)
+
+
+async def _write_thumb_to_disk(
+    mass: MusicAssistant, cache_filepath: str, thumb_data: bytes
+) -> None:
+    """
+    Atomically persist thumbnail bytes to their validated cache path.
+
+    :param mass: The MusicAssistant instance.
+    :param cache_filepath: Validated absolute thumbnail cache path.
+    :param thumb_data: Complete encoded thumbnail bytes.
+    """
+    resolved = os.path.realpath(cache_filepath)
+    thumb_dir = os.path.realpath(os.path.join(mass.cache_path, _THUMB_CACHE_DIR))
+    if not resolved.startswith(thumb_dir + os.sep):
+        msg = f"Cache path escapes thumbnail directory: {resolved}"
+        raise OSError(msg)
+    await asyncio.to_thread(os.makedirs, thumb_dir, exist_ok=True)
+    file_descriptor, temp_filepath = await asyncio.to_thread(
+        tempfile.mkstemp, dir=thumb_dir, prefix=".thumb-"
+    )
+    await asyncio.to_thread(os.close, file_descriptor)
+    try:
+        async with aiofiles.open(temp_filepath, "wb") as temp_file:
+            await temp_file.write(thumb_data)
+        await asyncio.to_thread(os.replace, temp_filepath, resolved)
+    finally:
+        with contextlib.suppress(OSError):
+            await asyncio.to_thread(Path(temp_filepath).unlink)

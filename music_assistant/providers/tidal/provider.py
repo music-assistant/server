@@ -11,21 +11,23 @@ from music_assistant_models.errors import LoginFailed
 from music_assistant_models.media_items import (
     Album,
     Artist,
+    BrowseFolder,
     ItemMapping,
     MediaItemType,
     Playlist,
     RecommendationFolder,
     SearchResults,
     Track,
+    UniqueList,
 )
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .api_client import TidalAPIClient
 from .auth_manager import TidalAuthManager
 from .constants import (
-    CACHE_CATEGORY_RECOMMENDATIONS,
     CONF_AUTH_TOKEN,
     CONF_EXPIRY_TIME,
     CONF_REFRESH_TOKEN,
@@ -68,7 +70,7 @@ SUPPORTED_FEATURES = {
 }
 
 
-class TidalProvider(MusicProvider):
+class TidalProvider(RecommendationPayloadMixin, MusicProvider):
     """Implementation of a Tidal MusicProvider."""
 
     def __init__(self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig):
@@ -121,14 +123,13 @@ class TidalProvider(MusicProvider):
         if not await self.auth.initialize(json.dumps(auth_data)):
             raise LoginFailed("Failed to authenticate with Tidal")
 
-        api_result = await self.api.get("sessions")
-        user_info = api_result[0] if isinstance(api_result, tuple) else api_result
+        user_info = await self.api.get("sessions")
         logged_in_user = await self.get_user(str(user_info.get("userId")))
         await self.auth.update_user_info(logged_in_user, str(user_info.get("sessionId")))
 
     async def get_user(self, prov_user_id: str) -> dict[str, Any]:
         """Get user information."""
-        return await self.api.get_data(f"users/{prov_user_id}")
+        return await self.api.get(f"users/{prov_user_id}")
 
     @use_cache(3600 * 24 * 14)
     async def search(
@@ -239,7 +240,20 @@ class TidalProvider(MusicProvider):
         """Remove track(s) from playlist."""
         await self.playlists.remove_tracks(prov_playlist_id, positions_to_remove)
 
-    @use_cache(expiration=3600, category=CACHE_CATEGORY_RECOMMENDATIONS)
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get this provider's recommendations organized into folders."""
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        return await self._recommendation_rows_from_payload()
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        return await self._recommendation_items_from_payload(item_id)
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch and parse the full recommendations payload (folders WITH items)."""
         return await self.recommendations_manager.get_recommendations()

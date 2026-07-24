@@ -29,6 +29,7 @@ from music_assistant_models.media_items import (
     SearchResults,
     SoundEffect,
     Track,
+    UniqueList,
 )
 
 from music_assistant.constants import (
@@ -531,7 +532,7 @@ class MusicProvider(Provider):
         """
         return path
 
-    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911, PLR0915
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:  # noqa: PLR0911
         """
         Browse this provider's items.
 
@@ -606,14 +607,11 @@ class MusicProvider(Provider):
             return [x async for x in self.get_sound_effects()]
         if subpath == "recommendations" and sub_subpath:
             # recommendations contents listing
-            recommendations = await self.recommendations()
-            for rec in recommendations:
-                if rec.item_id == sub_subpath:
-                    return rec.items
+            return await self.get_recommendation_items(sub_subpath)
         if subpath == "recommendations":
             # Main recommendations listing
             result: list[BrowseFolder] = []
-            recommendations = await self.recommendations()
+            recommendations = await self.get_recommendations()
             for rec in recommendations:
                 result.append(
                     BrowseFolder(
@@ -733,16 +731,34 @@ class MusicProvider(Provider):
             return await self.browse(folders[0].path)
         return folders
 
-    async def recommendations(self) -> list[RecommendationFolder]:
+    async def get_recommendations(self) -> list[RecommendationFolder]:
         """
-        Get this provider's recommendations.
+        Get this provider's available recommendation rows, without items.
 
-        Returns an actual (and often personalised) list of recommendations
-        from this provider for the user/account.
+        Must be fast: return static or cached row descriptors only, without
+        live backend calls. The items for a row are fetched separately
+        through get_recommendation_items.
+
+        Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
         """
         if ProviderFeature.RECOMMENDATIONS in self.supported_features:
             raise NotImplementedError
         return []
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        Live backend fetches belong here. Will only be called if
+        ProviderFeature.RECOMMENDATIONS is declared.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if ProviderFeature.RECOMMENDATIONS in self.supported_features:
+            raise NotImplementedError
+        return UniqueList()
 
     async def sync_library(self, media_type: MediaType) -> None:
         """Run library sync for this provider."""
