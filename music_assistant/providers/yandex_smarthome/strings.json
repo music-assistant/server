@@ -44,6 +44,9 @@
     "exposed_playlists": {
       "label": "Exposed Playlists (max 10)",
       "description": "Pick up to 10 playlists from your MA library — they fill the input_source mode slots after each player's native sources. Alice triggers slots by ordinal only (\"switch source to five\"); remember the order you picked. If the list is empty, save the form and reopen it once your music providers have finished loading their library."
+    },
+    "label_otp_confirm": {
+      "label": "Enter this one-time code in the Yandex app: {0}"
     }
   },
   "manifest": {

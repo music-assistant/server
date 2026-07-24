@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 from typing import TYPE_CHECKING
@@ -174,15 +175,20 @@ async def _musickit_authenticate(session: SetupSession, app_token: str) -> dict[
             headers={"content-type": "text/css"},
         )
 
+    def _js_str(value: object) -> str:
+        # json.dumps yields a quoted, escaped JS string literal; escaping "<" also
+        # neutralizes a "</script>" inside user-supplied values (manual tokens)
+        return json.dumps(str(value)).replace("<", "\\u003c")
+
     async def serve_mk_glue(request: web.Request) -> web.Response:  # noqa: ARG001
         glue = f"""
-        const return_url='{session.callback_url}';
-        const app_token='{app_token}';
+        const return_url={_js_str(session.callback_url)};
+        const app_token={_js_str(app_token)};
         const callback_method='POST';
-        const user_token='{user_token}';
-        const user_token_timestamp='{user_token_timestamp}';
+        const user_token={_js_str(user_token)};
+        const user_token_timestamp={_js_str(user_token_timestamp)};
         const flow_timeout={max(MUSICKIT_FLOW_TIMEOUT - 10, 60)};
-        const mass_version='{mass.version}';
+        const mass_version={_js_str(mass.version)};
         """
         return web.Response(body=glue, headers={"content-type": "text/javascript"})
 

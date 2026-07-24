@@ -89,9 +89,9 @@ async def run_setup(session: SetupSession) -> None:
     Run the Yandex Smart Home setup flow.
 
     Collects the connection mode, provisions the cloud slot and/or Yandex Dialogs skill
-    for that mode, and persists the resulting credentials as setup data. The genuine
-    playback options (instance name, exposed players/playlists) are configured via the
-    options surface, not here.
+    for that mode, and persists the resulting credentials as setup data. The instance
+    name asked here is only used to name the auto-created skill; the persisted instance
+    name and the exposed players/playlists live on the options surface.
 
     :param session: The setup session driving the flow.
     """
