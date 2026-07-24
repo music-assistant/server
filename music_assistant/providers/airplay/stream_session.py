@@ -213,11 +213,11 @@ class AirPlayStreamSession:
 
         The next play_media (resume or seek) commits a new generation over the
         live connections — the same coordinated warm restart as seek/next.
-        Returns False when any member lacks a running AirPlay 2 stream (RAOP
-        cannot be parked), so the caller can fall back to a full stop.
+        Returns False when any member lacks a running, connected stream so the
+        caller can fall back to a full stop.
         """
         if not all(
-            p.stream is not None and p.stream.running and p.protocol == StreamingProtocol.AIRPLAY2
+            p.stream is not None and p.stream.running and p.stream.connected
             for p in self.sync_clients
         ):
             return False

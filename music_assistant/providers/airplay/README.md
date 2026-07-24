@@ -419,8 +419,9 @@ instant**" on every protocol path (RAOP, AirPlay 2 RAOP-compat and native).
    the same value in `START` to every member
 4. The binary owns receiver-buffer handling from there, so the commanded start
    cannot race connection or pre-fill
-5. Warm seek and next-track use the same PREPARE/prime/START barrier for later
-   generations on legacy RAOP, RAOP-compatible AirPlay 2 and native AirPlay 2
+5. Warm seek, next-track and grouped resume use the same PREPARE/prime/START
+   barrier for later generations on legacy RAOP, RAOP-compatible AirPlay 2 and
+   native AirPlay 2; standby keeps each protocol connection alive
 6. Sendspin starts preserve its externally supplied audible instant after the
    same connection and prime gates
 7. Per-player `sync_adjust` config allows fine-tuning (+/- milliseconds)
