@@ -101,6 +101,8 @@ async def test_rows_interleaved_builtin_first(
 ) -> None:
     """Builtin and provider rows are interleaved one per source per pass, builtin first."""
     recommendations_provider = mass.get_provider("recommendations")
+    assert recommendations_provider is not None
+    assert isinstance(recommendations_provider, LibraryRecommendationsProvider)
     prov_a = _build(_RowsProvider, instance_id="prov_a")
     prov_b = _build(_RowsProvider, instance_id="prov_b")
     monkeypatch.setattr(
@@ -118,6 +120,8 @@ async def test_rows_interleave_uneven_provider_lengths_no_tail_dropped(
 ) -> None:
     """Providers with fewer rows than the builtin sources still contribute all their rows."""
     recommendations_provider = mass.get_provider("recommendations")
+    assert recommendations_provider is not None
+    assert isinstance(recommendations_provider, LibraryRecommendationsProvider)
     four = _build(_FourRowsProvider, instance_id="four")
     one = _build(_OneRowProvider, instance_id="one")
     monkeypatch.setattr(
