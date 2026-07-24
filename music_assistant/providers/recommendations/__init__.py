@@ -17,7 +17,11 @@ from music_assistant.models.plugin import PluginProvider
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+        ProviderConfig,
+    )
     from music_assistant_models.media_items import BrowseFolder, ItemMapping, MediaItemType
     from music_assistant_models.provider import ProviderManifest
 
@@ -61,8 +65,8 @@ async def get_config_entries(
     mass: MusicAssistant,  # noqa: ARG001
     instance_id: str | None = None,  # noqa: ARG001
     action: str | None = None,  # noqa: ARG001
-    values: dict[str, str | int | bool | None] | None = None,  # noqa: ARG001
-) -> tuple[()]:
+    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
     """Return config entries for this provider."""
     return ()
 
