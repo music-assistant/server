@@ -357,6 +357,27 @@ async def test_ptp_daemon_spawn_traces_at_verbose_level() -> None:
     assert process_cls.call_args.args[0][-2:] == ["--debug", "10"]
 
 
+def test_pyatv_logging_quiet_at_debug_level() -> None:
+    """A normal debug session keeps pyatv's own (very chatty) logging quiet."""
+    prov = _ptp_provider()
+    prov.logger.setLevel(logging.DEBUG)
+
+    prov._set_pyatv_log_level()
+
+    # pyatv debug output is dropped; only INFO and above pass through
+    assert logging.getLogger("pyatv").level == logging.INFO
+
+
+def test_pyatv_logging_traces_at_verbose_level() -> None:
+    """A verbose session passes pyatv's debug logging through."""
+    prov = _ptp_provider()
+    prov.logger.setLevel(VERBOSE_LOG_LEVEL)
+
+    prov._set_pyatv_log_level()
+
+    assert logging.getLogger("pyatv").level == logging.DEBUG
+
+
 def test_ptp_daemon_ready_event_set_on_daemon_up_line() -> None:
     """The readiness event is set when the daemon prints its 'daemon up' line."""
     prov = _ptp_provider()
