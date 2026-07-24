@@ -347,7 +347,13 @@ class SetupSession:
         if request.method == "POST" and request.can_read_body:
             try:
                 if request.content_type == "application/json":
-                    params.update(json_loads(await request.read()))
+                    body = json_loads(await request.read())
+                    if isinstance(body, dict):
+                        # coerce to str so the declared params contract holds for
+                        # json bodies carrying numbers/bools
+                        params.update({str(key): str(val) for key, val in body.items()})
+                    else:
+                        LOGGER.error("Ignoring non-object JSON setup flow callback body")
                 else:
                     params.update({key: str(val) for key, val in (await request.post()).items()})
             except Exception as err:

@@ -302,6 +302,33 @@ async def test_external_step_callback_roundtrip(flow_mass: MusicAssistant) -> No
     await _wait_for(lambda: callback_path not in registered_routes)
 
 
+async def test_external_callback_json_body_coerced(flow_mass: MusicAssistant) -> None:
+    """A JSON callback body with non-string values is coerced to the str params contract."""
+    received: dict[str, str] = {}
+
+    async def run_setup(session: SetupSession) -> None:
+        received.update(await session.external("https://example.com/authorize"))
+        await session.finish({})
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        session = flow_mass.config._setup_flows[step.flow_id].session
+        request = SimpleNamespace(
+            query={"state": "xyz"},
+            method="POST",
+            can_read_body=True,
+            content_type="application/json",
+            read=AsyncMock(return_value=b'{"code": 123, "granted": true}'),
+        )
+        response = await session.handle_callback(cast("Any", request))
+        assert response.status == 200
+        await _wait_for(lambda: session.finished)
+    assert received == {"state": "xyz", "code": "123", "granted": "True"}
+
+
 async def test_form_expiry_aborts_flow(
     flow_mass: MusicAssistant, flow_events: list[MassEvent]
 ) -> None:
