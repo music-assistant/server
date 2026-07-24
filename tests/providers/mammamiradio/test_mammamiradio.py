@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import os
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -27,6 +29,7 @@ from music_assistant.providers.mammamiradio import (
     MammamiradioProvider,
     _audio_format_from_contract,
     _normalize_base_url,
+    _supports_v1_schema,
     _v1_to_stream_metadata,
     get_config_entries,
 )
@@ -1297,6 +1300,27 @@ async def test_v1_callback_unsupported_schema_keeps_prior(
     mass_mock.http_session.get = MagicMock(return_value=_make_v1_ctx(unsupported))
     await initialized_provider._update_stream_metadata(details, 0)
     assert details.stream_metadata is prior
+
+
+# ---------------------------------------------------------------------------
+# Shared contract fixture (cross-repo golden copy)
+# ---------------------------------------------------------------------------
+
+
+def test_golden_fixture_maps_cleanly() -> None:
+    """
+    The cross-repo golden fixture renders through the v1 mapper.
+
+    The same bytes live in the addon repo (tests/integrations/golden/); the
+    addon's contract-drift CI checksum-compares the two copies, so this test is
+    the provider-side half of the shared contract fixture.
+    """
+    fixture = Path(__file__).parent / "fixtures" / "v1_now_playing.json"
+    payload = json.loads(fixture.read_text(encoding="utf-8"))
+    assert _supports_v1_schema(payload["schema_version"])
+    for show_upcoming in (False, True):
+        stream_metadata = _v1_to_stream_metadata(payload, show_upcoming=show_upcoming)
+        assert stream_metadata.title
 
 
 # ---------------------------------------------------------------------------
