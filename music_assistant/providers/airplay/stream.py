@@ -274,6 +274,8 @@ class AirPlayStream:
             f"POSITION_MS={position_ms}\nACTION=PREPARE"
         )
         if not command_delivered:
+            self._gen_ready.pop(generation, None)
+            self._gen_primed.pop(generation, None)
             raise PlayerCommandFailed(
                 f"Could not deliver PREPARE for generation {generation} "
                 f"to AirPlay player {self.player.player_id}"

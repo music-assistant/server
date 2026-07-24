@@ -629,6 +629,9 @@ async def test_prepare_generation_raises_when_command_is_dropped() -> None:
     ):
         await stream.prepare_generation(1, "/tmp/generation.pcm", 0)  # noqa: S108
 
+    assert 1 not in stream._gen_ready
+    assert 1 not in stream._gen_primed
+
 
 @pytest.mark.asyncio
 async def test_wait_generation_ready_times_out() -> None:
