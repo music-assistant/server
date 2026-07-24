@@ -577,7 +577,9 @@ class KionMusicProvider(MusicProvider):
             self.logger.debug("Tag validation failed for %s: %s", tag_slug, err)
             return False
 
-    @use_cache(3600)
+    # allow_expired_cache keeps the items call serving the same (possibly stale) tag
+    # list the rows subtitle was derived from, while a background refresh runs
+    @use_cache(3600, allow_expired_cache=True)
     async def _get_valid_tags_for_category(self, category: str) -> list[str]:
         """
         Get validated tags for a category (only those with playlists).
