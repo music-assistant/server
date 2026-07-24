@@ -14,10 +14,8 @@ results straight from the sort index. These tests verify that:
 from __future__ import annotations
 
 import json
-import logging
-from collections.abc import AsyncGenerator
 from typing import Any
-from unittest.mock import AsyncMock, NonCallableMagicMock, patch
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -40,54 +38,17 @@ from music_assistant.constants import (
 from music_assistant.controllers.music.media.base import MediaControllerBase
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.mass import MusicAssistant
-from tests.common import suppress_auto_loaded_providers
 
 pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture(scope="module")
 async def seeded_mass(
-    tmp_path_factory: pytest.TempPathFactory,
-) -> AsyncGenerator[MusicAssistant]:
-    """Module-scoped hermetic MusicAssistant instance with a seeded library."""
-    tmp_path = tmp_path_factory.mktemp("listing_query_tests")
-    storage_path = tmp_path / "data"
-    cache_path = tmp_path / "cache"
-    storage_path.mkdir(parents=True)
-    cache_path.mkdir(parents=True)
-    logging.getLogger("aiosqlite").level = logging.INFO
-    mass_instance = MusicAssistant(str(storage_path), str(cache_path))
-    with (
-        patch(
-            "music_assistant.controllers.discovery.controller.AsyncZeroconf",
-            return_value=NonCallableMagicMock(
-                async_register_service=AsyncMock(),
-                async_update_service=AsyncMock(),
-                async_unregister_service=AsyncMock(),
-                async_close=AsyncMock(),
-            ),
-        ),
-        patch(
-            "music_assistant.controllers.discovery.controller.AsyncServiceBrowser",
-            return_value=NonCallableMagicMock(),
-        ),
-        patch(
-            "music_assistant.controllers.streams.controller.check_ffmpeg_version",
-            new=AsyncMock(),
-        ),
-        # hermetic: no real SSDP search
-        patch(
-            "music_assistant.controllers.discovery.controller.async_upnp_search",
-            new=AsyncMock(),
-        ),
-        suppress_auto_loaded_providers(),
-    ):
-        await mass_instance.start()
-        try:
-            await _seed_library(mass_instance)
-            yield mass_instance
-        finally:
-            await mass_instance.stop()
+    music_mass_module: MusicAssistant,
+) -> MusicAssistant:
+    """Return a module-scoped database-only instance with a seeded library."""
+    await _seed_library(music_mass_module)
+    return music_mass_module
 
 
 def _mapping(provider_instance: str = "prov_a_inst") -> ProviderMapping:

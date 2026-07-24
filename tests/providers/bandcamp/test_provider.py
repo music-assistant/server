@@ -32,6 +32,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import Album, Artist, BrowseFolder, Track
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.bandcamp import BandcampProvider, split_id
 from music_assistant.providers.bandcamp.constants import (
     CACHE_EMPTY_RESULTS,
@@ -102,6 +103,12 @@ def config_mock() -> Mock:
 async def provider(mass_mock: Mock, manifest_mock: Mock, config_mock: Mock) -> BandcampProvider:
     """Return a BandcampProvider instance."""
     provider = BandcampProvider(mass_mock, manifest_mock, config_mock, SUPPORTED_FEATURES)
+    provider.throttler = ThrottlerManager(
+        rate_limit=provider.throttler.throttler.rate_limit,
+        period=provider.throttler.throttler.period,
+        retry_attempts=provider.throttler.retry_attempts,
+        initial_backoff=provider.throttler.initial_backoff,
+    )
 
     # Initialize the provider
     with patch("music_assistant.providers.bandcamp.BandcampAPIClient") as mock_client_class:
@@ -609,9 +616,7 @@ async def test_fetch_api_track_rate_limit_error(provider: BandcampProvider) -> N
         await provider._fetch_api_track("123-456-789")
 
     assert mock_get_album.call_count == provider.throttler.retry_attempts
-    # At least retry_attempts - 1 sleeps from backoff; may be higher if the
-    # class-level Throttler also called asyncio.sleep due to accumulated entries.
-    assert mock_sleep.call_count >= provider.throttler.retry_attempts - 1
+    assert mock_sleep.call_count == provider.throttler.retry_attempts - 1
 
 
 async def test_fetch_api_track_generic_api_error(provider: BandcampProvider) -> None:
