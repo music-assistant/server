@@ -71,9 +71,22 @@ async def test_provider_initialization(
     assert provider.streaming is not None
 
 
+_SETUP_VALUES = {
+    "auth_token": "mock_access_token",
+    "refresh_token": "mock_refresh_token",
+    "expiry_time": 1234567890,
+    "user_id": "12345",
+}
+
+
 async def test_handle_async_init_success(provider: TidalProvider) -> None:
     """Test successful async initialization."""
     with (
+        patch.object(
+            provider,
+            "get_setup_value",
+            side_effect=lambda key, default=None: _SETUP_VALUES.get(key, default),
+        ),
         patch.object(provider.auth, "initialize", new_callable=AsyncMock) as mock_init,
         patch.object(provider.api, "get", new_callable=AsyncMock) as mock_get,
         patch.object(provider, "get_user", new_callable=AsyncMock) as mock_get_user,
@@ -106,13 +119,23 @@ async def test_handle_async_init_missing_auth() -> None:
 
     provider = TidalProvider(mass, manifest, config)
 
-    with pytest.raises(LoginFailed, match="Missing authentication data"):
+    with (
+        patch.object(provider, "get_setup_value", return_value=None),
+        pytest.raises(LoginFailed, match="Missing authentication data"),
+    ):
         await provider.handle_async_init()
 
 
 async def test_handle_async_init_auth_failed(provider: TidalProvider) -> None:
     """Test async initialization fails when auth initialize fails."""
-    with patch.object(provider.auth, "initialize", new_callable=AsyncMock) as mock_init:
+    with (
+        patch.object(
+            provider,
+            "get_setup_value",
+            side_effect=lambda key, default=None: _SETUP_VALUES.get(key, default),
+        ),
+        patch.object(provider.auth, "initialize", new_callable=AsyncMock) as mock_init,
+    ):
         mock_init.return_value = False
 
         with pytest.raises(LoginFailed, match="Failed to authenticate with Tidal"):
