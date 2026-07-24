@@ -13,7 +13,7 @@ from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import TYPE_CHECKING, Final, cast
 
 from music_assistant_models.enums import PlaybackState
-from zeroconf import ServiceStateChange
+from zeroconf import NonUniqueNameException, ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import (
@@ -75,6 +75,9 @@ PTP_DAEMON_READY_MARKER: Final[str] = "[PTP] daemon up"
 # session that starts while the daemon is still coming up (or never binds) pays
 # any of this, and only up to the moment readiness is signalled.
 PTP_DAEMON_READY_TIMEOUT: Final[float] = 3.0
+# Grace period after broadcasting a goodbye for a stale DACP registration before
+# re-registering the (name-stable) service, letting the cache flush the old record.
+DACP_RECLAIM_DELAY: Final[float] = 1.0
 
 
 class AirPlayProvider(PlayerProvider):
@@ -205,7 +208,7 @@ class AirPlayProvider(PlayerProvider):
             },
             server=f"{socket.gethostname()}.local",
         )
-        await self.mass.discovery.aiozc.async_register_service(self._dacp_info)
+        await self._register_dacp_service()
 
         self._migrate_protocol_preferences()
         self._migrate_sync_adjust()
@@ -719,6 +722,30 @@ class AirPlayProvider(PlayerProvider):
         self.mass.config.set_raw_provider_config_value(
             self.instance_id, CONF_PROTOCOL_MIGRATION_MARKER, True
         )
+
+    async def _register_dacp_service(self) -> None:
+        """
+        Register the DACP ActiveRemote mDNS service, reclaiming a stale name if needed.
+
+        The service name is derived from the (persistent) server id, so it is identical
+        across every reload and restart. A previous registration that was not cleanly
+        torn down - a reload racing a slow initial load, or a leftover from a prior crash -
+        keeps the same name in the zeroconf cache and makes a plain register raise
+        NonUniqueNameException. In that case we broadcast a goodbye for the name to flush
+        the stale record, then register again.
+        """
+        aiozc = self.mass.discovery.aiozc
+        try:
+            await aiozc.async_register_service(self._dacp_info)
+            return
+        except NonUniqueNameException:
+            self.logger.debug(
+                "DACP service %s already advertised - reclaiming stale registration",
+                self._dacp_info.name,
+            )
+        await aiozc.async_unregister_service(self._dacp_info)
+        await asyncio.sleep(DACP_RECLAIM_DELAY)
+        await aiozc.async_register_service(self._dacp_info)
 
     async def _start_ptp_daemon(self) -> None:
         """Spawn the shared PTP clock daemon (cliairplay --ptp-daemon)."""
