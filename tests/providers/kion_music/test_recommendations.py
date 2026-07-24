@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
@@ -198,9 +199,14 @@ def _install_tag_cache(provider: KionMusicProvider, tags_by_category: dict[str, 
 
 @pytest.mark.asyncio
 async def test_rows_subtitle_matches_served_items_tag(
-    provider: KionMusicProvider,
+    provider: KionMusicProvider, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """With a warm tag cache the rows subtitle and the items call resolve the same tag."""
+    # freeze the clock so the hourly tag bucket cannot flip mid-test
+    monkeypatch.setattr(
+        "music_assistant.providers.kion_music.provider.utc",
+        lambda: datetime(2026, 7, 24, 12, 30, tzinfo=UTC),
+    )
     mood_tags = ["chill", "focus"]
     _install_tag_cache(provider, {"mood": mood_tags, "activity": ["workout"]})
     client = cast("Mock", provider.client)

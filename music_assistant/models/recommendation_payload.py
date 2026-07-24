@@ -76,14 +76,23 @@ class RecommendationPayloadMixin(_MixinBase):
         """
         Handle unload/close of the provider.
 
-        Cancels any in-flight payload fetch/refresh task before continuing the regular
-        provider unload chain.
+        Cancels any in-flight payload fetch/refresh task and awaits its completion,
+        so no payload work keeps running while the provider tears down, before
+        continuing the regular provider unload chain.
 
         :param is_removed: True when the provider is removed from the configuration.
         """
-        for task in (self._recommendation_payload_task, self._recommendation_refresh_task):
-            if task is not None and not task.done():
-                task.cancel()
+        tasks = [
+            task
+            for task in (self._recommendation_payload_task, self._recommendation_refresh_task)
+            if task is not None and not task.done()
+        ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._recommendation_payload_task = None
+        self._recommendation_refresh_task = None
         await super().unload(is_removed)
 
     async def _recommendation_rows_from_payload(self) -> list[RecommendationFolder]:

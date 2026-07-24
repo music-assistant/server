@@ -532,15 +532,17 @@ async def test_unload_cancels_inflight_cold_fetch_and_continues_chain() -> None:
     provider = _PayloadProvider(AsyncMock(side_effect=_hanging_fetch))
     caller = asyncio.create_task(provider._recommendation_payload())
     await started.wait()
+    task = provider._recommendation_payload_task
+    assert task is not None
 
     await provider.unload()
 
     assert provider.unload_chain_called is True
+    # the fetch was cancelled, awaited and its handle cleared before the chain continued
+    assert task.cancelled()
+    assert provider._recommendation_payload_task is None
     with pytest.raises(asyncio.CancelledError):
         await caller
-    task = provider._recommendation_payload_task
-    assert task is not None
-    assert task.cancelled()
 
 
 @pytest.mark.asyncio
@@ -561,14 +563,14 @@ async def test_unload_cancels_background_refresh() -> None:
     # serves the stale payload and schedules the (hanging) background refresh
     assert _payload_dicts(await provider._recommendation_payload()) == _payload_dicts(stale)
     await started.wait()
+    task = provider._recommendation_refresh_task
+    assert task is not None
 
     await provider.unload()
 
     assert provider.unload_chain_called is True
-    task = provider._recommendation_refresh_task
-    assert task is not None
-    await asyncio.gather(task, return_exceptions=True)
     assert task.cancelled()
+    assert provider._recommendation_refresh_task is None
 
 
 @pytest.mark.asyncio

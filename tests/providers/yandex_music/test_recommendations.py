@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -1099,8 +1100,15 @@ async def test_get_my_wave_recommendations_with_real_parser(provider_mock: Mock)
 
 
 @pytest.mark.asyncio
-async def test_rotating_row_tag_subtitle_from_warm_cache(provider_mock: Mock) -> None:
+async def test_rotating_row_tag_subtitle_from_warm_cache(
+    provider_mock: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """A warm tag-list cache yields the deterministic tag's display label as subtitle."""
+    # freeze the clock so the hourly tag bucket cannot flip mid-test
+    monkeypatch.setattr(
+        "music_assistant.providers.yandex_music.provider.utc",
+        lambda: datetime(2026, 7, 24, 12, 30, tzinfo=UTC),
+    )
     tags = ["chill", "focus"]
     provider_mock.mass.cache.get_with_freshness = AsyncMock(return_value=(tags, True, True))
     provider_mock._rotating_row_tag = YandexMusicProvider._rotating_row_tag.__get__(
@@ -1124,8 +1132,15 @@ async def test_rotating_row_tag_subtitle_cold_cache_returns_none(provider_mock: 
 
 
 @pytest.mark.asyncio
-async def test_rotating_row_tag_is_deterministic(provider_mock: Mock) -> None:
+async def test_rotating_row_tag_is_deterministic(
+    provider_mock: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The tag pick is stable within the hour and always one of the valid tags."""
+    # freeze the clock so the hourly tag bucket cannot flip mid-test
+    monkeypatch.setattr(
+        "music_assistant.providers.yandex_music.provider.utc",
+        lambda: datetime(2026, 7, 24, 12, 30, tzinfo=UTC),
+    )
     pick = YandexMusicProvider._rotating_row_tag.__get__(provider_mock, YandexMusicProvider)
     tags = ["chill", "focus", "sad", "romantic"]
 
