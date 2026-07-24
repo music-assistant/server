@@ -15,17 +15,10 @@ import os
 from functools import partial
 from typing import TYPE_CHECKING, TypedDict, cast
 
-import shortuuid
 from aiohttp import ClientError
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
-from hass_client.utils import (
-    base_url,
-    get_auth_url,
-    get_long_lived_token,
-    get_token,
-    get_websocket_url,
-)
+from hass_client.utils import get_websocket_url
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -35,7 +28,6 @@ from music_assistant_models.enums import (
     StreamType,
 )
 from music_assistant_models.errors import (
-    LoginFailed,
     MusicAssistantError,
     SetupFailedError,
     UnsupportedFeaturedException,
@@ -44,8 +36,7 @@ from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.player_control import PlayerControl
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
-from music_assistant.helpers.auth import AuthenticationHelper
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.util import try_parse_int
@@ -67,7 +58,6 @@ if TYPE_CHECKING:
 DOMAIN = "hass"
 CONF_URL = "url"
 CONF_AUTH_TOKEN = "token"
-CONF_ACTION_AUTH = "auth"
 CONF_VERIFY_SSL = "verify_ssl"
 CONF_POWER_CONTROLS = "power_controls"
 CONF_MUTE_CONTROLS = "mute_controls"
@@ -103,44 +93,21 @@ async def setup(
 async def get_config_entries(
     mass: MusicAssistant,
     instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
+    action: str | None = None,  # noqa: ARG001
+    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """
     Return Config entries to setup this provider.
 
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # config flow auth action/step (authenticate button clicked)
-    if action == CONF_ACTION_AUTH and values:
-        hass_url = str(values[CONF_URL]).strip()
-        async with AuthenticationHelper(mass, str(values["session_id"])) as auth_helper:
-            client_id = base_url(auth_helper.callback_url)
-            auth_url = get_auth_url(
-                hass_url,
-                auth_helper.callback_url,
-                client_id=client_id,
-                state=values["session_id"],
-            )
-            result = await auth_helper.authenticate(auth_url)
-        if result["state"] != values["session_id"]:
-            msg = "session id mismatch"
-            raise LoginFailed(msg)
-        # get access token after auth was a success
-        token_details = await get_token(hass_url, result["code"], client_id=client_id)
-        # register for a long lived token
-        long_lived_token = await get_long_lived_token(
-            hass_url,
-            token_details["access_token"],
-            client_name=f"Music Assistant {shortuuid.random(6)}",
-            client_icon=MASS_LOGO_ONLINE,
-            lifespan=365 * 2,
-        )
-        # set the retrieved token on the values object to pass along
-        values[CONF_AUTH_TOKEN] = long_lived_token
+    The connection URL and authentication token are collected by the setup flow (see
+    setup_flow.py) unless running as a Home Assistant add-on, where they are fixed; only
+    the player-control and feature options are configurable here.
 
+    :param mass: The MusicAssistant instance.
+    :param instance_id: id of an existing provider instance (None if new instance setup).
+    :param action: [optional] action key called from config entries UI.
+    :param values: the (intermediate) raw values for config entries sent with the action.
+    """
     base_entries: tuple[ConfigEntry, ...]
     if mass.running_as_hass_addon:
         # on supervisor, we use the internal url
@@ -174,36 +141,8 @@ async def get_config_entries(
             ),
         )
     else:
-        # manual configuration
-        base_entries = (
-            ConfigEntry(
-                key=CONF_URL,
-                type=ConfigEntryType.STRING,
-                required=True,
-                value=cast("str", values.get(CONF_URL)) if values else None,
-            ),
-            ConfigEntry(
-                key=CONF_ACTION_AUTH,
-                type=ConfigEntryType.ACTION,
-                action=CONF_ACTION_AUTH,
-                depends_on=CONF_URL,
-                required=False,
-            ),
-            ConfigEntry(
-                key=CONF_AUTH_TOKEN,
-                type=ConfigEntryType.SECURE_STRING,
-                depends_on=CONF_URL,
-                value=cast("str", values.get(CONF_AUTH_TOKEN)) if values else None,
-                advanced=True,
-            ),
-            ConfigEntry(
-                key=CONF_VERIFY_SSL,
-                type=ConfigEntryType.BOOLEAN,
-                required=False,
-                advanced=True,
-                default_value=True,
-            ),
-        )
+        # url/token/verify_ssl are collected by the setup flow instead (see setup_flow.py)
+        base_entries = ()
 
     # append player controls entries (if we have an active instance)
     if instance_id and (hass_prov := mass.get_provider(instance_id)) and hass_prov.available:
@@ -362,10 +301,10 @@ class HomeAssistantProvider(PluginProvider):
             raise SetupFailedError(msg)
         self._startup_complete = False
         self._player_controls = {}
-        url = get_websocket_url(self.config.get_value(CONF_URL))
-        token = self.config.get_value(CONF_AUTH_TOKEN)
+        url = get_websocket_url(cast("str", self.get_setup_value(CONF_URL)))
+        token = self.get_setup_value(CONF_AUTH_TOKEN)
         logging.getLogger("hass_client").setLevel(self.logger.level + 10)
-        ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
+        ssl = bool(self.get_setup_value(CONF_VERIFY_SSL, True))
         http_session = self.mass.http_session if ssl else self.mass.http_session_no_ssl
         self.hass = HomeAssistantClient(url, token, http_session)
         try:
@@ -858,11 +797,11 @@ class HomeAssistantProvider(PluginProvider):
 
     def _get_ha_http(self) -> tuple[str, dict[str, str], ClientSession]:
         """Return HA base URL (without trailing /api), auth headers, and the HTTP session."""
-        ha_url = cast("str", self.config.get_value(CONF_URL)).rstrip("/")
+        ha_url = cast("str", self.get_setup_value(CONF_URL)).rstrip("/")
         ha_url = ha_url.removesuffix("/api")
-        token = self.config.get_value(CONF_AUTH_TOKEN) or os.environ.get("HASSIO_TOKEN")
+        token = self.get_setup_value(CONF_AUTH_TOKEN) or os.environ.get("HASSIO_TOKEN")
         headers = {"Authorization": f"Bearer {token}"} if token else {}
-        ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
+        ssl = bool(self.get_setup_value(CONF_VERIFY_SSL, True))
         http_session = self.mass.http_session if ssl else self.mass.http_session_no_ssl
         return ha_url, headers, http_session
 

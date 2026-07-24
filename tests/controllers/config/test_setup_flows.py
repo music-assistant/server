@@ -8,6 +8,7 @@ from collections.abc import AsyncGenerator, Awaitable, Callable
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from aiohttp.test_utils import make_mocked_request
@@ -109,6 +110,29 @@ async def _wait_for(predicate: Callable[[], Any], timeout: float = 5.0) -> Any:
 
 def _abort_events(events: list[MassEvent]) -> list[SetupFlowStep]:
     return [event.data for event in events if event.data.type == FlowStepType.ABORT]
+
+
+def _fake_json_session(payload: dict[str, Any]) -> Any:
+    """Return a stub http_session whose .post() yields a 200 JSON response (token exchange)."""
+    response = SimpleNamespace(
+        status=200,
+        json=AsyncMock(return_value=payload),
+        text=AsyncMock(return_value=""),
+    )
+    post_cm = MagicMock()
+    post_cm.__aenter__ = AsyncMock(return_value=response)
+    post_cm.__aexit__ = AsyncMock(return_value=False)
+    session = MagicMock()
+    session.post = MagicMock(return_value=post_cm)
+    return session
+
+
+async def _fire_callback(flow_mass: MusicAssistant, flow_id: str, query: str) -> None:
+    """Hit a running flow's external-step callback route with the given query string."""
+    callback_path = f"/setup_flow/callback/{flow_id}"
+    handler = cast("Any", flow_mass.webserver).routes[callback_path]
+    response = await handler(make_mocked_request("GET", f"{callback_path}?{query}"))
+    assert response.status == 200
 
 
 async def test_zero_input_provider_immediate_finish(flow_mass: MusicAssistant) -> None:
@@ -831,3 +855,96 @@ async def test_real_provider_flow_retry_on_error(flow_mass: MusicAssistant) -> N
         )
     assert finish_step.type == FlowStepType.FINISH
     assert flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}") is not None
+async def test_spotify_flow_hosted_bounce_roundtrip(
+    flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real Spotify flow: hosted-bounce external auth then a stored refresh token."""
+    from music_assistant.providers.spotify.constants import (  # noqa: PLC0415
+        CONF_REFRESH_TOKEN_GLOBAL,
+    )
+    from music_assistant.providers.spotify.setup_flow import run_setup  # noqa: PLC0415
+
+    monkeypatch.setattr(
+        "music_assistant.providers.spotify.setup_flow.app_var", lambda _key: "ma_client_id"
+    )
+    # seed the lazy http_session backing field so the token exchange uses our stub
+    monkeypatch.setattr(
+        flow_mass, "_http_session", _fake_json_session({"refresh_token": "rt_global"})
+    )
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        # first step is the (required) global authentication via the hosted bounce
+        assert step.type == FlowStepType.EXTERNAL
+        assert step.step_id == "authenticate"
+        assert step.url is not None
+        assert "accounts.spotify.com/authorize" in step.url
+        # the fixed hosted redirect is used, with the local callback carried in `state`
+        assert "music-assistant.io%2Fcallback" in step.url
+        assert step.flow_id in step.url
+        session = flow_mass.config._setup_flows[step.flow_id].session
+        await _fire_callback(flow_mass, step.flow_id, "code=auth_code&state=xyz")
+        # after the token exchange the optional developer step is shown
+        await _wait_for(
+            lambda: session.current_step is not None and session.current_step.step_id == "developer"
+        )
+        # skipping the developer client id (blank) finishes the flow
+        finish_step = await flow_mass.config.submit_setup_flow(step.flow_id, {})
+    assert finish_step.type == FlowStepType.FINISH
+    raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}")
+    assert (
+        flow_mass.config.decrypt_string(raw_conf["setup_data"][CONF_REFRESH_TOKEN_GLOBAL])
+        == "rt_global"
+    )
+
+
+async def test_gdrive_flow_form_then_hosted_bounce(
+    flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The real Google Drive flow: credential form, hosted-bounce OAuth, stored refresh token."""
+    from music_assistant.providers.filesystem_cloud.base import (  # noqa: PLC0415
+        CONF_CLIENT_ID,
+        CONF_CLIENT_SECRET,
+        CONF_FOLDER_ID,
+        CONF_REFRESH_TOKEN,
+    )
+    from music_assistant.providers.filesystem_google_drive.setup_flow import (  # noqa: PLC0415
+        run_setup,
+    )
+
+    # seed the lazy http_session backing field so the token exchange uses our stub
+    monkeypatch.setattr(
+        flow_mass, "_http_session", _fake_json_session({"refresh_token": "rt_drive"})
+    )
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        # the shared cloud flow first collects content type + OAuth client credentials + folder
+        assert step.type == FlowStepType.FORM
+        assert step.step_id == "user"
+        session = flow_mass.config._setup_flows[step.flow_id].session
+        external_step = await flow_mass.config.submit_setup_flow(
+            step.flow_id,
+            {
+                "content_type": "music",
+                CONF_CLIENT_ID: "cid",
+                CONF_CLIENT_SECRET: "secret",
+                CONF_FOLDER_ID: "root",
+            },
+        )
+        assert external_step.type == FlowStepType.EXTERNAL
+        assert external_step.url is not None
+        auth_url = urlsplit(external_step.url)
+        assert auth_url.netloc == "accounts.google.com"
+        assert parse_qs(auth_url.query)["redirect_uri"] == ["https://music-assistant.io/callback"]
+        await _fire_callback(flow_mass, step.flow_id, "code=auth_code")
+        await _wait_for(lambda: session.finished)
+    raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}")
+    setup_data = raw_conf["setup_data"]
+    assert flow_mass.config.decrypt_string(setup_data[CONF_REFRESH_TOKEN]) == "rt_drive"
+    assert flow_mass.config.decrypt_string(setup_data[CONF_CLIENT_ID]) == "cid"
+    assert flow_mass.config.decrypt_string(setup_data[CONF_FOLDER_ID]) == "root"
