@@ -640,6 +640,31 @@ async def test_wait_generation_ready_times_out() -> None:
 
 
 @pytest.mark.asyncio
+async def test_discard_generation_propagates_flush_delivery() -> None:
+    """A staged discard sends targeted FLUSH and surfaces dropped delivery."""
+    stream = AirPlayStream(_make_player())
+    stream.next_generation()
+
+    with patch.object(
+        stream,
+        "_write_cli_command",
+        new_callable=AsyncMock,
+        side_effect=[True, False],
+    ) as write_command:
+        await stream.discard_generation(1)
+        stream.next_generation()
+        with pytest.raises(PlayerCommandFailed, match="Could not deliver FLUSH"):
+            await stream.discard_generation(2)
+
+    assert write_command.await_args_list == [
+        call("GENERATION=1\nACTION=FLUSH"),
+        call("GENERATION=2\nACTION=FLUSH"),
+    ]
+    assert 1 not in stream._gen_ready
+    assert 2 in stream._gen_ready
+
+
+@pytest.mark.asyncio
 async def test_named_pipe_writer_open_is_bounded_without_worker_thread() -> None:
     """A missing FIFO reader times out without stranding a blocking worker thread."""
     open_error = OSError(errno.ENXIO, "no reader")

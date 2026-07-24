@@ -290,6 +290,24 @@ class AirPlayStream:
             return False
         return True
 
+    async def discard_generation(self, generation: int) -> None:
+        """
+        Retire a staged generation without disturbing active playback.
+
+        :param generation: Staged generation number to retire.
+        :raises PlayerCommandFailed: If the FLUSH command cannot be delivered.
+        """
+        if generation == self._active_generation:
+            raise RuntimeError(f"Cannot discard active generation {generation}")
+        command_delivered = await self._write_cli_command(f"GENERATION={generation}\nACTION=FLUSH")
+        if not command_delivered:
+            raise PlayerCommandFailed(
+                f"Could not deliver FLUSH for generation {generation} "
+                f"to AirPlay player {self.player.player_id}"
+            )
+        self._gen_ready.pop(generation, None)
+        self._gen_primed.pop(generation, None)
+
     async def wait_generation_primed(self, generation: int, timeout: float = 8.0) -> bool:
         """Wait until the staged generation has buffered enough to start."""
         event = self._gen_primed.get(generation)

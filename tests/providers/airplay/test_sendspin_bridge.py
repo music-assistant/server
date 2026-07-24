@@ -416,6 +416,7 @@ async def test_warm_generation_commits_on_kept_stream_instance() -> None:
     kept_stream.prepare_generation = AsyncMock()
     kept_stream.wait_generation_ready = AsyncMock(return_value=True)
     kept_stream.wait_generation_primed = AsyncMock(return_value=True)
+    kept_stream.discard_generation = AsyncMock()
     kept_stream.start_generation = AsyncMock()
     bridge._airplay_stream = kept_stream
     bridge._airplay_stream_start_task = asyncio.current_task()
@@ -438,6 +439,7 @@ async def test_warm_generation_commits_on_kept_stream_instance() -> None:
     kept_stream.prepare_generation.assert_awaited_once_with(3, expected_fifo, 0)
     kept_stream.wait_generation_ready.assert_awaited_once_with(3)
     kept_stream.wait_generation_primed.assert_awaited_once_with(3)
+    kept_stream.discard_generation.assert_not_awaited()
     kept_stream.start_generation.assert_awaited_once_with(3, 0, 1_784_000_000_000)
     assert bridge._sink_fd == 99
     assert bridge._airplay_stream_ready.is_set()
@@ -451,6 +453,7 @@ async def test_warm_generation_prime_timeout_falls_back_to_cold_restart() -> Non
     kept_stream.prepare_generation = AsyncMock()
     kept_stream.wait_generation_ready = AsyncMock(return_value=True)
     kept_stream.wait_generation_primed = AsyncMock(return_value=False)
+    kept_stream.discard_generation = AsyncMock()
     kept_stream.start_generation = AsyncMock()
     bridge._airplay_stream = kept_stream
     bridge._airplay_stream_start_task = asyncio.current_task()
@@ -469,6 +472,7 @@ async def test_warm_generation_prime_timeout_falls_back_to_cold_restart() -> Non
         committed = await bridge._start_warm_generation(kept_stream, 1_784_000_000_000)
 
     assert committed is False
+    kept_stream.discard_generation.assert_awaited_once_with(1)
     kept_stream.start_generation.assert_not_awaited()
     assert bridge._sink_fd is None  # reverted so the cold-path writer uses stdin again
     mock_close.assert_any_call(55)
@@ -482,6 +486,7 @@ async def test_warm_generation_superseded_before_commit_does_not_start() -> None
     kept_stream.prepare_generation = AsyncMock()
     kept_stream.wait_generation_ready = AsyncMock(return_value=True)
     kept_stream.wait_generation_primed = AsyncMock(return_value=True)
+    kept_stream.discard_generation = AsyncMock()
     kept_stream.start_generation = AsyncMock()
     bridge._airplay_stream = kept_stream
     # Simulate a newer stream start having already replaced the tracked task.
@@ -501,6 +506,7 @@ async def test_warm_generation_superseded_before_commit_does_not_start() -> None
         committed = await bridge._start_warm_generation(kept_stream, 1_784_000_000_000)
 
     assert committed is False
+    kept_stream.discard_generation.assert_awaited_once_with(2)
     kept_stream.start_generation.assert_not_awaited()
     # The stale attempt must NOT close the fd: it was published as self._sink_fd,
     # so closing it here would break the writer (EBADF) or double-close a fd a
@@ -516,6 +522,7 @@ async def test_warm_generation_ready_timeout_does_not_open_writer() -> None:
     kept_stream.next_generation = MagicMock(return_value=1)
     kept_stream.prepare_generation = AsyncMock()
     kept_stream.wait_generation_ready = AsyncMock(return_value=False)
+    kept_stream.discard_generation = AsyncMock()
     kept_stream.start_generation = AsyncMock()
     bridge._airplay_stream = kept_stream
     bridge._airplay_stream_start_task = asyncio.current_task()
@@ -535,5 +542,6 @@ async def test_warm_generation_ready_timeout_does_not_open_writer() -> None:
         assert await bridge._start_warm_generation(kept_stream, 1_784_000_000_000) is False
 
     open_writer.assert_not_awaited()
+    kept_stream.discard_generation.assert_awaited_once_with(1)
     kept_stream.start_generation.assert_not_awaited()
     assert bridge._sink_fd is None

@@ -156,29 +156,15 @@ class AirPlayStreamSession:
         writer_fds: dict[str, int] = {}
         started_at = time.monotonic()
         committed = False
+        commit_attempted = False
         try:
-            for player in self.sync_clients:
-                stream = player.stream
-                assert stream
-                gen = stream.next_generation()
-                fifo = f"/tmp/ma-gen-{player.player_id}-{gen}.pcm"  # noqa: S108
-                with suppress(FileNotFoundError):
-                    await asyncio.to_thread(os.unlink, fifo)
-                await asyncio.to_thread(os.mkfifo, fifo)
-                generations[player.player_id] = gen
-                fifos[player.player_id] = fifo
-
-            async with asyncio.TaskGroup() as task_group:
-                for player in self.sync_clients:
-                    task_group.create_task(
-                        self._prepare_warm_generation(
-                            player,
-                            generations[player.player_id],
-                            fifos[player.player_id],
-                            position_ms,
-                            started_at,
-                        )
-                    )
+            await self._allocate_warm_generation_fifos(generations, fifos)
+            await self._prepare_warm_generations(
+                generations,
+                fifos,
+                position_ms,
+                started_at,
+            )
             async with asyncio.TaskGroup() as task_group:
                 for player in self.sync_clients:
                     task_group.create_task(
@@ -219,6 +205,7 @@ class AirPlayStreamSession:
                             started_at,
                         )
                     )
+            commit_attempted = True
             await self._commit_generations(generations, position_ms)
             for player_id, generation in generations.items():
                 self._log_generation_phase(player_id, generation, "commit", started_at)
@@ -227,6 +214,8 @@ class AirPlayStreamSession:
             self.prov.logger.warning(
                 "Warm replacement failed (%r); falling back to a cold restart", err
             )
+            if not commit_attempted:
+                await self._discard_warm_generations(generations, started_at)
             return False
         finally:
             for fifo_fd in writer_fds.values():
@@ -234,9 +223,8 @@ class AirPlayStreamSession:
                     os.close(fifo_fd)
             for fifo in fifos.values():
                 if not committed:
-                    # Give a staged reader EOF before removing its path. There is no
-                    # generation-cancel command; the caller tears down the persistent
-                    # stream immediately after this method returns False.
+                    # Give any staged reader EOF before removing its path. FLUSH has
+                    # no positive acknowledgement, so pipe cleanup remains explicit.
                     with suppress(OSError):
                         os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
                 with suppress(OSError):
@@ -833,6 +821,46 @@ class AirPlayStreamSession:
             # pipe sees EOF when ffmpeg exits
             os.close(fifo_fd)
 
+    async def _allocate_warm_generation_fifos(
+        self, generations: dict[str, int], fifos: dict[str, str]
+    ) -> None:
+        """Allocate one staged generation FIFO for every session member."""
+        for player in self.sync_clients:
+            stream = player.stream
+            assert stream
+            generation = stream.next_generation()
+            fifo = f"/tmp/ma-gen-{player.player_id}-{generation}.pcm"  # noqa: S108
+            with suppress(FileNotFoundError):
+                await asyncio.to_thread(os.unlink, fifo)
+            await asyncio.to_thread(os.mkfifo, fifo)
+            generations[player.player_id] = generation
+            fifos[player.player_id] = fifo
+
+    async def _prepare_warm_generations(
+        self,
+        generations: dict[str, int],
+        fifos: dict[str, str],
+        position_ms: int,
+        started_at: float,
+    ) -> None:
+        """Deliver every queued PREPARE before surfacing a partial-group failure."""
+        results = await asyncio.gather(
+            *[
+                self._prepare_warm_generation(
+                    player,
+                    generations[player.player_id],
+                    fifos[player.player_id],
+                    position_ms,
+                    started_at,
+                )
+                for player in self.sync_clients
+            ],
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+
     async def _prepare_warm_generation(
         self,
         player: AirPlayPlayer,
@@ -870,6 +898,32 @@ class AirPlayStreamSession:
                 f"generation {generation} prime timeout for {player.player_id}"
             )
         self._log_generation_phase(player.player_id, generation, "primed", started_at)
+
+    async def _discard_warm_generations(
+        self, generations: dict[str, int], started_at: float
+    ) -> None:
+        """Best-effort discard every generation staged before shared START."""
+        streams: dict[str, AirPlayStream] = {}
+        for player in self.sync_clients:
+            if player.stream is not None:
+                streams[player.player_id] = player.stream
+        player_ids = [player_id for player_id in generations if player_id in streams]
+        results = await asyncio.gather(
+            *[
+                streams[player_id].discard_generation(generations[player_id])
+                for player_id in player_ids
+            ],
+            return_exceptions=True,
+        )
+        for player_id, result in zip(player_ids, results, strict=True):
+            if isinstance(result, BaseException):
+                self.prov.logger.warning(
+                    "Could not discard staged AirPlay generation for player %s: %s",
+                    player_id,
+                    result,
+                )
+                continue
+            self._log_generation_phase(player_id, generations[player_id], "discard", started_at)
 
     def _log_generation_phase(
         self, player_id: str, generation: int, phase: str, started_at: float

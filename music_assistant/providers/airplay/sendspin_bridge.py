@@ -547,6 +547,7 @@ class SendspinAirPlayBridge:
         gen = stream.next_generation()
         fifo = f"/tmp/ma-bridge-{self.airplay_player.player_id}-{gen}.pcm"  # noqa: S108
         started_at = time.monotonic()
+        commit_attempted = False
         try:
             with suppress(FileNotFoundError):
                 await asyncio.to_thread(os.unlink, fifo)
@@ -567,13 +568,7 @@ class SendspinAirPlayBridge:
             # now prefill the pipe while the generation primes.
             self._airplay_stream_ready.set()
             if not await stream.wait_generation_primed(gen):
-                self.logger.warning(
-                    "Generation prime timed out for %s, falling back to a cold restart",
-                    self.airplay_player.display_name,
-                )
-                with suppress(Exception):
-                    await self._set_sink_fd(None)
-                return False
+                raise RuntimeError(f"generation {gen} prime timed out")
             self._log_generation_phase(gen, "primed", started_at)
             if asyncio.current_task() is not self._airplay_stream_start_task:
                 # A newer stream start already owns the bridge; abandon this
@@ -584,7 +579,9 @@ class SendspinAirPlayBridge:
                 # lifecycle is owned by _set_sink_fd / teardown, not this task.
                 # The binary safely collapses a superseded staged generation on
                 # its next PREPARE.
+                await self._discard_warm_generation(stream, gen, started_at)
                 return False
+            commit_attempted = True
             await stream.start_generation(gen, 0, start_unix_ms)
             self._generation_started = True
             self._log_generation_phase(gen, "commit", started_at)
@@ -600,6 +597,8 @@ class SendspinAirPlayBridge:
                 self.airplay_player.display_name,
                 err,
             )
+            if not commit_attempted:
+                await self._discard_warm_generation(stream, gen, started_at)
             with suppress(Exception):
                 await self._set_sink_fd(None)
             return False
@@ -609,6 +608,22 @@ class SendspinAirPlayBridge:
             with suppress(OSError):
                 await asyncio.to_thread(os.unlink, fifo)
         return True
+
+    async def _discard_warm_generation(
+        self, stream: AirPlayStream, generation: int, started_at: float
+    ) -> None:
+        """Best-effort discard a bridge generation staged before START."""
+        try:
+            await stream.discard_generation(generation)
+        except Exception as err:
+            self.logger.warning(
+                "Could not discard staged AirPlay generation %d for %s: %s",
+                generation,
+                self.airplay_player.display_name,
+                err,
+            )
+            return
+        self._log_generation_phase(generation, "discard", started_at)
 
     def _log_generation_phase(self, generation: int, phase: str, started_at: float) -> None:
         """Log a bridge generation phase with elapsed staging time."""
