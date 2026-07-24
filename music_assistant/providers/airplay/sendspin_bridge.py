@@ -142,33 +142,6 @@ def device_buffer_ahead_seconds(
     return cursor_play_time_s - unix_now
 
 
-def _close_fd(fd: int) -> None:
-    """Close a file descriptor if it is still open."""
-    with suppress(OSError):
-        os.close(fd)
-
-
-def _unlink_fifo(path: str) -> None:
-    """Remove a fifo path if it still exists."""
-    with suppress(OSError):
-        Path(path).unlink()
-
-
-async def _create_fifo(path: str) -> None:
-    """Create a fresh fifo path."""
-    with suppress(FileNotFoundError):
-        await asyncio.to_thread(os.unlink, path)
-    await asyncio.to_thread(os.mkfifo, path)
-
-
-async def _cleanup_fifo(path: str) -> None:
-    """Unblock any fifo reader and remove its path."""
-    with suppress(OSError):
-        _close_fd(os.open(path, os.O_WRONLY | os.O_NONBLOCK))
-    with suppress(OSError):
-        await asyncio.to_thread(os.unlink, path)
-
-
 class SendspinAirPlayBridge:
     """
     Manages the Sendspin to AirPlay bridge for a single player.
@@ -1106,3 +1079,30 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinAirPlayBridge]):
     def _should_have_bridge(self, player: Player) -> bool:
         """Return whether an AirPlay player should have a Sendspin bridge."""
         return get_bridge_client_id(cast("AirPlayPlayer", player)) is not None
+
+
+def _close_fd(fd: int) -> None:
+    """Close a file descriptor if it is still open."""
+    with suppress(OSError):
+        os.close(fd)
+
+
+def _unlink_fifo(path: str) -> None:
+    """Remove a fifo path if it still exists."""
+    with suppress(OSError):
+        Path(path).unlink()
+
+
+async def _create_fifo(path: str) -> None:
+    """Create a fresh fifo path."""
+    with suppress(FileNotFoundError):
+        await asyncio.to_thread(os.unlink, path)
+    await asyncio.to_thread(os.mkfifo, path)
+
+
+async def _cleanup_fifo(path: str) -> None:
+    """Unblock any fifo reader and remove its path."""
+    with suppress(OSError):
+        _close_fd(os.open(path, os.O_WRONLY | os.O_NONBLOCK))
+    with suppress(OSError):
+        await asyncio.to_thread(os.unlink, path)
