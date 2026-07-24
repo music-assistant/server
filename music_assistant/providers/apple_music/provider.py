@@ -74,9 +74,10 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
             self.get_setup_value(CONF_MUSIC_USER_MANUAL_TOKEN)
             or self.get_setup_value(CONF_MUSIC_USER_TOKEN),
         )
-        # prefer the live bundled developer token, falling back to a stored/manual one
-        self._music_app_token = MUSIC_APP_TOKEN or cast(
-            "str | None", self.get_setup_value(CONF_MUSIC_APP_TOKEN)
+        # a stored/manual app token only exists because the setup flow found the
+        # bundled one empty or invalid, so it takes precedence over the bundled token
+        self._music_app_token = (
+            cast("str | None", self.get_setup_value(CONF_MUSIC_APP_TOKEN)) or MUSIC_APP_TOKEN
         )
         self._storefront = await self.api_client.get_user_storefront()
         await self.streaming_manager.initialize()
