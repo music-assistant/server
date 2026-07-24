@@ -317,7 +317,7 @@ class AirPlayProvider(PlayerProvider):
         return cast("AirPlayPlayer | None", self.mass.players.get_player(player_id))
 
     def _set_pyatv_log_level(self) -> None:
-        """Align pyatv's log level with the provider's log level."""
+        """Keep pyatv's (very chatty) logging quiet unless verbose logging is enabled."""
         # pyatv is extremely chatty at debug level (it logs every protocol
         # message and heartbeat of each control connection), so only pass
         # through its debug logging when verbose logging is enabled
