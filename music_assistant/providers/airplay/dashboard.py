@@ -179,8 +179,8 @@ class AirPlayDashboards:
             player.display_name,
             self._target_origin(target_url),
         )
-        await player.wake()
         try:
+            await player.wake()
             await player.async_launch_app(launch_uri)
         except PlayerCommandFailed as err:
             raise PlayerUnavailableError(
