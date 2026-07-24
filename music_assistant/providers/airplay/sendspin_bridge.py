@@ -907,7 +907,12 @@ class SendspinAirPlayBridge:
             return
         try:
             await self._set_sink_fd(None)
-        except BaseException as err:
+        except asyncio.CancelledError:
+            if self._sink_fd == fd:
+                self._sink_fd = None
+            _close_fd(fd)
+            raise
+        except Exception as err:
             self.logger.warning(
                 "Could not release AirPlay bridge sink for %s: %s",
                 self.airplay_player.display_name,
@@ -915,7 +920,7 @@ class SendspinAirPlayBridge:
             )
             if self._sink_fd == fd:
                 self._sink_fd = None
-                _close_fd(fd)
+            _close_fd(fd)
 
     async def _set_sink_fd(self, fd: int | None) -> None:
         """
