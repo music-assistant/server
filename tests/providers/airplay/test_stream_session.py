@@ -758,11 +758,34 @@ async def test_generation_writer_fd_closes_when_old_ffmpeg_kill_fails() -> None:
 
     with (
         patch("music_assistant.providers.airplay.stream_session.os.close") as close_fd,
+        patch("music_assistant.providers.airplay.stream_session.FFMpeg") as ffmpeg_factory,
         pytest.raises(OSError, match="kill failed"),
     ):
         await session._start_generation_ffmpeg(player, 42, MagicMock())
 
     close_fd.assert_called_once_with(42)
+    ffmpeg_factory.assert_not_called()
+    assert session._player_ffmpeg[player.player_id] is old_ffmpeg
+
+
+@pytest.mark.asyncio
+async def test_generation_writer_kill_cancellation_keeps_old_ffmpeg_tracked() -> None:
+    """Cancellation during old ffmpeg kill retains it and closes the staged fd."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    old_ffmpeg = MagicMock()
+    old_ffmpeg.kill = AsyncMock(side_effect=asyncio.CancelledError)
+    session._player_ffmpeg[player.player_id] = old_ffmpeg
+
+    with (
+        patch("music_assistant.providers.airplay.stream_session.os.close") as close_fd,
+        patch("music_assistant.providers.airplay.stream_session.FFMpeg") as ffmpeg_factory,
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await session._start_generation_ffmpeg(player, 42, MagicMock())
+
+    close_fd.assert_called_once_with(42)
+    ffmpeg_factory.assert_not_called()
     assert session._player_ffmpeg[player.player_id] is old_ffmpeg
 
 
