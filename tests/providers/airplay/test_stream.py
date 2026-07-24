@@ -12,9 +12,10 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.enums import ContentType, PlaybackState
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
+from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter, open_named_pipe_writer
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
     CONF_ENCRYPTION,
@@ -598,6 +599,8 @@ async def test_generation_zero_uses_prepare_and_start_commands() -> None:
 
     with patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command:
         await stream.prepare_generation(0, "-", 12_000)
+        assert stream._handle_status_line("[STATUS] ready generation=0") is False
+        assert await stream.wait_generation_ready(0)
         assert stream._handle_status_line("[STATUS] primed generation=0") is False
         assert await stream.wait_generation_primed(0)
         await stream.start_generation(0, 12_000, START_UNIX_MS)
@@ -606,6 +609,121 @@ async def test_generation_zero_uses_prepare_and_start_commands() -> None:
         "GENERATION=0\nAUDIO=-\nPOSITION_MS=12000\nACTION=PREPARE",
         f"GENERATION=0\nSTART_UNIX_MS={START_UNIX_MS}\nACTION=START",
     ]
+
+
+@pytest.mark.asyncio
+async def test_repeated_prepare_failures_do_not_grow_generation_events() -> None:
+    """Dropped and failed PREPARE writes always remove their generation events."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with patch.object(
+        stream,
+        "_write_cli_command",
+        new_callable=AsyncMock,
+        side_effect=[False, OSError("write failed"), False],
+    ):
+        for generation in range(1, 4):
+            with pytest.raises((PlayerCommandFailed, OSError)):
+                await stream.prepare_generation(
+                    generation,
+                    "/tmp/generation.pcm",  # noqa: S108
+                    0,
+                )
+            assert stream._gen_ready == {}
+            assert stream._gen_primed == {}
+
+
+@pytest.mark.asyncio
+async def test_wait_generation_ready_times_out() -> None:
+    """A generation without a ready status fails its bounded readiness wait."""
+    stream = AirPlayStream(_make_player())
+    stream.next_generation()
+
+    assert await stream.wait_generation_ready(1, timeout=0) is False
+
+
+@pytest.mark.asyncio
+async def test_discard_generation_propagates_flush_delivery() -> None:
+    """A staged discard sends targeted FLUSH and surfaces dropped delivery."""
+    stream = AirPlayStream(_make_player())
+    stream.next_generation()
+
+    with patch.object(
+        stream,
+        "_write_cli_command",
+        new_callable=AsyncMock,
+        side_effect=[True, False, OSError("write failed")],
+    ) as write_command:
+        await stream.discard_generation(1)
+        stream.next_generation()
+        with pytest.raises(PlayerCommandFailed, match="Could not deliver FLUSH"):
+            await stream.discard_generation(2)
+        stream.next_generation()
+        with pytest.raises(OSError, match="write failed"):
+            await stream.discard_generation(3)
+
+    assert write_command.await_args_list == [
+        call("GENERATION=1\nACTION=FLUSH"),
+        call("GENERATION=2\nACTION=FLUSH"),
+        call("GENERATION=3\nACTION=FLUSH"),
+    ]
+    assert stream._gen_ready == {}
+    assert stream._gen_primed == {}
+
+
+@pytest.mark.asyncio
+async def test_named_pipe_writer_open_is_bounded_without_worker_thread() -> None:
+    """A missing FIFO reader times out without stranding a blocking worker thread."""
+    open_error = OSError(errno.ENXIO, "no reader")
+    with (
+        patch(
+            "music_assistant.helpers.named_pipe.os.open",
+            side_effect=open_error,
+        ),
+        patch(
+            "music_assistant.helpers.named_pipe.asyncio.to_thread",
+            new_callable=AsyncMock,
+        ) as to_thread,
+        pytest.raises(TimeoutError, match="Timed out opening named pipe writer"),
+    ):
+        await open_named_pipe_writer("/tmp/generation.pcm", timeout=0)  # noqa: S108
+
+    to_thread.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_named_pipe_writer_open_cancellation_has_no_fd_to_leak() -> None:
+    """Cancellation while waiting for a reader leaves no worker or descriptor behind."""
+    with (
+        patch(
+            "music_assistant.helpers.named_pipe.os.open",
+            side_effect=OSError(errno.ENXIO, "no reader"),
+        ),
+        patch("music_assistant.helpers.named_pipe.os.close") as close_fd,
+    ):
+        open_task = asyncio.create_task(
+            open_named_pipe_writer("/tmp/generation.pcm", timeout=10)  # noqa: S108
+        )
+        await asyncio.sleep(0)
+        open_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await open_task
+
+    close_fd.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_named_pipe_writer_open_restores_blocking_mode() -> None:
+    """The descriptor inherited by ffmpeg is switched out of nonblocking mode."""
+    with (
+        patch("music_assistant.helpers.named_pipe.os.open", return_value=42),
+        patch("music_assistant.helpers.named_pipe.os.set_blocking") as set_blocking,
+    ):
+        assert await open_named_pipe_writer("/tmp/generation.pcm") == 42  # noqa: S108
+
+    set_blocking.assert_called_once_with(42, True)
 
 
 @pytest.mark.asyncio

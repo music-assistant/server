@@ -21,6 +21,7 @@ import asyncio
 import os
 import time
 from contextlib import suppress
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from aiosendspin.models.core import ClientHelloPayload
@@ -30,6 +31,7 @@ from aiosendspin.models.types import AudioCodec, PlayerCommand
 from music_assistant_models.enums import IdentifierType
 
 from music_assistant.constants import CONF_SYNC_ADJUST
+from music_assistant.helpers.named_pipe import open_named_pipe_writer
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
 from music_assistant.providers.sendspin.bridge_role import (
@@ -138,6 +140,33 @@ def device_buffer_ahead_seconds(
     """
     cursor_play_time_s = start_unix_ms / 1000 + bytes_written / bytes_per_second
     return cursor_play_time_s - unix_now
+
+
+def _close_fd(fd: int) -> None:
+    """Close a file descriptor if it is still open."""
+    with suppress(OSError):
+        os.close(fd)
+
+
+def _unlink_fifo(path: str) -> None:
+    """Remove a fifo path if it still exists."""
+    with suppress(OSError):
+        Path(path).unlink()
+
+
+async def _create_fifo(path: str) -> None:
+    """Create a fresh fifo path."""
+    with suppress(FileNotFoundError):
+        await asyncio.to_thread(os.unlink, path)
+    await asyncio.to_thread(os.mkfifo, path)
+
+
+async def _cleanup_fifo(path: str) -> None:
+    """Unblock any fifo reader and remove its path."""
+    with suppress(OSError):
+        _close_fd(os.open(path, os.O_WRONLY | os.O_NONBLOCK))
+    with suppress(OSError):
+        await asyncio.to_thread(os.unlink, path)
 
 
 class SendspinAirPlayBridge:
@@ -489,27 +518,8 @@ class SendspinAirPlayBridge:
             # for cleanup. If we assigned it earlier, the new stream would be missed
             # and leaked. Only publish once start() succeeds and this task is current.
             new_stream = AirPlayStream(self.airplay_player)
-            try:
-                await new_stream.start()
-                await new_stream.wait_for_connection()
-                if asyncio.current_task() is not self._airplay_stream_start_task:
-                    await new_stream.stop(force=True)
-                    return
-                self._airplay_stream = new_stream
-                self.airplay_player.stream = new_stream
-                await new_stream.prepare_generation(0, "-", 0)
-                self._airplay_stream_ready.set()
-                if not await new_stream.wait_generation_primed(0):
-                    raise RuntimeError("generation 0 prime timed out")
-                if asyncio.current_task() is not self._airplay_stream_start_task:
-                    await new_stream.stop(force=True)
-                    return
-                await new_stream.start_generation(0, 0, start_unix_ms)
-                self._generation_started = True
-            except BaseException:
-                with suppress(Exception):
-                    await new_stream.stop(force=True)
-                raise
+            if not await self._start_cold_generation(new_stream, start_unix_ms):
+                return
             self.logger.info(
                 "Bridge protocol started for %s (start_unix_ms=%s, lookahead=%.0fms)",
                 self.airplay_player.display_name,
@@ -527,84 +537,178 @@ class SendspinAirPlayBridge:
             self._airplay_stream_ready.set()
             self._schedule_cleanup()
 
+    async def _start_cold_generation(self, stream: AirPlayStream, start_unix_ms: int) -> bool:
+        """
+        Connect and commit generation 0 for a new bridge transport.
+
+        :param stream: New AirPlay stream to start.
+        :param start_unix_ms: Audible-start instant for generation 0.
+        :return: True when generation 0 commits, False when superseded.
+        """
+        generation_prepared = False
+        commit_attempted = False
+        try:
+            await stream.start()
+            await stream.wait_for_connection()
+            if asyncio.current_task() is not self._airplay_stream_start_task:
+                await stream.stop(force=True)
+                return False
+            self._airplay_stream = stream
+            self.airplay_player.stream = stream
+            generation_prepared = True
+            await stream.prepare_generation(0, "-", 0)
+            if not await stream.wait_generation_ready(0):
+                raise RuntimeError("generation 0 reader ready timed out")
+            self._airplay_stream_ready.set()
+            if not await stream.wait_generation_primed(0):
+                raise RuntimeError("generation 0 prime timed out")
+            if asyncio.current_task() is not self._airplay_stream_start_task:
+                await self._discard_generation(stream, 0)
+                await stream.stop(force=True)
+                return False
+            commit_attempted = True
+            await stream.start_generation(0, 0, start_unix_ms)
+            self._generation_started = True
+        except BaseException:
+            if generation_prepared and not commit_attempted:
+                await self._discard_generation(stream, 0)
+            with suppress(Exception):
+                await stream.stop(force=True)
+            raise
+        return True
+
     async def _start_warm_generation(self, stream: AirPlayStream, start_unix_ms: int) -> bool:
         """
         Stage and commit a new media generation on a kept, still-connected stream.
 
         The new generation is staged on a fresh fifo while ``stream`` keeps playing
         its current one, then committed with a single START once primed. Returns
-        True once the switch is committed. Any failure (staging, a prime timeout,
-        or this task being superseded before commit) reverts the writer to the
-        stdin sink and returns False so the caller falls back to a cold restart of
-        the kept stream; the fifo node is never left behind.
+        True once the switch is committed. Any failure returns False so the caller
+        falls back to a cold restart of the kept stream; the fifo node is never
+        left behind.
 
         :param stream: The kept AirPlayStream to stage the new generation on.
         :param start_unix_ms: The audible-start instant to commit the generation at.
         """
         gen = stream.next_generation()
         fifo = f"/tmp/ma-bridge-{self.airplay_player.player_id}-{gen}.pcm"  # noqa: S108
-        opened = False
+        started_at = time.monotonic()
+        commit_attempted = False
+        fifo_fd: int | None = None
+        published_fd: int | None = None
         try:
-            with suppress(FileNotFoundError):
-                await asyncio.to_thread(os.unlink, fifo)
-            await asyncio.to_thread(os.mkfifo, fifo)
+            await _create_fifo(fifo)
             await stream.prepare_generation(gen, fifo, 0)
-            fifo_fd = await asyncio.wait_for(
-                asyncio.to_thread(os.open, fifo, os.O_WRONLY), timeout=5
-            )
-            opened = True
+            self._log_generation_phase(gen, "prepare-delivered", started_at)
+            if not await stream.wait_generation_ready(gen):
+                raise RuntimeError(f"generation {gen} reader ready timed out")
+            self._log_generation_phase(gen, "ready", started_at)
+            fifo_fd = await open_named_pipe_writer(fifo)
             # Both ends now hold the fifo open; drop the directory entry right away
             # so no stale pipe nodes accumulate even if a later step fails.
-            with suppress(OSError):
-                await asyncio.to_thread(os.unlink, fifo)
-            await self._set_sink_fd(fifo_fd)
+            _unlink_fifo(fifo)
+            try:
+                await self._publish_sink_fd(fifo_fd)
+            except BaseException:
+                fifo_fd = None
+                raise
+            published_fd = fifo_fd
+            fifo_fd = None
+            self._log_generation_phase(gen, "writer-open", started_at)
             # Unblocks the writer task, which was waiting on this event; it can
             # now prefill the pipe while the generation primes.
             self._airplay_stream_ready.set()
             if not await stream.wait_generation_primed(gen):
-                self.logger.warning(
-                    "Generation prime timed out for %s, falling back to a cold restart",
-                    self.airplay_player.display_name,
-                )
-                with suppress(Exception):
-                    await self._set_sink_fd(None)
-                return False
+                raise RuntimeError(f"generation {gen} prime timed out")
+            self._log_generation_phase(gen, "primed", started_at)
             if asyncio.current_task() is not self._airplay_stream_start_task:
-                # A newer stream start already owns the bridge; abandon this
-                # generation. Do NOT close fifo_fd here: it was published as
-                # self._sink_fd above, so it is either still the writer's active
-                # sink (closing it would break the writer with EBADF) or already
-                # closed/replaced by the newer task's _set_sink_fd. The sink fd's
-                # lifecycle is owned by _set_sink_fd / teardown, not this task.
-                # The binary safely collapses a superseded staged generation on
-                # its next PREPARE.
+                # A newer stream start owns the bridge. The published sink remains
+                # managed by _set_sink_fd or teardown so this stale task cannot
+                # close a sink the newer task may already be using.
+                await self._discard_generation(stream, gen, started_at)
                 return False
+            commit_attempted = True
             await stream.start_generation(gen, 0, start_unix_ms)
             self._generation_started = True
+            self._log_generation_phase(gen, "commit", started_at)
             self.logger.info(
                 "Bridge warm handover for %s (generation=%d, start_unix_ms=%d)",
                 self.airplay_player.display_name,
                 gen,
                 start_unix_ms,
             )
+        except asyncio.CancelledError:
+            if published_fd is not None:
+                await self._release_sink_fd(published_fd)
+            if not commit_attempted:
+                await self._discard_generation(stream, gen, started_at)
+            raise
+        except Exception as err:
+            await self._handle_warm_generation_failure(
+                stream,
+                gen,
+                started_at,
+                err,
+                published_fd,
+                discard=not commit_attempted,
+            )
+            return False
+        finally:
+            if fifo_fd is not None:
+                _close_fd(fifo_fd)
+            await _cleanup_fifo(fifo)
+        return True
+
+    async def _handle_warm_generation_failure(
+        self,
+        stream: AirPlayStream,
+        generation: int,
+        started_at: float,
+        error: Exception,
+        published_fd: int | None,
+        *,
+        discard: bool,
+    ) -> None:
+        """Clean up a failed warm generation before its cold fallback."""
+        self.logger.warning(
+            "Warm handover failed for %s (%r), falling back to a cold restart",
+            self.airplay_player.display_name,
+            error,
+        )
+        if published_fd is not None:
+            await self._release_sink_fd(published_fd)
+        if discard:
+            await self._discard_generation(stream, generation, started_at)
+
+    async def _discard_generation(
+        self,
+        stream: AirPlayStream,
+        generation: int,
+        started_at: float | None = None,
+    ) -> None:
+        """Best-effort discard a bridge generation staged before START."""
+        try:
+            await stream.discard_generation(generation)
         except Exception as err:
             self.logger.warning(
-                "Warm handover failed for %s (%r), falling back to a cold restart",
+                "Could not discard staged AirPlay generation %d for %s: %s",
+                generation,
                 self.airplay_player.display_name,
                 err,
             )
-            with suppress(Exception):
-                await self._set_sink_fd(None)
-            return False
-        finally:
-            if not opened:
-                # Unblock a writer-open still pending on a failed pipe by briefly
-                # opening the read side, then remove the pipe node either way.
-                with suppress(OSError):
-                    os.close(os.open(fifo, os.O_RDONLY | os.O_NONBLOCK))
-                with suppress(OSError):
-                    await asyncio.to_thread(os.unlink, fifo)
-        return True
+            return
+        if started_at is not None:
+            self._log_generation_phase(generation, "discard", started_at)
+
+    def _log_generation_phase(self, generation: int, phase: str, started_at: float) -> None:
+        """Log a bridge generation phase with elapsed staging time."""
+        self.logger.debug(
+            "AirPlay bridge generation: player=%s generation=%d phase=%s elapsed=%.3fs",
+            self.airplay_player.player_id,
+            generation,
+            phase,
+            time.monotonic() - started_at,
+        )
 
     def _on_volume_change(self, volume: int) -> None:
         """Forward volume changes to the AirPlay player."""
@@ -786,6 +890,33 @@ class SendspinAirPlayBridge:
         self._write_queue.put_nowait(chunk.data)
         return True
 
+    async def _publish_sink_fd(self, fd: int) -> None:
+        """Transfer a fifo descriptor to the bridge sink."""
+        try:
+            await self._set_sink_fd(fd)
+        except BaseException:
+            if self._sink_fd == fd:
+                await self._release_sink_fd(fd)
+            else:
+                _close_fd(fd)
+            raise
+
+    async def _release_sink_fd(self, fd: int) -> None:
+        """Release a fifo descriptor currently owned by the bridge sink."""
+        if self._sink_fd != fd:
+            return
+        try:
+            await self._set_sink_fd(None)
+        except BaseException as err:
+            self.logger.warning(
+                "Could not release AirPlay bridge sink for %s: %s",
+                self.airplay_player.display_name,
+                err,
+            )
+            if self._sink_fd == fd:
+                self._sink_fd = None
+                _close_fd(fd)
+
     async def _set_sink_fd(self, fd: int | None) -> None:
         """
         Swap the writer's raw-fd sink, closing whatever fd it replaces.
@@ -796,8 +927,7 @@ class SendspinAirPlayBridge:
         old_fd = self._sink_fd
         self._sink_fd = fd
         if old_fd is not None:
-            with suppress(OSError):
-                await asyncio.to_thread(os.close, old_fd)
+            _close_fd(old_fd)
 
     async def _write_to_sink(self, fd: int, data: bytes) -> None:
         """
