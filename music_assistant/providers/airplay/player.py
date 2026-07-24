@@ -339,8 +339,8 @@ class AirPlayPlayer(Player):
                 and await self.stream.session.standby()
             ):
                 return
-            # some member cannot be parked (e.g. RAOP legacy): full stop and
-            # let the queue controller resume from the saved position
+            # Some member no longer has a live connection: full stop and let
+            # the queue controller resume from the saved position.
             self.logger.debug("Sync group cannot be parked, using STOP instead of PAUSE")
             await self.stop()
             return

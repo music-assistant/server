@@ -325,37 +325,59 @@ def test_warm_replace_supports_every_streaming_protocol(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("protocols", "standby_supported"),
+    "protocols",
     [
-        ((StreamingProtocol.AIRPLAY2,), True),
-        ((StreamingProtocol.RAOP,), False),
-        ((StreamingProtocol.RAOP, StreamingProtocol.AIRPLAY2), False),
+        (StreamingProtocol.AIRPLAY2,),
+        (StreamingProtocol.RAOP,),
+        (StreamingProtocol.RAOP, StreamingProtocol.AIRPLAY2),
     ],
 )
-async def test_standby_requires_every_member_to_support_airplay2(
+async def test_standby_supports_every_connected_streaming_protocol(
     protocols: tuple[StreamingProtocol, ...],
-    standby_supported: bool,
 ) -> None:
-    """Generation support does not imply legacy RAOP standby support."""
+    """Connected legacy RAOP, AirPlay 2 and mixed sessions can enter standby."""
     session = _make_session(0, 0)
     players: Any = []
     for index, protocol in enumerate(protocols):
         player = MagicMock()
         player.player_id = f"player-{index}"
         player.protocol = protocol
-        player.stream = MagicMock(running=True)
+        player.stream = MagicMock(running=True, connected=True)
         player.stream.send_cli_command = AsyncMock()
         players.append(player)
     session.sync_clients = players
 
-    assert await session.standby() is standby_supported
+    assert await session.standby()
     for player in players:
-        if standby_supported:
-            player.stream.send_cli_command.assert_awaited_once_with("ACTION=STANDBY")
-            player.set_state_from_stream.assert_called_once()
-        else:
-            player.stream.send_cli_command.assert_not_awaited()
-            player.set_state_from_stream.assert_not_called()
+        player.stream.send_cli_command.assert_awaited_once_with("ACTION=STANDBY")
+        player.set_state_from_stream.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream_state", ["missing", "stopped", "disconnected"])
+async def test_standby_requires_every_member_running_and_connected(stream_state: str) -> None:
+    """Standby is unavailable when any member lacks a reusable generation session."""
+    session = _make_session(0, 0)
+    ready_player = MagicMock(player_id="ready", protocol=StreamingProtocol.AIRPLAY2)
+    ready_player.stream = MagicMock(running=True, connected=True)
+    ready_player.stream.send_cli_command = AsyncMock()
+    unavailable_player = MagicMock(player_id="unavailable", protocol=StreamingProtocol.RAOP)
+    unavailable_player.stream = None
+    if stream_state != "missing":
+        unavailable_player.stream = MagicMock(
+            running=stream_state != "stopped",
+            connected=stream_state != "disconnected",
+        )
+        unavailable_player.stream.send_cli_command = AsyncMock()
+    players: Any = [ready_player, unavailable_player]
+    session.sync_clients = players
+
+    assert await session.standby() is False
+    ready_player.stream.send_cli_command.assert_not_awaited()
+    ready_player.set_state_from_stream.assert_not_called()
+    if unavailable_player.stream:
+        unavailable_player.stream.send_cli_command.assert_not_awaited()
+        unavailable_player.set_state_from_stream.assert_not_called()
 
 
 @pytest.mark.asyncio

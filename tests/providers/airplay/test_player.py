@@ -830,7 +830,7 @@ async def test_grouped_leader_pause_parks_session(airplay_player: AirPlayPlayer)
 
 @pytest.mark.asyncio
 async def test_grouped_pause_falls_back_to_stop(airplay_player: AirPlayPlayer) -> None:
-    """When a member cannot be parked (e.g. RAOP), grouped pause stops the session."""
+    """When a member cannot be parked, grouped pause stops the session."""
     airplay_player._attr_group_members = ["test_player", "child"]
     send_cmd = _setup_running_stream(airplay_player)
     assert airplay_player.stream is not None
