@@ -11,7 +11,7 @@ import pytest
 from music_assistant_models.errors import PlayerCommandFailed, SetupFailedError
 from pyamplipi.error import AmpliPiUnreachableError
 
-from music_assistant.providers.amplipi import get_config_entries, setup
+from music_assistant.providers.amplipi import get_config_entries, setup, setup_flow
 from music_assistant.providers.amplipi.constants import CONF_HOST, MA_STREAM_NAME, MA_STREAM_TYPE
 from music_assistant.providers.amplipi.provider import AmpliPiPlayerProvider
 
@@ -47,6 +47,10 @@ class TestHandleAsyncInit:
         prov.config = MagicMock()
         prov.config.get_value.return_value = "amplipi.local"
         prov.mass = MagicMock()
+        # setup_data is unset here, so get_setup_value falls through to config.get_value
+        prov.config.values = {}
+        prov.mass.config.get.return_value = None
+        prov.mass.config.get_raw_provider_config_value.return_value = None
         fake_api = MagicMock()
         fake_api.get_status = AsyncMock(return_value="STATUS")
         created: dict[str, object] = {}
@@ -69,6 +73,10 @@ class TestHandleAsyncInit:
         prov.config = MagicMock()
         prov.config.get_value.return_value = "http://1.2.3.4/api"
         prov.mass = MagicMock()
+        # setup_data is unset here, so get_setup_value falls through to config.get_value
+        prov.config.values = {}
+        prov.mass.config.get.return_value = None
+        prov.mass.config.get_raw_provider_config_value.return_value = None
         fake_api = MagicMock()
         fake_api.get_status = AsyncMock(return_value="STATUS")
         created: dict[str, object] = {}
@@ -87,6 +95,10 @@ class TestHandleAsyncInit:
         prov.config = MagicMock()
         prov.config.get_value.return_value = "https://amplipi.local/"
         prov.mass = MagicMock()
+        # setup_data is unset here, so get_setup_value falls through to config.get_value
+        prov.config.values = {}
+        prov.mass.config.get.return_value = None
+        prov.mass.config.get_raw_provider_config_value.return_value = None
         fake_api = MagicMock()
         fake_api.get_status = AsyncMock(return_value="STATUS")
         created: dict[str, object] = {}
@@ -105,6 +117,10 @@ class TestHandleAsyncInit:
         prov.config = MagicMock()
         prov.config.get_value.return_value = "http-livingroom.local"
         prov.mass = MagicMock()
+        # setup_data is unset here, so get_setup_value falls through to config.get_value
+        prov.config.values = {}
+        prov.mass.config.get.return_value = None
+        prov.mass.config.get_raw_provider_config_value.return_value = None
         fake_api = MagicMock()
         fake_api.get_status = AsyncMock(return_value="STATUS")
         created: dict[str, object] = {}
@@ -123,6 +139,10 @@ class TestHandleAsyncInit:
         prov.config = MagicMock()
         prov.config.get_value.return_value = "amplipi.local"
         prov.mass = MagicMock()
+        # setup_data is unset here, so get_setup_value falls through to config.get_value
+        prov.config.values = {}
+        prov.mass.config.get.return_value = None
+        prov.mass.config.get_raw_provider_config_value.return_value = None
         fake_api = MagicMock()
         fake_api.get_status = AsyncMock(side_effect=AmpliPiUnreachableError("no route"))
         monkeypatch.setattr(
@@ -397,8 +417,12 @@ class TestModuleEntryPoints:
         result = await setup(MagicMock(), MagicMock(), MagicMock())
         assert result == "PROVIDER"  # type: ignore[comparison-overlap]
 
-    async def test_get_config_entries_exposes_host(self) -> None:
-        """The provider must expose a required Host config entry."""
+    async def test_get_config_entries_has_no_setup_entries(self) -> None:
+        """The host moved to the setup flow, so the options entries no longer expose it."""
         entries = await get_config_entries(MagicMock())
-        host = next(e for e in entries if e.key == CONF_HOST)
+        assert all(e.key != CONF_HOST for e in entries)
+
+    async def test_setup_flow_exposes_host(self) -> None:
+        """The setup flow must collect a required Host entry."""
+        host = next(e for e in setup_flow._ENTRIES if e.key == CONF_HOST)
         assert host.required is True

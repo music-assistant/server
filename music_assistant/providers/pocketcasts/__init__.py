@@ -7,9 +7,7 @@ import logging
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -48,7 +46,7 @@ from .api_client import PocketCastsClient
 if TYPE_CHECKING:
     from datetime import datetime
 
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.models import ProviderInstanceType
@@ -175,18 +173,7 @@ async def get_config_entries(
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
-    return (
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-        ),
-    )
+    return ()
 
 
 class PocketCastsProvider(MusicProvider):
@@ -199,8 +186,8 @@ class PocketCastsProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        email = self.config.get_value(CONF_USERNAME)
-        password = self.config.get_value(CONF_PASSWORD)
+        email = self.get_setup_value(CONF_USERNAME)
+        password = self.get_setup_value(CONF_PASSWORD)
         if not email or not password:
             raise LoginFailed("Email and password are required for Pocket Casts")
         self._announced_episodes = set()

@@ -109,17 +109,17 @@ class OpenSonicProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Set up the music provider and test the connection."""
-        port = self.config.get_value(CONF_PORT)
+        port = self.get_setup_value(CONF_PORT)
         port = int(str(port)) if port is not None else 443
-        path = self.config.get_value(CONF_PATH)
+        path = self.get_setup_value(CONF_PATH)
 
         if path is None:
             path = ""
 
         self.conn = SonicConnection(
-            str(self.config.get_value(CONF_BASE_URL)),
-            username=str(self.config.get_value(CONF_USERNAME)),
-            password=str(self.config.get_value(CONF_PASSWORD)),
+            str(self.get_setup_value(CONF_BASE_URL)),
+            username=str(self.get_setup_value(CONF_USERNAME)),
+            password=str(self.get_setup_value(CONF_PASSWORD)),
             legacy_auth=bool(self.config.get_value(CONF_ENABLE_LEGACY_AUTH)),
             port=port,
             server_path=str(path),
@@ -132,13 +132,13 @@ class OpenSonicProvider(MusicProvider):
                 raise CredentialError
         except (AuthError, CredentialError) as e:
             msg = (
-                f"Failed to connect to {self.config.get_value(CONF_BASE_URL)}, check your settings."
+                f"Failed to connect to {self.get_setup_value(CONF_BASE_URL)}, check your settings."
             )
             raise LoginFailed(
                 msg,
                 translation_key="connect_failed",
                 translation_owner=self.translation_owner,
-                translation_args=[self.config.get_value(CONF_BASE_URL)],
+                translation_args=[self.get_setup_value(CONF_BASE_URL)],
             ) from e
 
         try:

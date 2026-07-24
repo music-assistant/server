@@ -7,10 +7,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
-from music_assistant.constants import CONF_PASSWORD, CONF_PATH, CONF_PORT, CONF_USERNAME
-
 from .sonic_provider import (
-    CONF_BASE_URL,
     CONF_ENABLE_LEGACY_AUTH,
     CONF_ENABLE_PODCASTS,
     CONF_NEW_ALBUMS,
@@ -66,31 +63,6 @@ async def get_config_entries(
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     return (
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_BASE_URL,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PORT,
-            type=ConfigEntryType.INTEGER,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_PATH,
-            type=ConfigEntryType.STRING,
-            required=False,
-        ),
         ConfigEntry(
             key=CONF_ENABLE_PODCASTS,
             type=ConfigEntryType.BOOLEAN,

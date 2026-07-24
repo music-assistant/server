@@ -14,9 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 import podcastparser
 from aiohttp.client_exceptions import ClientError
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     MediaType,
     ProviderFeature,
@@ -43,7 +41,7 @@ from music_assistant.helpers.podcast_parsers import (
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -63,9 +61,6 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    if not config.get_value(CONF_FEED_URL):
-        msg = "No podcast feed set"
-        raise InvalidProviderURI(msg)
     return PodcastMusicprovider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
@@ -83,13 +78,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_FEED_URL,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-    )
+    return ()
 
 
 class PodcastMusicprovider(MusicProvider):
@@ -97,7 +86,11 @@ class PodcastMusicprovider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self.feed_url = podcastparser.normalize_feed_url(str(self.config.get_value(CONF_FEED_URL)))
+        feed_url = self.get_setup_value(CONF_FEED_URL)
+        if not feed_url:
+            msg = "No podcast feed set"
+            raise InvalidProviderURI(msg)
+        self.feed_url = podcastparser.normalize_feed_url(str(feed_url))
         if self.feed_url is None:
             raise MediaNotFoundError("The specified feed url cannot be used.")
 

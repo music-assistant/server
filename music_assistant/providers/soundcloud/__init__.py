@@ -7,9 +7,7 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, quote, urlparse
 
 from aiohttp import ClientError
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -60,7 +58,7 @@ SEARCH_DURATION_COMPARISON_TOLERANCE = 1000
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
     from music_assistant_models.media_items import BrowseFolder, ItemMapping, MediaItemType
     from music_assistant_models.provider import ProviderManifest
 
@@ -72,9 +70,6 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    if not config.get_value(CONF_CLIENT_ID) or not config.get_value(CONF_AUTHORIZATION):
-        msg = "Invalid login credentials"
-        raise LoginFailed(msg)
     return SoundcloudMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
@@ -92,19 +87,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return (
-        CONF_ENTRY_UNOFFICIAL_PROVIDER,
-        ConfigEntry(
-            key=CONF_CLIENT_ID,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_AUTHORIZATION,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-        ),
-    )
+    return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
 
 
 class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
@@ -119,8 +102,11 @@ class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Set up the Soundcloud provider."""
-        client_id = self.config.get_value(CONF_CLIENT_ID)
-        auth_token = self.config.get_value(CONF_AUTHORIZATION)
+        client_id = self.get_setup_value(CONF_CLIENT_ID)
+        auth_token = self.get_setup_value(CONF_AUTHORIZATION)
+        if not client_id or not auth_token:
+            msg = "Invalid login credentials"
+            raise LoginFailed(msg)
         self._soundcloud = SoundcloudAsyncAPI(auth_token, client_id, self.mass.http_session)
         await self._soundcloud.login()
         self._me = await self._soundcloud.get_account_details()

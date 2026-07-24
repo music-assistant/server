@@ -9,14 +9,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, ProviderFeature
+from music_assistant_models.enums import ProviderFeature
 
-from .constants import CONF_HOST
 from .provider import AmpliPiPlayerProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -47,10 +45,4 @@ async def get_config_entries(
     :param action: [optional] action key called from config entries UI.
     :param values: the (intermediate) raw values for config entries sent with the action.
     """
-    return (
-        ConfigEntry(
-            key=CONF_HOST,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-    )
+    return ()

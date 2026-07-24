@@ -150,79 +150,31 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    if values is None:
-        values = {}
-
-    authenticated = True
-    if values.get(CONF_TOKEN_BEARER) is None or values.get(CONF_USERID) is None:
-        authenticated = False
-
+    # credentials and the token/user-id/expiry stash are collected/persisted by the
+    # setup flow; the options surface only shows who is signed in plus the tunables
+    display_name = ""
+    email = ""
+    if instance_id and (prov := mass.get_provider(instance_id, return_unavailable=True)):
+        display_name = str(prov.get_setup_value(CONF_DISPLAY_NAME) or "")
+        email = str(prov.get_setup_value(CONF_EMAIL) or "")
     return (
         ConfigEntry(
             key="label_text",
             type=ConfigEntryType.LABEL,
-            translation_params=[
-                str(values.get(CONF_DISPLAY_NAME)),
-                str(values.get(CONF_EMAIL, "")).replace("@", "(at)"),
-            ],
-            hidden=not authenticated,
-        ),
-        ConfigEntry(
-            key=CONF_EMAIL,
-            type=ConfigEntryType.STRING,
-            required=False,
-            hidden=authenticated,
-            value=values.get(CONF_EMAIL),
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-            hidden=authenticated,
-            value=values.get(CONF_PASSWORD),
+            translation_params=[display_name, email.replace("@", "(at)")],
+            hidden=not display_name,
         ),
         ConfigEntry(
             key=CONF_MAX_BITRATE,
             type=ConfigEntryType.INTEGER,
             required=False,
             default_value=0,
-            value=values.get(CONF_MAX_BITRATE),
         ),
         ConfigEntry(
             key=CONF_PODCAST_FINISHED,
             type=ConfigEntryType.INTEGER,
             required=False,
             default_value=95,
-            value=values.get(CONF_PODCAST_FINISHED),
-        ),
-        ConfigEntry(
-            key=CONF_TOKEN_BEARER,
-            type=ConfigEntryType.SECURE_STRING,
-            hidden=True,
-            required=False,
-            value=values.get(CONF_TOKEN_BEARER),
-        ),
-        ConfigEntry(
-            key=CONF_USERID,
-            type=ConfigEntryType.SECURE_STRING,
-            hidden=True,
-            required=False,
-            value=values.get(CONF_USERID),
-        ),
-        ConfigEntry(
-            key=CONF_EXPIRY_TIME,
-            type=ConfigEntryType.SECURE_STRING,
-            hidden=True,
-            required=False,
-            default_value=0,
-            value=values.get(CONF_EXPIRY_TIME),
-        ),
-        ConfigEntry(
-            key=CONF_DISPLAY_NAME,
-            type=ConfigEntryType.STRING,
-            hidden=True,
-            required=False,
-            value=values.get(CONF_DISPLAY_NAME),
         ),
     )
 
@@ -236,11 +188,13 @@ class ARDAudiothek(MusicProvider):
 
         This happens when the token is expired or user credentials are updated.
         """
-        _email = self.config.get_value(CONF_EMAIL)
-        _password = self.config.get_value(CONF_PASSWORD)
-        self.token = self.config.get_value(CONF_TOKEN_BEARER)
-        self.user_id = self.config.get_value(CONF_USERID)
-        self.token_expire = from_utc_timestamp(float(str(self.config.get_value(CONF_EXPIRY_TIME))))
+        _email = self.get_setup_value(CONF_EMAIL)
+        _password = self.get_setup_value(CONF_PASSWORD)
+        self.token = self.get_setup_value(CONF_TOKEN_BEARER)
+        self.user_id = self.get_setup_value(CONF_USERID)
+        self.token_expire = from_utc_timestamp(
+            float(str(self.get_setup_value(CONF_EXPIRY_TIME, 0)))
+        )
 
         self.max_bitrate = int(float(str(self.config.get_value(CONF_MAX_BITRATE))))
 
@@ -252,10 +206,10 @@ class ARDAudiothek(MusicProvider):
             self.token, self.user_id, _display_name = await _login(
                 self.mass.http_session, str(_email), str(_password)
             )
-            self._update_config_value(CONF_TOKEN_BEARER, self.token, encrypted=True)
-            self._update_config_value(CONF_USERID, self.user_id, encrypted=True)
-            self._update_config_value(CONF_DISPLAY_NAME, _display_name)
-            self._update_config_value(CONF_EXPIRY_TIME, str(future_timestamp(hours=1)))
+            self._update_setup_data(CONF_TOKEN_BEARER, self.token)
+            self._update_setup_data(CONF_USERID, self.user_id)
+            self._update_setup_data(CONF_DISPLAY_NAME, _display_name)
+            self._update_setup_data(CONF_EXPIRY_TIME, str(future_timestamp(hours=1)))
             self._client_initialized = False
 
         if not self._client_initialized:

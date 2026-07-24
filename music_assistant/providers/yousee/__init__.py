@@ -10,11 +10,7 @@ from music_assistant_models.enums import (
     ProviderFeature,
 )
 
-from music_assistant.constants import (
-    CONF_ENTRY_UNOFFICIAL_PROVIDER,
-    CONF_PASSWORD,
-    CONF_USERNAME,
-)
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.providers.yousee.constants import CONF_QUALITY
 from music_assistant.providers.yousee.provider import YouSeeMusikProvider
 
@@ -73,16 +69,6 @@ async def get_config_entries(
     # ruff: noqa: ARG001
     return (
         CONF_ENTRY_UNOFFICIAL_PROVIDER,
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-        ),
         ConfigEntry(
             key=CONF_QUALITY,
             type=ConfigEntryType.INTEGER,

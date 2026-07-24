@@ -20,6 +20,10 @@ from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, ENCRYPT_SUFF
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.models.setup_flow import AbortFlow, SetupSession, StepExpiredError
+from music_assistant.providers.filesystem_local.setup_flow import (
+    run_setup as filesystem_local_run_setup,
+)
+from music_assistant.providers.qobuz.setup_flow import run_setup as qobuz_run_setup
 from tests.common import MockPlayer, MockProvider
 
 if TYPE_CHECKING:
@@ -736,3 +740,65 @@ async def test_secure_values_never_echoed_on_step(flow_mass: MusicAssistant) -> 
         )
         assert received["password"] == "sssh"
         await flow_mass.config.abort_setup_flow(step.flow_id)
+
+
+# --- real provider setup flows driven through the engine (migrated plain-cred providers) ---
+
+
+async def test_real_provider_flow_qobuz(flow_mass: MusicAssistant) -> None:
+    """Qobuz's run_setup collects credentials and persists them as (encrypted) setup_data."""
+    with (
+        _use_flow(flow_mass, qobuz_run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()) as mock_load,
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        assert step.type == FlowStepType.FORM
+        # only the setup credentials are on the form; the quality option stays behind
+        assert {entry.key for entry in step.entries} == {"username", "password"}
+        finish_step = await flow_mass.config.submit_setup_flow(
+            step.flow_id, {"username": "marcel", "password": "hunter2"}
+        )
+    assert finish_step.type == FlowStepType.FINISH
+    mock_load.assert_awaited_once()
+    raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}")
+    assert flow_mass.config.decrypt_string(raw_conf["setup_data"]["username"]) == "marcel"
+    assert flow_mass.config.decrypt_string(raw_conf["setup_data"]["password"]) == "hunter2"
+
+
+async def test_real_provider_flow_filesystem_local(flow_mass: MusicAssistant) -> None:
+    """filesystem_local's run_setup collects the content type and path as setup_data."""
+    with (
+        _use_flow(flow_mass, filesystem_local_run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()) as mock_load,
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        assert step.type == FlowStepType.FORM
+        assert {"content_type", "path"} <= {entry.key for entry in step.entries}
+        finish_step = await flow_mass.config.submit_setup_flow(
+            step.flow_id, {"content_type": "podcasts", "path": "/media/podcasts"}
+        )
+    assert finish_step.type == FlowStepType.FINISH
+    mock_load.assert_awaited_once()
+    raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}")
+    assert flow_mass.config.decrypt_string(raw_conf["setup_data"]["content_type"]) == "podcasts"
+    assert flow_mass.config.decrypt_string(raw_conf["setup_data"]["path"]) == "/media/podcasts"
+
+
+async def test_real_provider_flow_retry_on_error(flow_mass: MusicAssistant) -> None:
+    """A failing load makes the author's loop re-render the form with the error, then succeed."""
+    load_mock = AsyncMock(side_effect=[LoginFailed("bad creds"), None])
+    with (
+        _use_flow(flow_mass, qobuz_run_setup),
+        patch.object(flow_mass, "load_provider_config", load_mock),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        retry_step = await flow_mass.config.submit_setup_flow(
+            step.flow_id, {"username": "marcel", "password": "wrong"}
+        )
+        assert retry_step.type == FlowStepType.FORM
+        assert retry_step.errors == {"base": "bad creds"}
+        finish_step = await flow_mass.config.submit_setup_flow(
+            step.flow_id, {"username": "marcel", "password": "right"}
+        )
+    assert finish_step.type == FlowStepType.FINISH
+    assert flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}") is not None

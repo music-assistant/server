@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
@@ -18,7 +17,7 @@ from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_PROPAGATE_GENRES,
 )
 
-from .constants import CONF_CONTENT_TYPE, CONF_URL, CONF_VERIFY_SSL
+from .constants import CONF_CONTENT_TYPE
 from .provider import WebDAVFileSystemProvider
 
 if TYPE_CHECKING:
@@ -48,43 +47,17 @@ async def setup(
 async def get_config_entries(
     mass: MusicAssistant,
     instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
+    action: str | None = None,  # noqa: ARG001
+    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
-    # ruff: noqa: ARG001
+    # connection details and content type are collected by the setup flow; surface the
+    # (immutable) content type read-only so the sync options' depends_on chains resolve
+    content_type = "music"
+    if instance_id and (prov := mass.get_provider(instance_id, return_unavailable=True)):
+        content_type = getattr(prov, "media_content_type", content_type)
     return (
-        ConfigEntry(
-            key=CONF_CONTENT_TYPE,
-            type=ConfigEntryType.STRING,
-            options=[
-                ConfigValueOption("music"),
-                ConfigValueOption("audiobooks"),
-                ConfigValueOption("podcasts"),
-            ],
-            default_value="music",
-            hidden=instance_id is not None,
-        ),
-        ConfigEntry(
-            key=CONF_URL,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_VERIFY_SSL,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-        ),
+        ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
         CONF_ENTRY_MISSING_ALBUM_ARTIST,
         CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
         CONF_ENTRY_LIBRARY_SYNC_TRACKS,

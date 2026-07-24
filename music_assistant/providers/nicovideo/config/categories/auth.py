@@ -41,19 +41,9 @@ class AuthConfigCategory(ConfigCategoryBase):
     )
 
     def save_user_session(self, value: str) -> None:
-        """Save user session to config."""
-        self.writer.set_raw_provider_config_value(
-            self.provider.instance_id,
-            "user_session",
-            value,
-            True,
-        )
+        """Save user session to the setup data."""
+        self.provider._update_setup_data("user_session", value)
 
     def clear_mfa_code(self) -> None:
         """Clear MFA code after successful use (one-time password should not be reused)."""
-        self.writer.set_raw_provider_config_value(
-            self.provider.instance_id,
-            "mfa",
-            None,
-            True,
-        )
+        self.provider._update_setup_data("mfa", None)

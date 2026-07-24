@@ -8,9 +8,7 @@ from time import time
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientTimeout
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -51,7 +49,7 @@ from music_assistant.helpers.util import infer_album_type, parse_title_and_versi
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -88,19 +86,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return (
-        CONF_ENTRY_UNOFFICIAL_PROVIDER,
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-        ),
-    )
+    return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
 
 
 class NugsProvider(MusicProvider):
@@ -496,12 +482,12 @@ class NugsProvider(MusicProvider):
         """Login to nugs.net and return the token."""
         if self._auth_token and (self._token_expiry > time()):
             return self._auth_token
-        if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_PASSWORD):
+        if not self.get_setup_value(CONF_USERNAME) or not self.get_setup_value(CONF_PASSWORD):
             msg = "Invalid login credentials"
             raise LoginFailed(msg)
         login_data = {
-            "username": self.config.get_value(CONF_USERNAME),
-            "password": self.config.get_value(CONF_PASSWORD),
+            "username": self.get_setup_value(CONF_USERNAME),
+            "password": self.get_setup_value(CONF_PASSWORD),
             "scope": "offline_access nugsnet:api nugsnet:legacyapi openid profile email",
             "grant_type": "password",
             "client_id": "Eg7HuH873H65r5rt325UytR5429",

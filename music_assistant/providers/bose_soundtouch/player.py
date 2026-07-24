@@ -85,7 +85,7 @@ class BoseSoundTouchPlayer(Player):
         }
         # Native announcements require a Bose developer app key; when configured the
         # speaker plays them as an overlay (ducking and resuming the current playback).
-        app_key = provider.config.get_value(CONF_APP_KEY)
+        app_key = provider.get_setup_value(CONF_APP_KEY)
         self._app_key = str(app_key) if app_key else None
         if self._app_key:
             self._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)

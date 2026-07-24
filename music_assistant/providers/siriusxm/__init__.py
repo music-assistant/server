@@ -5,9 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     ImageType,
     LinkType,
@@ -38,7 +36,7 @@ from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant import MusicAssistant
@@ -80,29 +78,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return (
-        CONF_ENTRY_UNOFFICIAL_PROVIDER,
-        ConfigEntry(
-            key=CONF_SXM_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_SXM_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_SXM_REGION,
-            type=ConfigEntryType.STRING,
-            default_value="US",
-            options=[
-                ConfigValueOption("US"),
-                ConfigValueOption("CA"),
-            ],
-            required=True,
-        ),
-    )
+    return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
 
 
 class SiriusXMProvider(MusicProvider):
@@ -122,13 +98,13 @@ class SiriusXMProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        username = self.config.get_value(CONF_SXM_USERNAME)
+        username = self.get_setup_value(CONF_SXM_USERNAME)
         assert isinstance(username, str)  # for type checker
-        password = self.config.get_value(CONF_SXM_PASSWORD)
+        password = self.get_setup_value(CONF_SXM_PASSWORD)
         assert isinstance(password, str)  # for type checker
 
         region: RegionChoice = (
-            RegionChoice.US if self.config.get_value(CONF_SXM_REGION) == "US" else RegionChoice.CA
+            RegionChoice.US if self.get_setup_value(CONF_SXM_REGION) == "US" else RegionChoice.CA
         )
 
         self._client = SXMClientAsync(

@@ -103,16 +103,6 @@ async def get_config_entries(
             type=ConfigEntryType.LABEL,
         ),
         ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-        ),
-        ConfigEntry(
             key=_Constants.CONF_SHOW_LOCAL,
             advanced=True,
             type=ConfigEntryType.BOOLEAN,
@@ -145,8 +135,8 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         """Handle async initialization of the provider."""
         # If we have an account, authenticate. Testing shows all features work without auth
         # but BBC will be disabling BBC Sounds from outside the UK at some point
-        username = self.config.get_value(CONF_USERNAME)
-        password = self.config.get_value(CONF_PASSWORD)
+        username = self.get_setup_value(CONF_USERNAME)
+        password = self.get_setup_value(CONF_PASSWORD)
         if username and password:
             self.client = SoundsClient(
                 session=self.mass.http_session,
