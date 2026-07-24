@@ -17,6 +17,7 @@ tests are deterministic and independent of the host wall-clock:
 
 import asyncio
 import errno
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -647,13 +648,13 @@ async def test_warm_generation_cancellation_before_sink_publication_closes_fd() 
     ):
         await bridge._start_warm_generation(kept_stream, 1_784_000_000_000)
 
-    close_fd.assert_any_call(55)
+    assert sum(call.args == (55,) for call in close_fd.call_args_list) == 1
     kept_stream.discard_generation.assert_awaited_once_with(1)
     assert bridge._sink_fd is None
 
 
-async def test_warm_generation_cancellation_after_sink_publication_keeps_owner_fd() -> None:
-    """Cancellation after publication leaves the active sink under bridge ownership."""
+async def test_warm_generation_cancellation_after_sink_publication_releases_fd() -> None:
+    """Cancellation during sink publication releases the owner-managed fd."""
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     kept_stream = MagicMock()
     kept_stream.next_generation = MagicMock(return_value=1)
@@ -662,9 +663,13 @@ async def test_warm_generation_cancellation_after_sink_publication_keeps_owner_f
     kept_stream.discard_generation = AsyncMock()
     bridge._airplay_stream_start_task = asyncio.current_task()
 
-    async def publish_then_cancel(fd: int) -> None:
+    async def publish_then_cancel(fd: int | None) -> None:
+        old_fd = bridge._sink_fd
         bridge._sink_fd = fd
-        raise asyncio.CancelledError
+        if fd == 77:
+            raise asyncio.CancelledError
+        if old_fd is not None:
+            os.close(old_fd)
 
     with (
         patch("music_assistant.providers.airplay.sendspin_bridge.os.unlink"),
@@ -686,7 +691,82 @@ async def test_warm_generation_cancellation_after_sink_publication_keeps_owner_f
     ):
         await bridge._start_warm_generation(kept_stream, 1_784_000_000_000)
 
-    assert bridge._sink_fd == 77
-    assert all(call.args[0] != 77 for call in close_fd.call_args_list)
+    assert bridge._sink_fd is None
+    assert sum(call.args == (77,) for call in close_fd.call_args_list) == 1
     kept_stream.discard_generation.assert_awaited_once_with(1)
-    bridge._sink_fd = None
+
+
+async def test_warm_generation_exception_before_sink_publication_closes_fd() -> None:
+    """A failed sink publication closes its locally owned writer fd once."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    kept_stream = MagicMock()
+    kept_stream.next_generation = MagicMock(return_value=1)
+    kept_stream.prepare_generation = AsyncMock()
+    kept_stream.wait_generation_ready = AsyncMock(return_value=True)
+    kept_stream.discard_generation = AsyncMock()
+    bridge._airplay_stream_start_task = asyncio.current_task()
+
+    with (
+        patch("music_assistant.providers.airplay.sendspin_bridge.os.unlink"),
+        patch("music_assistant.providers.airplay.sendspin_bridge.os.mkfifo"),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.open_named_pipe_writer",
+            new_callable=AsyncMock,
+            return_value=55,
+        ),
+        patch.object(
+            bridge,
+            "_set_sink_fd",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("swap failed"),
+        ),
+        patch("music_assistant.providers.airplay.sendspin_bridge.os.open", return_value=100),
+        patch("music_assistant.providers.airplay.sendspin_bridge.os.close") as close_fd,
+    ):
+        assert await bridge._start_warm_generation(kept_stream, 1_784_000_000_000) is False
+
+    assert sum(call.args == (55,) for call in close_fd.call_args_list) == 1
+    kept_stream.discard_generation.assert_awaited_once_with(1)
+    assert bridge._sink_fd is None
+
+
+async def test_warm_generation_exception_after_sink_publication_releases_fd() -> None:
+    """A failed published sink swap releases its owner-managed writer fd once."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    kept_stream = MagicMock()
+    kept_stream.next_generation = MagicMock(return_value=1)
+    kept_stream.prepare_generation = AsyncMock()
+    kept_stream.wait_generation_ready = AsyncMock(return_value=True)
+    kept_stream.discard_generation = AsyncMock()
+    bridge._airplay_stream_start_task = asyncio.current_task()
+
+    async def publish_then_fail(fd: int | None) -> None:
+        old_fd = bridge._sink_fd
+        bridge._sink_fd = fd
+        if fd == 77:
+            raise RuntimeError("swap failed")
+        if old_fd is not None:
+            os.close(old_fd)
+
+    with (
+        patch("music_assistant.providers.airplay.sendspin_bridge.os.unlink"),
+        patch("music_assistant.providers.airplay.sendspin_bridge.os.mkfifo"),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.open_named_pipe_writer",
+            new_callable=AsyncMock,
+            return_value=77,
+        ),
+        patch.object(
+            bridge,
+            "_set_sink_fd",
+            new_callable=AsyncMock,
+            side_effect=publish_then_fail,
+        ),
+        patch("music_assistant.providers.airplay.sendspin_bridge.os.open", return_value=100),
+        patch("music_assistant.providers.airplay.sendspin_bridge.os.close") as close_fd,
+    ):
+        assert await bridge._start_warm_generation(kept_stream, 1_784_000_000_000) is False
+
+    assert bridge._sink_fd is None
+    assert sum(call.args == (77,) for call in close_fd.call_args_list) == 1
+    kept_stream.discard_generation.assert_awaited_once_with(1)

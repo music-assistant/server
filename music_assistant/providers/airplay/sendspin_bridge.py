@@ -154,6 +154,21 @@ def _unlink_fifo(path: str) -> None:
         Path(path).unlink()
 
 
+async def _create_fifo(path: str) -> None:
+    """Create a fresh fifo path."""
+    with suppress(FileNotFoundError):
+        await asyncio.to_thread(os.unlink, path)
+    await asyncio.to_thread(os.mkfifo, path)
+
+
+async def _cleanup_fifo(path: str) -> None:
+    """Unblock any fifo reader and remove its path."""
+    with suppress(OSError):
+        _close_fd(os.open(path, os.O_WRONLY | os.O_NONBLOCK))
+    with suppress(OSError):
+        await asyncio.to_thread(os.unlink, path)
+
+
 class SendspinAirPlayBridge:
     """
     Manages the Sendspin to AirPlay bridge for a single player.
@@ -580,10 +595,9 @@ class SendspinAirPlayBridge:
         started_at = time.monotonic()
         commit_attempted = False
         fifo_fd: int | None = None
+        published_fd: int | None = None
         try:
-            with suppress(FileNotFoundError):
-                await asyncio.to_thread(os.unlink, fifo)
-            await asyncio.to_thread(os.mkfifo, fifo)
+            await _create_fifo(fifo)
             await stream.prepare_generation(gen, fifo, 0)
             self._log_generation_phase(gen, "prepare-delivered", started_at)
             if not await stream.wait_generation_ready(gen):
@@ -593,7 +607,13 @@ class SendspinAirPlayBridge:
             # Both ends now hold the fifo open; drop the directory entry right away
             # so no stale pipe nodes accumulate even if a later step fails.
             _unlink_fifo(fifo)
-            await self._publish_sink_fd(fifo_fd)
+            try:
+                await self._publish_sink_fd(fifo_fd)
+            except BaseException:
+                fifo_fd = None
+                raise
+            published_fd = fifo_fd
+            fifo_fd = None
             self._log_generation_phase(gen, "writer-open", started_at)
             # Unblocks the writer task, which was waiting on this event; it can
             # now prefill the pipe while the generation primes.
@@ -618,6 +638,8 @@ class SendspinAirPlayBridge:
                 start_unix_ms,
             )
         except asyncio.CancelledError:
+            if published_fd is not None:
+                await self._release_sink_fd(published_fd)
             if not commit_attempted:
                 await self._discard_generation(stream, gen, started_at)
             raise
@@ -627,15 +649,14 @@ class SendspinAirPlayBridge:
                 gen,
                 started_at,
                 err,
-                fifo_fd,
+                published_fd,
                 discard=not commit_attempted,
             )
             return False
         finally:
-            with suppress(OSError):
-                os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
-            with suppress(OSError):
-                await asyncio.to_thread(os.unlink, fifo)
+            if fifo_fd is not None:
+                _close_fd(fifo_fd)
+            await _cleanup_fifo(fifo)
         return True
 
     async def _handle_warm_generation_failure(
@@ -644,7 +665,7 @@ class SendspinAirPlayBridge:
         generation: int,
         started_at: float,
         error: Exception,
-        fifo_fd: int | None,
+        published_fd: int | None,
         *,
         discard: bool,
     ) -> None:
@@ -654,11 +675,10 @@ class SendspinAirPlayBridge:
             self.airplay_player.display_name,
             error,
         )
+        if published_fd is not None:
+            await self._release_sink_fd(published_fd)
         if discard:
             await self._discard_generation(stream, generation, started_at)
-        if fifo_fd is not None and self._sink_fd is fifo_fd:
-            with suppress(Exception):
-                await self._set_sink_fd(None)
 
     async def _discard_generation(
         self,
@@ -875,9 +895,27 @@ class SendspinAirPlayBridge:
         try:
             await self._set_sink_fd(fd)
         except BaseException:
-            if self._sink_fd is not fd:
+            if self._sink_fd is fd:
+                await self._release_sink_fd(fd)
+            else:
                 _close_fd(fd)
             raise
+
+    async def _release_sink_fd(self, fd: int) -> None:
+        """Release a fifo descriptor currently owned by the bridge sink."""
+        if self._sink_fd is not fd:
+            return
+        try:
+            await self._set_sink_fd(None)
+        except BaseException as err:
+            self.logger.warning(
+                "Could not release AirPlay bridge sink for %s: %s",
+                self.airplay_player.display_name,
+                err,
+            )
+            if self._sink_fd is fd:
+                self._sink_fd = None
+                _close_fd(fd)
 
     async def _set_sink_fd(self, fd: int | None) -> None:
         """
@@ -889,8 +927,7 @@ class SendspinAirPlayBridge:
         old_fd = self._sink_fd
         self._sink_fd = fd
         if old_fd is not None:
-            with suppress(OSError):
-                await asyncio.to_thread(os.close, old_fd)
+            _close_fd(old_fd)
 
     async def _write_to_sink(self, fd: int, data: bytes) -> None:
         """
