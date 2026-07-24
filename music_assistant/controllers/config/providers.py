@@ -406,8 +406,11 @@ class ProviderConfigMixin:
         :param default: Value to return when the key is not present anywhere.
         """
         setup_data = self.get(f"{CONF_PROVIDERS}/{instance_id}/setup_data") or {}
-        value = setup_data.get(key)
-        if value is None:
+        # presence check (not None check): an explicitly cleared value must not
+        # fall back to (and resurrect) a stale legacy config value
+        if key in setup_data:
+            value = cast("ConfigValueType", setup_data[key])
+        else:
             value = self.get_raw_provider_config_value(instance_id, key, default)
         if isinstance(value, str):
             return self.decrypt_string(value)

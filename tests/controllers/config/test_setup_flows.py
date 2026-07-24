@@ -796,7 +796,9 @@ async def test_real_provider_flow_retry_on_error(flow_mass: MusicAssistant) -> N
             step.flow_id, {"username": "marcel", "password": "wrong"}
         )
         assert retry_step.type == FlowStepType.FORM
-        assert retry_step.errors == {"base": "bad creds"}
+        # the error slug (LoginFailed.translation_key) is used so it localizes
+        # at serialization; the raw message is the fallback for keyless errors
+        assert retry_step.errors == {"base": "login_failed"}
         finish_step = await flow_mass.config.submit_setup_flow(
             step.flow_id, {"username": "marcel", "password": "right"}
         )

@@ -48,4 +48,4 @@ async def run_setup(session: SetupSession) -> None:
             await session.finish(setup_data)
             return
         except SetupFlowError as err:
-            errors = {"base": str(err)}
+            errors = {"base": err.translation_key or str(err)}
