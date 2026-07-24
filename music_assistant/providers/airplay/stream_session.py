@@ -213,8 +213,9 @@ class AirPlayStreamSession:
 
         The next play_media (resume or seek) commits a new generation over the
         live connections — the same coordinated warm restart as seek/next.
-        Returns False when any member lacks a running, connected stream so the
-        caller can fall back to a full stop.
+        Returns False when any member lacks a running, connected stream or its
+        standby command cannot be delivered so the caller can fall back to a
+        full stop.
         """
         if not all(
             p.stream is not None and p.stream.running and p.stream.connected

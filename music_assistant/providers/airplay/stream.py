@@ -243,7 +243,13 @@ class AirPlayStream:
         await self._cli_proc.write_eof()
 
     async def send_cli_command(self, command: str) -> bool:
-        """Send an interactive command to the running CLI binary."""
+        """
+        Send an interactive command to the running CLI binary.
+
+        :param command: Command to send.
+        :return: True when the complete command is delivered, False when the
+            command is ignored, the CLI is unavailable, or the write is dropped.
+        """
         if self._stopped or self._stopping:
             return False
         return await self._write_cli_command(command)

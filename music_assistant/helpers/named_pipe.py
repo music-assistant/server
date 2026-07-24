@@ -47,7 +47,14 @@ class AsyncNamedPipeWriter:
         await asyncio.to_thread(_create)
 
     async def write(self, data: bytes) -> bool:
-        """Write data to the named pipe."""
+        """
+        Write data to the named pipe.
+
+        :param data: Data to write.
+        :return: True for a complete write, False when no reader is available,
+            the reader closes, or the write is incomplete.
+        :raises OSError: If writing fails for another reason.
+        """
 
         def _write() -> bool:
             if not self._ensure_write_fd():
