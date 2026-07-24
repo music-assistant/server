@@ -194,7 +194,11 @@ class ConfigFactory:
         return _cast
 
 
+def get_setup_config_entries() -> tuple[ConfigEntry, ...]:
+    """Return the (credential) config entries collected by the setup flow."""
+    return tuple(_registry)
+
+
 async def get_config_entries_impl() -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
-    # Combine entries from logical categories
-    return (CONF_ENTRY_UNOFFICIAL_PROVIDER, *_registry)
+    return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)

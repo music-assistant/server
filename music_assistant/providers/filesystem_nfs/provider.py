@@ -10,6 +10,8 @@ from music_assistant_models.errors import SetupFailedError
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.process import check_output
+from music_assistant.helpers.security import is_safe_path
+from music_assistant.helpers.util import get_ip_from_host
 from music_assistant.providers.filesystem_local import (
     LocalFileSystemProvider,
     exists,
@@ -32,8 +34,8 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
     @property
     def instance_name_postfix(self) -> str | None:
         """Return a (default) instance name postfix for this provider instance."""
-        export_path = str(self.config.get_value(CONF_EXPORT_PATH))
-        subfolder = str(self.config.get_value(CONF_SUBFOLDER) or "")
+        export_path = str(self.get_setup_value(CONF_EXPORT_PATH))
+        subfolder = str(self.get_setup_value(CONF_SUBFOLDER) or "")
         if subfolder:
             return subfolder
         if export_path:
@@ -42,6 +44,19 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        # validate the connection details before attempting to mount
+        server = str(self.get_setup_value(CONF_HOST))
+        if not await get_ip_from_host(server):
+            msg = f"Unable to resolve {server}, make sure the address is resolvable."
+            raise SetupFailedError(
+                msg,
+                translation_key="host_unresolvable",
+                translation_args=[server],
+            )
+        export_path = str(self.get_setup_value(CONF_EXPORT_PATH))
+        if not export_path or not export_path.startswith("/") or not is_safe_path(export_path):
+            msg = "Invalid export path: must be an absolute path starting with /"
+            raise SetupFailedError(msg)
         if not await exists(self.base_path):
             await makedirs(self.base_path)
         try:
@@ -70,11 +85,11 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
 
     async def mount(self) -> None:
         """Mount the NFS export to a temporary folder."""
-        server = str(self.config.get_value(CONF_HOST))
-        export_path = str(self.config.get_value(CONF_EXPORT_PATH))
+        server = str(self.get_setup_value(CONF_HOST))
+        export_path = str(self.get_setup_value(CONF_EXPORT_PATH))
 
         # build full export path including optional subfolder
-        subfolder = str(self.config.get_value(CONF_SUBFOLDER) or "").strip()
+        subfolder = str(self.get_setup_value(CONF_SUBFOLDER) or "").strip()
         full_export = (
             str(PurePosixPath(export_path) / subfolder.lstrip("/")) if subfolder else export_path
         )
@@ -110,7 +125,7 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
         else:
             options = ["noatime", "nolock", "tcp", "soft", "timeo=30", "retrans=5"]
 
-        nfs_version = str(self.config.get_value(CONF_NFS_VERSION) or "")
+        nfs_version = str(self.get_setup_value(CONF_NFS_VERSION) or "")
         if nfs_version:
             options.append(f"vers={nfs_version}")
 

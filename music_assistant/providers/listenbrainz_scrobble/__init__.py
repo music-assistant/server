@@ -13,9 +13,8 @@ from typing import TYPE_CHECKING, ClassVar, Final
 import requests.exceptions
 from liblistenbrainz import Listen, ListenBrainz
 from liblistenbrainz.errors import ListenBrainzException
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
-from music_assistant_models.enums import ConfigEntryType, EventType, MediaType, ProviderFeature
+from music_assistant_models.enums import EventType, MediaType, ProviderFeature
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import UNKNOWN_ARTIST
@@ -25,6 +24,7 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
     from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
     from music_assistant_models.provider import ProviderManifest
 
@@ -41,34 +41,35 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    token = config.get_value(CONF_USER_TOKEN)
-    api_base_url = config.get_value(CONF_API_BASE_URL) or LISTENBRAINZ_API_URL
-
-    if not token:
-        raise SetupFailedError("User token needs to be set")
-
-    assert token != SECURE_STRING_SUBSTITUTE
-
-    client = ListenBrainz(api_base_url=api_base_url)
-    client.set_auth_token(token)
-
-    return ListenBrainzScrobbleProvider(mass, manifest, config, client)
+    return ListenBrainzScrobbleProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 class ListenBrainzScrobbleProvider(PluginProvider):
     """Plugin provider to support scrobbling of tracks."""
+
+    _client: ListenBrainz
 
     def __init__(
         self,
         mass: MusicAssistant,
         manifest: ProviderManifest,
         config: ProviderConfig,
-        client: ListenBrainz,
+        supported_features: set[ProviderFeature],
     ) -> None:
         """Initialize MusicProvider."""
-        super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
-        self._client = client
+        super().__init__(mass, manifest, config, supported_features)
         self._on_unload: list[Callable[[], None]] = []
+
+    async def handle_async_init(self) -> None:
+        """Create the ListenBrainz client from the configured user token."""
+        token = self.get_setup_value(CONF_USER_TOKEN)
+        api_base_url = self.get_setup_value(CONF_API_BASE_URL) or LISTENBRAINZ_API_URL
+        if not token:
+            raise SetupFailedError("User token needs to be set")
+        assert token != SECURE_STRING_SUBSTITUTE
+        client = ListenBrainz(api_base_url=str(api_base_url))
+        client.set_auth_token(str(token))
+        self._client = client
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -169,19 +170,4 @@ async def get_config_entries(
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
-    return (
-        *await ScrobblerConfig.get_shared_config_entries(mass, values),
-        ConfigEntry(
-            key=CONF_USER_TOKEN,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-            value=values.get(CONF_USER_TOKEN) if values else None,
-        ),
-        ConfigEntry(
-            key=CONF_API_BASE_URL,
-            type=ConfigEntryType.STRING,
-            required=False,
-            value=values.get(CONF_API_BASE_URL) if values else None,
-            advanced=True,
-        ),
-    )
+    return tuple(await ScrobblerConfig.get_shared_config_entries(mass, values))

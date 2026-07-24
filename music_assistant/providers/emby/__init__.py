@@ -10,13 +10,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin
 
 from aiohttp import ClientResponseError
-from music_assistant_models.config_entries import (
-    ConfigEntry,
-    ConfigValueType,
-    ProviderConfig,
-)
 from music_assistant_models.enums import (
-    ConfigEntryType,
     MediaType,
     ProviderFeature,
     StreamType,
@@ -62,6 +56,11 @@ from music_assistant.providers.emby.parsers import (
 )
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+        ProviderConfig,
+    )
     from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import (
@@ -99,23 +98,7 @@ async def get_config_entries(
 ) -> tuple[ConfigEntry, ...]:
     """Get configuration entries for provider setup."""
     # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_IP_ADDRESS,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-        ),
-    )
+    return ()
 
 
 class EmbyProvider(MusicProvider):
@@ -123,9 +106,9 @@ class EmbyProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Initialize provider(instance) with given configuration."""
-        username = str(self.config.get_value(CONF_USERNAME))
-        password = str(self.config.get_value(CONF_PASSWORD) or "")
-        self._base_url = str(self.config.get_value(CONF_IP_ADDRESS)).rstrip("/") + "/"
+        username = str(self.get_setup_value(CONF_USERNAME))
+        password = str(self.get_setup_value(CONF_PASSWORD) or "")
+        self._base_url = str(self.get_setup_value(CONF_IP_ADDRESS)).rstrip("/") + "/"
         self._session = self.mass.http_session
 
         # stable device id
