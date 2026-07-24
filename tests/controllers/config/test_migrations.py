@@ -3,6 +3,7 @@
 from typing import Any
 
 from music_assistant.controllers.config.migrations import (
+    _migrate_airplay_apple_power_control,
     _migrate_airplay_receiver_ghost_players,
     _migrate_output_limiter,
 )
@@ -211,3 +212,33 @@ def test_migrate_airplay_receiver_ghosts_noop_without_receivers() -> None:
 
     assert _migrate_airplay_receiver_ghost_players(data) is False
     assert "apdb1ff0aae80e" in data["players"]
+
+
+def test_migrate_airplay_apple_power_control_flips_stale_default() -> None:
+    """Paired Apple TVs stuck on the old 'none' default get native power control."""
+    data: dict[str, Any] = {
+        "players": {
+            "ap_paired_stale": {
+                "provider": "airplay--x",
+                "values": {"companion_credentials": "enc", "power_control": "none"},
+            },
+            "ap_unpaired": {"provider": "airplay--x", "values": {"power_control": "none"}},
+            "ap_already_native": {
+                "provider": "airplay--x",
+                "values": {"companion_credentials": "enc", "power_control": "native"},
+            },
+            "cast_x": {
+                "provider": "chromecast",
+                "values": {"companion_credentials": "enc", "power_control": "none"},
+            },
+        }
+    }
+    assert _migrate_airplay_apple_power_control(data) is True
+    values = data["players"]
+    # only the paired Apple device on the stale default is changed
+    assert values["ap_paired_stale"]["values"]["power_control"] == "native"
+    assert values["ap_unpaired"]["values"]["power_control"] == "none"
+    assert values["ap_already_native"]["values"]["power_control"] == "native"
+    assert values["cast_x"]["values"]["power_control"] == "none"
+    # idempotent: nothing left to migrate on a second pass
+    assert _migrate_airplay_apple_power_control(data) is False
