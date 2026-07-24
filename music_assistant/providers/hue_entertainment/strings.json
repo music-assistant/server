@@ -32,5 +32,8 @@
   },
   "manifest": {
     "description": "Sync Philips Hue lights to music using Entertainment Mode."
+  },
+  "errors": {
+    "button_not_pressed": "The link button was not pressed in time. Press the round button on top of your Hue Bridge, then try again."
   }
 }

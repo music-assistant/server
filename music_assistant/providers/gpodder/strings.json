@@ -60,5 +60,9 @@
   },
   "manifest": {
     "description": "Subscribe to and fetch podcasts from gPodder."
+  },
+  "errors": {
+    "not_a_nextcloud_instance": "This does not look like a Nextcloud server. Check the URL and try again.",
+    "nextcloud_login_timeout": "The Nextcloud login was not completed in time. Try again."
   }
 }
