@@ -81,6 +81,14 @@ if TYPE_CHECKING:
 _CONTROL_RECONNECT_DELAY: Final[float] = 30.0
 _WAKE_TIMEOUT: Final[float] = 10.0
 
+# mDNS TXT keys whose values change with transient playback, session or group
+# state - most notably `flags`, which a receiver toggles while it is receiving a
+# stream. They never affect how the control connection is established, so a
+# change must not force a reconnect: doing so made Apple TVs tear down and
+# re-establish the control channel on every stream start and stop, each time
+# surfacing the on-screen pairing code. Compared case-insensitively (RFC 6763).
+_VOLATILE_DISCOVERY_KEYS: Final = frozenset({"flags", "gcgl", "gid", "igl", "gpn", "pgcgl"})
+
 _CONNECTION_ERRORS = (
     pyatv_exceptions.AuthenticationError,
     pyatv_exceptions.BackOffError,
@@ -1206,11 +1214,20 @@ class AirPlayControlPlayer(AirPlayPlayer):
         """Return fields that require a pyatv reconnection when changed."""
         if info is None:
             return None
+        # TXT keys are case-insensitive (RFC 6763); casefold them so a re-cased
+        # key is never mistaken for a connection-relevant change.
+        stable_properties = tuple(
+            sorted(
+                (key.casefold(), value)
+                for key, value in info.decoded_properties.items()
+                if key.casefold() not in _VOLATILE_DISCOVERY_KEYS
+            )
+        )
         return (
             info.name,
             info.port,
             tuple(info.addresses),
-            tuple(sorted(info.decoded_properties.items())),
+            stable_properties,
         )
 
 
