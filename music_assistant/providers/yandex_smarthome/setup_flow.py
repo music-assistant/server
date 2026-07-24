@@ -292,25 +292,6 @@ async def _provision_skill(
     Flow), then provisions the Yandex Dialogs skill. Raises SetupFlowError when the
     account source is unusable or the pipeline does not reach the DONE state.
     """
-    if ym_instance != BORROW_SOURCE_OWN:
-        # borrow the linked yandex_music instance's x_token read-only — never persisted
-        # or rotated by this provider (the owner is the single writer)
-        x_token = _borrowed_x_token(session.mass, ym_instance)
-    else:
-        cached = collected.get(CONF_AUTH_X_TOKEN)
-        if cached:
-            x_token = str(cached)
-        else:
-            x_token = await _device_login(session)
-            collected[CONF_AUTH_X_TOKEN] = x_token
-
-    authenticator = make_authenticator(
-        mass=session.mass,
-        session_id=session.flow_id,
-        cached_x_token=x_token,
-        on_token_obtained=None,
-        allow_device_flow=False,
-    )
     base_url = resolve_base_url(
         session.mass, str(collected.get(CONF_EXTERNAL_BASE_URL) or "") or None
     )
@@ -330,29 +311,55 @@ async def _provision_skill(
         # (an aborted flow persists nothing - no config exists yet during setup)
         collected[CONF_AUTO_CREATE_ARTIFACTS] = dump_artifacts(updated)
 
-    artifacts_raw = collected.get(CONF_AUTO_CREATE_ARTIFACTS)
-    artifacts = await session.progress_until(
-        auto_create_skill(
-            authenticator=authenticator,
-            skill_name=skill_name,
-            artifacts=load_artifacts(str(artifacts_raw) if artifacts_raw else None),
-            backend_uri=urls.backend_uri,
-            oauth_authorize_url=urls.oauth_authorize_url,
-            oauth_token_url=urls.oauth_token_url,
-            oauth_client_id=urls.oauth_client_id,
-            oauth_client_secret=urls.oauth_client_secret,
-            logo_bytes=load_default_logo_bytes(),
-            channel=SMART_HOME_CHANNEL,
-            progress_cb=_track,
-        ),
-        step_id="creating_skill",
-        text="creating_skill",
-        expires_in=_SKILL_CREATE_TIMEOUT,
-    )
-    collected[CONF_AUTO_CREATE_ARTIFACTS] = dump_artifacts(artifacts)
-    if artifacts.state != SkillCreationState.DONE or not artifacts.skill_id:
-        raise SetupFlowError(artifacts.last_error or "skill creation failed")
-    return artifacts.skill_id
+    async def _attempt(x_token: str) -> str:
+        authenticator = make_authenticator(
+            mass=session.mass,
+            session_id=session.flow_id,
+            cached_x_token=x_token,
+            on_token_obtained=None,
+            allow_device_flow=False,
+        )
+        artifacts_raw = collected.get(CONF_AUTO_CREATE_ARTIFACTS)
+        artifacts = await session.progress_until(
+            auto_create_skill(
+                authenticator=authenticator,
+                skill_name=skill_name,
+                artifacts=load_artifacts(str(artifacts_raw) if artifacts_raw else None),
+                backend_uri=urls.backend_uri,
+                oauth_authorize_url=urls.oauth_authorize_url,
+                oauth_token_url=urls.oauth_token_url,
+                oauth_client_id=urls.oauth_client_id,
+                oauth_client_secret=urls.oauth_client_secret,
+                logo_bytes=load_default_logo_bytes(),
+                channel=SMART_HOME_CHANNEL,
+                progress_cb=_track,
+            ),
+            step_id="creating_skill",
+            text="creating_skill",
+            expires_in=_SKILL_CREATE_TIMEOUT,
+        )
+        collected[CONF_AUTO_CREATE_ARTIFACTS] = dump_artifacts(artifacts)
+        if artifacts.state != SkillCreationState.DONE or not artifacts.skill_id:
+            raise SetupFlowError(artifacts.last_error or "skill creation failed")
+        return artifacts.skill_id
+
+    if ym_instance != BORROW_SOURCE_OWN:
+        # borrow the linked yandex_music instance's x_token read-only — never persisted
+        # or rotated by this provider (the owner is the single writer)
+        return await _attempt(_borrowed_x_token(session.mass, ym_instance))
+    if cached := collected.get(CONF_AUTH_X_TOKEN):
+        # imported lazily so the module can be imported in minimal test envs
+        from ya_passport_auth import InvalidCredentialsError  # noqa: PLC0415
+
+        try:
+            return await _attempt(str(cached))
+        except SetupFlowError, InvalidCredentialsError:
+            # the cached token may be revoked/expired: never a dead end, fall back
+            # to a fresh device login and try once more
+            collected.pop(CONF_AUTH_X_TOKEN, None)
+    x_token = await _device_login(session)
+    collected[CONF_AUTH_X_TOKEN] = x_token
+    return await _attempt(x_token)
 
 
 async def _device_login(session: SetupSession) -> str:
