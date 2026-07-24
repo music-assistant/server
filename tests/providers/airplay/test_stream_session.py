@@ -1,6 +1,7 @@
 """Unit tests for AirPlay stream session late-join logic."""
 
 import asyncio
+import errno
 import time
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -70,6 +71,7 @@ def _setup_stream(player: MagicMock) -> Any:
         player.stream.running = True
         player.stream.wait_for_connection = AsyncMock()
         player.stream.prepare_generation = AsyncMock()
+        player.stream.wait_generation_ready = AsyncMock(return_value=True)
         player.stream.wait_generation_primed = AsyncMock(return_value=True)
         player.stream.start_generation = AsyncMock()
 
@@ -161,6 +163,10 @@ async def test_initial_group_waits_for_every_member_before_shared_start(
             assert (generation, audio_path, position_ms) == (0, "-", 12_000)
             operations.append(f"prepared:{player.player_id}")
 
+        async def wait_generation_ready(_generation: int) -> bool:
+            operations.append(f"ready:{player.player_id}")
+            return True
+
         async def wait_generation_primed(_generation: int) -> bool:
             operations.append(f"primed:{player.player_id}")
             return True
@@ -170,6 +176,7 @@ async def test_initial_group_waits_for_every_member_before_shared_start(
 
         stream.wait_for_connection = AsyncMock(side_effect=wait_for_connection)
         stream.prepare_generation = AsyncMock(side_effect=prepare_generation)
+        stream.wait_generation_ready = AsyncMock(side_effect=wait_generation_ready)
         stream.wait_generation_primed = AsyncMock(side_effect=wait_generation_primed)
         stream.start_generation = AsyncMock(side_effect=start_generation)
         player.stream = stream
@@ -184,9 +191,12 @@ async def test_initial_group_waits_for_every_member_before_shared_start(
 
     first_prepare = min(i for i, op in enumerate(operations) if op.startswith("prepared:"))
     last_connected = max(i for i, op in enumerate(operations) if op.startswith("connected:"))
+    first_primed = min(i for i, op in enumerate(operations) if op.startswith("primed:"))
+    last_ready = max(i for i, op in enumerate(operations) if op.startswith("ready:"))
     first_start = min(i for i, op in enumerate(operations) if op.startswith("started:"))
     last_primed = max(i for i, op in enumerate(operations) if op.startswith("primed:"))
     assert last_connected < first_prepare
+    assert last_ready < first_primed
     assert last_primed < first_start
     starts = {int(op.rsplit(":", 1)[1]) for op in operations if op.startswith("started:")}
     assert starts == {100_750}
@@ -210,6 +220,7 @@ async def test_initial_single_player_uses_commanded_generation_zero(
     stream = MagicMock(running=True)
     stream.wait_for_connection = AsyncMock()
     stream.prepare_generation = AsyncMock()
+    stream.wait_generation_ready = AsyncMock(return_value=True)
     stream.wait_generation_primed = AsyncMock(return_value=True)
     stream.start_generation = AsyncMock()
 
@@ -244,6 +255,7 @@ async def test_initial_prime_timeout_never_starts_partial_group() -> None:
         stream = MagicMock(running=True)
         stream.wait_for_connection = AsyncMock()
         stream.prepare_generation = AsyncMock()
+        stream.wait_generation_ready = AsyncMock(return_value=True)
         stream.wait_generation_primed = AsyncMock(return_value=player is not second_player)
         stream.start_generation = AsyncMock()
         player.stream = stream
@@ -356,16 +368,18 @@ async def test_standby_supports_every_connected_streaming_protocol(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "protocols",
+    ("protocols", "start_lead_ms"),
     [
-        (StreamingProtocol.RAOP, StreamingProtocol.RAOP),
-        (StreamingProtocol.RAOP, StreamingProtocol.AIRPLAY2),
+        ((StreamingProtocol.RAOP,), 400),
+        ((StreamingProtocol.AIRPLAY2,), 400),
+        ((StreamingProtocol.RAOP, StreamingProtocol.AIRPLAY2), 750),
     ],
 )
 async def test_standby_resumes_next_generation_on_existing_streams(
-    protocols: tuple[StreamingProtocol, StreamingProtocol],
+    protocols: tuple[StreamingProtocol, ...],
+    start_lead_ms: int,
 ) -> None:
-    """All-RAOP and mixed sessions resume warm on their parked streams."""
+    """RAOP, AirPlay 2 and mixed sessions resume warm on their parked streams."""
     session = _make_session(0, 0)
     players: Any = []
     original_streams: dict[str, MagicMock] = {}
@@ -378,6 +392,7 @@ async def test_standby_resumes_next_generation_on_existing_streams(
         player.stream.send_cli_command = AsyncMock(return_value=True)
         player.stream.next_generation = MagicMock(return_value=1)
         player.stream.prepare_generation = AsyncMock()
+        player.stream.wait_generation_ready = AsyncMock(return_value=True)
         player.stream.wait_generation_primed = AsyncMock(return_value=True)
         player.stream.start_generation = AsyncMock()
         players.append(player)
@@ -393,7 +408,12 @@ async def test_standby_resumes_next_generation_on_existing_streams(
         patch("music_assistant.providers.airplay.stream_session.time.time", return_value=100.0),
         patch("music_assistant.providers.airplay.stream_session.os.unlink"),
         patch("music_assistant.providers.airplay.stream_session.os.mkfifo"),
-        patch("music_assistant.providers.airplay.stream_session.os.open", return_value=99),
+        patch(
+            "music_assistant.providers.airplay.stream_session.open_named_pipe_writer",
+            new_callable=AsyncMock,
+            return_value=99,
+        ),
+        patch("music_assistant.providers.airplay.stream_session.os.open", return_value=100),
         patch("music_assistant.providers.airplay.stream_session.os.close"),
     ):
         assert await session.replace(MagicMock(), media)
@@ -406,8 +426,164 @@ async def test_standby_resumes_next_generation_on_existing_streams(
             f"/tmp/ma-gen-{player.player_id}-1.pcm",  # noqa: S108
             10_000,
         )
+        stream.wait_generation_ready.assert_awaited_once_with(1)
         stream.wait_generation_primed.assert_awaited_once_with(1)
-        stream.start_generation.assert_awaited_once_with(1, 10_000, 100_750)
+        stream.start_generation.assert_awaited_once_with(1, 10_000, 100_000 + start_lead_ms)
+
+
+@pytest.mark.asyncio
+async def test_warm_replace_waits_for_every_reader_before_old_teardown() -> None:
+    """Old audio remains active until every staged member reports its reader ready."""
+    session = _make_session(0, 0)
+    operations: list[str] = []
+    players: list[Any] = []
+    release_delayed = asyncio.Event()
+    delayed_waiting = asyncio.Event()
+
+    for player_id in ("first", "delayed"):
+        player = MagicMock(player_id=player_id, protocol=StreamingProtocol.AIRPLAY2)
+        stream = MagicMock(running=True, connected=True)
+        stream.next_generation = MagicMock(return_value=1)
+        stream.prepare_generation = AsyncMock()
+
+        async def wait_ready(_generation: int, *, current_id: str = player_id) -> bool:
+            operations.append(f"ready-wait:{current_id}")
+            if current_id == "delayed":
+                delayed_waiting.set()
+                await release_delayed.wait()
+            operations.append(f"ready:{current_id}")
+            return True
+
+        stream.wait_generation_ready = AsyncMock(side_effect=wait_ready)
+        stream.wait_generation_primed = AsyncMock(return_value=True)
+        stream.start_generation = AsyncMock()
+        player.stream = stream
+        player.config.get_value = MagicMock(return_value=0)
+        players.append(player)
+    session.sync_clients = players
+
+    async def old_audio() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            operations.append("old-audio-cancelled")
+            raise
+
+    session._audio_source_task = asyncio.create_task(old_audio())
+
+    async def open_writer(_fifo: str) -> int:
+        operations.append("writer-open")
+        return 99
+
+    async def start_ffmpeg(_player: Any, _fifo_fd: int, _media: Any) -> None:
+        operations.append("ffmpeg-switched")
+
+    with (
+        patch.object(session, "_start_generation_ffmpeg", side_effect=start_ffmpeg),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch(
+            "music_assistant.providers.airplay.stream_session.open_named_pipe_writer",
+            side_effect=open_writer,
+        ),
+        patch("music_assistant.providers.airplay.stream_session.os.unlink"),
+        patch("music_assistant.providers.airplay.stream_session.os.mkfifo"),
+        patch("music_assistant.providers.airplay.stream_session.os.open", return_value=100),
+        patch("music_assistant.providers.airplay.stream_session.os.close"),
+    ):
+        replace_task = asyncio.create_task(session.replace(MagicMock(), MagicMock(elapsed_time=0)))
+        await delayed_waiting.wait()
+        assert "old-audio-cancelled" not in operations
+        assert "ffmpeg-switched" not in operations
+        release_delayed.set()
+        assert await replace_task
+
+    last_ready = max(i for i, operation in enumerate(operations) if operation.startswith("ready:"))
+    assert last_ready < operations.index("old-audio-cancelled")
+    assert last_ready < operations.index("ffmpeg-switched")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_phase", ["prepare", "ready"])
+async def test_warm_replace_pre_ready_failure_preserves_old_resources(
+    failure_phase: str,
+) -> None:
+    """Dropped PREPARE and reader timeout leave the active source and ffmpeg untouched."""
+    session = _make_session(0, 0)
+    players: list[Any] = []
+    old_ffmpegs: list[MagicMock] = []
+    old_audio_cancelled = asyncio.Event()
+
+    for player_id in ("working", "failed"):
+        player = MagicMock(player_id=player_id, protocol=StreamingProtocol.RAOP)
+        stream = MagicMock(running=True, connected=True)
+        stream.next_generation = MagicMock(return_value=1)
+        if failure_phase == "prepare" and player_id == "failed":
+            stream.prepare_generation = AsyncMock(
+                side_effect=PlayerCommandFailed("PREPARE was not delivered")
+            )
+        else:
+            stream.prepare_generation = AsyncMock()
+        stream.wait_generation_ready = AsyncMock(
+            return_value=not (failure_phase == "ready" and player_id == "failed")
+        )
+        stream.wait_generation_primed = AsyncMock(return_value=True)
+        stream.start_generation = AsyncMock()
+        player.stream = stream
+        players.append(player)
+        ffmpeg = MagicMock(closed=False)
+        ffmpeg.kill = AsyncMock()
+        session._player_ffmpeg[player_id] = ffmpeg
+        old_ffmpegs.append(ffmpeg)
+    session.sync_clients = players
+
+    async def old_audio() -> None:
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            old_audio_cancelled.set()
+            raise
+
+    session._audio_source_task = asyncio.create_task(old_audio())
+    with (
+        patch(
+            "music_assistant.providers.airplay.stream_session.open_named_pipe_writer",
+            new_callable=AsyncMock,
+        ) as open_writer,
+        patch("music_assistant.providers.airplay.stream_session.os.unlink"),
+        patch("music_assistant.providers.airplay.stream_session.os.mkfifo"),
+        patch(
+            "music_assistant.providers.airplay.stream_session.os.open",
+            side_effect=OSError(errno.ENXIO, "no reader"),
+        ),
+    ):
+        assert await session.replace(MagicMock(), MagicMock(elapsed_time=0)) is False
+
+    assert not old_audio_cancelled.is_set()
+    assert not session._audio_source_task.done()
+    open_writer.assert_not_awaited()
+    for ffmpeg in old_ffmpegs:
+        ffmpeg.kill.assert_not_awaited()
+    session._audio_source_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await session._audio_source_task
+
+
+@pytest.mark.asyncio
+async def test_generation_writer_fd_closes_when_old_ffmpeg_kill_fails() -> None:
+    """The prepared writer fd closes if switching away from the old ffmpeg fails."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    old_ffmpeg = MagicMock()
+    old_ffmpeg.kill = AsyncMock(side_effect=OSError("kill failed"))
+    session._player_ffmpeg[player.player_id] = old_ffmpeg
+
+    with (
+        patch("music_assistant.providers.airplay.stream_session.os.close") as close_fd,
+        pytest.raises(OSError, match="kill failed"),
+    ):
+        await session._start_generation_ffmpeg(player, 42, MagicMock())
+
+    close_fd.assert_called_once_with(42)
 
 
 @pytest.mark.asyncio

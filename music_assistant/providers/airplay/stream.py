@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 from music_assistant_models.enums import PlaybackState
+from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.images import get_image_thumb_path
@@ -268,10 +269,26 @@ class AirPlayStream:
             raise RuntimeError("Cannot prepare a generation without a connected cliairplay process")
         self._gen_ready.setdefault(generation, asyncio.Event())
         self._gen_primed.setdefault(generation, asyncio.Event())
-        await self._write_cli_command(
+        command_delivered = await self._write_cli_command(
             f"GENERATION={generation}\nAUDIO={audio_path}\n"
             f"POSITION_MS={position_ms}\nACTION=PREPARE"
         )
+        if not command_delivered:
+            raise PlayerCommandFailed(
+                f"Could not deliver PREPARE for generation {generation} "
+                f"to AirPlay player {self.player.player_id}"
+            )
+
+    async def wait_generation_ready(self, generation: int, timeout: float = 5.0) -> bool:
+        """Wait until the staged generation has opened its audio source."""
+        event = self._gen_ready.get(generation)
+        if event is None:
+            return False
+        try:
+            await asyncio.wait_for(event.wait(), timeout)
+        except TimeoutError:
+            return False
+        return True
 
     async def wait_generation_primed(self, generation: int, timeout: float = 8.0) -> bool:
         """Wait until the staged generation has buffered enough to start."""

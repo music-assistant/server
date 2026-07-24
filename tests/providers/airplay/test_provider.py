@@ -586,6 +586,7 @@ async def test_raop_session_resolves_ptp_for_first_ap2_late_joiner() -> None:
         player.stream = MagicMock(running=True)
         player.stream.wait_for_connection = AsyncMock()
         player.stream.prepare_generation = AsyncMock()
+        player.stream.wait_generation_ready = AsyncMock(return_value=True)
         player.stream.wait_generation_primed = AsyncMock(return_value=True)
         player.stream.start_generation = AsyncMock()
 
@@ -611,6 +612,7 @@ async def test_session_start_applies_uniform_ptp_decision_to_all_members() -> No
         player.stream = MagicMock()
         player.stream.wait_for_connection = AsyncMock()
         player.stream.prepare_generation = AsyncMock()
+        player.stream.wait_generation_ready = AsyncMock(return_value=True)
         player.stream.wait_generation_primed = AsyncMock(return_value=True)
         player.stream.start_generation = AsyncMock()
     session = _make_ptp_session(prov, players)
@@ -636,6 +638,7 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
         player.stream = MagicMock()
         player.stream.wait_for_connection = AsyncMock()
         player.stream.prepare_generation = AsyncMock()
+        player.stream.wait_generation_ready = AsyncMock(return_value=True)
         player.stream.wait_generation_primed = AsyncMock(return_value=True)
         player.stream.start_generation = AsyncMock()
     session = _make_ptp_session(prov, players)

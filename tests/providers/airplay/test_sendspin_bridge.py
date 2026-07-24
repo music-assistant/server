@@ -16,6 +16,7 @@ tests are deterministic and independent of the host wall-clock:
 """
 
 import asyncio
+import errno
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from aiosendspin.clock import ManualClock
@@ -290,6 +291,7 @@ async def test_cold_start_connects_then_prepares_and_starts_generation_zero() ->
     stream.start = AsyncMock()
     stream.wait_for_connection = AsyncMock()
     stream.prepare_generation = AsyncMock()
+    stream.wait_generation_ready = AsyncMock(return_value=True)
     stream.wait_generation_primed = AsyncMock(return_value=True)
     stream.start_generation = AsyncMock()
 
@@ -308,6 +310,7 @@ async def test_cold_start_connects_then_prepares_and_starts_generation_zero() ->
     stream.start.assert_awaited_once_with()
     stream.wait_for_connection.assert_awaited_once_with()
     stream.prepare_generation.assert_awaited_once_with(0, "-", 0)
+    stream.wait_generation_ready.assert_awaited_once_with(0)
     stream.wait_generation_primed.assert_awaited_once_with(0)
     stream.start_generation.assert_awaited_once_with(0, 0, int(UNIX_NOW_S * 1000) + AP2_LEAD_MS)
     assert bridge._airplay_stream is stream
@@ -411,6 +414,7 @@ async def test_warm_generation_commits_on_kept_stream_instance() -> None:
     kept_stream = MagicMock()
     kept_stream.next_generation = MagicMock(return_value=3)
     kept_stream.prepare_generation = AsyncMock()
+    kept_stream.wait_generation_ready = AsyncMock(return_value=True)
     kept_stream.wait_generation_primed = AsyncMock(return_value=True)
     kept_stream.start_generation = AsyncMock()
     bridge._airplay_stream = kept_stream
@@ -420,13 +424,19 @@ async def test_warm_generation_commits_on_kept_stream_instance() -> None:
     with (
         patch("music_assistant.providers.airplay.sendspin_bridge.os.unlink"),
         patch("music_assistant.providers.airplay.sendspin_bridge.os.mkfifo"),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.open", return_value=99),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.open_named_pipe_writer",
+            new_callable=AsyncMock,
+            return_value=99,
+        ),
+        patch("music_assistant.providers.airplay.sendspin_bridge.os.open", return_value=100),
     ):
         committed = await bridge._start_warm_generation(kept_stream, 1_784_000_000_000)
 
     assert committed is True
     assert bridge._airplay_stream is kept_stream  # no new instance was built
     kept_stream.prepare_generation.assert_awaited_once_with(3, expected_fifo, 0)
+    kept_stream.wait_generation_ready.assert_awaited_once_with(3)
     kept_stream.wait_generation_primed.assert_awaited_once_with(3)
     kept_stream.start_generation.assert_awaited_once_with(3, 0, 1_784_000_000_000)
     assert bridge._sink_fd == 99
@@ -439,6 +449,7 @@ async def test_warm_generation_prime_timeout_falls_back_to_cold_restart() -> Non
     kept_stream = MagicMock()
     kept_stream.next_generation = MagicMock(return_value=1)
     kept_stream.prepare_generation = AsyncMock()
+    kept_stream.wait_generation_ready = AsyncMock(return_value=True)
     kept_stream.wait_generation_primed = AsyncMock(return_value=False)
     kept_stream.start_generation = AsyncMock()
     bridge._airplay_stream = kept_stream
@@ -447,7 +458,12 @@ async def test_warm_generation_prime_timeout_falls_back_to_cold_restart() -> Non
     with (
         patch("music_assistant.providers.airplay.sendspin_bridge.os.unlink"),
         patch("music_assistant.providers.airplay.sendspin_bridge.os.mkfifo"),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.open", return_value=55),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.open_named_pipe_writer",
+            new_callable=AsyncMock,
+            return_value=55,
+        ),
+        patch("music_assistant.providers.airplay.sendspin_bridge.os.open", return_value=100),
         patch("music_assistant.providers.airplay.sendspin_bridge.os.close") as mock_close,
     ):
         committed = await bridge._start_warm_generation(kept_stream, 1_784_000_000_000)
@@ -464,6 +480,7 @@ async def test_warm_generation_superseded_before_commit_does_not_start() -> None
     kept_stream = MagicMock()
     kept_stream.next_generation = MagicMock(return_value=2)
     kept_stream.prepare_generation = AsyncMock()
+    kept_stream.wait_generation_ready = AsyncMock(return_value=True)
     kept_stream.wait_generation_primed = AsyncMock(return_value=True)
     kept_stream.start_generation = AsyncMock()
     bridge._airplay_stream = kept_stream
@@ -473,7 +490,12 @@ async def test_warm_generation_superseded_before_commit_does_not_start() -> None
     with (
         patch("music_assistant.providers.airplay.sendspin_bridge.os.unlink"),
         patch("music_assistant.providers.airplay.sendspin_bridge.os.mkfifo"),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.open", return_value=77),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.open_named_pipe_writer",
+            new_callable=AsyncMock,
+            return_value=77,
+        ),
+        patch("music_assistant.providers.airplay.sendspin_bridge.os.open", return_value=100),
         patch("music_assistant.providers.airplay.sendspin_bridge.os.close") as mock_close,
     ):
         committed = await bridge._start_warm_generation(kept_stream, 1_784_000_000_000)
@@ -485,3 +507,33 @@ async def test_warm_generation_superseded_before_commit_does_not_start() -> None
     # newer task already replaced. Its lifecycle is owned by _set_sink_fd/teardown.
     assert all(call.args[0] != 77 for call in mock_close.call_args_list)
     assert bridge._sink_fd == 77
+
+
+async def test_warm_generation_ready_timeout_does_not_open_writer() -> None:
+    """A missing ready status abandons the staged FIFO before publishing a sink."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    kept_stream = MagicMock()
+    kept_stream.next_generation = MagicMock(return_value=1)
+    kept_stream.prepare_generation = AsyncMock()
+    kept_stream.wait_generation_ready = AsyncMock(return_value=False)
+    kept_stream.start_generation = AsyncMock()
+    bridge._airplay_stream = kept_stream
+    bridge._airplay_stream_start_task = asyncio.current_task()
+
+    with (
+        patch("music_assistant.providers.airplay.sendspin_bridge.os.unlink"),
+        patch("music_assistant.providers.airplay.sendspin_bridge.os.mkfifo"),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.open_named_pipe_writer",
+            new_callable=AsyncMock,
+        ) as open_writer,
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.os.open",
+            side_effect=OSError(errno.ENXIO, "no reader"),
+        ),
+    ):
+        assert await bridge._start_warm_generation(kept_stream, 1_784_000_000_000) is False
+
+    open_writer.assert_not_awaited()
+    kept_stream.start_generation.assert_not_awaited()
+    assert bridge._sink_fd is None

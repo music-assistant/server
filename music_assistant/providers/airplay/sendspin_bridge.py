@@ -30,6 +30,7 @@ from aiosendspin.models.types import AudioCodec, PlayerCommand
 from music_assistant_models.enums import IdentifierType
 
 from music_assistant.constants import CONF_SYNC_ADJUST
+from music_assistant.helpers.named_pipe import open_named_pipe_writer
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
 from music_assistant.providers.sendspin.bridge_role import (
@@ -498,6 +499,8 @@ class SendspinAirPlayBridge:
                 self._airplay_stream = new_stream
                 self.airplay_player.stream = new_stream
                 await new_stream.prepare_generation(0, "-", 0)
+                if not await new_stream.wait_generation_ready(0):
+                    raise RuntimeError("generation 0 reader ready timed out")
                 self._airplay_stream_ready.set()
                 if not await new_stream.wait_generation_primed(0):
                     raise RuntimeError("generation 0 prime timed out")
@@ -543,16 +546,18 @@ class SendspinAirPlayBridge:
         """
         gen = stream.next_generation()
         fifo = f"/tmp/ma-bridge-{self.airplay_player.player_id}-{gen}.pcm"  # noqa: S108
-        opened = False
+        started_at = time.monotonic()
         try:
             with suppress(FileNotFoundError):
                 await asyncio.to_thread(os.unlink, fifo)
             await asyncio.to_thread(os.mkfifo, fifo)
             await stream.prepare_generation(gen, fifo, 0)
-            fifo_fd = await asyncio.wait_for(
-                asyncio.to_thread(os.open, fifo, os.O_WRONLY), timeout=5
-            )
-            opened = True
+            self._log_generation_phase(gen, "prepare-delivered", started_at)
+            if not await stream.wait_generation_ready(gen):
+                raise RuntimeError(f"generation {gen} reader ready timed out")
+            self._log_generation_phase(gen, "ready", started_at)
+            fifo_fd = await open_named_pipe_writer(fifo)
+            self._log_generation_phase(gen, "writer-open", started_at)
             # Both ends now hold the fifo open; drop the directory entry right away
             # so no stale pipe nodes accumulate even if a later step fails.
             with suppress(OSError):
@@ -569,6 +574,7 @@ class SendspinAirPlayBridge:
                 with suppress(Exception):
                     await self._set_sink_fd(None)
                 return False
+            self._log_generation_phase(gen, "primed", started_at)
             if asyncio.current_task() is not self._airplay_stream_start_task:
                 # A newer stream start already owns the bridge; abandon this
                 # generation. Do NOT close fifo_fd here: it was published as
@@ -581,6 +587,7 @@ class SendspinAirPlayBridge:
                 return False
             await stream.start_generation(gen, 0, start_unix_ms)
             self._generation_started = True
+            self._log_generation_phase(gen, "commit", started_at)
             self.logger.info(
                 "Bridge warm handover for %s (generation=%d, start_unix_ms=%d)",
                 self.airplay_player.display_name,
@@ -597,14 +604,21 @@ class SendspinAirPlayBridge:
                 await self._set_sink_fd(None)
             return False
         finally:
-            if not opened:
-                # Unblock a writer-open still pending on a failed pipe by briefly
-                # opening the read side, then remove the pipe node either way.
-                with suppress(OSError):
-                    os.close(os.open(fifo, os.O_RDONLY | os.O_NONBLOCK))
-                with suppress(OSError):
-                    await asyncio.to_thread(os.unlink, fifo)
+            with suppress(OSError):
+                os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
+            with suppress(OSError):
+                await asyncio.to_thread(os.unlink, fifo)
         return True
+
+    def _log_generation_phase(self, generation: int, phase: str, started_at: float) -> None:
+        """Log a bridge generation phase with elapsed staging time."""
+        self.logger.debug(
+            "AirPlay bridge generation: player=%s generation=%d phase=%s elapsed=%.3fs",
+            self.airplay_player.player_id,
+            generation,
+            phase,
+            time.monotonic() - started_at,
+        )
 
     def _on_volume_change(self, volume: int) -> None:
         """Forward volume changes to the AirPlay player."""

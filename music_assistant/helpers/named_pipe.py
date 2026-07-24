@@ -149,6 +149,37 @@ class AsyncNamedPipeWriter:
         return False
 
 
+async def open_named_pipe_writer(pipe_path: str, timeout: float = 1.0) -> int:
+    """
+    Open a named pipe writer after its reader is expected to be ready.
+
+    :param pipe_path: Filesystem path of the named pipe.
+    :param timeout: Maximum time to wait for the reader in seconds.
+    :return: A blocking file descriptor suitable for subprocess inheritance.
+    :raises TimeoutError: If no reader becomes available before the timeout.
+    :raises OSError: If opening or configuring the pipe fails.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        try:
+            fd = os.open(pipe_path, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError as err:
+            if err.errno not in (errno_module.ENXIO, errno_module.ENOENT):
+                raise
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError(f"Timed out opening named pipe writer: {pipe_path}") from err
+            await asyncio.sleep(min(0.05, remaining))
+            continue
+        try:
+            os.set_blocking(fd, True)
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+
+
 async def read_named_pipe(
     pipe_path: str,
     chunk_size: int = 4096,

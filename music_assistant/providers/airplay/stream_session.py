@@ -15,6 +15,7 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.ffmpeg import FFMpeg
+from music_assistant.helpers.named_pipe import open_named_pipe_writer
 
 from .constants import AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS, StreamingProtocol
 from .helpers import get_final_output_format
@@ -99,6 +100,11 @@ class AirPlayStreamSession:
                     stream = player.stream
                     assert stream
                     task_group.create_task(stream.prepare_generation(0, "-", position_ms))
+            ready = await asyncio.gather(
+                *[p.stream.wait_generation_ready(0) for p in self.sync_clients if p.stream]
+            )
+            if not all(ready):
+                raise PlayerCommandFailed("generation reader ready timeout")
             self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
             primed = await asyncio.gather(
                 *[p.stream.wait_generation_primed(0) for p in self.sync_clients if p.stream]
@@ -147,8 +153,10 @@ class AirPlayStreamSession:
         position_ms = int((media.elapsed_time or 0) * 1000)
         generations: dict[str, int] = {}
         fifos: dict[str, str] = {}
+        writer_fds: dict[str, int] = {}
+        started_at = time.monotonic()
+        committed = False
         try:
-            # stage the new generation on every member (old audio unaffected)
             for player in self.sync_clients:
                 stream = player.stream
                 assert stream
@@ -159,16 +167,41 @@ class AirPlayStreamSession:
                 await asyncio.to_thread(os.mkfifo, fifo)
                 generations[player.player_id] = gen
                 fifos[player.player_id] = fifo
-                await stream.prepare_generation(gen, fifo, position_ms)
 
-            # swap the source: retire the old flow + per-player DSP ffmpegs,
-            # spawn fresh ones writing into the generation pipes
+            async with asyncio.TaskGroup() as task_group:
+                for player in self.sync_clients:
+                    task_group.create_task(
+                        self._prepare_warm_generation(
+                            player,
+                            generations[player.player_id],
+                            fifos[player.player_id],
+                            position_ms,
+                            started_at,
+                        )
+                    )
+            async with asyncio.TaskGroup() as task_group:
+                for player in self.sync_clients:
+                    task_group.create_task(
+                        self._wait_warm_generation_ready(
+                            player,
+                            generations[player.player_id],
+                            started_at,
+                        )
+                    )
+
+            for player in self.sync_clients:
+                player_id = player.player_id
+                writer_fds[player_id] = await open_named_pipe_writer(fifos[player_id])
+                self._log_generation_phase(
+                    player_id, generations[player_id], "writer-open", started_at
+                )
+
             if self._audio_source_task and not self._audio_source_task.done():
                 self._audio_source_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await self._audio_source_task
             for player in self.sync_clients:
-                await self._start_generation_ffmpeg(player, fifos[player.player_id], media)
+                await self._start_generation_ffmpeg(player, writer_fds.pop(player.player_id), media)
             self.media = media
             # The stream position counter and the late-join prime buffer both
             # describe the OLD generation's timeline; restart them before the
@@ -177,27 +210,35 @@ class AirPlayStreamSession:
             self._pcm_buffer.clear()
             self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
 
-            primed = await asyncio.gather(
-                *[
-                    p.stream.wait_generation_primed(generations[p.player_id])
-                    for p in self.sync_clients
-                    if p.stream
-                ]
-            )
-            if not all(primed):
-                raise PlayerCommandFailed("generation prime timeout")
+            async with asyncio.TaskGroup() as task_group:
+                for player in self.sync_clients:
+                    task_group.create_task(
+                        self._wait_warm_generation_primed(
+                            player,
+                            generations[player.player_id],
+                            started_at,
+                        )
+                    )
             await self._commit_generations(generations, position_ms)
+            for player_id, generation in generations.items():
+                self._log_generation_phase(player_id, generation, "commit", started_at)
+            committed = True
         except Exception as err:
             self.prov.logger.warning(
                 "Warm replacement failed (%r); falling back to a cold restart", err
             )
             return False
         finally:
-            for fifo in fifos.values():
-                # Unblock any writer-open still pending on a failed pipe by
-                # briefly opening the read side, then remove the pipe node.
+            for fifo_fd in writer_fds.values():
                 with suppress(OSError):
-                    os.close(os.open(fifo, os.O_RDONLY | os.O_NONBLOCK))
+                    os.close(fifo_fd)
+            for fifo in fifos.values():
+                if not committed:
+                    # Give a staged reader EOF before removing its path. There is no
+                    # generation-cancel command; the caller tears down the persistent
+                    # stream immediately after this method returns False.
+                    with suppress(OSError):
+                        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
                 with suppress(OSError):
                     await asyncio.to_thread(os.unlink, fifo)
         return True
@@ -422,6 +463,8 @@ class AirPlayStreamSession:
 
             try:
                 await stream.prepare_generation(0, "-", position_ms)
+                if not await stream.wait_generation_ready(0):
+                    raise PlayerCommandFailed("generation reader ready timeout")
                 if buffered_pcm:
                     await self._write_chunk_to_player(airplay_player, buffered_pcm)
             except asyncio.CancelledError:
@@ -746,36 +789,36 @@ class AirPlayStreamSession:
             self.start_time = start_unix_ms / 1000
 
     async def _start_generation_ffmpeg(
-        self, player: AirPlayPlayer, fifo: str, media: PlayerMedia
+        self, player: AirPlayPlayer, fifo_fd: int, media: PlayerMedia
     ) -> None:
         """
         Start the per-player DSP ffmpeg for a staged generation.
 
         Retires the player's previous ffmpeg and spawns a fresh one writing
-        into the generation's pipe. The pipe's write side is opened here and
-        handed to ffmpeg as an inherited descriptor (like the stdin case in
-        ``_start_client``) because ffmpeg refuses to open an existing path.
-        The open pairs with the read side the binary opened at PREPARE.
+        into the prepared generation pipe.
+
+        :param player: AirPlay player receiving the generation.
+        :param fifo_fd: Blocking write descriptor paired with the prepared reader.
+        :param media: Media that owns the new generation.
         """
-        if ffmpeg := self._player_ffmpeg.pop(player.player_id, None):
-            # Kill, not close: a graceful close waits for the old ffmpeg to
-            # drain its buffered audio into the binary at playback speed
-            # (seconds), and that audio is superseded anyway. The binary keeps
-            # playing the old generation from its own ring until START lands.
-            await ffmpeg.kill()
-        stream = player.stream
-        assert stream
-        handoff_format = stream.pcm_format
-        output_plan = self.mass.streams.audio.get_player_output_plan(
-            player.player_id,
-            input_format=self.pcm_format,
-            output_format=get_final_output_format(handoff_format, player),
-            handoff_format=handoff_format,
-            queue_id=media.source_id,
-            session_id=get_media_session_id(media),
-        )
-        fifo_fd = await asyncio.wait_for(asyncio.to_thread(os.open, fifo, os.O_WRONLY), timeout=5)
         try:
+            if ffmpeg := self._player_ffmpeg.pop(player.player_id, None):
+                # Kill, not close: a graceful close waits for the old ffmpeg to
+                # drain its buffered audio into the binary at playback speed
+                # (seconds), and that audio is superseded anyway. The binary keeps
+                # playing the old generation from its own ring until START lands.
+                await ffmpeg.kill()
+            stream = player.stream
+            assert stream
+            handoff_format = stream.pcm_format
+            output_plan = self.mass.streams.audio.get_player_output_plan(
+                player.player_id,
+                input_format=self.pcm_format,
+                output_format=get_final_output_format(handoff_format, player),
+                handoff_format=handoff_format,
+                queue_id=media.source_id,
+                session_id=get_media_session_id(media),
+            )
             ffmpeg = FFMpeg(
                 audio_input="-",
                 input_format=self.pcm_format,
@@ -784,8 +827,58 @@ class AirPlayStreamSession:
                 audio_output=fifo_fd,
             )
             await ffmpeg.start()
+            self._player_ffmpeg[player.player_id] = ffmpeg
         finally:
             # the ffmpeg child inherited the descriptor; drop our copy so the
             # pipe sees EOF when ffmpeg exits
             os.close(fifo_fd)
-        self._player_ffmpeg[player.player_id] = ffmpeg
+
+    async def _prepare_warm_generation(
+        self,
+        player: AirPlayPlayer,
+        generation: int,
+        fifo: str,
+        position_ms: int,
+        started_at: float,
+    ) -> None:
+        """Deliver PREPARE for one member without changing its active generation."""
+        stream = player.stream
+        assert stream
+        await stream.prepare_generation(generation, fifo, position_ms)
+        self._log_generation_phase(player.player_id, generation, "prepare-delivered", started_at)
+
+    async def _wait_warm_generation_ready(
+        self, player: AirPlayPlayer, generation: int, started_at: float
+    ) -> None:
+        """Wait for one member to open its staged generation reader."""
+        stream = player.stream
+        assert stream
+        if not await stream.wait_generation_ready(generation):
+            raise PlayerCommandFailed(
+                f"generation {generation} reader ready timeout for {player.player_id}"
+            )
+        self._log_generation_phase(player.player_id, generation, "ready", started_at)
+
+    async def _wait_warm_generation_primed(
+        self, player: AirPlayPlayer, generation: int, started_at: float
+    ) -> None:
+        """Wait for one member to buffer its staged generation."""
+        stream = player.stream
+        assert stream
+        if not await stream.wait_generation_primed(generation):
+            raise PlayerCommandFailed(
+                f"generation {generation} prime timeout for {player.player_id}"
+            )
+        self._log_generation_phase(player.player_id, generation, "primed", started_at)
+
+    def _log_generation_phase(
+        self, player_id: str, generation: int, phase: str, started_at: float
+    ) -> None:
+        """Log a warm generation phase with elapsed staging time."""
+        self.prov.logger.debug(
+            "AirPlay warm generation: player=%s generation=%d phase=%s elapsed=%.3fs",
+            player_id,
+            generation,
+            phase,
+            time.monotonic() - started_at,
+        )
