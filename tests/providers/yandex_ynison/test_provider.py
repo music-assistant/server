@@ -25,7 +25,7 @@ from music_assistant_models.media_items import AudioFormat, AudioSource
 from ya_passport_auth import SecretStr
 from ya_passport_auth.ma import BorrowedCredentialSource, list_yandex_music_instances
 
-from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
+from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER, ThrottlerManager
 from music_assistant.providers.yandex_ynison.constants import (
     CONF_ALLOW_PLAYER_SWITCH,
     CONF_DEVICE_ID,
@@ -152,7 +152,9 @@ def _make_provider(player_id: str = PLAYER_ID_AUTO) -> YandexYnisonProvider:
     mass = _make_mock_mass()
     config = _make_mock_config({CONF_MASS_PLAYER_ID: player_id})
     manifest = _make_mock_manifest()
-    return YandexYnisonProvider(mass, manifest, config, {ProviderFeature.AUDIO_SOURCE})
+    provider = YandexYnisonProvider(mass, manifest, config, {ProviderFeature.AUDIO_SOURCE})
+    provider._api_throttler = ThrottlerManager(rate_limit=1000)
+    return provider
 
 
 # ------------------------------------------------------------------
@@ -1281,12 +1283,16 @@ class TestPCMNormalization:
         """If get_stream_details fails, _stream_track yields nothing."""
         provider = _make_provider()
         mock_yandex = MagicMock()
-        mock_yandex.get_stream_details = AsyncMock(side_effect=Exception("API error"))
         provider._yandex_provider = mock_yandex
 
         collected: list[bytes] = []
-        async for chunk in provider._stream_track("track:bad"):
-            collected.append(chunk)
+        with patch.object(
+            provider,
+            "_get_stream_details_with_retry",
+            new=AsyncMock(side_effect=Exception("API error")),
+        ):
+            async for chunk in provider._stream_track("track:bad"):
+                collected.append(chunk)
 
         assert collected == []
 
@@ -2387,8 +2393,13 @@ class TestAdvanceQueueIndex:
 
         type(mock_yn).connected = property(_get_connected)
 
-        await provider._advance_queue_index(1)
+        with patch(
+            "music_assistant.providers.yandex_ynison.provider.asyncio.sleep",
+            new_callable=AsyncMock,
+        ) as sleep:
+            await provider._advance_queue_index(1)
 
+        assert sleep.await_count == 2
         mock_yn.update_player_state.assert_awaited_once()
 
     async def test_timeout_no_send(self) -> None:
