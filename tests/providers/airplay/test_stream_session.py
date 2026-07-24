@@ -218,6 +218,7 @@ async def test_initial_single_player_uses_commanded_generation_zero(
 
     with (
         patch.object(session, "_start_client", side_effect=start_client),
+        patch.object(session, "_resolve_shared_ptp", new_callable=AsyncMock, return_value=False),
         patch.object(session, "_audio_streamer", new_callable=AsyncMock),
         patch("music_assistant.providers.airplay.stream_session.time.time", return_value=200.0),
     ):

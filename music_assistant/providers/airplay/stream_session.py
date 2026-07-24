@@ -66,10 +66,6 @@ class AirPlayStreamSession:
         # sync group can never mix shared-PTP and NTP members.
         self.use_shared_ptp: bool = False
         self._shared_ptp_resolved = False
-        # A lone native AirPlay 2 player negotiates the clock honestly and may
-        # yield the timeline to a master-or-mute receiver (Samsung); groups
-        # keep the sender-owned shared timeline.
-        self._ptp_follow = False
         self._ptp_degraded_warning_logged = False
         # Raw PCM ring buffer for late joiners. When a late joiner arrives we
         # send this buffer to prime its pipeline so it starts playing quickly
@@ -83,8 +79,7 @@ class AirPlayStreamSession:
     async def start(self, audio_source: AsyncGenerator[bytes]) -> None:
         """Initialize stream session for all players."""
         ap2_members = sum(1 for p in self.sync_clients if p.protocol == StreamingProtocol.AIRPLAY2)
-        self._ptp_follow = ap2_members == 1 and len(self.sync_clients) == 1
-        if ap2_members and not self._ptp_follow:
+        if ap2_members:
             # Resolve the timing source before calculating the audible anchor so
             # a bounded daemon-readiness wait cannot consume the setup lead.
             self.use_shared_ptp = await self._resolve_shared_ptp(ap2_members)
@@ -312,11 +307,6 @@ class AirPlayStreamSession:
            the client so the live stream continues priming it.
         4. Start generation 0 only after the client reports primed.
         """
-        if self._ptp_follow:
-            # A group needs the sender-owned timeline; the solo session
-            # yielded its clock to the receiver, so restart as a group.
-            await self._regroup_from_follow()
-            return
         await self._resolve_late_joiner_ptp(airplay_player)
         async with self._lock:
             if not self.sync_clients:
@@ -527,20 +517,6 @@ class AirPlayStreamSession:
             ap2_members,
         )
 
-    async def _regroup_from_follow(self) -> None:
-        """
-        Restart a yielded (receiver-clocked) solo session as a proper group.
-
-        The late joiner is already in the leader's group_members, so the
-        queue's resume rebuilds playback as a sender-clocked group including
-        it. The resume runs as a task because the caller holds the leader's
-        lock (resume ends in play_media, which takes the same lock).
-        """
-        queue_id = self.media.source_id
-        await self.stop()
-        if queue_id:
-            self.mass.create_task(self.mass.player_queues.resume(queue_id, fade_in=False))
-
     async def _cleanup_after_removal(
         self, airplay_player: AirPlayPlayer, reason: str = "client removed"
     ) -> None:
@@ -690,7 +666,7 @@ class AirPlayStreamSession:
         stream_pcm_format = airplay_player.get_stream_pcm_format(self.pcm_format)
         airplay_player.stream = AirPlayStream(airplay_player, pcm_format=stream_pcm_format)
         airplay_player.stream.session = self
-        await airplay_player.stream.start(use_shared_ptp, ptp_follow=self._ptp_follow)
+        await airplay_player.stream.start(use_shared_ptp)
         # Start ffmpeg to feed audio to CLI stdin
         if ffmpeg := self._player_ffmpeg.pop(airplay_player.player_id, None):
             await ffmpeg.close()

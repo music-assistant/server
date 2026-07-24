@@ -127,7 +127,6 @@ class AirPlayStream:
     async def start(
         self,
         use_shared_ptp: bool | None = None,
-        ptp_follow: bool = False,
     ) -> None:
         """
         Start cliairplay and connect to the receiver.
@@ -137,12 +136,8 @@ class AirPlayStream:
             passes the same value to every member so a group never mixes PTP and
             NTP timing. None (single-stream callers) falls back to the daemon's
             live state.
-        :param ptp_follow: Solo-session clock negotiation: the binary may yield
-            the timeline to a receiver that announces itself as a master
-            (Samsung renders only on its own clock). Never combined with the
-            shared daemon.
         """
-        args = await self._build_cli_args(use_shared_ptp, ptp_follow)
+        args = await self._build_cli_args(use_shared_ptp)
         self.player.logger.debug("Starting cliairplay for player %s", self.player.player_id)
         self._cli_proc = AsyncProcess(args, stdin=True, stdout=True, stderr=True, name="cliairplay")
         try:
@@ -418,7 +413,6 @@ class AirPlayStream:
     async def _build_cli_args(  # noqa: PLR0915
         self,
         use_shared_ptp: bool | None = None,
-        ptp_follow: bool = False,
     ) -> list[str]:
         """
         Assemble the cliairplay argument list for this stream.
@@ -427,11 +421,7 @@ class AirPlayStream:
             shared PTP clock daemon. The stream session passes an explicit
             group-wide decision so members never mix PTP and NTP timing; None
             (single-stream callers) falls back to the daemon's live state.
-        :param ptp_follow: Whether a solo native AirPlay 2 stream may follow
-            the receiver's PTP clock.
         """
-        if use_shared_ptp and ptp_follow:
-            raise ValueError("Shared PTP and receiver clock-follow are mutually exclusive")
         cli_binary = await get_cli_binary()
         prov = cast("AirPlayProvider", self.prov)
         airplay_info = self.player.airplay_discovery_info
@@ -531,12 +521,7 @@ class AirPlayStream:
         # daemon's live state.
         if target_protocol == StreamingProtocol.AIRPLAY2:
             shared_ptp = prov.ptp_daemon_running if use_shared_ptp is None else use_shared_ptp
-            if ptp_follow:
-                # Solo session: negotiate the clock honestly and yield to a
-                # master-or-mute receiver (Samsung); never via the shared
-                # daemon, which always holds grandmaster.
-                args += ["--ptp-follow"]
-            elif shared_ptp:
+            if shared_ptp:
                 args += ["--ptp-shared"]
 
         # Local interface binding
