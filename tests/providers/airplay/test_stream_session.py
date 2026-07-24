@@ -324,6 +324,41 @@ def test_warm_replace_supports_every_streaming_protocol(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("protocols", "standby_supported"),
+    [
+        ((StreamingProtocol.AIRPLAY2,), True),
+        ((StreamingProtocol.RAOP,), False),
+        ((StreamingProtocol.RAOP, StreamingProtocol.AIRPLAY2), False),
+    ],
+)
+async def test_standby_requires_every_member_to_support_airplay2(
+    protocols: tuple[StreamingProtocol, ...],
+    standby_supported: bool,
+) -> None:
+    """Generation support does not imply legacy RAOP standby support."""
+    session = _make_session(0, 0)
+    players: Any = []
+    for index, protocol in enumerate(protocols):
+        player = MagicMock()
+        player.player_id = f"player-{index}"
+        player.protocol = protocol
+        player.stream = MagicMock(running=True)
+        player.stream.send_cli_command = AsyncMock()
+        players.append(player)
+    session.sync_clients = players
+
+    assert await session.standby() is standby_supported
+    for player in players:
+        if standby_supported:
+            player.stream.send_cli_command.assert_awaited_once_with("ACTION=STANDBY")
+            player.set_state_from_stream.assert_called_once()
+        else:
+            player.stream.send_cli_command.assert_not_awaited()
+            player.set_state_from_stream.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_late_join_empty_buffer() -> None:
     """Test that with an empty buffer, start_at = start_time + seconds_streamed."""
     now = time.time()
