@@ -316,9 +316,14 @@ class AirPlayPlayer(Player):
             # Grouped pause parks the whole session (standby); unpausing one
             # member cannot restart the group in sync. Resume via the queue
             # instead: play_media flushes and re-anchors every parked member at
-            # one shared instant.
-            queue_id = self.synced_to or self.player_id
-            await self.mass.player_queues.resume(queue_id, fade_in=False)
+            # one shared instant. The queue can belong to a linked native parent
+            # (for example Sonos), so resolve it instead of using the AirPlay ID.
+            active_queue = self.mass.players.get_active_queue(self)
+            if active_queue is None:
+                raise PlayerCommandFailed(
+                    f"Cannot resume grouped AirPlay player {self.display_name} without an active queue"
+                )
+            await self.mass.player_queues.resume(active_queue.queue_id, fade_in=False)
             return
         async with self._lock:
             if self.stream and self.stream.running:
