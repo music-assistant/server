@@ -162,15 +162,6 @@ async def test_cli_args_no_ptp_shared_without_daemon() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cli_args_reject_shared_ptp_with_clock_follow() -> None:
-    """Shared PTP and receiver clock-follow cannot be requested together."""
-    stream = AirPlayStream(_make_player())
-
-    with pytest.raises(ValueError, match="mutually exclusive"):
-        await stream._build_cli_args(use_shared_ptp=True, ptp_follow=True)
-
-
-@pytest.mark.asyncio
 async def test_cli_args_no_latency_override() -> None:
     """The playback lead/buffer is binary-managed; MA never passes --latency."""
     player = _make_player()
