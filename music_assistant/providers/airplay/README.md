@@ -235,7 +235,7 @@ The `AirPlayStreamSession` class in [stream_session.py](stream_session.py) manag
      (16-bit default, 24-bit s32le when hi-res is enabled)
    - Starts the CLI process and connects to the receiver without starting playback
    - Configures FFmpeg for audio format conversion and optional DSP filters
-   - Pipes FFmpeg output to CLI process stdin
+   - Keeps process stdin connected so generation 0 can select it with `AUDIO=-`
 
 3. **Audio Streaming** (`_audio_streamer()` method)
    - Receives PCM audio chunks from Music Assistant core
@@ -378,13 +378,16 @@ and verify it against that release's `SHA256SUMS`. For local source development,
 ### Binary Communication
 
 **Input** (stdin):
-- PCM audio data piped from FFmpeg: s16le for 16-bit, raw s32le for 24-bit
+- Generation 0 PCM selected by command-pipe `PREPARE` with `AUDIO=-`: s16le
+  for 16-bit, raw s32le for 24-bit
   (the binary truncates 32→24 internally when `--bitdepth 24` is passed)
 - May be written eagerly, ahead of the scheduled start; byte 0 maps to the
   sample audible at the start instant
 
 **Commands** (named pipe):
 - Interactive commands sent via `AsyncNamedPipeWriter`
+- Required for every streaming protocol; audio sources are supplied only by
+  generation `PREPARE` (`AUDIO=-` for stdin or `AUDIO=<fifo path>`)
 - Examples: `ACTION=PLAY`, `ACTION=PAUSE`, `VOLUME=50`, `TITLE=Song Name`
 - MA creates the pipe and sends text metadata immediately after process start;
   timeline-anchored metadata and artwork are refreshed once the receiver connects
@@ -416,8 +419,8 @@ instant**" on every protocol path (RAOP, AirPlay 2 RAOP-compat and native).
    the same value in `START` to every member
 4. The binary owns receiver-buffer handling from there, so the commanded start
    cannot race connection or pre-fill
-5. Warm seek, next-track and resume use the same PREPARE/prime/START barrier for
-   later generations
+5. Warm seek and next-track use the same PREPARE/prime/START barrier for later
+   generations on legacy RAOP, RAOP-compatible AirPlay 2 and native AirPlay 2
 6. Sendspin starts preserve its externally supplied audible instant after the
    same connection and prime gates
 7. Per-player `sync_adjust` config allows fine-tuning (+/- milliseconds)
