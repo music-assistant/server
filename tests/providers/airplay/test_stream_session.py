@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.errors import PlayerCommandFailed
 
+from music_assistant.providers.airplay.constants import StreamingProtocol
 from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
 
 PCM_SAMPLE_SIZE = 176400  # 44.1kHz / 16-bit / 2ch
@@ -33,10 +34,14 @@ def _make_session(
     pcm_format.channels = 2
 
     leader = MagicMock()
+    leader.player_id = "leader"
+    leader.protocol = StreamingProtocol.RAOP
     leader.stream = MagicMock()
     leader.stream.running = True
+    leader.stream.connected = True
+    leader.config.get_value = MagicMock(return_value=0)
 
-    session = AirPlayStreamSession(prov, [leader], pcm_format, MagicMock())
+    session = AirPlayStreamSession(prov, [leader], pcm_format, MagicMock(elapsed_time=0))
     session.start_time = start_time
     session.seconds_streamed = seconds_streamed
     session.start_unix_ms = 1  # dummy
@@ -49,6 +54,7 @@ def _make_late_joiner(wait_start_ms: int = 2000) -> MagicMock:
     """Create a mock AirPlay player for late-join testing."""
     player = MagicMock()
     player.player_id = "late_joiner"
+    player.protocol = StreamingProtocol.RAOP
     player.wait_start = wait_start_ms
     player.stream = None
     player.config = MagicMock()
@@ -63,13 +69,16 @@ def _setup_stream(player: MagicMock) -> Any:
         player.stream = MagicMock()
         player.stream.running = True
         player.stream.wait_for_connection = AsyncMock()
+        player.stream.prepare_generation = AsyncMock()
+        player.stream.wait_generation_primed = AsyncMock(return_value=True)
+        player.stream.start_generation = AsyncMock()
 
     return _side_effect
 
 
-def _captured_start_at(mock_start: AsyncMock) -> float:
-    """Return the start time (unix seconds) passed to the patched _start_client."""
-    start_unix_ms = mock_start.call_args[0][1]
+def _captured_start_at(player: MagicMock) -> float:
+    """Return the start time passed to the player's generation-0 START."""
+    start_unix_ms = player.stream.start_generation.call_args[0][2]
     assert isinstance(start_unix_ms, int)
     return start_unix_ms / 1000
 
@@ -116,6 +125,319 @@ async def test_initial_client_failure_stops_started_clients() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("first_protocol", "second_protocol"),
+    [
+        (StreamingProtocol.RAOP, StreamingProtocol.RAOP),
+        (StreamingProtocol.AIRPLAY2, StreamingProtocol.AIRPLAY2),
+        (StreamingProtocol.RAOP, StreamingProtocol.AIRPLAY2),
+    ],
+)
+async def test_initial_group_waits_for_every_member_before_shared_start(
+    first_protocol: StreamingProtocol,
+    second_protocol: StreamingProtocol,
+) -> None:
+    """Generation 0 starts at one instant only after every member connects and primes."""
+    session = _make_session(0, 0)
+    first_player: Any = session.sync_clients[0]
+    first_player.player_id = "first"
+    first_player.protocol = first_protocol
+    first_player.wait_start = 2500
+    first_player.config.get_value = MagicMock(return_value=0)
+    second_player = MagicMock(player_id="second", wait_start=2500)
+    second_player.protocol = second_protocol
+    second_player.config.get_value = MagicMock(return_value=0)
+    session.sync_clients.append(second_player)
+    session.media.elapsed_time = 12
+    operations: list[str] = []
+
+    async def start_client(player: MagicMock, _use_shared_ptp: bool) -> None:
+        stream = MagicMock(running=True)
+
+        async def wait_for_connection() -> None:
+            operations.append(f"connected:{player.player_id}")
+
+        async def prepare_generation(generation: int, audio_path: str, position_ms: int) -> None:
+            assert (generation, audio_path, position_ms) == (0, "-", 12_000)
+            operations.append(f"prepared:{player.player_id}")
+
+        async def wait_generation_primed(_generation: int) -> bool:
+            operations.append(f"primed:{player.player_id}")
+            return True
+
+        async def start_generation(_generation: int, _position_ms: int, start_unix_ms: int) -> None:
+            operations.append(f"started:{player.player_id}:{start_unix_ms}")
+
+        stream.wait_for_connection = AsyncMock(side_effect=wait_for_connection)
+        stream.prepare_generation = AsyncMock(side_effect=prepare_generation)
+        stream.wait_generation_primed = AsyncMock(side_effect=wait_generation_primed)
+        stream.start_generation = AsyncMock(side_effect=start_generation)
+        player.stream = stream
+
+    with (
+        patch.object(session, "_start_client", side_effect=start_client),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch.object(session, "_resolve_shared_ptp", new_callable=AsyncMock, return_value=False),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=100.0),
+    ):
+        await session.start(MagicMock())
+
+    first_prepare = min(i for i, op in enumerate(operations) if op.startswith("prepared:"))
+    last_connected = max(i for i, op in enumerate(operations) if op.startswith("connected:"))
+    first_start = min(i for i, op in enumerate(operations) if op.startswith("started:"))
+    last_primed = max(i for i, op in enumerate(operations) if op.startswith("primed:"))
+    assert last_connected < first_prepare
+    assert last_primed < first_start
+    starts = {int(op.rsplit(":", 1)[1]) for op in operations if op.startswith("started:")}
+    assert starts == {100_750}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "protocol",
+    [StreamingProtocol.RAOP, StreamingProtocol.AIRPLAY2],
+)
+async def test_initial_single_player_uses_commanded_generation_zero(
+    protocol: StreamingProtocol,
+) -> None:
+    """A standalone player follows the same generation-0 flow with the solo lead."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.player_id = "solo"
+    player.protocol = protocol
+    player.wait_start = 2500
+    player.config.get_value = MagicMock(return_value=0)
+    stream = MagicMock(running=True)
+    stream.wait_for_connection = AsyncMock()
+    stream.prepare_generation = AsyncMock()
+    stream.wait_generation_primed = AsyncMock(return_value=True)
+    stream.start_generation = AsyncMock()
+
+    async def start_client(_player: MagicMock, _use_shared_ptp: bool) -> None:
+        player.stream = stream
+
+    with (
+        patch.object(session, "_start_client", side_effect=start_client),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=200.0),
+    ):
+        await session.start(MagicMock())
+
+    stream.prepare_generation.assert_awaited_once_with(0, "-", 0)
+    stream.wait_generation_primed.assert_awaited_once_with(0)
+    stream.start_generation.assert_awaited_once_with(0, 0, 200_400)
+
+
+@pytest.mark.asyncio
+async def test_initial_prime_timeout_never_starts_partial_group() -> None:
+    """If any member fails to prime, no member receives START and the group is stopped."""
+    session = _make_session(0, 0)
+    first_player: Any = session.sync_clients[0]
+    first_player.protocol = StreamingProtocol.RAOP
+    first_player.wait_start = 2500
+    second_player = MagicMock(player_id="second", wait_start=2500)
+    second_player.protocol = StreamingProtocol.RAOP
+    session.sync_clients.append(second_player)
+
+    async def start_client(player: MagicMock, _use_shared_ptp: bool) -> None:
+        stream = MagicMock(running=True)
+        stream.wait_for_connection = AsyncMock()
+        stream.prepare_generation = AsyncMock()
+        stream.wait_generation_primed = AsyncMock(return_value=player is not second_player)
+        stream.start_generation = AsyncMock()
+        player.stream = stream
+
+    with (
+        patch.object(session, "_start_client", side_effect=start_client),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch.object(session, "stop", new_callable=AsyncMock) as stop_session,
+        pytest.raises(PlayerCommandFailed, match="Playback failed to start"),
+    ):
+        await session.start(MagicMock())
+
+    for player in session.sync_clients:
+        stream: Any = player.stream
+        stream.start_generation.assert_not_awaited()
+    stop_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_initial_connection_cancellation_never_prepares_group() -> None:
+    """Cancellation while connecting cleans up without preparing or starting."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.player_id = "solo"
+    player.protocol = StreamingProtocol.RAOP
+    player.wait_start = 2500
+    connection_waiting = asyncio.Event()
+    stream = MagicMock(running=True)
+
+    async def wait_for_connection() -> None:
+        connection_waiting.set()
+        await asyncio.Event().wait()
+
+    stream.wait_for_connection = AsyncMock(side_effect=wait_for_connection)
+    stream.prepare_generation = AsyncMock()
+    stream.start_generation = AsyncMock()
+
+    async def start_client(_player: MagicMock, _use_shared_ptp: bool) -> None:
+        player.stream = stream
+
+    with (
+        patch.object(session, "_start_client", side_effect=start_client),
+        patch.object(session, "stop", new_callable=AsyncMock) as stop_session,
+    ):
+        start_task = asyncio.create_task(session.start(MagicMock()))
+        await connection_waiting.wait()
+        start_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await start_task
+
+    stream.prepare_generation.assert_not_awaited()
+    stream.start_generation.assert_not_awaited()
+    stop_session.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "protocols",
+    [
+        (StreamingProtocol.RAOP,),
+        (StreamingProtocol.AIRPLAY2,),
+        (StreamingProtocol.RAOP, StreamingProtocol.AIRPLAY2),
+    ],
+)
+def test_warm_replace_supports_every_streaming_protocol(
+    protocols: tuple[StreamingProtocol, ...],
+) -> None:
+    """Connected legacy RAOP, AirPlay 2 and mixed sessions can replace warm."""
+    session = _make_session(0, 0)
+    players: Any = []
+    for index, protocol in enumerate(protocols):
+        player = MagicMock()
+        player.player_id = f"player-{index}"
+        player.protocol = protocol
+        player.stream = MagicMock(running=True, connected=True)
+        players.append(player)
+    session.sync_clients = players
+
+    assert session.can_replace(players, session.pcm_format)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "protocols",
+    [
+        (StreamingProtocol.AIRPLAY2,),
+        (StreamingProtocol.RAOP,),
+        (StreamingProtocol.RAOP, StreamingProtocol.AIRPLAY2),
+    ],
+)
+async def test_standby_supports_every_connected_streaming_protocol(
+    protocols: tuple[StreamingProtocol, ...],
+) -> None:
+    """Connected legacy RAOP, AirPlay 2 and mixed sessions can enter standby."""
+    session = _make_session(0, 0)
+    players: Any = []
+    for index, protocol in enumerate(protocols):
+        player = MagicMock()
+        player.player_id = f"player-{index}"
+        player.protocol = protocol
+        player.stream = MagicMock(running=True, connected=True)
+        player.stream.send_cli_command = AsyncMock()
+        players.append(player)
+    session.sync_clients = players
+
+    assert await session.standby()
+    for player in players:
+        player.stream.send_cli_command.assert_awaited_once_with("ACTION=STANDBY")
+        player.set_state_from_stream.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "protocols",
+    [
+        (StreamingProtocol.RAOP, StreamingProtocol.RAOP),
+        (StreamingProtocol.RAOP, StreamingProtocol.AIRPLAY2),
+    ],
+)
+async def test_standby_resumes_next_generation_on_existing_streams(
+    protocols: tuple[StreamingProtocol, StreamingProtocol],
+) -> None:
+    """All-RAOP and mixed sessions resume warm on their parked streams."""
+    session = _make_session(0, 0)
+    players: Any = []
+    original_streams: dict[str, MagicMock] = {}
+    for index, protocol in enumerate(protocols):
+        player = MagicMock()
+        player.player_id = f"player-{index}"
+        player.protocol = protocol
+        player.config.get_value = MagicMock(return_value=0)
+        player.stream = MagicMock(running=True, connected=True)
+        player.stream.send_cli_command = AsyncMock()
+        player.stream.next_generation = MagicMock(return_value=1)
+        player.stream.prepare_generation = AsyncMock()
+        player.stream.wait_generation_primed = AsyncMock(return_value=True)
+        player.stream.start_generation = AsyncMock()
+        players.append(player)
+        original_streams[player.player_id] = player.stream
+    session.sync_clients = players
+
+    assert await session.standby()
+    assert session.can_replace(players, session.pcm_format)
+    media = MagicMock(elapsed_time=10)
+    with (
+        patch.object(session, "_start_generation_ffmpeg", new_callable=AsyncMock),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=100.0),
+        patch("music_assistant.providers.airplay.stream_session.os.unlink"),
+        patch("music_assistant.providers.airplay.stream_session.os.mkfifo"),
+        patch("music_assistant.providers.airplay.stream_session.os.open", return_value=99),
+        patch("music_assistant.providers.airplay.stream_session.os.close"),
+    ):
+        assert await session.replace(MagicMock(), media)
+
+    for player in players:
+        stream = original_streams[player.player_id]
+        assert player.stream is stream
+        stream.prepare_generation.assert_awaited_once_with(
+            1,
+            f"/tmp/ma-gen-{player.player_id}-1.pcm",  # noqa: S108
+            10_000,
+        )
+        stream.wait_generation_primed.assert_awaited_once_with(1)
+        stream.start_generation.assert_awaited_once_with(1, 10_000, 100_750)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream_state", ["missing", "stopped", "disconnected"])
+async def test_standby_requires_every_member_running_and_connected(stream_state: str) -> None:
+    """Standby is unavailable when any member lacks a reusable generation session."""
+    session = _make_session(0, 0)
+    ready_player = MagicMock(player_id="ready", protocol=StreamingProtocol.AIRPLAY2)
+    ready_player.stream = MagicMock(running=True, connected=True)
+    ready_player.stream.send_cli_command = AsyncMock()
+    unavailable_player = MagicMock(player_id="unavailable", protocol=StreamingProtocol.RAOP)
+    unavailable_player.stream = None
+    if stream_state != "missing":
+        unavailable_player.stream = MagicMock(
+            running=stream_state != "stopped",
+            connected=stream_state != "disconnected",
+        )
+        unavailable_player.stream.send_cli_command = AsyncMock()
+    players: Any = [ready_player, unavailable_player]
+    session.sync_clients = players
+
+    assert await session.standby() is False
+    assert session.can_replace(players, session.pcm_format) is False
+    ready_player.stream.send_cli_command.assert_not_awaited()
+    ready_player.set_state_from_stream.assert_not_called()
+    if unavailable_player.stream:
+        unavailable_player.stream.send_cli_command.assert_not_awaited()
+        unavailable_player.set_state_from_stream.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_late_join_empty_buffer() -> None:
     """Test that with an empty buffer, start_at = start_time + seconds_streamed."""
     now = time.time()
@@ -130,7 +452,7 @@ async def test_late_join_empty_buffer() -> None:
 
     assert mock_start.called, "_start_client was never called"
     expected = start_time + seconds_streamed
-    assert abs(_captured_start_at(mock_start) - expected) < 0.1
+    assert abs(_captured_start_at(player) - expected) < 0.1
 
 
 @pytest.mark.asyncio
@@ -156,7 +478,7 @@ async def test_late_join_with_buffered_pcm_in_future() -> None:
     assert mock_start.called, "_start_client was never called"
     # start_at should remain at start_time + (seconds_streamed - 3.0) — already in future
     expected = start_time + (seconds_streamed - 3.0)
-    captured = _captured_start_at(mock_start)
+    captured = _captured_start_at(player)
     assert abs(captured - expected) < 0.1, (
         f"start_at should match buffer position, expected {expected}, got {captured}"
     )
@@ -220,9 +542,9 @@ async def test_late_join_trims_and_shifts_when_start_at_in_past() -> None:
 
     # start_at should be pushed to now + min_headroom (session.wait_start = 2.0)
     assert mock_start.called, "_start_client was never called"
-    assert _captured_start_at(mock_start) - now == pytest.approx(2.0, abs=0.01), (
+    assert _captured_start_at(player) - now == pytest.approx(2.0, abs=0.01), (
         f"start_at should be at now + min_headroom, "
-        f"got offset {_captured_start_at(mock_start) - now:.4f}s"
+        f"got offset {_captured_start_at(player) - now:.4f}s"
     )
 
     # Buffer should have been trimmed: 2.5s out of 5s (start_at shifted from -0.5 to +2.0)
@@ -264,7 +586,7 @@ async def test_late_join_drops_buffer_when_trim_exceeds_buffer() -> None:
     assert written_chunks == [], "Buffer should have been dropped entirely"
     # start_at should be exactly now + min_headroom (since the next-chunk anchor would
     # have landed at now - 1.0, which is below the target).
-    assert _captured_start_at(mock_start) - now == pytest.approx(2.0, abs=0.01)
+    assert _captured_start_at(player) - now == pytest.approx(2.0, abs=0.01)
 
 
 @pytest.mark.asyncio

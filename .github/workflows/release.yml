@@ -39,8 +39,8 @@ on:
 
 env:
   BASE_IMAGE_VERSION_STABLE: "1.5.4"
-  BASE_IMAGE_VERSION_BETA: "1.5.4"
-  BASE_IMAGE_VERSION_NIGHTLY: "1.5.4"
+  BASE_IMAGE_VERSION_BETA: "1.6.0"
+  BASE_IMAGE_VERSION_NIGHTLY: "1.6.0"
 
 permissions:
   contents: read
@@ -349,7 +349,7 @@ jobs:
           path: dist/
 
       - name: Log in to the GitHub container registry
-        uses: docker/login-action@v4.4.0
+        uses: docker/login-action@v4.5.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}

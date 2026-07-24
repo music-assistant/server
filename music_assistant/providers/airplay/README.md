@@ -225,15 +225,17 @@ Apple TV and Mac devices require pairing before they can be used for streaming.
 The `AirPlayStreamSession` class in [stream_session.py](stream_session.py) manages streaming to one or more synchronized players:
 
 1. **Initialization** (`start()` method)
-   - Calculates the audible start instant (`now + setup lead`) as unix epoch milliseconds
-   - Every member receives the exact same start value (`--start-unix-ms`)
+   - Connects every member before preparing playback
+   - Prepares generation 0 on every connected CLI and starts feeding audio
+   - Waits until every member reports the generation primed
+   - Sends one shared audible start instant to every member
 
 2. **Client Setup** (per player, `_start_client()` method)
    - Creates an `AirPlayStream` instance with the player's PCM format
      (16-bit default, 24-bit s32le when hi-res is enabled)
-   - Starts the CLI process with the shared start instant
+   - Starts the CLI process and connects to the receiver without starting playback
    - Configures FFmpeg for audio format conversion and optional DSP filters
-   - Pipes FFmpeg output to CLI process stdin
+   - Keeps process stdin connected so generation 0 can select it with `AUDIO=-`
 
 3. **Audio Streaming** (`_audio_streamer()` method)
    - Receives PCM audio chunks from Music Assistant core
@@ -242,7 +244,7 @@ The `AirPlayStreamSession` class in [stream_session.py](stream_session.py) manag
    - Handles silence padding if audio source is slow (watchdog mechanism)
 
 4. **Connection Monitoring**
-   - Waits for all devices to connect before starting playback
+   - Waits for all devices to connect and prime before starting playback
    - Monitors CLI stderr for connection status and errors
    - Removes players that fail to keep up (write timeouts)
 
@@ -376,13 +378,16 @@ and verify it against that release's `SHA256SUMS`. For local source development,
 ### Binary Communication
 
 **Input** (stdin):
-- PCM audio data piped from FFmpeg: s16le for 16-bit, raw s32le for 24-bit
+- Generation 0 PCM selected by command-pipe `PREPARE` with `AUDIO=-`: s16le
+  for 16-bit, raw s32le for 24-bit
   (the binary truncates 32→24 internally when `--bitdepth 24` is passed)
 - May be written eagerly, ahead of the scheduled start; byte 0 maps to the
   sample audible at the start instant
 
 **Commands** (named pipe):
 - Interactive commands sent via `AsyncNamedPipeWriter`
+- Required for every streaming protocol; audio sources are supplied only by
+  generation `PREPARE` (`AUDIO=-` for stdin or `AUDIO=<fifo path>`)
 - Examples: `ACTION=PLAY`, `ACTION=PAUSE`, `VOLUME=50`, `TITLE=Song Name`
 - MA creates the pipe and sends text metadata immediately after process start;
   timeline-anchored metadata and artwork are refreshed once the receiver connects
@@ -402,24 +407,24 @@ The provider monitors stderr in a separate task (`_stderr_reader()` in [stream.p
 
 ## Start Timing and Synchronization
 
-The provider never handles NTP fixed-point formats: the group start is passed
-to the binary as plain unix epoch milliseconds (`--start-unix-ms`), meaning
-"**the first sample is audible exactly at this instant**" on every protocol
-path (RAOP, AirPlay 2 RAOP-compat and native).
+The provider never handles NTP fixed-point formats: every media generation is
+prepared and started over the command pipe. `START_UNIX_MS` is a plain unix
+epoch millisecond meaning "**the first sample is audible exactly at this
+instant**" on every protocol path (RAOP, AirPlay 2 RAOP-compat and native).
 
-1. Calculate the start instant: `now + wait_start`, a fixed per-protocol lead
-   (`AIRPLAY_RAOP_SETUP_LEAD_MS` / `AIRPLAY_AP2_SETUP_LEAD_MS`) covering process
-   spawn + connect + session setup + receiver pre-fill; native AirPlay 2 uses
-   the larger budget as its pre-fill is paced
-2. Pass the **same** value to every member of a sync group — the group takes
-   the largest member lead, so mixed RAOP + AirPlay 2 groups align by
-   construction
-3. The binary owns all lead/buffer handling from there: it fills the
-   receiver's buffer ahead of the audible start (clamped to the buffering
-   window the device reports), so the start cannot underrun
-4. Audio may be written to the binary's stdin as soon as it is available -
-   byte 0 of stdin maps to the sample audible at the start instant
-5. Per-player `sync_adjust` config allows fine-tuning (+/- milliseconds)
+1. Start every CLI and wait until every group member reports connected
+2. Send `PREPARE` for generation 0 to every member, begin feeding PCM, and wait
+   until every member reports primed
+3. Calculate one explicit start instant with a short post-prime lead and send
+   the same value in `START` to every member
+4. The binary owns receiver-buffer handling from there, so the commanded start
+   cannot race connection or pre-fill
+5. Warm seek, next-track and grouped resume use the same PREPARE/prime/START
+   barrier for later generations on legacy RAOP, RAOP-compatible AirPlay 2 and
+   native AirPlay 2; standby keeps each protocol connection alive
+6. Sendspin starts preserve its externally supplied audible instant after the
+   same connection and prime gates
+7. Per-player `sync_adjust` config allows fine-tuning (+/- milliseconds)
 
 ### Shared PTP Clock Daemon
 

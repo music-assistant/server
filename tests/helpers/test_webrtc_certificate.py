@@ -12,10 +12,35 @@ from music_assistant.helpers.webrtc_certificate import (
     CERT_FILENAME,
     KEY_FILENAME,
     _get_or_create_certificate,
+    get_or_create_remote_id,
+    get_or_create_webrtc_certificate_pems,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+# Frozen fixtures derived from _generate_certificate()/_remote_id_from_certificate(),
+# pinned as literals so these tests keep guarding the derivation even if the
+# implementation changes later.
+FIXTURE_CERT_PEM = (
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIBQTCB6KADAgECAhRuYKuRIszhzAOCq29MyuvEOzJ9EDAKBggqhkjOPQQDAjAh\n"
+    "MR8wHQYDVQQDDBZNdXNpYyBBc3Npc3RhbnQgV2ViUlRDMB4XDTI2MDcxOTEwMjIw\n"
+    "OFoXDTM2MDcxNzEwMjIwOFowITEfMB0GA1UEAwwWTXVzaWMgQXNzaXN0YW50IFdl\n"
+    "YlJUQzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABAU/5JpGlyTQ2pexaev5083F\n"
+    "1/dkvNKxCCRWQbfZOvk1vRhJP4jsT710Un7jzfMx25rtMVsv1lzvCmerRFCsacsw\n"
+    "CgYIKoZIzj0EAwIDSAAwRQIgOTVzTaqOXVyaD2NDNIVjXlX3hDOxEgbacy7Q7Lfj\n"
+    "61QCIQCq3RN0iyR9qfuo28VjkWceEcHkDwynS1vFKr2oqffO6g==\n"
+    "-----END CERTIFICATE-----\n"
+)
+FIXTURE_KEY_PEM = (
+    "-----BEGIN PRIVATE KEY-----\n"
+    "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgrrFr6dcpp+Sr1j+e\n"
+    "dY0oUp/WYDjh/xpceu3sIxmldUWhRANCAAQFP+SaRpck0NqXsWnr+dPNxdf3ZLzS\n"
+    "sQgkVkG32Tr5Nb0YST+I7E+9dFJ+483zMdua7TFbL9Zc7wpnq0RQrGnL\n"
+    "-----END PRIVATE KEY-----\n"
+)
+FIXTURE_REMOTE_ID = "QCPJJTJMI3IDBNURU6XJJENRYU"
 
 
 def test_certificate_is_persistent(tmp_path: Path) -> None:
@@ -66,3 +91,23 @@ def test_private_key_permissions_tightened_on_load(tmp_path: Path) -> None:
     _, cert2 = _get_or_create_certificate(str(tmp_path))
     assert cert2 == cert
     assert stat.S_IMODE(key_path.stat().st_mode) == 0o600
+
+
+def test_remote_id_and_pems_stable_across_frozen_fixture(tmp_path: Path) -> None:
+    """A pre-existing certificate pair yields the frozen Remote ID and is returned as-is."""
+    (tmp_path / CERT_FILENAME).write_text(FIXTURE_CERT_PEM)
+    (tmp_path / KEY_FILENAME).write_text(FIXTURE_KEY_PEM)
+
+    assert get_or_create_remote_id(str(tmp_path)) == FIXTURE_REMOTE_ID
+    assert get_or_create_webrtc_certificate_pems(str(tmp_path)) == (
+        FIXTURE_CERT_PEM,
+        FIXTURE_KEY_PEM,
+    )
+
+
+def test_get_or_create_webrtc_certificate_pems_persists(tmp_path: Path) -> None:
+    """A fresh call creates the certificate files and a second call returns the same PEMs."""
+    cert_pem, key_pem = get_or_create_webrtc_certificate_pems(str(tmp_path))
+    cert_pem2, key_pem2 = get_or_create_webrtc_certificate_pems(str(tmp_path))
+    assert cert_pem2 == cert_pem
+    assert key_pem2 == key_pem

@@ -13,7 +13,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from music_assistant.controllers.streams.smart_fades.models import TransitionTier
+from music_assistant.controllers.streams.smart_fades.models import TransitionPlan, TransitionTier
 from music_assistant.controllers.streams.smart_fades.vocal import (
     COLLISION_SECONDS_LIMIT,
     SHORT_FADE_SECONDS,
@@ -125,6 +125,52 @@ class AudibleTrimPolicy(Policy):
         return Verdict.ok(trim * self.trim_penalty_per_second)
 
 
+class DeadAirPolicy(Policy):
+    """Penalize a handover that strands the listener in silence before B's groove entry."""
+
+    grace_seconds: float = 4.0
+    dead_air_penalty_per_second: float = 1.0
+    # pre-fade outgoing level (relative to its own track peak) below which the
+    # outgoing is already a whisper and a slow incoming intro is welcome
+    hot_outgoing_floor: float = 0.178  # -15 dB
+    lookback_seconds: float = 8.0
+
+    def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
+        """Judge one candidate against the shared per-transition context."""
+        plan = candidate.plan
+        gap = (
+            ctx.natural_entry
+            - (plan.fadein_trim_start or 0.0)
+            - plan.crossfade_duration
+            - self.grace_seconds
+        )
+        if gap <= 0.0 or not self._outgoing_is_hot(plan, ctx):
+            return Verdict.ok()
+        return Verdict.ok(gap * self.dead_air_penalty_per_second)
+
+    def _outgoing_is_hot(self, plan: TransitionPlan, ctx: TransitionContext) -> bool:
+        """Whether the outgoing still plays at level just before the candidate's fade."""
+        analysis = ctx.outgoing.analysis
+        rms = analysis.rms_energy
+        duration = analysis.duration
+        if rms is None or len(rms) == 0 or not duration:
+            # without energy data the gate cannot clear the penalty; dead air
+            # after an unknown outgoing is worse than a trimmed intro
+            return True
+        peak = max(rms)
+        if peak <= 0.0:
+            return False
+        bin_seconds = duration / len(rms)
+        # sample the source RMS over the last lookback window ending at the cut
+        # anchor; the stored energy is unfaded, so this reads the outgoing's own
+        # level right before the cut with no crossfade-ramp or tempo-stretch mixed in
+        anchor = ctx.buffer_offset + plan.fade_out_window
+        low = max(0, int((anchor - self.lookback_seconds) / bin_seconds))
+        high = max(low + 1, min(len(rms), int(anchor / bin_seconds)))
+        window = rms[low:high]
+        return sum(window) / len(window) >= peak * self.hot_outgoing_floor
+
+
 class OverlapPreferencePolicy(Policy):
     """Prefer the tier's top rung, the context's chosen tier, and two-sided vocal relief."""
 
@@ -172,6 +218,7 @@ def default_policies() -> tuple[Policy, ...]:
         VocalCollisionPolicy(),
         VocalTruncationPolicy(),
         AudibleTrimPolicy(),
+        DeadAirPolicy(),
         OverlapPreferencePolicy(),
         AnchorAlignmentPolicy(),
     )

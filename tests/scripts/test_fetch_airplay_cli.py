@@ -56,8 +56,10 @@ def test_fetch_airplay_cli_preserves_existing_binary(
     destination = tmp_path / fetch_airplay_cli.BINARY_DIR / "cliairplay-linux-x86_64"
     destination.parent.mkdir(parents=True)
     destination.write_bytes(b"local build")
+    _write_dockerfile(tmp_path, b"unused manifest")
     monkeypatch.setattr("scripts.fetch_airplay_cli.platform.system", lambda: "Linux")
     monkeypatch.setattr("scripts.fetch_airplay_cli.platform.machine", lambda: "x86_64")
+    monkeypatch.setattr(fetch_airplay_cli, "_read_binary_version", lambda _path: None)
     monkeypatch.setattr(
         fetch_airplay_cli,
         "_download",
@@ -66,6 +68,36 @@ def test_fetch_airplay_cli_preserves_existing_binary(
 
     assert fetch_airplay_cli.fetch_airplay_cli(tmp_path) == destination
     assert destination.read_bytes() == b"local build"
+
+
+def test_fetch_airplay_cli_replaces_older_release_binary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Replace a recognized older release binary with the pinned release."""
+    binary = b"new release"
+    asset_name = "cliairplay-macos-arm64"
+    manifest = f"{hashlib.sha256(binary).hexdigest()}  {asset_name}\n".encode()
+    _write_dockerfile(tmp_path, manifest)
+    destination = tmp_path / fetch_airplay_cli.BINARY_DIR / asset_name
+    destination.parent.mkdir(parents=True)
+    destination.write_bytes(b"old release")
+    downloads: list[str] = []
+
+    def download(url: str) -> bytes:
+        downloads.append(url)
+        return manifest if url.endswith("/SHA256SUMS") else binary
+
+    monkeypatch.setattr("scripts.fetch_airplay_cli.platform.system", lambda: "Darwin")
+    monkeypatch.setattr("scripts.fetch_airplay_cli.platform.machine", lambda: "arm64")
+    monkeypatch.setattr(fetch_airplay_cli, "_read_binary_version", lambda _path: (0, 0, 9))
+    monkeypatch.setattr(fetch_airplay_cli, "_download", download)
+
+    assert fetch_airplay_cli.fetch_airplay_cli(tmp_path) == destination
+    assert destination.read_bytes() == binary
+    assert downloads == [
+        f"{fetch_airplay_cli.RELEASE_BASE_URL}/v0.1.0/SHA256SUMS",
+        f"{fetch_airplay_cli.RELEASE_BASE_URL}/v0.1.0/{asset_name}",
+    ]
 
 
 def test_fetch_airplay_cli_rejects_checksum_mismatch(
@@ -156,6 +188,43 @@ def test_main_reports_filesystem_error(
 def test_asset_name(system: str, machine: str, expected: str | None) -> None:
     """Map supported development platforms to their release asset."""
     assert fetch_airplay_cli._asset_name(system, machine) == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("v0.3.0", (0, 3, 0)),
+        ("1.2.3", (1, 2, 3)),
+        ("0.3", None),
+        ("development", None),
+    ],
+)
+def test_parse_release_version(value: str, expected: tuple[int, int, int] | None) -> None:
+    """Parse supported release versions without treating local labels as releases."""
+    assert fetch_airplay_cli._parse_release_version(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("current", "pinned", "expected"),
+    [
+        ((0, 2, 0), "v0.3.0", True),
+        ((0, 3, 0), "v0.3.0", False),
+        ((0, 3, 1), "v0.3.0", False),
+        (None, "v0.3.0", False),
+    ],
+)
+def test_binary_is_outdated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    current: tuple[int, int, int] | None,
+    pinned: str,
+    expected: bool,
+) -> None:
+    """Only older recognized releases are replaced."""
+    binary_path = tmp_path / "cliairplay"
+    monkeypatch.setattr(fetch_airplay_cli, "_read_binary_version", lambda _path: current)
+
+    assert fetch_airplay_cli._binary_is_outdated(binary_path, pinned) is expected
 
 
 def _write_dockerfile(root: Path, manifest: bytes, *, manifest_digest: str | None = None) -> None:

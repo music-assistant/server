@@ -191,6 +191,24 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
         """Return True as the provider is a streaming provider."""
         return True
 
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        if not self.logged_in:
+            return []
+        return await self._recommendation_rows_from_payload()
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if not self.logged_in:
+            return UniqueList()
+        return await self._recommendation_items_from_payload(item_id)
+
     def _get_provider_mapping(self, item_id: str) -> ProviderMapping:
         return ProviderMapping(
             item_id=item_id,
@@ -663,41 +681,6 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
 
         return results
 
-    async def get_recommendations(self) -> list[RecommendationFolder]:
-        """Get this provider's available recommendation rows, without items."""
-        if not self.logged_in:
-            return []
-        return await self._recommendation_rows_from_payload()
-
-    async def get_recommendation_items(
-        self, item_id: str
-    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
-        """
-        Get the items for a single recommendation row.
-
-        :param item_id: The item_id of the row, as returned by get_recommendations.
-        """
-        if not self.logged_in:
-            return UniqueList()
-        return await self._recommendation_items_from_payload(item_id)
-
-    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
-        """Fetch the experience-menu recommendation folders, with items."""
-        self.logger.debug("Getting recommendations from API")
-        folders: list[RecommendationFolder] = []
-        recommendations = await self.client.personal.get_experience_menu(
-            recommendations=MenuRecommendationOptions.ONLY
-        )
-        if recommendations.sub_items:
-            for recommendation in recommendations.sub_items:
-                # recommendation is a RecommendedMenuItem
-                folder = await self.adaptor.new_object(
-                    recommendation, force_type=RecommendationFolder
-                )
-                if isinstance(folder, RecommendationFolder):
-                    folders.append(folder)
-        return folders
-
     async def on_played(
         self,
         media_type: MediaType,
@@ -728,3 +711,20 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
                         self.logger.debug(f"Updated play status: {success}")
                     except exceptions.APIResponseError as err:
                         self.logger.error(f"Error updating play status: {err}")
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch the experience-menu recommendation folders, with items."""
+        self.logger.debug("Getting recommendations from API")
+        folders: list[RecommendationFolder] = []
+        recommendations = await self.client.personal.get_experience_menu(
+            recommendations=MenuRecommendationOptions.ONLY
+        )
+        if recommendations.sub_items:
+            for recommendation in recommendations.sub_items:
+                # recommendation is a RecommendedMenuItem
+                folder = await self.adaptor.new_object(
+                    recommendation, force_type=RecommendationFolder
+                )
+                if isinstance(folder, RecommendationFolder):
+                    folders.append(folder)
+        return folders

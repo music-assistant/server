@@ -6,7 +6,14 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import IdentifierType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.config_entries import PlayerConfig
+from music_assistant_models.enums import (
+    EventType,
+    IdentifierType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+)
 from music_assistant_models.player import OutputProtocol, PlayerMedia
 
 from music_assistant.constants import (
@@ -5246,6 +5253,277 @@ class TestUniversalPlayerMerging:
                 f"but has {len(up.linked_output_protocols)}"
             )
 
+    @staticmethod
+    def _setup_merge_scenario(
+        mock_mass: MagicMock, config_store: dict[str, Any]
+    ) -> tuple[PlayerController, UniversalPlayer, list[Awaitable[object]]]:
+        """
+        Wire a merge scenario for the config carry-over tests.
+
+        Universal players 'up_keep' and 'up_remove' share a MAC; with equal
+        link counts the deterministic tiebreaker keeps 'up_keep' and removes
+        'up_remove', so 'up_remove' is the loser whose config is carried over.
+        """
+        controller = PlayerController(mock_mass)
+        up_provider = create_mock_universal_provider(mock_mass)
+
+        def config_get(key: str, default: object = None) -> object:
+            return config_store.get(key, default)
+
+        def config_set(key: str, value: object) -> None:
+            config_store[key] = value
+
+        def config_remove(key: str) -> None:
+            config_store.pop(key, None)
+
+        scheduled_tasks: list[Awaitable[object]] = []
+
+        def capture_task(task: Awaitable[object], *_args: Any, **_kwargs: Any) -> None:
+            scheduled_tasks.append(task)
+
+        mock_mass.config.get = MagicMock(side_effect=config_get)
+        mock_mass.config.set = MagicMock(side_effect=config_set)
+        mock_mass.config.remove = MagicMock(side_effect=config_remove)
+        mock_mass.players = controller
+        mock_mass.player_queues = MagicMock()
+        mock_mass.call_later = MagicMock()
+        mock_mass.loop = MagicMock()
+        mock_mass.create_task = MagicMock(side_effect=capture_task)
+
+        keep = UniversalPlayer(
+            provider=up_provider,
+            player_id="up_keep",
+            name="Keep (Universal)",
+            device_info=DeviceInfo(model="Test", manufacturer="Test"),
+            protocol_player_ids=["ap_keep"],
+        )
+        keep._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, "AA:BB:CC:DD:EE:FF")
+        keep._cache.clear()
+        keep.update_state(signal_event=False)
+        keep.set_initialized()
+
+        remove = UniversalPlayer(
+            provider=up_provider,
+            player_id="up_remove",
+            name="Remove (Universal)",
+            device_info=DeviceInfo(model="Test", manufacturer="Test"),
+            protocol_player_ids=["dlna_live"],
+        )
+        remove._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, "AA:BB:CC:DD:EE:FF")
+        remove._cache.clear()
+        remove.update_state(signal_event=False)
+        remove.set_initialized()
+
+        ap_keep = MockPlayer(
+            MockProvider("airplay", mass=mock_mass),
+            "ap_keep",
+            "AirPlay",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap_keep.set_initialized()
+
+        dlna_live = MockPlayer(
+            MockProvider("dlna", mass=mock_mass),
+            "dlna_live",
+            "DLNA",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        dlna_live.set_initialized()
+
+        controller._players = {
+            "up_keep": keep,
+            "up_remove": remove,
+            "ap_keep": ap_keep,
+            "dlna_live": dlna_live,
+        }
+        controller._add_protocol_link(keep, ap_keep, "airplay")
+        controller._add_protocol_link(remove, dlna_live, "dlna")
+        return controller, keep, scheduled_tasks
+
+    async def test_merge_carries_over_universal_config(self, mock_mass: MagicMock) -> None:
+        """Merge migrates name, values, DSP and queue settings from loser to keeper."""
+        config_store: dict[str, Any] = {
+            "players/up_keep": {
+                "enabled": True,
+                "name": "Keep (Universal)",
+                "default_name": "Keep (Universal)",
+                "values": {"volume_control": "keep_ctrl"},
+            },
+            "players/up_remove": {
+                "enabled": True,
+                "name": "Living Room",
+                "default_name": "Remove (Universal)",
+                "values": {
+                    "hide_in_ui": True,
+                    "volume_control": "remove_ctrl",
+                    "device_info": {"model": "Test", "manufacturer": "Test"},
+                },
+            },
+            "players/ap_keep": {"enabled": True},
+            "players/dlna_live": {"enabled": True},
+            "player_dsp/up_remove": {"enabled": True, "filters": []},
+            "player_queues/up_remove": {
+                "queue_id": "up_remove",
+                "values": {"crossfade_duration": 5},
+            },
+        }
+        controller, keep, scheduled_tasks = self._setup_merge_scenario(mock_mass, config_store)
+
+        with patch.object(controller, "_save_universal_player_data"):
+            controller._check_merge_universal_players(keep)
+
+        # the custom display name and non-conflicting values moved onto the keeper
+        assert config_store["players/up_keep/name"] == "Living Room"
+        assert config_store["players/up_keep/values/hide_in_ui"] is True
+        # values the keeper has explicitly set are not overwritten
+        assert "players/up_keep/values/volume_control" not in config_store
+        # wrapper bookkeeping is not carried over
+        assert "players/up_keep/values/device_info" not in config_store
+        # DSP moved wholesale and queue settings moved and re-keyed onto the keeper
+        assert config_store["player_dsp/up_keep"] == {"enabled": True, "filters": []}
+        assert config_store["player_queues/up_keep"] == {
+            "queue_id": "up_keep",
+            "values": {"crossfade_duration": 5},
+        }
+        assert "player_queues/up_remove" not in config_store
+        # the keeper's in-place config gets reloaded to apply the migrated values
+        assert any("_reapply_player_config" in repr(t) for t in scheduled_tasks)
+
+        # and the losing universal player is still permanently removed
+        unregister_tasks = [t for t in scheduled_tasks if "unregister" in repr(t)]
+        assert len(unregister_tasks) == 1
+        await unregister_tasks[0]
+        assert "up_remove" not in controller._players
+
+    def test_merge_keeps_keeper_explicit_values(self, mock_mass: MagicMock) -> None:
+        """Values explicitly set on the keeper win over the losing player's."""
+        config_store: dict[str, Any] = {
+            "players/up_keep": {
+                "enabled": True,
+                "name": "Kitchen",
+                "default_name": "Keep (Universal)",
+                "values": {"hide_in_ui": False},
+            },
+            "players/up_remove": {
+                "enabled": True,
+                "name": "Living Room",
+                "default_name": "Remove (Universal)",
+                "values": {"hide_in_ui": True, "flow_mode": True},
+            },
+            "players/ap_keep": {"enabled": True},
+            "players/dlna_live": {"enabled": True},
+            "player_dsp/up_keep": {"enabled": False, "filters": ["keep"]},
+            "player_dsp/up_remove": {"enabled": True, "filters": ["remove"]},
+        }
+        controller, keep, _ = self._setup_merge_scenario(mock_mass, config_store)
+
+        with patch.object(controller, "_save_universal_player_data"):
+            controller._check_merge_universal_players(keep)
+
+        # the keeper's own custom name and DSP config win
+        assert "players/up_keep/name" not in config_store
+        assert config_store["players/up_keep"]["name"] == "Kitchen"
+        assert config_store["player_dsp/up_keep"] == {"enabled": False, "filters": ["keep"]}
+        # the keeper's explicit value is not overwritten
+        assert "players/up_keep/values/hide_in_ui" not in config_store
+        # non-conflicting values still migrate
+        assert config_store["players/up_keep/values/flow_mode"] is True
+
+    def test_merge_repoints_group_memberships(self, mock_mass: MagicMock) -> None:
+        """Merge re-points group memberships from the removed wrapper to the keeper."""
+        config_store: dict[str, Any] = {
+            "players/up_keep": {
+                "enabled": True,
+                "name": "Keep (Universal)",
+                "default_name": "Keep (Universal)",
+                "values": {},
+            },
+            "players/up_remove": {
+                "enabled": True,
+                "name": "Remove (Universal)",
+                "default_name": "Remove (Universal)",
+                "values": {},
+            },
+            "players/ap_keep": {"enabled": True},
+            "players/dlna_live": {"enabled": True},
+            # nested players dict scanned by _repoint_group_memberships
+            "players": {
+                "group_1": {
+                    "enabled": True,
+                    "values": {
+                        "group_members": ["up_remove", "other"],
+                        "allowed_members": ["up_remove"],
+                    },
+                },
+                "group_2": {
+                    "enabled": True,
+                    # keeper already listed -> no duplicate after re-point
+                    "values": {"group_members": ["up_keep", "up_remove"]},
+                },
+            },
+        }
+        controller, keep, _ = self._setup_merge_scenario(mock_mass, config_store)
+
+        with patch.object(controller, "_save_universal_player_data"):
+            controller._check_merge_universal_players(keep)
+
+        assert config_store["players/group_1/values/group_members"] == ["up_keep", "other"]
+        assert config_store["players/group_1/values/allowed_members"] == ["up_keep"]
+        # no duplicate when the keeper is already a member
+        assert config_store["players/group_2/values/group_members"] == ["up_keep"]
+
+    async def test_merge_stops_playing_loser_before_unregister(self, mock_mass: MagicMock) -> None:
+        """A playing losing wrapper is stopped before it is permanently removed."""
+        config_store: dict[str, Any] = {
+            "players/up_keep": {"enabled": True},
+            "players/up_remove": {"enabled": True},
+            "players/ap_keep": {"enabled": True},
+            "players/dlna_live": {"enabled": True},
+        }
+        controller, keep, scheduled_tasks = self._setup_merge_scenario(mock_mass, config_store)
+        controller._players["up_remove"]._attr_playback_state = PlaybackState.PLAYING
+
+        call_order: list[str] = []
+        mock_mass.player_queues.stop = AsyncMock(
+            side_effect=lambda *_a, **_k: call_order.append("stop")
+        )
+
+        with patch.object(controller, "_save_universal_player_data"):
+            controller._check_merge_universal_players(keep)
+
+        task = next(t for t in scheduled_tasks if "unregister" in repr(t))
+
+        def _record_unregister(*_a: Any, **_k: Any) -> None:
+            call_order.append("unregister")
+
+        with patch.object(controller, "unregister", new=AsyncMock(side_effect=_record_unregister)):
+            await task
+
+        assert call_order == ["stop", "unregister"]
+        mock_mass.player_queues.stop.assert_awaited_once_with("up_remove")
+
+    async def test_merge_idle_loser_not_stopped(self, mock_mass: MagicMock) -> None:
+        """An idle losing wrapper is removed without a stop command."""
+        config_store: dict[str, Any] = {
+            "players/up_keep": {"enabled": True},
+            "players/up_remove": {"enabled": True},
+            "players/ap_keep": {"enabled": True},
+            "players/dlna_live": {"enabled": True},
+        }
+        controller, keep, scheduled_tasks = self._setup_merge_scenario(mock_mass, config_store)
+        mock_mass.player_queues.stop = AsyncMock()
+
+        with patch.object(controller, "_save_universal_player_data"):
+            controller._check_merge_universal_players(keep)
+
+        task = next(t for t in scheduled_tasks if "unregister" in repr(t))
+        await task
+
+        mock_mass.player_queues.stop.assert_not_awaited()
+        assert "up_remove" not in controller._players
+
 
 class TestUniversalPlayerReplacement:
     """Tests for replacing a universal player with a native player."""
@@ -5576,6 +5854,338 @@ class TestUniversalPlayerReplacement:
         assert all(
             link.output_protocol_id != "ap_old" for link in universal.linked_output_protocols
         )
+
+    @staticmethod
+    def _setup_carry_over_scenario(
+        mock_mass: MagicMock, config_store: dict[str, Any]
+    ) -> tuple[PlayerController, MockPlayer, list[Awaitable[object]]]:
+        """
+        Wire a replacement scenario for the config carry-over tests.
+
+        Universal player 'up_old' (holding protocol player 'ap_live') is
+        replaceable by native player 'cast_1'.
+        """
+        controller = PlayerController(mock_mass)
+        up_provider = create_mock_universal_provider(mock_mass)
+
+        def config_get(key: str, default: object = None) -> object:
+            return config_store.get(key, default)
+
+        def config_set(key: str, value: object) -> None:
+            config_store[key] = value
+
+        def config_remove(key: str) -> None:
+            config_store.pop(key, None)
+
+        scheduled_tasks: list[Awaitable[object]] = []
+
+        def capture_task(task: Awaitable[object], *_args: Any, **_kwargs: Any) -> None:
+            scheduled_tasks.append(task)
+
+        mock_mass.config.get = MagicMock(side_effect=config_get)
+        mock_mass.config.set = MagicMock(side_effect=config_set)
+        mock_mass.config.remove = MagicMock(side_effect=config_remove)
+        mock_mass.players = controller
+        mock_mass.player_queues = MagicMock()
+        mock_mass.call_later = MagicMock()
+        mock_mass.loop = MagicMock()
+        mock_mass.create_task = MagicMock(side_effect=capture_task)
+
+        universal = UniversalPlayer(
+            provider=up_provider,
+            player_id="up_old",
+            name="Soundbar (Universal)",
+            device_info=DeviceInfo(model="Test", manufacturer="Test"),
+            protocol_player_ids=["ap_live"],
+        )
+        universal._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, "AA:BB:CC:DD:EE:FF")
+        universal._cache.clear()
+        universal.update_state(signal_event=False)
+        universal.set_initialized()
+
+        cast_provider = MockProvider("cast", mass=mock_mass)
+        native = MockPlayer(
+            cast_provider,
+            "cast_1",
+            "Soundbar",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        native.set_initialized()
+
+        airplay_provider = MockProvider("airplay", mass=mock_mass)
+        ap_live = MockPlayer(
+            airplay_provider,
+            "ap_live",
+            "Soundbar (AirPlay)",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        ap_live.set_initialized()
+
+        controller._players = {"up_old": universal, "cast_1": native, "ap_live": ap_live}
+        controller._add_protocol_link(universal, ap_live, "airplay")
+        return controller, native, scheduled_tasks
+
+    async def test_replace_carries_over_universal_config(self, mock_mass: MagicMock) -> None:
+        """Replacement migrates name, values, DSP and queue settings to the native player."""
+        config_store: dict[str, Any] = {
+            # fresh native configs store name == default_name; that must not
+            # count as a user override blocking the name carry-over
+            "players/cast_1": {
+                "enabled": True,
+                "name": "Soundbar",
+                "default_name": "Soundbar",
+                "values": {"volume_control": "native"},
+            },
+            "players/up_old": {
+                "enabled": True,
+                "name": "Living Room",
+                "default_name": "Soundbar (Universal)",
+                "values": {
+                    "hide_in_ui": True,
+                    "volume_control": "up_volume_control",
+                    "linked_protocol_ids": ["ap_live", "ghost_proto"],
+                    "device_identifiers": {"mac_address": "AA:BB:CC:DD:EE:FF"},
+                    "device_info": {"model": "Test", "manufacturer": "Test"},
+                    "ap_live||protocol||output_codec": "flac",
+                },
+            },
+            "players/ap_live": {"enabled": True},
+            "player_dsp/up_old": {"enabled": True, "filters": []},
+            "player_queues/up_old": {"queue_id": "up_old", "values": {"crossfade_duration": 5}},
+        }
+        controller, native, scheduled_tasks = self._setup_carry_over_scenario(
+            mock_mass, config_store
+        )
+
+        controller._check_replace_universal_player(native)
+
+        # the custom display name and user-set values moved onto the native player
+        assert config_store["players/cast_1/name"] == "Living Room"
+        assert config_store["players/cast_1/values/hide_in_ui"] is True
+        # values the native player has explicitly set are not overwritten
+        assert "players/cast_1/values/volume_control" not in config_store
+        # wrapper bookkeeping and protocol-mirror values are not carried over
+        assert "players/cast_1/values/device_identifiers" not in config_store
+        assert "players/cast_1/values/device_info" not in config_store
+        assert "players/cast_1/values/ap_live||protocol||output_codec" not in config_store
+        # linked ids come from the protocol move machinery, not the universal's raw list
+        assert config_store["players/cast_1/values/linked_protocol_ids"] == ["ap_live"]
+        # DSP settings moved wholesale
+        assert config_store["player_dsp/cast_1"] == {"enabled": True, "filters": []}
+        # queue settings moved and re-keyed onto the native player's queue
+        assert config_store["player_queues/cast_1"] == {
+            "queue_id": "cast_1",
+            "values": {"crossfade_duration": 5},
+        }
+        assert "player_queues/up_old" not in config_store
+        # the native player's in-place config gets reloaded to apply the new values
+        assert any("_reapply_player_config" in repr(t) for t in scheduled_tasks)
+
+        # and the universal player is still permanently removed
+        unregister_tasks = [t for t in scheduled_tasks if "unregister" in repr(t)]
+        assert len(unregister_tasks) == 1
+        await unregister_tasks[0]
+        assert "up_old" not in controller._players
+        # migrated values survive the permanent cleanup of the universal player
+        assert config_store["players/cast_1/name"] == "Living Room"
+        assert "players/up_old" not in config_store
+        assert "player_dsp/up_old" not in config_store
+
+    def test_replace_carries_over_nothing_without_user_config(self, mock_mass: MagicMock) -> None:
+        """A non-customized universal player migrates nothing (no default-name carry)."""
+        config_store: dict[str, Any] = {
+            "players/cast_1": {"enabled": True},
+            "players/up_old": {
+                "enabled": True,
+                "name": "Soundbar (Universal)",
+                "default_name": "Soundbar (Universal)",
+                "values": {"linked_protocol_ids": ["ap_live"]},
+            },
+            "players/ap_live": {"enabled": True},
+        }
+        controller, native, scheduled_tasks = self._setup_carry_over_scenario(
+            mock_mass, config_store
+        )
+
+        controller._check_replace_universal_player(native)
+
+        assert "players/cast_1/name" not in config_store
+        assert "player_dsp/cast_1" not in config_store
+        assert "player_queues/cast_1" not in config_store
+        # nothing migrated, so no config reload is scheduled
+        assert not any("_reapply_player_config" in repr(t) for t in scheduled_tasks)
+        assert any("unregister" in repr(t) for t in scheduled_tasks)
+
+    def test_replace_keeps_native_name_dsp_and_queue_values(self, mock_mass: MagicMock) -> None:
+        """Values explicitly set on the native player win over the universal player's."""
+        config_store: dict[str, Any] = {
+            "players/cast_1": {"enabled": True, "name": "Kitchen", "default_name": "Soundbar"},
+            "players/up_old": {
+                "enabled": True,
+                "name": "Living Room",
+                "default_name": "Soundbar (Universal)",
+                "values": {"hide_in_ui": True},
+            },
+            "players/ap_live": {"enabled": True},
+            "player_dsp/cast_1": {"enabled": False, "filters": ["native"]},
+            "player_dsp/up_old": {"enabled": True, "filters": ["universal"]},
+            "player_queues/cast_1": {"queue_id": "cast_1", "values": {"crossfade_duration": 2}},
+            "player_queues/up_old": {
+                "queue_id": "up_old",
+                "values": {"crossfade_duration": 8, "autoplay_mode": "smart"},
+            },
+        }
+        controller, native, _ = self._setup_carry_over_scenario(mock_mass, config_store)
+
+        controller._check_replace_universal_player(native)
+
+        # the native player's own custom name and DSP config win
+        assert "players/cast_1/name" not in config_store
+        assert config_store["players/cast_1"]["name"] == "Kitchen"
+        assert config_store["player_dsp/cast_1"] == {"enabled": False, "filters": ["native"]}
+        # queue values merge without overwriting the native queue's own values
+        assert config_store["player_queues/cast_1"] == {
+            "queue_id": "cast_1",
+            "values": {"crossfade_duration": 2, "autoplay_mode": "smart"},
+        }
+        assert "player_queues/up_old" not in config_store
+        # non-conflicting values still migrate
+        assert config_store["players/cast_1/values/hide_in_ui"] is True
+
+    async def test_reapply_player_config_refreshes_native_player(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Reloading the config applies a migrated custom name to the live player."""
+        controller = PlayerController(mock_mass)
+        mock_mass.players = controller
+        mock_mass.player_queues = MagicMock()
+        mock_mass.call_later = MagicMock()
+        provider = MockProvider("cast", mass=mock_mass)
+        native = MockPlayer(provider, "cast_1", "Soundbar")
+        native.set_initialized()
+        controller._players = {"cast_1": native}
+
+        new_config = PlayerConfig.parse(
+            [],
+            {
+                "player_id": "cast_1",
+                "provider": "cast",
+                "name": "Living Room",
+                "default_name": "Soundbar",
+            },
+        )
+        mock_mass.config.get_player_config = AsyncMock(return_value=new_config)
+
+        await controller._reapply_player_config("cast_1")
+
+        assert native.config is new_config
+        assert native.display_name == "Living Room"
+        signaled_events = [call.args[0] for call in mock_mass.signal_event.call_args_list]
+        assert EventType.PLAYER_CONFIG_UPDATED in signaled_events
+
+    def test_replace_repoints_group_memberships(self, mock_mass: MagicMock) -> None:
+        """Replacement re-points group memberships from the wrapper to the native player."""
+        config_store: dict[str, Any] = {
+            "players/cast_1": {"enabled": True},
+            "players/up_old": {
+                "enabled": True,
+                "name": "Soundbar (Universal)",
+                "default_name": "Soundbar (Universal)",
+                "values": {"linked_protocol_ids": ["ap_live"]},
+            },
+            "players/ap_live": {"enabled": True},
+            # nested players dict scanned by _repoint_group_memberships
+            "players": {
+                "group_1": {
+                    "enabled": True,
+                    "values": {
+                        "group_members": ["up_old", "other"],
+                        "allowed_members": ["up_old"],
+                    },
+                },
+                "group_2": {
+                    "enabled": True,
+                    # native id already listed -> no duplicate after re-point
+                    "values": {"group_members": ["up_old", "cast_1", "extra"]},
+                },
+            },
+        }
+        controller, native, _ = self._setup_carry_over_scenario(mock_mass, config_store)
+        group_1 = MockPlayer(MockProvider("player_group", mass=mock_mass), "group_1", "Group")
+        group_1.set_initialized()
+        controller._players["group_1"] = group_1
+
+        with patch.object(group_1, "refresh_state") as mock_refresh:
+            controller._check_replace_universal_player(native)
+
+        # the wrapper id is replaced by the native id on both membership keys
+        assert config_store["players/group_1/values/group_members"] == ["cast_1", "other"]
+        assert config_store["players/group_1/values/allowed_members"] == ["cast_1"]
+        # no duplicate when the native id is already a member
+        assert config_store["players/group_2/values/group_members"] == ["cast_1", "extra"]
+        # a registered player whose membership changed is refreshed
+        mock_refresh.assert_called()
+
+    async def test_replace_stops_playing_universal_before_unregister(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A playing universal player is stopped before it is permanently removed."""
+        config_store: dict[str, Any] = {
+            "players/cast_1": {"enabled": True},
+            "players/up_old": {
+                "enabled": True,
+                "name": "Soundbar (Universal)",
+                "default_name": "Soundbar (Universal)",
+                "values": {"linked_protocol_ids": ["ap_live"]},
+            },
+            "players/ap_live": {"enabled": True},
+        }
+        controller, native, scheduled_tasks = self._setup_carry_over_scenario(
+            mock_mass, config_store
+        )
+        controller._players["up_old"]._attr_playback_state = PlaybackState.PLAYING
+
+        call_order: list[str] = []
+        mock_mass.player_queues.stop = AsyncMock(
+            side_effect=lambda *_a, **_k: call_order.append("stop")
+        )
+
+        controller._check_replace_universal_player(native)
+        task = next(t for t in scheduled_tasks if "unregister" in repr(t))
+
+        def _record_unregister(*_a: Any, **_k: Any) -> None:
+            call_order.append("unregister")
+
+        with patch.object(controller, "unregister", new=AsyncMock(side_effect=_record_unregister)):
+            await task
+
+        assert call_order == ["stop", "unregister"]
+        mock_mass.player_queues.stop.assert_awaited_once_with("up_old")
+
+    async def test_replace_idle_universal_not_stopped(self, mock_mass: MagicMock) -> None:
+        """An idle universal player is removed without a stop command."""
+        config_store: dict[str, Any] = {
+            "players/cast_1": {"enabled": True},
+            "players/up_old": {
+                "enabled": True,
+                "name": "Soundbar (Universal)",
+                "default_name": "Soundbar (Universal)",
+                "values": {"linked_protocol_ids": ["ap_live"]},
+            },
+            "players/ap_live": {"enabled": True},
+        }
+        controller, native, scheduled_tasks = self._setup_carry_over_scenario(
+            mock_mass, config_store
+        )
+        mock_mass.player_queues.stop = AsyncMock()
+
+        controller._check_replace_universal_player(native)
+        task = next(t for t in scheduled_tasks if "unregister" in repr(t))
+        await task
+
+        mock_mass.player_queues.stop.assert_not_awaited()
+        assert "up_old" not in controller._players
 
 
 class TestEndToEndDuplicateProtocol:
@@ -7155,6 +7765,39 @@ class TestUniversalPlayerRestoreOrphanCleanup:
 
         mock_mass.config.get.side_effect = _get
 
+    @staticmethod
+    def _wire_nested_config(mock_mass: MagicMock, store: dict[str, Any]) -> None:
+        """Wire mass.config get/set/remove to a nested, path-addressable store."""
+
+        def _get(key: str, default: object = None) -> object:
+            node: Any = store
+            for part in key.split("/"):
+                if not isinstance(node, dict) or part not in node:
+                    return default
+                node = node[part]
+            return node
+
+        def _set(key: str, value: object) -> None:
+            parts = key.split("/")
+            node: dict[str, Any] = store
+            for part in parts[:-1]:
+                node = node.setdefault(part, {})
+            node[parts[-1]] = value
+
+        def _remove(key: str) -> None:
+            parts = key.split("/")
+            node: Any = store
+            for part in parts[:-1]:
+                node = node.get(part) if isinstance(node, dict) else None
+                if node is None:
+                    return
+            if isinstance(node, dict):
+                node.pop(parts[-1], None)
+
+        mock_mass.config.get = MagicMock(side_effect=_get)
+        mock_mass.config.set = MagicMock(side_effect=_set)
+        mock_mass.config.remove = MagicMock(side_effect=_remove)
+
     @pytest.mark.asyncio
     async def test_orphan_protocol_dropped_but_configs_kept(self, mock_mass: MagicMock) -> None:
         """Orphan protocol is dropped from membership without deleting any config."""
@@ -7365,10 +8008,10 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         """
         Self-heal: stale UP whose protocols belong to a disabled native parent.
 
-        Restoring such a UP should skip the wrapper (keeping its config), restore
-        each protocol's parent_id back to the rightful (disabled) native parent, and
-        cascade-disable each protocol so the next registration cycle doesn't rebuild
-        the wrapper.
+        Restoring such a UP should skip the wrapper, restore each protocol's
+        parent_id back to the rightful (disabled) native parent, cascade-disable
+        each protocol so the next registration cycle doesn't rebuild the wrapper,
+        and hand the wrapper's config over to the native parent before deleting it.
         """
         provider = create_mock_universal_provider(mock_mass)
         universal_id = "up_test"
@@ -7419,8 +8062,18 @@ class TestUniversalPlayerRestoreOrphanCleanup:
 
         await provider._restore_player(universal_id)
 
-        # The wrapper is skipped but its config is kept
-        mock_mass.config.remove_player_config.assert_not_awaited()
+        # The wrapper is not restored; its settings are handed over to the
+        # native parent and its now-obsolete config is deleted
+        mock_mass.players._migrate_universal_player_config.assert_called_once_with(
+            universal_id, native_parent_id
+        )
+        mock_mass.players._repoint_group_memberships.assert_called_once_with(
+            universal_id, native_parent_id
+        )
+        mock_mass.players.delete_player_config.assert_called_once_with(universal_id)
+        mock_mass.player_queues.on_player_remove.assert_called_once_with(
+            universal_id, permanent=True
+        )
 
         # Each protocol's parent_id is restored to the disabled native parent
         parent_restorations = {
@@ -7506,6 +8159,246 @@ class TestUniversalPlayerRestoreOrphanCleanup:
         }
         for call in mock_mass.config.save_player_config.await_args_list:
             assert call.args[1] == {ATTR_ENABLED: False}
+        # The wrapper's settings are handed to the first claimer, then its
+        # config is deleted
+        mock_mass.players._migrate_universal_player_config.assert_called_once_with(
+            universal_id, "native_a"
+        )
+        mock_mass.players._repoint_group_memberships.assert_called_once_with(
+            universal_id, "native_a"
+        )
+        mock_mass.players.delete_player_config.assert_called_once_with(universal_id)
+        mock_mass.player_queues.on_player_remove.assert_called_once_with(
+            universal_id, permanent=True
+        )
+
+    @pytest.mark.asyncio
+    async def test_restore_native_claims_carries_config_and_deletes_wrapper(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The wrapper's user settings move to the native claimer and its config is deleted."""
+        universal_id = "up_old"
+        native_id = "cast_1"
+        ap_id = "ap_1"
+        store: dict[str, Any] = {
+            CONF_PLAYERS: {
+                universal_id: {
+                    "provider": "universal_player",
+                    "enabled": True,
+                    "name": "Living Room",
+                    "default_name": "Soundbar (Universal)",
+                    "values": {
+                        "hide_in_ui": True,
+                        "volume_control": "up_volume_control",
+                        "linked_protocol_ids": [ap_id],
+                        "device_identifiers": {"mac_address": "AA:BB:CC:DD:EE:FF"},
+                        "device_info": {"model": "Test", "manufacturer": "Test"},
+                    },
+                },
+                native_id: {
+                    "provider": "cast",
+                    "enabled": True,
+                    "name": "Soundbar",
+                    "default_name": "Soundbar",
+                    "values": {
+                        "volume_control": "native",
+                        "linked_protocol_ids": [ap_id],
+                    },
+                },
+                ap_id: {
+                    "player_type": "protocol",
+                    "enabled": True,
+                    "values": {"protocol_parent_id": universal_id},
+                },
+                "group_1": {
+                    "provider": "sync_group",
+                    "enabled": True,
+                    "values": {
+                        "group_members": [universal_id, "other"],
+                        "allowed_members": [universal_id],
+                    },
+                },
+            },
+            CONF_PLAYER_DSP: {universal_id: {"enabled": True, "filters": []}},
+            CONF_PLAYER_QUEUES: {
+                universal_id: {"queue_id": universal_id, "values": {"crossfade_duration": 5}}
+            },
+        }
+        self._wire_nested_config(mock_mass, store)
+        mock_mass.config.save_player_config = AsyncMock()
+        scheduled_tasks: list[Awaitable[object]] = []
+        mock_mass.create_task = MagicMock(
+            side_effect=lambda task, *_a, **_kw: scheduled_tasks.append(task)
+        )
+        controller = PlayerController(mock_mass)
+        controller._players = {}
+        mock_mass.players = controller
+        mock_mass.player_queues = MagicMock()
+        provider = create_mock_universal_provider(mock_mass)
+
+        await provider._restore_player(universal_id)
+
+        players_tree = store[CONF_PLAYERS]
+        # the protocol player is reparented to the native claimer
+        assert players_tree[ap_id]["values"]["protocol_parent_id"] == native_id
+        # the custom display name and user-set values moved onto the native player
+        assert players_tree[native_id]["name"] == "Living Room"
+        assert players_tree[native_id]["values"]["hide_in_ui"] is True
+        # values the native player has explicitly set are not overwritten
+        assert players_tree[native_id]["values"]["volume_control"] == "native"
+        # wrapper bookkeeping values are not carried over
+        assert "device_identifiers" not in players_tree[native_id]["values"]
+        assert "device_info" not in players_tree[native_id]["values"]
+        # DSP and queue settings moved onto the native player
+        assert store[CONF_PLAYER_DSP] == {native_id: {"enabled": True, "filters": []}}
+        assert store[CONF_PLAYER_QUEUES] == {
+            native_id: {"queue_id": native_id, "values": {"crossfade_duration": 5}}
+        }
+        # group memberships that referenced the wrapper now point at the native player
+        assert players_tree["group_1"]["values"]["group_members"] == [native_id, "other"]
+        assert players_tree["group_1"]["values"]["allowed_members"] == [native_id]
+        # the wrapper's own config entries are all gone
+        assert universal_id not in players_tree
+        # cached queue state of the wrapper is purged as well
+        mock_mass.player_queues.on_player_remove.assert_called_once_with(
+            universal_id, permanent=True
+        )
+        # the wrapper itself is not registered as a player
+        assert universal_id not in controller._players
+        for task in scheduled_tasks:
+            await task
+
+    @pytest.mark.asyncio
+    async def test_restore_native_claims_keeps_native_name_dsp_and_queue_values(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """Values explicitly set on the native player win over the wrapper's on restore."""
+        universal_id = "up_old"
+        native_id = "cast_1"
+        ap_id = "ap_1"
+        store: dict[str, Any] = {
+            CONF_PLAYERS: {
+                universal_id: {
+                    "provider": "universal_player",
+                    "enabled": True,
+                    "name": "Living Room",
+                    "default_name": "Soundbar (Universal)",
+                    "values": {"hide_in_ui": True, "linked_protocol_ids": [ap_id]},
+                },
+                native_id: {
+                    "provider": "cast",
+                    "enabled": True,
+                    "name": "Kitchen",
+                    "default_name": "Soundbar",
+                    "values": {"linked_protocol_ids": [ap_id]},
+                },
+                ap_id: {
+                    "player_type": "protocol",
+                    "enabled": True,
+                    "values": {"protocol_parent_id": universal_id},
+                },
+            },
+            CONF_PLAYER_DSP: {
+                universal_id: {"enabled": True, "filters": ["universal"]},
+                native_id: {"enabled": False, "filters": ["native"]},
+            },
+            CONF_PLAYER_QUEUES: {
+                universal_id: {
+                    "queue_id": universal_id,
+                    "values": {"crossfade_duration": 8, "autoplay_mode": "smart"},
+                },
+                native_id: {"queue_id": native_id, "values": {"crossfade_duration": 2}},
+            },
+        }
+        self._wire_nested_config(mock_mass, store)
+        mock_mass.config.save_player_config = AsyncMock()
+        scheduled_tasks: list[Awaitable[object]] = []
+        mock_mass.create_task = MagicMock(
+            side_effect=lambda task, *_a, **_kw: scheduled_tasks.append(task)
+        )
+        controller = PlayerController(mock_mass)
+        controller._players = {}
+        mock_mass.players = controller
+        mock_mass.player_queues = MagicMock()
+        provider = create_mock_universal_provider(mock_mass)
+
+        await provider._restore_player(universal_id)
+
+        players_tree = store[CONF_PLAYERS]
+        # the native player's own custom name and DSP config win
+        assert players_tree[native_id]["name"] == "Kitchen"
+        assert store[CONF_PLAYER_DSP] == {native_id: {"enabled": False, "filters": ["native"]}}
+        # queue values merge without overwriting the native queue's own values
+        assert store[CONF_PLAYER_QUEUES] == {
+            native_id: {
+                "queue_id": native_id,
+                "values": {"crossfade_duration": 2, "autoplay_mode": "smart"},
+            }
+        }
+        # non-conflicting values still migrate and the wrapper config is gone
+        assert players_tree[native_id]["values"]["hide_in_ui"] is True
+        assert universal_id not in players_tree
+        for task in scheduled_tasks:
+            await task
+
+    @pytest.mark.asyncio
+    async def test_restore_native_claims_keeps_config_while_wrapper_registered(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """No config carry-over/deletion while the wrapper is still registered."""
+        provider = create_mock_universal_provider(mock_mass)
+        universal_id = "up_test"
+        ap_id = "airplay_1"
+
+        all_configs = {
+            universal_id: {
+                "values": {
+                    "linked_protocol_ids": [ap_id],
+                    "device_identifiers": {},
+                    "device_info": {},
+                },
+                "name": "Test UP",
+            },
+            "native_a": {
+                "provider": "dlna",
+                "values": {"linked_protocol_ids": [ap_id]},
+            },
+            ap_id: {
+                "player_type": "protocol",
+                "values": {"protocol_parent_id": universal_id},
+            },
+        }
+
+        def _config_get(key: str, default: object = None) -> object:
+            if key == CONF_PLAYERS:
+                return all_configs
+            if key.startswith(f"{CONF_PLAYERS}/"):
+                pid = key.split("/", 1)[1]
+                return all_configs.get(pid, default)
+            return default
+
+        mock_mass.config.get.side_effect = _config_get
+        mock_mass.config.set = MagicMock()
+        mock_mass.config.save_player_config = AsyncMock()
+        mock_mass.players = MagicMock()
+        mock_mass.players.get_player = MagicMock(return_value=MagicMock())
+
+        await provider._restore_player(universal_id)
+
+        # the protocol link repair still runs
+        parent_restorations = {
+            call.args[0]: call.args[1]
+            for call in mock_mass.config.set.call_args_list
+            if "protocol_parent_id" in call.args[0]
+        }
+        assert parent_restorations == {
+            f"{CONF_PLAYERS}/{ap_id}/values/protocol_parent_id": "native_a",
+        }
+        # but the registered wrapper keeps its config and group memberships
+        mock_mass.players._migrate_universal_player_config.assert_not_called()
+        mock_mass.players._repoint_group_memberships.assert_not_called()
+        mock_mass.players.delete_player_config.assert_not_called()
+        mock_mass.player_queues.on_player_remove.assert_not_called()
 
 
 class TestParentDisableCascade:

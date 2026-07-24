@@ -269,10 +269,6 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
         """
         return await self.browse_manager.get_recommendation_items(item_id)
 
-    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
-        """Fetch the recommendation folders fed by the shared gql recommendations payload."""
-        return await self.browse_manager._fetch_recommendation_payload()
-
     # -- Streaming --
 
     async def get_resume_position(
@@ -309,3 +305,7 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
     async def on_streamed(self, streamdetails: StreamDetails) -> None:
         """Handle callback when an item completed streaming."""
         await self.streaming_manager.on_streamed(streamdetails)
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch the recommendation folders fed by the shared gql recommendations payload."""
+        return await self.browse_manager._fetch_recommendation_payload()
