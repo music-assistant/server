@@ -92,6 +92,8 @@ async def run_cloud_setup(
         client_id = str(setup_data.get(CONF_CLIENT_ID) or "")
         client_secret = str(setup_data.get(CONF_CLIENT_SECRET) or "") or stored_secret
         setup_data[CONF_CLIENT_SECRET] = client_secret
+        # a blank secret on a retry means "the one just tried", not the original stored one
+        stored_secret = client_secret
         try:
             if not client_secret:
                 raise SetupFlowError("A client secret is required", translation_key="required")

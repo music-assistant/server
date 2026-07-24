@@ -120,4 +120,6 @@ async def _pkce_authenticate(session: SetupSession, client_id: str, step_id: str
         if response.status != 200:
             raise SetupFlowError(f"Failed to get access token: {await response.text()}")
         token_result = await response.json()
-    return str(token_result["refresh_token"])
+    if not (refresh_token := token_result.get("refresh_token")):
+        raise SetupFlowError("No refresh token in the token response")
+    return str(refresh_token)
