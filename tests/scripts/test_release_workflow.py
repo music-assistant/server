@@ -451,6 +451,7 @@ def test_dependency_auto_merge_enforces_app_bot_identity_contract() -> None:
     assert workflow_text.count("musicassistant-bot[bot]") == 1
     assert workflow["env"] == {
         "EXPECTED_APP_BOT_LOGIN": "musicassistant-bot[bot]",
+        "EXPECTED_APP_BOT_LOGIN_ENCODED": "musicassistant-bot%5Bbot%5D",
         "EXPECTED_APP_BOT_ID": "304008617",
     }
 
@@ -471,7 +472,7 @@ def test_dependency_auto_merge_enforces_app_bot_identity_contract() -> None:
         '[ "$PR_AUTHOR_TYPE" != "Bot" ] ||',
         '[ "$PR_AUTHOR_ID" != "$EXPECTED_APP_BOT_ID" ] ||',
         '[ "$HEAD_REPOSITORY" != "$BASE_REPOSITORY" ]; then',
-        'gh api "/users/$EXPECTED_APP_BOT_LOGIN"',
+        'gh api "/users/$EXPECTED_APP_BOT_LOGIN_ENCODED"',
     ):
         assert required_check in source_check
     assert "collaborators/" not in source_check
