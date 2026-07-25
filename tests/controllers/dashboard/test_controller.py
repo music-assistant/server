@@ -150,6 +150,24 @@ async def test_resolve_dashboard_url_rejects_unknown_dashboard_type() -> None:
         await controller.resolve_dashboard_url(DashboardType.UNKNOWN, None)
 
 
+async def test_resolve_dashboard_url_prefer_local_uses_plain_http_base() -> None:
+    """prefer_local returns the plain local base url, bypassing the https/remote requirement."""
+    controller = _make_controller()
+    controller.mass.webserver.base_url = "http://192.168.1.10:8095"  # type: ignore[misc]
+    # neither an https base nor remote access is configured: the default path would raise,
+    # but prefer_local skips that gate for native LAN apps
+    with patch.object(
+        DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")
+    ):
+        url = await controller.resolve_dashboard_url(
+            DashboardType.NOW_PLAYING, "player1", prefer_local=True
+        )
+
+    assert url.startswith("http://192.168.1.10:8095?")
+    query = _query(url)
+    assert query == {"dashboard": "code456", "path": "/now-playing?player=player1"}
+
+
 @pytest.mark.parametrize(
     ("version", "expected_channel"),
     [

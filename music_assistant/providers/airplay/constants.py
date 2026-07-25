@@ -45,6 +45,10 @@ CONF_COMPANION_CREDENTIALS: Final[str] = "companion_credentials"
 CONF_MRP_CREDENTIALS: Final[str] = "mrp_credentials"
 CONF_NATIVE_MRP_CREDENTIALS: Final[str] = "native_mrp_credentials"
 
+# Bundle id of the Music Assistant tvOS dashboard app, launched over Companion on
+# eligible Apple TVs (see tvos/docs/launch-contract.md).
+TVOS_APP_BUNDLE_ID: Final[str] = "io.music-assistant.tvos"
+
 AIRPLAY_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
 COMPANION_DISCOVERY_TYPE: Final[str] = "_companion-link._tcp.local."
 MRP_DISCOVERY_TYPE: Final[str] = "_mediaremotetv._tcp.local."

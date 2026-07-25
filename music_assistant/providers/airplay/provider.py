@@ -53,6 +53,7 @@ from .constants import (
     StreamingProtocol,
 )
 from .control_player import AirPlayControlPlayer
+from .dashboard import AirPlayDashboards
 from .helpers import (
     convert_airplay_volume,
     get_cli_binary,
@@ -86,6 +87,7 @@ class AirPlayProvider(PlayerProvider):
     _dacp_server: asyncio.Server
     _dacp_info: AsyncServiceInfo
     _bridge_manager: SendspinBridgeManager
+    dashboards: AirPlayDashboards
     _ptp_daemon: AsyncProcess | None = None
     _ptp_daemon_stdout_task: asyncio.Task[None] | None = None
     _ptp_daemon_started: float = 0.0
@@ -186,6 +188,9 @@ class AirPlayProvider(PlayerProvider):
         # Initialize Sendspin bridge manager for protocol linking
         self._bridge_manager = SendspinBridgeManager(self)
 
+        # Registers eligible Apple TVs as dashboard endpoints for the tvOS app
+        self.dashboards = AirPlayDashboards(self)
+
         # register DACP zeroconf service
         dacp_port = await select_free_port(39831, 49831)
         # Use first 16 hex chars of server_id as a persistent DACP ID
@@ -261,6 +266,7 @@ class AirPlayProvider(PlayerProvider):
                 # Remove the Sendspin bridge first
                 await self._bridge_manager.remove_bridge(player_id)
                 await self.mass.players.unregister(player_id)
+            self.dashboards.unregister(player_id)
             return
         # handle update for existing device
         assert info is not None  # type guard
@@ -268,11 +274,18 @@ class AirPlayProvider(PlayerProvider):
         if player := cast("AirPlayPlayer | None", self.mass.players.get_player(player_id)):
             # update the latest discovery info for existing player
             player.set_discovery_info(info, display_name)
+            # only control players can ever be dashboard endpoints
+            if isinstance(player, AirPlayControlPlayer):
+                self.dashboards.reconcile(player_id)
             return
         await self._setup_player(player_id, display_name, info)
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        # Unregister all dashboard endpoints
+        dashboards = getattr(self, "dashboards", None)
+        if dashboards:
+            await dashboards.unload()
         # Stop all Sendspin bridges
         bridge_manager = getattr(self, "_bridge_manager", None)
         if bridge_manager:
@@ -462,6 +475,10 @@ class AirPlayProvider(PlayerProvider):
 
         # Set up Sendspin bridge for protocol linking (if Sendspin provider is available)
         await self._bridge_manager.evaluate_bridge(player)
+
+        # Track control players (Apple TVs) for dashboard eligibility
+        if isinstance(player, AirPlayControlPlayer):
+            self.dashboards.setup_player(player)
 
     async def _is_own_airplay_receiver(
         self, display_name: str, discovery_info: AsyncServiceInfo
