@@ -382,6 +382,28 @@ def test_release_workflow_uses_minimum_preflight_permissions_and_expected_app() 
     assert "'.default_branch'" in workflow
 
 
+def test_release_workflow_publication_state_uses_release_ids() -> None:
+    """Publication lookup must use release IDs and fail closed on mismatches."""
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    assert "DRAFT_RELEASE_ID: ${{ needs.prepare_draft.outputs.release_id }}" in workflow
+    assert "PUBLISHED_RELEASE_ID: ${{ needs.resolve.outputs.release_id }}" in workflow
+    assert "RELEASE_STATE: ${{ needs.resolve.outputs.release_state }}" in workflow
+
+    publication_step = _workflow_step_run(
+        workflow,
+        job_name="publish_release",
+        step_name="Detect live publication state",
+    )
+
+    assert 'gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION"' not in publication_step
+    assert 'gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID"' in publication_step
+    assert 'case "$RELEASE_STATE" in' in publication_step
+    assert "Missing release id for $RELEASE_STATE release $VERSION" in publication_step
+    assert "tag_name" in publication_step
+    assert "Release $VERSION resolves to tag $live_tag_name" in publication_step
+    assert "Release $VERSION is neither a mutable draft nor immutable" in publication_step
+
+
 def _api_asset(path: Path) -> dict[str, str | int]:
     return {
         "name": path.name,
@@ -408,3 +430,12 @@ def _git(path: Path, *args: str) -> str:
         text=True,
     )
     return result.stdout.strip()
+
+
+def _workflow_step_run(workflow: str, job_name: str, step_name: str) -> str:
+    jobs = yaml.safe_load(workflow)["jobs"]
+    for step in jobs[job_name]["steps"]:
+        if step.get("name") == step_name:
+            return str(step["run"])
+    msg = f"Step {step_name!r} not found in job {job_name!r}"
+    raise AssertionError(msg)
