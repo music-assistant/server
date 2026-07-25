@@ -23,6 +23,7 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     Genre,
     ItemMapping,
+    MediaCollection,
     MediaItemType,
     Playlist,
     Podcast,
@@ -39,6 +40,7 @@ from music_assistant.controllers.player_queues.constants import (
     ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
 )
 from music_assistant.controllers.player_queues.helpers import sort_tracks
+from music_assistant.helpers.collections import get_collection_item_media_type_from_item_id
 
 if TYPE_CHECKING:
     from music_assistant.controllers.player_queues.controller import PlayerQueuesController
@@ -501,6 +503,33 @@ class MediaResolver:
                 media_item, start_item, userid=userid
             )
             return [media_item]
+        if media_item.media_type == MediaType.COLLECTION:
+            collection_item_media_type = get_collection_item_media_type_from_item_id(
+                media_item.item_id
+            )
+            if collection_item_media_type != MediaType.AUDIOBOOK:
+                self.logger.error("Collections are only available for audiobooks.")
+                return []
+            if TYPE_CHECKING:
+                assert isinstance(media_item, MediaCollection)
+            book: Audiobook | None = None
+            for item in media_item.items:
+                if TYPE_CHECKING:
+                    assert isinstance(item, Audiobook)
+                # enqueue the first not fully finished audiobook
+                fully_played, resume_position_ms = await self.mass.music.get_resume_position(
+                    item, userid=userid
+                )
+                if not fully_played:
+                    item.resume_position_ms = resume_position_ms
+                    book = item
+                    break
+            if book is None:
+                if len(media_item.items) > 0:
+                    return [media_item.items[0]]
+                return []
+            return [book]
+
         if media_item.media_type == MediaType.PODCAST:
             media_item = cast("Podcast", media_item)
             self.mass.create_task(

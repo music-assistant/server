@@ -819,7 +819,7 @@
   "provider.airplay.config_entries.password.label": "Device password",
   "provider.airplay.config_entries.sync_adjust.description": "Shifts when audio is heard on this device relative to the other players in a synced group. \nNegative values make this device play earlier; positive values make it play later. \nUse a negative value when this device is connected to a TV, AV receiver or amplifier that adds a processing delay, which makes it play slightly behind the rest of the group. \nExample: if this device lags the group by about 100 ms, set it to -100 to pull it back into sync.",
   "provider.airplay.config_entries.sync_adjust.label": "Audio synchronization delay correction",
-  "provider.airplay.errors.invalid_pin": "Enter the numeric PIN shown on the screen of your device.",
+  "provider.airplay.errors.show_dashboard_failed": "Failed to show the dashboard on {0}.",
   "provider.airplay.manifest.description": "Stream to AirPlay-enabled devices on your local network.",
   "provider.airplay.setup_flow.abort.pairing_failed": "Could not start pairing with the device. Make sure the device is reachable on the network and try again.",
   "provider.airplay.setup_flow.companion_offer.description": "Optionally pair Companion controls to monitor power, wake the device before playback, and control native playback and volume. You can skip this and set it up later from the player settings.",

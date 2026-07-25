@@ -90,6 +90,7 @@ GUEST_COMMANDS = (
     "music_quiz/info",
     "music_quiz/join",
     "music_quiz/state",
+    "music_quiz/public_state",
     "music_quiz/heartbeat",
     "music_quiz/submit_answer",
     "music_quiz/answer",
@@ -3721,6 +3722,65 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
     alice = next(player for player in state["players"] if player["name"] == "Alice")
     assert set(alice) == {*public_player_keys, "last_answer"}
     assert set(alice["last_answer"]) == {"suggestion_id", "correct", "points"}
+
+
+@pytest.mark.asyncio
+async def test_public_state_returns_none_without_active_game() -> None:
+    """The non-participant public state getter is empty (not an error) without a game."""
+    plugin = _create_plugin()
+
+    assert await plugin.get_public_state() is None
+
+
+@pytest.mark.asyncio
+async def test_public_state_exposes_full_state_for_non_participant() -> None:
+    """A display client fetches the full broadcast state without joining as a player."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin)
+    broadcast_state = cast("MagicMock", plugin.signal_provider_event).call_args.args[0]["state"]
+
+    state = await plugin.get_public_state()
+
+    # identical to the game_updated broadcast payload, with no personal "you" section
+    assert state == broadcast_state
+    assert state is not None
+    assert "you" not in state
+    assert state["phase"] == "answering"
+    assert {player["name"] for player in state["players"]} == set(player_ids)
+    current_round = state["current_round"]
+    assert current_round is not None
+    assert "question" in current_round
+    assert current_round["suggestions"]
+    # the getter takes no player_id and never leaks the private player credentials
+    serialized = str(state)
+    for player_id in player_ids.values():
+        assert player_id not in serialized
+    # a participant's personal state is this same public state plus their own "you" view
+    personal_state = await plugin.get_player_state(player_ids["Alice"])
+    assert set(personal_state) == {*state, "you"}
+
+
+@pytest.mark.asyncio
+async def test_public_state_command_is_guest_tier_and_needs_no_player_id() -> None:
+    """music_quiz/public_state is registered guest-safe and requires no player credential."""
+    plugin = _create_plugin()
+    registered: dict[str, APICommandHandler] = {}
+
+    def _register(command: str, handler: Any, **kwargs: Any) -> Any:
+        registered[command] = APICommandHandler.parse(command, handler, **kwargs)
+        return MagicMock()
+
+    cast("MagicMock", plugin.mass.register_api_command).side_effect = _register
+    await plugin.loaded_in_mass()
+
+    handler = registered["music_quiz/public_state"]
+    assert handler.target == plugin.get_public_state
+    # None scope == any authenticated user (the guest-safe tier), unlike host commands
+    assert handler.required_scope is None
+    assert registered["music_quiz/create"].required_scope == Scope.USERS_INVITE
+    # resolves with no arguments, unlike the participant-scoped music_quiz/state
+    assert "player_id" not in handler.signature.parameters
+    assert parse_arguments(handler.signature, handler.type_hints, {}) == {}
 
 
 @pytest.mark.asyncio

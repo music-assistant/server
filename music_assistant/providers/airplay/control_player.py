@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Callable
 from ipaddress import AddressValueError, IPv4Address
 from typing import TYPE_CHECKING, Final
 
@@ -162,6 +162,9 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._disconnecting = False
         self._restart_connections = False
         self._unloading = False
+        # invoked (if set) whenever the Companion connection comes up or goes down,
+        # so an observer (e.g. the dashboard adapter) can re-evaluate its state
+        self.on_companion_state_change: Callable[[], None] | None = None
 
     @property
     def companion_pairing_supported(self) -> bool:
@@ -205,6 +208,11 @@ class AirPlayControlPlayer(AirPlayPlayer):
         if not self._stream_active and not self._device_for_feature(FeatureName.SetVolume):
             features.discard(PlayerFeature.VOLUME_MUTE)
         return features
+
+    @property
+    def companion_connected(self) -> bool:
+        """Return whether the Companion control channel is currently connected."""
+        return self._companion_device is not None
 
     async def get_config_entries(
         self,
@@ -357,6 +365,40 @@ class AirPlayControlPlayer(AirPlayPlayer):
             raise PlayerCommandFailed(f"Previous control is unavailable for {self.display_name}")
         await self._run_control_command(device.remote_control.previous(), "skip to previous")
 
+    async def wake(self) -> None:
+        """Wake the device from sleep when it exposes power control."""
+        await self._wake_for_playback()
+
+    async def async_list_installed_app_ids(self) -> set[str] | None:
+        """
+        Return the bundle ids of the apps installed on the device.
+
+        Uses the Companion app-listing feature. Returns None when the app list cannot be
+        retrieved (Companion channel down or the query failed), so a caller can tell
+        "unknown" apart from "installed, but not this app".
+        """
+        device = self._device_for_feature(FeatureName.AppList)
+        if device is None:
+            return None
+        try:
+            apps = await device.apps.app_list()
+        except _COMMAND_ERRORS as err:
+            self.logger.debug("Unable to list installed apps for %s: %s", self.name, err)
+            return None
+        return {app.identifier for app in apps}
+
+    async def async_launch_app(self, bundle_id_or_url: str) -> None:
+        """
+        Launch an app (bundle id) or custom URL on the device over Companion.
+
+        :param bundle_id_or_url: A bundle id or a URL-scheme value to launch.
+        :raises PlayerCommandFailed: If app launching is unavailable or the launch fails.
+        """
+        device = self._device_for_feature(FeatureName.LaunchApp)
+        if device is None:
+            raise PlayerCommandFailed(f"App launching is unavailable for {self.display_name}")
+        await self._run_control_command(device.apps.launch_app(bundle_id_or_url), "launch app")
+
     def set_discovery_info(self, discovery_info: AsyncServiceInfo, display_name: str) -> None:
         """Update AirPlay discovery data and reconnect device control if needed."""
         previous_signature = self._service_signature(self.airplay_discovery_info)
@@ -475,6 +517,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._apply_initial_device_state(device, "companion")
         self.update_state()
         self.logger.debug("Connected Companion control for %s", self.display_name)
+        self._notify_companion_state_change()
         return False
 
     async def _connect_mrp(self) -> bool:
@@ -559,6 +602,8 @@ class AirPlayControlPlayer(AirPlayPlayer):
         if companion_device:
             companion_device.close()
         self._disconnecting = False
+        if companion_device is not None:
+            self._notify_companion_state_change()
 
     def _build_config(
         self,
@@ -1031,9 +1076,11 @@ class AirPlayControlPlayer(AirPlayPlayer):
         exception: Exception | None = None,
     ) -> None:
         """Handle a pyatv connection closing."""
+        companion_closed = False
         if source == "companion" and self._companion_device is device:
             self._companion_device = None
             self._companion_listener = None
+            companion_closed = True
         elif source == "mrp" and self._mrp_device is device:
             self._mrp_device = None
             self._mrp_state_listener = None
@@ -1042,6 +1089,8 @@ class AirPlayControlPlayer(AirPlayPlayer):
             return
         if exception:
             self.logger.debug("Apple %s connection lost for %s: %s", source, self.name, exception)
+        if companion_closed:
+            self._notify_companion_state_change()
         if not self._disconnecting and not self._unloading:
             self._schedule_connection()
 
@@ -1056,6 +1105,11 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._mrp_push_listener = None
         device.close()
         self._schedule_connection()
+
+    def _notify_companion_state_change(self) -> None:
+        """Notify a wired-up observer that the Companion connection state changed."""
+        if self.on_companion_state_change is not None:
+            self.on_companion_state_change()
 
     @staticmethod
     def _service_signature(info: AsyncServiceInfo | None) -> tuple[object, ...] | None:
