@@ -562,6 +562,7 @@ def test_release_workflow_uses_minimum_preflight_permissions_and_expected_app() 
         "contents": "read",
         "pull-requests": "read",
     }
+    assert jobs["build_artifacts"]["permissions"] == {"contents": "write"}
     assert workflow.count("actions/create-github-app-token@") == 5
     assert workflow.count("outputs.installation-id") == 5
     assert 'EXPECTED_APP_INSTALLATION_ID: "146062122"' in workflow
