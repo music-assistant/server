@@ -8,6 +8,7 @@ import re
 import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TypedDict
 
 import pytest
 import yaml
@@ -28,6 +29,7 @@ from scripts.release_workflow import (
 )
 
 ROOT = Path(__file__).parents[2]
+AUTO_MERGE_WORKFLOW = ROOT / ".github" / "workflows" / "auto-merge-dependency-updates.yml"
 PINNED_WORKFLOW_FILES = (
     ROOT / ".github" / "workflows" / "release.yml",
     ROOT / ".github" / "workflows" / "auto-release.yml",
@@ -333,6 +335,130 @@ def test_release_workflows_pin_external_actions_and_drop_legacy_token() -> None:
             assert re.fullmatch(r"v\d+(?:\.\d+){0,2}", comment)
 
 
+def test_auto_merge_dependency_workflow_trust_checks_are_exact() -> None:
+    """The dependency auto-merge workflow only trusts the App bot and same-repo PRs."""
+    workflow = AUTO_MERGE_WORKFLOW.read_text(encoding="utf-8")
+    data = yaml.safe_load(workflow)
+
+    assert data["jobs"]["auto-merge"]["env"] == {"EXPECTED_BOT_LOGIN": "musicassistant-bot[bot]"}
+    assert "github.event.pull_request.user.login" in workflow
+    assert "github.event.pull_request.user.type" in workflow
+    assert "github.event.pull_request.head.repo.full_name" in workflow
+    assert "github.repository" in workflow
+    assert "collaborators/" not in workflow
+    assert "collaborators/$PR_AUTHOR/permission" not in workflow
+    assert "collaborators/$AUTHOR/permission" not in workflow
+    assert "author.login != env.EXPECTED_BOT_LOGIN" in workflow
+
+
+@pytest.mark.parametrize(
+    ("name", "event", "expected", "reason"),
+    [
+        (
+            "exact bot in repo",
+            {
+                "pr_author_login": "musicassistant-bot[bot]",
+                "pr_author_type": "Bot",
+                "head_repo": "music-assistant/server",
+                "declared_commit_count": 2,
+                "commits": [
+                    {"author": {"login": "musicassistant-bot[bot]", "type": "Bot"}},
+                    {"author": {"login": "musicassistant-bot[bot]", "type": "Bot"}},
+                ],
+            },
+            True,
+            "",
+        ),
+        (
+            "human collaborator",
+            {
+                "pr_author_login": "alice",
+                "pr_author_type": "User",
+                "head_repo": "music-assistant/server",
+                "declared_commit_count": 1,
+                "commits": [
+                    {"author": {"login": "alice", "type": "User"}},
+                ],
+            },
+            False,
+            "trusted GitHub App bot",
+        ),
+        (
+            "lookalike bot",
+            {
+                "pr_author_login": "musicassistant-bot-ops[bot]",
+                "pr_author_type": "Bot",
+                "head_repo": "music-assistant/server",
+                "declared_commit_count": 1,
+                "commits": [
+                    {"author": {"login": "musicassistant-bot-ops[bot]", "type": "Bot"}},
+                ],
+            },
+            False,
+            "trusted GitHub App bot",
+        ),
+        (
+            "fork",
+            {
+                "pr_author_login": "musicassistant-bot[bot]",
+                "pr_author_type": "Bot",
+                "head_repo": "someone/server",
+                "declared_commit_count": 1,
+                "commits": [
+                    {"author": {"login": "musicassistant-bot[bot]", "type": "Bot"}},
+                ],
+            },
+            False,
+            "trusted repository",
+        ),
+        (
+            "mixed commit authors",
+            {
+                "pr_author_login": "musicassistant-bot[bot]",
+                "pr_author_type": "Bot",
+                "head_repo": "music-assistant/server",
+                "declared_commit_count": 2,
+                "commits": [
+                    {"author": {"login": "musicassistant-bot[bot]", "type": "Bot"}},
+                    {"author": {"login": "alice", "type": "User"}},
+                ],
+            },
+            False,
+            "trusted GitHub App bot",
+        ),
+        (
+            "unattributed commit",
+            {
+                "pr_author_login": "musicassistant-bot[bot]",
+                "pr_author_type": "Bot",
+                "head_repo": "music-assistant/server",
+                "declared_commit_count": 2,
+                "commits": [
+                    {"author": {"login": "musicassistant-bot[bot]", "type": "Bot"}},
+                    {"author": None},
+                ],
+            },
+            False,
+            "linked GitHub author",
+        ),
+    ],
+)
+def test_auto_merge_dependency_trust_gate(
+    name: str,
+    event: _AutoMergeEvent,
+    expected: bool,
+    reason: str,
+) -> None:
+    """The trust gate accepts only the exact bot and rejects every other source."""
+    allowed, actual_reason = _auto_merge_dependency_trust_check(event)
+
+    assert allowed is expected, name
+    if expected:
+        assert actual_reason == "accepted"
+    else:
+        assert reason in actual_reason
+
+
 def test_release_workflow_uses_minimum_preflight_permissions_and_expected_app() -> None:
     """Resolve stays read-only, preflight covers pull requests, and every App token checks its installation."""
     workflow_path = ROOT / ".github" / "workflows" / "release.yml"
@@ -386,3 +512,50 @@ def _git(path: Path, *args: str) -> str:
         text=True,
     )
     return result.stdout.strip()
+
+
+class _AutoMergeCommit(TypedDict):
+    author: dict[str, str] | None
+
+
+class _AutoMergeEvent(TypedDict):
+    pr_author_login: str
+    pr_author_type: str
+    head_repo: str
+    declared_commit_count: int
+    commits: list[_AutoMergeCommit]
+
+
+def _auto_merge_dependency_trust_check(
+    event: _AutoMergeEvent,
+) -> tuple[bool, str]:
+    """
+    Evaluate the workflow trust gate against a minimal PR payload.
+
+    :param event: Minimal PR metadata and commit payload to validate.
+    """
+    expected_bot_login = "musicassistant-bot[bot]"
+    base_repo = "music-assistant/server"
+
+    if event["pr_author_login"] != expected_bot_login or event["pr_author_type"] != "Bot":
+        return False, "PR author is not the trusted GitHub App bot"
+
+    if event["head_repo"] != base_repo:
+        return False, "PR head repository is not the trusted repository"
+
+    declared_commit_count = event["declared_commit_count"]
+    commits = event["commits"]
+
+    if declared_commit_count > 20:
+        return False, "PR has too many commits"
+    if len(commits) != declared_commit_count:
+        return False, "Fetched commit count does not match the PR"
+
+    for commit in commits:
+        author = commit["author"]
+        if author is None:
+            return False, "One or more commits have no linked GitHub author"
+        if author["login"] != expected_bot_login:
+            return False, "One or more commits are not authored by the trusted GitHub App bot"
+
+    return True, "accepted"

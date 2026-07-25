@@ -22,32 +22,39 @@ jobs:
       startsWith(github.event.pull_request.head.ref, 'auto-update-frontend-') ||
       startsWith(github.event.pull_request.head.ref, 'auto-update-models-')
 
+    env:
+      EXPECTED_BOT_LOGIN: musicassistant-bot[bot]
+
     permissions:
       contents: write
       pull-requests: write
 
     steps:
-      # Security check 1: Verify PR is from user with write access
+      # Security check 1: Verify PR is from the trusted bot and same repository
       - name: Verify PR is from trusted source
         id: verify_pr_author
+        env:
+          BASE_REPO: ${{ github.repository }}
+          PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
-          PR_AUTHOR="${{ github.event.pull_request.user.login }}"
-
-          # Check if PR author has write access to the repository (includes org members and bots)
-          if gh api "/repos/${{ github.repository }}/collaborators/$PR_AUTHOR/permission" --jq '.permission' 2>/dev/null | grep -qE "^(admin|write|maintain)$"; then
-            echo "✅ PR is from user with write access: $PR_AUTHOR"
-          else
-            echo "❌ PR author does not have write access: $PR_AUTHOR"
+          if [ "$PR_AUTHOR_LOGIN" != "$EXPECTED_BOT_LOGIN" ] || [ "$PR_AUTHOR_TYPE" != "Bot" ]; then
+            echo "❌ PR author is not the trusted GitHub App bot: $PR_AUTHOR_LOGIN ($PR_AUTHOR_TYPE)"
             exit 1
           fi
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+          if [ "$PR_HEAD_REPO" != "$BASE_REPO" ]; then
+            echo "❌ PR head repository is not trusted: $PR_HEAD_REPO"
+            exit 1
+          fi
+
+          echo "✅ PR is from the trusted bot and same repository"
 
       # Security check 2: Verify PR labels and source branch
       - name: Verify PR labels and source
         run: |
           LABELS="${{ join(github.event.pull_request.labels.*.name, ',') }}"
-          BRANCH="$BRANCH"
 
           if [[ "$LABELS" != *"dependencies"* ]]; then
             echo "❌ PR does not have 'dependencies' label"
@@ -71,9 +78,9 @@ jobs:
       - name: Get PR details
         id: pr
         run: |
-          echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
 
-      # Security check 4: Verify all commit authors have write access
+      # Security check 4: Verify all commit authors are the trusted bot
       - name: Verify commit authors
         run: |
           # A dependency bump PR only ever needs a handful of commits
@@ -93,26 +100,19 @@ jobs:
           fi
 
           # Commits whose author email is not linked to a GitHub account have
-          # no login to verify, so they must be rejected
-          UNATTRIBUTED=$(echo "$COMMITS" | jq '[.[] | select(.author.login == null)] | length')
+          # no login to verify, so they must be rejected. Every commit must
+          # also be attributed to the trusted GitHub App bot.
+          UNATTRIBUTED=$(echo "$COMMITS" | jq '[.[] | select(.author == null)] | length')
           if [ "$UNATTRIBUTED" -gt 0 ]; then
             echo "❌ $UNATTRIBUTED commit(s) have no linked GitHub author"
             exit 1
           fi
 
-          COMMIT_AUTHORS=$(echo "$COMMITS" | jq -r '[.[].author.login] | unique | .[]')
-
-          for AUTHOR in $COMMIT_AUTHORS; do
-            if gh api "/repos/${{ github.repository }}/collaborators/$AUTHOR/permission" --jq '.permission' 2>/dev/null | grep -qE "^(admin|write|maintain)$"; then
-              echo "✅ Commit author has write access: $AUTHOR"
-            else
-              echo "❌ Commit author does not have write access: $AUTHOR"
-              exit 1
-            fi
-          done
-
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NON_BOT=$(echo "$COMMITS" | jq '[.[] | select(.author.login != env.EXPECTED_BOT_LOGIN)] | length')
+          if [ "$NON_BOT" -gt 0 ]; then
+            echo "❌ $NON_BOT commit(s) are not authored by the trusted GitHub App bot"
+            exit 1
+          fi
 
       # Security check 5: Verify only dependency files were changed
       - name: Verify only dependency files were changed
