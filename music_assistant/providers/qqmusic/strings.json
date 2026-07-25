@@ -18,6 +18,15 @@
     }
   },
   "setup_flow": {
+    "user": {
+      "title": "Choose how to sign in",
+      "description": "Select whether to sign in with the QQ or the WeChat app. The next step shows a QR code to scan."
+    },
+    "scan_qr": {
+      "title": "Scan to sign in",
+      "description": "Scan the QR code with the QQ or WeChat app and confirm the login. A fresh code is shown automatically if it expires.",
+      "progress_text": "Waiting for you to scan and confirm in the app..."
+    },
     "abort": {
       "login_rejected": "Login was rejected in the QQ or WeChat app."
     }

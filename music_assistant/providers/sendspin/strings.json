@@ -222,6 +222,7 @@
       "description": "Paste the device's pairing token to pair it. This briefly interrupts playback on the device."
     },
     "abort": {
+      "nothing_to_configure": "This player has nothing to pair. Bridge and web players, and devices connected without encryption, do not require pairing.",
       "no_pair_methods": "The device does not offer any pairing method.",
       "pairing_error_locked_out": "PIN pairing is locked out on the device. Wait a moment, then try again from the device's settings.",
       "pairing_error_not_connected": "The device is no longer connected.",
