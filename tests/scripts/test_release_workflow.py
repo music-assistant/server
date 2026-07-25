@@ -28,10 +28,27 @@ from scripts.release_workflow import (
 )
 
 ROOT = Path(__file__).parents[2]
-PINNED_WORKFLOW_FILES = (
+PINNED_ACTION_FILES = (
     ROOT / ".github" / "workflows" / "release.yml",
     ROOT / ".github" / "workflows" / "auto-release.yml",
+    ROOT / ".github" / "workflows" / "build-base-image.yml",
+    ROOT / ".github" / "workflows" / "dependabot-sync-manifests.yml",
+    ROOT / ".github" / "workflows" / "pr-labels.yaml",
     ROOT / ".github" / "actions" / "generate-release-notes" / "action.yml",
+)
+LEGACY_AUTH_FILES = (
+    *PINNED_ACTION_FILES,
+    ROOT / ".github" / "release-notes-config.yml",
+)
+FORBIDDEN_LEGACY_IDENTIFIERS = tuple(
+    separator.join(parts)
+    for separator, parts in (
+        ("_", ("PRIVILEGED", "GITHUB", "TOKEN")),
+        ("_", ("TRIAGE", "GITHUB", "TOKEN")),
+        ("_", ("TRIAGE", "APP", "ID")),
+        ("_", ("TRIAGE", "APP", "PRIVATE", "KEY")),
+        ("-", ("music", "assistant", "machine")),
+    )
 )
 
 
@@ -315,17 +332,22 @@ def test_addon_update_replaces_duplicate_version_and_retains_three(tmp_path: Pat
     assert "# [oldest]" in first_result
 
 
-def test_release_workflows_pin_external_actions_and_drop_legacy_token() -> None:
-    """Touched release flows use commit-pinned actions and no privileged PAT."""
-    action_pattern = re.compile(r"^\s*uses:\s+([^./][^@]+)@(\S+)(?:\s+#\s+(.+))?$", re.MULTILINE)
-    for workflow_path in PINNED_WORKFLOW_FILES:
+def test_automation_drops_legacy_credentials() -> None:
+    """Ensure migrated automation does not reference retired bot credentials."""
+    for automation_path in LEGACY_AUTH_FILES:
+        automation = automation_path.read_text(encoding="utf-8")
+        for forbidden in FORBIDDEN_LEGACY_IDENTIFIERS:
+            assert forbidden not in automation
+
+
+def test_automation_pins_external_actions() -> None:
+    """Ensure migrated automation pins external actions to immutable commits."""
+    action_pattern = re.compile(
+        r"^\s*(?:-\s+)?uses:\s+([^./][^@]+)@(\S+)(?:\s+#\s+(.+))?$",
+        re.MULTILINE,
+    )
+    for workflow_path in PINNED_ACTION_FILES:
         workflow = workflow_path.read_text(encoding="utf-8")
-        for forbidden in (
-            "PRIVILEGED_GITHUB_TOKEN",
-            "TRIAGE_GITHUB_TOKEN",
-            "music-assistant-machine",
-        ):
-            assert forbidden not in workflow
         matches = action_pattern.findall(workflow)
         assert matches
         for _action, ref, comment in matches:
@@ -340,7 +362,10 @@ def test_release_workflow_uses_minimum_preflight_permissions_and_expected_app() 
     jobs = yaml.safe_load(workflow)["jobs"]
 
     assert jobs["resolve"]["permissions"] == {"contents": "read"}
-    assert jobs["preflight"]["permissions"] == {"contents": "read"}
+    assert jobs["preflight"]["permissions"] == {
+        "contents": "read",
+        "pull-requests": "read",
+    }
     assert workflow.count("actions/create-github-app-token@") == 5
     assert workflow.count("outputs.installation-id") == 5
     assert 'EXPECTED_APP_INSTALLATION_ID: "146062122"' in workflow
