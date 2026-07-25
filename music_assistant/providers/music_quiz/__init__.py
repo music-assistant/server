@@ -69,6 +69,7 @@ from music_assistant_models.errors import (
     AudioError,
     InvalidDataError,
     MediaNotFoundError,
+    MusicAssistantError,
     SetupFailedError,
 )
 from music_assistant_models.media_items import Track
@@ -260,6 +261,7 @@ class MusicQuizPlugin(PluginProvider):
         self._playback_session: SharedPlaybackSession | None = None
         self._playback_lock = asyncio.Lock()
         self._next_round_task: asyncio.Task[MusicQuizRound] | None = None
+        self._warm_next_track_task: asyncio.Task[None] | None = None
         self._reveal_playback_task: asyncio.Task[None] | None = None
         self._unregister_handles: list[Callable[[], None]] = []
 
@@ -1376,6 +1378,39 @@ class MusicQuizPlugin(PluginProvider):
             await self.mass.player_queues.play_media(
                 session.queue_id, track_uri, option=QueueOption.REPLACE
             )
+
+    async def _enqueue_track(self, track_uri: str) -> None:
+        """Append a track to the game's playback session queue without starting it."""
+        with _system_auth_context():
+            # only warm an existing session; creating one here would start a
+            # playback target for a round that may never be reached
+            session = self._playback_session
+            if session is None:
+                return
+            player = self.mass.players.get_player(session.player_id)
+            if player is None or not player.state.available:
+                return
+            if player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+                return
+            await self.mass.player_queues.play_media(
+                session.queue_id, track_uri, option=QueueOption.ADD
+            )
+
+    async def _warm_next_track(self, task: asyncio.Task[MusicQuizRound]) -> None:
+        """Queue the prefetched round's track so its stream details resolve before it plays."""
+        try:
+            game_round = await task
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # a failed prefetch is reported when the round is actually requested
+            return
+        if game_round.track_uri is None:
+            return
+        try:
+            await self._enqueue_track(game_round.track_uri)
+        except MusicAssistantError as err:
+            self.logger.debug("Could not pre-queue next Music Quiz track: %s", err)
 
     async def _stop_playback(self) -> None:
         """Stop playback on the game's playback session, if any."""

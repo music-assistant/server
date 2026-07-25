@@ -285,6 +285,7 @@ def _create_plugin(
     plugin._playback_session = None
     plugin._playback_lock = asyncio.Lock()
     plugin._next_round_task = None
+    plugin._warm_next_track_task = None
     plugin._reveal_playback_task = None
     plugin._unregister_handles = []
     plugin.mass.cache.get = AsyncMock(return_value=None)
@@ -5347,3 +5348,41 @@ async def test_get_config_entries_reports_available_ai() -> None:
 
     assert [entry.key for entry in entries] == ["use_ai_distractors"]
     assert entries[0].read_only is False
+
+
+@pytest.mark.asyncio
+async def test_prefetch_enqueues_next_track_for_preloading() -> None:
+    """The prefetched next track is appended to the queue so its stream resolves early."""
+    plugin = _create_plugin()
+    session = _mock_playback_session("venue_player", "venue_player")
+    plugin._playback_session = session
+    enqueued: list[tuple[str, QueueOption]] = []
+
+    async def _play_media(queue_id: str, track_uri: str, *, option: QueueOption) -> None:
+        assert queue_id == "venue_player"
+        enqueued.append((track_uri, option))
+
+    cast("MagicMock", plugin.mass.player_queues).play_media = AsyncMock(side_effect=_play_media)
+    plugin._enqueue_track = MusicQuizPlugin._enqueue_track.__get__(  # type: ignore[method-assign]
+        plugin,
+        MusicQuizPlugin,
+    )
+
+    prepared = MusicQuizRound(
+        round_index=1,
+        track_uri="library://track/warm",
+        answer_label="Warm Track",
+        answer_state=MultipleChoiceRoundState(suggestions=[]),
+    )
+    task: asyncio.Task[MusicQuizRound] = asyncio.get_running_loop().create_task(
+        _immediate(prepared)
+    )
+
+    await plugin._warm_next_track(task)
+
+    assert enqueued == [("library://track/warm", QueueOption.ADD)]
+
+
+async def _immediate(value: MusicQuizRound) -> MusicQuizRound:
+    """Return the given round (helper for building an already-resolved task)."""
+    return value
