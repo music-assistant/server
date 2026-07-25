@@ -343,26 +343,5 @@
   },
   "manifest": {
     "description": "Stream music, personalized recommendations, and lossless FLAC from Yandex Music — including My Wave radio and library sync."
-  },
-  "page": {
-    "device_code": {
-      "title": "Login to Yandex Music",
-      "step_copy": "[%key:common::page::device_code::step_copy%]",
-      "hint_copy": "[%key:common::page::device_code::hint_copy%]",
-      "copied": "[%key:common::page::device_code::copied%]",
-      "copy_manual": "[%key:common::page::device_code::copy_manual%]",
-      "step_open": "[%key:common::page::device_code::step_open%]",
-      "open_button": "[%key:common::page::device_code::open_button%]",
-      "expires_label": "[%key:common::page::device_code::expires_label%]",
-      "expired_title": "[%key:common::page::device_code::expired_title%]",
-      "expired_text": "[%key:common::page::device_code::expired_text%]",
-      "success_title": "[%key:common::page::device_code::success_title%]",
-      "success_text": "[%key:common::page::device_code::success_text%]",
-      "failed_title": "[%key:common::page::device_code::failed_title%]",
-      "failed_text": "[%key:common::page::device_code::failed_text%]",
-      "denied_text": "[%key:common::page::device_code::denied_text%]",
-      "ended_title": "[%key:common::page::device_code::ended_title%]",
-      "ended_text": "[%key:common::page::device_code::ended_text%]"
-    }
   }
 }

@@ -34,7 +34,7 @@ async def test_events(mass: MusicAssistant) -> None:
     filters: list[tuple[EventType | tuple[EventType, ...] | None, str | tuple[str, ...] | None]] = [
         (None, None),
         (EventType.UNKNOWN, None),
-        ((EventType.UNKNOWN, EventType.AUTH_SESSION), None),
+        ((EventType.UNKNOWN, EventType.PLAYER_ADDED), None),
         (None, "myid1"),
         (None, ("myid1", "myid2")),
         (EventType.UNKNOWN, "myid1"),
