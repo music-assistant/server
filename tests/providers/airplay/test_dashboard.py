@@ -125,7 +125,11 @@ async def test_eligible_player_registers_once() -> None:
     device = handler.call_args[0][0]  # type: ignore[attr-defined]
     assert device.dashboard_id == f"airplay_{PLAYER_ID}"
     assert device.name == "Living Room"
-    assert device.supported_types == {DashboardType.NOW_PLAYING}
+    assert device.supported_types == {
+        DashboardType.NOW_PLAYING,
+        DashboardType.PARTY,
+        DashboardType.MUSIC_QUIZ,
+    }
     assert device.provider_domain_hint == "airplay"
 
 
@@ -263,6 +267,34 @@ async def test_on_show_builds_contract_launch_uri() -> None:
         "&dashboard_id=airplay_ap1234567890ab"
     )
     player.async_launch_app.assert_awaited_once_with(expected)
+
+
+async def test_on_show_party_launch_uri_needs_no_player() -> None:
+    """A dashboard that is not player-scoped launches through the real controller route."""
+    controller = DashboardController.__new__(DashboardController)
+    controller.mass = MagicMock()
+    controller.mass.webserver.base_url = "http://192.168.1.10:8095"
+    controller.logger = MagicMock()
+    controller._dashboards = {}
+    controller._sessions = {}
+
+    dashboards = _make_dashboards()
+    dashboards.mass.dashboard = controller
+    player = _make_player()
+    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+    dashboards._register(player)
+    dashboard_id = f"airplay_{PLAYER_ID}"
+
+    with patch.object(DashboardController, "_get_dashboard_code", AsyncMock(return_value="ABC123")):
+        await controller.show_dashboard(dashboard_id, DashboardType.PARTY)
+
+    expected = (
+        "musicassistant://dashboard/show?v=1&type=party"
+        "&target=http%3A%2F%2F192.168.1.10%3A8095%3Fdashboard%3DABC123%26path%3D%252Fparty"
+        f"&dashboard_id={dashboard_id}"
+    )
+    player.async_launch_app.assert_awaited_once_with(expected)
+    assert controller._sessions[dashboard_id].player_id is None
 
 
 async def test_on_show_wakes_before_launching() -> None:

@@ -21,8 +21,12 @@ if TYPE_CHECKING:
 
 # Version of the launch contract this adapter emits (see tvos/docs/launch-contract.md).
 LAUNCH_CONTRACT_VERSION = "1"
-# Dashboard types the tvOS app can render in this release.
-SUPPORTED_DASHBOARD_TYPES = {DashboardType.NOW_PLAYING}
+# Dashboard types the tvOS app has native views for.
+SUPPORTED_DASHBOARD_TYPES = {
+    DashboardType.NOW_PLAYING,
+    DashboardType.PARTY,
+    DashboardType.MUSIC_QUIZ,
+}
 
 
 class AirPlayDashboards:
