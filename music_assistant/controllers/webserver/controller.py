@@ -163,6 +163,11 @@ class WebserverController(CoreController):
             return self._auto_base_url
         return base_url.removesuffix("/")
 
+    @property
+    def sendspin_cast_base_url(self) -> str | None:
+        """Return the secure Sendspin proxy base URL for Cast receivers, if available."""
+        return self._sendspin_proxy.cast_base_url
+
     async def get_config_entries(
         self,
         action: str | None = None,
@@ -317,6 +322,13 @@ class WebserverController(CoreController):
         routes.append(("POST", "/setup", self._handle_setup))
         # add sendspin proxy route (authenticated WebSocket proxy to internal sendspin server)
         routes.append(("GET", "/sendspin", self._sendspin_proxy.handle_sendspin_proxy))
+        routes.append(
+            (
+                "GET",
+                "/sendspin-cast/{access_token}/sendspin",
+                self._sendspin_proxy.handle_cast_sendspin_proxy,
+            )
+        )
         await self.auth.setup()
         # start the webserver
         all_ip_addresses = await get_ip_addresses(include_ipv6=True)

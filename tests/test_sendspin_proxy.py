@@ -18,6 +18,7 @@ def mock_webserver() -> MagicMock:
     webserver.mass = MagicMock()
     webserver.mass.streams.bind_ip = "0.0.0.0"
     webserver.mass.http_session = MagicMock()
+    webserver.base_url = "http://192.0.2.10:8095"
     return webserver
 
 
@@ -124,6 +125,57 @@ class TestSendspinProxyRetry:
 
         assert mock_ws_connect.call_count == 1
         mock_ws_response.close.assert_called_once_with(code=1011, message=b"Internal server error")
+        assert result is mock_ws_response
+
+
+class TestSendspinCastProxy:
+    """Tests for the capability-protected Cast proxy endpoint."""
+
+    def test_cast_base_url_requires_https(
+        self, handler: SendspinProxyHandler, mock_webserver: MagicMock
+    ) -> None:
+        """The Cast proxy must never advertise its bearer token over plain HTTP."""
+        assert handler.cast_base_url is None
+
+        mock_webserver.base_url = "https://music.example.test/ma"
+        secure_base_url = SendspinProxyHandler(mock_webserver).cast_base_url
+        assert secure_base_url is not None
+        assert secure_base_url.startswith("https://music.example.test/ma/sendspin-cast/")
+
+    async def test_invalid_cast_capability_is_rejected(self, handler: SendspinProxyHandler) -> None:
+        """An invalid capability token must be rejected before WebSocket upgrade."""
+        request = MagicMock()
+        request.match_info = {"access_token": "invalid"}
+
+        with pytest.raises(web.HTTPNotFound):
+            await handler.handle_cast_sendspin_proxy(request)
+
+    async def test_valid_cast_capability_connects_proxy(
+        self, handler: SendspinProxyHandler, mock_webserver: MagicMock
+    ) -> None:
+        """A valid capability token may connect without interactive user auth."""
+        mock_webserver.base_url = "https://music.example.test"
+        cast_base_url = handler.cast_base_url
+        assert cast_base_url is not None
+        access_token = cast_base_url.rsplit("/", 1)[-1]
+        request = MagicMock()
+        request.match_info = {"access_token": access_token}
+        request.remote = "192.0.2.20"
+        mock_ws_response = AsyncMock(spec=web.WebSocketResponse)
+
+        with (
+            patch("aiohttp.web.WebSocketResponse", return_value=mock_ws_response),
+            patch.object(
+                handler,
+                "_connect_and_proxy",
+                new_callable=AsyncMock,
+                return_value=mock_ws_response,
+            ) as mock_connect,
+        ):
+            result = await handler.handle_cast_sendspin_proxy(request)
+
+        mock_ws_response.prepare.assert_awaited_once_with(request)
+        mock_connect.assert_awaited_once_with(request, mock_ws_response)
         assert result is mock_ws_response
 
 

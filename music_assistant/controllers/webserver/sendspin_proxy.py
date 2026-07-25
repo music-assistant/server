@@ -1,9 +1,9 @@
 """
 Sendspin WebSocket proxy handler for Music Assistant.
 
-This module provides an authenticated WebSocket proxy to the internal Sendspin server,
-allowing web clients to connect through the main webserver instead of requiring direct
-access to the Sendspin port.
+This module provides WebSocket proxies to the internal Sendspin server. Browser clients
+authenticate interactively, while Cast receivers use a capability URL that is only
+advertised when the main webserver is available over HTTPS.
 """
 
 from __future__ import annotations
@@ -12,7 +12,9 @@ import asyncio
 import contextlib
 import json
 import logging
+import secrets
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 import aiohttp
 from aiohttp import ClientConnectorError, WSMsgType, web
@@ -44,6 +46,15 @@ class SendspinProxyHandler:
         self.webserver = webserver
         self.mass = webserver.mass
         self.logger = LOGGER
+        self._cast_access_token = secrets.token_urlsafe(32)
+
+    @property
+    def cast_base_url(self) -> str | None:
+        """Return the capability URL for Cast clients when HTTPS is configured."""
+        base_url = self.webserver.base_url
+        if urlsplit(base_url).scheme.lower() != "https":
+            return None
+        return f"{base_url}/sendspin-cast/{self._cast_access_token}"
 
     @property
     def internal_sendspin_url(self) -> str:
@@ -102,6 +113,23 @@ class SendspinProxyHandler:
                 await wsock.close(code=4001, message=b"Authentication error")
                 return wsock
 
+        return await self._connect_and_proxy(request, wsock)
+
+    async def handle_cast_sendspin_proxy(self, request: web.Request) -> web.WebSocketResponse:
+        """Proxy a Cast receiver authorized by an unguessable capability URL."""
+        access_token = request.match_info.get("access_token", "")
+        if not secrets.compare_digest(access_token, self._cast_access_token):
+            raise web.HTTPNotFound
+
+        wsock = web.WebSocketResponse(heartbeat=25)
+        await wsock.prepare(request)
+        self.logger.debug("Sendspin Cast proxy connection from %s", request.remote)
+        return await self._connect_and_proxy(request, wsock)
+
+    async def _connect_and_proxy(
+        self, request: web.Request, wsock: web.WebSocketResponse
+    ) -> web.WebSocketResponse:
+        """Connect an authorized client WebSocket to the internal Sendspin server."""
         # The internal Sendspin server may not be ready yet during startup
         # (it starts in the provider load phase, after the webserver).
         # Retry a few times with backoff to handle this race condition.
@@ -126,7 +154,7 @@ class SendspinProxyHandler:
             self.logger.exception("Failed to connect to internal Sendspin server")
             await wsock.close(code=1011, message=b"Internal server error")
             return wsock
-        self.logger.debug("Sendspin proxy authenticated and connected for %s", request.remote)
+        self.logger.debug("Sendspin proxy connected for %s", request.remote)
 
         try:
             await self._proxy_messages(wsock, internal_ws)

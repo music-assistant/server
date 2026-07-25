@@ -64,6 +64,7 @@ if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
     from pychromecast.generated.cast_channel_pb2 import CastMessage
 
+    from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import Player
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
@@ -77,6 +78,14 @@ _CAST_LOG_LEVEL_MAP: dict[str, int] = {
     "info": logging.INFO,
     "debug": logging.DEBUG,
 }
+
+
+def get_sendspin_server_url(mass: MusicAssistant) -> tuple[str, bool]:
+    """Return the Sendspin Cast base URL and whether it uses the secure proxy."""
+    if secure_proxy_url := mass.webserver.sendspin_cast_base_url:
+        return secure_proxy_url, True
+    publish_ip = mass.streams.publish_ip
+    return f"ws://{format_ip_for_url(publish_ip)}:8927", False
 
 
 class SendspinCastController(BaseController):
@@ -622,12 +631,11 @@ class SendspinChromecastBridge:
         The Cast app uses this info to connect its JS Sendspin client
         back to the server with the same client_id.
         """
-        # The Sendspin server runs on its own port (8927), NOT through
-        # the MA webserver or streams server. Use publish_ip directly.
-        publish_ip = self.mass.streams.publish_ip
-        # sendspin-js's SendspinCore appends `/sendspin` to baseUrl when constructing
-        # the WebSocket URL. Send the bare server URL here so it ends up correct.
-        server_url = f"ws://{format_ip_for_url(publish_ip)}:8927"
+        # A Cast receiver loaded over HTTPS cannot connect to an insecure WebSocket.
+        # When the MA webserver has an HTTPS base URL, use its capability-protected
+        # proxy. sendspin-js converts the HTTPS base URL to WSS and appends `/sendspin`.
+        # Keep the direct LAN WebSocket as the fallback for existing installations.
+        server_url, uses_secure_proxy = get_sendspin_server_url(self.mass)
         raw_delay = self.mass.config.get_raw_player_config_value(
             self._bridge_client_id, CONF_SENDSPIN_STATIC_DELAY
         )
@@ -656,9 +664,9 @@ class SendspinChromecastBridge:
 
         await self.mass.loop.run_in_executor(None, send)
         self.logger.debug(
-            "Sent Sendspin config to Cast app on %s: serverUrl=%s, playerId=%s, syncDelay=%dms",
+            "Sent Sendspin config to Cast app on %s: transport=%s, playerId=%s, syncDelay=%dms",
             self.cast_player.display_name,
-            message["serverUrl"],
+            "secure proxy" if uses_secure_proxy else "direct WebSocket",
             self._bridge_client_id,
             sync_delay,
         )
