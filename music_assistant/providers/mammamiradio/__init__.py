@@ -65,8 +65,9 @@ DEFAULT_URL = "http://localhost:8000"
 RADIO_ITEM_ID = "mammamiradio"
 RADIO_NAME = "Mamma Mi Radio"
 RADIO_DESCRIPTION = (
-    "AI-generated Italian radio station — continuous music, banter, and ads. "
-    "Self-hosted via the Mamma Mi Radio HA addon."
+    "Two Italian hosts. One very opinionated smart home. Self-hosted radio for "
+    "Home Assistant: music, banter, and ads, with your home's moments worked "
+    "into the show."
 )
 REACHABILITY_TIMEOUT = 5
 # How often Music Assistant invokes the live-metadata callback (seconds). 12s is
@@ -549,7 +550,7 @@ class MammamiradioProvider(MusicProvider):
             name=RADIO_NAME,
             metadata=MediaItemMetadata(
                 description=RADIO_DESCRIPTION,
-                genres={"AI Radio", "Italian"},
+                genres={"Italian", "Talk Radio"},
                 languages=UniqueList(["it"]),
             ),
             provider_mappings={
