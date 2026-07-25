@@ -38,6 +38,7 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     Genre,
     ItemMapping,
+    MediaCollection,
     MediaItemType,
     Playlist,
     Podcast,
@@ -1406,7 +1407,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             seconds_played = 0
             if (
                 fully_played
-                and not isinstance(media_item, Album | Artist | Genre | Playlist | Podcast)
+                and not isinstance(
+                    media_item, Album | Artist | Genre | MediaCollection | Playlist | Podcast
+                )
                 and isinstance(media_item.duration, int)  # for Radio duration can be None
             ):
                 seconds_played = media_item.duration
