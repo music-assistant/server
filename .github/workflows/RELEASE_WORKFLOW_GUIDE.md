@@ -9,8 +9,8 @@ Before running a release:
   the App's global permissions.
 - Make the organization variable `MUSIC_ASSISTANT_BOT_CLIENT_ID` and organization
   secret `MUSIC_ASSISTANT_BOT_PRIVATE_KEY` available to this repository.
-- Grant the `musicassistant-bot` GitHub App Administration read, Contents read/write,
-  Issues write, and Pull requests write permissions.
+- Grant the `musicassistant-bot` GitHub App Administration read and Contents read/write
+  permissions.
 - Select `server`, `appvars`, `home-assistant-addon`, and
   `app.music-assistant.io` in installation `146062122`, then approve the installation
   permission changes.
@@ -18,6 +18,8 @@ Before running a release:
   change is merged.
 - Keep same-repository release, tag, asset, and GHCR writes on the workflow
   `GITHUB_TOKEN`.
+- Keep GitHub CLI 2.93.0 or newer available. The workflow checks both immutable-release
+  verification commands before publication.
 
 Each job mints a repository-scoped installation token with only the permissions it
 needs. Tokens expire within one hour and are revoked when their job ends. The workflow

@@ -46,6 +46,7 @@ env:
   BASE_IMAGE_VERSION_BETA: "1.6.0"
   BASE_IMAGE_VERSION_NIGHTLY: "1.6.0"
   IMAGE_NAME: ghcr.io/music-assistant/server
+  MINIMUM_GH_VERSION: "2.93.0"
   MUSIC_ASSISTANT_BOT_APP_SLUG: musicassistant-bot
   MUSIC_ASSISTANT_BOT_INSTALLATION_ID: "146062122"
   RELEASE_PYTHON_VERSION: "3.14.5"
@@ -308,6 +309,12 @@ jobs:
         run: |
           set -euo pipefail
 
+          normalize_release_body() {
+            perl -0777 -pe \
+              's/\r\n?/\n/g; s/[ \t]+$//mg; s/(?:\n[ \t]*)*\z/\n/' \
+              "$1"
+          }
+
           gh api --paginate --slurp \
             "repos/${{ github.repository }}/releases?per_page=100" \
             > "$RUNNER_TEMP/release-pages.json"
@@ -376,7 +383,11 @@ jobs:
             exit 1
           fi
 
-          BODY=$(jq -r '.body // ""' "$RUNNER_TEMP/release.json")
+          jq -j '.body // ""' "$RUNNER_TEMP/release.json" \
+            > "$RUNNER_TEMP/release-body-raw.md"
+          normalize_release_body "$RUNNER_TEMP/release-body-raw.md" \
+            > "$RUNNER_TEMP/release-body.md"
+          BODY=$(cat "$RUNNER_TEMP/release-body.md")
           METADATA_COUNT=$(printf '%s\n' "$BODY" \
             | grep -c '^<!-- immutable-release-metadata: .* -->$' || true)
           if [[ "$METADATA_COUNT" != "1" ]]; then
@@ -761,6 +772,12 @@ jobs:
         run: |
           set -euo pipefail
 
+          normalize_release_body() {
+            perl -0777 -pe \
+              's/\r\n?/\n/g; s/[ \t]+$//mg; s/(?:\n[ \t]*)*\z/\n/' \
+              "$1"
+          }
+
           mkdir -p release
           printf '%s\n' "$TITLE" > release/title.txt
 
@@ -813,6 +830,8 @@ jobs:
             printf '\n<!-- immutable-release-metadata: %s -->\n' "$METADATA" \
               >> release/body.md
           fi
+          normalize_release_body release/body.md > "$RUNNER_TEMP/release-body.md"
+          mv "$RUNNER_TEMP/release-body.md" release/body.md
 
       - name: Upload release bundle
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -855,6 +874,12 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
+
+          normalize_release_body() {
+            perl -0777 -pe \
+              's/\r\n?/\n/g; s/[ \t]+$//mg; s/(?:\n[ \t]*)*\z/\n/' \
+              "$1"
+          }
 
           if [[ "$RELEASE_STATE" == "draft" ]]; then
             gh api "repos/${{ github.repository }}/releases/$RELEASE_ID" \
@@ -906,17 +931,27 @@ jobs:
             --arg title "$TITLE" \
             --arg source "$SOURCE_SHA" \
             --argjson prerelease "$EXPECTED_PRERELEASE" \
-            --rawfile body release/body.md \
             '
               .tag_name == $version
               and .target_commitish == $source
               and .name == $title
-              and .body == $body
               and .draft == true
               and .prerelease == $prerelease
               and .author.login == "github-actions[bot]"
             ' "$RUNNER_TEMP/release.json" >/dev/null; then
             echo "::error::Draft $VERSION no longer matches the generated release state"
+            exit 1
+          fi
+          jq -j '.body // ""' "$RUNNER_TEMP/release.json" \
+            > "$RUNNER_TEMP/api-release-body-raw.md"
+          normalize_release_body "$RUNNER_TEMP/api-release-body-raw.md" \
+            > "$RUNNER_TEMP/api-release-body.md"
+          normalize_release_body release/body.md \
+            > "$RUNNER_TEMP/expected-release-body.md"
+          if ! cmp -s \
+            "$RUNNER_TEMP/api-release-body.md" \
+            "$RUNNER_TEMP/expected-release-body.md"; then
+            echo "::error::Draft $VERSION body differs from the generated release state"
             exit 1
           fi
 
@@ -1190,6 +1225,22 @@ jobs:
           name: release-bundle
           path: .
 
+      - name: Verify GitHub CLI release support
+        env:
+          MINIMUM_VERSION: ${{ env.MINIMUM_GH_VERSION }}
+        run: |
+          set -euo pipefail
+
+          GH_VERSION=$(gh --version | awk 'NR == 1 {print $3}')
+          if [[ ! "$GH_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || [[ $(printf '%s\n' "$MINIMUM_VERSION" "$GH_VERSION" | sort -V | head -n 1) \
+              != "$MINIMUM_VERSION" ]] \
+            || ! gh release verify --help >/dev/null \
+            || ! gh release verify-asset --help >/dev/null; then
+            echo "::error::Release verification requires GitHub CLI $MINIMUM_VERSION or newer"
+            exit 1
+          fi
+
       - name: Bind exact image digest to draft
         if: needs.resolve-release.outputs.release_state != 'published'
         env:
@@ -1200,15 +1251,32 @@ jobs:
         run: |
           set -euo pipefail
 
+          normalize_release_body() {
+            perl -0777 -pe \
+              's/\r\n?/\n/g; s/[ \t]+$//mg; s/(?:\n[ \t]*)*\z/\n/' \
+              "$1"
+          }
+
+          release_body_matches() {
+            local release_file=$1
+            jq -j '.body // ""' "$release_file" \
+              > "$RUNNER_TEMP/api-release-body-raw.md"
+            normalize_release_body "$RUNNER_TEMP/api-release-body-raw.md" \
+              > "$RUNNER_TEMP/api-release-body.md"
+            normalize_release_body release/body.md \
+              > "$RUNNER_TEMP/expected-release-body.md"
+            cmp -s \
+              "$RUNNER_TEMP/api-release-body.md" \
+              "$RUNNER_TEMP/expected-release-body.md"
+          }
+
           gh api "repos/${{ github.repository }}/releases/$RELEASE_ID" \
             > "$RUNNER_TEMP/release-before-image-bind.json"
           if [[ $(jq -r .draft "$RUNNER_TEMP/release-before-image-bind.json") != "true" ]]; then
             echo "::error::Release $VERSION was published before its exact image digest was bound"
             exit 1
           fi
-          if ! cmp -s \
-            <(jq -j '.body // ""' "$RUNNER_TEMP/release-before-image-bind.json") \
-            release/body.md; then
+          if ! release_body_matches "$RUNNER_TEMP/release-before-image-bind.json"; then
             echo "::error::Draft body changed before its exact image digest was bound"
             exit 1
           fi
@@ -1246,9 +1314,7 @@ jobs:
             --input "$RUNNER_TEMP/bind-image.json" \
             > "$RUNNER_TEMP/release-after-image-bind.json"
           if [[ $(jq -r .draft "$RUNNER_TEMP/release-after-image-bind.json") != "true" ]] \
-            || ! cmp -s \
-              <(jq -j '.body // ""' "$RUNNER_TEMP/release-after-image-bind.json") \
-              release/body.md; then
+            || ! release_body_matches "$RUNNER_TEMP/release-after-image-bind.json"; then
             echo "::error::Draft $VERSION changed while binding its exact image digest"
             exit 1
           fi
@@ -1317,6 +1383,25 @@ jobs:
         run: |
           set -euo pipefail
 
+          normalize_release_body() {
+            perl -0777 -pe \
+              's/\r\n?/\n/g; s/[ \t]+$//mg; s/(?:\n[ \t]*)*\z/\n/' \
+              "$1"
+          }
+
+          release_body_matches() {
+            local release_file=$1
+            jq -j '.body // ""' "$release_file" \
+              > "$RUNNER_TEMP/api-release-body-raw.md"
+            normalize_release_body "$RUNNER_TEMP/api-release-body-raw.md" \
+              > "$RUNNER_TEMP/api-release-body.md"
+            normalize_release_body release/body.md \
+              > "$RUNNER_TEMP/expected-release-body.md"
+            cmp -s \
+              "$RUNNER_TEMP/api-release-body.md" \
+              "$RUNNER_TEMP/expected-release-body.md"
+          }
+
           validate_release() {
             local release_file=$1
             if ! jq -e \
@@ -1337,7 +1422,11 @@ jobs:
             fi
 
             local body metadata_count metadata
-            body=$(jq -r '.body // ""' "$release_file")
+            jq -j '.body // ""' "$release_file" \
+              > "$RUNNER_TEMP/release-body-raw.md"
+            normalize_release_body "$RUNNER_TEMP/release-body-raw.md" \
+              > "$RUNNER_TEMP/release-body.md"
+            body=$(cat "$RUNNER_TEMP/release-body.md")
             metadata_count=$(printf '%s\n' "$body" \
               | grep -c '^<!-- immutable-release-metadata: .* -->$' || true)
             if [[ "$metadata_count" != "1" ]]; then
@@ -1449,9 +1538,7 @@ jobs:
               echo "::error::Release $VERSION was published by another process; rerun to verify it"
               exit 1
             fi
-            if ! cmp -s \
-              <(jq -j '.body // ""' "$RUNNER_TEMP/release.json") \
-              release/body.md; then
+            if ! release_body_matches "$RUNNER_TEMP/release.json"; then
               echo "::error::Draft body changed after asset verification"
               exit 1
             fi
@@ -1816,9 +1903,7 @@ jobs:
           owner: ${{ github.repository_owner }}
           repositories: home-assistant-addon
           permission-contents: write
-          permission-issues: write
           permission-metadata: read
-          permission-pull-requests: write
 
       - name: Verify GitHub App installation
         env:
