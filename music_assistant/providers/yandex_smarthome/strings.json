@@ -49,6 +49,53 @@
       "label": "Enter this one-time code in the Yandex app: {0}"
     }
   },
+  "setup_flow": {
+    "user": {
+      "title": "Choose how to connect",
+      "description": "Select a connection mode and the Yandex account to use. Cloud is the simplest; Cloud Plus and Direct set up a private skill."
+    },
+    "registering": {
+      "progress_text": "Registering a cloud relay for this instance..."
+    },
+    "skill_method": {
+      "title": "How should the skill be set up?",
+      "description": "Create the Yandex Dialogs skill automatically, or use the ID of a skill you already created."
+    },
+    "skill_id": {
+      "title": "Enter your skill ID",
+      "description": "Paste the ID of the Yandex Dialogs skill you created."
+    },
+    "creating_skill": {
+      "progress_text": "Creating the Yandex Dialogs skill..."
+    },
+    "device_login": {
+      "title": "Sign in to Yandex",
+      "description": "Open the verification URL and enter the code shown to sign in with Yandex.",
+      "progress_text": "Waiting for you to enter the code and confirm in the Yandex app..."
+    },
+    "skill_token": {
+      "title": "Enter the skill OAuth token",
+      "description": "Paste the OAuth token for your Yandex Dialogs skill. Use the link next to the field to obtain it."
+    },
+    "fetching_otp": {
+      "progress_text": "Fetching the one-time linking code..."
+    },
+    "cloud_otp": {
+      "progress_text": "Enter this one-time code in the Yandex app to link your account."
+    },
+    "cloud_confirm": {
+      "title": "Confirm in the Yandex app",
+      "description": "Enter the one-time code shown in the Yandex app, then continue once your account is linked."
+    },
+    "abort": {
+      "device_login_denied": "Sign-in was denied in the Yandex app."
+    }
+  },
+  "errors": {
+    "direct_requires_https": "Direct mode needs Music Assistant to be reachable over HTTPS. Set an external HTTPS URL and try again.",
+    "skill_token_required": "Enter the skill's OAuth token to continue.",
+    "no_borrowed_token": "The linked Yandex Music account has no session token. Authenticate the Yandex Music provider (with Remember session enabled) and retry."
+  },
   "manifest": {
     "description": "Expose Music Assistant players to Yandex Alice via Yandex Smart Home API."
   }
