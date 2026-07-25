@@ -275,5 +275,4 @@ jobs:
       source_sha: ${{ needs.resolve-release.outputs.source_sha }}
       important_notes: ${{ inputs.important_notes }}
     secrets:
-      TRIAGE_APP_ID: ${{ secrets.TRIAGE_APP_ID }}
-      TRIAGE_APP_PRIVATE_KEY: ${{ secrets.TRIAGE_APP_PRIVATE_KEY }}
+      MUSIC_ASSISTANT_BOT_PRIVATE_KEY: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
