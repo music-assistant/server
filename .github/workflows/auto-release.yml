@@ -275,4 +275,4 @@ jobs:
       source_sha: ${{ needs.resolve-release.outputs.source_sha }}
       important_notes: ${{ inputs.important_notes }}
     secrets:
-      PRIVILEGED_GITHUB_TOKEN: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
+      MUSIC_ASSISTANT_BOT_PRIVATE_KEY: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}

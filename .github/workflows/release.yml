@@ -38,7 +38,7 @@ on:
         required: false
         type: string
     secrets:
-      PRIVILEGED_GITHUB_TOKEN:
+      MUSIC_ASSISTANT_BOT_PRIVATE_KEY:
         required: true
 
 env:
@@ -46,6 +46,8 @@ env:
   BASE_IMAGE_VERSION_BETA: "1.6.0"
   BASE_IMAGE_VERSION_NIGHTLY: "1.6.0"
   IMAGE_NAME: ghcr.io/music-assistant/server
+  MUSIC_ASSISTANT_BOT_APP_SLUG: musicassistant-bot
+  MUSIC_ASSISTANT_BOT_INSTALLATION_ID: "146062122"
   RELEASE_PYTHON_VERSION: "3.14.5"
 
 permissions:
@@ -80,27 +82,57 @@ jobs:
       wheel_sha256: ${{ steps.state.outputs.wheel_sha256 }}
       wheel_size: ${{ steps.state.outputs.wheel_size }}
     steps:
-      - name: Verify privileged token and immutable releases
+      - name: Create server settings App token
+        id: settings-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: server
+          permission-administration: read
+          permission-metadata: read
+
+      - name: Create appvars App token
+        id: appvars-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: appvars
+          permission-contents: read
+          permission-metadata: read
+
+      - name: Verify GitHub App installation
         env:
-          GH_TOKEN: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
+          APPVARS_APP_SLUG: ${{ steps.appvars-app-token.outputs.app-slug }}
+          APPVARS_INSTALLATION_ID: ${{ steps.appvars-app-token.outputs.installation-id }}
+          SETTINGS_APP_SLUG: ${{ steps.settings-app-token.outputs.app-slug }}
+          SETTINGS_INSTALLATION_ID: ${{ steps.settings-app-token.outputs.installation-id }}
         run: |
           set -euo pipefail
 
-          if ! LOGIN=$(gh api user --jq .login); then
-            echo "::error::PRIVILEGED_GITHUB_TOKEN could not authenticate"
+          if [[ "$SETTINGS_APP_SLUG" != "${{ env.MUSIC_ASSISTANT_BOT_APP_SLUG }}" \
+            || "$SETTINGS_INSTALLATION_ID" != "${{ env.MUSIC_ASSISTANT_BOT_INSTALLATION_ID }}" \
+            || "$APPVARS_APP_SLUG" != "${{ env.MUSIC_ASSISTANT_BOT_APP_SLUG }}" \
+            || "$APPVARS_INSTALLATION_ID" != "${{ env.MUSIC_ASSISTANT_BOT_INSTALLATION_ID }}" ]]; then
+            echo "::error::GitHub App tokens were not minted by the expected musicassistant-bot installation"
             exit 1
           fi
-          if [[ "$LOGIN" != "music-assistant-machine" ]]; then
-            echo "::error::PRIVILEGED_GITHUB_TOKEN authenticated as $LOGIN, expected music-assistant-machine"
-            exit 1
-          fi
+
+      - name: Verify immutable releases
+        env:
+          GH_TOKEN: ${{ steps.settings-app-token.outputs.token }}
+        run: |
+          set -euo pipefail
 
           if ! ENABLED=$(gh api \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2026-03-10" \
             "repos/${{ github.repository }}/immutable-releases" \
             --jq .enabled); then
-            echo "::error::PRIVILEGED_GITHUB_TOKEN needs Administration read access to query immutable releases"
+            echo "::error::musicassistant-bot needs Administration read access to query immutable releases"
             exit 1
           fi
           if [[ "$ENABLED" != "true" ]]; then
@@ -267,8 +299,8 @@ jobs:
         env:
           EXPECTED_PRERELEASE: ${{ steps.config.outputs.is_prerelease }}
           EXPECTED_TITLE: ${{ steps.config.outputs.title }}
+          APPVARS_TOKEN: ${{ steps.appvars-app-token.outputs.token }}
           GH_TOKEN: ${{ github.token }}
-          PRIVILEGED_GITHUB_TOKEN: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
           SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
           TAG_EXISTS: ${{ steps.source.outputs.tag_exists }}
           VERSION: ${{ inputs.version }}
@@ -301,7 +333,7 @@ jobs:
               echo "::error::Tag $VERSION exists without its matching immutable release"
               exit 1
             fi
-            if ! APP_SECRETS_SHA=$(GH_TOKEN="$PRIVILEGED_GITHUB_TOKEN" gh api \
+            if ! APP_SECRETS_SHA=$(GH_TOKEN="$APPVARS_TOKEN" gh api \
               repos/music-assistant/appvars/commits/main --jq .sha); then
               echo "::error::Unable to resolve the app secrets source commit"
               exit 1
@@ -507,6 +539,30 @@ jobs:
           persist-credentials: false
           path: source
 
+      - name: Create appvars App token
+        id: appvars-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: appvars
+          permission-contents: read
+          permission-metadata: read
+
+      - name: Verify GitHub App installation
+        env:
+          APP_SLUG: ${{ steps.appvars-app-token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.appvars-app-token.outputs.installation-id }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$APP_SLUG" != "${{ env.MUSIC_ASSISTANT_BOT_APP_SLUG }}" \
+            || "$INSTALLATION_ID" != "${{ env.MUSIC_ASSISTANT_BOT_INSTALLATION_ID }}" ]]; then
+            echo "::error::Appvars token was not minted by the expected musicassistant-bot installation"
+            exit 1
+          fi
+
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -544,7 +600,7 @@ jobs:
         working-directory: source
         env:
           APP_SECRETS_SHA: ${{ needs.resolve-release.outputs.app_secrets_sha }}
-          GH_TOKEN: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.appvars-app-token.outputs.token }}
         run: |
           set -euo pipefail
 
@@ -1197,20 +1253,36 @@ jobs:
             exit 1
           fi
 
-      - name: Recheck privileged token and immutable releases
+      - name: Create server settings App token
+        id: settings-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: server
+          permission-administration: read
+          permission-metadata: read
+
+      - name: Verify GitHub App installation
         env:
-          GH_TOKEN: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
+          APP_SLUG: ${{ steps.settings-app-token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.settings-app-token.outputs.installation-id }}
         run: |
           set -euo pipefail
 
-          if ! LOGIN=$(gh api user --jq .login); then
-            echo "::error::PRIVILEGED_GITHUB_TOKEN could not authenticate before publication"
+          if [[ "$APP_SLUG" != "${{ env.MUSIC_ASSISTANT_BOT_APP_SLUG }}" \
+            || "$INSTALLATION_ID" != "${{ env.MUSIC_ASSISTANT_BOT_INSTALLATION_ID }}" ]]; then
+            echo "::error::Settings token was not minted by the expected musicassistant-bot installation"
             exit 1
           fi
-          if [[ "$LOGIN" != "music-assistant-machine" ]]; then
-            echo "::error::PRIVILEGED_GITHUB_TOKEN authenticated as $LOGIN, expected music-assistant-machine"
-            exit 1
-          fi
+
+      - name: Recheck immutable releases
+        env:
+          GH_TOKEN: ${{ steps.settings-app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+
           if ! ENABLED=$(gh api \
             -H "Accept: application/vnd.github+json" \
             -H "X-GitHub-Api-Version: 2026-03-10" \
@@ -1735,17 +1807,45 @@ jobs:
               ;;
           esac
 
+      - name: Create add-on App token
+        id: addon-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: home-assistant-addon
+          permission-contents: write
+          permission-issues: write
+          permission-metadata: read
+          permission-pull-requests: write
+
+      - name: Verify GitHub App installation
+        env:
+          APP_SLUG: ${{ steps.addon-app-token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.addon-app-token.outputs.installation-id }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$APP_SLUG" != "${{ env.MUSIC_ASSISTANT_BOT_APP_SLUG }}" \
+            || "$INSTALLATION_ID" != "${{ env.MUSIC_ASSISTANT_BOT_INSTALLATION_ID }}" ]]; then
+            echo "::error::Add-on token was not minted by the expected musicassistant-bot installation"
+            exit 1
+          fi
+
       - name: Check out add-on repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: music-assistant/home-assistant-addon
-          token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
+          token: ${{ steps.addon-app-token.outputs.token }}
           path: addon-repo
           fetch-depth: 0
 
       - name: Update add-on release state
         env:
           ADDON_FOLDER: ${{ steps.addon.outputs.folder }}
+          APP_SLUG: ${{ steps.addon-app-token.outputs.app-slug }}
+          APP_TOKEN: ${{ steps.addon-app-token.outputs.token }}
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ inputs.version }}
           CHANNEL: ${{ inputs.channel }}
@@ -1787,8 +1887,9 @@ jobs:
             exit 0
           fi
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          APP_USER_ID=$(GH_TOKEN="$APP_TOKEN" gh api "/users/${APP_SLUG}[bot]" --jq .id)
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email "${APP_USER_ID}+${APP_SLUG}[bot]@users.noreply.github.com"
           git add "$ADDON_FOLDER/config.yaml" "$ADDON_FOLDER/CHANGELOG.md"
           git commit -m "Bump $CHANNEL add-on to version $VERSION"
           BRANCH=$(git branch --show-current)
@@ -1835,22 +1936,41 @@ jobs:
           fi
           echo "version=$FRONTEND_VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Create remote app token
+        id: remote-app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: app.music-assistant.io
+          permission-contents: write
+          permission-metadata: read
+
+      - name: Verify GitHub App installation
+        env:
+          APP_SLUG: ${{ steps.remote-app-token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.remote-app-token.outputs.installation-id }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$APP_SLUG" != "${{ env.MUSIC_ASSISTANT_BOT_APP_SLUG }}" \
+            || "$INSTALLATION_ID" != "${{ env.MUSIC_ASSISTANT_BOT_INSTALLATION_ID }}" ]]; then
+            echo "::error::Remote app token was not minted by the expected musicassistant-bot installation"
+            exit 1
+          fi
+
       - name: Dispatch idempotent frontend update
         env:
           CHANNEL: ${{ inputs.channel == 'rc' && 'beta' || inputs.channel }}
           FRONTEND_VERSION: ${{ steps.frontend.outputs.version }}
-          GH_TOKEN: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.remote-app-token.outputs.token }}
           IMAGE_DIGEST: ${{ needs.exact-image.outputs.digest }}
           SOURCE_SHA: ${{ needs.resolve-release.outputs.source_sha }}
           VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
 
-          LOGIN=$(gh api user --jq .login)
-          if [[ "$LOGIN" != "music-assistant-machine" ]]; then
-            echo "::error::PRIVILEGED_GITHUB_TOKEN authenticated as $LOGIN, expected music-assistant-machine"
-            exit 1
-          fi
           CURRENT_FRONTEND_VERSION=$(gh api \
             repos/music-assistant/app.music-assistant.io/contents/channels.json \
             --jq .content \
