@@ -296,6 +296,9 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
                 "mfsymlinks",
                 "noserverino",
                 "actimeo=30",
+                "soft",
+                "timeo=100",
+                "retrans=6",
             ]
         )
 
