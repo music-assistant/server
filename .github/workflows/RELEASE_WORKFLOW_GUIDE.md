@@ -4,6 +4,9 @@
 
 Before running a release:
 
+- Merge the support repository's App-token hardening so every existing
+  `musicassistant-bot` token requests explicit least-privilege scopes before expanding
+  the App's global permissions.
 - Make the organization variable `MUSIC_ASSISTANT_BOT_CLIENT_ID` and organization
   secret `MUSIC_ASSISTANT_BOT_PRIVATE_KEY` available to this repository.
 - Grant the `musicassistant-bot` GitHub App Administration read, Contents read/write,
@@ -118,13 +121,14 @@ release manually.
 
 ## External Rollout
 
-1. Merge this workflow change while immutable releases remain disabled.
-2. Update the `musicassistant-bot` App permissions and selected repositories listed
+1. Merge the support repository's App-token least-privilege hardening.
+2. Merge this workflow change while immutable releases remain disabled.
+3. Update the `musicassistant-bot` App permissions and selected repositories listed
    above.
-3. Approve the installation changes and confirm the Client ID variable and private-key
+4. Approve the installation changes and confirm the Client ID variable and private-key
    secret are available to `server`.
-4. Enable immutable releases for `music-assistant/server`.
-5. Run the intended release version. Do not pre-create its tag or GitHub release.
+5. Enable immutable releases for `music-assistant/server`.
+6. Run the intended release version. Do not pre-create its tag or GitHub release.
 
 ## Troubleshooting
 
