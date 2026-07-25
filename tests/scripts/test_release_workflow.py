@@ -6,8 +6,10 @@ import hashlib
 import json
 import re
 import subprocess
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 import yaml
@@ -533,6 +535,64 @@ def test_release_workflow_uses_minimum_preflight_permissions_and_expected_app() 
     assert "'.default_branch'" in workflow
 
 
+def test_release_workflow_dispatch_source_sha_is_optional_for_recovery() -> None:
+    """Direct recovery keeps source_sha optional while workflow_call stays required."""
+    workflow = cast(
+        "Mapping[object, Any]",
+        yaml.safe_load(
+            (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+        ),
+    )
+    triggers = _workflow_triggers(workflow)
+
+    assert triggers["workflow_dispatch"]["inputs"]["source_sha"] == {
+        "description": (
+            "Exact full commit SHA for draft/published recovery; leave empty to "
+            "resolve the current channel branch head"
+        ),
+        "required": False,
+        "type": "string",
+    }
+    assert triggers["workflow_call"]["inputs"]["source_sha"] == {
+        "description": "Exact source commit to release",
+        "required": True,
+        "type": "string",
+    }
+
+
+def test_release_workflow_exact_source_resolution_uses_requested_sha() -> None:
+    """Resolve exact source commit honors recovery SHAs and rejects bad ones."""
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    resolve_step = _workflow_step(
+        cast("dict[str, Any]", yaml.safe_load(workflow)),
+        "resolve",
+        "Resolve exact source commit",
+    )
+
+    assert resolve_step["env"] == {"REQUESTED_SHA": "${{ inputs.source_sha }}"}
+    resolve_run = str(resolve_step["run"])
+
+    expected_resolution = """\
+if [ -n "$REQUESTED_SHA" ]; then
+  requested_sha=$(printf '%s' "$REQUESTED_SHA" |
+    tr '[:upper:]' '[:lower:]')
+  if ! [[ "$requested_sha" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "source_sha must be a full commit SHA" >&2
+    exit 1
+  fi
+  source_sha=$(git -C source rev-parse "$requested_sha^{commit}")
+  if ! git -C source merge-base --is-ancestor "$source_sha" "$branch_sha"; then
+    echo "$source_sha is not part of ${{ steps.branch.outputs.branch }}" >&2
+    exit 1
+  fi
+else
+  source_sha="$branch_sha"
+fi
+echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+"""
+    assert expected_resolution in resolve_run
+
+
 def test_release_workflow_publication_state_uses_release_ids() -> None:
     """Publication lookup must use release IDs and fail closed on mismatches."""
     workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
@@ -584,10 +644,23 @@ def _git(path: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _workflow_step_run(workflow: str, job_name: str, step_name: str) -> str:
-    jobs = yaml.safe_load(workflow)["jobs"]
+def _workflow_triggers(workflow: Mapping[object, Any]) -> dict[str, Any]:
+    trigger = workflow.get("on")
+    if trigger is None:
+        trigger = workflow[True]
+    assert isinstance(trigger, dict)
+    return cast("dict[str, Any]", trigger)
+
+
+def _workflow_step(workflow: Mapping[str, Any], job_name: str, step_name: str) -> dict[str, Any]:
+    jobs = workflow["jobs"]
+    assert isinstance(jobs, dict)
     for step in jobs[job_name]["steps"]:
         if step.get("name") == step_name:
-            return str(step["run"])
+            return cast("dict[str, Any]", step)
     msg = f"Step {step_name!r} not found in job {job_name!r}"
     raise AssertionError(msg)
+
+
+def _workflow_step_run(workflow: str, job_name: str, step_name: str) -> str:
+    return str(_workflow_step(yaml.safe_load(workflow), job_name, step_name)["run"])
