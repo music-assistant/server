@@ -65,7 +65,7 @@ def get_prs_between_tags(repo, previous_tag, source_sha):
     released_pr_numbers = set()
     if not previous_tag:
         print("No previous tag specified, will include all PRs from branch history")  # noqa: T201
-        # Get the first commit on the branch
+        # Get commits reachable from the exact release source
         commits = list(repo.get_commits(sha=source_sha))
         # Limit to last 100 commits to avoid going too far back
         commits = commits[:100]
