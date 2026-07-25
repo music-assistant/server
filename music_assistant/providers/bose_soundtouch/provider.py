@@ -16,11 +16,16 @@ from .const import PLAYER_ID_PREFIX
 from .player import BoseSoundTouchPlayer
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
     from zeroconf.asyncio import AsyncServiceInfo
 
 
 class BoseSoundTouchProvider(PlayerProvider):
     """Player provider for Bose SoundTouch speakers."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (CONF_ENTRY_MANUAL_DISCOVERY_IPS,)
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""

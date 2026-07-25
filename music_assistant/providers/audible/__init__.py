@@ -25,7 +25,6 @@ from music_assistant.providers.audible.audible_helper import (
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import (
         ConfigEntry,
-        ConfigValueType,
         ProviderConfig,
     )
     from music_assistant_models.media_items import (
@@ -59,27 +58,21 @@ async def setup(
     return Audibleprovider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return the config entries for the Audible provider.
-
-    Authentication (Amazon sign-in on their own page + device registration) runs in the
-    interactive setup flow (see ``setup_flow.py``); this provider has no further options.
-    """
-    return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
-
-
 class Audibleprovider(MusicProvider):
     """Implementation of a Audible Audiobook Provider."""
 
     locale: str
     auth_file: str
     _client: audible.AsyncClient | None = None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the config entries for the Audible provider.
+
+        Authentication (Amazon sign-in on their own page + device registration) runs in the
+        interactive setup flow (see ``setup_flow.py``); this provider has no further options.
+        """
+        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
 
     async def handle_async_init(self) -> None:
         """Handle asynchronous initialization of the provider."""

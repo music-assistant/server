@@ -44,7 +44,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER, CONF_PASSWORD, CONF_USERNAME
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.json import json_loads
@@ -65,6 +65,8 @@ from .helpers import decrypt
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+    from music_assistant_models.config_entries import ConfigEntry
+
 
 class MusicMeProvider(MusicProvider):
     """Provider for the MusicMe streaming service."""
@@ -72,6 +74,10 @@ class MusicMeProvider(MusicProvider):
     _user_id: str | None = None
     http_session: aiohttp.ClientSession
     throttler: ThrottlerManager
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

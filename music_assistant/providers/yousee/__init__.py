@@ -4,14 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
-from music_assistant_models.enums import (
-    ConfigEntryType,
-    ProviderFeature,
-)
+from music_assistant_models.enums import ProviderFeature
 
-from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
-from music_assistant.providers.yousee.constants import CONF_QUALITY
 from music_assistant.providers.yousee.provider import YouSeeMusikProvider
 
 if TYPE_CHECKING:
@@ -51,31 +45,3 @@ async def setup(
     # you are free to do any preflight checks here and but you must return
     #  an instance of the provider.
     return YouSeeMusikProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    return (
-        CONF_ENTRY_UNOFFICIAL_PROVIDER,
-        ConfigEntry(
-            key=CONF_QUALITY,
-            type=ConfigEntryType.INTEGER,
-            default_value=320,
-            options=[
-                ConfigValueOption(320),
-                ConfigValueOption(192),
-            ],
-        ),
-    )

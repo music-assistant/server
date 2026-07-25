@@ -57,7 +57,6 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import (
         ConfigEntry,
         ConfigValueOption,
-        ConfigValueType,
         ProviderConfig,
     )
     from music_assistant_models.provider import ProviderManifest
@@ -151,36 +150,6 @@ async def setup(
     return DigitallyIncorporatedProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-# ruff: noqa: ARG001
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    entries = []
-
-    # Network selection - multi-select instead of individual booleans
-    network_options = [
-        ConfigValueOption(network_key, title=network_info["display_name"])
-        for network_key, network_info in NETWORKS.items()
-    ]
-
-    entries.append(
-        ConfigEntry(
-            key="enabled_networks",
-            type=ConfigEntryType.STRING,
-            default_value=list(NETWORKS.keys()),  # Enable all by default
-            required=True,
-            options=network_options,
-            multi_value=True,
-        )
-    )
-
-    return tuple(entries)
-
-
 class DigitallyIncorporatedProvider(MusicProvider):
     """Digitally Incorporated Music Provider."""
 
@@ -196,6 +165,29 @@ class DigitallyIncorporatedProvider(MusicProvider):
         """Initialize Digitally Incorporated provider."""
         super().__init__(mass, manifest, config, supported_features)
         self._throttler = Throttler(rate_limit=RATE_LIMIT, period=RATE_PERIOD)
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        entries = []
+
+        # Network selection - multi-select instead of individual booleans
+        network_options = [
+            ConfigValueOption(network_key, title=network_info["display_name"])
+            for network_key, network_info in NETWORKS.items()
+        ]
+
+        entries.append(
+            ConfigEntry(
+                key="enabled_networks",
+                type=ConfigEntryType.STRING,
+                default_value=list(NETWORKS.keys()),  # Enable all by default
+                required=True,
+                options=network_options,
+                multi_value=True,
+            )
+        )
+
+        return tuple(entries)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

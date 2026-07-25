@@ -12,7 +12,9 @@ from datetime import datetime
 from typing import Any, cast
 
 import aiohttp
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
+    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -49,6 +51,7 @@ from music_assistant_models.media_items.metadata import MediaItemChapter
 from music_assistant_models.streamdetails import StreamDetails
 from orjson import JSONDecodeError
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.json import SerializableType, json_loads
@@ -106,6 +109,32 @@ class SpotifyProvider(MusicProvider):
     # True if user has configured a custom client ID with valid authentication
     dev_session_active: bool = False
     throttler: ThrottlerManager
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return Config entries to setup this provider.
+
+        Authentication is handled by the setup flow (see setup_flow.py); only the genuine
+        options are configurable here.
+        """
+        # audiobook progress sync is only offered where the account's region supports audiobooks
+        audiobooks_supported = bool(getattr(self, "audiobooks_supported", False))
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_SYNC_PODCAST_PROGRESS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                category="sync_options",
+            ),
+            ConfigEntry(
+                key=CONF_SYNC_AUDIOBOOK_PROGRESS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                category="sync_options",
+                hidden=not audiobooks_supported,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

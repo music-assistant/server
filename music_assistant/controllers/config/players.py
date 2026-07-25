@@ -212,18 +212,11 @@ class PlayerConfigMixin:
         raise KeyError(msg)
 
     @api_command("config/players/get_entries", required_scope=Scope.CONFIG_PLAYERS_READ)
-    async def get_player_config_entries(
-        self,
-        player_id: str,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_player_config_entries(self, player_id: str) -> list[ConfigEntry]:
         """
         Return Config entries to configure a player.
 
-        player_id: id of an existing player instance.
-        action: [optional] action key called from config entries UI.
-        values: the (intermediate) raw values for config entries sent with the action.
+        :param player_id: id of an existing player instance.
         """
         if not (player := self.mass.players.get_player(player_id, False)):
             msg = f"Player {player_id} not found"
@@ -233,9 +226,7 @@ class PlayerConfigMixin:
         player_entries: list[ConfigEntry]
         if player.state.type == PlayerType.PROTOCOL:
             default_entries = []
-            player_entries = await self._get_player_config_entries(
-                player, action=action, values=values
-            )
+            player_entries = await self._get_player_config_entries(player)
         else:
             # get default entries which are common for all (non protocol)players
             default_entries = self._get_default_player_config_entries(player)
@@ -246,14 +237,10 @@ class PlayerConfigMixin:
             # and maximizes api client compatibility because you can configure the whole player
             # including its protocols from a single config endpoint without needing special handling
             # for protocol players in the UI/api clients
-            if protocol_entries := await self._create_output_protocol_config_entries(
-                player, action=action, values=values
-            ):
+            if protocol_entries := await self._create_output_protocol_config_entries(player):
                 player_entries = protocol_entries
             else:
-                player_entries = await self._get_player_config_entries(
-                    player, action=action, values=values
-                )
+                player_entries = await self._get_player_config_entries(player)
 
         player_entries_keys = {entry.key for entry in player_entries}
         all_entries = [
@@ -261,7 +248,33 @@ class PlayerConfigMixin:
             *[x for x in default_entries if x.key not in player_entries_keys],
             *player_entries,
         ]
-        return _with_translation_owner(all_entries, f"provider.{player.provider}", action, values)
+        return _with_translation_owner(all_entries, f"provider.{player.provider}")
+
+    @api_command("config/players/invoke_action", required_scope=Scope.CONFIG_PLAYERS_WRITE)
+    async def invoke_player_config_action(self, player_id: str, action: str) -> list[ConfigEntry]:
+        """
+        Run a one-shot action button from a player's config and return the (re-rendered) entries.
+
+        A protocol-prefixed action (``<protocol_player_id>||protocol||<action>``) is routed to
+        the linked protocol player; the parent player's entries are then re-rendered so the
+        injected protocol entries pick up any state change.
+
+        :param player_id: The player whose config surface holds the action.
+        :param action: The action id of the pressed button (may be protocol-prefixed).
+        """
+        if not (player := self.mass.players.get_player(player_id, False)):
+            msg = f"Player {player_id} not found"
+            raise KeyError(msg)
+        if CONF_PROTOCOL_KEY_SPLITTER in action:
+            protocol_player_id, protocol_action = action.split(CONF_PROTOCOL_KEY_SPLITTER, 1)
+            if not (target := self.mass.players.get_player(protocol_player_id, False)):
+                msg = f"Player {protocol_player_id} not found"
+                raise KeyError(msg)
+            await target.handle_config_action(protocol_action)
+        else:
+            await player.handle_config_action(action)
+        # re-render the full (parent) player entries so injected protocol entries refresh
+        return await self.get_player_config_entries(player_id)
 
     @overload
     async def get_player_config_value(
@@ -547,8 +560,6 @@ class PlayerConfigMixin:
     async def _get_player_config_entries(
         self,
         player: Player,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """
         Return Player(protocol) specific config entries, without any default entries.
@@ -556,9 +567,7 @@ class PlayerConfigMixin:
         In general this returns entries that are specific to this provider/player type only,
         and includes audio related entries that are not part of the default set.
 
-        player: the player instance
-        action: [optional] action key called from config entries UI.
-        values: the (intermediate) raw values for config entries sent with the action.
+        :param player: the player instance
         """
         default_entries: list[ConfigEntry]
         is_dedicated_group_player = player.state.type in (
@@ -595,7 +604,7 @@ class PlayerConfigMixin:
         if PlayerFeature.GAPLESS_PLAYBACK in player.supported_features:
             default_entries.append(CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES)
         # request player specific entries
-        player_entries = await player.get_config_entries(action=action, values=values)
+        player_entries = await player.get_config_entries()
         players_keys = {entry.key for entry in player_entries}
         # filter out any default entries that are already provided by the player
         default_entries = [entry for entry in default_entries if entry.key not in players_keys]
@@ -786,8 +795,6 @@ class PlayerConfigMixin:
     async def _create_output_protocol_config_entries(  # noqa: PLR0915
         self,
         player: Player,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """
         Create config entry for preferred output protocol.
@@ -904,9 +911,7 @@ class PlayerConfigMixin:
                 )
             if protocol.is_native:
                 # add protocol-specific entries from native player
-                protocol_entries = await self._get_player_config_entries(
-                    player, action=action, values=values
-                )
+                protocol_entries = await self._get_player_config_entries(player)
                 for proto_entry in protocol_entries:
                     # deep copy to avoid mutating shared/constant ConfigEntry objects
                     entry = deepcopy(proto_entry)
@@ -918,23 +923,7 @@ class PlayerConfigMixin:
             elif protocol_player := self.mass.players.get_player(protocol.output_protocol_id):
                 # we grab the config entries from the protocol player
                 # and then prefix them to avoid key collisions
-
-                if action and protocol_prefix in action:
-                    protocol_action = action.replace(protocol_prefix, "")
-                else:
-                    protocol_action = None
-                if values:
-                    # extract only relevant values for this protocol player
-                    protocol_values = {
-                        key.replace(protocol_prefix, ""): val
-                        for key, val in values.items()
-                        if key.startswith(protocol_prefix)
-                    }
-                else:
-                    protocol_values = None
-                protocol_entries = await self._get_player_config_entries(
-                    protocol_player, action=protocol_action, values=protocol_values
-                )
+                protocol_entries = await self._get_player_config_entries(protocol_player)
                 for proto_entry in protocol_entries:
                     # deep copy to avoid mutating shared/constant ConfigEntry objects
                     entry = deepcopy(proto_entry)

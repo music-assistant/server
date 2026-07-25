@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 from aiohttp import ClientError, ClientSession, ClientTimeout
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -374,48 +374,37 @@ async def setup(
     return NeteaseCloudMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return the configuration (options) entries for the NetEase Cloud Music provider.
-
-    Authentication runs in the interactive setup flow (see ``setup_flow.py``); the only
-    genuine option configured here is the preferred streaming quality.
-
-    :param mass: The MusicAssistant instance.
-    :param instance_id: Optional existing provider instance id (unused).
-    :param action: Unused; retained for the config-entries signature contract.
-    :param values: Unused; retained for the config-entries signature contract.
-    """
-    return (
-        CONF_ENTRY_UNOFFICIAL_PROVIDER,
-        ConfigEntry(
-            key=CONF_QUALITY,
-            type=ConfigEntryType.STRING,
-            default_value=QUALITY_EXHIGH,
-            options=[
-                ConfigValueOption(QUALITY_STANDARD),
-                ConfigValueOption(QUALITY_HIGHER),
-                ConfigValueOption(QUALITY_EXHIGH),
-                ConfigValueOption(QUALITY_LOSSLESS),
-                ConfigValueOption(QUALITY_HIRES),
-                ConfigValueOption(QUALITY_JYEFFECT),
-                ConfigValueOption(QUALITY_JYMASTER),
-            ],
-        ),
-    )
-
-
 class NeteaseCloudMusicProvider(MusicProvider):
     """NetEase Cloud Music provider (MVP)."""
 
     _client: NcmApiClient
     _cookie: str
     _uid: str
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the configuration (options) entries for the NetEase Cloud Music provider.
+
+        Authentication runs in the interactive setup flow (see ``setup_flow.py``); the only
+        genuine option configured here is the preferred streaming quality.
+        """
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                default_value=QUALITY_EXHIGH,
+                options=[
+                    ConfigValueOption(QUALITY_STANDARD),
+                    ConfigValueOption(QUALITY_HIGHER),
+                    ConfigValueOption(QUALITY_EXHIGH),
+                    ConfigValueOption(QUALITY_LOSSLESS),
+                    ConfigValueOption(QUALITY_HIRES),
+                    ConfigValueOption(QUALITY_JYEFFECT),
+                    ConfigValueOption(QUALITY_JYMASTER),
+                ],
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of provider."""

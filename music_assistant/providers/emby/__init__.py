@@ -58,7 +58,6 @@ from music_assistant.providers.emby.parsers import (
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import (
         ConfigEntry,
-        ConfigValueType,
         ProviderConfig,
     )
     from music_assistant_models.provider import ProviderManifest
@@ -90,19 +89,12 @@ async def setup(
     return EmbyProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Get configuration entries for provider setup."""
-    # ruff: noqa: ARG001
-    return ()
-
-
 class EmbyProvider(MusicProvider):
     """Provider for an Emby music library (uses Emby REST API)."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Get configuration entries for provider setup."""
+        return ()
 
     async def handle_async_init(self) -> None:
         """Initialize provider(instance) with given configuration."""

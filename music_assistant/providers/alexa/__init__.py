@@ -33,7 +33,7 @@ from music_assistant.models.player_provider import PlayerProvider
 _LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -66,42 +66,6 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return AlexaProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    # Amazon credentials, the companion API details and the login are collected by the
-    # setup flow (see setup_flow.py); only the language option is configurable here.
-    return (
-        ConfigEntry(
-            key=CONF_ALEXA_LANGUAGE,
-            type=ConfigEntryType.STRING,
-            required=True,
-            options=[
-                ConfigValueOption("en-US"),
-                ConfigValueOption("en-CA"),
-                ConfigValueOption("de-DE"),
-                ConfigValueOption("es-ES"),
-                ConfigValueOption("fr-FR"),
-                ConfigValueOption("fr-CA"),
-                ConfigValueOption("it-IT"),
-                ConfigValueOption("pt-BR"),
-            ],
-            default_value="en-US",  # choose a sensible default
-        ),
-    )
 
 
 async def save_cookie(login: AlexaLogin, username: str, mass: MusicAssistant) -> None:
@@ -418,6 +382,33 @@ class AlexaProvider(PlayerProvider):
 
     login: AlexaLogin
     devices: dict[str, AlexaDevice]
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the config entries for the Alexa provider.
+
+        Amazon credentials, the companion API details and the login are collected by the
+        interactive setup flow (see ``setup_flow.py``); only the language option is
+        configurable here.
+        """
+        return (
+            ConfigEntry(
+                key=CONF_ALEXA_LANGUAGE,
+                type=ConfigEntryType.STRING,
+                required=True,
+                options=[
+                    ConfigValueOption("en-US"),
+                    ConfigValueOption("en-CA"),
+                    ConfigValueOption("de-DE"),
+                    ConfigValueOption("es-ES"),
+                    ConfigValueOption("fr-FR"),
+                    ConfigValueOption("fr-CA"),
+                    ConfigValueOption("it-IT"),
+                    ConfigValueOption("pt-BR"),
+                ],
+                default_value="en-US",  # choose a sensible default
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

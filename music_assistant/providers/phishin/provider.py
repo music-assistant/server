@@ -45,11 +45,16 @@ from .helpers import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from music_assistant_models.config_entries import ConfigEntry
     from music_assistant_models.media_items import MediaItemType
 
 
 class PhishInProvider(MusicProvider):
     """Phish.in music provider."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return ()
 
     @property
     def is_streaming_provider(self) -> bool:

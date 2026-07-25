@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from music_assistant_models.enums import MediaType, StreamType
@@ -30,9 +30,18 @@ from .constants import (
 )
 from .helpers import find_current_song, get_current_block_position, get_next_song
 
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
+
 
 class RadioParadiseProvider(MusicProvider):
     """Radio Paradise Music Provider for Music Assistant."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            # we (currently) don't have any config entries to set up
+        )
 
     @property
     def is_streaming_provider(self) -> bool:

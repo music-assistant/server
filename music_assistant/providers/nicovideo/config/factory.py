@@ -199,6 +199,6 @@ def get_setup_config_entries() -> tuple[ConfigEntry, ...]:
     return tuple(_registry)
 
 
-async def get_config_entries_impl() -> tuple[ConfigEntry, ...]:
+async def build_config_entries() -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)

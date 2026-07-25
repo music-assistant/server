@@ -6,7 +6,6 @@ import json
 from typing import TYPE_CHECKING, cast
 from unittest import mock
 
-from music_assistant.providers.yandex_music import get_config_entries
 from music_assistant.providers.yandex_music.auth import PAGE_CONFIG
 from music_assistant.providers.yandex_music.constants import (
     QUALITY_BALANCED,
@@ -39,7 +38,11 @@ def _load_strings() -> dict[str, dict[str, object]]:
 
 async def _get_entries() -> tuple[ConfigEntry, ...]:
     """Collect the provider option config entries (auth now lives in the setup flow)."""
-    return await get_config_entries(mock.MagicMock(), None, None, {})
+    provider = mock.MagicMock(spec=YandexMusicProvider)
+    provider.get_config_value = mock.MagicMock(
+        side_effect=lambda _key, default=None, **_kw: default
+    )
+    return await YandexMusicProvider.get_config_entries(provider)
 
 
 async def test_strings_json_covers_config_entries() -> None:

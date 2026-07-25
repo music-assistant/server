@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
 import aiohttp
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
@@ -21,6 +23,12 @@ from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+    CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+    CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+    CONF_ENTRY_MISSING_ALBUM_ARTIST,
+    CONF_ENTRY_PROPAGATE_GENRES,
     SUPPORTED_EXTENSIONS,
 )
 from music_assistant.providers.filesystem_local.helpers import FileSystemItem
@@ -57,6 +65,22 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         self.password = cast("str | None", self.get_setup_value(CONF_PASSWORD))
         self.verify_ssl = cast("bool", self.get_setup_value(CONF_VERIFY_SSL))
         self.media_content_type = cast("str", self.get_setup_value(CONF_CONTENT_TYPE))
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        # connection details and content type are collected by the setup flow; surface the
+        # (immutable) content type read-only so the sync options' depends_on chains resolve
+        content_type = str(self.get_setup_value(CONF_CONTENT_TYPE, "music"))
+        return (
+            ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
+            CONF_ENTRY_MISSING_ALBUM_ARTIST,
+            CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+            CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+            CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+            CONF_ENTRY_PROPAGATE_GENRES,
+        )
 
     @property
     def instance_name_postfix(self) -> str | None:

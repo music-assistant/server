@@ -18,7 +18,6 @@ import requests
 import urllib3.exceptions
 from music_assistant_models.config_entries import (
     ConfigEntry,
-    ConfigValueType,
     ProviderConfig,
 )
 from music_assistant_models.enums import (
@@ -121,7 +120,6 @@ from music_assistant.providers.plex.helpers import (
 __all__ = [
     "CONF_LIBRARY_ID",
     "PlexProvider",
-    "get_config_entries",
     "setup",
 ]
 
@@ -159,96 +157,6 @@ async def setup(
     return PlexProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    Server connection, authentication and library selection are handled by the setup flow
-    (see setup_flow.py); only the genuine options are configurable here.
-
-    :param mass: The MusicAssistant instance.
-    :param instance_id: id of an existing provider instance (None if new instance setup).
-    :param action: [optional] action key called from config entries UI.
-    :param values: the (intermediate) raw values for config entries sent with the action.
-    """
-    entries: list[ConfigEntry] = []
-
-    # Collection import options (advanced settings)
-    entries.append(
-        ConfigEntry(
-            key=CONF_IMPORT_COLLECTIONS,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            advanced=True,
-        )
-    )
-    entries.append(
-        ConfigEntry(
-            key=CONF_COLLECTION_PREFIX,
-            type=ConfigEntryType.STRING,
-            default_value="Collection: ",
-            depends_on=CONF_IMPORT_COLLECTIONS,
-            advanced=True,
-        )
-    )
-
-    # rating/favorite sync configuration
-    entries.append(
-        ConfigEntry(
-            key=CONF_PLEX_LIKE_RATING,
-            type=ConfigEntryType.FLOAT,
-            default_value=10.0,
-            range=(0, 10),
-            category="sync_options",
-        )
-    )
-    entries.append(
-        ConfigEntry(
-            key=CONF_PLEX_FAVORITE_THRESHOLD,
-            type=ConfigEntryType.FLOAT,
-            default_value=10.0,
-            range=(0, 10),
-            category="sync_options",
-        )
-    )
-    entries.append(
-        ConfigEntry(
-            key=CONF_PLEX_UNLIKE_RATING,
-            type=ConfigEntryType.FLOAT,
-            default_value=0.0,
-            range=(0, 10),
-            category="sync_options",
-        )
-    )
-
-    # Recommendation settings (advanced)
-    entries.append(
-        ConfigEntry(
-            key=CONF_HUB_ITEMS_LIMIT,
-            type=ConfigEntryType.INTEGER,
-            default_value=10,
-            advanced=True,
-            range=(1, 100),
-        )
-    )
-    entries.append(
-        ConfigEntry(
-            key=CONF_EXTENDED_RECOMMENDATIONS,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-            advanced=True,
-        )
-    )
-
-    # return all config entries
-    return tuple(entries)
-
-
 Param = ParamSpec("Param")
 RetType = TypeVar("RetType")
 PlexObjectT = TypeVar("PlexObjectT", bound=PlexObject)
@@ -280,6 +188,85 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         if library_name:
             return library_name
         return None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return Config entries to configure this provider.
+
+        Server connection, authentication and library selection are handled by the setup flow
+        (see setup_flow.py); only the genuine options are configurable here.
+        """
+        entries: list[ConfigEntry] = []
+
+        # Collection import options (advanced settings)
+        entries.append(
+            ConfigEntry(
+                key=CONF_IMPORT_COLLECTIONS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                advanced=True,
+            )
+        )
+        entries.append(
+            ConfigEntry(
+                key=CONF_COLLECTION_PREFIX,
+                type=ConfigEntryType.STRING,
+                default_value="Collection: ",
+                depends_on=CONF_IMPORT_COLLECTIONS,
+                advanced=True,
+            )
+        )
+
+        # rating/favorite sync configuration
+        entries.append(
+            ConfigEntry(
+                key=CONF_PLEX_LIKE_RATING,
+                type=ConfigEntryType.FLOAT,
+                default_value=10.0,
+                range=(0, 10),
+                category="sync_options",
+            )
+        )
+        entries.append(
+            ConfigEntry(
+                key=CONF_PLEX_FAVORITE_THRESHOLD,
+                type=ConfigEntryType.FLOAT,
+                default_value=10.0,
+                range=(0, 10),
+                category="sync_options",
+            )
+        )
+        entries.append(
+            ConfigEntry(
+                key=CONF_PLEX_UNLIKE_RATING,
+                type=ConfigEntryType.FLOAT,
+                default_value=0.0,
+                range=(0, 10),
+                category="sync_options",
+            )
+        )
+
+        # Recommendation settings (advanced)
+        entries.append(
+            ConfigEntry(
+                key=CONF_HUB_ITEMS_LIMIT,
+                type=ConfigEntryType.INTEGER,
+                default_value=10,
+                advanced=True,
+                range=(1, 100),
+            )
+        )
+        entries.append(
+            ConfigEntry(
+                key=CONF_EXTENDED_RECOMMENDATIONS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                advanced=True,
+            )
+        )
+
+        # return all config entries
+        return tuple(entries)
 
     async def handle_async_init(self) -> None:
         """Set up the music provider by connecting to the server."""

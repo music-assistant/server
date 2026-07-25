@@ -8,12 +8,13 @@ from unittest.mock import AsyncMock
 
 from music_assistant_models.enums import IdentifierType
 
-from music_assistant.providers.hass_players import get_config_entries
 from music_assistant.providers.hass_players.constants import (
+    CONF_PLAYERS,
     DISABLED_REASON_NATIVE_DUPLICATE,
     DISABLED_REASON_NATIVE_INTEGRATION,
 )
 from music_assistant.providers.hass_players.helpers import native_player_macs, normalized_mac
+from music_assistant.providers.hass_players.provider import HomeAssistantPlayerProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueOption
@@ -48,7 +49,6 @@ def _mass(
     entities: list[dict[str, Any]],
     devices: list[dict[str, Any]] | None = None,
     native_players: list[SimpleNamespace] | None = None,
-    stored_players: list[str] | None = None,
 ) -> MusicAssistant:
     hass_prov = SimpleNamespace(
         hass=SimpleNamespace(
@@ -63,17 +63,22 @@ def _mass(
         SimpleNamespace(
             get_provider=lambda _domain: hass_prov,
             players=native_players or [],
-            config=SimpleNamespace(
-                get_raw_provider_config_value=lambda *_args, **_kwargs: stored_players
-            ),
         ),
     )
 
 
 async def _picker_options(
-    mass: MusicAssistant, instance_id: str | None = None
+    mass: MusicAssistant, *, selected_players: list[str] | None = None
 ) -> list[ConfigValueOption]:
-    entries = await get_config_entries(mass, instance_id=instance_id)
+    prov = HomeAssistantPlayerProvider.__new__(HomeAssistantPlayerProvider)
+    prov.mass = mass
+
+    # entities already stored under CONF_PLAYERS must stay selectable on a config edit
+    def _stored_config_value(key: str, default: Any = None) -> Any:
+        return selected_players if key == CONF_PLAYERS else default
+
+    prov.get_config_value = _stored_config_value  # type: ignore[method-assign, assignment]
+    entries = await prov.get_config_entries()
     return entries[0].options
 
 
@@ -111,11 +116,8 @@ async def test_esphome_entity_without_native_player_is_selectable() -> None:
 
 async def test_already_imported_entity_stays_selectable() -> None:
     """An already imported entity stays selectable so a config edit never drops it."""
-    mass = _mass(
-        [_entity("media_player.living_room_tv", "cast")],
-        stored_players=["media_player.living_room_tv"],
-    )
-    (option,) = await _picker_options(mass, instance_id="hass_players--test")
+    mass = _mass([_entity("media_player.living_room_tv", "cast")])
+    (option,) = await _picker_options(mass, selected_players=["media_player.living_room_tv"])
     assert option.disabled is False
     assert option.disabled_reason is None
 

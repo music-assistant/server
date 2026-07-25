@@ -27,7 +27,7 @@ from music_assistant_models.constants import (
     PLAYER_CONTROL_NONE,
 )
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.errors import UnsupportedFeaturedException
+from music_assistant_models.errors import ActionUnavailable, UnsupportedFeaturedException
 from music_assistant_models.player import (
     DeviceInfo,
     OutputProtocol,
@@ -871,21 +871,28 @@ class Player(ABC):
         """
         raise NotImplementedError("poll needs to be implemented when needs_poll is True")
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """
         Return all (provider/player specific) Config Entries for the player.
 
-        action: [optional] action key called from config entries UI.
-        values: the (intermediate) raw values for config entries sent with the action.
+        Called only for an existing player: read current values via ``self.config``/
+        ``self.get_config_value`` and capabilities via ``self.supported_features``.
+        To override a default config entry, define an entry with the same key.
+        Include ``ConfigEntryType.ACTION`` entries for one-shot buttons and handle their
+        presses in ``handle_config_action``.
         """
-        # Return any (player/provider specific) config entries for a player.
-        # To override the default config entries, simply define an entry with the same key
-        # and it will be used instead of the default one.
         return []
+
+    async def handle_config_action(self, action: str) -> list[ConfigEntry]:
+        """
+        Handle a one-shot action button press from this player's config and re-render.
+
+        Override to run the side effect for each ``ConfigEntryType.ACTION`` entry this
+        player declares, then return the (possibly refreshed) config entries to display.
+
+        :param action: The action id of the pressed button (an entry's ``action`` key).
+        """
+        raise ActionUnavailable(f"Unknown action: {action}")
 
     async def run_setup_flow(self, session: SetupSession) -> None:
         """

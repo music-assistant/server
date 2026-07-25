@@ -4,24 +4,21 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, ProviderFeature
+from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.errors import LoginFailed
 
-from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER, CONF_PROVIDERS
+from music_assistant.constants import CONF_PROVIDERS
 
 from .constants import (
     CONF_CLIENT_ID,
     CONF_REFRESH_TOKEN_DEPRECATED,
     CONF_REFRESH_TOKEN_DEV,
     CONF_REFRESH_TOKEN_GLOBAL,
-    CONF_SYNC_AUDIOBOOK_PROGRESS,
-    CONF_SYNC_PODCAST_PROGRESS,
 )
 from .provider import SpotifyProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant import MusicAssistant
@@ -46,47 +43,6 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LIBRARY_PODCASTS,
     ProviderFeature.LIBRARY_PODCASTS_EDIT,
 }
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    Authentication is handled by the setup flow (see setup_flow.py); only the genuine
-    options are configurable here.
-
-    :param mass: The MusicAssistant instance.
-    :param instance_id: id of an existing provider instance (None if new instance setup).
-    :param action: [optional] action key called from config entries UI.
-    :param values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # audiobook progress sync is only offered where the account's region supports audiobooks
-    audiobooks_supported = bool(
-        instance_id
-        and (prov_instance := mass.get_provider(instance_id))
-        and getattr(prov_instance, "audiobooks_supported", False)
-    )
-    return (
-        CONF_ENTRY_UNOFFICIAL_PROVIDER,
-        ConfigEntry(
-            key=CONF_SYNC_PODCAST_PROGRESS,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-            category="sync_options",
-        ),
-        ConfigEntry(
-            key=CONF_SYNC_AUDIOBOOK_PROGRESS,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            category="sync_options",
-            hidden=not audiobooks_supported,
-        ),
-    )
 
 
 async def setup(

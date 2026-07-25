@@ -13,7 +13,7 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -24,22 +24,6 @@ SUPPORTED_FEATURES = {
 }
 
 CAA_BASE_URL = "https://coverartarchive.org"
-
-
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    :param instance_id: id of an existing provider instance (None if new instance setup).
-    :param action: [optional] action key called from config entries UI.
-    :param values: the (intermediate) raw values for config entries sent with the action.
-    """
-    return ()
 
 
 async def setup(
@@ -55,6 +39,10 @@ class CoverArtArchiveMetadataProvider(MetadataProvider):
 
     Fetches album artwork from the Cover Art Archive using MusicBrainz release group IDs.
     """
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return ()
 
     @property
     def priority(self) -> int:

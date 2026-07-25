@@ -134,8 +134,8 @@ async def e2e_mass(
     ):
         await mass_instance.start()
         # configure the fake music + player providers
-        await mass_instance.config.save_provider_config("test", {})
-        await mass_instance.config.save_provider_config(
+        await mass_instance.config._create_provider_instance("test", {})
+        await mass_instance.config._create_provider_instance(
             "_demo_player_provider", {"number_of_players": NUM_DEMO_PLAYERS}
         )
         await wait_for(lambda: len(demo_players(mass_instance)) >= NUM_DEMO_PLAYERS)

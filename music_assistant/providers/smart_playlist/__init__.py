@@ -64,7 +64,7 @@ from music_assistant.providers.smart_playlist.helpers import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
 
@@ -89,23 +89,6 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return SmartPlaylistProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    return (
-        ConfigEntry(
-            key=CONF_AI_DESCRIPTIONS,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            default_value=True,
-        ),
-    )
 
 
 def _filter_by_explicit(tracks: list[Track], explicit_rule: bool | None) -> list[Track]:
@@ -173,6 +156,17 @@ class SmartPlaylistProvider(PluginProvider):
     _descriptions_store: dict[str, str]
     _unregister_handles: list[Callable[[], None]]
     _flush_lock: asyncio.Lock
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_AI_DESCRIPTIONS,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=True,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization."""

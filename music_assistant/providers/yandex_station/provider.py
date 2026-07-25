@@ -8,6 +8,8 @@ import logging
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import ClientSession, CookieJar
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
 from ya_passport_auth import PassportClient, SecretStr
 from ya_passport_auth.ma import (
     BORROW_SOURCE_OWN,
@@ -20,6 +22,7 @@ from ya_passport_auth.ma import (
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
+    CONF_INTERCEPT_FEATURE_ENABLED,
     CONF_MUSIC_TOKEN,
     CONF_REFRESH_TOKEN,
     CONF_REMEMBER_SESSION,
@@ -67,6 +70,24 @@ class YandexStationProvider(PlayerProvider):
         self._init_lock: asyncio.Lock = asyncio.Lock()
         self._cascade = self._build_cascade()
         self._borrow_source = self._build_borrow_source()
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return Config entries to configure this provider.
+
+        Authentication and the Yandex account source are collected by the interactive
+        setup flow (see setup_flow.py); only the genuine options live on this surface.
+        """
+        return (
+            # Experimental intercept feature — provider-level master switch.
+            # When OFF, no per-player intercept setting takes effect.
+            ConfigEntry(
+                key=CONF_INTERCEPT_FEATURE_ENABLED,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+            ),
+        )
 
     # ── Discovery ─────────────────────────────────────────────────────
 

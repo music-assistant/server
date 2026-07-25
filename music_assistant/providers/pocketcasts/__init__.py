@@ -46,7 +46,7 @@ from .api_client import PocketCastsClient
 if TYPE_CHECKING:
     from datetime import datetime
 
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.models import ProviderInstanceType
@@ -166,16 +166,6 @@ async def setup(
     return PocketCastsProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    return ()
-
-
 class PocketCastsProvider(MusicProvider):
     """Provider for Pocket Casts podcast service."""
 
@@ -183,6 +173,10 @@ class PocketCastsProvider(MusicProvider):
     # episode uuids already mirrored to Pocket Casts Up Next/history this session, keyed as a
     # set since multi-room playback can have several episodes in progress on one instance
     _announced_episodes: set[str]
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return ()
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

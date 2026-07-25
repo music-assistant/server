@@ -19,7 +19,7 @@ from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -88,31 +88,24 @@ async def setup(
     return GPodder(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return the (options) config entries for the gPodder provider.
-
-    The server/account connection (gpodder API or Nextcloud) is set up by the interactive
-    setup flow (see ``setup_flow.py``); only the max-episodes limit is configured here.
-    """
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_MAX_NUM_EPISODES,
-            type=ConfigEntryType.INTEGER,
-            required=False,
-            default_value=0,
-        ),
-    )
-
-
 class GPodder(MusicProvider):
     """gPodder MusicProvider."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the (options) config entries for the gPodder provider.
+
+        The server/account connection (gpodder API or Nextcloud) is set up by the interactive
+        setup flow (see ``setup_flow.py``); only the max-episodes limit is configured here.
+        """
+        return (
+            ConfigEntry(
+                key=CONF_MAX_NUM_EPISODES,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=0,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Pass config values to client and initialize."""

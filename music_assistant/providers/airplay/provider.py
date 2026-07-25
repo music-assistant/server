@@ -64,7 +64,7 @@ from .player import AirPlayPlayer, GenericAirPlayPlayer
 from .sendspin_bridge import SendspinBridgeManager
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
 
 # Marker the `cliairplay --ptp-daemon` process prints once it has bound the
 # privileged PTP ports (UDP 319/320) and opened its control channel. Until this
@@ -178,6 +178,10 @@ class AirPlayProvider(PlayerProvider):
                 self.mass.create_task(self.mass.players.cmd_next_track(player_id))
             case AirPlayRemoteCommand.PREVIOUS:
                 self.mass.create_task(self.mass.players.cmd_previous_track(player_id))
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return ()
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

@@ -141,7 +141,7 @@ def _entry_dump(entry: ConfigEntry, current: Any) -> ConfigEntryDump:
 
 
 async def _resolve_entries(
-    mass: MusicAssistant, target_type: str, target_id: str, action: str | None
+    mass: MusicAssistant, target_type: str, target_id: str
 ) -> tuple[list[ConfigEntry], dict[str, Any]]:
     """
     Fetch ConfigEntry list + current values dict for a target.
@@ -149,14 +149,11 @@ async def _resolve_entries(
     :param mass: MusicAssistant instance.
     :param target_type: "provider" | "core" | "player".
     :param target_id: The target identifier.
-    :param action: Optional action key (provider only).
     """
     cfg: ProviderConfig | CoreConfig | PlayerConfig
     if target_type == "provider":
         cfg = await mass.config.get_provider_config(target_id)
-        entries = await mass.config.get_provider_config_entries(
-            getattr(cfg, "domain", target_id), instance_id=target_id, action=action
-        )
+        entries = await mass.config.get_provider_config_entries(target_id)
     elif target_type == "core":
         cfg = await mass.config.get_core_config(target_id)
         entries = await mass.config.get_core_config_entries(target_id)
@@ -245,7 +242,7 @@ async def _write_single(
     :param secret_writes_enabled: Bool or callable returning bool; resolved
         per request so a hot-swapped toggle takes effect immediately.
     """
-    entries_list, current = await _resolve_entries(mass, target_type, target_id, None)
+    entries_list, current = await _resolve_entries(mass, target_type, target_id)
     entries = {e.key: e for e in entries_list}
     if key not in entries:
         raise ToolError(f"unknown key {key!r} for {target_type} {target_id!r}")
@@ -318,7 +315,7 @@ async def _write_bulk(
 
     if len(json.dumps(values, default=str)) > _SAVE_PAYLOAD_CAP_BYTES:
         raise ToolError("save payload exceeds 64 KB cap")
-    entries_list, current = await _resolve_entries(mass, target_type, target_id, None)
+    entries_list, current = await _resolve_entries(mass, target_type, target_id)
     entries = {e.key: e for e in entries_list}
     parsed: dict[str, Any] = {}
     for key, raw in values.items():
@@ -535,20 +532,17 @@ def _register_read_tools(sub: FastMCP, mass: MusicAssistant) -> None:
         annotations=_readonly("Get editable config entries"),
         timeout=TIMEOUT_FAST,
     )
-    async def get_entries(
-        target_type: str, target_id: str, action: str | None = None
-    ) -> ConfigEntryList:
+    async def get_entries(target_type: str, target_id: str) -> ConfigEntryList:
         """
         Return the editable ConfigEntry schema for a target.
 
-        See also: config_set_*_value to write a key. ``action`` activates an
-        action-driven entry set (e.g. a provider's QR-login flow).
+        See also: config_set_*_value to write a key. Action-driven entries are
+        triggered separately via config_trigger_provider_action.
 
         :param target_type: "provider" | "core" | "player".
         :param target_id: The target identifier (instance_id / domain / player_id).
-        :param action: Optional action key to activate dynamic entries.
         """
-        entries, current = await _resolve_entries(mass, target_type, target_id, action)
+        entries, current = await _resolve_entries(mass, target_type, target_id)
         dumps = [_entry_dump(e, current.get(e.key)) for e in entries]
         return ConfigEntryList(
             target_type=target_type, target_id=target_id, entries=dumps, truncated=False
@@ -674,7 +668,6 @@ def _register_provider_write_tools(
     async def trigger_provider_action(
         instance_id: str,
         action_key: str,
-        values: dict[str, Any] | None = None,
         ctx: Context | None = None,
     ) -> ActionResult:
         """
@@ -684,7 +677,6 @@ def _register_provider_write_tools(
 
         :param instance_id: Provider instance identifier.
         :param action_key: The action ConfigEntry key.
-        :param values: Optional intermediate values for the action.
         :param ctx: FastMCP context (auto-populated).
         """
         await confirm_or_raise(
@@ -692,13 +684,7 @@ def _register_provider_write_tools(
             f"Run provider action {action_key!r} on {instance_id!r}?",
             enabled=True,
         )
-        cfg = await mass.config.get_provider_config(instance_id)
-        entries = await mass.config.get_provider_config_entries(
-            getattr(cfg, "domain", instance_id),
-            instance_id=instance_id,
-            action=action_key,
-            values=values or {},
-        )
+        entries = await mass.config.invoke_provider_config_action(instance_id, action_key)
         audit = _audit_id()
         LOGGER.info(
             "config_action provider=%s action=%s audit_id=%s", instance_id, action_key, audit

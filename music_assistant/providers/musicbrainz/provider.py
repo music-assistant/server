@@ -34,7 +34,7 @@ from .models import (
 from .recommendations import MusicBrainzRecommendationManager
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.media_items import (
         Album,
         Artist,
@@ -61,33 +61,20 @@ async def setup(
     return MusicbrainzProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_RECOMMENDATION_DAYS,
-            type=ConfigEntryType.INTEGER,
-            default_value=3,
-            range=(1, 15),
-            advanced=True,
-        ),
-    )
-
-
 class MusicbrainzProvider(MetadataProvider):
     """The Musicbrainz Metadata provider."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_RECOMMENDATION_DAYS,
+                type=ConfigEntryType.INTEGER,
+                default_value=3,
+                range=(1, 15),
+                advanced=True,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

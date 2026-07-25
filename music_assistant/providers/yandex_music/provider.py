@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import uuid
@@ -11,7 +12,14 @@ from collections.abc import AsyncGenerator, Sequence
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ImageType, MediaType, ProviderFeature, StreamType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    ImageType,
+    MediaType,
+    ProviderFeature,
+    StreamType,
+)
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -41,6 +49,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from PIL import Image as PilImage
 from ya_passport_auth import SecretStr
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import utc
 from music_assistant.models.music_provider import MusicProvider
@@ -50,6 +59,8 @@ from .auth import refresh_credentials_via_passport, refresh_music_token
 from .constants import (
     BROWSE_INITIAL_TRACKS,
     COLLECTION_FOLDER_ID,
+    CONF_ACTION_DELETE_WAVE_PRESET,
+    CONF_ACTION_SAVE_WAVE_PRESET,
     CONF_BASE_URL,
     CONF_LIKED_TRACKS_MAX_TRACKS,
     CONF_MY_WAVE_MAX_TRACKS,
@@ -57,6 +68,11 @@ from .constants import (
     CONF_REFRESH_TOKEN,
     CONF_RESTRICTIVE_RATE_LIMITS,
     CONF_TOKEN,
+    CONF_WAVE_PRESET_DRAFT_DIVERSITY,
+    CONF_WAVE_PRESET_DRAFT_LANGUAGE,
+    CONF_WAVE_PRESET_DRAFT_MOOD,
+    CONF_WAVE_PRESET_DRAFT_NAME,
+    CONF_WAVE_PRESET_TO_DELETE,
     CONF_WAVE_PRESETS_DATA,
     CONF_X_TOKEN,
     DEFAULT_BASE_URL,
@@ -76,6 +92,8 @@ from .constants import (
     PINNED_ITEMS_FOLDER_ID,
     PLAYLIST_ID_SPLITTER,
     QUALITY_BALANCED,
+    QUALITY_EFFICIENT,
+    QUALITY_HIGH,
     QUALITY_SUPERB,
     RADIO_FOLDER_ID,
     RADIO_TRACK_ID_SEP,
@@ -93,6 +111,9 @@ from .constants import (
     WAVE_MODE_ORDER,
     WAVE_MODE_PRESETS,
     WAVE_MODE_SEP,
+    WAVE_PRESET_DIVERSITY_VALUES,
+    WAVE_PRESET_LANGUAGE_VALUES,
+    WAVE_PRESET_MOOD_VALUES,
     WAVES_FOLDER_ID,
     WAVES_LANDING_FOLDER_ID,
 )
@@ -195,6 +216,172 @@ def _extract_chapter_map_from_album(album: YandexAlbum) -> tuple[list[str], list
     return chapter_ids, chapter_durations_ms
 
 
+def _merge_wave_preset(
+    name: str | None,
+    diversity: str | None,
+    mood: str | None,
+    language: str | None,
+    presets_data: str | None,
+) -> str:
+    """
+    Merge the given draft fields into the stored preset list and return the new JSON.
+
+    Overwrites an existing preset with the same name instead of creating a duplicate.
+    Raises ``InvalidDataError`` when the name is blank.
+
+    :param name: Draft preset name; blank/whitespace-only raises.
+    :param diversity: Draft diversity seed ("" / None → omitted).
+    :param mood: Draft mood/energy seed ("" / None → omitted).
+    :param language: Draft language seed ("" / None → omitted).
+    :param presets_data: The current stored presets JSON.
+    """
+    clean_name = name.strip() if isinstance(name, str) else ""
+    if not clean_name:
+        raise InvalidDataError("Please fill the preset name before saving.")
+    presets = parse_stored_presets(presets_data)
+    presets = [p for p in presets if p["name"] != clean_name]
+    new_preset: dict[str, str] = {
+        "name": clean_name,
+        **{
+            api_key: val
+            for val, api_key in (
+                (diversity, "diversity"),
+                (mood, "moodEnergy"),
+                (language, "language"),
+            )
+            if isinstance(val, str) and val
+        },
+    }
+    presets.append(new_preset)
+    return json.dumps(presets, ensure_ascii=False)
+
+
+def _remove_wave_preset(target: str | None, presets_data: str | None) -> str:
+    """
+    Remove the named preset from the stored list and return the new JSON.
+
+    Raises ``InvalidDataError`` when no name is selected. Idempotent — an absent
+    name simply rewrites an unchanged list.
+
+    :param target: Name of the preset to remove; blank/whitespace-only raises.
+    :param presets_data: The current stored presets JSON.
+    """
+    clean_target = target.strip() if isinstance(target, str) else ""
+    if not clean_target:
+        raise InvalidDataError("Please select a preset to delete.")
+    presets = parse_stored_presets(presets_data)
+    presets = [p for p in presets if p["name"] != clean_target]
+    return json.dumps(presets, ensure_ascii=False)
+
+
+def _wave_preset_config_entries(presets_data: str | None) -> list[ConfigEntry]:
+    """
+    Return the wave-preset builder UI (all advanced settings).
+
+    Layout:
+      - Section label showing how many presets are saved.
+      - Four "draft" fields (name + three dropdowns) the user fills in.
+      - "Save preset" action → copies draft into the JSON store.
+      - "Delete preset" dropdown + action (hidden when no presets exist).
+      - Hidden STRING carrying the JSON store itself.
+
+    Number of presets is unbounded; the user never edits JSON directly.
+
+    :param presets_data: The stored wave-presets JSON (``CONF_WAVE_PRESETS_DATA``).
+    """
+    empty_title = "— Default —"
+    diversity_options = [
+        ConfigValueOption(v, title=empty_title if not v else v.title())
+        for v in WAVE_PRESET_DIVERSITY_VALUES
+    ]
+    mood_options = [
+        ConfigValueOption(v, title=empty_title if not v else v.title())
+        for v in WAVE_PRESET_MOOD_VALUES
+    ]
+    language_options = [
+        ConfigValueOption(v, title=empty_title if not v else v.replace("-", " ").title())
+        for v in WAVE_PRESET_LANGUAGE_VALUES
+    ]
+
+    presets = parse_stored_presets(presets_data)
+    has_presets = bool(presets)
+    delete_options = [ConfigValueOption(p["name"], title=p["name"]) for p in presets]
+    if not delete_options:
+        # Empty options can break some frontends; supply a no-op placeholder.
+        delete_options = [ConfigValueOption("")]
+
+    return [
+        ConfigEntry(
+            key="wave_preset_section_label",
+            type=ConfigEntryType.LABEL,
+            translation_key="wave_preset_section_saved" if has_presets else None,
+            translation_params=[str(len(presets))] if has_presets else None,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_WAVE_PRESET_DRAFT_NAME,
+            type=ConfigEntryType.STRING,
+            default_value=None,
+            required=False,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_WAVE_PRESET_DRAFT_DIVERSITY,
+            type=ConfigEntryType.STRING,
+            options=diversity_options,
+            default_value="",
+            required=False,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_WAVE_PRESET_DRAFT_MOOD,
+            type=ConfigEntryType.STRING,
+            options=mood_options,
+            default_value="",
+            required=False,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_WAVE_PRESET_DRAFT_LANGUAGE,
+            type=ConfigEntryType.STRING,
+            options=language_options,
+            default_value="",
+            required=False,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_SAVE_WAVE_PRESET,
+            type=ConfigEntryType.ACTION,
+            action=CONF_ACTION_SAVE_WAVE_PRESET,
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_WAVE_PRESET_TO_DELETE,
+            type=ConfigEntryType.STRING,
+            options=delete_options,
+            default_value="",
+            required=False,
+            advanced=True,
+            hidden=not has_presets,
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_DELETE_WAVE_PRESET,
+            type=ConfigEntryType.ACTION,
+            action=CONF_ACTION_DELETE_WAVE_PRESET,
+            advanced=True,
+            hidden=not has_presets,
+        ),
+        ConfigEntry(
+            key=CONF_WAVE_PRESETS_DATA,
+            type=ConfigEntryType.STRING,
+            default_value="",
+            required=False,
+            advanced=True,
+            hidden=True,
+        ),
+    ]
+
+
 class _WaveState:
     """
     Per-station mutable state for rotor wave playback.
@@ -247,6 +434,104 @@ class YandexMusicProvider(MusicProvider):
         if self._streaming is None:
             raise ProviderUnavailableError("Provider not initialized")
         return self._streaming
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return Config entries to configure this provider.
+
+        Authentication runs in the interactive setup flow (see setup_flow.py); this
+        surface only exposes the genuine playback options and the My Wave preset builder
+        (whose save/delete actions are handled in ``handle_config_action``).
+        """
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            # Quality
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(QUALITY_EFFICIENT),
+                    ConfigValueOption(QUALITY_BALANCED),
+                    ConfigValueOption(QUALITY_HIGH),
+                    ConfigValueOption(QUALITY_SUPERB),
+                ],
+                default_value=QUALITY_BALANCED,
+            ),
+            # My Wave maximum tracks (advanced)
+            ConfigEntry(
+                key=CONF_MY_WAVE_MAX_TRACKS,
+                type=ConfigEntryType.INTEGER,
+                range=(10, 1000),
+                default_value=150,
+                required=False,
+                advanced=True,
+            ),
+            # User-defined wave presets: builder + save/delete actions (dynamic list)
+            *_wave_preset_config_entries(
+                self.get_config_value(CONF_WAVE_PRESETS_DATA, return_type=str)
+            ),
+            # Liked Tracks maximum tracks (advanced)
+            ConfigEntry(
+                key=CONF_LIKED_TRACKS_MAX_TRACKS,
+                type=ConfigEntryType.INTEGER,
+                range=(50, 2000),
+                default_value=200,
+                required=False,
+                advanced=True,
+            ),
+            # API Base URL (advanced)
+            ConfigEntry(
+                key=CONF_BASE_URL,
+                type=ConfigEntryType.STRING,
+                translation_params=[DEFAULT_BASE_URL],
+                default_value=DEFAULT_BASE_URL,
+                required=False,
+                advanced=True,
+            ),
+            # Restrictive rate limits (advanced)
+            ConfigEntry(
+                key=CONF_RESTRICTIVE_RATE_LIMITS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+                advanced=True,
+            ),
+        )
+
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+        """
+        Handle a wave-preset save/delete button press and re-render the entries.
+
+        Both actions mutate the hidden JSON store and clear the draft / selection
+        fields so the UI re-renders in a clean state. Draft values are read from
+        stored config (no form values are passed) and persisted immediately.
+
+        :param action: The action id of the pressed button.
+        """
+        if action == CONF_ACTION_SAVE_WAVE_PRESET:
+            new_presets = _merge_wave_preset(
+                self.get_config_value(CONF_WAVE_PRESET_DRAFT_NAME, return_type=str),
+                self.get_config_value(CONF_WAVE_PRESET_DRAFT_DIVERSITY, return_type=str),
+                self.get_config_value(CONF_WAVE_PRESET_DRAFT_MOOD, return_type=str),
+                self.get_config_value(CONF_WAVE_PRESET_DRAFT_LANGUAGE, return_type=str),
+                self.get_config_value(CONF_WAVE_PRESETS_DATA, return_type=str),
+            )
+            self._update_config_value(CONF_WAVE_PRESETS_DATA, new_presets, immediate=True)
+            # Clear draft so the UI is ready for the next preset
+            self._update_config_value(CONF_WAVE_PRESET_DRAFT_NAME, None, immediate=True)
+            self._update_config_value(CONF_WAVE_PRESET_DRAFT_DIVERSITY, "", immediate=True)
+            self._update_config_value(CONF_WAVE_PRESET_DRAFT_MOOD, "", immediate=True)
+            self._update_config_value(CONF_WAVE_PRESET_DRAFT_LANGUAGE, "", immediate=True)
+            return await self.get_config_entries()
+        if action == CONF_ACTION_DELETE_WAVE_PRESET:
+            new_presets = _remove_wave_preset(
+                self.get_config_value(CONF_WAVE_PRESET_TO_DELETE, return_type=str),
+                self.get_config_value(CONF_WAVE_PRESETS_DATA, return_type=str),
+            )
+            self._update_config_value(CONF_WAVE_PRESETS_DATA, new_presets, immediate=True)
+            self._update_config_value(CONF_WAVE_PRESET_TO_DELETE, "", immediate=True)
+            return await self.get_config_entries()
+        return await super().handle_config_action(action)
 
     def _media_label(self, group: str, key: str, fallback: str) -> tuple[str, str | None]:
         """

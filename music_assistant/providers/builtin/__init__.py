@@ -102,7 +102,7 @@ from .constants import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -135,35 +135,23 @@ async def setup(
     return BuiltinProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    return (
-        *BUILTIN_PLAYLISTS_ENTRIES,
-        # hide some of the default (dynamic) entries for library management
-        CONF_ENTRY_LIBRARY_SYNC_TRACKS_HIDDEN,
-        CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS_HIDDEN,
-        CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN,
-        CONF_ENTRY_LIBRARY_SYNC_BACK_HIDDEN,
-    )
-
-
 class BuiltinProvider(MusicProvider):
     """Built-in/generic provider to handle (manually added) media from files and (remote) urls."""
 
     _playlists_dir: str
     _playlist_lock: asyncio.Lock
     _playlist_locks: dict[str, asyncio.Lock]
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            *BUILTIN_PLAYLISTS_ENTRIES,
+            # hide some of the default (dynamic) entries for library management
+            CONF_ENTRY_LIBRARY_SYNC_TRACKS_HIDDEN,
+            CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS_HIDDEN,
+            CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN,
+            CONF_ENTRY_LIBRARY_SYNC_BACK_HIDDEN,
+        )
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""

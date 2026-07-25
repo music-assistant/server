@@ -260,6 +260,9 @@ class SendspinBasePlayer(Player):
     unsub_event_cb: Callable[[], None] | None
     unsub_group_event_cb: Callable[[], None] | None
     is_web_player: bool = False
+    # transient alert produced by the most recent security action, surfaced on the next
+    # config-entries render (the settings page re-renders after invoking an action)
+    _pending_security_alert: AlertText | None = None
 
     def __init__(
         self,
@@ -365,15 +368,22 @@ class SendspinBasePlayer(Player):
         """Return the reason this device needs setup (pairing), or None when it does not."""
         return "pairing_required" if self.needs_setup else None
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
-        entries = await super().get_config_entries(action, values)
-        entries.extend(await self._get_security_config_entries(action, values))
+        entries = await super().get_config_entries()
+        entries.extend(await self._get_security_config_entries())
         return entries
+
+    async def handle_config_action(self, action: str) -> list[ConfigEntry]:
+        """Run a device-presence/pairing/management action, then re-render the entries."""
+        if self.api.connection is not None:
+            provider = cast("SendspinProvider", self.provider)
+            # the no-values contract reads the entered PIN from the (persisted) config value
+            pin = str(self.get_config_value(CONF_PAIRING_PIN, "") or "")
+            alert = await self._handle_security_action(provider, action, {CONF_PAIRING_PIN: pin})
+            if alert is not None:
+                self._pending_security_alert = alert
+        return await self.get_config_entries()
 
     async def run_setup_flow(self, session: SetupSession) -> None:
         """
@@ -596,18 +606,14 @@ class SendspinBasePlayer(Player):
             self._attr_group_members.remove(client_id)
             self.update_state()
 
-    async def _get_security_config_entries(
-        self,
-        action: str | None,
-        values: dict[str, ConfigValueType] | None,
-    ) -> list[ConfigEntry]:
-        """Build the pairing/security section entries, handling any pairing action."""
+    async def _get_security_config_entries(self) -> list[ConfigEntry]:
+        """Build the pairing/security section entries."""
         if self._is_bridge_or_web_player:
             return []
         provider = cast("SendspinProvider", self.provider)
-        alert: AlertText | None = None
-        if action is not None and self.api.connection is not None:
-            alert = await self._handle_security_action(provider, action, values or {})
+        # surface (and clear) any alert produced by the most recent action
+        alert: AlertText | None = self._pending_security_alert
+        self._pending_security_alert = None
 
         pin_session = provider.get_pin_session(self.player_id)
         if pin_session is not None and pin_session.finished:
@@ -1954,11 +1960,7 @@ class SendspinPlayer(SendspinBasePlayer):
             if self._beat_retry_queue_item_id == queue_item_id:
                 self._beat_retry_queue_item_id = None
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         entries: list[ConfigEntry] = []
         # Show alert if this Cast device is known to lack AudioContext support
@@ -1972,7 +1974,7 @@ class SendspinPlayer(SendspinBasePlayer):
                     required=False,
                 )
             )
-        entries.extend(await super().get_config_entries(action, values))
+        entries.extend(await super().get_config_entries())
         # Build dynamic format options from player's supported formats
         player_role = self._player_role
         if player_role is not None:

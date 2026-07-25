@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
-from music_assistant.providers.yandex_ynison import get_config_entries
 from music_assistant.providers.yandex_ynison.constants import (
     CONF_ALLOW_PLAYER_SWITCH,
     CONF_DEVICE_ID,
@@ -15,6 +14,7 @@ from music_assistant.providers.yandex_ynison.constants import (
     CONF_PUBLISH_NAME,
     PLAYER_ID_AUTO,
 )
+from music_assistant.providers.yandex_ynison.provider import YandexYnisonProvider
 
 # auth / account-source keys that moved to the interactive setup flow — none of
 # these may reappear on the options surface
@@ -40,13 +40,20 @@ def _make_mock_mass(players: list[Any] | None = None) -> MagicMock:
     return mass
 
 
+def _make_provider(players: list[Any] | None = None) -> YandexYnisonProvider:
+    """Build a provider instance wired only to the player-list surface it reads."""
+    provider = YandexYnisonProvider.__new__(YandexYnisonProvider)
+    provider.mass = _make_mock_mass(players)
+    return provider
+
+
 def _entries_by_key(entries: tuple[Any, ...]) -> dict[str, Any]:
     return {entry.key: entry for entry in entries}
 
 
 async def test_no_auth_or_account_source_entries() -> None:
     """Authentication and the account source moved to the setup flow."""
-    entries = await get_config_entries(_make_mock_mass())
+    entries = await _make_provider().get_config_entries()
     keys = {e.key for e in entries}
     assert keys.isdisjoint(_FLOW_ONLY_KEYS)
     actions = {e.action for e in entries if e.action}
@@ -55,7 +62,7 @@ async def test_no_auth_or_account_source_entries() -> None:
 
 async def test_genuine_options_present() -> None:
     """The genuine playback options remain on the options surface."""
-    entries = await get_config_entries(_make_mock_mass())
+    entries = await _make_provider().get_config_entries()
     keys = {e.key for e in entries}
     assert {
         CONF_MASS_PLAYER_ID,
@@ -72,17 +79,7 @@ async def test_player_dropdown_lists_players_plus_auto() -> None:
     player = MagicMock()
     player.player_id = "player-1"
     player.display_name = "Living Room"
-    entries = await get_config_entries(_make_mock_mass([player]))
+    entries = await _make_provider([player]).get_config_entries()
     dropdown = _entries_by_key(entries)[CONF_MASS_PLAYER_ID]
     option_values = [opt.value for opt in dropdown.options]
     assert option_values == [PLAYER_ID_AUTO, "player-1"]
-
-
-async def test_legacy_keys_migrated() -> None:
-    """Legacy 'player'/'display_name' keys are migrated to the current names."""
-    values: dict[str, Any] = {"player": "player-9", "display_name": "Kitchen"}
-    await get_config_entries(_make_mock_mass(), values=values)
-    assert values[CONF_MASS_PLAYER_ID] == "player-9"
-    assert values[CONF_PUBLISH_NAME] == "Kitchen"
-    assert "player" not in values
-    assert "display_name" not in values

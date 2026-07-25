@@ -14,22 +14,11 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType, ProviderFeature
-
-from .constants import (
-    COLOR_MODES,
-    CONF_BRIGHTNESS,
-    CONF_COLOR_MODE,
-    CONF_HUE_LATENCY_MS,
-    DEFAULT_COLOR_MODE,
-    DEFAULT_HUE_LATENCY_MS,
-)
-
 LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -50,41 +39,3 @@ async def setup(
     # instance only exists once pairing succeeded. A provider that somehow lacks
     # credentials degrades to unavailable in loaded_in_mass rather than failing here.
     return HueEntertainmentProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return the (options) config entries for the Hue Entertainment provider.
-
-    Bridge pairing runs in the interactive setup flow (see ``setup_flow.py``); only the
-    playback/visualization settings are configured here.
-    """
-    return (
-        ConfigEntry(
-            key=CONF_BRIGHTNESS,
-            type=ConfigEntryType.INTEGER,
-            default_value=100,
-            range=(0, 100),
-            category="settings",
-        ),
-        ConfigEntry(
-            key=CONF_COLOR_MODE,
-            type=ConfigEntryType.STRING,
-            default_value=DEFAULT_COLOR_MODE,
-            options=[ConfigValueOption(mode, title=mode.capitalize()) for mode in COLOR_MODES],
-            category="settings",
-        ),
-        ConfigEntry(
-            key=CONF_HUE_LATENCY_MS,
-            type=ConfigEntryType.INTEGER,
-            default_value=DEFAULT_HUE_LATENCY_MS,
-            range=(0, 3000),
-            immediate_apply=True,
-            category="settings",
-        ),
-    )

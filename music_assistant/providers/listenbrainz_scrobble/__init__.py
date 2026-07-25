@@ -24,7 +24,7 @@ from music_assistant.models import ProviderInstanceType
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
     from music_assistant_models.provider import ProviderManifest
 
@@ -59,6 +59,10 @@ class ListenBrainzScrobbleProvider(PluginProvider):
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config, supported_features)
         self._on_unload: list[Callable[[], None]] = []
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return tuple(await ScrobblerConfig.get_shared_config_entries(self.mass, None))
 
     async def handle_async_init(self) -> None:
         """Create the ListenBrainz client from the configured user token."""
@@ -161,13 +165,3 @@ class ListenBrainzEventHandler(ScrobblerHelper):
         # the listenbrainz client is not async friendly,
         # so we need to run it in a executor thread
         await asyncio.to_thread(handler)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    return tuple(await ScrobblerConfig.get_shared_config_entries(mass, values))

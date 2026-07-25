@@ -58,6 +58,8 @@ from .constants import (
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
+    from music_assistant_models.config_entries import ConfigEntry
+
 
 def _read_varint(buf: bytes, pos: int) -> tuple[int, int]:
     """Read a protobuf base-128 varint; return (value, new_pos)."""
@@ -115,6 +117,10 @@ def _parse_taf_header(header: bytes) -> tuple[int | None, int | None]:
 
 class TeddyCloudProvider(MusicProvider):
     """Music provider that exposes TeddyCloud (Toniebox) content as audiobooks."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return ()
 
     async def handle_async_init(self) -> None:
         """Read config, prepare the HTTP client and verify connectivity."""

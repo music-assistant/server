@@ -16,7 +16,7 @@ from music_assistant_models.enums import ProviderType
 from music_assistant_models.errors import LoginFailed, ResourceTemporarilyUnavailable
 from ya_passport_auth.ma import BORROW_SOURCE_OWN
 
-from music_assistant.providers.yandex_station import get_config_entries, setup
+from music_assistant.providers.yandex_station import setup
 from music_assistant.providers.yandex_station.constants import (
     CONF_INTERCEPT_FEATURE_ENABLED,
     CONF_MUSIC_TOKEN,
@@ -27,15 +27,6 @@ from music_assistant.providers.yandex_station.constants import (
 from .test_provider_cascade import _make_provider, _updates
 
 _MOD = "music_assistant.providers.yandex_station.provider"
-
-
-def _make_mass_with_ym(instances: dict[str, str]) -> mock.MagicMock:
-    """Mass stub whose raw config lists yandex_music *instances*."""
-    mass = mock.MagicMock()
-    mass.config.get.return_value = {
-        inst_id: {"domain": "yandex_music", "name": name} for inst_id, name in instances.items()
-    }
-    return mass
 
 
 def _ym_owner(token: str | None, x_token: str | None) -> mock.MagicMock:
@@ -65,8 +56,8 @@ class TestConfigEntries:
 
     async def test_no_account_source_or_auth_actions(self) -> None:
         """The options surface exposes only genuine options, no source/auth entries."""
-        mass = _make_mass_with_ym({"ym-a": "Main", "ym-b": "Second"})
-        entries = await get_config_entries(mass, values={})
+        provider = _make_provider({})
+        entries = await provider.get_config_entries()
         keys = {e.key for e in entries}
         assert CONF_YM_INSTANCE not in keys
         assert keys.isdisjoint({"auth_device", "auth_qr", "auth_cookies", "clear_auth"})

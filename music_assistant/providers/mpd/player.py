@@ -30,8 +30,6 @@ from .constants import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType
-
     from music_assistant.models.setup_flow import SetupSession
 
     from .provider import MPDPlayerProvider
@@ -106,16 +104,10 @@ class MPDPlayer(Player):
         """
         return self._attr_playback_state == PlaybackState.PLAYING
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """
         Return player-level config entries.
 
-        :param action: Optional action key from the config UI.
-        :param values: Optional intermediate config values from the UI.
         :return: List of ConfigEntry objects for this player.
         """
         return [

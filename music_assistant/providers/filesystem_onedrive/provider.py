@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import quote
 
 from aiohttp import ClientError
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import (
     LoginFailed,
     ProviderUnavailableError,
@@ -33,6 +35,16 @@ from music_assistant.providers.filesystem_cloud.base import (
     CONF_REFRESH_TOKEN,
     CloudFileSystemProvider,
     read_setup_value,
+)
+from music_assistant.providers.filesystem_local.constants import (
+    CONF_CONTENT_TYPE,
+    CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+    CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+    CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+    CONF_ENTRY_MISSING_ALBUM_ARTIST,
+    CONF_ENTRY_PROPAGATE_GENRES,
 )
 
 from .auth import MAOneDriveAuth
@@ -76,6 +88,27 @@ class OneDriveFileSystemProvider(CloudFileSystemProvider):
         # the SDK just needs a coroutine that returns a fresh access token
         self.client = OneDriveClient(self.auth.async_get_access_token, mass.http_session)
         self._root_folder_name: str | None = None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return Config entries to setup this provider.
+
+        Credentials, the content type and root folder are collected by the setup flow (see
+        setup_flow.py); only the genuine sync options are configurable here.
+        """
+        # the content type is set by the setup flow; surface it read-only so the sync
+        # options' depends_on chains still resolve
+        content_type = getattr(self, "media_content_type", "music")
+        return (
+            ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
+            CONF_ENTRY_MISSING_ALBUM_ARTIST,
+            CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+            CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+            CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+            CONF_ENTRY_PROPAGATE_GENRES,
+        )
 
     @property
     def instance_name_postfix(self) -> str | None:
