@@ -46,6 +46,7 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_ENQUEUE_OPTION_ALBUM,
     CONF_DEFAULT_ENQUEUE_OPTION_ARTIST,
     CONF_DEFAULT_ENQUEUE_OPTION_AUDIOBOOK,
+    CONF_DEFAULT_ENQUEUE_OPTION_COLLECTION,
     CONF_DEFAULT_ENQUEUE_OPTION_FOLDER,
     CONF_DEFAULT_ENQUEUE_OPTION_GENRE,
     CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES,
@@ -211,6 +212,9 @@ def _enqueue_default_entries() -> list[ConfigEntry]:
         _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_GENRE, QueueOption.REPLACE.value),
         _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES, QueueOption.REPLACE.value),
         _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST, QueueOption.REPLACE.value),
+        _option_entry(
+            CONF_DEFAULT_ENQUEUE_OPTION_COLLECTION, QueueOption.REPLACE.value, hidden=True
+        ),
         _option_entry(
             CONF_DEFAULT_ENQUEUE_OPTION_AUDIOBOOK, QueueOption.REPLACE.value, hidden=True
         ),
