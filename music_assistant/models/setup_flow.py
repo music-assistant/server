@@ -253,8 +253,10 @@ class SetupSession:
         Publish a progress step and wait for the given awaitable, deadline-enforced.
 
         Display and enforcement come from the single ``expires_in`` declaration: the
-        step's countdown and the engine deadline cannot drift. On the deadline the
-        awaitable is cancelled and StepExpiredError is raised here.
+        step's countdown and the engine deadline cannot drift. On the deadline
+        StepExpiredError is raised here and the awaitable is cancelled - note this
+        holds for a coroutine passed in directly; a pre-existing Task/Future keeps
+        running (shield semantics) and must be cancelled by the caller.
 
         :param awaitable: The work/wait to perform while the progress step shows.
         :param step_id: Stable slug identifying this step (also the i18n key segment).
@@ -279,6 +281,9 @@ class SetupSession:
 
         :param values: The values to persist as the target's setup_data.
         """
+        if self.finished:
+            msg = "Setup flow already finished"
+            raise RuntimeError(msg)
         result = await self._finish_handler(self, values)
         self.finished = True
         step = self._build_step(FlowStepType.FINISH, "finish", result=result)
@@ -392,8 +397,11 @@ class SetupSession:
                     params.update({key: str(val) for key, val in (await request.post()).items()})
             except Exception as err:
                 LOGGER.error("Failed to parse setup flow callback body: %s", err)
-        self.last_activity = time.monotonic()
         if self._callback_future is not None and not self._callback_future.done():
+            # only a callback that resolves a pending external step counts as
+            # activity: the route is unauthenticated, so bare requests must not
+            # be able to keep the flow alive past the idle TTL
+            self.last_activity = time.monotonic()
             self._callback_future.set_result(params)
         else:
             LOGGER.debug(

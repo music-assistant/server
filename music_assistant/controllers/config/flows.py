@@ -51,6 +51,8 @@ FLOW_SWEEP_INTERVAL = 60
 # how long start/submit wait for the flow coroutine to produce the (next) step;
 # generous because finish() may install requirements and load the provider
 NEXT_STEP_TIMEOUT = 120
+# bound on waiting for a cancelled flow's cleanup (author finally-blocks)
+FLOW_ABORT_CLEANUP_TIMEOUT = 10
 
 
 @dataclass
@@ -222,7 +224,8 @@ class SetupFlowMixin:
             return await self._start_flow(
                 flow_coro=child.run_setup_flow,
                 context=self._player_flow_context(child),
-                target_key=target_key,
+                # key on the child: a direct setup of the child must replace this flow
+                target_key=f"player_setup:{child.player_id}",
                 required_scope=Scope.CONFIG_PLAYERS_WRITE,
                 finish_handler=self._finish_player_setup,
             )
@@ -254,12 +257,22 @@ class SetupFlowMixin:
         self._check_flow_permission(flow)
         if (error_step := flow.session.handle_submit(values)) is not None:
             return error_step
-        # wait (bounded) for the coroutine to produce the next step; on the rare
-        # timeout the stored step is returned as-is and the client picks up the real
-        # next step from the SETUP_FLOW_UPDATED push event
+        # wait (bounded) for the coroutine to produce the next step
+        submitted_step = flow.session.current_step
         await flow.session.wait_for_step_change(NEXT_STEP_TIMEOUT)
         step = flow.session.current_step
         assert step is not None  # an accepted submit implies a published FORM step
+        if step is submitted_step:
+            # rare: the coroutine is still working on the next step. The submitted
+            # form's input future is already consumed, so re-serving the form would
+            # invite a doomed resubmit - hand back a transient progress step and let
+            # the SETUP_FLOW_UPDATED push deliver the real next step
+            return SetupFlowStep(
+                flow_id=flow_id,
+                step_id="working",
+                type=FlowStepType.PROGRESS,
+                translation_owner=step.translation_owner,
+            )
         return step
 
     @api_command("config/flows/get")
@@ -287,6 +300,16 @@ class SetupFlowMixin:
         self._check_flow_permission(flow)
         await self._abort_flow(flow, reason="aborted")
 
+    def get_setup_flow_required_scope(self, flow_id: str) -> Scope | None:
+        """
+        Return the scope required to interact with the given running setup flow.
+
+        :param flow_id: The id of the flow; None is returned when no such flow runs.
+        """
+        if flow := self._setup_flows.get(flow_id):
+            return flow.required_scope
+        return None
+
     async def _start_flow(
         self,
         *,
@@ -299,10 +322,13 @@ class SetupFlowMixin:
         ],
     ) -> SetupFlowStep:
         """Register and start a new flow, returning its first published step."""
-        # one flow per target: starting anew replaces (aborts) a lingering previous flow
-        for existing_flow in list(self._setup_flows.values()):
-            if existing_flow.target_key == target_key:
-                await self._abort_flow(existing_flow, reason="replaced")
+        # one flow per target: starting anew replaces (aborts) a lingering previous flow.
+        # re-scan after every await: the abort yields, so a concurrent start for the same
+        # target may have registered a new flow in the meantime
+        while existing_flow := next(
+            (f for f in self._setup_flows.values() if f.target_key == target_key), None
+        ):
+            await self._abort_flow(existing_flow, reason="replaced")
         flow_id = uuid4().hex
         session = SetupSession(self.mass, flow_id, context, finish_handler)
         flow = ActiveSetupFlow(
@@ -360,8 +386,16 @@ class SetupFlowMixin:
         if flow.task is not None and not flow.task.done():
             flow.task.cancel()
             # wait() shields us from the task's CancelledError without
-            # masking a cancellation of the caller itself
-            await asyncio.wait([flow.task])
+            # masking a cancellation of the caller itself; the timeout keeps a
+            # wedged author cleanup (e.g. a hanging pairing teardown) from
+            # stalling the abort and any replacement flow indefinitely
+            _, pending = await asyncio.wait([flow.task], timeout=FLOW_ABORT_CLEANUP_TIMEOUT)
+            if pending:
+                LOGGER.warning(
+                    "Setup flow for %s did not clean up within %ss after cancellation",
+                    flow.session.context.domain,
+                    FLOW_ABORT_CLEANUP_TIMEOUT,
+                )
         self._setup_flows.pop(flow.session.flow_id, None)
         current_step = flow.session.current_step
         if current_step is None or current_step.type not in (
@@ -622,6 +656,15 @@ class SetupFlowMixin:
             return
         now = time.monotonic()
         for flow in list(self._setup_flows.values()):
+            current_step = flow.session.current_step
+            if (
+                current_step is not None
+                and current_step.expires_at is not None
+                and current_step.expires_at > time.time()
+            ):
+                # the step advertises a (longer) countdown to the user; the step
+                # deadline machinery guarantees the flow terminates on its own
+                continue
             if now - flow.session.last_activity >= IDLE_FLOW_TTL:
                 self.mass.create_task(self._abort_flow(flow, "timed_out"))
         if self._setup_flows:
