@@ -552,12 +552,12 @@ def test_dependency_auto_merge_enforces_app_bot_identity_contract() -> None:
 
 
 def test_release_workflow_uses_minimum_preflight_permissions_and_expected_app() -> None:
-    """Resolve and preflight stay read-only and every App token checks its installation."""
+    """Resolve can discover drafts while preflight and App tokens stay minimal."""
     workflow_path = ROOT / ".github" / "workflows" / "release.yml"
     workflow = workflow_path.read_text(encoding="utf-8")
     jobs = yaml.safe_load(workflow)["jobs"]
 
-    assert jobs["resolve"]["permissions"] == {"contents": "read"}
+    assert jobs["resolve"]["permissions"] == {"contents": "write"}
     assert jobs["preflight"]["permissions"] == {
         "contents": "read",
         "pull-requests": "read",
