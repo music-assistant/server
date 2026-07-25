@@ -1436,6 +1436,23 @@ class MusicQuizPlugin(PluginProvider):
             await self._enqueue_track(game_round.track_uri)
         except MusicAssistantError as err:
             self.logger.debug("Could not pre-queue next Music Quiz track: %s", err)
+            return
+        with _system_auth_context():
+            session = self._playback_session
+            if session is None:
+                return
+            queue = self.mass.player_queues.get(session.queue_id)
+            if queue is None or queue.current_item is None:
+                return
+            try:
+                await self.mass.player_queues.load_next_queue_item(
+                    session.queue_id, queue.current_item.queue_item_id
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as err:
+                # the round is resolved on demand instead if this best-effort warm-up misses
+                self.logger.debug("Could not resolve next Music Quiz track: %s", err)
 
     async def _advance_to_queued_track(self, track_uri: str) -> bool:
         """
