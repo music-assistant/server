@@ -900,7 +900,11 @@ class AirPlayControlPlayer(AirPlayPlayer):
             pairing = await pyatv.pair(config, protocol, self.mass.loop, name="Music Assistant")
             await pairing.begin()
             started = True
-        except (pyatv_exceptions.PairingError, *_CONNECTION_ERRORS) as err:
+        except Exception as err:
+            # any failure starting the pairing (device unreachable, pyatv/system
+            # issue, ...) is unrecoverable here; abort with a clear reason rather
+            # than letting it surface as a generic internal error
+            self.logger.warning("Could not start Apple TV pairing: %s", err)
             raise AbortFlow("pairing_failed") from err
         finally:
             if not started and pairing is not None:

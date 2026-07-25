@@ -31,6 +31,20 @@
       "description": "Automatically sync audiobook progress from Spotify to Music Assistant. Progress from Spotify app will sync to MA when audiobooks are accessed. Only enable this if you use both the Spotify app and Music Assistant for audiobook playback."
     }
   },
+  "setup_flow": {
+    "authenticate": {
+      "title": "Connect your Spotify account",
+      "description": "A browser window will open so you can sign in to Spotify and authorize Music Assistant. Come back here once you're done."
+    },
+    "developer": {
+      "title": "Use your own Spotify app (optional)",
+      "description": "You're connected using Music Assistant's shared Spotify app — that's all most people need, so you can just press Finish.\n\nIf you'd rather use your own Spotify Developer app (for example to avoid the shared rate limits), enter its Client ID below. Leave it empty to finish with the shared app."
+    },
+    "authenticate_dev": {
+      "title": "Authorize your Spotify app",
+      "description": "A browser window will open to authorize Music Assistant against your own Spotify app."
+    }
+  },
   "media": {
     "folder": {
       "new_releases": {
