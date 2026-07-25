@@ -25,6 +25,7 @@ from scripts.release_workflow import (
     determine_auto_release,
     inspect_assets,
     is_current_release,
+    select_release,
     update_addon_release,
     verify_oci_manifest,
 )
@@ -206,6 +207,48 @@ def test_frontend_version_order(
 ) -> None:
     """Frontend dispatches compare numeric and post-release versions."""
     assert compare_frontend_versions(current, requested) == relation
+
+
+def test_select_release_returns_none_without_an_exact_tag() -> None:
+    """Release selection ignores nonmatching tags across every API page."""
+    release_pages = [
+        [{"id": 10, "tag_name": "2.10.0b7"}],
+        [],
+        [{"id": 11, "tag_name": "2.10.0B8"}],
+    ]
+
+    assert select_release(release_pages, "2.10.0b8") is None
+
+
+def test_select_release_finds_one_exact_draft_across_pages() -> None:
+    """Release selection returns the exact draft and its existing id."""
+    expected = {
+        "id": 359740600,
+        "tag_name": "2.10.0b8",
+        "draft": True,
+        "immutable": False,
+    }
+    release_pages = [
+        [{"id": 10, "tag_name": "2.10.0b7"}],
+        [expected],
+        [{"id": 12, "tag_name": "2.10.0b80"}],
+    ]
+
+    assert select_release(release_pages, "2.10.0b8") is expected
+
+
+def test_select_release_rejects_duplicate_exact_tags() -> None:
+    """Release selection fails closed when multiple releases use the exact tag."""
+    release_pages = [
+        [{"id": 359740600, "tag_name": "2.10.0b8"}],
+        [{"id": 359752771, "tag_name": "2.10.0b8"}],
+    ]
+
+    with pytest.raises(
+        ReleaseWorkflowError,
+        match=re.escape("Multiple releases match exact tag 2.10.0b8: 359740600, 359752771"),
+    ):
+        select_release(release_pages, "2.10.0b8")
 
 
 def test_release_assets_match_names_sizes_and_digests(tmp_path: Path) -> None:
@@ -591,6 +634,90 @@ fi
 echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
 """
     assert expected_resolution in resolve_run
+
+
+def test_release_workflow_discovers_exact_drafts_from_paginated_releases() -> None:
+    """Resolve discovers draft releases through the paginated releases endpoint."""
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    resolve_run = _workflow_step_run(
+        workflow,
+        job_name="resolve",
+        step_name="Inspect existing tag and release",
+    )
+
+    assert "gh api --paginate --slurp" in resolve_run
+    assert '"repos/$GITHUB_REPOSITORY/releases?per_page=100"' in resolve_run
+    assert "release_workflow.py select-release" in resolve_run
+    assert '--release-json "$release_json"' in resolve_run
+    assert "release_id=$(sed -n 's/^release_id=//p' \"$release_lookup\")" in resolve_run
+
+
+def test_release_workflow_reuses_resolved_draft_id() -> None:
+    """Draft recovery and updates revalidate and reuse the resolved release id."""
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    parsed_workflow = cast("dict[str, Any]", yaml.safe_load(workflow))
+    recover_step = _workflow_step(
+        parsed_workflow,
+        "build_artifacts",
+        "Recover matching draft assets",
+    )
+    assert recover_step["env"]["RELEASE_ID"] == "${{ needs.resolve.outputs.release_id }}"
+    recover_run = str(recover_step["run"])
+    assert 'if [ -z "$RELEASE_ID" ]; then' in recover_run
+    assert 'gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID"' in recover_run
+    assert "'.tag_name // empty'" in recover_run
+    assert "'.draft'" in recover_run
+    assert "'.immutable'" in recover_run
+    assert "'.target_commitish'" in recover_run
+    assert "gh release download" not in recover_run
+    assert "Draft must contain exactly one $asset_name asset" in recover_run
+    assert '"repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"' in recover_run
+
+    draft_step = _workflow_step(
+        parsed_workflow,
+        "prepare_draft",
+        "Create or update matching draft",
+    )
+    assert draft_step["env"]["RELEASE_ID"] == "${{ needs.resolve.outputs.release_id }}"
+    draft_run = str(draft_step["run"])
+    assert 'if [ -n "$RELEASE_ID" ]; then' in draft_run
+    assert 'gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID"' in draft_run
+    assert '"repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \\\n' in draft_run
+    assert '"repos/$GITHUB_REPOSITORY/releases" \\\n' in draft_run
+    assert "release_exists=true" in draft_run
+    assert "release_exists=false" in draft_run
+
+    replace_run = str(
+        _workflow_step(
+            parsed_workflow,
+            "prepare_draft",
+            "Replace draft assets",
+        )["run"]
+    )
+    assert "gh release upload" not in replace_run
+    assert (
+        "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/"
+        "$RELEASE_ID/assets?name=$asset_name"
+    ) in replace_run
+
+
+def test_release_workflow_avoids_prepublication_tag_release_lookups() -> None:
+    """Only post-publication work may use GitHub's published tag endpoint."""
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    parsed_workflow = cast("dict[str, Any]", yaml.safe_load(workflow))
+    tag_endpoint = "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION"
+
+    for job_name in ("resolve", "build_artifacts", "prepare_draft"):
+        for step in parsed_workflow["jobs"][job_name]["steps"]:
+            assert tag_endpoint not in str(step.get("run", ""))
+
+    publication_run = _workflow_step_run(
+        workflow,
+        job_name="publish_release",
+        step_name="Verify immutable release and assets",
+    )
+    assert tag_endpoint in publication_run
+    assert workflow.count(tag_endpoint) == 2
 
 
 def test_release_workflow_publication_state_uses_release_ids() -> None:
