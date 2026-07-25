@@ -2,7 +2,7 @@ name: Auto Release
 
 # Resolves the release channel to its source branch, computes the next version from
 # Git tags, and triggers the reusable release workflow with the exact commit to release.
-# - Nightly: runs at 05:00 UTC daily if there are 2+ commits since the last nightly tag
+# - Nightly: runs at 05:00 Europe/Amsterdam time daily if there are 2+ commits since the last nightly tag
 # - Beta / RC / Stable: manual trigger only (format: 1.2.0b1, 1.2.0rc1, 1.2.3)
 
 on:

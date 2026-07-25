@@ -18,7 +18,7 @@ patterns, per channel:
 | Channel | Pattern | Compares against |
 |---|---|---|
 | stable | `^[0-9]+\.[0-9]+\.[0-9]+$` | latest stable tag |
-| beta | `^[0-9]+\.[0-9]+\.[0-9]+(b\|rc)[0-9]+$` | latest beta/rc tag |
+| beta | `^[0-9]+\.[0-9]+\.[0-9]+` + `b` or `rc` + `[0-9]+$` | latest beta/rc tag |
 | rc | RC1: latest beta tag; RC2+: previous RC tag | see below |
 | nightly | `^[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$` | latest nightly tag |
 
