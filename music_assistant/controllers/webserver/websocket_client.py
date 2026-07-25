@@ -558,8 +558,9 @@ class WebsocketClientHandler:
                     else None
                 )
                 if required is None:
-                    # flow already popped (terminal step race): config rights required
-                    if not has_scope(user, Scope.CONFIG_PROVIDERS_WRITE) and not has_scope(
+                    # flow already popped (terminal step race): the flow kind is no
+                    # longer known, so require both config scopes to be safe
+                    if not has_scope(user, Scope.CONFIG_PROVIDERS_WRITE) or not has_scope(
                         user, Scope.CONFIG_PLAYERS_WRITE
                     ):
                         return
