@@ -35,6 +35,7 @@ from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 CONF_CLIENT_ID = "client_id"
 CONF_AUTHORIZATION = "authorization"
@@ -60,6 +61,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.media_items import BrowseFolder, ItemMapping, MediaItemType
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -105,8 +107,11 @@ async def get_config_entries(
     )
 
 
-class SoundcloudMusicProvider(MusicProvider):
+class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
     """Provider for Soundcloud."""
+
+    # keep the pre-refactor 3h refresh interval for the mixed-selections payload
+    recommendation_payload_ttl = 3600 * 3
 
     _user_id: str = ""
     _soundcloud: SoundcloudAsyncAPI = None
@@ -227,12 +232,36 @@ class SoundcloudMusicProvider(MusicProvider):
             round(time.time() - time_start, 2),
         )
 
-    @use_cache(3600 * 3)  # Cache for 3 hours
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get available recommendations."""
-        # Part 1, the mixed selections
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        rows = await self._recommendation_rows_from_payload()
+        rows.append(
+            RecommendationFolder(
+                name="SoundCloud Feed",
+                translation_key="soundcloud_feed",
+                item_id=f"{self.instance_id}_sc_subscribed_feed",
+                provider=self.instance_id,
+                icon="mdi-rss",
+            )
+        )
+        return rows
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id == f"{self.instance_id}_sc_subscribed_feed":
+            return UniqueList(await self._get_subscribed_feed_tracks())
+        return await self._recommendation_items_from_payload(item_id)
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch and parse the mixed-selection collections as folders with items."""
+        folders: list[RecommendationFolder] = []
         recommendations = await self._soundcloud.get_mixed_selection(40)
-        folders = []
         for collection in recommendations.get("collection", []):
             folder = RecommendationFolder(
                 name=collection["title"],
@@ -246,30 +275,29 @@ class SoundcloudMusicProvider(MusicProvider):
                     folder.items.append(await self._parse_playlist(playlist))
                 else:
                     self.logger.debug(
-                        "Unknown item type in collection for SoundCloud: %s", playlist.get("kind")
-                    )
-                    continue
-            folders.append(folder)
-        # Part 2, the subscribed feed
-        feed = await self._soundcloud.get_subscribe_feed(40)
-        if feed and "collection" in feed:
-            folder = RecommendationFolder(
-                name="SoundCloud Feed",
-                translation_key="soundcloud_feed",
-                item_id=f"{self.instance_id}_sc_subscribed_feed",
-                provider=self.instance_id,
-                icon="mdi-rss",
-            )
-            for item in feed["collection"]:
-                if item.get("type") == "track" or item.get("type") == "track-repost":
-                    folder.items.append(await self._parse_track(item.get("track")))
-                else:
-                    self.logger.debug(
-                        "Unknown type in subscribed feed for SoundCloud: %s", item.get("type")
+                        "Unknown item type in collection for SoundCloud: %s",
+                        playlist.get("kind"),
                     )
                     continue
             folders.append(folder)
         return folders
+
+    @use_cache(3600 * 3)  # Cache for 3 hours
+    async def _get_subscribed_feed_tracks(self) -> list[Track]:
+        """Fetch and parse the tracks of the subscribed feed."""
+        tracks: list[Track] = []
+        feed = await self._soundcloud.get_subscribe_feed(40)
+        if not feed or "collection" not in feed:
+            return tracks
+        for item in feed["collection"]:
+            if item.get("type") == "track" or item.get("type") == "track-repost":
+                tracks.append(await self._parse_track(item.get("track")))
+            else:
+                self.logger.debug(
+                    "Unknown type in subscribed feed for SoundCloud: %s", item.get("type")
+                )
+                continue
+        return tracks
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_artist(self, prov_artist_id: str) -> Artist:

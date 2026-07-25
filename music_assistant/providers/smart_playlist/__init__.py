@@ -287,22 +287,33 @@ class SmartPlaylistProvider(PluginProvider):
             playlists.append(await self._build_playlist(pid, rules))
         return playlists
 
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Return smart playlists as a recommendation folder."""
-        playlists = []
-        for pid, r in self._rules_store.items():
-            playlists.append(await self._build_playlist(pid, r))
-        if playlists:
-            return [
-                RecommendationFolder(
-                    item_id="smart_playlists",
-                    provider=self.domain,
-                    name="Smart Playlists",
-                    translation_key="smart_playlists",
-                    items=playlists,  # type: ignore[arg-type]
-                )
-            ]
-        return []
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this plugin's available recommendation rows, without items."""
+        if not self._rules_store:
+            return []
+        return [
+            RecommendationFolder(
+                item_id="smart_playlists",
+                provider=self.instance_id,
+                name="Smart Playlists",
+                translation_key="smart_playlists",
+            )
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the smart playlists for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList()
+        if item_id != "smart_playlists":
+            return items
+        for pid, rules in self._rules_store.items():
+            items.append(await self._build_playlist(pid, rules))
+        return items
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get playlist details by provider id."""

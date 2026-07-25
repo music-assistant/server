@@ -26,8 +26,8 @@ dependencies = [
   "ifaddr==0.2.0",
   "getmac==0.9.5",
   "mashumaro==3.20",
-  "music-assistant-frontend==2.17.228",
-  "music-assistant-models==1.1.166",
+  "music-assistant-frontend==2.17.236",
+  "music-assistant-models==1.1.169",
   "mutagen==1.48.1",
   "orjson==3.11.6",
   "pillow==12.3.0",
@@ -45,7 +45,8 @@ dependencies = [
   "torch==2.13.0",
   "torchaudio==2.11.0",
   "gql[all]==4.0.0",
-  "aiortc>=1.6.0",
+  # TEMPORARY test-drive pin — replace with PyPI release before merge (see webrtc_aiolibdatachannel_plan.md Phase C)
+  "aiolibdatachannel @ git+https://github.com/music-assistant/aiolibdatachannel@feat/certpem-testdrive",
   "pyjwt[crypto]>=2.10.1",
 ]
 description = "Music Assistant"
@@ -65,6 +66,7 @@ test = [
   "pytest-aiohttp==1.1.0",
   "pytest-codspeed==5.0.3",
   "pytest-cov==7.0.0",
+  "pytest-timeout==2.4.0",
   "syrupy==5.2.0",
   "tomli==2.4.1",
   "ruff==0.15.22",
@@ -184,6 +186,7 @@ line-ending = "lf"
 [tool.pytest.ini_options]
 addopts = "--cov music_assistant"
 asyncio_mode = "auto"
+timeout = 120
 filterwarnings = [
   # Suppress Python 3.14 AsyncMock internal warnings about unawaited coroutines
   "ignore:coroutine.*was never awaited:RuntimeWarning",

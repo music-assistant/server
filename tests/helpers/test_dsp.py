@@ -6,6 +6,9 @@ from music_assistant_models.dsp import (
     AudioChannel,
     BalanceFilter,
     GainFilter,
+    HighLowPassFilter,
+    HighLowPassMode,
+    HighLowPassSlope,
     ParametricEQBand,
     ParametricEQBandType,
     ParametricEQFilter,
@@ -129,3 +132,64 @@ def test_parametric_eq_disabled_band_skipped() -> None:
     band = ParametricEQBand(enabled=False, gain=6.0)
     dsp_filter = ParametricEQFilter(enabled=True, per_channel_preamp={}, bands=[band])
     assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT) == []
+
+
+def _expected_pass_section(mode: HighLowPassMode, frequency: float, q: float) -> str:
+    """Build the expected cookbook biquad string for one high/low-pass section."""
+    w_0 = 2 * math.pi * frequency / INPUT_FORMAT.sample_rate
+    alpha = math.sin(w_0) / (2 * q)
+    if mode == HighLowPassMode.HIGH_PASS:
+        b0 = (1 + math.cos(w_0)) / 2
+        b1 = -(1 + math.cos(w_0))
+        b2 = (1 + math.cos(w_0)) / 2
+    else:
+        b0 = (1 - math.cos(w_0)) / 2
+        b1 = 1 - math.cos(w_0)
+        b2 = (1 - math.cos(w_0)) / 2
+    a0 = 1 + alpha
+    a1 = -2 * math.cos(w_0)
+    a2 = 1 - alpha
+    return f"biquad=b0={b0}:b1={b1}:b2={b2}:a0={a0}:a1={a1}:a2={a2}"
+
+
+def test_high_low_pass_12db_single_section() -> None:
+    """Test that a 12 dB/octave high-pass is a single Butterworth biquad at Q=1/sqrt(2)."""
+    dsp_filter = HighLowPassFilter(
+        enabled=True, mode=HighLowPassMode.HIGH_PASS, frequency=100.0, slope=HighLowPassSlope.DB12
+    )
+    q = 1 / (2 * math.cos(math.pi / 4))
+    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT) == [
+        _expected_pass_section(HighLowPassMode.HIGH_PASS, 100.0, q)
+    ]
+
+
+def test_high_low_pass_24db_two_sections() -> None:
+    """Test that a 24 dB/octave low-pass is two sections with the 4th-order Butterworth Qs."""
+    dsp_filter = HighLowPassFilter(
+        enabled=True, mode=HighLowPassMode.LOW_PASS, frequency=8000.0, slope=HighLowPassSlope.DB24
+    )
+    qs = [1 / (2 * math.cos(math.pi * (2 * k + 1) / 8)) for k in range(2)]
+    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT) == [
+        _expected_pass_section(HighLowPassMode.LOW_PASS, 8000.0, q) for q in qs
+    ]
+
+
+def test_high_low_pass_48db_has_four_sections() -> None:
+    """Test that a 48 dB/octave filter is a cascade of four biquad sections."""
+    dsp_filter = HighLowPassFilter(
+        enabled=True, mode=HighLowPassMode.HIGH_PASS, frequency=40.0, slope=HighLowPassSlope.DB48
+    )
+    params = filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT)
+    assert len(params) == 4
+    assert all(p.startswith("biquad=") for p in params)
+
+
+def test_high_low_pass_mode_changes_coefficients() -> None:
+    """Test that high-pass and low-pass at identical settings produce different coefficients."""
+    high = HighLowPassFilter(
+        enabled=True, mode=HighLowPassMode.HIGH_PASS, frequency=1000.0, slope=HighLowPassSlope.DB12
+    )
+    low = HighLowPassFilter(
+        enabled=True, mode=HighLowPassMode.LOW_PASS, frequency=1000.0, slope=HighLowPassSlope.DB12
+    )
+    assert filter_to_ffmpeg_params(high, INPUT_FORMAT) != filter_to_ffmpeg_params(low, INPUT_FORMAT)

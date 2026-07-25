@@ -62,6 +62,8 @@ current_token: ContextVar[str | None] = ContextVar("current_token", default=None
 impersonated_user: ContextVar[User | None] = ContextVar("impersonated_user", default=None)
 # ContextVar for tracking the sendspin player associated with the current connection
 sendspin_player_id: ContextVar[str | None] = ContextVar("sendspin_player_id", default=None)
+# ContextVar for tracking the websocket client id associated with the current connection
+current_client_id: ContextVar[str | None] = ContextVar("current_client_id", default=None)
 
 
 async def get_authenticated_user(request: web.Request) -> User | None:
@@ -313,6 +315,24 @@ def set_sendspin_player_id(player_id: str | None) -> None:
     :param player_id: The sendspin player ID to set.
     """
     sendspin_player_id.set(player_id)
+
+
+def get_current_client_id() -> str | None:
+    """
+    Get the websocket client id associated with the current connection.
+
+    :return: The client id, or None if not called from within a websocket command.
+    """
+    return current_client_id.get()
+
+
+def set_current_client_id(client_id: str | None) -> None:
+    """
+    Set the websocket client id for the current connection.
+
+    :param client_id: The client id to set.
+    """
+    current_client_id.set(client_id)
 
 
 def is_request_from_ingress(request: web.Request) -> bool:

@@ -573,6 +573,41 @@
             50% { opacity: 0.6; }
         }
 
+        /* Party QR overlay (top-center) */
+        #kiosk-party {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            background: rgba(0, 0, 0, 0.55);
+            border-radius: 12px;
+            padding: 12px;
+            text-align: center;
+            max-width: 180px;
+        }
+        #kiosk-party[hidden] { display: none; }
+        #kiosk-party-qr {
+            display: block;
+            width: 140px;
+            height: 140px;
+            margin: 0 auto;
+            padding: 6px;
+            background: #fff;
+            border-radius: 8px;
+        }
+        #kiosk-party-name {
+            margin-top: 8px;
+            font-size: 15px;
+            font-weight: 600;
+            color: #fff;
+        }
+        #kiosk-party-text {
+            margin-top: 2px;
+            font-size: 12px;
+            color: rgba(255, 255, 255, 0.8);
+        }
+
         /* === Karaoke lyrics (center column) === */
         #kiosk-lyrics {
             position: absolute;
@@ -672,6 +707,18 @@
             will-change: height;
             min-height: 8px;
         }
+
+        /* Live spectrum: heights are set inline from FFT data, no keyframes */
+        #eq-bars.eq-live .eq-bar {
+            animation: none;
+            transition: height 0.06s linear;
+        }
+
+        /* Kiosk display toggles (URL params controls/party/viz/lyrics = 0) */
+        #kiosk-player.kiosk-hide-controls #kiosk-controls-panel { display: none !important; }
+        #kiosk-player.kiosk-hide-party #kiosk-party { display: none !important; }
+        #kiosk-player.kiosk-hide-viz #kiosk-equalizer { display: none !important; }
+        #kiosk-player.kiosk-hide-lyrics #kiosk-lyrics { display: none !important; }
 
         @keyframes eqBounce {
             0%   { height: var(--eq-min, 8px); opacity: 0.5; }
@@ -982,6 +1029,13 @@
 
             <!-- Sync indicator (Sendspin, top-right) -->
             <div id="kiosk-sync-status" class="sync-indicator">CONNECTING...</div>
+
+            <!-- Party QR overlay (shown when the MA Party plugin has guest access enabled) -->
+            <div id="kiosk-party" hidden>
+                <img id="kiosk-party-qr" src="" alt="Party join QR code">
+                <div id="kiosk-party-name"></div>
+                <div id="kiosk-party-text"></div>
+            </div>
 
             <!-- Left column: album art + track info -->
             <div class="kiosk-col-left">

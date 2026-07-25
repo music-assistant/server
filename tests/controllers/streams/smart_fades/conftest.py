@@ -18,7 +18,7 @@ from music_assistant.controllers.streams.smart_fades.planner.candidates import (
 from music_assistant.models.audio_analysis import AudioAnalysisData
 
 
-def build_test_candidate(
+def build_test_candidate(  # noqa: PLR0913
     *,
     bars: int = 8,
     ideal: int = 8,
@@ -30,12 +30,19 @@ def build_test_candidate(
     duration: float = 20.0,
     one_sided: str | None = None,
     tier: TransitionTier = TransitionTier.FULL_BLEND,
+    fadein_trim: float | None = None,
+    fade_end: float | None = None,
 ) -> Candidate:
     """Build a minimal ``Candidate`` with only the fields a policy under test reads."""
     spec = CandidateSpec(
         tier=tier, bars=bars, anchor_s=None, entry_s=None, one_sided_vocal=one_sided
     )
-    plan = TransitionPlan(tier=tier, fade_out_window=duration, crossfade_duration=duration)
+    plan = TransitionPlan(
+        tier=tier,
+        fade_out_window=fade_end if fade_end is not None else duration,
+        crossfade_duration=duration,
+        fadein_trim_start=fadein_trim,
+    )
     metrics = PlanMetrics(
         audible_outgoing_trim=trim,
         outgoing_vocal_fade_seconds=vocal_fade,

@@ -5,19 +5,29 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import socket
+import time
 from contextlib import suppress
-from ipaddress import ip_address
-from typing import cast
+from ipaddress import IPv4Address, IPv6Address, ip_address
+from typing import TYPE_CHECKING, Final, cast
 
 from music_assistant_models.enums import PlaybackState
-from zeroconf import ServiceStateChange
+from zeroconf import NonUniqueNameException, ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
-from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    CONF_LOG_LEVEL,
+    CONF_PLAYERS,
+    CONF_PROVIDERS,
+    CONF_SYNC_ADJUST,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import SerializableType
+from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import (
+    get_ip_addresses,
     get_ip_pton,
     get_primary_ip_address_from_zeroconf,
     select_free_port,
@@ -27,21 +37,48 @@ from music_assistant.models.player_provider import PlayerProvider
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_VOLUME_MUTE,
+    COMPANION_DISCOVERY_TYPE,
+    CONF_FORCE_RAOP,
     CONF_IGNORE_VOLUME,
+    CONF_LEGACY_AIRPLAY_PROTOCOL,
+    CONF_LEGACY_FORCE_RAOP,
+    CONF_PROTOCOL_MIGRATION_MARKER,
     CONF_STORED_VOLUME,
+    CONF_SYNC_ADJUST_RESET_MARKER,
     DACP_DISCOVERY_TYPE,
     FALLBACK_VOLUME,
+    MRP_DISCOVERY_TYPE,
     RAOP_DISCOVERY_TYPE,
+    AirPlayRemoteCommand,
+    StreamingProtocol,
 )
-from .helpers import convert_airplay_volume, get_model_info
-from .player import AirPlayPlayer
-from .protocols.airplay2 import AirPlay2Stream
+from .control_player import AirPlayControlPlayer
+from .dashboard import AirPlayDashboards
+from .helpers import (
+    convert_airplay_volume,
+    get_cli_binary,
+    get_model_info,
+    is_apple_device,
+)
+from .player import AirPlayPlayer, GenericAirPlayPlayer
 from .sendspin_bridge import SendspinBridgeManager
 
-# TODO: AirPlay provider
-# Implement Companion protocol for communicating with original Apple (TV) devices
-# This allows for getting state/metadata changes from the device,
-# even if we are not actively streaming to it.
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ProviderConfig
+
+# Marker the `cliairplay --ptp-daemon` process prints once it has bound the
+# privileged PTP ports (UDP 319/320) and opened its control channel. Until this
+# line is seen the daemon is spawned but not yet able to serve shared-clock
+# streams, so a group start before it would race the daemon's readiness.
+PTP_DAEMON_READY_MARKER: Final[str] = "[PTP] daemon up"
+# Bounded wait for the daemon to report readiness before a stream session
+# decides its timing source. Once ready the check returns immediately; only a
+# session that starts while the daemon is still coming up (or never binds) pays
+# any of this, and only up to the moment readiness is signalled.
+PTP_DAEMON_READY_TIMEOUT: Final[float] = 3.0
+# Grace period after broadcasting a goodbye for a stale DACP registration before
+# re-registering the (name-stable) service, letting the cache flush the old record.
+DACP_RECLAIM_DELAY: Final[float] = 1.0
 
 
 class AirPlayProvider(PlayerProvider):
@@ -50,16 +87,109 @@ class AirPlayProvider(PlayerProvider):
     _dacp_server: asyncio.Server
     _dacp_info: AsyncServiceInfo
     _bridge_manager: SendspinBridgeManager
+    dashboards: AirPlayDashboards
+    _ptp_daemon: AsyncProcess | None = None
+    _ptp_daemon_stdout_task: asyncio.Task[None] | None = None
+    _ptp_daemon_started: float = 0.0
+    _ptp_daemon_restarted: bool = False
+    _ptp_daemon_stop_requested: bool = False
+    # Set once the running daemon reports it has bound 319/320 and opened its
+    # control channel; created/cleared per daemon start so a crash+restart
+    # re-gates readiness. None until the daemon is first started.
+    _ptp_daemon_ready: asyncio.Event | None = None
 
     @property
     def bridge_manager(self) -> SendspinBridgeManager:
         """Return the Sendspin bridge manager."""
         return self._bridge_manager
 
+    @property
+    def ptp_daemon_running(self) -> bool:
+        """
+        Return if the shared PTP clock daemon process is alive.
+
+        This reflects process liveness only (spawned, not closed, still
+        running) for status/diagnostics. The streaming timing decision must use
+        :meth:`wait_ptp_daemon_ready`, which also waits for the daemon to have
+        actually bound its ports and opened its control channel.
+        """
+        return (
+            self._ptp_daemon is not None
+            and not self._ptp_daemon.closed
+            and self._ptp_daemon.returncode is None
+        )
+
+    async def wait_ptp_daemon_ready(self, timeout: float = PTP_DAEMON_READY_TIMEOUT) -> bool:
+        """
+        Wait until the shared PTP clock daemon is ready to serve streams.
+
+        Readiness means the daemon has bound the privileged PTP ports (UDP
+        319/320) and opened its control channel - not merely that the process is
+        alive. A stream session gates its group-wide timing decision on this so
+        it never attaches members to a clock that is not yet serving.
+
+        :param timeout: Maximum seconds to wait for the readiness signal.
+        :return: True if the daemon has signalled readiness, False otherwise
+            (never started, failed to bind, or not ready within the timeout).
+        """
+        event = self._ptp_daemon_ready
+        daemon = self._ptp_daemon
+        if event is None or daemon is None or daemon.closed or daemon.returncode is not None:
+            return False
+        if event.is_set():
+            return True
+
+        ready_task = asyncio.create_task(event.wait())
+        exit_task = asyncio.create_task(daemon.wait())
+        try:
+            done, _ = await asyncio.wait(
+                (ready_task, exit_task),
+                timeout=timeout,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            return (
+                ready_task in done
+                and event.is_set()
+                and self._ptp_daemon is daemon
+                and not daemon.closed
+                and daemon.returncode is None
+            )
+        finally:
+            ready_task.cancel()
+            exit_task.cancel()
+            await asyncio.gather(ready_task, exit_task, return_exceptions=True)
+
+    def handle_remote_command(self, player: AirPlayPlayer, command: AirPlayRemoteCommand) -> None:
+        """Dispatch a transport command received from an AirPlay receiver."""
+        player_id = (
+            self.bridge_manager.get_transport_command_target(player.player_id) or player.player_id
+        )
+        match command:
+            case AirPlayRemoteCommand.PLAY:
+                # Some receivers echo play as confirmation of a command from MA.
+                if player.playback_state != PlaybackState.PLAYING:
+                    self.mass.create_task(self.mass.players.cmd_play(player_id))
+            case AirPlayRemoteCommand.PAUSE:
+                if player.playback_state == PlaybackState.PLAYING:
+                    self.mass.create_task(self.mass.players.cmd_pause(player_id))
+            case AirPlayRemoteCommand.PLAY_PAUSE:
+                self.mass.create_task(self.mass.players.cmd_play_pause(player_id))
+            case AirPlayRemoteCommand.NEXT:
+                self.mass.create_task(self.mass.players.cmd_next_track(player_id))
+            case AirPlayRemoteCommand.PREVIOUS:
+                self.mass.create_task(self.mass.players.cmd_previous_track(player_id))
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        self._set_pyatv_log_level()
+        self._companion_info_by_address: dict[str, AsyncServiceInfo] = {}
+        self._mrp_info_by_address: dict[str, AsyncServiceInfo] = {}
+
         # Initialize Sendspin bridge manager for protocol linking
         self._bridge_manager = SendspinBridgeManager(self)
+
+        # Registers eligible Apple TVs as dashboard endpoints for the tvOS app
+        self.dashboards = AirPlayDashboards(self)
 
         # register DACP zeroconf service
         dacp_port = await select_free_port(39831, 49831)
@@ -83,12 +213,36 @@ class AirPlayProvider(PlayerProvider):
             },
             server=f"{socket.gethostname()}.local",
         )
-        await self.mass.discovery.aiozc.async_register_service(self._dacp_info)
+        await self._register_dacp_service()
+
+        self._migrate_protocol_preferences()
+        self._migrate_sync_adjust()
+
+        # Run one shared PTP clock daemon for the provider lifetime: all native
+        # AirPlay 2 streams attach to it (--ptp-shared) so multi-room sync groups
+        # lock to a single grandmaster while UDP 319/320 is bound only once.
+        await self._start_ptp_daemon()
+
+    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        await super().update_config(config, changed_keys)
+        # a log level(-only) change does not reload the provider,
+        # so realign pyatv's logger here
+        if f"values/{CONF_LOG_LEVEL}" in changed_keys:
+            self._set_pyatv_log_level()
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Handle MDNS service state callback."""
+        if (info and info.type == COMPANION_DISCOVERY_TYPE) or name.endswith(
+            COMPANION_DISCOVERY_TYPE
+        ):
+            await self._handle_companion_service_state_change(name, state_change, info)
+            return
+        if (info and info.type == MRP_DISCOVERY_TYPE) or name.endswith(MRP_DISCOVERY_TYPE):
+            await self._handle_mrp_service_state_change(name, state_change, info)
+            return
         if not info:
             if state_change == ServiceStateChange.Removed and "@" in name:
                 # Service name is enough to mark the player as unavailable on 'Removed' notification
@@ -112,6 +266,7 @@ class AirPlayProvider(PlayerProvider):
                 # Remove the Sendspin bridge first
                 await self._bridge_manager.remove_bridge(player_id)
                 await self.mass.players.unregister(player_id)
+            self.dashboards.unregister(player_id)
             return
         # handle update for existing device
         assert info is not None  # type guard
@@ -119,15 +274,34 @@ class AirPlayProvider(PlayerProvider):
         if player := cast("AirPlayPlayer | None", self.mass.players.get_player(player_id)):
             # update the latest discovery info for existing player
             player.set_discovery_info(info, display_name)
+            # only control players can ever be dashboard endpoints
+            if isinstance(player, AirPlayControlPlayer):
+                self.dashboards.reconcile(player_id)
             return
         await self._setup_player(player_id, display_name, info)
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
+        # Unregister all dashboard endpoints
+        dashboards = getattr(self, "dashboards", None)
+        if dashboards:
+            await dashboards.unload()
         # Stop all Sendspin bridges
         bridge_manager = getattr(self, "_bridge_manager", None)
         if bridge_manager:
             await bridge_manager.close()
+        # terminate the shared PTP clock daemon
+        self._ptp_daemon_stop_requested = True
+        if self._ptp_daemon_ready is not None:
+            self._ptp_daemon_ready.clear()
+        ptp_stdout_task = self._ptp_daemon_stdout_task
+        if ptp_stdout_task and not ptp_stdout_task.done():
+            ptp_stdout_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await ptp_stdout_task
+        if self._ptp_daemon and not self._ptp_daemon.closed:
+            await self._ptp_daemon.close()
+        self._ptp_daemon = None
         # shutdown DACP server
         if self._dacp_server:
             self._dacp_server.close()
@@ -141,10 +315,11 @@ class AirPlayProvider(PlayerProvider):
         for player in self.get_players():
             if not (player.stream and player.stream.running):
                 continue
-            stream_type = "airplay2" if isinstance(player.stream, AirPlay2Stream) else "raop"
+            stream_type = "airplay2" if player.protocol == StreamingProtocol.AIRPLAY2 else "raop"
             streams_by_type[stream_type] = streams_by_type.get(stream_type, 0) + 1
         return {
             "dacp_server_running": self._dacp_server.is_serving(),
+            "ptp_daemon_running": self.ptp_daemon_running,
             "active_streams": sum(streams_by_type.values()),
             "streams_by_type": streams_by_type,
         }
@@ -157,6 +332,16 @@ class AirPlayProvider(PlayerProvider):
         """Return AirplayPlayer by id."""
         return cast("AirPlayPlayer | None", self.mass.players.get_player(player_id))
 
+    def _set_pyatv_log_level(self) -> None:
+        """Keep pyatv's (very chatty) logging quiet unless verbose logging is enabled."""
+        # pyatv is extremely chatty at debug level (it logs every protocol
+        # message and heartbeat of each control connection), so only pass
+        # through its debug logging when verbose logging is enabled
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            logging.getLogger("pyatv").setLevel(logging.DEBUG)
+        else:
+            logging.getLogger("pyatv").setLevel(self.logger.level + 10)
+
     async def _setup_player(
         self, player_id: str, display_name: str, discovery_info: AsyncServiceInfo
     ) -> None:
@@ -164,6 +349,14 @@ class AirPlayProvider(PlayerProvider):
         # return early if player is disabled in config
         if not self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
             self.logger.debug("Ignoring %s in discovery as it is disabled.", display_name)
+            return
+        # Filter out this server's own AirPlay Receiver (shairport-sync) instances
+        # before anything else: they must never register as AirPlay players.
+        if await self._is_own_airplay_receiver(display_name, discovery_info):
+            self.logger.debug(
+                "Ignoring %s in discovery: it is an AirPlay Receiver instance of this server",
+                display_name,
+            )
             return
         raop_discovery_info: AsyncServiceInfo | None = None
         airplay_discovery_info: AsyncServiceInfo | None = None
@@ -183,34 +376,17 @@ class AirPlayProvider(PlayerProvider):
             )
 
         if airplay_discovery_info:
-            manufacturer, model = get_model_info(airplay_discovery_info)
+            model_discovery_info = airplay_discovery_info
         elif raop_discovery_info:
-            manufacturer, model = get_model_info(raop_discovery_info)
+            model_discovery_info = raop_discovery_info
         else:
             return  # should not happen, but guard just in case
+        manufacturer, model = get_model_info(model_discovery_info)
 
         prefer_ipv6 = ":" in str(self.mass.streams.publish_ip)
         address = get_primary_ip_address_from_zeroconf(discovery_info, prefer_ipv6=prefer_ipv6)
         if not address:
             return  # should not happen, but guard just in case
-
-        # Filter out shairport-sync instances running on THIS Music Assistant server
-        # These are managed by the AirPlay Receiver provider, not the AirPlay provider
-        # We check both model name AND that it's a local address to avoid filtering
-        # shairport-sync instances running on other machines
-        if model == "ShairportSync":
-            # Check if this is a local address (loopback or matches our server's IP)
-            if ip_address(address).is_loopback or address == self.mass.streams.publish_ip:
-                # Only filter if the port matches one of MA's own AirPlay Receiver instances.
-                # This allows user-configured shairport-sync instances on the same machine
-                # to be used as AirPlay players (e.g., multiple audio outputs via shairport-sync).
-                receiver_ports = {
-                    port
-                    for prov in self.mass.get_provider_instances("airplay_receiver")
-                    if (port := getattr(prov, "airplay_port", None)) is not None
-                }
-                if discovery_info.port in receiver_ports:
-                    return
 
         # if we reach this point, all preflights are ok and we can create the player
         self.logger.debug("Discovered AirPlay device %s on %s", display_name, address)
@@ -237,23 +413,467 @@ class AirPlayProvider(PlayerProvider):
             model,
         )
 
-        # Create single AirPlayPlayer for all devices
-        # Pairing config entries will be shown conditionally based on device type
-        player = AirPlayPlayer(
-            provider=self,
-            player_id=player_id,
-            raop_discovery_info=raop_discovery_info,
-            airplay_discovery_info=airplay_discovery_info,
-            address=address,
-            display_name=display_name,
-            manufacturer=manufacturer,
-            model=model,
-            initial_volume=volume,
+        player_addresses = self._get_discovery_addresses(
+            airplay_discovery_info,
+            raop_discovery_info,
         )
+        player_addresses.add(address)
+        # Apple TVs and HomePods are standalone players with a native control
+        # plane (Companion/MRP); all other receivers are protocol endpoints.
+        # The model is decided from the device's own identity only: it defines
+        # the player id exposed to API consumers (e.g. Home Assistant), so it
+        # must not vary with the discovery timing of the separate Companion/MRP
+        # mDNS records. Which control features are offered on a control player
+        # is decided from the advertised capabilities instead.
+        enhanced_control = is_apple_device(manufacturer, model)
+        companion_info: AsyncServiceInfo | None = None
+        mrp_info: AsyncServiceInfo | None = None
+        if enhanced_control:
+            companion_info, mrp_info = await asyncio.gather(
+                self._get_related_discovery_info(
+                    COMPANION_DISCOVERY_TYPE,
+                    self._companion_info_by_address,
+                    player_addresses,
+                    display_name,
+                ),
+                self._get_related_discovery_info(
+                    MRP_DISCOVERY_TYPE,
+                    self._mrp_info_by_address,
+                    player_addresses,
+                    display_name,
+                ),
+            )
+
+        player: AirPlayPlayer
+        if enhanced_control:
+            player = AirPlayControlPlayer(
+                provider=self,
+                player_id=player_id,
+                raop_discovery_info=raop_discovery_info,
+                airplay_discovery_info=airplay_discovery_info,
+                companion_discovery_info=companion_info,
+                mrp_discovery_info=mrp_info,
+                address=address,
+                display_name=display_name,
+                manufacturer=manufacturer,
+                model=model,
+                initial_volume=volume,
+            )
+        else:
+            player = GenericAirPlayPlayer(
+                provider=self,
+                player_id=player_id,
+                raop_discovery_info=raop_discovery_info,
+                airplay_discovery_info=airplay_discovery_info,
+                address=address,
+                display_name=display_name,
+                manufacturer=manufacturer,
+                model=model,
+                initial_volume=volume,
+            )
         await self.mass.players.register(player)
 
         # Set up Sendspin bridge for protocol linking (if Sendspin provider is available)
         await self._bridge_manager.evaluate_bridge(player)
+
+        # Track control players (Apple TVs) for dashboard eligibility
+        if isinstance(player, AirPlayControlPlayer):
+            self.dashboards.setup_player(player)
+
+    async def _is_own_airplay_receiver(
+        self, display_name: str, discovery_info: AsyncServiceInfo
+    ) -> bool:
+        """
+        Return whether a discovered service is an AirPlay Receiver instance of this server.
+
+        :param display_name: The advertised device name (mdns name without any id prefix).
+        :param discovery_info: The mdns service info that triggered the discovery.
+        """
+        from music_assistant.providers.airplay_receiver import (  # noqa: PLC0415
+            CONF_AIRPLAY_NAME,
+            DEFAULT_AIRPLAY_NAME,
+            airplay_receiver_port,
+        )
+
+        # Collect the advertised names and ports of all configured AirPlay Receiver
+        # instances from raw config storage: this works regardless of provider load
+        # order at boot, when the receiver instances may not be running yet.
+        receiver_names: set[str] = set()
+        receiver_ports: set[int] = set()
+        for instance_id, raw_conf in self.mass.config.get(CONF_PROVIDERS, {}).items():
+            if not isinstance(raw_conf, dict) or raw_conf.get("domain") != "airplay_receiver":
+                continue
+            if not raw_conf.get("enabled", True):
+                continue
+            values = raw_conf.get("values")
+            airplay_name = values.get(CONF_AIRPLAY_NAME) if isinstance(values, dict) else None
+            receiver_names.add(str(airplay_name) if airplay_name else DEFAULT_AIRPLAY_NAME)
+            receiver_ports.add(airplay_receiver_port(str(instance_id)))
+        # running instances are authoritative for the actual daemon ports
+        for prov in self.mass.get_provider_instances("airplay_receiver"):
+            if (port := getattr(prov, "airplay_port", None)) is not None:
+                receiver_ports.add(port)
+        if not receiver_names and not receiver_ports:
+            return False
+
+        # The advertisement must originate from this host. shairport-sync's embedded
+        # mDNS responder announces address records for every host interface and which
+        # one resolves (first) is undefined, so match the full advertised address set
+        # against all of this host's addresses instead of a single picked address.
+        advertised_ips: set[IPv4Address | IPv6Address] = set()
+        for value in discovery_info.parsed_addresses():
+            with suppress(ValueError):
+                advertised_ips.add(ip_address(value))
+        if not advertised_ips:
+            return False
+        if not any(advertised_ip.is_loopback for advertised_ip in advertised_ips):
+            host_ips: set[IPv4Address | IPv6Address] = set()
+            for value in await get_ip_addresses(include_ipv6=True):
+                with suppress(ValueError):
+                    host_ips.add(ip_address(value))
+            if advertised_ips.isdisjoint(host_ips):
+                return False
+
+        # Match by advertised name (robust even when the TXT record did not resolve).
+        if display_name in receiver_names:
+            return True
+        # Match by port, gated on the shairport-sync model so user-run AirPlay
+        # receivers on this machine (e.g. the macOS built-in receiver, which also
+        # listens on port 7000) remain usable as players when their name differs.
+        _, model = get_model_info(discovery_info)
+        return model == "ShairportSync" and discovery_info.port in receiver_ports
+
+    async def _handle_companion_service_state_change(
+        self,
+        name: str,
+        state_change: ServiceStateChange,
+        info: AsyncServiceInfo | None,
+    ) -> None:
+        """Associate a Companion service with its controlled AirPlay player."""
+        if state_change == ServiceStateChange.Removed:
+            # Keep the last endpoint while the device sleeps. Some devices can
+            # withdraw services from mDNS before Companion reports the asleep
+            # state, but the existing endpoint is still needed to wake them.
+            return
+        if info is None:
+            return
+
+        addresses = self._cache_control_service(self._companion_info_by_address, info)
+        player = self._find_airplay_player(addresses)
+        if isinstance(player, AirPlayControlPlayer):
+            await player.set_companion_discovery_info(info)
+
+    async def _handle_mrp_service_state_change(
+        self,
+        name: str,
+        state_change: ServiceStateChange,
+        info: AsyncServiceInfo | None,
+    ) -> None:
+        """Associate an MRP service with its controlled AirPlay player."""
+        if state_change == ServiceStateChange.Removed or info is None:
+            return
+        addresses = self._cache_control_service(self._mrp_info_by_address, info)
+        player = self._find_airplay_player(addresses)
+        if isinstance(player, AirPlayControlPlayer):
+            await player.set_mrp_discovery_info(info)
+
+    async def _get_related_discovery_info(
+        self,
+        service_type: str,
+        info_by_address: dict[str, AsyncServiceInfo],
+        player_addresses: set[str],
+        display_name: str,
+    ) -> AsyncServiceInfo | None:
+        """Return a related control service from cache or mDNS discovery."""
+        for address in player_addresses:
+            if discovery_info := info_by_address.get(address):
+                return discovery_info
+        if discovery_info := await self._find_cached_discovery_info(
+            service_type,
+            player_addresses,
+        ):
+            self._cache_control_service(info_by_address, discovery_info)
+            return discovery_info
+        discovery_info = await self.mass.discovery.async_find_mdns_service(
+            service_type,
+            display_name,
+        )
+        if discovery_info is None:
+            discovery_info = await self._find_cached_discovery_info(
+                service_type,
+                player_addresses,
+            )
+            if discovery_info is None:
+                return None
+        if player_addresses.isdisjoint(discovery_info.parsed_addresses()):
+            return None
+        self._cache_control_service(info_by_address, discovery_info)
+        return discovery_info
+
+    async def _find_cached_discovery_info(
+        self,
+        service_type: str,
+        player_addresses: set[str],
+    ) -> AsyncServiceInfo | None:
+        """Find a cached mDNS service sharing an address with the AirPlay endpoint."""
+        service_type_lower = service_type.lower()
+        for mdns_name in set(self.mass.discovery.aiozc.zeroconf.cache.cache):
+            if service_type_lower not in mdns_name or mdns_name == service_type_lower:
+                continue
+            discovery_info = AsyncServiceInfo(service_type, mdns_name)
+            if not await discovery_info.async_request(
+                self.mass.discovery.aiozc.zeroconf,
+                3000,
+            ):
+                continue
+            if not player_addresses.isdisjoint(discovery_info.parsed_addresses()):
+                return discovery_info
+        return None
+
+    def _find_airplay_player(self, addresses: set[str]) -> AirPlayPlayer | None:
+        """Return the AirPlay player matching any advertised address."""
+        return next(
+            (
+                candidate
+                for candidate in self.get_players()
+                if not addresses.isdisjoint(
+                    {
+                        candidate.address,
+                        *self._get_discovery_addresses(
+                            candidate.airplay_discovery_info,
+                            candidate.raop_discovery_info,
+                            candidate.mrp_discovery_info
+                            if isinstance(candidate, AirPlayControlPlayer)
+                            else None,
+                        ),
+                    }
+                )
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _cache_control_service(
+        info_by_address: dict[str, AsyncServiceInfo],
+        info: AsyncServiceInfo,
+    ) -> set[str]:
+        """Cache a control service by address and return its current addresses."""
+        addresses = set(info.parsed_addresses())
+        # Drop addresses this service no longer advertises (e.g. after a DHCP
+        # change), so a stale entry can never classify a future device that
+        # gets the old address assigned.
+        for stale_address in [
+            address
+            for address, cached in info_by_address.items()
+            if cached.name == info.name and address not in addresses
+        ]:
+            del info_by_address[stale_address]
+        for address in addresses:
+            info_by_address[address] = info
+        return addresses
+
+    @staticmethod
+    def _get_discovery_addresses(
+        *discovery_infos: AsyncServiceInfo | None,
+    ) -> set[str]:
+        """Return all IP addresses advertised by the given mDNS services."""
+        return {
+            address
+            for discovery_info in discovery_infos
+            if discovery_info is not None
+            for address in discovery_info.parsed_addresses()
+        }
+
+    def _migrate_sync_adjust(self) -> None:
+        """One-time reset of persisted sync_adjust values on this provider's players."""
+        # The unified cliairplay binary uses a different timing model than the old
+        # implementation, so offsets calibrated against it would now break sync
+        # instead of fixing it. Reset them once; a provider-level marker prevents
+        # wiping adjustments the user makes after the migration.
+        if self.mass.config.get_raw_provider_config_value(
+            self.instance_id, CONF_SYNC_ADJUST_RESET_MARKER, False
+        ):
+            return
+        for raw_conf in list(self.mass.config.get(CONF_PLAYERS, {}).values()):
+            if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
+                continue
+            if not (player_id := raw_conf.get("player_id")):
+                continue
+            stored = self.mass.config.get_raw_player_config_value(player_id, CONF_SYNC_ADJUST, 0)
+            if not stored:
+                continue
+            self.logger.warning(
+                "Resetting sync_adjust of %sms for player %s: the unified AirPlay engine "
+                "uses a different timing model, so corrections calibrated against the old "
+                "implementation no longer apply",
+                stored,
+                player_id,
+            )
+            self.mass.config.set_raw_player_config_value(player_id, CONF_SYNC_ADJUST, 0)
+        self.mass.config.set_raw_provider_config_value(
+            self.instance_id, CONF_SYNC_ADJUST_RESET_MARKER, True
+        )
+
+    def _migrate_protocol_preferences(self) -> None:
+        """Preserve explicit RAOP selections from the legacy protocol setting."""
+        if self.mass.config.get_raw_provider_config_value(
+            self.instance_id, CONF_PROTOCOL_MIGRATION_MARKER, False
+        ):
+            return
+        for raw_conf in list(self.mass.config.get(CONF_PLAYERS, {}).values()):
+            if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
+                continue
+            if not (player_id := raw_conf.get("player_id")):
+                continue
+            legacy_protocol = self.mass.config.get_raw_player_config_value(
+                player_id, CONF_LEGACY_AIRPLAY_PROTOCOL, 0
+            )
+            force_raop = self.mass.config.get_raw_player_config_value(
+                player_id, CONF_FORCE_RAOP, None
+            )
+            if legacy_protocol == StreamingProtocol.RAOP and force_raop is None:
+                self.mass.config.set_raw_player_config_value(player_id, CONF_FORCE_RAOP, True)
+                self.mass.config.set_raw_player_config_value(
+                    player_id, CONF_LEGACY_FORCE_RAOP, True
+                )
+        self.mass.config.set_raw_provider_config_value(
+            self.instance_id, CONF_PROTOCOL_MIGRATION_MARKER, True
+        )
+
+    async def _register_dacp_service(self) -> None:
+        """
+        Register the DACP ActiveRemote mDNS service, reclaiming a stale name if needed.
+
+        The service name is derived from the (persistent) server id, so it is identical
+        across every reload and restart. A previous registration that was not cleanly
+        torn down - a reload racing a slow initial load, or a leftover from a prior crash -
+        keeps the same name in the zeroconf cache and makes a plain register raise
+        NonUniqueNameException. In that case we broadcast a goodbye for the name to flush
+        the stale record, then register again.
+        """
+        aiozc = self.mass.discovery.aiozc
+        try:
+            await aiozc.async_register_service(self._dacp_info)
+            return
+        except NonUniqueNameException:
+            self.logger.debug(
+                "DACP service %s already advertised - reclaiming stale registration",
+                self._dacp_info.name,
+            )
+        await aiozc.async_unregister_service(self._dacp_info)
+        await asyncio.sleep(DACP_RECLAIM_DELAY)
+        await aiozc.async_register_service(self._dacp_info)
+
+    async def _start_ptp_daemon(self) -> None:
+        """Spawn the shared PTP clock daemon (cliairplay --ptp-daemon)."""
+        try:
+            cli_binary = await get_cli_binary()
+        except RuntimeError as err:
+            self.logger.warning(
+                "cliairplay binary unavailable (%s) - "
+                "PTP timing is degraded, AirPlay 2 streams fall back to NTP",
+                err,
+            )
+            return
+        # Advertise the same grandmaster identity as the per-stream sessions
+        # (which derive their PTP clock id from --dacp), so receivers see one
+        # consistent clock whether the daemon or an in-process engine serves it.
+        args = [cli_binary, "--ptp-daemon", "--dacp", self.dacp_id]
+        bind_ip = str(self.mass.streams.bind_ip)
+        if bind_ip not in ("0.0.0.0", "::", ""):
+            args += ["--if", bind_ip]
+        # The daemon runs quiet by default; only a verbose session turns on its
+        # per-packet PTP tracing (Announce/Sync/Delay_Req), so a normal debug
+        # session does not flood the log with timing chatter.
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            args += ["--debug", "10"]
+        daemon = AsyncProcess(args, stdout=True, stderr=True, name="cliairplay-ptp-daemon")
+        # (Re)gate readiness for this daemon instance: not ready until a reader
+        # sees the "daemon up" line (a restart clears any previous readiness).
+        if self._ptp_daemon_ready is None:
+            self._ptp_daemon_ready = asyncio.Event()
+        else:
+            self._ptp_daemon_ready.clear()
+        await daemon.start()
+        self._ptp_daemon = daemon
+        self._ptp_daemon_started = time.monotonic()
+        daemon.attach_stderr_reader(self.mass.create_task(self._ptp_daemon_stderr_reader(daemon)))
+        self._ptp_daemon_stdout_task = self.mass.create_task(self._ptp_daemon_stdout_reader(daemon))
+        self.mass.create_task(self._ptp_daemon_monitor(daemon))
+
+    async def _ptp_daemon_stderr_reader(self, daemon: AsyncProcess) -> None:
+        """Forward PTP daemon stderr output to the debug log."""
+        async for line in daemon.iter_stderr():
+            self._handle_ptp_daemon_line(line)
+
+    async def _ptp_daemon_stdout_reader(self, daemon: AsyncProcess) -> None:
+        """Drain (and debug-log) the PTP daemon stdout pipe."""
+        buffer = b""
+        while chunk := await daemon.read(1024):
+            buffer += chunk
+            while b"\n" in buffer:
+                raw_line, buffer = buffer.split(b"\n", 1)
+                if line := raw_line.decode("utf-8", errors="ignore").strip():
+                    self._handle_ptp_daemon_line(line)
+
+    def _handle_ptp_daemon_line(self, line: str) -> None:
+        """Log a PTP daemon output line and detect its readiness signal."""
+        # Routine daemon output is verbose-only so it never floods a user's log
+        # (the per-packet timing trace only runs at verbose in the first place).
+        # The daemon tags no log levels, so a genuine problem is recognised by
+        # keyword and promoted to a warning that stays visible at normal levels.
+        lowered = line.lower()
+        if any(marker in lowered for marker in ("error", "cannot", "failed", "unable")):
+            self.logger.warning("PTP daemon: %s", line)
+        else:
+            self.logger.log(VERBOSE_LOG_LEVEL, "PTP daemon: %s", line)
+        # The readiness marker is matched on either pipe: the daemon's diagnostic
+        # output is not contractually stdout-vs-stderr, so both readers feed this
+        # handler and setting the event is idempotent.
+        if (
+            (event := self._ptp_daemon_ready) is not None
+            and not event.is_set()
+            and PTP_DAEMON_READY_MARKER in line
+        ):
+            self.logger.debug("Shared PTP clock daemon reported ready")
+            event.set()
+
+    async def _ptp_daemon_monitor(self, daemon: AsyncProcess) -> None:
+        """Watch the PTP daemon process and restart it once if it crashes."""
+        returncode = await daemon.wait()
+        if self._ptp_daemon_stop_requested or self._ptp_daemon is not daemon:
+            return
+        self._ptp_daemon = None
+        # Crash detected: drop readiness immediately so a session starting during
+        # the restart window degrades consistently instead of attaching to a dead
+        # clock (a restart re-sets it once the new daemon reports ready).
+        if self._ptp_daemon_ready is not None:
+            self._ptp_daemon_ready.clear()
+        runtime = time.monotonic() - self._ptp_daemon_started
+        if runtime < 5:
+            # immediate exit: UDP 319/320 already taken or missing privileges
+            # (root or CAP_NET_BIND_SERVICE) - streams fall back to their
+            # in-process timing engine, so playback keeps working.
+            self.logger.warning(
+                "PTP clock daemon could not start (exit code %s) - PTP timing is degraded. "
+                "Multi-room sync of native AirPlay 2 players may drift; ensure UDP ports "
+                "319/320 are free and run the server as root or grant cliairplay "
+                "CAP_NET_BIND_SERVICE.",
+                returncode,
+            )
+            return
+        if not self._ptp_daemon_restarted:
+            self._ptp_daemon_restarted = True
+            self.logger.warning(
+                "PTP clock daemon stopped unexpectedly (exit code %s) - restarting", returncode
+            )
+            await self._start_ptp_daemon()
+            return
+        self.logger.warning(
+            "PTP clock daemon stopped again (exit code %s) - giving up. "
+            "PTP timing is degraded until the provider is reloaded.",
+            returncode,
+        )
 
     async def _handle_dacp_request(  # noqa: PLR0915
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -329,16 +949,13 @@ class AirPlayProvider(PlayerProvider):
                 or player.device_info.manufacturer.lower() == "apple"
             )
             if path == "/ctrl-int/1/nextitem":
-                self.mass.create_task(self.mass.players.cmd_next_track(player_id))
+                self.handle_remote_command(player, AirPlayRemoteCommand.NEXT)
             elif path == "/ctrl-int/1/previtem":
-                self.mass.create_task(self.mass.players.cmd_previous_track(player_id))
+                self.handle_remote_command(player, AirPlayRemoteCommand.PREVIOUS)
             elif path == "/ctrl-int/1/play":
-                # sometimes this request is sent by a device as confirmation of a play command
-                # we ignore this if the player is already playing
-                if player.playback_state != PlaybackState.PLAYING:
-                    self.mass.create_task(self.mass.players.cmd_play(player_id))
+                self.handle_remote_command(player, AirPlayRemoteCommand.PLAY)
             elif path == "/ctrl-int/1/playpause":
-                self.mass.create_task(self.mass.players.cmd_play_pause(player_id))
+                self.handle_remote_command(player, AirPlayRemoteCommand.PLAY_PAUSE)
             elif path == "/ctrl-int/1/stop":
                 self.mass.create_task(self.mass.players.cmd_stop(player_id))
             elif path == "/ctrl-int/1/volumeup":
@@ -353,8 +970,7 @@ class AirPlayProvider(PlayerProvider):
                     active_queue.queue_id, not active_queue.shuffle_enabled
                 )
             elif path == "/ctrl-int/1/pause":
-                if player.state.playback_state == PlaybackState.PLAYING:
-                    self.mass.create_task(self.mass.players.cmd_pause(player_id))
+                self.handle_remote_command(player, AirPlayRemoteCommand.PAUSE)
             elif path == "/ctrl-int/1/discrete-pause":
                 # Some devices send discrete-pause right before device-prevent-playback=1
                 # when switching to another source. We debounce the pause to avoid

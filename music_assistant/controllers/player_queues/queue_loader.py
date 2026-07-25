@@ -493,6 +493,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         radio_mode: bool = False,
         start_item: PlayableMediaItemType | str | None = None,
         sort_by: str | None = None,
+        start_from_beginning: bool = False,
     ) -> None:
         """Handle play media without acquiring the queue lock."""
         # cancel any pending play_index calls for this queue to prevent conflicts
@@ -659,6 +660,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         userid=queue_data.userid,
                         queue_id=queue_id,
                         sort_by=sort_by,
+                        start_from_beginning=start_from_beginning,
                     )
 
             except MusicAssistantError as err:

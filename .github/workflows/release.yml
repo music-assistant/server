@@ -39,8 +39,8 @@ on:
 
 env:
   BASE_IMAGE_VERSION_STABLE: "1.5.4"
-  BASE_IMAGE_VERSION_BETA: "1.5.4"
-  BASE_IMAGE_VERSION_NIGHTLY: "1.5.4"
+  BASE_IMAGE_VERSION_BETA: "1.6.0"
+  BASE_IMAGE_VERSION_NIGHTLY: "1.6.0"
 
 permissions:
   contents: read
@@ -145,7 +145,7 @@ jobs:
           echo "✅ Version $VERSION is valid for $CHANNEL channel"
 
       - name: Set up Python
-        uses: actions/setup-python@v6.3.0
+        uses: actions/setup-python@v7.0.0
         with:
           python-version-file: ".python-version"
           check-latest: true
@@ -349,7 +349,7 @@ jobs:
           path: dist/
 
       - name: Log in to the GitHub container registry
-        uses: docker/login-action@v4.4.0
+        uses: docker/login-action@v4.5.1
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}

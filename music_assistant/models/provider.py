@@ -11,7 +11,7 @@ from music_assistant_models.config_entries import ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, EventType
 from music_assistant_models.errors import UnsupportedFeaturedException
 
-from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
+from music_assistant.constants import CONF_LOG_LEVEL, CONF_PROVIDERS, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
     from async_upnp_client.utils import CaseInsensitiveDict
@@ -275,6 +275,49 @@ class Provider:
             assert isinstance(value, str)
             return self.mass.config.decrypt_string(value)
         return value
+
+    def get_setup_value(self, key: str, default: ConfigValueType = None) -> ConfigValueType:
+        """
+        Return a value collected by this provider's setup flow (from setup_data).
+
+        Encrypted (string) values are decrypted transparently. Falls back to the
+        legacy config values for installs that were configured before setup flows
+        existed, so no data migration is needed.
+
+        :param key: The setup data key to retrieve.
+        :param default: Value to return when the key is not present anywhere.
+        """
+        setup_data = self.mass.config.get(f"{CONF_PROVIDERS}/{self.instance_id}/setup_data") or {}
+        if key in setup_data:
+            value = setup_data[key]
+            return self.mass.config.decrypt_string(value) if isinstance(value, str) else value
+        # read-through to the legacy (pre-setup-flow) config values, no migration
+        value = self.mass.config.get_raw_provider_config_value(self.instance_id, key)
+        if value is None:
+            return self.get_config_value(key, default)
+        return self.mass.config.decrypt_string(value) if isinstance(value, str) else value
+
+    def _update_setup_data(self, key: str, value: ConfigValueType, immediate: bool = True) -> None:
+        """
+        Update a single setup_data value for this provider (e.g. a rotated auth token).
+
+        :param key: The setup data key to update.
+        :param value: The new value; strings are encrypted at rest.
+        :param immediate: Persist to disk right away (the default) instead of on the
+            debounced save timer, so a critical value survives a crash.
+        """
+        if not self.mass.config.get(f"{CONF_PROVIDERS}/{self.instance_id}"):
+            # only allow setting setup data if the main config entry exists
+            msg = f"Invalid provider instance: {self.instance_id}"
+            raise KeyError(msg)
+        stored_value = self.mass.config.encrypt_string(value) if isinstance(value, str) else value
+        self.mass.config.set(
+            f"{CONF_PROVIDERS}/{self.instance_id}/setup_data/{key}",
+            stored_value,
+            immediate=immediate,
+        )
+        # keep the in-memory config copy in sync with storage
+        self.config.setup_data[key] = stored_value
 
     def _update_config_value(
         self, key: str, value: ConfigValueType, encrypted: bool = False, immediate: bool = False

@@ -58,7 +58,7 @@ class HomeAssistantPlayerProvider(PlayerProvider):
             x["entity_id"]: x for x in await self.hass_prov.hass.get_entity_registry()
         }
         # setup players from hass entities
-        async for state in get_hass_media_players(self.hass_prov):
+        async for state, _ in get_hass_media_players(self.hass_prov):
             if state["entity_id"] not in player_ids:
                 continue
             await self._setup_player(state, entity_registry, device_registry)
@@ -183,7 +183,7 @@ class HomeAssistantPlayerProvider(PlayerProvider):
         entity_registry = {
             x["entity_id"]: x for x in await self.hass_prov.hass.get_entity_registry()
         }
-        async for state in get_hass_media_players(self.hass_prov):
+        async for state, _ in get_hass_media_players(self.hass_prov):
             if state["entity_id"] != entity_id:
                 continue
             await self._setup_player(state, entity_registry, device_registry)

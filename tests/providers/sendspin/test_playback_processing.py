@@ -20,10 +20,10 @@ if TYPE_CHECKING:
     import pytest
 
 
-def test_limiter_is_not_reported_when_shared_channel_skips_it(
+def test_empty_plan_does_not_require_transform(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A limiter-only plan reflects that the shared Sendspin channel bypasses it."""
+    """A plan without filters keeps the member on the shared Sendspin channel."""
     player = MagicMock(player_id="leader")
     player.mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
     player.mass.config.get_raw_player_config_value.return_value = "stereo"
@@ -35,11 +35,11 @@ def test_limiter_is_not_reported_when_shared_channel_skips_it(
     )
     output_details = AudioOutputDetails(
         player_ids=["member"],
-        dsp=AudioDSPDetails(output_limiter=True),
+        dsp=AudioDSPDetails(),
         output_format=pcm_format,
     )
     output_plan = AudioOutputPlan(
-        filter_params=["alimiter=limit=-2dB:level=false:asc=true"],
+        filter_params=[],
         output_details=output_details,
         input_format=pcm_format,
     )
@@ -53,7 +53,6 @@ def test_limiter_is_not_reported_when_shared_channel_skips_it(
     config = session._read_pipeline_config("member")
 
     assert not config.requires_transform
-    assert not output_details.dsp.output_limiter
     player.mass.streams.audio_processing.update_output.assert_called_once_with(
         "member",
         output_plan,
