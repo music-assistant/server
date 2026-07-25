@@ -16,6 +16,10 @@ on:
           - beta
           - rc
           - nightly
+      source_sha:
+        description: "Exact full commit SHA for draft/published recovery; leave empty to resolve the current channel branch head"
+        required: false
+        type: string
       important_notes:
         description: "Important notes (breaking changes, critical info, etc.)"
         required: false
