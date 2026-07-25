@@ -977,7 +977,8 @@ def _parse_id3_tags(tags: dict[str, Any]) -> dict[str, Any]:
     if (frame := tags.get("TXXX:MusicBrainz Release Group Id")) and frame.text:
         result["musicbrainzreleasegroupid"] = frame.text[0]
     if frame := tags.get("UFID:http://musicbrainz.org"):
-        result["musicbrainzrecordingid"] = frame.data.decode()
+        # Strip NULs and whitespace from MusicBrainz UFID data (support #5906).
+        result["musicbrainzrecordingid"] = frame.data.decode().replace("\x00", "").strip()
     if (frame := tags.get("TXXX:MusicBrainz Track Id")) and frame.text:
         result["musicbrainztrackid"] = frame.text[0]
 

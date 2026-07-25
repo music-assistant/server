@@ -8,6 +8,7 @@ from unittest.mock import MagicMock
 import mutagen
 import pytest
 from music_assistant_models.errors import InvalidDataError
+from mutagen.id3 import UFID
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers import tags
@@ -166,6 +167,26 @@ def test_parse_metadata_from_apev2tags() -> None:
     assert result.get("artistsort") == ["MyArtist Sort"]
     assert result.get("albumsort") == "MyAlbum Sort"
     assert result.get("albumartistsort") == ["MyAlbumArtist Sort"]
+
+
+def test_id3_musicbrainz_ufid_strips_trailing_null() -> None:
+    """
+    Strip a trailing NUL terminator from the MusicBrainz UFID frame data.
+
+    Some taggers (e.g. Picard) append a NUL to the UFID data; without stripping
+    it the recording MBID is malformed and breaks import and MusicBrainz
+    lookups.
+
+    See https://github.com/music-assistant/support/issues/5906
+    """
+    ufid = UFID(  # type: ignore[no-untyped-call]
+        owner="http://musicbrainz.org",
+        data=b"1e74cd4c-cfa7-4bdb-99da-41869f5f1171\x00",
+    )
+
+    result = _parse_id3_tags({"UFID:http://musicbrainz.org": ufid})
+
+    assert result["musicbrainzrecordingid"] == "1e74cd4c-cfa7-4bdb-99da-41869f5f1171"
 
 
 async def test_parse_metadata_from_flac_with_multiple_artist_fields() -> None:
