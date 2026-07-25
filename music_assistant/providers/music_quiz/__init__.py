@@ -1002,8 +1002,7 @@ class MusicQuizPlugin(PluginProvider):
                 task_id=self._advance_timer_id,
             )
             current_round.auto_advance_at = auto_advance_at
-        # a reveal held past the track's natural end would let the player glide into
-        # the next round's (pre-queued) track, so stop at the track boundary instead
+        # a reveal held past the track's end would glide into the next round's queued track
         if (
             quiz_type.plays_track_before_answering
             and not quiz_type.plays_track_on_reveal
@@ -1407,8 +1406,7 @@ class MusicQuizPlugin(PluginProvider):
     async def _enqueue_track(self, track_uri: str) -> None:
         """Append a track to the game's playback session queue without starting it."""
         with _system_auth_context():
-            # only warm an existing session; creating one here would start a
-            # playback target for a round that may never be reached
+            # don't create a session for a round that may never be reached
             session = self._playback_session
             if session is None:
                 return
@@ -1453,20 +1451,12 @@ class MusicQuizPlugin(PluginProvider):
                 self.logger.debug("Could not resolve next Music Quiz track: %s", err)
 
     async def _advance_to_queued_track(self, track_uri: str) -> bool:
-        """
-        Start a track that is already queued (and stream-resolved) for this game.
-
-        :param track_uri: URI of the round's track.
-        :return: True when playback started, False when the caller must fall back
-            to the regular play path.
-        """
+        """Start an already-queued track; False when the caller must fall back."""
         with _system_auth_context():
             session = self._playback_session
             if session is None:
                 return False
-            # match the round's own track explicitly: the queue's next-item helpers
-            # silently skip unplayable items, which would desync the played track
-            # from the answer this round is scored against
+            # match by uri: the queue's next-item helpers silently skip unplayable items
             queued_item = next(
                 (
                     item

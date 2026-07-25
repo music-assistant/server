@@ -1354,7 +1354,7 @@ async def test_guest_ready_advances_and_prefetches_in_system_context() -> None:
             impersonated_user.reset(impersonated_user_token)
             current_user.reset(current_user_token)
 
-    assert playback_contexts and all(context is None for context in playback_contexts)  # noqa: PT018
+    assert set(playback_contexts) == {None}
     assert (2, None) in prepared_contexts
     assert game.current_round_index == 1
     assert len(game.rounds) == 2
