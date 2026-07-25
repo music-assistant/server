@@ -956,7 +956,7 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           case "$RELEASE_STATE" in
-            draft)
+            new|draft)
               RELEASE_ID="$DRAFT_RELEASE_ID"
               ;;
             published)

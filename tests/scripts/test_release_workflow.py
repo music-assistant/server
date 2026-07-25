@@ -398,6 +398,7 @@ def test_release_workflow_publication_state_uses_release_ids() -> None:
     assert 'gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION"' not in publication_step
     assert 'gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID"' in publication_step
     assert 'case "$RELEASE_STATE" in' in publication_step
+    assert "new|draft)" in publication_step
     assert "Missing release id for $RELEASE_STATE release $VERSION" in publication_step
     assert "tag_name" in publication_step
     assert "Release $VERSION resolves to tag $live_tag_name" in publication_step
