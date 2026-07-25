@@ -6,7 +6,7 @@
   "description": "Create dynamic or fixed playlists based on rules like genres, artists, albums, favorites and similar tracks.",
   "codeowners": ["@dmoo500"],
   "requirements": [],
-  "documentation": "",
+  "documentation": "https://music-assistant.io/plugins/smart_playlist/",
   "multi_instance": false,
   "builtin": false,
   "icon": "playlist-star"
