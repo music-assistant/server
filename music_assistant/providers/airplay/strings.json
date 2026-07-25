@@ -87,5 +87,8 @@
   },
   "manifest": {
     "description": "Stream to AirPlay-enabled devices on your local network."
+  },
+  "errors": {
+    "show_dashboard_failed": "Failed to show the dashboard on {0}."
   }
 }

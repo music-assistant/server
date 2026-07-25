@@ -1,15 +1,21 @@
 """Unit tests for the AirPlay stream CLI argument assembly."""
 
 import asyncio
+import errno
 import logging
+import os
+import threading
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.enums import ContentType, PlaybackState
+from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter, open_named_pipe_writer
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
     CONF_ENCRYPTION,
@@ -75,7 +81,7 @@ async def _build_args(player: MagicMock) -> list[str]:
             return_value="192.168.1.5",
         ),
     ):
-        return await stream._build_cli_args(START_UNIX_MS)
+        return await stream._build_cli_args()
 
 
 def _arg_value(args: list[str], flag: str) -> Any:
@@ -90,7 +96,7 @@ async def test_cli_args_default_auto() -> None:
     args = await _build_args(player)
 
     assert _arg_value(args, "--protocol") == "auto"
-    assert _arg_value(args, "--start-unix-ms") == str(START_UNIX_MS)
+    assert "--start-unix-ms" not in args
     # legacy timing args are gone
     assert "--ntpstart" not in args
     assert "--wait" not in args
@@ -117,8 +123,10 @@ async def test_cli_args_default_auto() -> None:
     # networking
     assert _arg_value(args, "--if") == "192.168.1.5"
     assert _arg_value(args, "--publish-ip") == "192.168.1.99"
-    # positional args: device address + stdin
-    assert args[-2:] == ["192.168.1.50", "-"]
+    # the target is the only positional argument; PREPARE selects stdin
+    assert args[-1] == "192.168.1.50"
+    assert "-" not in args
+    assert "--cmdpipe" in args
 
 
 @pytest.mark.asyncio
@@ -183,7 +191,7 @@ async def test_cli_args_hires_pcm_format() -> None:
             return_value="192.168.1.5",
         ),
     ):
-        args = await stream._build_cli_args(START_UNIX_MS)
+        args = await stream._build_cli_args()
 
     assert _arg_value(args, "--samplerate") == "48000"
     assert _arg_value(args, "--bitdepth") == "24"
@@ -193,7 +201,7 @@ async def test_cli_args_hires_pcm_format() -> None:
 
 @pytest.mark.asyncio
 async def test_cli_args_raop_only_device() -> None:
-    """A device without an _airplay._tcp service targets the RAOP service, no --txt."""
+    """True legacy RAOP uses the command pipe and has no positional audio source."""
     player = _make_player()
     player.airplay_discovery_info = None
     player.protocol = StreamingProtocol.RAOP
@@ -204,6 +212,9 @@ async def test_cli_args_raop_only_device() -> None:
     assert "--txt" not in args
     assert "--name" not in args
     assert "--encrypt" in args
+    assert "--cmdpipe" in args
+    assert args[-1] == "192.168.1.50"
+    assert "-" not in args
 
 
 @pytest.mark.asyncio
@@ -317,7 +328,185 @@ def test_command_pipe_paths_are_unique_per_stream() -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_queues_text_metadata_before_connection() -> None:
+async def test_command_pipe_write_returns_false_without_reader(tmp_path: Path) -> None:
+    """A command pipe write reports when no reader can receive the command."""
+    pipe_path = tmp_path / "commands"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+
+    with patch("music_assistant.helpers.named_pipe.time.sleep"):
+        assert await writer.write(b"ACTION=STANDBY\n") is False
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_write_returns_true_for_complete_write() -> None:
+    """A complete command pipe write reports successful delivery."""
+    data = b"ACTION=STANDBY\n"
+    writer = AsyncNamedPipeWriter("/tmp/commands")  # noqa: S108
+    writer._write_fd = 42
+
+    with patch("music_assistant.helpers.named_pipe.os.write", return_value=len(data)) as write:
+        assert await writer.write(data) is True
+
+    write.assert_called_once_with(42, data)
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_write_completes_short_write() -> None:
+    """A short command pipe write continues with the remaining data."""
+    data = b"ACTION=STANDBY\n"
+    writer = AsyncNamedPipeWriter("/tmp/commands")  # noqa: S108
+    writer._write_fd = 42
+
+    with patch(
+        "music_assistant.helpers.named_pipe.os.write",
+        side_effect=[5, len(data) - 5],
+    ) as write:
+        assert await writer.write(data) is True
+
+    assert write.call_args_list == [call(42, memoryview(data)), call(42, memoryview(data)[5:])]
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_write_returns_false_and_resets_fd_on_epipe() -> None:
+    """A closed command pipe reader resets the writer for a later retry."""
+    writer = AsyncNamedPipeWriter("/tmp/commands")  # noqa: S108
+    writer._write_fd = 42
+
+    with (
+        patch(
+            "music_assistant.helpers.named_pipe.os.write",
+            side_effect=OSError(errno.EPIPE, "reader closed"),
+        ),
+        patch("music_assistant.helpers.named_pipe.os.close") as close_fd,
+    ):
+        assert await writer.write(b"ACTION=STANDBY\n") is False
+
+    close_fd.assert_called_once_with(42)
+    assert writer._write_fd is None
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_write_resets_fd_when_epipe_follows_partial_write() -> None:
+    """An EPIPE after a short write reports failure and resets the writer."""
+    data = b"ACTION=STANDBY\n"
+    writer = AsyncNamedPipeWriter("/tmp/commands")  # noqa: S108
+    writer._write_fd = 42
+
+    with (
+        patch(
+            "music_assistant.helpers.named_pipe.os.write",
+            side_effect=[5, OSError(errno.EPIPE, "reader closed")],
+        ) as write,
+        patch("music_assistant.helpers.named_pipe.os.close") as close_fd,
+    ):
+        assert await writer.write(data) is False
+
+    assert write.call_args_list == [call(42, memoryview(data)), call(42, memoryview(data)[5:])]
+    close_fd.assert_called_once_with(42)
+    assert writer._write_fd is None
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_writes_are_serialized() -> None:
+    """Concurrent command writes cannot interleave after a short write."""
+    writer = AsyncNamedPipeWriter("/tmp/commands")  # noqa: S108
+    writer._write_fd = 42
+    written_chunks: list[bytes] = []
+    first_chunk_written = threading.Event()
+    release_first_write = threading.Event()
+
+    def write_chunk(_fd: int, data: memoryview) -> int:
+        chunk = bytes(data)
+        if not written_chunks:
+            written_chunks.append(chunk[:2])
+            first_chunk_written.set()
+            assert release_first_write.wait(timeout=1)
+            return 2
+        written_chunks.append(chunk)
+        return len(chunk)
+
+    with patch("music_assistant.helpers.named_pipe.os.write", side_effect=write_chunk):
+        first_write = asyncio.create_task(writer.write(b"FIRST\n"))
+        assert await asyncio.to_thread(first_chunk_written.wait, 1)
+        second_write = asyncio.create_task(writer.write(b"SECOND\n"))
+        await asyncio.sleep(0)
+        release_first_write.set()
+        assert all(await asyncio.gather(first_write, second_write))
+
+    assert b"".join(written_chunks) == b"FIRST\nSECOND\n"
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_write_propagates_non_epipe_errors() -> None:
+    """An unexpected command pipe write error remains visible to the caller."""
+    writer = AsyncNamedPipeWriter("/tmp/commands")  # noqa: S108
+    writer._write_fd = 42
+
+    with (
+        patch(
+            "music_assistant.helpers.named_pipe.os.write",
+            side_effect=OSError(errno.EBADF, "bad file descriptor"),
+        ),
+        pytest.raises(OSError, match="bad file descriptor"),
+    ):
+        await writer.write(b"ACTION=STANDBY\n")
+
+
+@pytest.mark.asyncio
+async def test_cli_command_updates_timestamp_after_successful_delivery() -> None:
+    """A delivered command updates the player's last command timestamp."""
+    player = _make_player()
+    player.last_command_sent = 10.0
+    stream = AirPlayStream(player)
+    stream._cli_proc = MagicMock(closed=False)
+
+    with (
+        patch.object(stream.commands_pipe, "write", new=AsyncMock(return_value=True)),
+        patch("music_assistant.providers.airplay.stream.time.time", return_value=20.0),
+    ):
+        assert await stream.send_cli_command("ACTION=STANDBY") is True
+
+    assert player.last_command_sent == 20.0
+
+
+@pytest.mark.asyncio
+async def test_cli_command_preserves_timestamp_when_delivery_fails() -> None:
+    """A dropped command leaves the player's last command timestamp unchanged."""
+    player = _make_player()
+    player.last_command_sent = 10.0
+    stream = AirPlayStream(player)
+    stream._cli_proc = MagicMock(closed=False)
+
+    with patch.object(stream.commands_pipe, "write", new=AsyncMock(return_value=False)):
+        assert await stream.send_cli_command("ACTION=STANDBY") is False
+
+    assert player.last_command_sent == 10.0
+
+
+@pytest.mark.asyncio
+async def test_cli_command_preserves_timestamp_when_delivery_raises() -> None:
+    """A command write error leaves the player's last command timestamp unchanged."""
+    player = _make_player()
+    player.last_command_sent = 10.0
+    stream = AirPlayStream(player)
+    stream._cli_proc = MagicMock(closed=False)
+
+    with (
+        patch.object(
+            stream.commands_pipe,
+            "write",
+            new=AsyncMock(side_effect=OSError("command pipe failed")),
+        ),
+        pytest.raises(OSError, match="command pipe failed"),
+    ):
+        await stream.send_cli_command("ACTION=STANDBY")
+
+    assert player.last_command_sent == 10.0
+
+
+@pytest.mark.asyncio
+async def test_connect_queues_text_metadata_before_connection() -> None:
     """Text metadata is queued as soon as cliairplay starts."""
     player = _make_player()
     stream = AirPlayStream(player)
@@ -353,14 +542,14 @@ async def test_start_queues_text_metadata_before_connection() -> None:
         patch.object(stream.commands_pipe, "create", side_effect=create_pipe),
         patch.object(stream, "send_metadata", side_effect=send_metadata) as send_metadata_mock,
     ):
-        await stream.start(START_UNIX_MS)
+        await stream.connect()
 
     assert operation_order == ["pipe", "process", "metadata"]
     send_metadata_mock.assert_awaited_once_with(12, metadata, send_artwork=False)
 
 
 @pytest.mark.asyncio
-async def test_start_failure_cleans_up_process_and_pipe() -> None:
+async def test_connect_failure_cleans_up_process_and_pipe() -> None:
     """A metadata write failure cannot leave a live cliairplay process or FIFO."""
     player = _make_player()
     stream = AirPlayStream(player)
@@ -393,12 +582,264 @@ async def test_start_failure_cleans_up_process_and_pipe() -> None:
         ),
         pytest.raises(OSError, match="metadata write failed"),
     ):
-        await stream.start(START_UNIX_MS)
+        await stream.connect()
 
     process.kill.assert_awaited_once()
     remove_pipe.assert_awaited_once()
     assert stream._cli_proc is None
     assert stream._cleanup_complete is True
+
+
+@pytest.mark.asyncio
+async def test_start_sends_command_and_stamps_position() -> None:
+    """START is delivered over the command pipe and stamps the media position."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command:
+        await stream.start(START_UNIX_MS, 12_000)
+
+    write_command.assert_awaited_once_with(f"START_UNIX_MS={START_UNIX_MS}\nACTION=START")
+    assert stream._start_position == 12.0
+    player.set_state_from_stream.assert_called_once_with(elapsed_time=12.0, stream=stream)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "complete_before_start",
+    [True, False],
+    ids=["delivered", "rendering"],
+)
+async def test_start_repushes_transition_artwork(complete_before_start: bool) -> None:
+    """START re-sends artwork prepared before or during a track transition."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+    metadata = MagicMock(
+        corrected_elapsed_time=0,
+        title="New track",
+        artist="Artist",
+        album="Album",
+        duration=180,
+        image_url="new-image",
+    )
+    stream.session = MagicMock(media=metadata)
+    render_started = asyncio.Event()
+    release_render = asyncio.Event()
+    metadata_tasks: list[asyncio.Task[Any]] = []
+    render_count = 0
+
+    def create_task(target: Any, **_kwargs: Any) -> asyncio.Task[Any]:
+        task = asyncio.create_task(target())
+        metadata_tasks.append(task)
+        return task
+
+    async def prepare_artwork(_image_url: str, _generation: int) -> str:
+        nonlocal render_count
+        render_count += 1
+        if render_count == 1:
+            render_started.set()
+            if not complete_before_start:
+                await release_render.wait()
+            return "/cache/pretransition.jpg"
+        return "/cache/posttransition.jpg"
+
+    player.provider.mass.create_task.side_effect = create_task
+    with (
+        patch.object(
+            stream,
+            "_write_cli_command",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as write_command,
+        patch.object(
+            stream,
+            "_prepare_artwork",
+            new_callable=AsyncMock,
+            side_effect=prepare_artwork,
+        ),
+    ):
+        pretransition_task = asyncio.create_task(stream.send_metadata(None, metadata))
+        await render_started.wait()
+        if complete_before_start:
+            await pretransition_task
+        await stream.start(START_UNIX_MS, 0)
+        await asyncio.gather(*metadata_tasks)
+        release_render.set()
+        await pretransition_task
+
+    commands = [args.args[0] for args in write_command.await_args_list]
+    assert commands[-2:] == [
+        f"START_UNIX_MS={START_UNIX_MS}\nACTION=START",
+        "ARTWORK=/cache/posttransition.jpg",
+    ]
+    assert ("ARTWORK=/cache/pretransition.jpg" in commands) is complete_before_start
+    assert stream._metadata_generation == 2
+    assert stream._metadata_checksum == "New track|Artist|Album|180|new-image"
+
+
+@pytest.mark.asyncio
+async def test_start_requires_connected_process() -> None:
+    """START is rejected without a connected cliairplay process."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    # not connected: _connected event never set
+
+    with (
+        patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command,
+        pytest.raises(RuntimeError, match="without a connected cliairplay process"),
+    ):
+        await stream.start(START_UNIX_MS, 0)
+
+    write_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_flush_sends_command_and_awaits_ack() -> None:
+    """FLUSH is delivered and resolves once the binary reports it flushed."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with patch.object(
+        stream, "_write_cli_command", new_callable=AsyncMock, return_value=True
+    ) as write_command:
+        flush_task = asyncio.create_task(stream.flush())
+        await asyncio.sleep(0)
+        assert stream._handle_status_line("[STATUS] flushed") is False
+        assert await flush_task is True
+
+    write_command.assert_awaited_once_with("ACTION=FLUSH")
+
+
+@pytest.mark.asyncio
+async def test_flush_times_out_without_ack() -> None:
+    """FLUSH returns False when the binary never acknowledges it."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
+        assert await stream.flush(timeout=0) is False
+
+
+@pytest.mark.asyncio
+async def test_flush_returns_false_when_command_not_delivered() -> None:
+    """FLUSH reports failure when the command cannot be delivered."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=False):
+        assert await stream.flush() is False
+
+
+@pytest.mark.asyncio
+async def test_start_raises_when_command_not_delivered() -> None:
+    """A dropped START surfaces as an error so the caller can fall back cold."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with (
+        patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=False),
+        pytest.raises(PlayerCommandFailed, match="Could not deliver START"),
+    ):
+        await stream.start(1_750_000_000_000, 0)
+
+
+@pytest.mark.asyncio
+async def test_flush_returns_false_when_not_connected() -> None:
+    """FLUSH is a no-op returning False before the device connects."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    # not connected
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command:
+        assert await stream.flush() is False
+
+    write_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_named_pipe_writer_open_is_bounded_without_worker_thread() -> None:
+    """A missing FIFO reader times out without stranding a blocking worker thread."""
+    open_error = OSError(errno.ENXIO, "no reader")
+    with (
+        patch(
+            "music_assistant.helpers.named_pipe.os.open",
+            side_effect=open_error,
+        ),
+        patch(
+            "music_assistant.helpers.named_pipe.asyncio.to_thread",
+            new_callable=AsyncMock,
+        ) as to_thread,
+        pytest.raises(TimeoutError, match="Timed out opening named pipe writer"),
+    ):
+        await open_named_pipe_writer("/tmp/generation.pcm", timeout=0)  # noqa: S108
+
+    to_thread.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_named_pipe_writer_open_cancellation_has_no_fd_to_leak() -> None:
+    """Cancellation while waiting for a reader leaves no worker or descriptor behind."""
+    with (
+        patch(
+            "music_assistant.helpers.named_pipe.os.open",
+            side_effect=OSError(errno.ENXIO, "no reader"),
+        ),
+        patch("music_assistant.helpers.named_pipe.os.close") as close_fd,
+    ):
+        open_task = asyncio.create_task(
+            open_named_pipe_writer("/tmp/generation.pcm", timeout=10)  # noqa: S108
+        )
+        await asyncio.sleep(0)
+        open_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await open_task
+
+    close_fd.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_named_pipe_writer_open_restores_blocking_mode() -> None:
+    """The descriptor inherited by ffmpeg is switched out of nonblocking mode."""
+    with (
+        patch("music_assistant.helpers.named_pipe.os.open", return_value=42),
+        patch("music_assistant.helpers.named_pipe.os.set_blocking") as set_blocking,
+    ):
+        assert await open_named_pipe_writer("/tmp/generation.pcm") == 42  # noqa: S108
+
+    set_blocking.assert_called_once_with(42, True)
+
+
+def test_flushed_status_sets_flush_event() -> None:
+    """The [STATUS] flushed line releases the flush acknowledgement event."""
+    stream = AirPlayStream(_make_player())
+    assert not stream._flushed.is_set()
+
+    assert stream._handle_status_line("[STATUS] flushed") is False
+
+    assert stream._flushed.is_set()
+
+
+def test_elapsed_includes_start_position() -> None:
+    """Reported progress is the current anchor's media base plus the binary delta."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._start_position = 12.0
+
+    stream._update_elapsed(1.5)
+
+    player.set_state_from_stream.assert_called_once_with(
+        state=PlaybackState.PLAYING,
+        elapsed_time=13.5,
+        stream=stream,
+    )
 
 
 @pytest.mark.asyncio
@@ -858,3 +1299,42 @@ async def test_send_metadata_passes_cached_artwork_path_to_binary() -> None:
         await stream.send_metadata(None, metadata)
 
     assert send_command.await_args_list[-1] == call(f"ARTWORK={cached_path}")
+
+
+@pytest.mark.asyncio
+async def test_failed_artwork_delivery_is_retried() -> None:
+    """A dropped ARTWORK command remains pending for the next metadata update."""
+    stream = AirPlayStream(_make_player())
+    metadata = MagicMock(
+        duration=180,
+        title="Track",
+        artist="Artist",
+        album="Album",
+        image_url="image",
+    )
+    metadata_checksum = "Track|Artist|Album|180|image"
+    artwork_path = "/cache/thumbnails/artwork.jpg"
+
+    with (
+        patch.object(
+            stream,
+            "_prepare_artwork",
+            new_callable=AsyncMock,
+            return_value=artwork_path,
+        ) as prepare_artwork,
+        patch.object(
+            stream,
+            "send_cli_command",
+            new_callable=AsyncMock,
+            side_effect=[True, False, True],
+        ) as send_command,
+    ):
+        await stream.send_metadata(None, metadata)
+        assert stream._metadata_checksum == ""
+        await stream.send_metadata(None, metadata)
+
+    assert prepare_artwork.await_count == 2
+    assert [args.args[0] for args in send_command.await_args_list].count(
+        f"ARTWORK={artwork_path}"
+    ) == 2
+    assert stream._metadata_checksum == metadata_checksum

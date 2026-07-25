@@ -107,7 +107,7 @@ async def get_config_entries(
     )
 
 
-class SoundcloudMusicProvider(MusicProvider, RecommendationPayloadMixin):
+class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
     """Provider for Soundcloud."""
 
     # keep the pre-refactor 3h refresh interval for the mixed-selections payload

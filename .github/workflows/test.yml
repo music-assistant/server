@@ -27,6 +27,10 @@ permissions:
 env:
   URLLIB3_NO_OVERRIDE: "1"
 
+concurrency:
+  group: test-${{ github.event_name }}-${{ github.event.pull_request.number || inputs.ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+
 jobs:
   changes:
     runs-on: ubuntu-latest

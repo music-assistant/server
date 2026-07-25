@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 
-class AppleMusicProvider(MusicProvider, RecommendationPayloadMixin):
+class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
     """Implementation of an Apple Music MusicProvider."""
 
     _music_user_token: str | None = None
@@ -125,10 +125,6 @@ class AppleMusicProvider(MusicProvider, RecommendationPayloadMixin):
         :param item_id: The item_id of the row, as returned by get_recommendations.
         """
         return await self._recommendation_items_from_payload(item_id)
-
-    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
-        """Fetch and parse the full recommendations payload (folders with items)."""
-        return await self.recommendation_manager.get_personal_recommendations()
 
     # ------------------------------------------------------------------
     # Media item getters
@@ -240,3 +236,7 @@ class AppleMusicProvider(MusicProvider, RecommendationPayloadMixin):
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         return await self.streaming_manager.get_stream_details(item_id)
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch and parse the full recommendations payload (folders with items)."""
+        return await self.recommendation_manager.get_personal_recommendations()

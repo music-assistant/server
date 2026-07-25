@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -804,7 +805,12 @@ class TestPlayMediaOverride:
         controller._player_command_locks = {}
 
         media = MagicMock(uri="x", source_id="src")
-        await controller.play_media("member", media)
+        with patch.object(
+            controller,
+            "wait_for_player_update",
+            _skip_player_update_wait,
+        ):
+            await controller.play_media("member", media)
 
         # the member was removed from the group ...
         assert set_members_calls == [{"player_id": "g1", "remove": ["member"]}]
@@ -868,7 +874,12 @@ class TestPlayMediaOverride:
         controller._player_command_locks = {}
 
         media = MagicMock(uri="x", source_id="src")
-        await controller.play_media("member", media)
+        with patch.object(
+            controller,
+            "wait_for_player_update",
+            _skip_player_update_wait,
+        ):
+            await controller.play_media("member", media)
 
         # powerless group + static member: we should have stopped the group ...
         assert stop_calls == ["g1"]
@@ -1378,6 +1389,15 @@ class TestScheduleActiveOutputProtocolClear:
 
         wait_mock.assert_awaited_once_with(player, PlaybackState.IDLE, timeout=10)
         player.set_active_output_protocol.assert_called_once_with(None)
+
+
+@contextlib.asynccontextmanager
+async def _skip_player_update_wait(
+    *_args: object,
+    **_kwargs: object,
+) -> AsyncIterator[None]:
+    """Skip provider-driven state propagation in command-routing tests."""
+    yield
 
 
 if __name__ == "__main__":

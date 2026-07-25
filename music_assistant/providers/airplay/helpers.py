@@ -24,6 +24,11 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 _COMPANION_PAIRING_DISABLED = 0x04
 _COMPANION_PAIRING_WITH_PIN = 0x4000
+# Bound the binary's `--check` probe. It normally answers instantly, but the first
+# execution of a freshly-fetched binary can stall (e.g. macOS Gatekeeper verification
+# of an unsigned download), and a wedged binary would otherwise block provider load or
+# a stream start indefinitely.
+_CLI_BINARY_CHECK_TIMEOUT = 15.0
 
 
 async def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
@@ -167,6 +172,17 @@ def is_apple_device(manufacturer: str, model: str) -> bool:
     )
 
 
+def is_apple_tv(manufacturer: str, model: str) -> bool:
+    """
+    Check if a device identifies as an Apple TV (and not a HomePod).
+
+    Only Apple TVs run the tvOS dashboard app, so this narrows :func:`is_apple_device`
+    to the Apple TV family. The model strings come from :func:`get_model_info`
+    (e.g. "Apple TV 4K", "Apple TV Gen4").
+    """
+    return manufacturer.lower().startswith("apple") and "apple tv" in model.lower()
+
+
 def get_decoded_property(discovery_info: AsyncServiceInfo, key: str) -> str | None:
     """
     Return an mDNS TXT property value by case-insensitive key.
@@ -252,10 +268,18 @@ async def get_cli_binary() -> str:
     binary_path = os.path.join(base_path, binary_name)
 
     try:
-        returncode, output = await check_output(binary_path, "--check")
+        returncode, output = await check_output(
+            binary_path, "--check", timeout=_CLI_BINARY_CHECK_TIMEOUT
+        )
         output_str = output.strip().decode()
         if returncode == 0 and "cliairplay" in output_str and "check" in output_str:
             return binary_path
+    except TimeoutError:
+        msg = (
+            f"{binary_name} did not respond to --check within "
+            f"{_CLI_BINARY_CHECK_TIMEOUT:.0f}s (first-run verification or a wedged binary)"
+        )
+        raise RuntimeError(msg) from None
     except OSError:
         pass
 

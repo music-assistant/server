@@ -26,8 +26,8 @@ dependencies = [
   "ifaddr==0.2.0",
   "getmac==0.9.5",
   "mashumaro==3.20",
-  "music-assistant-frontend==2.17.231",
-  "music-assistant-models==1.1.168",
+  "music-assistant-frontend==2.17.237",
+  "music-assistant-models==1.1.169",
   "mutagen==1.48.1",
   "orjson==3.11.6",
   "pillow==12.3.0",
@@ -66,6 +66,7 @@ test = [
   "pytest-aiohttp==1.1.0",
   "pytest-codspeed==5.0.3",
   "pytest-cov==7.0.0",
+  "pytest-timeout==2.4.0",
   "syrupy==5.2.0",
   "tomli==2.4.1",
   "ruff==0.15.22",
@@ -183,6 +184,7 @@ line-ending = "lf"
 [tool.pytest.ini_options]
 addopts = "--cov music_assistant"
 asyncio_mode = "auto"
+timeout = 120
 filterwarnings = [
   # Suppress Python 3.14 AsyncMock internal warnings about unawaited coroutines
   "ignore:coroutine.*was never awaited:RuntimeWarning",

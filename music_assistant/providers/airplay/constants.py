@@ -45,25 +45,34 @@ CONF_COMPANION_CREDENTIALS: Final[str] = "companion_credentials"
 CONF_MRP_CREDENTIALS: Final[str] = "mrp_credentials"
 CONF_NATIVE_MRP_CREDENTIALS: Final[str] = "native_mrp_credentials"
 
+# Bundle id of the Music Assistant tvOS dashboard app, launched over Companion on
+# eligible Apple TVs (see tvos/docs/launch-contract.md).
+TVOS_APP_BUNDLE_ID: Final[str] = "io.music-assistant.tvos"
+
 AIRPLAY_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
 COMPANION_DISCOVERY_TYPE: Final[str] = "_companion-link._tcp.local."
 MRP_DISCOVERY_TYPE: Final[str] = "_mediaremotetv._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
-# Fixed lead (ms) between starting the stream and the audible group start
-# (--start-unix-ms means "the first sample is audible exactly at this instant"
-# on every protocol path). Covers process spawn + connect/session setup plus
-# the receiver-buffer pre-fill the binary does ahead of the audible start.
-# The effective pre-fill is roughly lead - connect_time; the native AirPlay 2
-# path needs a larger budget than RAOP because its pre-fill is paced (RAOP
-# bursts its backlog and fills faster), so too short a lead intermittently
-# clips the first fraction of a second on native receivers such as Sonos.
+# Setup lead (ms) advertised to externally timed sources such as Sendspin.
+# It covers process spawn, connect/session setup and receiver pre-fill before
+# the commanded audible instant. Native AirPlay 2 needs a larger budget than
+# RAOP because its pre-fill is paced.
 AIRPLAY_RAOP_SETUP_LEAD_MS: Final[int] = 1500
 AIRPLAY_AP2_SETUP_LEAD_MS: Final[int] = 2500
 # Late joiners keep a more conservative headroom: besides connecting, their
 # pipeline must also be primed from the session's history buffer.
 AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 2000
+# Anchor lead for a readiness-confirmed START (cold and warm alike): the
+# session only anchors after the binary confirmed the connection ([STATUS]
+# connected) and the new audio flowing ([STATUS] audio), so the lead no longer
+# guesses at setup or transcoder spin-up time. It covers just the receiver
+# re-anchor (accepted down to ~150 ms in the flush-ladder measurements; the
+# binary clamps below its own 250 ms floor) plus, for groups, fanning the
+# shared instant out to every member.
+AIRPLAY_START_LEAD_MS: Final[int] = 250
+AIRPLAY_GROUP_START_LEAD_MS: Final[int] = 500
 
 # Cover art is rendered to a local JPEG for the binary to embed (the binary
 # does not fetch URLs). 512px keeps the SET_PARAMETER payload small while still

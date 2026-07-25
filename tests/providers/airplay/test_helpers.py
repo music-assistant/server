@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from music_assistant.providers.airplay.helpers import (
+    _CLI_BINARY_CHECK_TIMEOUT,
     get_cli_binary,
     get_decoded_property,
     serialize_txt_records,
@@ -122,4 +123,19 @@ async def test_get_cli_binary_uses_release_asset_name(
     result = await get_cli_binary()
 
     assert result.endswith(f"/bin/{expected_name}")
-    check_output.assert_awaited_once_with(result, "--check")
+    check_output.assert_awaited_once_with(result, "--check", timeout=_CLI_BINARY_CHECK_TIMEOUT)
+
+
+async def test_get_cli_binary_raises_when_check_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A binary that never answers --check surfaces as RuntimeError, not a hang."""
+    check_output = AsyncMock(side_effect=TimeoutError)
+    monkeypatch.setattr(
+        "music_assistant.providers.airplay.helpers.platform.system", lambda: "Darwin"
+    )
+    monkeypatch.setattr(
+        "music_assistant.providers.airplay.helpers.platform.machine", lambda: "aarch64"
+    )
+    monkeypatch.setattr("music_assistant.providers.airplay.helpers.check_output", check_output)
+
+    with pytest.raises(RuntimeError, match="did not respond to --check"):
+        await get_cli_binary()

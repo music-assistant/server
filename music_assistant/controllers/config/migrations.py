@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import CrossfadeMode
 
 from music_assistant.constants import (
@@ -160,6 +161,12 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     # (shairport-sync) advertisements before discovery learned to filter them out.
     # TODO: remove after 2.10 release
     if _migrate_airplay_receiver_ghost_players(data):
+        changed = True
+
+    # Give Apple TVs paired before native power control existed the current
+    # default ("native") instead of the stale "none" that hid their power button.
+    # TODO: remove after 2.11 release
+    if _migrate_airplay_apple_power_control(data):
         changed = True
 
     # Drop the stored value of the removed output limiter player setting; clipping protection
@@ -681,6 +688,37 @@ def _migrate_airplay_receiver_ghost_players(data: dict[str, Any]) -> bool:
         len(ghost_ids),
     )
     return True
+
+
+def _migrate_airplay_apple_power_control(data: dict[str, Any]) -> bool:
+    """
+    Enable native power control for Apple TVs paired before the feature existed.
+
+    Native on/off (Companion) power control was added to Apple TVs later, but
+    players configured earlier kept the power_control default from that time
+    ("none"), so the power button stayed hidden. Flip that stale default to
+    "native" for paired Apple devices (those with Companion credentials, i.e.
+    the ones that actually gained the feature); a device that turns out not to
+    support power degrades back to "none" at runtime.
+    """
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    changed = False
+    for player_id, player_cfg in all_player_configs.items():
+        if not isinstance(player_cfg, dict):
+            continue
+        if not str(player_cfg.get("provider", "")).startswith("airplay"):
+            continue
+        values = player_cfg.get("values")
+        if not isinstance(values, dict) or not values.get("companion_credentials"):
+            continue
+        if values.get("power_control") != PLAYER_CONTROL_NONE:
+            continue
+        values["power_control"] = PLAYER_CONTROL_NATIVE
+        LOGGER.info("Enabled native power control for paired Apple device %s", player_id)
+        changed = True
+    return changed
 
 
 def _migrate_output_limiter(data: dict[str, Any]) -> bool:

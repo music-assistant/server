@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import random
+import zlib
 from collections.abc import AsyncGenerator, Coroutine, Sequence
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
@@ -161,6 +161,129 @@ class KionMusicProvider(MusicProvider):
         if self._streaming is None:
             raise ProviderUnavailableError("Provider not initialized")
         return self._streaming
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """
+        Get the available recommendation rows, without items.
+
+        Returns My Mix, Made for you, Chart, New Releases, New Playlists,
+        Top Picks, Mood Mix, Activity Mix and Seasonal Mix rows.
+        """
+        # The seasonal row title carries the current season, derived locally from the month.
+        seasonal_tag = TAG_SEASONAL_MAP.get(utc().month, "autumn")
+        seasonal_name = (
+            self._media_source_name("folder", _media_label_key(seasonal_tag))
+            or seasonal_tag.title()
+        )
+        return [
+            RecommendationFolder(
+                item_id=MY_WAVE_PLAYLIST_ID,
+                provider=self.instance_id,
+                name="My Mix",
+                translation_key=MY_WAVE_PLAYLIST_ID,
+                icon="mdi-waveform",
+            ),
+            RecommendationFolder(
+                item_id="feed",
+                provider=self.instance_id,
+                name="Made for you",
+                translation_key="made_for_you",
+                icon="mdi-account-music",
+            ),
+            RecommendationFolder(
+                item_id="chart",
+                provider=self.instance_id,
+                name="Chart",
+                translation_key="chart",
+                icon="mdi-chart-line",
+            ),
+            RecommendationFolder(
+                item_id="new_releases",
+                provider=self.instance_id,
+                name="New Releases",
+                translation_key="new_releases",
+                icon="mdi-new-box",
+            ),
+            RecommendationFolder(
+                item_id="new_playlists",
+                provider=self.instance_id,
+                name="New Playlists",
+                translation_key="new_playlists",
+                icon="mdi-playlist-star",
+            ),
+            RecommendationFolder(
+                item_id="top_picks",
+                provider=self.instance_id,
+                name="Top Picks",
+                translation_key="top_picks",
+                icon="mdi-star",
+            ),
+            # Mood/Activity rows have a static title; the hourly rotating tag - derived
+            # deterministically, so the items call independently computes the same one -
+            # shows as the row subtitle (cache-only tag-list read, no backend I/O).
+            RecommendationFolder(
+                item_id="mood_mix",
+                provider=self.instance_id,
+                name="Mood Mix",
+                translation_key="mood_mix",
+                subtitle=await self._rotating_row_tag_subtitle("mood"),
+                icon="mdi-emoticon-outline",
+            ),
+            RecommendationFolder(
+                item_id="activity_mix",
+                provider=self.instance_id,
+                name="Activity Mix",
+                translation_key="activity_mix",
+                subtitle=await self._rotating_row_tag_subtitle("activity"),
+                icon="mdi-run",
+            ),
+            RecommendationFolder(
+                item_id="seasonal_mix",
+                provider=self.instance_id,
+                name=f"Seasonal: {seasonal_name}",
+                translation_key="seasonal_mix",
+                translation_params=[seasonal_name],
+                icon="mdi-weather-sunny",
+            ),
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        folder: RecommendationFolder | None = None
+        if item_id == MY_WAVE_PLAYLIST_ID:
+            folder = await self._get_my_wave_recommendations()
+        elif item_id == "feed":
+            folder = await self._get_feed_recommendations()
+        elif item_id == "chart":
+            folder = await self._get_chart_recommendations()
+        elif item_id == "new_releases":
+            folder = await self._get_new_releases_recommendations()
+        elif item_id == "new_playlists":
+            folder = await self._get_new_playlists_recommendations()
+        elif item_id == "top_picks":
+            folder = await self._get_top_picks_recommendations()
+        elif item_id == "mood_mix":
+            # the deterministic hourly tag keeps the served items matching the row subtitle
+            if mood_tags := await self._get_valid_tags_for_category("mood"):
+                folder = await self._get_mood_mix_recommendations(
+                    self._rotating_row_tag("mood", mood_tags)
+                )
+        elif item_id == "activity_mix":
+            if activity_tags := await self._get_valid_tags_for_category("activity"):
+                folder = await self._get_activity_mix_recommendations(
+                    self._rotating_row_tag("activity", activity_tags)
+                )
+        elif item_id == "seasonal_mix":
+            folder = await self._get_seasonal_mix_recommendations()
+        if folder is None:
+            return UniqueList()
+        return folder.items
 
     def _media_source_name(self, group: str, key: str) -> str | None:
         """
@@ -577,7 +700,9 @@ class KionMusicProvider(MusicProvider):
             self.logger.debug("Tag validation failed for %s: %s", tag_slug, err)
             return False
 
-    @use_cache(3600)
+    # allow_expired_cache keeps the items call serving the same (possibly stale) tag
+    # list the rows subtitle was derived from, while a background refresh runs
+    @use_cache(3600, allow_expired_cache=True)
     async def _get_valid_tags_for_category(self, category: str) -> list[str]:
         """
         Get validated tags for a category (only those with playlists).
@@ -1880,121 +2005,6 @@ class KionMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing similar artist: %s", err)
         return artists
 
-    async def get_recommendations(self) -> list[RecommendationFolder]:
-        """
-        Get the available recommendation rows, without items.
-
-        Returns My Mix, Made for you, Chart, New Releases, New Playlists,
-        Top Picks, Mood Mix, Activity Mix and Seasonal Mix rows.
-        """
-        # The seasonal row title carries the current season, derived locally from the month.
-        seasonal_tag = TAG_SEASONAL_MAP.get(utc().month, "autumn")
-        seasonal_name = (
-            self._media_source_name("folder", _media_label_key(seasonal_tag))
-            or seasonal_tag.title()
-        )
-        return [
-            RecommendationFolder(
-                item_id=MY_WAVE_PLAYLIST_ID,
-                provider=self.instance_id,
-                name="My Mix",
-                translation_key=MY_WAVE_PLAYLIST_ID,
-                icon="mdi-waveform",
-            ),
-            RecommendationFolder(
-                item_id="feed",
-                provider=self.instance_id,
-                name="Made for you",
-                translation_key="made_for_you",
-                icon="mdi-account-music",
-            ),
-            RecommendationFolder(
-                item_id="chart",
-                provider=self.instance_id,
-                name="Chart",
-                translation_key="chart",
-                icon="mdi-chart-line",
-            ),
-            RecommendationFolder(
-                item_id="new_releases",
-                provider=self.instance_id,
-                name="New Releases",
-                translation_key="new_releases",
-                icon="mdi-new-box",
-            ),
-            RecommendationFolder(
-                item_id="new_playlists",
-                provider=self.instance_id,
-                name="New Playlists",
-                translation_key="new_playlists",
-                icon="mdi-playlist-star",
-            ),
-            RecommendationFolder(
-                item_id="top_picks",
-                provider=self.instance_id,
-                name="Top Picks",
-                translation_key="top_picks",
-                icon="mdi-star",
-            ),
-            # Mood/Activity rows have a static title; the rotating tag is picked at items time.
-            RecommendationFolder(
-                item_id="mood_mix",
-                provider=self.instance_id,
-                name="Mood Mix",
-                translation_key="mood_mix",
-                icon="mdi-emoticon-outline",
-            ),
-            RecommendationFolder(
-                item_id="activity_mix",
-                provider=self.instance_id,
-                name="Activity Mix",
-                translation_key="activity_mix",
-                icon="mdi-run",
-            ),
-            RecommendationFolder(
-                item_id="seasonal_mix",
-                provider=self.instance_id,
-                name=f"Seasonal: {seasonal_name}",
-                translation_key="seasonal_mix",
-                translation_params=[seasonal_name],
-                icon="mdi-weather-sunny",
-            ),
-        ]
-
-    async def get_recommendation_items(
-        self, item_id: str
-    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
-        """
-        Get the items for a single recommendation row.
-
-        :param item_id: The item_id of the row, as returned by get_recommendations.
-        """
-        folder: RecommendationFolder | None = None
-        if item_id == MY_WAVE_PLAYLIST_ID:
-            folder = await self._get_my_wave_recommendations()
-        elif item_id == "feed":
-            folder = await self._get_feed_recommendations()
-        elif item_id == "chart":
-            folder = await self._get_chart_recommendations()
-        elif item_id == "new_releases":
-            folder = await self._get_new_releases_recommendations()
-        elif item_id == "new_playlists":
-            folder = await self._get_new_playlists_recommendations()
-        elif item_id == "top_picks":
-            folder = await self._get_top_picks_recommendations()
-        elif item_id == "mood_mix":
-            # Pick the tag outside the cached helper so rotation actually works
-            if mood_tag := await self._pick_random_tag_for_category("mood"):
-                folder = await self._get_mood_mix_recommendations(mood_tag)
-        elif item_id == "activity_mix":
-            if activity_tag := await self._pick_random_tag_for_category("activity"):
-                folder = await self._get_activity_mix_recommendations(activity_tag)
-        elif item_id == "seasonal_mix":
-            folder = await self._get_seasonal_mix_recommendations()
-        if folder is None:
-            return UniqueList()
-        return folder.items
-
     @use_cache(600)
     async def _get_my_wave_recommendations(self) -> RecommendationFolder | None:
         """
@@ -2217,18 +2227,6 @@ class KionMusicProvider(MusicProvider):
             items=UniqueList(items),
             icon="mdi-star",
         )
-
-    async def _pick_random_tag_for_category(self, category: str) -> str | None:
-        """
-        Pick a random valid tag for a category (not cached — enables rotation).
-
-        :param category: Category name ('mood', 'activity', etc.).
-        :return: Random tag slug, or None if no valid tags.
-        """
-        valid_tags = await self._get_valid_tags_for_category(category)
-        if not valid_tags:
-            return None
-        return random.choice(valid_tags)
 
     @use_cache(1800)
     async def _get_mood_mix_recommendations(self, mood_tag: str) -> RecommendationFolder | None:
@@ -2747,3 +2745,41 @@ class KionMusicProvider(MusicProvider):
             total_played_seconds=seconds,
             batch_id=batch_id,
         )
+
+    async def _rotating_row_tag_subtitle(self, category: str) -> str | None:
+        """
+        Return the display label of the current rotating tag for a mood/activity row.
+
+        Cache-only read of the validated tag list (rows must stay free of backend I/O):
+        returns None - no subtitle - until an items fetch has warmed that cache.
+
+        :param category: Tag category ('mood' or 'activity').
+        """
+        # key mirrors the @use_cache key construction on _get_valid_tags_for_category:
+        # the wrapped function's __name__ (preserved by functools.wraps, so it survives
+        # renames) plus its positional args, joined by dots
+        tags, _, found = await self.mass.cache.get_with_freshness(
+            f"{self._get_valid_tags_for_category.__name__}.{category}",
+            provider=self.instance_id,
+            include_expired=True,
+        )
+        if not found or not tags:
+            return None
+        tag = self._rotating_row_tag(category, tags)
+        return self._media_source_name("folder", _media_label_key(tag)) or tag.title()
+
+    def _rotating_row_tag(self, category: str, valid_tags: list[str]) -> str:
+        """
+        Deterministically pick the current hour's tag for a mood/activity row.
+
+        Rows and items derive the same tag independently - no shared state, so
+        concurrent clients (or multiple users on one instance) can never make the
+        served items mismatch the row subtitle. The pick rotates hourly and
+        differs per provider instance.
+
+        :param category: Tag category the tags belong to.
+        :param valid_tags: Non-empty list of valid tag slugs to pick from.
+        """
+        hour_bucket = int(utc().timestamp()) // 3600
+        seed = f"{self.instance_id}.{category}.{hour_bucket}".encode()
+        return sorted(valid_tags)[zlib.crc32(seed) % len(valid_tags)]

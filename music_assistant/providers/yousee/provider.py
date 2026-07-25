@@ -52,7 +52,7 @@ if TYPE_CHECKING:
     from music_assistant_models.streamdetails import StreamDetails
 
 
-class YouSeeMusikProvider(MusicProvider, RecommendationPayloadMixin):
+class YouSeeMusikProvider(RecommendationPayloadMixin, MusicProvider):
     """Provider implementation for YouSee Musik."""
 
     # the personalized sections barely change intraday; keep the pre-refactor 24h interval
