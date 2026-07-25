@@ -359,7 +359,10 @@ def test_release_workflow_uses_minimum_preflight_permissions_and_expected_app() 
     jobs = yaml.safe_load(workflow)["jobs"]
 
     assert jobs["resolve"]["permissions"] == {"contents": "read"}
-    assert jobs["preflight"]["permissions"] == {"contents": "read"}
+    assert jobs["preflight"]["permissions"] == {
+        "contents": "read",
+        "pull-requests": "read",
+    }
     assert workflow.count("actions/create-github-app-token@") == 5
     assert workflow.count("outputs.installation-id") == 5
     assert 'EXPECTED_APP_INSTALLATION_ID: "146062122"' in workflow
