@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncGenerator, Coroutine
 from types import SimpleNamespace
 from typing import Any, cast
@@ -52,6 +53,7 @@ from music_assistant.providers.music_quiz.errors import (
     MusicQuizUnknownPlayerError,
 )
 from music_assistant.providers.music_quiz.game import finish_game as finish_game_state
+from music_assistant.providers.music_quiz.game import get_current_round
 from music_assistant.providers.music_quiz.models import (
     MultipleChoiceRoundState,
     MultipleChoiceSuggestion,
@@ -5453,3 +5455,30 @@ async def test_advance_falls_back_when_track_not_queued() -> None:
 
     assert await plugin._advance_to_queued_track("library://track/warm") is False
     play_index.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reveal_stops_playback_when_it_outlives_the_track() -> None:
+    """A reveal held past the track's end stops playback so the next track cannot start."""
+    plugin = _create_plugin()
+    call_later = cast("MagicMock", plugin.mass.call_later)
+
+    await _create_started_game(plugin)
+    call_later.reset_mock()
+
+    game = plugin._game
+    assert game is not None
+    current = get_current_round(game)
+    # 2s of track left, but the reveal is floored at MIN_REVEAL_SECONDS
+    current.duration = 2
+    current.started_at = time.time()
+
+    plugin._do_reveal()
+
+    stop_delays = [
+        c.args[0]
+        for c in call_later.call_args_list
+        if c.kwargs.get("task_id") == plugin._track_end_timer_id
+    ]
+    assert len(stop_delays) == 1
+    assert 0 <= stop_delays[0] <= 2

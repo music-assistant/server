@@ -1002,6 +1002,21 @@ class MusicQuizPlugin(PluginProvider):
                 task_id=self._advance_timer_id,
             )
             current_round.auto_advance_at = auto_advance_at
+        # a reveal held past the track's natural end would let the player glide into
+        # the next round's (pre-queued) track, so stop at the track boundary instead
+        if (
+            quiz_type.plays_track_before_answering
+            and not quiz_type.plays_track_on_reveal
+            and current_round.duration
+            and current_round.started_at
+        ):
+            remaining = current_round.started_at + current_round.duration - now
+            if advance_delay is not None and advance_delay > remaining:
+                self.mass.call_later(
+                    max(remaining, 0),
+                    self._stop_playback,
+                    task_id=self._track_end_timer_id,
+                )
         self._signal_game_updated()
         if quiz_type.plays_track_on_reveal:
             if current_round.track_uri is None:
@@ -1899,6 +1914,11 @@ class MusicQuizPlugin(PluginProvider):
         return f"music_quiz_advance_{self.instance_id}"
 
     @property
+    def _track_end_timer_id(self) -> str:
+        """Return the task_id of the reveal-outlives-track stop timer."""
+        return f"music_quiz_track_end_{self.instance_id}"
+
+    @property
     def _presence_timer_id(self) -> str:
         """Return the task_id of the player presence timer."""
         return f"music_quiz_presence_{self.instance_id}"
@@ -1912,6 +1932,7 @@ class MusicQuizPlugin(PluginProvider):
         """Cancel all scheduled game timers."""
         self.mass.cancel_timer(self._reveal_timer_id)
         self.mass.cancel_timer(self._advance_timer_id)
+        self.mass.cancel_timer(self._track_end_timer_id)
         self._cancel_replay_auto_start(cancel_task=True)
         self._cancel_presence_expiry(cancel_task=True)
 
