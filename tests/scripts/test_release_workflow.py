@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 from collections.abc import Mapping
@@ -25,6 +26,8 @@ from scripts.release_workflow import (
     determine_auto_release,
     inspect_assets,
     is_current_release,
+    load_paginated_releases,
+    select_exact_release,
     update_addon_release,
     verify_oci_manifest,
 )
@@ -579,10 +582,146 @@ def test_release_workflow_exact_source_resolution_uses_requested_sha() -> None:
         "source_sha must be a full commit SHA",
         'source_sha=$(git -C source rev-parse "$requested_sha^{commit}")',
         'if ! git -C source merge-base --is-ancestor "$source_sha" "$branch_sha"; then',
-        'source_sha="$branch_sha"',
         'echo "sha=$source_sha" >> "$GITHUB_OUTPUT"',
     ):
         assert required_snippet in resolve_run
+
+
+def test_release_workflow_exact_source_resolution_rejects_non_ancestor_sha(
+    tmp_path: Path,
+) -> None:
+    """Resolve exact source commit fails closed for SHAs outside the branch history."""
+    source = tmp_path / "source"
+    source.mkdir()
+    _git(source, "init", "-b", "dev")
+    _git(source, "config", "user.name", "Release Test")
+    _git(source, "config", "user.email", "release@example.com")
+    _commit(source, "initial")
+    requested_sha = _git(source, "rev-parse", "HEAD")
+
+    _git(source, "checkout", "--orphan", "unrelated")
+    (source / "state").unlink()
+    _commit(source, "unrelated")
+
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    resolve_step = _workflow_step(
+        cast("dict[str, Any]", yaml.safe_load(workflow)),
+        "resolve",
+        "Resolve exact source commit",
+    )
+    resolve_run = (
+        str(resolve_step["run"])
+        .replace("${{ steps.branch.outputs.branch }}", "dev")
+        .replace("git -C source", 'git -C "$SOURCE_DIR"')
+    )
+    output = tmp_path / "github-output.txt"
+    result = subprocess.run(  # noqa: S603
+        ["/bin/bash", "-lc", resolve_run],
+        cwd=tmp_path,
+        env={
+            **os.environ,
+            "GITHUB_OUTPUT": str(output),
+            "REQUESTED_SHA": requested_sha,
+            "SOURCE_DIR": str(source),
+        },
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1
+    assert "is not part of dev" in result.stderr
+
+
+def test_release_selection_returns_none_for_absent_tag(tmp_path: Path) -> None:
+    """A missing release tag is treated as absent."""
+    releases_json = tmp_path / "releases.json"
+    releases_json.write_text(
+        json.dumps(
+            [
+                {"id": 1, "tag_name": "2.10.0b8"},
+                {"id": 2, "tag_name": "2.10.0b9"},
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    releases = load_paginated_releases(releases_json)
+
+    assert select_exact_release(releases, "2.10.0b10") is None
+
+
+def test_release_selection_returns_exact_match_from_paginated_pages(
+    tmp_path: Path,
+) -> None:
+    """Paginated release lists can resolve one exact matching draft."""
+    releases_json = tmp_path / "releases.json"
+    releases_json.write_text(
+        json.dumps([{"id": 1, "tag_name": "2.10.0b8"}])
+        + "\n"
+        + json.dumps([{"id": 2, "tag_name": "2.10.0b9"}])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    release = select_exact_release(load_paginated_releases(releases_json), "2.10.0b9")
+
+    assert release == {"id": 2, "tag_name": "2.10.0b9"}
+
+
+def test_release_selection_rejects_duplicate_tags(tmp_path: Path) -> None:
+    """Duplicate exact-tag releases are rejected instead of guessed."""
+    releases_json = tmp_path / "releases.json"
+    releases_json.write_text(
+        json.dumps([{"id": 1, "tag_name": "2.10.0b8"}])
+        + "\n"
+        + json.dumps([{"id": 2, "tag_name": "2.10.0b8"}])
+        + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ReleaseWorkflowError, match="More than one release matches tag"):
+        select_exact_release(load_paginated_releases(releases_json), "2.10.0b8")
+
+
+def test_release_workflow_prepublication_steps_use_release_ids_only() -> None:
+    """Resolve, reuse, and draft prep all avoid tag lookups before publication."""
+    workflow = (ROOT / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
+    workflow_data = cast("dict[str, Any]", yaml.safe_load(workflow))
+
+    resolve_step = _workflow_step(workflow_data, "resolve", "Inspect existing tag and release")
+    resolve_run = str(resolve_step["run"])
+    assert 'gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100"' in resolve_run
+    assert "select-release" in resolve_run
+    assert 'gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION"' not in resolve_run
+
+    recovery_step = _workflow_step(
+        workflow_data, "build_artifacts", "Recover matching draft assets"
+    )
+    assert recovery_step["env"] == {
+        "GH_TOKEN": "${{ github.token }}",
+        "RELEASE_ID": "${{ needs.resolve.outputs.release_id }}",
+        "SDIST_NAME": "${{ needs.resolve.outputs.sdist_name }}",
+        "SOURCE_SHA": "${{ needs.resolve.outputs.source_sha }}",
+        "VERSION": "${{ inputs.version }}",
+        "WHEEL_NAME": "${{ needs.resolve.outputs.wheel_name }}",
+    }
+    recovery_run = str(recovery_step["run"])
+    assert 'if [ -z "$RELEASE_ID" ]; then' in recovery_run
+    assert 'gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID"' in recovery_run
+    assert 'gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION"' not in recovery_run
+    assert "Release $VERSION is no longer a reusable mutable draft" in recovery_run
+
+    draft_step = _workflow_step(workflow_data, "prepare_draft", "Create or update matching draft")
+    assert draft_step["env"]["RELEASE_ID"] == "${{ needs.resolve.outputs.release_id }}"
+    draft_run = str(draft_step["run"])
+    assert 'gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID"' in draft_run
+    assert 'gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION"' not in draft_run
+    assert "gh api --method POST" in draft_run
+    assert 'repos/$GITHUB_REPOSITORY/releases"' in draft_run
+    assert "gh api --method PATCH" in draft_run
+    assert 'repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID"' in draft_run
 
 
 def test_release_workflow_publication_state_uses_release_ids() -> None:

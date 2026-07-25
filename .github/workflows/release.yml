@@ -198,16 +198,17 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           release_json="$RUNNER_TEMP/release.json"
-          release_error="$RUNNER_TEMP/release-error.txt"
-          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION" \
-            > "$release_json" 2> "$release_error"; then
-            release_exists=true
-          elif grep -q "HTTP 404" "$release_error"; then
-            release_exists=false
-          else
-            cat "$release_error" >&2
-            exit 1
-          fi
+          release_pages="$RUNNER_TEMP/releases.json"
+          release_outputs="$RUNNER_TEMP/release-outputs.txt"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            > "$release_pages"
+          python3 .release-workflow/scripts/release_workflow.py select-release \
+            --tag "$VERSION" \
+            --releases-json "$release_pages" \
+            --release-json "$release_json" \
+            --github-output "$release_outputs"
+          cat "$release_outputs" >> "$GITHUB_OUTPUT"
+          release_id=$(sed -n 's/^release_id=//p' "$release_outputs")
 
           tag_sha=""
           tag_is_resumable=false
@@ -242,6 +243,10 @@ jobs:
             --github-output "$current_outputs"
           cat "$current_outputs" >> "$GITHUB_OUTPUT"
           is_current=$(sed -n 's/^is_current=//p' "$current_outputs")
+          release_exists=false
+          if [ -n "$release_id" ]; then
+            release_exists=true
+          fi
 
           if [ "$release_exists" = "false" ]; then
             if [ -n "$tag_sha" ] && [ "$tag_is_resumable" != "true" ]; then
@@ -377,15 +382,39 @@ jobs:
         if: needs.resolve.outputs.assets_ready == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.resolve.outputs.release_id }}
           SDIST_NAME: ${{ needs.resolve.outputs.sdist_name }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           VERSION: ${{ inputs.version }}
           WHEEL_NAME: ${{ needs.resolve.outputs.wheel_name }}
         run: |
-          gh release download "$VERSION" \
-            --repo "$GITHUB_REPOSITORY" \
-            --dir source/dist \
-            --pattern "$WHEEL_NAME" \
-            --pattern "$SDIST_NAME"
+          if [ -z "$RELEASE_ID" ]; then
+            echo "Missing release id for reusable draft assets" >&2
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            > "$RUNNER_TEMP/release.json"
+          if [ "$(jq -r '.tag_name' "$RUNNER_TEMP/release.json")" != "$VERSION" ] || \
+             [ "$(jq -r '.draft' "$RUNNER_TEMP/release.json")" != "true" ] || \
+             [ "$(jq -r '.immutable' "$RUNNER_TEMP/release.json")" != "false" ] || \
+             [ "$(jq -r '.target_commitish' "$RUNNER_TEMP/release.json")" != "$SOURCE_SHA" ]; then
+            echo "Release $VERSION is no longer a reusable mutable draft" >&2
+            exit 1
+          fi
+          for asset_name in "$WHEEL_NAME" "$SDIST_NAME"; do
+            asset_url=$(jq -r --arg name "$asset_name" \
+              '.assets[] | select(.name == $name) | .url' \
+              "$RUNNER_TEMP/release.json")
+            if [ -z "$asset_url" ] || [ "$asset_url" = "null" ]; then
+              echo "Missing release asset $asset_name" >&2
+              exit 1
+            fi
+            curl --fail --location --silent --show-error \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/octet-stream" \
+              "$asset_url" \
+              -o "source/dist/$asset_name"
+          done
 
       - name: Create appvars token
         if: needs.resolve.outputs.assets_ready != 'true'
@@ -462,8 +491,6 @@ jobs:
         run: |
           extra_args=()
           if [ "$REUSED_ASSETS" = "true" ]; then
-            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION" \
-              > "$RUNNER_TEMP/release.json"
             extra_args=(--release-json "$RUNNER_TEMP/release.json")
           fi
           python3 .release-workflow/scripts/release_workflow.py assets \
@@ -582,19 +609,23 @@ jobs:
           IS_PRERELEASE: ${{ needs.resolve.outputs.is_prerelease }}
           RELEASE_NOTES: ${{ steps.notes.outputs.release-notes }}
           RELEASE_TITLE: ${{ steps.title.outputs.title }}
+          RELEASE_ID: ${{ needs.resolve.outputs.release_id }}
           SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           VERSION: ${{ inputs.version }}
         run: |
           release_json="$RUNNER_TEMP/release.json"
-          release_error="$RUNNER_TEMP/release-error.txt"
-          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION" \
-            > "$release_json" 2> "$release_error"; then
+          release_exists=false
+          if [ -n "$RELEASE_ID" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+              > "$release_json"
+            if [ "$(jq -r '.tag_name' "$release_json")" != "$VERSION" ] || \
+               [ "$(jq -r '.draft' "$release_json")" != "true" ] || \
+               [ "$(jq -r '.immutable' "$release_json")" != "false" ] || \
+               [ "$(jq -r '.target_commitish' "$release_json")" != "$SOURCE_SHA" ]; then
+              echo "Release $VERSION is no longer a matching mutable draft" >&2
+              exit 1
+            fi
             release_exists=true
-          elif grep -q "HTTP 404" "$release_error"; then
-            release_exists=false
-          else
-            cat "$release_error" >&2
-            exit 1
           fi
 
           jq -n \

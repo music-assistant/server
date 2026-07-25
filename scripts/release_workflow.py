@@ -15,7 +15,7 @@ import json
 import re
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -382,6 +382,41 @@ def inspect_assets(
     return assets[expected_names[0]], assets[expected_names[1]]
 
 
+def load_paginated_releases(path: Path) -> list[dict[str, Any]]:
+    """
+    Load a paginated GitHub release listing.
+
+    :param path: Path to the raw ``gh api --paginate`` response body.
+    """
+    releases: list[dict[str, Any]] = []
+    for document in _load_json_documents(path):
+        if not isinstance(document, list):
+            raise ReleaseWorkflowError("Paginated release response must contain release lists")
+        for raw_release in document:
+            if not isinstance(raw_release, dict):
+                raise ReleaseWorkflowError(
+                    "Paginated release response contains invalid release data"
+                )
+            releases.append(raw_release)
+    return releases
+
+
+def select_exact_release(
+    releases: Sequence[Mapping[str, Any]],
+    tag: str,
+) -> Mapping[str, Any] | None:
+    """
+    Select the one release that matches a tag exactly.
+
+    :param releases: Release records returned by GitHub.
+    :param tag: Exact release tag to match.
+    """
+    matches = [release for release in releases if release.get("tag_name") == tag]
+    if len(matches) > 1:
+        raise ReleaseWorkflowError(f"More than one release matches tag {tag}")
+    return matches[0] if matches else None
+
+
 def verify_oci_manifest(
     manifest: dict[str, Any],
     source_sha: str,
@@ -598,6 +633,21 @@ def _expected_asset_names(version: str) -> tuple[str, str]:
     )
 
 
+def _load_json_documents(path: Path) -> list[Any]:
+    text = path.read_text(encoding="utf-8")
+    decoder = json.JSONDecoder()
+    documents: list[Any] = []
+    index = 0
+    while True:
+        while index < len(text) and text[index].isspace():
+            index += 1
+        if index >= len(text):
+            break
+        document, index = decoder.raw_decode(text, index)
+        documents.append(document)
+    return documents
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as file_handle:
@@ -648,7 +698,7 @@ def _asset_outputs(assets: tuple[Asset, Asset]) -> dict[str, str | int]:
     }
 
 
-def _build_parser() -> argparse.ArgumentParser:
+def _build_parser() -> argparse.ArgumentParser:  # noqa: PLR0915
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -694,6 +744,12 @@ def _build_parser() -> argparse.ArgumentParser:
     assets_parser.add_argument("--directory", type=Path)
     assets_parser.add_argument("--release-json", type=Path)
     assets_parser.add_argument("--github-output", type=Path)
+
+    select_parser = subparsers.add_parser("select-release")
+    select_parser.add_argument("--tag", required=True)
+    select_parser.add_argument("--releases-json", type=Path, required=True)
+    select_parser.add_argument("--release-json", type=Path)
+    select_parser.add_argument("--github-output", type=Path)
 
     manifest_parser = subparsers.add_parser("verify-manifest")
     manifest_parser.add_argument("--manifest-json", type=Path, required=True)
@@ -783,6 +839,20 @@ def main() -> int:
                 release_json=args.release_json,
             )
             _write_outputs(_asset_outputs(assets), args.github_output)
+        elif args.command == "select-release":
+            release = select_exact_release(
+                load_paginated_releases(args.releases_json),
+                args.tag,
+            )
+            if release is not None and args.release_json is not None:
+                args.release_json.write_text(
+                    json.dumps(release, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+            _write_outputs(
+                {"release_id": release.get("id") if release is not None else None},
+                args.github_output,
+            )
         elif args.command == "verify-manifest":
             manifest = json.loads(args.manifest_json.read_text(encoding="utf-8"))
             digest, runtime_digests = verify_oci_manifest(
