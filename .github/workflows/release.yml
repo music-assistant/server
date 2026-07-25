@@ -106,11 +106,13 @@ jobs:
         run: |
           branch_sha=$(git -C source rev-parse HEAD)
           if [ -n "$REQUESTED_SHA" ]; then
-            if ! [[ "$REQUESTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-              echo "source_sha must be a full lowercase commit SHA" >&2
+            requested_sha=$(printf '%s' "$REQUESTED_SHA" |
+              tr '[:upper:]' '[:lower:]')
+            if ! [[ "$requested_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "source_sha must be a full commit SHA" >&2
               exit 1
             fi
-            source_sha=$(git -C source rev-parse "$REQUESTED_SHA^{commit}")
+            source_sha=$(git -C source rev-parse "$requested_sha^{commit}")
             if ! git -C source merge-base --is-ancestor "$source_sha" "$branch_sha"; then
               echo "$source_sha is not part of ${{ steps.branch.outputs.branch }}" >&2
               exit 1
