@@ -32,7 +32,7 @@ jobs:
       pull-requests: write
 
     steps:
-      # Security check 1: Verify PR is from user with write access
+      # Security check 1: Verify PR is from the exact expected GitHub App bot
       - name: Verify PR is from trusted source
         id: verify_pr_author
         run: |
@@ -94,7 +94,7 @@ jobs:
         run: |
           echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
 
-      # Security check 4: Verify all commit authors have write access
+      # Security check 4: Verify every commit is authored by the expected GitHub App bot
       - name: Verify commit authors
         run: |
           # A dependency bump PR only ever needs a handful of commits
