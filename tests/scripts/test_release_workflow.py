@@ -28,6 +28,9 @@ from scripts.release_workflow import (
 )
 
 ROOT = Path(__file__).parents[2]
+DEPENDENCY_AUTO_MERGE_WORKFLOW = (
+    ROOT / ".github" / "workflows" / "auto-merge-dependency-updates.yml"
+)
 PINNED_ACTION_FILES = (
     ROOT / ".github" / "workflows" / "release.yml",
     ROOT / ".github" / "workflows" / "auto-release.yml",
@@ -38,6 +41,7 @@ PINNED_ACTION_FILES = (
 )
 LEGACY_AUTH_FILES = (
     *PINNED_ACTION_FILES,
+    DEPENDENCY_AUTO_MERGE_WORKFLOW,
     ROOT / ".github" / "release-notes-config.yml",
 )
 FORBIDDEN_LEGACY_IDENTIFIERS = tuple(
@@ -353,6 +357,119 @@ def test_automation_pins_external_actions() -> None:
         for _action, ref, comment in matches:
             assert re.fullmatch(r"[0-9a-f]{40}", ref)
             assert re.fullmatch(r"v\d+(?:\.\d+){0,2}", comment)
+
+
+@pytest.mark.parametrize(
+    ("login", "user_type", "user_id", "head_repository", "trusted"),
+    [
+        (
+            "musicassistant-bot[bot]",
+            "Bot",
+            "304008617",
+            "music-assistant/server",
+            True,
+        ),
+        ("musicassistant-bot", "Bot", "304008617", "music-assistant/server", False),
+        (
+            "musicassistant-bot[bot]",
+            "User",
+            "304008617",
+            "music-assistant/server",
+            False,
+        ),
+        (
+            "musicassistant-bot[bot]",
+            "Bot",
+            "304008617",
+            "untrusted/server",
+            False,
+        ),
+        (
+            "musicassistant-bot[bot]",
+            "Bot",
+            "123456789",
+            "music-assistant/server",
+            False,
+        ),
+    ],
+)
+def test_dependency_auto_merge_app_bot_identity_contract(
+    login: str,
+    user_type: str,
+    user_id: str,
+    head_repository: str,
+    trusted: bool,
+) -> None:
+    """Accept only the expected same-repository GitHub App bot identity."""
+    workflow = yaml.safe_load(DEPENDENCY_AUTO_MERGE_WORKFLOW.read_text(encoding="utf-8"))
+    expected = workflow["env"]
+
+    is_trusted_app = (
+        login == expected["EXPECTED_APP_BOT_LOGIN"]
+        and user_type == "Bot"
+        and user_id == expected["EXPECTED_APP_BOT_ID"]
+        and head_repository == "music-assistant/server"
+    )
+
+    assert is_trusted_app is trusted
+
+
+def test_dependency_auto_merge_enforces_app_bot_identity_contract() -> None:
+    """Ensure the workflow enforces the tested App bot identity contract."""
+    workflow_text = DEPENDENCY_AUTO_MERGE_WORKFLOW.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    assert workflow_text.count("musicassistant-bot[bot]") == 1
+    assert workflow["env"] == {
+        "EXPECTED_APP_BOT_LOGIN": "musicassistant-bot[bot]",
+        "EXPECTED_APP_BOT_ID": "304008617",
+    }
+
+    job = workflow["jobs"]["auto-merge"]
+    steps = {step["name"]: step for step in job["steps"]}
+    source_step = steps["Verify PR is from trusted source"]
+    assert source_step["env"] == {
+        "GH_TOKEN": "${{ secrets.GITHUB_TOKEN }}",
+        "BASE_REPOSITORY": "${{ github.repository }}",
+        "HEAD_REPOSITORY": "${{ github.event.pull_request.head.repo.full_name }}",
+        "PR_AUTHOR": "${{ github.event.pull_request.user.login }}",
+        "PR_AUTHOR_ID": "${{ github.event.pull_request.user.id }}",
+        "PR_AUTHOR_TYPE": "${{ github.event.pull_request.user.type }}",
+    }
+    source_check = source_step["run"]
+    for required_check in (
+        'if [ "$PR_AUTHOR" = "$EXPECTED_APP_BOT_LOGIN" ]; then',
+        '[ "$PR_AUTHOR_TYPE" != "Bot" ] ||',
+        '[ "$PR_AUTHOR_ID" != "$EXPECTED_APP_BOT_ID" ] ||',
+        '[ "$HEAD_REPOSITORY" != "$BASE_REPOSITORY" ]; then',
+        'gh api "/users/$EXPECTED_APP_BOT_LOGIN"',
+        'elif [ "$PR_AUTHOR_TYPE" = "User" ]; then',
+    ):
+        assert required_check in source_check
+
+    author_check = steps["Verify commit authors"]["run"]
+    assert '--arg login "$EXPECTED_APP_BOT_LOGIN"' in author_check
+    assert '--argjson id "$EXPECTED_APP_BOT_ID"' in author_check
+    assert 'if [ "$AUTHOR" = "$EXPECTED_APP_BOT_LOGIN" ]; then' in author_check
+    assert "UNATTRIBUTED" in author_check
+    assert "COMMIT_COUNT" in author_check
+    assert "collaborators/$AUTHOR/permission" in author_check
+
+    assert "auto-update-frontend-" in job["if"]
+    assert "auto-update-models-" in job["if"]
+    labels_check = steps["Verify PR labels and source"]["run"]
+    assert '"dependencies"' in labels_check
+    assert "auto-update-frontend-*" in labels_check
+    assert "auto-update-models-*" in labels_check
+    files_check = steps["Verify only dependency files were changed"]["run"]
+    assert '"pyproject.toml"' in files_check
+    assert '"requirements_all.txt"' in files_check
+    diff_check = steps["Verify changes are version bumps"]["run"]
+    assert "UNEXPECTED=" in diff_check
+    assert "No added version pin found" in diff_check
+    availability_check = steps["Wait for package availability on PyPI"]["run"]
+    assert "python3 -m pip download --no-deps" in availability_check
+    assert "--approve" in steps["Auto-approve PR"]["run"]
+    assert "--auto --squash" in steps["Enable auto-merge"]["run"]
 
 
 def test_release_workflow_uses_minimum_preflight_permissions_and_expected_app() -> None:
