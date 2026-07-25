@@ -572,17 +572,25 @@ def test_release_workflow_exact_source_resolution_uses_requested_sha() -> None:
     assert resolve_step["env"] == {"REQUESTED_SHA": "${{ inputs.source_sha }}"}
     resolve_run = str(resolve_step["run"])
 
-    for required_snippet in (
-        'if [ -n "$REQUESTED_SHA" ]; then',
-        "requested_sha=$(printf '%s' \"$REQUESTED_SHA\" |",
-        "tr '[:upper:]' '[:lower:]')",
-        "source_sha must be a full commit SHA",
-        'source_sha=$(git -C source rev-parse "$requested_sha^{commit}")',
-        'if ! git -C source merge-base --is-ancestor "$source_sha" "$branch_sha"; then',
-        'source_sha="$branch_sha"',
-        'echo "sha=$source_sha" >> "$GITHUB_OUTPUT"',
-    ):
-        assert required_snippet in resolve_run
+    expected_resolution = """\
+if [ -n "$REQUESTED_SHA" ]; then
+  requested_sha=$(printf '%s' "$REQUESTED_SHA" |
+    tr '[:upper:]' '[:lower:]')
+  if ! [[ "$requested_sha" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "source_sha must be a full commit SHA" >&2
+    exit 1
+  fi
+  source_sha=$(git -C source rev-parse "$requested_sha^{commit}")
+  if ! git -C source merge-base --is-ancestor "$source_sha" "$branch_sha"; then
+    echo "$source_sha is not part of ${{ steps.branch.outputs.branch }}" >&2
+    exit 1
+  fi
+else
+  source_sha="$branch_sha"
+fi
+echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+"""
+    assert expected_resolution in resolve_run
 
 
 def test_release_workflow_publication_state_uses_release_ids() -> None:
