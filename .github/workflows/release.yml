@@ -950,10 +950,34 @@ jobs:
         id: publication_state
         env:
           GH_TOKEN: ${{ github.token }}
+          DRAFT_RELEASE_ID: ${{ needs.prepare_draft.outputs.release_id }}
+          PUBLISHED_RELEASE_ID: ${{ needs.resolve.outputs.release_id }}
+          RELEASE_STATE: ${{ needs.resolve.outputs.release_state }}
           VERSION: ${{ inputs.version }}
         run: |
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION" \
+          case "$RELEASE_STATE" in
+            new|draft)
+              RELEASE_ID="$DRAFT_RELEASE_ID"
+              ;;
+            published)
+              RELEASE_ID="$PUBLISHED_RELEASE_ID"
+              ;;
+            *)
+              echo "Unsupported release state: $RELEASE_STATE" >&2
+              exit 1
+              ;;
+          esac
+          if [ -z "$RELEASE_ID" ]; then
+            echo "Missing release id for $RELEASE_STATE release $VERSION" >&2
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
             > "$RUNNER_TEMP/live-release.json"
+          live_tag_name=$(jq -r '.tag_name' "$RUNNER_TEMP/live-release.json")
+          if [ "$live_tag_name" != "$VERSION" ]; then
+            echo "Release $VERSION resolves to tag $live_tag_name" >&2
+            exit 1
+          fi
           draft=$(jq -r '.draft' "$RUNNER_TEMP/live-release.json")
           immutable=$(jq -r '.immutable' "$RUNNER_TEMP/live-release.json")
           if [ "$draft" = "true" ] && [ "$immutable" = "false" ]; then
