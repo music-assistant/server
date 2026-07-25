@@ -506,7 +506,7 @@ async def test_cli_command_preserves_timestamp_when_delivery_raises() -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_queues_text_metadata_before_connection() -> None:
+async def test_connect_queues_text_metadata_before_connection() -> None:
     """Text metadata is queued as soon as cliairplay starts."""
     player = _make_player()
     stream = AirPlayStream(player)
@@ -542,14 +542,14 @@ async def test_start_queues_text_metadata_before_connection() -> None:
         patch.object(stream.commands_pipe, "create", side_effect=create_pipe),
         patch.object(stream, "send_metadata", side_effect=send_metadata) as send_metadata_mock,
     ):
-        await stream.start()
+        await stream.connect()
 
     assert operation_order == ["pipe", "process", "metadata"]
     send_metadata_mock.assert_awaited_once_with(12, metadata, send_artwork=False)
 
 
 @pytest.mark.asyncio
-async def test_start_failure_cleans_up_process_and_pipe() -> None:
+async def test_connect_failure_cleans_up_process_and_pipe() -> None:
     """A metadata write failure cannot leave a live cliairplay process or FIFO."""
     player = _make_player()
     stream = AirPlayStream(player)
@@ -582,7 +582,7 @@ async def test_start_failure_cleans_up_process_and_pipe() -> None:
         ),
         pytest.raises(OSError, match="metadata write failed"),
     ):
-        await stream.start()
+        await stream.connect()
 
     process.kill.assert_awaited_once()
     remove_pipe.assert_awaited_once()
@@ -591,86 +591,177 @@ async def test_start_failure_cleans_up_process_and_pipe() -> None:
 
 
 @pytest.mark.asyncio
-async def test_generation_zero_uses_prepare_and_start_commands() -> None:
-    """The first generation is prepared, primed, and started over the command pipe."""
-    stream = AirPlayStream(_make_player())
+async def test_start_sends_command_and_stamps_position() -> None:
+    """START is delivered over the command pipe and stamps the media position."""
+    player = _make_player()
+    stream = AirPlayStream(player)
     stream._cli_proc = MagicMock(closed=False)
     stream._connected.set()
 
     with patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command:
-        await stream.prepare_generation(0, "-", 12_000)
-        assert stream._handle_status_line("[STATUS] ready generation=0") is False
-        assert await stream.wait_generation_ready(0)
-        assert stream._handle_status_line("[STATUS] primed generation=0") is False
-        assert await stream.wait_generation_primed(0)
-        await stream.start_generation(0, 12_000, START_UNIX_MS)
+        await stream.start(START_UNIX_MS, 12_000)
 
-    assert [call.args[0] for call in write_command.await_args_list] == [
-        "GENERATION=0\nAUDIO=-\nPOSITION_MS=12000\nACTION=PREPARE",
-        f"GENERATION=0\nSTART_UNIX_MS={START_UNIX_MS}\nACTION=START",
-    ]
+    write_command.assert_awaited_once_with(f"START_UNIX_MS={START_UNIX_MS}\nACTION=START")
+    assert stream._start_position == 12.0
+    player.set_state_from_stream.assert_called_once_with(elapsed_time=12.0, stream=stream)
 
 
 @pytest.mark.asyncio
-async def test_repeated_prepare_failures_do_not_grow_generation_events() -> None:
-    """Dropped and failed PREPARE writes always remove their generation events."""
+@pytest.mark.parametrize(
+    "complete_before_start",
+    [True, False],
+    ids=["delivered", "rendering"],
+)
+async def test_start_repushes_transition_artwork(complete_before_start: bool) -> None:
+    """START re-sends artwork prepared before or during a track transition."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+    metadata = MagicMock(
+        corrected_elapsed_time=0,
+        title="New track",
+        artist="Artist",
+        album="Album",
+        duration=180,
+        image_url="new-image",
+    )
+    stream.session = MagicMock(media=metadata)
+    render_started = asyncio.Event()
+    release_render = asyncio.Event()
+    metadata_tasks: list[asyncio.Task[Any]] = []
+    render_count = 0
+
+    def create_task(target: Any, **_kwargs: Any) -> asyncio.Task[Any]:
+        task = asyncio.create_task(target())
+        metadata_tasks.append(task)
+        return task
+
+    async def prepare_artwork(_image_url: str, _generation: int) -> str:
+        nonlocal render_count
+        render_count += 1
+        if render_count == 1:
+            render_started.set()
+            if not complete_before_start:
+                await release_render.wait()
+            return "/cache/pretransition.jpg"
+        return "/cache/posttransition.jpg"
+
+    player.provider.mass.create_task.side_effect = create_task
+    with (
+        patch.object(
+            stream,
+            "_write_cli_command",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as write_command,
+        patch.object(
+            stream,
+            "_prepare_artwork",
+            new_callable=AsyncMock,
+            side_effect=prepare_artwork,
+        ),
+    ):
+        pretransition_task = asyncio.create_task(stream.send_metadata(None, metadata))
+        await render_started.wait()
+        if complete_before_start:
+            await pretransition_task
+        await stream.start(START_UNIX_MS, 0)
+        await asyncio.gather(*metadata_tasks)
+        release_render.set()
+        await pretransition_task
+
+    commands = [args.args[0] for args in write_command.await_args_list]
+    assert commands[-2:] == [
+        f"START_UNIX_MS={START_UNIX_MS}\nACTION=START",
+        "ARTWORK=/cache/posttransition.jpg",
+    ]
+    assert ("ARTWORK=/cache/pretransition.jpg" in commands) is complete_before_start
+    assert stream._metadata_generation == 2
+    assert stream._metadata_checksum == "New track|Artist|Album|180|new-image"
+
+
+@pytest.mark.asyncio
+async def test_start_requires_connected_process() -> None:
+    """START is rejected without a connected cliairplay process."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    # not connected: _connected event never set
+
+    with (
+        patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command,
+        pytest.raises(RuntimeError, match="without a connected cliairplay process"),
+    ):
+        await stream.start(START_UNIX_MS, 0)
+
+    write_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_flush_sends_command_and_awaits_ack() -> None:
+    """FLUSH is delivered and resolves once the binary reports it flushed."""
     stream = AirPlayStream(_make_player())
     stream._cli_proc = MagicMock(closed=False)
     stream._connected.set()
 
     with patch.object(
-        stream,
-        "_write_cli_command",
-        new_callable=AsyncMock,
-        side_effect=[False, OSError("write failed"), False],
-    ):
-        for generation in range(1, 4):
-            with pytest.raises((PlayerCommandFailed, OSError)):
-                await stream.prepare_generation(
-                    generation,
-                    "/tmp/generation.pcm",  # noqa: S108
-                    0,
-                )
-            assert stream._gen_ready == {}
-            assert stream._gen_primed == {}
-
-
-@pytest.mark.asyncio
-async def test_wait_generation_ready_times_out() -> None:
-    """A generation without a ready status fails its bounded readiness wait."""
-    stream = AirPlayStream(_make_player())
-    stream.next_generation()
-
-    assert await stream.wait_generation_ready(1, timeout=0) is False
-
-
-@pytest.mark.asyncio
-async def test_discard_generation_propagates_flush_delivery() -> None:
-    """A staged discard sends targeted FLUSH and surfaces dropped delivery."""
-    stream = AirPlayStream(_make_player())
-    stream.next_generation()
-
-    with patch.object(
-        stream,
-        "_write_cli_command",
-        new_callable=AsyncMock,
-        side_effect=[True, False, OSError("write failed")],
+        stream, "_write_cli_command", new_callable=AsyncMock, return_value=True
     ) as write_command:
-        await stream.discard_generation(1)
-        stream.next_generation()
-        with pytest.raises(PlayerCommandFailed, match="Could not deliver FLUSH"):
-            await stream.discard_generation(2)
-        stream.next_generation()
-        with pytest.raises(OSError, match="write failed"):
-            await stream.discard_generation(3)
+        flush_task = asyncio.create_task(stream.flush())
+        await asyncio.sleep(0)
+        assert stream._handle_status_line("[STATUS] flushed") is False
+        assert await flush_task is True
 
-    assert write_command.await_args_list == [
-        call("GENERATION=1\nACTION=FLUSH"),
-        call("GENERATION=2\nACTION=FLUSH"),
-        call("GENERATION=3\nACTION=FLUSH"),
-    ]
-    assert stream._gen_ready == {}
-    assert stream._gen_primed == {}
+    write_command.assert_awaited_once_with("ACTION=FLUSH")
+
+
+@pytest.mark.asyncio
+async def test_flush_times_out_without_ack() -> None:
+    """FLUSH returns False when the binary never acknowledges it."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
+        assert await stream.flush(timeout=0) is False
+
+
+@pytest.mark.asyncio
+async def test_flush_returns_false_when_command_not_delivered() -> None:
+    """FLUSH reports failure when the command cannot be delivered."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=False):
+        assert await stream.flush() is False
+
+
+@pytest.mark.asyncio
+async def test_start_raises_when_command_not_delivered() -> None:
+    """A dropped START surfaces as an error so the caller can fall back cold."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with (
+        patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=False),
+        pytest.raises(PlayerCommandFailed, match="Could not deliver START"),
+    ):
+        await stream.start(1_750_000_000_000, 0)
+
+
+@pytest.mark.asyncio
+async def test_flush_returns_false_when_not_connected() -> None:
+    """FLUSH is a no-op returning False before the device connects."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    # not connected
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command:
+        assert await stream.flush() is False
+
+    write_command.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -726,45 +817,21 @@ async def test_named_pipe_writer_open_restores_blocking_mode() -> None:
     set_blocking.assert_called_once_with(42, True)
 
 
-@pytest.mark.asyncio
-async def test_generation_cannot_start_before_primed() -> None:
-    """A START command is rejected until that generation has reported primed."""
+def test_flushed_status_sets_flush_event() -> None:
+    """The [STATUS] flushed line releases the flush acknowledgement event."""
     stream = AirPlayStream(_make_player())
-    stream._cli_proc = MagicMock(closed=False)
-    stream._connected.set()
+    assert not stream._flushed.is_set()
 
-    with (
-        patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command,
-        pytest.raises(RuntimeError, match="before it is primed"),
-    ):
-        await stream.start_generation(0, 0, START_UNIX_MS)
+    assert stream._handle_status_line("[STATUS] flushed") is False
 
-    write_command.assert_not_awaited()
+    assert stream._flushed.is_set()
 
 
-@pytest.mark.asyncio
-async def test_generation_cannot_start_after_process_exit() -> None:
-    """A primed generation is not started after its CLI process exits."""
-    stream = AirPlayStream(_make_player())
-    process = MagicMock(closed=False)
-    stream._cli_proc = process
-    stream._connected.set()
-
-    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command:
-        await stream.prepare_generation(0, "-", 0)
-        stream._handle_status_line("[STATUS] primed generation=0")
-        process.closed = True
-        with pytest.raises(RuntimeError, match="without a connected cliairplay process"):
-            await stream.start_generation(0, 0, START_UNIX_MS)
-
-    write_command.assert_awaited_once_with("GENERATION=0\nAUDIO=-\nPOSITION_MS=0\nACTION=PREPARE")
-
-
-def test_generation_zero_elapsed_includes_position_once() -> None:
-    """Generation-0 progress is based on its media position without session offset."""
+def test_elapsed_includes_start_position() -> None:
+    """Reported progress is the current anchor's media base plus the binary delta."""
     player = _make_player()
     stream = AirPlayStream(player)
-    stream._generation_position = 12.0
+    stream._start_position = 12.0
 
     stream._update_elapsed(1.5)
 
@@ -1232,3 +1299,42 @@ async def test_send_metadata_passes_cached_artwork_path_to_binary() -> None:
         await stream.send_metadata(None, metadata)
 
     assert send_command.await_args_list[-1] == call(f"ARTWORK={cached_path}")
+
+
+@pytest.mark.asyncio
+async def test_failed_artwork_delivery_is_retried() -> None:
+    """A dropped ARTWORK command remains pending for the next metadata update."""
+    stream = AirPlayStream(_make_player())
+    metadata = MagicMock(
+        duration=180,
+        title="Track",
+        artist="Artist",
+        album="Album",
+        image_url="image",
+    )
+    metadata_checksum = "Track|Artist|Album|180|image"
+    artwork_path = "/cache/thumbnails/artwork.jpg"
+
+    with (
+        patch.object(
+            stream,
+            "_prepare_artwork",
+            new_callable=AsyncMock,
+            return_value=artwork_path,
+        ) as prepare_artwork,
+        patch.object(
+            stream,
+            "send_cli_command",
+            new_callable=AsyncMock,
+            side_effect=[True, False, True],
+        ) as send_command,
+    ):
+        await stream.send_metadata(None, metadata)
+        assert stream._metadata_checksum == ""
+        await stream.send_metadata(None, metadata)
+
+    assert prepare_artwork.await_count == 2
+    assert [args.args[0] for args in send_command.await_args_list].count(
+        f"ARTWORK={artwork_path}"
+    ) == 2
+    assert stream._metadata_checksum == metadata_checksum

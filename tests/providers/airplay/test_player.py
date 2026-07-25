@@ -786,8 +786,8 @@ def test_supported_features_always_includes_pause(airplay_player: AirPlayPlayer)
     PAUSE stays advertised whether or not the player is grouped.
 
     Keeping PAUSE keeps the AirPlay player itself as the pause control target, so a
-    grouped pause maps to a full session stop (see pause()) instead of the players
-    controller falling through to a linked native player's pause - which would only
+    grouped pause parks the complete session (see pause()) instead of the players
+    controller falling through to a linked native player's pause, which would only
     pause the sync leader while the other members keep playing.
     """
     airplay_player._attr_group_members = []
@@ -795,6 +795,39 @@ def test_supported_features_always_includes_pause(airplay_player: AirPlayPlayer)
     # sync leader: still advertises PAUSE
     airplay_player._attr_group_members = ["test_player", "child"]
     assert PlayerFeature.PAUSE in airplay_player.supported_features
+
+
+@pytest.mark.asyncio
+async def test_single_player_play_sends_action_play(airplay_player: AirPlayPlayer) -> None:
+    """An unsynced player resumes its paused stream in place with ACTION=PLAY."""
+    airplay_player._attr_group_members = []
+    send_cmd = _setup_running_stream(airplay_player)
+
+    await airplay_player.play()
+
+    send_cmd.assert_awaited_once_with("ACTION=PLAY")
+
+
+@pytest.mark.asyncio
+async def test_grouped_play_resumes_active_native_queue(airplay_player: AirPlayPlayer) -> None:
+    """A linked AirPlay group resumes the queue owned by its native parent."""
+    airplay_player._attr_group_members = ["test_player", "child"]
+    send_cmd = _setup_running_stream(airplay_player)
+    active_queue = MagicMock(queue_id="native_parent")
+
+    with (
+        patch.object(
+            airplay_player.mass.players, "get_active_queue", return_value=active_queue
+        ) as get_active_queue,
+        patch.object(
+            airplay_player.mass.player_queues, "resume", new_callable=AsyncMock
+        ) as resume_queue,
+    ):
+        await airplay_player.play()
+
+    get_active_queue.assert_called_once_with(airplay_player)
+    resume_queue.assert_awaited_once_with("native_parent", fade_in=False)
+    send_cmd.assert_not_awaited()
 
 
 @pytest.mark.asyncio

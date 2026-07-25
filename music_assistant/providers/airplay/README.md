@@ -225,17 +225,19 @@ Apple TV and Mac devices require pairing before they can be used for streaming.
 The `AirPlayStreamSession` class in [stream_session.py](stream_session.py) manages streaming to one or more synchronized players:
 
 1. **Initialization** (`start()` method)
-   - Connects every member before preparing playback
-   - Prepares generation 0 on every connected CLI and starts feeding audio
-   - Waits until every member reports the generation primed
-   - Sends one shared audible start instant to every member
+   - Connects every member before anchoring playback
+   - Wires each member's ffmpeg into its persistent CLI stdin and starts feeding audio
+   - Waits until every member's binary confirms the feed flowing (`[STATUS] audio`),
+     then sends one shared audible start instant with a short anchor lead
+     (250 ms solo / 500 ms group); readiness is fully event-driven, so no
+     setup time is guessed and the binary bursts the receiver pre-fill after START
 
 2. **Client Setup** (per player, `_start_client()` method)
    - Creates an `AirPlayStream` instance with the player's PCM format
      (16-bit default, 24-bit s32le when hi-res is enabled)
-   - Starts the CLI process and connects to the receiver without starting playback
-   - Configures FFmpeg for audio format conversion and optional DSP filters
-   - Keeps process stdin connected so generation 0 can select it with `AUDIO=-`
+   - Starts the CLI process and connects to the receiver without anchoring playback
+   - Configures FFmpeg for audio format conversion and optional DSP filters,
+     feeding its output into the CLI's persistent stdin
 
 3. **Audio Streaming** (`_audio_streamer()` method)
    - Receives PCM audio chunks from Music Assistant core
@@ -244,7 +246,7 @@ The `AirPlayStreamSession` class in [stream_session.py](stream_session.py) manag
    - Handles silence padding if audio source is slow (watchdog mechanism)
 
 4. **Connection Monitoring**
-   - Waits for all devices to connect and prime before starting playback
+   - Waits for all devices to connect and confirm audio flowing before anchoring playback
    - Monitors CLI stderr for connection status and errors
    - Removes players that fail to keep up (write timeouts)
 
@@ -280,8 +282,8 @@ The provider supports synchronized multi-room audio by:
 When adding a player to an already-playing session (`add_client()` in [stream_session.py](stream_session.py)):
 
 1. **Ring buffer**: Session maintains a few seconds of recent audio chunks in memory
-2. **Immediate buffered feed**: Late joiner receives buffered chunks immediately to prime the ffmpeg/CLI pipeline
-3. **Compensated start time**: The joiner's start instant accounts for the buffer duration: `start_time + (seconds_streamed - buffer_duration)`, shifted forward (with the buffer head trimmed) when it would land in the past
+2. **Compensated start time**: The joiner's start instant accounts for the buffer duration: `start_time + (seconds_streamed - buffer_duration)`, shifted forward (with the buffer head trimmed) when it would land in the past
+3. **Anchor first, then prime**: The joiner's START is sent before the buffered chunks; pre-START the binary only buffers its bounded ring and sends nothing, so anchoring first lets it drain the prime as it streams in
 4. **Fast catch-up**: Device processes buffered audio and catches up to real-time position
 5. **Seamless sync**: Joins live stream perfectly synchronized with other players
 
@@ -378,22 +380,27 @@ and verify it against that release's `SHA256SUMS`. For local source development,
 ### Binary Communication
 
 **Input** (stdin):
-- Generation 0 PCM selected by command-pipe `PREPARE` with `AUDIO=-`: s16le
-  for 16-bit, raw s32le for 24-bit
-  (the binary truncates 32→24 internally when `--bitdepth 24` is passed)
+- A single persistent PCM stream for the whole CLI lifetime: s16le for 16-bit,
+  raw s32le for 24-bit (the binary truncates 32→24 internally when
+  `--bitdepth 24` is passed). The binary reads stdin into one ring buffer.
 - May be written eagerly, ahead of the scheduled start; byte 0 maps to the
-  sample audible at the start instant
+  sample audible at the start instant. A seek/next flushes the ring in place and
+  refills it — the stdin connection is never closed between tracks (only the
+  per-seek ffmpeg feeding it is restarted).
 
 **Commands** (named pipe):
 - Interactive commands sent via `AsyncNamedPipeWriter`
-- Required for every streaming protocol; audio sources are supplied only by
-  generation `PREPARE` (`AUDIO=-` for stdin or `AUDIO=<fifo path>`)
+- `ACTION=START` + `START_UNIX_MS=<t>` anchors/re-anchors playback;
+  `ACTION=FLUSH` flushes the live stream in place (acknowledged by
+  `[STATUS] flushed`) so the same stdin can be refilled for a seek/next
 - Examples: `ACTION=PLAY`, `ACTION=PAUSE`, `VOLUME=50`, `TITLE=Song Name`
 - MA creates the pipe and sends text metadata immediately after process start;
   timeline-anchored metadata and artwork are refreshed once the receiver connects
 
 **Output** (stderr):
-- Normalized `[STATUS]` messages (connected/playing/paused/eof), logs and errors
+- Normalized `[STATUS]` messages (connected/playing/paused/flushed/audio/eof), logs
+  and errors. `[STATUS] audio` is a one-shot per start cycle (re-armed by each
+  FLUSH) reporting the first stdin bytes arriving; MA anchors START only after it
 
 **Output** (stdout):
 - `[STATUS] latency ...` line with the effective lead and the device's
@@ -407,24 +414,27 @@ The provider monitors stderr in a separate task (`_stderr_reader()` in [stream.p
 
 ## Start Timing and Synchronization
 
-The provider never handles NTP fixed-point formats: every media generation is
-prepared and started over the command pipe. `START_UNIX_MS` is a plain unix
-epoch millisecond meaning "**the first sample is audible exactly at this
-instant**" on every protocol path (RAOP, AirPlay 2 RAOP-compat and native).
+The provider never handles NTP fixed-point formats: playback is anchored over
+the command pipe. `START_UNIX_MS` is a plain unix epoch millisecond meaning
+"**the first pending stdin sample is audible exactly at this instant**" on every
+protocol path (RAOP, AirPlay 2 RAOP-compat and native).
 
 1. Start every CLI and wait until every group member reports connected
-2. Send `PREPARE` for generation 0 to every member, begin feeding PCM, and wait
-   until every member reports primed
-3. Calculate one explicit start instant with a short post-prime lead and send
-   the same value in `START` to every member
-4. The binary owns receiver-buffer handling from there, so the commanded start
-   cannot race connection or pre-fill
-5. Warm seek, next-track and grouped resume use the same PREPARE/prime/START
-   barrier for later generations on legacy RAOP, RAOP-compatible AirPlay 2 and
-   native AirPlay 2; standby keeps each protocol connection alive
-6. Sendspin starts preserve its externally supplied audible instant after the
-   same connection and prime gates
-7. Per-player `sync_adjust` config allows fine-tuning (+/- milliseconds)
+2. Wire each member's ffmpeg into its persistent stdin, begin feeding PCM and
+   wait until every member confirms the feed flowing (`[STATUS] audio`)
+3. Send one shared `START` (now + 250 ms solo / 500 ms group) to every member;
+   readiness is event-confirmed so the anchor covers only the receiver re-anchor,
+   and the binary bursts the receiver pre-fill from START
+4. **Warm seek / next-track / grouped resume** reuse the live connections: MA
+   stops feeding old audio, kills the per-seek ffmpeg (never the persistent
+   stdin), sends `ACTION=FLUSH` to every member and awaits `[STATUS] flushed`,
+   then feeds a fresh ffmpeg into the same stdin, awaits `[STATUS] audio` and
+   sends one shared `START`.
+   Standby keeps each protocol connection alive for the same flush-refill resume
+5. Sendspin starts preserve its externally supplied audible instant, riding the
+   same persistent-stdin flush-refill (cold connect + `START`, warm `FLUSH` +
+   `START`) instead of a cold reconnect
+6. Per-player `sync_adjust` config allows fine-tuning (+/- milliseconds)
 
 ### Shared PTP Clock Daemon
 

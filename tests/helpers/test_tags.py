@@ -2,10 +2,12 @@
 
 import pathlib
 import shutil
+import subprocess
 from unittest.mock import MagicMock
 
 import mutagen
 import pytest
+from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers import tags
@@ -27,6 +29,39 @@ FILE_M4A = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.m4a"))
 FILE_FLAC = str(RESOURCES_DIR.joinpath("MultipleArtists.flac"))
 FILE_FLAC_SEMICOLON = str(RESOURCES_DIR.joinpath("ArtistWithSemicolon.flac"))
 FILE_WV = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.wv"))
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected_detail"),
+    [
+        (
+            b"[Vorbis parser @ 0x123] Invalid Setup header\n"
+            b"[ogg @ 0x456] Header processing failed: Unknown error occurred\n",
+            "Invalid Setup header",
+        ),
+        (b"broken.ogg: Unknown error occurred\n", "Invalid or unsupported media file"),
+    ],
+)
+def test_parse_tags_reports_actionable_ffprobe_error(
+    monkeypatch: pytest.MonkeyPatch, stderr: bytes, expected_detail: str
+) -> None:
+    """Test that tag parsing reports a useful FFprobe failure."""
+    process_error = subprocess.CalledProcessError(
+        returncode=1,
+        cmd=("ffprobe",),
+        output=b'{"error":{"code":-1,"string":"Unknown error occurred"}}',
+        stderr=stderr,
+    )
+    check_output = MagicMock(side_effect=process_error)
+    monkeypatch.setattr(subprocess, "check_output", check_output)
+
+    with pytest.raises(InvalidDataError) as err:
+        tags.parse_tags("broken.ogg")
+
+    assert str(err.value) == f"Unable to retrieve info for broken.ogg ({expected_detail})"
+    assert check_output.call_args.kwargs == {"stderr": subprocess.PIPE}
+    args = check_output.call_args.args[0]
+    assert args[args.index("-loglevel") + 1] == "error"
 
 
 async def test_parse_metadata_from_id3tags() -> None:
