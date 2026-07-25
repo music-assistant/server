@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.media_items import Track
+from music_assistant_models.media_items import Audiobook, MediaCollection, Track, UniqueList
 
 from music_assistant.controllers.player_queues.media_resolver import MediaResolver
 
@@ -80,3 +80,36 @@ async def test_unsupported_type_is_empty() -> None:
     """A type with no playable-track resolution yields an empty list."""
     resolver = _resolver()
     assert await resolver.get_tracks_for_playback(_item(MediaType.AUDIOBOOK)) == []
+
+
+@pytest.mark.asyncio
+async def test_audiobook_collection_resolves_existing_items() -> None:
+    """An audiobook collection resolves its model items without deserializing them again."""
+    resolver = _resolver()
+    resolver.mass = MagicMock()
+    resolver.mass.music.get_resume_position = AsyncMock(side_effect=[(True, 0), (False, 12_000)])
+    first = Audiobook(
+        item_id="book-1",
+        provider="library",
+        name="Book 1",
+        provider_mappings=set(),
+    )
+    second = Audiobook(
+        item_id="book-2",
+        provider="library",
+        name="Book 2",
+        provider_mappings=set(),
+    )
+    collection = MediaCollection[Audiobook](
+        item_id="audiobook___Series",
+        provider="library",
+        name="Series",
+        provider_mappings=set(),
+        items=UniqueList([first, second]),
+    )
+
+    result = await resolver._resolve_media_items(collection, userid="user")
+
+    assert result == [second]
+    assert result[0] is second
+    assert second.resume_position_ms == 12_000

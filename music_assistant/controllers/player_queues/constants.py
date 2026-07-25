@@ -19,6 +19,7 @@ CONF_DEFAULT_ENQUEUE_OPTION_PODCAST = "default_enqueue_option_podcast"
 CONF_DEFAULT_ENQUEUE_OPTION_SOUND_EFFECT = "default_enqueue_option_sound_effect"
 CONF_DEFAULT_ENQUEUE_OPTION_PODCAST_EPISODE = "default_enqueue_option_podcast_episode"
 CONF_DEFAULT_ENQUEUE_OPTION_FOLDER = "default_enqueue_option_folder"
+CONF_DEFAULT_ENQUEUE_OPTION_COLLECTION = "default_enqueue_option_collection"
 CONF_DEFAULT_ENQUEUE_OPTION_UNKNOWN = "default_enqueue_option_unknown"
 
 CONF_AUTOPLAY_LABEL = "autoplay_label"

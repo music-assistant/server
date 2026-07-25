@@ -27,7 +27,7 @@ dependencies = [
   "getmac==0.9.5",
   "mashumaro==3.20",
   "music-assistant-frontend==2.17.237",
-  "music-assistant-models==1.1.169",
+  "music-assistant-models==1.1.170",
   "mutagen==1.48.1",
   "orjson==3.11.6",
   "pillow==12.3.0",
