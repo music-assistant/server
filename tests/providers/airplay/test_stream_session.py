@@ -320,6 +320,8 @@ def test_warm_replace_supports_every_streaming_protocol(
     [
         (StreamingProtocol.AIRPLAY2,),
         (StreamingProtocol.RAOP,),
+        (StreamingProtocol.AIRPLAY2, StreamingProtocol.AIRPLAY2),
+        (StreamingProtocol.RAOP, StreamingProtocol.RAOP),
         (StreamingProtocol.RAOP, StreamingProtocol.AIRPLAY2),
     ],
 )
@@ -389,6 +391,7 @@ async def test_standby_resumes_warm_on_existing_streams(
     for player in players:
         stream = original_streams[player.player_id]
         assert player.stream is stream
+        stream.send_cli_command.assert_awaited_once_with("ACTION=STANDBY")
         stream.flush.assert_awaited_once_with()
         stream.start.assert_awaited_once_with(expected_start, 10_000)
 
