@@ -1552,9 +1552,13 @@ class SendspinPlayer(SendspinBasePlayer):
                 primary_artist = artists[0]
                 # Prefer a full library artist (has reliable up-to-date artwork) over
                 # the ItemMapping in the queue item, which often has image=None.
-                result = await self.mass.music.get_library_item_by_prov_id(
-                    MediaType.ARTIST, primary_artist.item_id, primary_artist.provider
-                )
+                try:
+                    result = await self.mass.music.get_library_item_by_prov_id(
+                        MediaType.ARTIST, primary_artist.item_id, primary_artist.provider
+                    )
+                except MediaNotFoundError:
+                    # Queue items can outlive an artist's library row.
+                    result = None
                 artist_item = result if isinstance(result, Artist) else None
                 image = artist_item.image if artist_item is not None else primary_artist.image
                 if image is not None:
