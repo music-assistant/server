@@ -54,7 +54,7 @@ def test_parse_artist(
     example: pathlib.Path, provider_mock: Mock, snapshot: SnapshotAssertion
 ) -> None:
     """Test we can parse artists."""
-    with open(example) as f:
+    with open(example, encoding="utf-8") as f:
         data = json.load(f)
     parsed = parse_artist(provider_mock, data).to_dict()
     assert snapshot == parsed
@@ -65,7 +65,7 @@ def test_parse_album(
     example: pathlib.Path, provider_mock: Mock, snapshot: SnapshotAssertion
 ) -> None:
     """Test we can parse albums."""
-    with open(example) as f:
+    with open(example, encoding="utf-8") as f:
         data = json.load(f)
     parsed = parse_album(provider_mock, data).to_dict()
     assert snapshot == parsed
@@ -76,7 +76,7 @@ def test_parse_track(
     example: pathlib.Path, provider_mock: Mock, snapshot: SnapshotAssertion
 ) -> None:
     """Test we can parse tracks."""
-    with open(example) as f:
+    with open(example, encoding="utf-8") as f:
         data = json.load(f)
     parsed = parse_track(provider_mock, data).to_dict()
     assert snapshot == parsed
@@ -87,7 +87,7 @@ def test_parse_playlist(
     example: pathlib.Path, provider_mock: Mock, snapshot: SnapshotAssertion
 ) -> None:
     """Test we can parse playlists."""
-    with open(example) as f:
+    with open(example, encoding="utf-8") as f:
         data = json.load(f)
 
     is_mix = "mix" in example.name

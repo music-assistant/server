@@ -13,11 +13,12 @@ Covers three fixes for the Spotify auth failures caused by refresh-token rotatio
 
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.config_entries import ProviderConfig, ProviderError
-from music_assistant_models.enums import ProviderStatus, ProviderType
+from music_assistant_models.config_entries import ConfigEntry, ProviderConfig, ProviderError
+from music_assistant_models.enums import ConfigEntryType, ProviderStatus, ProviderType
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.constants import CONF_PROVIDERS
@@ -71,6 +72,38 @@ async def test_failed_reload_records_auth_error(mass_minimal: MusicAssistant) ->
     prov_conf = _prov_conf(instance)
     prov_conf.last_error = ProviderError.from_dict(stored)
     assert _provider_status(prov_conf, is_loaded=False) == ProviderStatus.AUTH_REQUIRED
+
+
+async def test_save_preserves_unknown_stored_values(mass_minimal: MusicAssistant) -> None:
+    """Stored values without config entries in the current save context survive a save."""
+    config = mass_minimal.config
+    instance = "spotify--test"
+    conf_key = f"{CONF_PROVIDERS}/{instance}"
+    config.set(
+        conf_key,
+        {
+            "domain": "spotify",
+            "type": "music",
+            "instance_id": instance,
+            "enabled": True,
+            "values": {"legacy_token": "keep-me"},
+            "setup_data": {"token": "abc"},
+        },
+    )
+    entry = ConfigEntry(key="region", type=ConfigEntryType.STRING, required=False)
+    prov_conf = cast("ProviderConfig", ProviderConfig.parse([entry], config.get(conf_key)))
+    with (
+        patch.object(config, "get_provider_config", AsyncMock(return_value=prov_conf)),
+        patch.object(mass_minimal, "load_provider_config", AsyncMock()),
+    ):
+        await config._update_provider_config(instance, {"region": "eu"})
+    stored = config.get(conf_key)
+    assert stored["values"]["region"] == "eu"
+    # a value written outside the declared entries (e.g. by a provider at runtime)
+    # is preserved instead of being dropped by the save rebuild
+    assert stored["values"]["legacy_token"] == "keep-me"
+    # setup_data travels along untouched
+    assert stored["setup_data"] == {"token": "abc"}
 
 
 async def test_immediate_flush_for_rotated_token(mass_minimal: MusicAssistant) -> None:

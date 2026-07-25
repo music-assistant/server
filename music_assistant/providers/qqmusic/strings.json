@@ -1,7 +1,11 @@
 {
   "config_entries": {
-    "qr_page_url": {
-      "label": "QR login page URL"
+    "method": {
+      "label": "Sign in with",
+      "options": {
+        "qq": "QQ",
+        "wx": "WeChat"
+      }
     },
     "quality": {
       "label": "Preferred quality",
@@ -11,28 +15,14 @@
         "flac": "FLAC (fallback to MP3)",
         "hi_res": "Hi-Res (Master, fallback to FLAC/MP3)"
       }
-    },
-    "start_qq_qr_auth": {
-      "label": "QQ Login",
-      "description": "Generate a QQ QR code and open the login popup page."
-    },
-    "start_wx_qr_auth": {
-      "label": "WeChat Login",
-      "description": "Generate a WeChat QR code and open the login popup page."
-    },
-    "check_qr_auth": {
-      "label": "Check QR status",
-      "description": "Manually check whether {0} scan confirmation is completed."
-    },
-    "clear_auth": {
-      "label": "[%key:common::config_entries::clear_auth::label%]"
+    }
+  },
+  "setup_flow": {
+    "abort": {
+      "login_rejected": "Login was rejected in the QQ or WeChat app."
     }
   },
   "manifest": {
     "description": "Stream QQ Music catalog, playlists, lyrics, and personalized recommendations."
-  },
-  "errors": {
-    "login_rejected": "Login was rejected in the {0} app.",
-    "confirm_login_in_app": "QR code scanned. Please confirm the login in the {0} app."
   }
 }

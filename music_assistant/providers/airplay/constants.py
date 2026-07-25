@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from enum import IntEnum
+from enum import IntEnum, StrEnum
 from typing import Final
 
-from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, ContentType, PlayerFeature
+from music_assistant_models.enums import ContentType, PlayerFeature
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_ENTRY_SYNC_ADJUST, INTERNAL_PCM_FORMAT
@@ -22,9 +21,18 @@ class StreamingProtocol(IntEnum):
     AIRPLAY2 = 2  # AirPlay 2
 
 
+class AirPlayRemoteCommand(StrEnum):
+    """Transport commands received from an AirPlay receiver."""
+
+    PLAY = "play"
+    PAUSE = "pause"
+    PLAY_PAUSE = "play_pause"
+    NEXT = "next"
+    PREVIOUS = "previous"
+
+
 CONF_VOLUME_START: Final[str] = "volume_start"
 CONF_PASSWORD: Final[str] = "password"
-CONF_AP2PASSWORD: Final[str] = "ap2password"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_ENCRYPTION: Final[str] = "encryption"
 # Advanced per-device escape hatch: force the legacy RAOP protocol on an
@@ -32,24 +40,38 @@ CONF_ENCRYPTION: Final[str] = "encryption"
 CONF_FORCE_RAOP: Final[str] = "force_raop"
 CONF_STORED_VOLUME: Final[str] = "stored_volume"
 CONF_HIRES_PLAYBACK: Final[str] = "hires_playback"
+CONF_COMPANION_CREDENTIALS: Final[str] = "companion_credentials"
+CONF_MRP_CREDENTIALS: Final[str] = "mrp_credentials"
+CONF_NATIVE_MRP_CREDENTIALS: Final[str] = "native_mrp_credentials"
+
+# Bundle id of the Music Assistant tvOS dashboard app, launched over Companion on
+# eligible Apple TVs (see tvos/docs/launch-contract.md).
+TVOS_APP_BUNDLE_ID: Final[str] = "io.music-assistant.tvos"
 
 AIRPLAY_DISCOVERY_TYPE: Final[str] = "_airplay._tcp.local."
+COMPANION_DISCOVERY_TYPE: Final[str] = "_companion-link._tcp.local."
+MRP_DISCOVERY_TYPE: Final[str] = "_mediaremotetv._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
-# Fixed lead (ms) between starting the stream and the audible group start
-# (--start-unix-ms means "the first sample is audible exactly at this instant"
-# on every protocol path). Covers process spawn + connect/session setup plus
-# the receiver-buffer pre-fill the binary does ahead of the audible start.
-# The effective pre-fill is roughly lead - connect_time; the native AirPlay 2
-# path needs a larger budget than RAOP because its pre-fill is paced (RAOP
-# bursts its backlog and fills faster), so too short a lead intermittently
-# clips the first fraction of a second on native receivers such as Sonos.
+# Setup lead (ms) advertised to externally timed sources such as Sendspin.
+# It covers process spawn, connect/session setup and receiver pre-fill before
+# the commanded audible instant. Native AirPlay 2 needs a larger budget than
+# RAOP because its pre-fill is paced.
 AIRPLAY_RAOP_SETUP_LEAD_MS: Final[int] = 1500
 AIRPLAY_AP2_SETUP_LEAD_MS: Final[int] = 2500
 # Late joiners keep a more conservative headroom: besides connecting, their
 # pipeline must also be primed from the session's history buffer.
 AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 2000
+# Anchor lead for a readiness-confirmed START (cold and warm alike): the
+# session only anchors after the binary confirmed the connection ([STATUS]
+# connected) and the new audio flowing ([STATUS] audio), so the lead no longer
+# guesses at setup or transcoder spin-up time. It covers just the receiver
+# re-anchor (accepted down to ~150 ms in the flush-ladder measurements; the
+# binary clamps below its own 250 ms floor) plus, for groups, fanning the
+# shared instant out to every member.
+AIRPLAY_START_LEAD_MS: Final[int] = 250
+AIRPLAY_GROUP_START_LEAD_MS: Final[int] = 500
 
 # Cover art is rendered to a local JPEG for the binary to embed (the binary
 # does not fetch URLs). 512px keeps the SET_PARAMETER payload small while still
@@ -77,12 +99,13 @@ CONF_PROTOCOL_MIGRATION_MARKER: Final[str] = "unified_binary_protocol_migration"
 # for other providers.
 CONF_ENTRY_SYNC_ADJUST_AIRPLAY = replace(CONF_ENTRY_SYNC_ADJUST, advanced=False)
 
-# Pairing action keys
-CONF_ACTION_START_PAIRING: Final[str] = "start_pairing"
-CONF_ACTION_FINISH_PAIRING: Final[str] = "finish_pairing"
-CONF_ACTION_RESET_PAIRING: Final[str] = "reset_pairing"
+# Interactive setup-flow input keys (transient PIN/password form fields and the
+# optional "set up now?" choice for the control pairing steps).
 CONF_PAIRING_PIN: Final[str] = "pairing_pin"
 CONF_PAIRING_PASSWORD: Final[str] = "pairing_password"
+CONF_COMPANION_PAIRING_PIN: Final[str] = "companion_pairing_pin"
+CONF_MRP_PAIRING_PIN: Final[str] = "mrp_pairing_pin"
+CONF_PAIR_NOW: Final[str] = "pair_now"
 BACKOFF_TIME_LOWER_LIMIT: Final[int] = 15  # seconds
 BACKOFF_TIME_UPPER_LIMIT: Final[int] = 300  # Five minutes
 
@@ -101,19 +124,6 @@ AIRPLAY_PCM_FORMAT = AudioFormat(
 # native flow only). At 24-bit the cliairplay binary expects raw s32le on stdin
 # and truncates to 24-bit ALAC internally.
 AIRPLAY_HIRES_SAMPLE_RATES: Final[list[tuple[int, int]]] = [(44100, 24), (48000, 24)]
-
-BROKEN_AIRPLAY_MODELS = (
-    # Samsung has been repeatedly being reported as having issues with AirPlay (raop and AP2)
-    # Samsung will work with AirPlay2 once PTP timing is implemented for the MA build
-    ("Samsung", "*"),
-)
-
-BROKEN_AIRPLAY_WARN = ConfigEntry(
-    key="BROKEN_AIRPLAY",
-    type=ConfigEntryType.ALERT,
-    default_value=None,
-    required=False,
-)
 
 BASE_PLAYER_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.PLAY_MEDIA,

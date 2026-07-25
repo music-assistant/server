@@ -9,6 +9,11 @@ on:
     branches:
       - dev
 
+env:
+  EXPECTED_APP_BOT_LOGIN: musicassistant-bot[bot]
+  EXPECTED_APP_BOT_LOGIN_ENCODED: musicassistant-bot%5Bbot%5D
+  EXPECTED_APP_BOT_ID: "304008617"
+
 # CRITICAL SECURITY: This workflow uses pull_request_target which runs in the context
 # of the base repository and has access to secrets. Multiple security checks ensure
 # only trusted automation PRs are auto-merged.
@@ -27,27 +32,43 @@ jobs:
       pull-requests: write
 
     steps:
-      # Security check 1: Verify PR is from user with write access
+      # Security check 1: Verify PR is from the exact expected GitHub App bot
       - name: Verify PR is from trusted source
         id: verify_pr_author
         run: |
-          PR_AUTHOR="${{ github.event.pull_request.user.login }}"
-
-          # Check if PR author has write access to the repository (includes org members and bots)
-          if gh api "/repos/${{ github.repository }}/collaborators/$PR_AUTHOR/permission" --jq '.permission' 2>/dev/null | grep -qE "^(admin|write|maintain)$"; then
-            echo "✅ PR is from user with write access: $PR_AUTHOR"
-          else
-            echo "❌ PR author does not have write access: $PR_AUTHOR"
+          # GitHub App bots are not collaborators. Trust only the known App account
+          # when the event also proves it is a same-repository Bot PR.
+          if [ "$PR_AUTHOR" != "$EXPECTED_APP_BOT_LOGIN" ] || \
+             [ "$PR_AUTHOR_TYPE" != "Bot" ] || \
+             [ "$PR_AUTHOR_ID" != "$EXPECTED_APP_BOT_ID" ] || \
+             [ "$HEAD_REPOSITORY" != "$BASE_REPOSITORY" ]; then
+            echo "❌ GitHub App PR identity does not match the trusted source"
             exit 1
           fi
+
+          if ! BOT_PROFILE=$(gh api "/users/$EXPECTED_APP_BOT_LOGIN_ENCODED" 2>/dev/null); then
+            echo "❌ Could not verify the GitHub App bot profile"
+            exit 1
+          fi
+          if [ "$(jq -r '.login' <<< "$BOT_PROFILE")" != "$EXPECTED_APP_BOT_LOGIN" ] || \
+             [ "$(jq -r '.type' <<< "$BOT_PROFILE")" != "Bot" ] || \
+             [ "$(jq -r '.id' <<< "$BOT_PROFILE")" != "$EXPECTED_APP_BOT_ID" ]; then
+            echo "❌ GitHub App bot profile does not match the trusted identity"
+            exit 1
+          fi
+          echo "✅ PR is from the trusted GitHub App bot"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_REPOSITORY: ${{ github.repository }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+          PR_AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
 
       # Security check 2: Verify PR labels and source branch
       - name: Verify PR labels and source
         run: |
           LABELS="${{ join(github.event.pull_request.labels.*.name, ',') }}"
-          BRANCH="$BRANCH"
 
           if [[ "$LABELS" != *"dependencies"* ]]; then
             echo "❌ PR does not have 'dependencies' label"
@@ -71,9 +92,9 @@ jobs:
       - name: Get PR details
         id: pr
         run: |
-          echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
 
-      # Security check 4: Verify all commit authors have write access
+      # Security check 4: Verify every commit is authored by the expected GitHub App bot
       - name: Verify commit authors
         run: |
           # A dependency bump PR only ever needs a handful of commits
@@ -100,16 +121,20 @@ jobs:
             exit 1
           fi
 
-          COMMIT_AUTHORS=$(echo "$COMMITS" | jq -r '[.[].author.login] | unique | .[]')
+          UNTRUSTED_AUTHORS=$(echo "$COMMITS" | jq \
+            --arg login "$EXPECTED_APP_BOT_LOGIN" \
+            --argjson id "$EXPECTED_APP_BOT_ID" \
+            '[.[] | select(
+              .author.login != $login or
+              .author.type != "Bot" or
+              .author.id != $id
+            )] | length')
+          if [ "$UNTRUSTED_AUTHORS" -gt 0 ]; then
+            echo "❌ $UNTRUSTED_AUTHORS commit(s) are not authored by the trusted GitHub App bot"
+            exit 1
+          fi
 
-          for AUTHOR in $COMMIT_AUTHORS; do
-            if gh api "/repos/${{ github.repository }}/collaborators/$AUTHOR/permission" --jq '.permission' 2>/dev/null | grep -qE "^(admin|write|maintain)$"; then
-              echo "✅ Commit author has write access: $AUTHOR"
-            else
-              echo "❌ Commit author does not have write access: $AUTHOR"
-              exit 1
-            fi
-          done
+          echo "✅ All commits are authored by the trusted GitHub App bot"
 
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

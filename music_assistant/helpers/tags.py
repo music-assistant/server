@@ -665,7 +665,7 @@ def parse_tags(
         "ffprobe",
         "-hide_banner",
         "-loglevel",
-        "fatal",
+        "error",
         "-threads",
         "0",
         "-show_error",
@@ -678,7 +678,7 @@ def parse_tags(
         input_file,
     )
     try:
-        res = subprocess.check_output(args)  # noqa: S603
+        res = subprocess.check_output(args, stderr=subprocess.PIPE)  # noqa: S603
         data = json.loads(res)
         if error := data.get("error"):
             raise InvalidDataError(error["string"])
@@ -711,11 +711,7 @@ def parse_tags(
                 tags.has_cover_image = True
         return tags
     except subprocess.CalledProcessError as err:
-        error_msg = f"Unable to retrieve info for {input_file}"
-        if output := getattr(err, "stdout", None):
-            err_details = json_loads(output)
-            with suppress(KeyError):
-                error_msg = f"{error_msg} ({err_details['error']['string']})"
+        error_msg = f"Unable to retrieve info for {input_file} ({_get_ffprobe_error(err)})"
         raise InvalidDataError(error_msg) from err
     except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
         try:
@@ -755,6 +751,40 @@ def get_file_duration(input_file: str) -> float:
     except Exception as err:
         error_msg = f"Unable to retrieve duration for {input_file}"
         raise InvalidDataError(error_msg) from err
+
+
+def _get_ffprobe_error(err: subprocess.CalledProcessError) -> str:
+    """
+    Return an actionable message for a failed FFprobe command.
+
+    :param err: The FFprobe process error.
+    """
+    unknown_error = "Unknown error occurred"
+    error_detail = "Invalid or unsupported media file"
+    if err.stdout:
+        with suppress(JSONDecodeError):
+            result = json_loads(err.stdout)
+            if (
+                isinstance(result, dict)
+                and isinstance(ffprobe_error := result.get("error"), dict)
+                and isinstance(message := ffprobe_error.get("string"), str)
+                and message != unknown_error
+            ):
+                error_detail = message
+
+    stderr = (
+        err.stderr.decode("utf-8", errors="replace")
+        if isinstance(err.stderr, bytes)
+        else err.stderr or ""
+    )
+    for line in stderr.splitlines():
+        stripped_line = line.strip()
+        if not stripped_line.startswith("["):
+            continue
+        _, separator, message = stripped_line.partition("] ")
+        if separator and message and unknown_error not in message:
+            return message
+    return error_detail
 
 
 def _decode_mp4_freeform_single(values: list[Any]) -> str:

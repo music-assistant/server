@@ -22,8 +22,7 @@ from music_assistant.providers.filesystem_local import (
     makedirs,
 )
 from music_assistant.providers.filesystem_local.constants import (
-    CONF_ENTRY_CONTENT_TYPE,
-    CONF_ENTRY_CONTENT_TYPE_READ_ONLY,
+    CONF_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
@@ -51,20 +50,6 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    # check if valid dns name is given for the host
-    server = str(config.get_value(CONF_HOST))
-    if not await get_ip_from_host(server):
-        msg = f"Unable to resolve {server}, make sure the address is resolvable."
-        raise LoginFailed(
-            msg,
-            translation_key="host_unresolvable",
-            translation_args=[server],
-        )
-    # check if share is valid
-    share = str(config.get_value(CONF_SHARE))
-    if not share or "/" in share or "\\" in share:
-        msg = "Invalid share name"
-        raise LoginFailed(msg)
     # base_path will be the path where we're going to mount the remote share
     base_path = f"/tmp/{config.instance_id}"  # noqa: S108
     return SMBFileSystemProvider(mass, manifest, config, base_path)
@@ -73,8 +58,8 @@ async def setup(
 async def get_config_entries(
     mass: MusicAssistant,
     instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
+    action: str | None = None,  # noqa: ARG001
+    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """
     Return Config entries to setup this provider.
@@ -83,51 +68,17 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    # ruff: noqa: ARG001
-    base_entries = (
-        ConfigEntry(
-            key=CONF_HOST,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_SHARE,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=False,
-            default_value="guest",
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-            default_value=None,
-        ),
-        ConfigEntry(
-            key=CONF_SUBFOLDER,
-            type=ConfigEntryType.STRING,
-            required=False,
-            default_value="",
-        ),
-        ConfigEntry(
-            key=CONF_SMB_VERSION,
-            type=ConfigEntryType.STRING,
-            required=False,
-            advanced=True,
-            default_value="3.0",
-            options=[
-                ConfigValueOption(""),
-                ConfigValueOption("1.0"),
-                ConfigValueOption("2.0"),
-                ConfigValueOption("2.1"),
-                ConfigValueOption("3.0"),
-                ConfigValueOption("3.1.1"),
-            ],
-        ),
+    # connection details and content type are collected by the setup flow; surface the
+    # (immutable) content type read-only so the sync options' depends_on chains resolve
+    content_type = "music"
+    if instance_id:
+        # read the persisted value so the depends_on chains resolve correctly
+        # even when the provider (instance) is not currently loaded
+        content_type = str(
+            mass.config.get_provider_setup_value(instance_id, CONF_CONTENT_TYPE, "music")
+        )
+    return (
+        ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
         ConfigEntry(
             key=CONF_CACHE_MODE,
             type=ConfigEntryType.STRING,
@@ -149,16 +100,6 @@ async def get_config_entries(
         CONF_ENTRY_PROPAGATE_GENRES,
     )
 
-    if instance_id is None or values is None:
-        return (
-            CONF_ENTRY_CONTENT_TYPE,
-            *base_entries,
-        )
-    return (
-        *base_entries,
-        CONF_ENTRY_CONTENT_TYPE_READ_ONLY,
-    )
-
 
 class SMBFileSystemProvider(LocalFileSystemProvider):
     """
@@ -173,8 +114,8 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
     @property
     def instance_name_postfix(self) -> str | None:
         """Return a (default) instance name postfix for this provider instance."""
-        share = str(self.config.get_value(CONF_SHARE))
-        subfolder = str(self.config.get_value(CONF_SUBFOLDER))
+        share = str(self.get_setup_value(CONF_SHARE))
+        subfolder = str(self.get_setup_value(CONF_SUBFOLDER))
         if subfolder:
             return subfolder
         if share:
@@ -183,6 +124,19 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        # validate the connection details before attempting to mount
+        server = str(self.get_setup_value(CONF_HOST))
+        if not await get_ip_from_host(server):
+            msg = f"Unable to resolve {server}, make sure the address is resolvable."
+            raise LoginFailed(
+                msg,
+                translation_key="host_unresolvable",
+                translation_args=[server],
+            )
+        share = str(self.get_setup_value(CONF_SHARE))
+        if not share or "/" in share or "\\" in share:
+            msg = "Invalid share name"
+            raise LoginFailed(msg)
         if not await exists(self.base_path):
             await makedirs(self.base_path)
         try:
@@ -211,15 +165,15 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
 
     async def mount(self) -> None:
         """Mount the SMB location to a temporary folder."""
-        server = str(self.config.get_value(CONF_HOST))
-        username = str(self.config.get_value(CONF_USERNAME) or "guest")
-        password = self.config.get_value(CONF_PASSWORD)
+        server = str(self.get_setup_value(CONF_HOST))
+        username = str(self.get_setup_value(CONF_USERNAME) or "guest")
+        password = self.get_setup_value(CONF_PASSWORD)
         # Type narrowing: password can be str or None
         password_str: str | None = str(password) if password is not None else None
-        share = str(self.config.get_value(CONF_SHARE))
+        share = str(self.get_setup_value(CONF_SHARE))
 
         # handle optional subfolder
-        subfolder = str(self.config.get_value(CONF_SUBFOLDER) or "")
+        subfolder = str(self.get_setup_value(CONF_SUBFOLDER) or "")
         if subfolder:
             subfolder = subfolder.replace("\\", "/")
             if not subfolder.startswith("/"):
@@ -260,7 +214,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         mount_options = []
 
         # Add SMB version if specified
-        smb_version = str(self.config.get_value(CONF_SMB_VERSION) or "")
+        smb_version = str(self.get_setup_value(CONF_SMB_VERSION) or "")
         if smb_version:
             # macOS uses different version format (e.g., smb2, smb3)
             if smb_version.startswith("3"):
@@ -317,7 +271,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             options.append("guest")
 
         # SMB version for better compatibility and performance
-        smb_version = str(self.config.get_value(CONF_SMB_VERSION) or "")
+        smb_version = str(self.get_setup_value(CONF_SMB_VERSION) or "")
         if smb_version:
             options.append(f"vers={smb_version}")
 

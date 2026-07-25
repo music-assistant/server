@@ -22,11 +22,10 @@ from music_assistant.constants import CONF_CORE
 from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.helpers.webrtc_certificate import (
     get_or_create_remote_id,
-    get_or_create_webrtc_certificate,
+    get_or_create_webrtc_certificate_pems,
 )
 
 if TYPE_CHECKING:
-    from aiortc.rtcdtlstransport import RTCCertificate
     from music_assistant_models.event import MassEvent
 
     from music_assistant.controllers.webserver import WebserverController
@@ -66,7 +65,8 @@ class RemoteAccessManager:
         self.gateway: WebRTCGateway | None = None
         self._gateway_lock = asyncio.Lock()
         self._remote_id: str
-        self._certificate: RTCCertificate
+        self._cert_pem: str
+        self._key_pem: str
         self._enabled: bool = False
         self._using_ha_cloud: bool = False
         self._target_using_ha_cloud: bool = False
@@ -74,8 +74,8 @@ class RemoteAccessManager:
 
     async def setup(self) -> None:
         """Initialize the remote access manager."""
-        # derive the Remote ID without importing aiortc, so a disabled instance keeps
-        # aiortc/PyAV (~51MB) out of memory while the remote_access/info endpoint still works
+        # derive the Remote ID without importing aiolibdatachannel, so a disabled instance
+        # never spins up the native lib's thread pool while remote_access/info still works
         self._remote_id = get_or_create_remote_id(self.mass.storage_path)
 
         enabled_value = self.mass.config.get(f"{CONF_CORE}/{CONF_KEY_MAIN}/{CONF_ENABLED}", False)
@@ -142,11 +142,6 @@ class RemoteAccessManager:
         """Return the current Remote ID."""
         return self._remote_id
 
-    @property
-    def certificate(self) -> RTCCertificate:
-        """Return the persistent WebRTC DTLS certificate."""
-        return self._certificate
-
     def _schedule_start(self) -> None:
         """Schedule a debounced gateway restart."""
         self.mass.cancel_timer(TASK_ID_START_GATEWAY)
@@ -191,13 +186,15 @@ class RemoteAccessManager:
         if self.gateway is not None:
             await self._stop_gateway_locked()
 
-        # imported here (and the certificate built here) so aiortc/PyAV is only
-        # loaded when remote access is actually enabled, never at idle
+        # imported here so the native WebRTC lib (and its thread pool) is only loaded
+        # when remote access is actually enabled, never at idle
         from music_assistant.controllers.webserver.remote_access.gateway import (  # noqa: PLC0415
             WebRTCGateway,
         )
 
-        self._certificate = get_or_create_webrtc_certificate(self.mass.storage_path)
+        self._cert_pem, self._key_pem = get_or_create_webrtc_certificate_pems(
+            self.mass.storage_path
+        )
 
         base_url = self.mass.webserver.base_url
         local_ws_url = base_url.replace("http", "ws")
@@ -220,7 +217,8 @@ class RemoteAccessManager:
         gateway = WebRTCGateway(
             http_session=self.mass.http_session,
             remote_id=self._remote_id,
-            certificate=self._certificate,
+            cert_pem=self._cert_pem,
+            key_pem=self._key_pem,
             signaling_url=SIGNALING_SERVER_URL,
             local_ws_url=local_ws_url,
             sendspin_url=sendspin_url,

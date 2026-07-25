@@ -1,12 +1,11 @@
-"""Tests for get_config_entries to prevent recursion and validate defaults."""
+"""Tests for the Plex setup-flow library selection (claim exclusion + smart defaults)."""
 
 from __future__ import annotations
 
 from typing import Any
-from unittest import mock
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
-from music_assistant.providers.plex import CONF_LIBRARY_ID, get_config_entries
+from music_assistant.providers.plex.constants import CONF_LIBRARY_ID
 from music_assistant.providers.plex.helpers import (
     CONF_LIBRARY_TYPE,
     LIBRARY_TYPE_AUDIOBOOKS,
@@ -14,27 +13,36 @@ from music_assistant.providers.plex.helpers import (
     LIBRARY_TYPE_PODCASTS,
     PlexSectionInfo,
 )
+from music_assistant.providers.plex.setup_flow import (
+    _claimed_libraries,
+    _default_library_selection,
+)
 
 
-def _make_mock_mass(
-    providers_config: dict[str, Any] | None = None,
-    _sections: list[PlexSectionInfo] | None = None,
-) -> MagicMock:
-    """Build a MusicAssistant stub with configurable providers and section info."""
+def _section(name: str, tracking: bool) -> PlexSectionInfo:
+    """Build a PlexSectionInfo for the given display name and tracking flag."""
+    return PlexSectionInfo(
+        display_name=name,
+        section_title=name.rsplit(" / ", maxsplit=1)[-1],
+        server_name="Server",
+        section_type="artist",
+        is_tracking_progress=tracking,
+    )
+
+
+def _make_mock_mass(providers_config: dict[str, Any] | None = None) -> MagicMock:
+    """Build a MusicAssistant stub whose config.get('providers') returns the raw config."""
     mass = MagicMock()
     mass.config.get = MagicMock(return_value=providers_config or {})
-    mass.config.decrypt_string = MagicMock(return_value="token")
-    mass.cache.get = AsyncMock(return_value=None)
     return mass
 
 
-async def test_get_config_entries_no_recursion_with_multiple_plex_instances() -> None:
+def test_claimed_libraries_reads_raw_config_without_recursion() -> None:
     """
-    Calling get_config_entries should not recurse when multiple plex instances exist.
+    Claimed libraries are read from the raw stored config, not via get_provider_configs.
 
-    Regression test: using get_provider_configs(include_values=True) caused
-    infinite recursion because each call triggered get_config_entries for all
-    other plex instances.
+    Regression: using get_provider_configs(include_values=True) recursed because each
+    call triggered get_config_entries for every other plex instance.
     """
     raw_config = {
         "plex-1": {
@@ -46,167 +54,85 @@ async def test_get_config_entries_no_recursion_with_multiple_plex_instances() ->
         },
         "plex-2": {
             "domain": "plex",
-            "values": {
+            "setup_data": {
                 CONF_LIBRARY_ID: "Server / Music",
                 CONF_LIBRARY_TYPE: LIBRARY_TYPE_MUSIC,
             },
         },
+        "other": {"domain": "spotify", "values": {CONF_LIBRARY_ID: "ignored"}},
     }
+    mass = _make_mock_mass(raw_config)
 
+    used, has_audiobook_provider = _claimed_libraries(mass, instance_id=None)
+
+    assert used == {"Server / Audiobooks", "Server / Music"}
+    assert has_audiobook_provider is True
+    # the raw provider config is read directly; the recursive helper is never used
+    mass.config.get.assert_called_once_with("providers", {})
+    mass.config.get_provider_configs.assert_not_called()
+
+
+def test_default_selection_prefers_unclaimed_non_tracking_library() -> None:
+    """The default library is the first non-tracking (music) library, A-Z."""
     sections = [
-        PlexSectionInfo(
-            display_name="Server / Audiobooks",
-            section_title="Audiobooks",
-            server_name="Server",
-            section_type="artist",
-            is_tracking_progress=True,
-        ),
-        PlexSectionInfo(
-            display_name="Server / Music",
-            section_title="Music",
-            server_name="Server",
-            section_type="artist",
-            is_tracking_progress=False,
-        ),
-        PlexSectionInfo(
-            display_name="Server / Podcasts",
-            section_title="Podcasts",
-            server_name="Server",
-            section_type="artist",
-            is_tracking_progress=True,
-        ),
+        _section("Server / Audiobooks", tracking=True),
+        _section("Server / Music", tracking=False),
+        _section("Server / Podcasts", tracking=True),
     ]
-
-    mass = _make_mock_mass(raw_config, sections)
-
-    with mock.patch(
-        "music_assistant.providers.plex.get_section_info",
-        new_callable=AsyncMock,
-        return_value=sections,
-    ):
-        # Call for a *new* instance (no instance_id) — this must not recurse
-        entries = await get_config_entries(
-            mass,
-            values={
-                "token": "encrypted",
-                "local_server_ip": "10.0.4.33",
-                "local_server_port": 32400,
-                "local_server_ssl": False,
-                "local_server_verify_cert": True,
-            },
-        )
-
-    # Verify we got entries back without hitting recursion
-    by_key = {e.key: e for e in entries}
-    assert CONF_LIBRARY_ID in by_key
-    assert CONF_LIBRARY_TYPE in by_key
-
-    library_entry = by_key[CONF_LIBRARY_ID]
-    # Default library should be the first *unclaimed* non-tracking library, A-Z
-    # Server / Music is claimed by plex-2, so Podcasts is the only unclaimed option
-    assert library_entry.default_value == "Server / Podcasts"
-
-    type_entry = by_key[CONF_LIBRARY_TYPE]
-    # Podcasts is a tracking library and an audiobook provider already exists -> Podcasts type
-    assert type_entry.default_value == LIBRARY_TYPE_PODCASTS
+    library, library_type = _default_library_selection(
+        sections,
+        used_libraries=set(),
+        has_audiobook_provider=False,
+        prefilled_library=None,
+    )
+    # the non-tracking (music) library sorts ahead of the tracking ones
+    assert library == "Server / Music"
+    assert library_type == LIBRARY_TYPE_MUSIC
 
 
-async def test_get_config_entries_default_type_progress_tracking() -> None:
-    """Progress-tracking libraries default to Audiobooks (or Podcasts if one exists)."""
-    raw_config = {
-        "plex-1": {
-            "domain": "plex",
-            "values": {
-                CONF_LIBRARY_ID: "Server / Audiobooks",
-                CONF_LIBRARY_TYPE: LIBRARY_TYPE_AUDIOBOOKS,
-            },
-        },
-    }
-
+def test_default_selection_skips_claimed_libraries() -> None:
+    """Claimed libraries are excluded, so the default falls to the remaining one."""
     sections = [
-        PlexSectionInfo(
-            display_name="Server / Audiobooks",
-            section_title="Audiobooks",
-            server_name="Server",
-            section_type="artist",
-            is_tracking_progress=True,
-        ),
-        PlexSectionInfo(
-            display_name="Server / More Audios",
-            section_title="More Audios",
-            server_name="Server",
-            section_type="artist",
-            is_tracking_progress=True,
-        ),
+        _section("Server / Music", tracking=False),
+        _section("Server / Podcasts", tracking=True),
     ]
-
-    mass = _make_mock_mass(raw_config, sections)
-
-    with mock.patch(
-        "music_assistant.providers.plex.get_section_info",
-        new_callable=AsyncMock,
-        return_value=sections,
-    ):
-        entries = await get_config_entries(
-            mass,
-            values={
-                "token": "encrypted",
-                "local_server_ip": "10.0.4.33",
-                "local_server_port": 32400,
-                "local_server_ssl": False,
-                "local_server_verify_cert": True,
-            },
-        )
-
-    by_key = {e.key: e for e in entries}
-
-    # Only unclaimed tracking library is "More Audios"
-    library_entry = by_key[CONF_LIBRARY_ID]
-    assert library_entry.default_value == "Server / More Audios"
-
-    # Audiobook provider already exists -> Podcasts
-    type_entry = by_key[CONF_LIBRARY_TYPE]
-    assert type_entry.default_value == LIBRARY_TYPE_PODCASTS
+    # Music is claimed and an audiobook provider already exists
+    library, library_type = _default_library_selection(
+        sections,
+        used_libraries={"Server / Music"},
+        has_audiobook_provider=True,
+        prefilled_library=None,
+    )
+    # only Podcasts is unclaimed; it is a tracking library and an audiobook provider
+    # already exists, so the type resolves to Podcasts
+    assert library == "Server / Podcasts"
+    assert library_type == LIBRARY_TYPE_PODCASTS
 
 
-async def test_get_config_entries_preserves_user_library_choice() -> None:
-    """When user has already selected a library, defaults are not overwritten."""
-    raw_config: dict[str, Any] = {}
+def test_default_selection_tracking_library_without_audiobook_provider() -> None:
+    """A tracking default library maps to the Audiobooks type when none exists yet."""
+    sections = [_section("Server / Audiobooks", tracking=True)]
+    library, library_type = _default_library_selection(
+        sections,
+        used_libraries=set(),
+        has_audiobook_provider=False,
+        prefilled_library=None,
+    )
+    assert library == "Server / Audiobooks"
+    assert library_type == LIBRARY_TYPE_AUDIOBOOKS
 
+
+def test_default_selection_preserves_prefilled_choice() -> None:
+    """A previously selected library (reconfigure) is kept as the default."""
     sections = [
-        PlexSectionInfo(
-            display_name="Server / Music",
-            section_title="Music",
-            server_name="Server",
-            section_type="artist",
-            is_tracking_progress=False,
-        ),
+        _section("Server / Music", tracking=False),
+        _section("Server / Audiobooks", tracking=True),
     ]
-
-    mass = _make_mock_mass(raw_config, sections)
-
-    with mock.patch(
-        "music_assistant.providers.plex.get_section_info",
-        new_callable=AsyncMock,
-        return_value=sections,
-    ):
-        entries = await get_config_entries(
-            mass,
-            instance_id="plex_test",
-            values={
-                "token": "encrypted",
-                "local_server_ip": "10.0.4.33",
-                "local_server_port": 32400,
-                "local_server_ssl": False,
-                "local_server_verify_cert": True,
-                CONF_LIBRARY_ID: "Server / Music",
-                CONF_LIBRARY_TYPE: LIBRARY_TYPE_MUSIC,
-            },
-        )
-
-    by_key = {e.key: e for e in entries}
-    library_entry = by_key[CONF_LIBRARY_ID]
-    type_entry = by_key[CONF_LIBRARY_TYPE]
-
-    assert library_entry.value == "Server / Music"
-    assert type_entry.value == LIBRARY_TYPE_MUSIC
+    library, library_type = _default_library_selection(
+        sections,
+        used_libraries=set(),
+        has_audiobook_provider=False,
+        prefilled_library="Server / Music",
+    )
+    assert library == "Server / Music"
+    assert library_type == LIBRARY_TYPE_MUSIC

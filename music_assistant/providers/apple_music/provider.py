@@ -15,15 +15,18 @@ from music_assistant_models.media_items import (
     RecommendationFolder,
     SearchResults,
     Track,
+    UniqueList,
 )
 
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .api_client import AppleMusicAPIClient
 from .constants import (
     CONF_MUSIC_APP_TOKEN,
     CONF_MUSIC_USER_MANUAL_TOKEN,
     CONF_MUSIC_USER_TOKEN,
+    MUSIC_APP_TOKEN,
     SUPPORTED_FEATURES,
 )
 from .helpers import browse_playlists
@@ -43,7 +46,7 @@ if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 
-class AppleMusicProvider(MusicProvider):
+class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
     """Implementation of an Apple Music MusicProvider."""
 
     _music_user_token: str | None = None
@@ -68,10 +71,14 @@ class AppleMusicProvider(MusicProvider):
         """Handle async initialization of the provider."""
         self._music_user_token = cast(
             "str | None",
-            self.config.get_value(CONF_MUSIC_USER_MANUAL_TOKEN)
-            or self.config.get_value(CONF_MUSIC_USER_TOKEN),
+            self.get_setup_value(CONF_MUSIC_USER_MANUAL_TOKEN)
+            or self.get_setup_value(CONF_MUSIC_USER_TOKEN),
         )
-        self._music_app_token = cast("str | None", self.config.get_value(CONF_MUSIC_APP_TOKEN))
+        # a stored/manual app token only exists because the setup flow found the
+        # bundled one empty or invalid, so it takes precedence over the bundled token
+        self._music_app_token = (
+            cast("str | None", self.get_setup_value(CONF_MUSIC_APP_TOKEN)) or MUSIC_APP_TOKEN
+        )
         self._storefront = await self.api_client.get_user_storefront()
         await self.streaming_manager.initialize()
 
@@ -110,9 +117,19 @@ class AppleMusicProvider(MusicProvider):
         """Perform search on musicprovider."""
         return await self.media_manager.search(search_query, media_types, limit)
 
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get personalized station recommendations for the Discover page."""
-        return await self.recommendation_manager.get_personal_recommendations()
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        return await self._recommendation_rows_from_payload()
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        return await self._recommendation_items_from_payload(item_id)
 
     # ------------------------------------------------------------------
     # Media item getters
@@ -139,6 +156,11 @@ class AppleMusicProvider(MusicProvider):
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all album tracks for given album id."""
         return await self.media_manager.get_album_tracks(prov_album_id)
+
+    async def resolve_image(self, path: str) -> str | bytes:
+        """Resolve an artwork token to a freshly signed artwork URL."""
+        media_type, _, item_id = path.partition("/")
+        return await self.media_manager.get_artwork_url(media_type, item_id) or ""
 
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
@@ -219,3 +241,7 @@ class AppleMusicProvider(MusicProvider):
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         return await self.streaming_manager.get_stream_details(item_id)
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch and parse the full recommendations payload (folders with items)."""
+        return await self.recommendation_manager.get_personal_recommendations()

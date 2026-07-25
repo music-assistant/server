@@ -1,8 +1,5 @@
 {
   "config_entries": {
-    "BROKEN_AIRPLAY": {
-      "label": "This player is known to have broken AirPlay support. Playback may fail or simply be silent. There is no workaround for this issue at the moment. \nIf you already enforced AirPlay 2 on the player and it remains silent, this is one of the known broken models. Only remedy is to nag the manufacturer for a fix."
-    },
     "force_raop": {
       "label": "Force RAOP protocol",
       "description": "Escape hatch for devices whose AirPlay 2 implementation misbehaves (e.g. dropouts, silence or failed playback). \nWhen enabled, this device is streamed to using the older AirPlay 1 (RAOP) protocol instead of AirPlay 2. \nLeave this off unless this device genuinely works better on RAOP."
@@ -33,26 +30,52 @@
     "pairing_password": {
       "label": "Enter the device password"
     },
-    "finish_pairing_pin": {
-      "label": "Complete {0} pairing with the PIN"
+    "companion_pairing_pin": {
+      "label": "Enter the 4-digit PIN shown on the device"
     },
-    "finish_pairing_password": {
-      "label": "Complete {0} pairing with the password"
+    "mrp_pairing_pin": {
+      "label": "Enter the 4-digit PIN shown on the device"
     },
-    "pairing_instructions": {
-      "label": "This device requires {0} pairing before it can be used. Click the button below to start the pairing process."
-    },
-    "start_pairing": {
-      "label": "Start {0} pairing"
-    },
-    "pairing_status": {
-      "label": "Device is paired ({0}) and ready to use."
-    },
-    "reset_pairing": {
-      "label": "Reset {0} pairing"
+    "pair_now": {
+      "label": "Set up now"
     }
+  },
+  "setup_flow": {
+    "pair_pin": {
+      "title": "Pair with your device",
+      "description": "A PIN code is shown on the screen of your device. Enter it below to complete pairing."
+    },
+    "pair_password": {
+      "title": "Enter the device password",
+      "description": "This device is protected with a password. Enter it below to connect."
+    },
+    "companion_offer": {
+      "title": "Set up remote control (optional)",
+      "description": "Optionally pair Companion controls to monitor power, wake the device before playback, and control native playback and volume. You can skip this and set it up later from the player settings."
+    },
+    "pair_companion": {
+      "title": "Pair remote control",
+      "description": "A PIN code is shown on the screen of your device. Enter it below to pair the remote controls."
+    },
+    "mrp_offer": {
+      "title": "Set up playback monitoring (optional)",
+      "description": "Optionally pair playback monitoring to show the active app and media playing outside Music Assistant. You can skip this and set it up later from the player settings."
+    },
+    "pair_mrp": {
+      "title": "Pair playback monitoring",
+      "description": "A PIN code is shown on the screen of your device. Enter it below to pair playback monitoring."
+    },
+    "abort": {
+      "pairing_failed": "Could not start pairing with the device. Make sure the device is reachable on the network and try again."
+    }
+  },
+  "errors": {
+    "invalid_pin": "Enter the numeric PIN shown on the screen of your device."
   },
   "manifest": {
     "description": "Stream to AirPlay-enabled devices on your local network."
+  },
+  "errors": {
+    "show_dashboard_failed": "Failed to show the dashboard on {0}."
   }
 }

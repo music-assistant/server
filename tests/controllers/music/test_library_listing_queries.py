@@ -14,10 +14,8 @@ results straight from the sort index. These tests verify that:
 from __future__ import annotations
 
 import json
-import logging
-from collections.abc import AsyncGenerator
 from typing import Any
-from unittest.mock import AsyncMock, NonCallableMagicMock, patch
+from unittest.mock import patch
 from uuid import uuid4
 
 import pytest
@@ -26,6 +24,9 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     Audiobook,
+    MediaCollection,
+    MediaItemCollection,
+    MediaItemMetadata,
     ProviderMapping,
     Track,
 )
@@ -40,54 +41,17 @@ from music_assistant.constants import (
 from music_assistant.controllers.music.media.base import MediaControllerBase
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.mass import MusicAssistant
-from tests.common import suppress_auto_loaded_providers
 
 pytestmark = pytest.mark.asyncio
 
 
 @pytest.fixture(scope="module")
 async def seeded_mass(
-    tmp_path_factory: pytest.TempPathFactory,
-) -> AsyncGenerator[MusicAssistant]:
-    """Module-scoped hermetic MusicAssistant instance with a seeded library."""
-    tmp_path = tmp_path_factory.mktemp("listing_query_tests")
-    storage_path = tmp_path / "data"
-    cache_path = tmp_path / "cache"
-    storage_path.mkdir(parents=True)
-    cache_path.mkdir(parents=True)
-    logging.getLogger("aiosqlite").level = logging.INFO
-    mass_instance = MusicAssistant(str(storage_path), str(cache_path))
-    with (
-        patch(
-            "music_assistant.controllers.discovery.controller.AsyncZeroconf",
-            return_value=NonCallableMagicMock(
-                async_register_service=AsyncMock(),
-                async_update_service=AsyncMock(),
-                async_unregister_service=AsyncMock(),
-                async_close=AsyncMock(),
-            ),
-        ),
-        patch(
-            "music_assistant.controllers.discovery.controller.AsyncServiceBrowser",
-            return_value=NonCallableMagicMock(),
-        ),
-        patch(
-            "music_assistant.controllers.streams.controller.check_ffmpeg_version",
-            new=AsyncMock(),
-        ),
-        # hermetic: no real SSDP search
-        patch(
-            "music_assistant.controllers.discovery.controller.async_upnp_search",
-            new=AsyncMock(),
-        ),
-        suppress_auto_loaded_providers(),
-    ):
-        await mass_instance.start()
-        try:
-            await _seed_library(mass_instance)
-            yield mass_instance
-        finally:
-            await mass_instance.stop()
+    music_mass_module: MusicAssistant,
+) -> MusicAssistant:
+    """Return a module-scoped database-only instance with a seeded library."""
+    await _seed_library(music_mass_module)
+    return music_mass_module
 
 
 def _mapping(provider_instance: str = "prov_a_inst") -> ProviderMapping:
@@ -334,6 +298,7 @@ async def _compare(
         }
         new_mappings = {(m.provider_instance, m.item_id) for m in item.provider_mappings}
         assert legacy_mappings == new_mappings
+    assert isinstance(new_items, list)
     return new_items
 
 
@@ -544,6 +509,80 @@ async def test_audiobook_listing_resume_info(seeded_mass: MusicAssistant) -> Non
     assert len(books) == 1
     # the most recent playlog entry wins
     assert books[0].resume_position_ms == 120 * 1000
+
+
+async def test_audiobook_collections_collapse_and_preserve_order(
+    mass: MusicAssistant,
+) -> None:
+    """Collapsed audiobook collections remain ordered and reuse the cached row shape."""
+    controller = mass.music.audiobooks
+    assert (
+        await controller.get_library_items_by_query(
+            in_library_only=True,
+            collapse_collections=True,
+        )
+        == []
+    )
+
+    collection_books = (
+        ("Alpha 2", "Alpha Series", 2.0),
+        ("Alpha 1.5", "Alpha Series", "1.5"),
+        ("Alpha 1", "Alpha Series", 1.0),
+        ("Beta 1", "Beta Series", 1.0),
+    )
+    for name, collection_name, sequence in collection_books:
+        await controller.add_item_to_library(
+            Audiobook(
+                item_id="0",
+                provider="library",
+                name=name,
+                provider_mappings={_mapping()},
+                metadata=MediaItemMetadata(
+                    collections=UniqueList(
+                        [MediaItemCollection(title=collection_name, sequence=sequence)]
+                    )
+                ),
+            )
+        )
+    await controller.add_item_to_library(
+        Audiobook(
+            item_id="0",
+            provider="library",
+            name="Standalone",
+            provider_mappings={_mapping()},
+        )
+    )
+
+    items = await controller.get_library_items_by_query(
+        in_library_only=True,
+        order_by="name_desc",
+        collapse_collections=True,
+    )
+    collections = {item.name: item for item in items if isinstance(item, MediaCollection)}
+    assert list(collections) == ["Beta Series", "Alpha Series"]
+    assert [item.name for item in collections["Alpha Series"].items] == [
+        "Alpha 1",
+        "Alpha 1.5",
+        "Alpha 2",
+    ]
+
+    with patch.object(
+        mass.music.database,
+        "get_rows_from_query",
+        wraps=mass.music.database.get_rows_from_query,
+    ) as get_rows:
+        search_results = await controller.get_library_items_by_query(
+            search="Series",
+            in_library_only=True,
+            order_by="name_desc",
+            collapse_collections=True,
+        )
+    assert [item.name for item in search_results] == ["Beta Series", "Alpha Series"]
+    assert get_rows.await_count == 1
+
+    collection = await controller.get_collection(collections["Alpha Series"].item_id)
+    assert [item.name for item in collection.items] == ["Alpha 1", "Alpha 1.5", "Alpha 2"]
+    assert all(isinstance(item, Audiobook) for item in collection.items)
 
 
 async def test_listing_queries_stream_from_sort_index(seeded_mass: MusicAssistant) -> None:

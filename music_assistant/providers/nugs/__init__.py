@@ -8,9 +8,7 @@ from time import time
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientTimeout
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -27,9 +25,11 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     AudioFormat,
+    BrowseFolder,
     ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
+    MediaItemType,
     Playlist,
     ProviderMapping,
     RecommendationFolder,
@@ -49,7 +49,7 @@ from music_assistant.helpers.util import infer_album_type, parse_title_and_versi
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -86,19 +86,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return (
-        CONF_ENTRY_UNOFFICIAL_PROVIDER,
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-        ),
-    )
+    return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
 
 
 class NugsProvider(MusicProvider):
@@ -212,6 +200,44 @@ class NugsProvider(MusicProvider):
         await self._cache_tracks(result)
         return result
 
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        return [
+            RecommendationFolder(
+                name="Most Popular",
+                translation_key="nugs_popular_shows",
+                item_id="nugs_popular_shows",
+                provider=self.instance_id,
+            ),
+            RecommendationFolder(
+                name="Recommended Shows",
+                translation_key="nugs_recommended_shows",
+                item_id="nugs_recommended_shows",
+                provider=self.instance_id,
+            ),
+            RecommendationFolder(
+                name="Recent Shows",
+                translation_key="nugs_recent_shows",
+                item_id="nugs_recent_shows",
+                provider=self.instance_id,
+            ),
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        # caching lives on the folder-level helper: a RecommendationFolder is reconstructed
+        # from cached json via base_class, unlike this method's parameterized union type
+        folder = await self._get_recommendation_folder(item_id)
+        if folder is None:
+            return UniqueList()
+        return folder.items
+
     async def _cache_tracks(self, tracks: list[Track]) -> None:
         """Cache individual tracks persistently for later lookup by get_track."""
         for track in tracks:
@@ -235,49 +261,6 @@ class NugsProvider(MusicProvider):
             stream_type=StreamType.HTTP,
             path=stream_url,
         )
-
-    @use_cache(3600 * 4)  # Cache for 4 hours
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get this provider's recommendations."""
-        popular = "releases/popular"
-        recom_shows = "me/releases/recommendations"
-        recent = "releases/recent"
-
-        popular_folder = RecommendationFolder(
-            name="Most Popular",
-            translation_key="nugs_popular_shows",
-            item_id="nugs_popular_shows",
-            provider=self.instance_id,
-        )
-        recommended_folder = RecommendationFolder(
-            name="Recommended Shows",
-            translation_key="nugs_recommended_shows",
-            item_id="nugs_recommended_shows",
-            provider=self.instance_id,
-        )
-        recent_folder = RecommendationFolder(
-            name="Recent Shows",
-            translation_key="nugs_recent_shows",
-            item_id="nugs_recent_shows",
-            provider=self.instance_id,
-        )
-        popular_data = await self._get_data("catalog", popular, limit=20)
-        for item in popular_data["items"]:
-            endpoint = f"shows/{item['id']}"
-            response = await self._get_data("catalog", endpoint)
-            popular_folder.items.append(self._parse_album(response["Response"]))
-        recommended_data = await self._get_data("catalog", recom_shows)
-        for item in recommended_data["items"]:
-            recommended_folder.items.append(self._parse_album(item))
-        recent_data = await self._get_data("catalog", recent, limit=50)
-        for item in recent_data["items"]:
-            recent_folder.items.append(self._parse_album(item))
-
-        return [
-            popular_folder,
-            recommended_folder,
-            recent_folder,
-        ]
 
     def _parse_artist(self, artist_obj: dict[str, Any]) -> Artist:
         """Parse nugs artist object to generic layout."""
@@ -499,12 +482,12 @@ class NugsProvider(MusicProvider):
         """Login to nugs.net and return the token."""
         if self._auth_token and (self._token_expiry > time()):
             return self._auth_token
-        if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_PASSWORD):
+        if not self.get_setup_value(CONF_USERNAME) or not self.get_setup_value(CONF_PASSWORD):
             msg = "Invalid login credentials"
             raise LoginFailed(msg)
         login_data = {
-            "username": self.config.get_value(CONF_USERNAME),
-            "password": self.config.get_value(CONF_PASSWORD),
+            "username": self.get_setup_value(CONF_USERNAME),
+            "password": self.get_setup_value(CONF_PASSWORD),
             "scope": "offline_access nugsnet:api nugsnet:legacyapi openid profile email",
             "grant_type": "password",
             "client_id": "Eg7HuH873H65r5rt325UytR5429",
@@ -575,3 +558,31 @@ class NugsProvider(MusicProvider):
                 break
             offset += limit
         return all_items
+
+    @use_cache(3600 * 4, base_class=RecommendationFolder)  # Cache for 4 hours
+    async def _get_recommendation_folder(self, item_id: str) -> RecommendationFolder | None:
+        """
+        Fetch a single recommendation row, including its items.
+
+        :param item_id: The item_id of the row (unknown ids yield None).
+        """
+        folder = next(
+            (row for row in await self.get_recommendations() if row.item_id == item_id), None
+        )
+        if folder is None:
+            return None
+        albums: list[Album]
+        if item_id == "nugs_popular_shows":
+            popular_data = await self._get_data("catalog", "releases/popular", limit=20)
+            albums = []
+            for item in popular_data["items"]:
+                response = await self._get_data("catalog", f"shows/{item['id']}")
+                albums.append(self._parse_album(response["Response"]))
+        elif item_id == "nugs_recommended_shows":
+            recommended_data = await self._get_data("catalog", "me/releases/recommendations")
+            albums = [self._parse_album(item) for item in recommended_data["items"]]
+        else:  # nugs_recent_shows
+            recent_data = await self._get_data("catalog", "releases/recent", limit=50)
+            albums = [self._parse_album(item) for item in recent_data["items"]]
+        folder.items = UniqueList(albums)
+        return folder

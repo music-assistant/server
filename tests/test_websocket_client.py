@@ -31,6 +31,7 @@ def _create_client(user_role: UserRole | None, handler: APICommandHandler) -> An
     )
     client._current_token = "token" if user_role else None
     client._sendspin_player_id = None
+    client.client_id = "test_client"
     client._send_message = AsyncMock()
     return client
 

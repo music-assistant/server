@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from asyncio import TaskGroup
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 from urllib.parse import urlencode
@@ -28,6 +27,8 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     AudioFormat,
+    BrowseFolder,
+    ItemMapping,
     MediaItemType,
     Playlist,
     Podcast,
@@ -36,6 +37,7 @@ from music_assistant_models.media_items import (
     RecommendationFolder,
     SearchResults,
     Track,
+    UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -107,17 +109,17 @@ class OpenSonicProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Set up the music provider and test the connection."""
-        port = self.config.get_value(CONF_PORT)
+        port = self.get_setup_value(CONF_PORT)
         port = int(str(port)) if port is not None else 443
-        path = self.config.get_value(CONF_PATH)
+        path = self.get_setup_value(CONF_PATH)
 
         if path is None:
             path = ""
 
         self.conn = SonicConnection(
-            str(self.config.get_value(CONF_BASE_URL)),
-            username=str(self.config.get_value(CONF_USERNAME)),
-            password=str(self.config.get_value(CONF_PASSWORD)),
+            str(self.get_setup_value(CONF_BASE_URL)),
+            username=str(self.get_setup_value(CONF_USERNAME)),
+            password=str(self.get_setup_value(CONF_PASSWORD)),
             legacy_auth=bool(self.config.get_value(CONF_ENABLE_LEGACY_AUTH)),
             port=port,
             server_path=str(path),
@@ -130,13 +132,13 @@ class OpenSonicProvider(MusicProvider):
                 raise CredentialError
         except (AuthError, CredentialError) as e:
             msg = (
-                f"Failed to connect to {self.config.get_value(CONF_BASE_URL)}, check your settings."
+                f"Failed to connect to {self.get_setup_value(CONF_BASE_URL)}, check your settings."
             )
             raise LoginFailed(
                 msg,
                 translation_key="connect_failed",
                 translation_owner=self.translation_owner,
-                translation_args=[self.config.get_value(CONF_BASE_URL)],
+                translation_args=[self.get_setup_value(CONF_BASE_URL)],
             ) from e
 
         try:
@@ -189,6 +191,73 @@ class OpenSonicProvider(MusicProvider):
         Setting this to False will query all instances of this provider for search and lookups.
         """
         return False
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """
+        Get this provider's available recommendation rows, without items.
+
+        These can be favorited items, recently added albums, newest podcast episodes,
+        and most played albums.  What is included is configured with the provider.
+        """
+        recos: list[RecommendationFolder] = []
+        if self._enable_podcasts:
+            recos.append(
+                RecommendationFolder(
+                    item_id="subsonic_newest_podcasts",
+                    provider=self.instance_id,
+                    name="Newest Podcast Episodes",
+                    translation_key="episodes_recently_added",
+                )
+            )
+        if self._show_faves:
+            recos.append(
+                RecommendationFolder(
+                    item_id="subsonic_starred_albums",
+                    provider=self.instance_id,
+                    name="Starred Items",
+                    translation_key="starred_items",
+                )
+            )
+        if self._show_new:
+            recos.append(
+                RecommendationFolder(
+                    item_id="subsonic_new_albums",
+                    provider=self.instance_id,
+                    name="New Albums",
+                    translation_key="recently_added_albums",
+                )
+            )
+        if self._show_played:
+            recos.append(
+                RecommendationFolder(
+                    item_id="subsonic_most_played",
+                    provider=self.instance_id,
+                    name="Most Played Albums",
+                    translation_key="most_played_albums",
+                )
+            )
+        return recos
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        folder: RecommendationFolder | None = None
+        if item_id == "subsonic_newest_podcasts" and self._enable_podcasts:
+            folder = await self._podcast_recommendations()
+        elif item_id == "subsonic_starred_albums" and self._show_faves:
+            folder = await self._favorites_recommendation()
+        elif item_id == "subsonic_new_albums" and self._show_new:
+            folder = await self._new_recommendations()
+        elif item_id == "subsonic_most_played" and self._show_played:
+            folder = await self._played_recommendations()
+        if folder is None:
+            return UniqueList()
+        return folder.items
 
     async def _get_podcast_episode(self, eid: str) -> SonicEpisode:
         chan_id, ep_id = eid.split(EP_CHAN_SEP)
@@ -832,10 +901,11 @@ class OpenSonicProvider(MusicProvider):
             return channel
         return None
 
+    @use_cache(3600 * 3, cache_checksum="v2", base_class=RecommendationFolder)
     async def _podcast_recommendations(self) -> RecommendationFolder:
         podcasts: RecommendationFolder = RecommendationFolder(
             item_id="subsonic_newest_podcasts",
-            provider=self.domain,
+            provider=self.instance_id,
             name="Newest Podcast Episodes",
             translation_key="episodes_recently_added",
         )
@@ -846,10 +916,11 @@ class OpenSonicProvider(MusicProvider):
                 podcasts.items.append(parse_epsiode(self.instance_id, ep, channel_info))
         return podcasts
 
+    @use_cache(3600 * 3, cache_checksum="v2", base_class=RecommendationFolder)
     async def _favorites_recommendation(self) -> RecommendationFolder:
         faves: RecommendationFolder = RecommendationFolder(
             item_id="subsonic_starred_albums",
-            provider=self.domain,
+            provider=self.instance_id,
             name="Starred Items",
             translation_key="starred_items",
         )
@@ -869,10 +940,11 @@ class OpenSonicProvider(MusicProvider):
                 )
         return faves
 
+    @use_cache(3600 * 3, cache_checksum="v2", base_class=RecommendationFolder)
     async def _new_recommendations(self) -> RecommendationFolder:
         new_stuff: RecommendationFolder = RecommendationFolder(
             item_id="subsonic_new_albums",
-            provider=self.domain,
+            provider=self.instance_id,
             name="New Albums",
             translation_key="recently_added_albums",
         )
@@ -881,10 +953,11 @@ class OpenSonicProvider(MusicProvider):
             new_stuff.items.append(parse_album(self.logger, self.instance_id, sonic_album))
         return new_stuff
 
+    @use_cache(3600 * 3, cache_checksum="v2", base_class=RecommendationFolder)
     async def _played_recommendations(self) -> RecommendationFolder:
         recent: RecommendationFolder = RecommendationFolder(
             item_id="subsonic_most_played",
-            provider=self.domain,
+            provider=self.instance_id,
             name="Most Played Albums",
             translation_key="most_played_albums",
         )
@@ -892,41 +965,6 @@ class OpenSonicProvider(MusicProvider):
         for sonic_album in albums:
             recent.items.append(parse_album(self.logger, self.instance_id, sonic_album))
         return recent
-
-    @use_cache(3600 * 3, cache_checksum="v2")  # cache for 3 hours
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """
-        Provide recommendations.
-
-        These can provide favorited items, recently added albums, newest podcast episodes,
-        and most played albums.  What is included is configured with the provider.
-        """
-        recos: list[RecommendationFolder] = []
-
-        podcasts = None
-        faves = None
-        new_stuff = None
-        played = None
-        async with TaskGroup() as grp:
-            if self._enable_podcasts:
-                podcasts = grp.create_task(self._podcast_recommendations())
-            if self._show_faves:
-                faves = grp.create_task(self._favorites_recommendation())
-            if self._show_new:
-                new_stuff = grp.create_task(self._new_recommendations())
-            if self._show_played:
-                played = grp.create_task(self._played_recommendations())
-
-        if podcasts:
-            recos.append(podcasts.result())
-        if faves:
-            recos.append(faves.result())
-        if new_stuff:
-            recos.append(new_stuff.result())
-        if played:
-            recos.append(played.result())
-
-        return recos
 
     async def get_track_lyrics(self, track: SonicItem) -> tuple[str, bool] | None:
         """

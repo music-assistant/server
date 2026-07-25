@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from music_assistant_models.enums import EventType
 
-from music_assistant.constants import CONF_PLAYERS
+from music_assistant.constants import CONF_PLAYERS, CONF_PROTOCOL_PARENT_ID
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -115,6 +115,8 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
             if self._has_bridge(player_id):
                 await self.remove_bridge(player_id, permanent=True)
             return
+        if client_id:
+            await self._heal_stale_client_disable(player, client_id)
         if not self._lifecycle_allows_bridge(player):
             if self._has_bridge(player_id):
                 await self.remove_bridge(player_id)
@@ -278,6 +280,32 @@ class SendspinBridgeManagerBase[BridgeT: SendspinBridge](ABC):
         if not raw_conf:
             return True
         return bool(raw_conf.get("enabled", True))
+
+    async def _heal_stale_client_disable(self, player: Player, client_id: str) -> None:
+        """
+        Re-enable a bridge client whose disabled state lost its owning parent.
+
+        :param player: The base player a bridge is wanted for.
+        :param client_id: The Sendspin bridge client_id computed for the player.
+        """
+        raw_conf = self.mass.config.get(f"{CONF_PLAYERS}/{client_id}")
+        if not raw_conf or raw_conf.get("enabled", True):
+            return
+        if self.sendspin_server is None or not self._is_player_enabled(player.player_id):
+            return
+        # MAC-based client ids outlive the UUID-based parent ids they were
+        # disabled under; without the parent there is no UI toggle to undo it.
+        values = raw_conf.get("values") or {}
+        parent_id = values.get(CONF_PROTOCOL_PARENT_ID)
+        if parent_id and self.mass.config.get(f"{CONF_PLAYERS}/{parent_id}"):
+            # the parent the disable was made under still exists - respect it
+            return
+        self.logger.info(
+            "Re-enabling Sendspin bridge client %s for %s: former parent no longer exists",
+            client_id,
+            player.display_name,
+        )
+        await self.mass.config.save_player_config(client_id, {"enabled": True})
 
     async def _on_player_config_updated(self, event: MassEvent) -> None:
         """Re-evaluate the bridge of a player affected by a config change."""

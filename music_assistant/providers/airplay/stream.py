@@ -16,14 +16,13 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
-import aiofiles
 from music_assistant_models.enums import PlaybackState
+from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
-from music_assistant.helpers.images import get_image_thumb
+from music_assistant.helpers.images import get_image_thumb_path
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
-from music_assistant.helpers.util import remove_file
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
     AIRPLAY_PCM_FORMAT,
@@ -31,6 +30,7 @@ from music_assistant.providers.airplay.constants import (
     CONF_ENCRYPTION,
     CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
+    AirPlayRemoteCommand,
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.helpers import (
@@ -82,6 +82,13 @@ class AirPlayStream:
         self._cleanup_complete = False
         self._stop_lock = asyncio.Lock()
         self._connected = asyncio.Event()
+        # Set when the binary acknowledges an in-place FLUSH ([STATUS] flushed).
+        self._flushed = asyncio.Event()
+        # Set when the binary reports the first audio bytes of the current
+        # start cycle arriving on its stdin ([STATUS] audio). Together with
+        # `connected` this makes readiness fully event-driven, so START can
+        # use a short re-anchor lead instead of a guessed setup time.
+        self._audio_present = asyncio.Event()
         self._metadata_checksum = ""
         self._metadata_text_checksum = ""
         self._pending_metadata_checksum = ""
@@ -89,7 +96,11 @@ class AirPlayStream:
         self._metadata_lock = asyncio.Lock()
         self._artwork_render_generations: set[int] = set()
         self._last_progress_sent: int = -1
-        self._elapsed_time_offset: float | None = None
+        # Media position (seconds) mapped to the first sample of the current
+        # START anchor. The binary reports "playing elapsed_ms" relative to that
+        # anchor (resetting to ~0 at each START), so elapsed is this base plus
+        # the reported delta.
+        self._start_position: float = 0.0
         self._stdout_reader_task: asyncio.Task[None] | None = None
         # Device latency info reported by the binary after connect (0 = unreported)
         self.latency_lead_ms: int = 0
@@ -98,8 +109,6 @@ class AirPlayStream:
         # Route the binary resolved for this stream (empty until reported),
         # e.g. "AirPlay 2 (native, PTP)" or "RAOP"
         self.active_route: str = ""
-        self._artwork_paths: set[str] = set()
-        self._current_artwork_path: str | None = None
 
     @property
     def running(self) -> bool:
@@ -116,30 +125,43 @@ class AirPlayStream:
         """Return boolean if the device connection has been established."""
         return self._connected.is_set()
 
-    async def start(self, start_unix_ms: int, use_shared_ptp: bool | None = None) -> None:
+    async def connect(
+        self,
+        use_shared_ptp: bool | None = None,
+    ) -> None:
         """
-        Start cliairplay process.
+        Spawn cliairplay and connect to the receiver.
 
-        :param start_unix_ms: The instant the first sample must be audible,
-            as unix epoch milliseconds. All members of a sync group must
-            receive the same value.
+        Establishes the process, command pipe and device connection that persist
+        for the whole stream lifetime. Playback itself is anchored separately with
+        :meth:`start` once audio is being fed on the persistent stdin.
+
         :param use_shared_ptp: Session-wide decision on whether native AirPlay 2
             members attach to the shared PTP clock daemon. The stream session
             passes the same value to every member so a group never mixes PTP and
             NTP timing. None (single-stream callers) falls back to the daemon's
             live state.
         """
-        args = await self._build_cli_args(start_unix_ms, use_shared_ptp)
+        args = await self._build_cli_args(use_shared_ptp)
         self.player.logger.debug("Starting cliairplay for player %s", self.player.player_id)
         self._cli_proc = AsyncProcess(args, stdin=True, stdout=True, stderr=True, name="cliairplay")
-        await self._cli_proc.start()
-        self._cli_proc.attach_stderr_reader(self.mass.create_task(self._stderr_reader()))
-        self._stdout_reader_task = self.mass.create_task(self._stdout_reader())
+        try:
+            await self.commands_pipe.create()
+            await self._cli_proc.start()
+            self._cli_proc.attach_stderr_reader(self.mass.create_task(self._stderr_reader()))
+            self._stdout_reader_task = self.mass.create_task(self._stdout_reader())
+            await self._send_current_metadata(send_artwork=False)
+        except BaseException:
+            try:
+                await self._cleanup_failed_start()
+            except Exception as err:
+                self.player.logger.warning("Failed to clean up cliairplay startup: %s", err)
+            raise
 
     async def wait_for_connection(self) -> None:
         """Wait for device connection to be established."""
         if not self._cli_proc:
-            return
+            raise RuntimeError("cliairplay process is not running")
         await asyncio.wait_for(self._connected.wait(), timeout=10)
         # Send the mute-aware volume right away — audio can start within a
         # second now that metadata goes out immediately — and repeat it after
@@ -148,16 +170,14 @@ class AirPlayStream:
         volume = 0 if self.player.volume_muted else self.player.volume_level
         await self.send_cli_command(f"VOLUME={volume}")
         self.mass.call_later(2, self.send_cli_command(f"VOLUME={volume}"))
-        self._metadata_checksum = ""
-        self._metadata_text_checksum = ""
-        self._pending_metadata_checksum = ""
-        self._metadata_generation += 1
-        # Push track metadata immediately on connect. Some receivers (notably
-        # Sonos) hold back audio rendering until they receive track metadata
-        # anchored to the stream timeline; the binary anchors that timeline the
-        # instant it reports connected, so a metadata command issued now lands
-        # with a valid anchor. Deferring it kept those devices silent past the
-        # scheduled start, clipping the first seconds of the stream.
+        async with self._metadata_lock:
+            self._metadata_checksum = ""
+            self._metadata_text_checksum = ""
+            self._pending_metadata_checksum = ""
+            self._metadata_generation += 1
+        # Push track metadata before START. Some receivers (notably Sonos) hold
+        # back audio rendering until they receive track metadata; deferring it
+        # can keep them silent past the commanded start.
         self.player._on_player_media_updated()
 
     async def stop(self, force: bool = False) -> None:
@@ -200,7 +220,6 @@ class AirPlayStream:
                                 elapsed_time=0,
                                 stream=self,
                             )
-                            await self._cleanup_artwork()
                             self._cleanup_complete = True
 
     async def write_audio(self, data: bytes) -> None:
@@ -219,14 +238,116 @@ class AirPlayStream:
             return
         await self._cli_proc.write_eof()
 
-    async def send_cli_command(self, command: str) -> None:
-        """Send an interactive command to the running CLI binary."""
-        if self._stopped or self._stopping:
-            return
-        await self._write_cli_command(command)
+    async def send_cli_command(self, command: str) -> bool:
+        """
+        Send an interactive command to the running CLI binary.
 
-    async def send_metadata(self, progress: int | None, metadata: PlayerMedia | None) -> None:
-        """Send metadata to player."""
+        :param command: Command to send.
+        :return: True when the complete command is delivered, False when the
+            command is ignored, the CLI is unavailable, or the write is dropped.
+        """
+        if self._stopped or self._stopping:
+            return False
+        return await self._write_cli_command(command)
+
+    async def flush(self, timeout: float = 2.0) -> bool:
+        """
+        Flush the live stream in place and wait for the binary's acknowledgement.
+
+        Sends ``ACTION=FLUSH`` — the binary stops sending audio, flushes the
+        receiver, discards its input ring and drains stdin, then reports
+        ``[STATUS] flushed`` while keeping the connection and stdin reader alive.
+        The caller must have stopped feeding old audio before calling this so the
+        drain removes exactly the pre-flush bytes.
+
+        :param timeout: Seconds to wait for the flushed acknowledgement.
+        :return: True once the flush is acknowledged; False on a delivery failure
+            or timeout so the caller can fall back to a cold restart.
+        """
+        if not self.running or not self.connected:
+            return False
+        self._flushed.clear()
+        # The flush drain re-arms the binary's one-shot audio signal; the next
+        # [STATUS] audio belongs to the new track.
+        self._audio_present.clear()
+        if not await self._write_cli_command("ACTION=FLUSH"):
+            return False
+        try:
+            await asyncio.wait_for(self._flushed.wait(), timeout)
+        except TimeoutError:
+            return False
+        return True
+
+    async def wait_audio_present(self, timeout: float = 5.0) -> bool:
+        """
+        Wait until the binary reports the current start cycle's audio arriving.
+
+        The binary emits a one-shot ``[STATUS] audio`` when the first bytes of
+        a start cycle land on its stdin (re-armed by each flush). Waiting for
+        it before commanding START removes source/transcoder spin-up from the
+        start lead.
+
+        :param timeout: Seconds to wait for the signal.
+        :return: True once audio is flowing; False on timeout.
+        """
+        try:
+            await asyncio.wait_for(self._audio_present.wait(), timeout)
+        except TimeoutError:
+            return False
+        return True
+
+    async def start(self, start_unix_ms: int = 0, position_ms: int = 0) -> None:
+        """
+        Anchor playback so the first pending stdin sample is audible at an instant.
+
+        The first call begins playback (connection already established); a call
+        after :meth:`flush` re-bases the frozen anchor and resumes from the ring.
+
+        :param start_unix_ms: Unix-epoch milliseconds at which the first pending
+            stdin sample must be audible. 0 means as soon as possible (the binary
+            clamps to its minimum lead).
+        :param position_ms: Media position mapped to that first sample, used as
+            the base for elapsed reporting.
+        :raises PlayerCommandFailed: If the START command cannot be delivered.
+        """
+        if not self.running or not self.connected:
+            raise RuntimeError("Cannot start playback without a connected cliairplay process")
+        self._start_position = position_ms / 1000
+        # Stamp the player's elapsed onto the new anchor's base right away: until
+        # the binary's first status arrives, interpolation would otherwise keep
+        # extending the previous anchor's clock, briefly mapping a bogus position.
+        self.player.set_state_from_stream(elapsed_time=self._start_position, stream=self)
+        async with self._metadata_lock:
+            if not await self._write_cli_command(f"START_UNIX_MS={start_unix_ms}\nACTION=START"):
+                # Surfacing the dropped delivery lets the session fall back to a
+                # cold restart instead of waiting on an anchor that never happens.
+                raise PlayerCommandFailed(
+                    f"Could not deliver START to AirPlay player {self.player.player_id}"
+                )
+            # A receiver may discard artwork sent before a new playback anchor.
+            # Start a fresh generation so an in-flight pre-transition render is
+            # superseded and the artwork is pushed again after START.
+            self._metadata_checksum = ""
+            self._metadata_generation += 1
+        self.mass.create_task(
+            self._send_current_metadata,
+            task_id=f"airplay_metadata_after_start_{self._stream_id}",
+            abort_existing=True,
+        )
+
+    async def send_metadata(
+        self,
+        progress: int | None,
+        metadata: PlayerMedia | None,
+        send_artwork: bool = True,
+    ) -> None:
+        """
+        Send metadata to player.
+
+        :param progress: Current playback position in seconds.
+        :param metadata: Media metadata to send.
+        :param send_artwork: Whether artwork should be rendered and sent.
+        """
         metadata_checksum: str | None = None
         duration = 0
         title = ""
@@ -261,13 +382,15 @@ class AirPlayStream:
                 if metadata_checksum != self._metadata_text_checksum:
                     cmd = f"TITLE={title}\nARTIST={artist}\nALBUM={album}\n"
                     cmd += f"DURATION={duration}\nPROGRESS=0\nACTION=SENDMETA\n"
-                    await self.send_cli_command(cmd)
+                    if not await self.send_cli_command(cmd):
+                        return
                     self._metadata_text_checksum = metadata_checksum
                     self._last_progress_sent = 0
                 if metadata_generation != self._metadata_generation:
                     return
                 if (
-                    metadata.image_url
+                    send_artwork
+                    and metadata.image_url
                     and needs_artwork
                     and metadata_generation not in self._artwork_render_generations
                 ):
@@ -276,8 +399,8 @@ class AirPlayStream:
                 elif not metadata.image_url or not needs_artwork:
                     self._metadata_checksum = metadata_checksum
             if progress is not None and abs(progress - self._last_progress_sent) >= 2:
-                self._last_progress_sent = progress
-                await self.send_cli_command(f"PROGRESS={progress}")
+                if await self.send_cli_command(f"PROGRESS={progress}"):
+                    self._last_progress_sent = progress
 
         if artwork_url is not None and metadata_checksum is not None:
             await self._render_and_send_artwork(artwork_url, metadata_checksum, metadata_generation)
@@ -298,7 +421,6 @@ class AirPlayStream:
             async with self._metadata_lock:
                 self._artwork_render_generations.discard(metadata_generation)
             raise
-        remove_artwork: str | None = None
         async with self._metadata_lock:
             self._artwork_render_generations.discard(metadata_generation)
             if (
@@ -307,29 +429,22 @@ class AirPlayStream:
                 and not self._stopping
                 and metadata_generation == self._metadata_generation
             ):
-                await self.send_cli_command(f"ARTWORK={artwork}")
+                artwork_delivered = await self.send_cli_command(f"ARTWORK={artwork}")
                 if (
-                    not self._stopped
+                    artwork_delivered
+                    and not self._stopped
                     and not self._stopping
                     and metadata_generation == self._metadata_generation
                 ):
-                    remove_artwork = self._current_artwork_path
-                    self._current_artwork_path = artwork
                     self._metadata_checksum = metadata_checksum
-                else:
-                    remove_artwork = artwork
-            elif artwork:
-                remove_artwork = artwork
-        if remove_artwork:
-            await self._remove_artwork(remove_artwork)
 
     async def _build_cli_args(  # noqa: PLR0915
-        self, start_unix_ms: int, use_shared_ptp: bool | None = None
+        self,
+        use_shared_ptp: bool | None = None,
     ) -> list[str]:
         """
         Assemble the cliairplay argument list for this stream.
 
-        :param start_unix_ms: The audible-start instant in unix epoch ms.
         :param use_shared_ptp: Whether a native AirPlay 2 stream attaches to the
             shared PTP clock daemon. The stream session passes an explicit
             group-wide decision so members never mix PTP and NTP timing; None
@@ -361,8 +476,6 @@ class AirPlayStream:
             self.active_remote_id,
             "--cmdpipe",
             self.commands_pipe.path,
-            "--start-unix-ms",
-            str(start_unix_ms),
             "--samplerate",
             str(self.pcm_format.sample_rate),
             "--bitdepth",
@@ -409,7 +522,7 @@ class AirPlayStream:
             args += ["--txt", txt_records]
 
         # HAP credentials (triggers native AP2 flow when present)
-        if creds := self.player.config.get_value(CONF_AIRPLAY_CREDENTIALS):
+        if creds := self.player.get_setup_value(CONF_AIRPLAY_CREDENTIALS):
             creds_str = str(creds)
             if len(creds_str) == 192:
                 args += ["--auth", creds_str]
@@ -419,7 +532,7 @@ class AirPlayStream:
                 )
 
         # Legacy Apple TV RAOP pairing secret
-        if raop_creds := self.player.config.get_value(CONF_RAOP_CREDENTIALS):
+        if raop_creds := self.player.get_setup_value(CONF_RAOP_CREDENTIALS):
             # Credentials format is "client_id:auth_secret", the binary expects the secret
             creds_str = str(raop_creds)
             auth_secret = creds_str.split(":", 1)[1] if ":" in creds_str else creds_str
@@ -471,8 +584,10 @@ class AirPlayStream:
         elif self.prov.logger.isEnabledFor(logging.DEBUG):
             args += ["--debug", "5"]
 
-        # Positional args: device address + stdin for audio
-        args += [self.player.address, "-"]
+        # Audio is fed continuously on the process stdin; the binary reads it into
+        # a single ring buffer for the whole session lifetime (flushed and
+        # refilled in place on a seek, never reconnected).
+        args.append(self.player.address)
         return args
 
     async def _stdout_reader(self) -> None:
@@ -485,6 +600,7 @@ class AirPlayStream:
           [STATUS] route protocol=<raop|airplay2> flow=<...> timing=<ntp|ptp> buffered=<0|1>
           [STATUS] latency lead_ms=<int> device_min_frames=<int> device_max_frames=<int>
           [STATUS] mrp path=<command> status=<http status>
+          [EVENT] remote command=<play|pause|play_pause|next|previous>
         """
         if not self._cli_proc:
             return
@@ -502,7 +618,22 @@ class AirPlayStream:
                     self._parse_mrp_status(line)
                 elif "[STATUS] latency" in line:
                     self._parse_latency_status(line)
+                elif line.startswith("[EVENT] remote command="):
+                    self._parse_remote_event(line)
                 self.player.logger.log(VERBOSE_LOG_LEVEL, line)
+
+    def _parse_remote_event(self, line: str) -> None:
+        """Dispatch a normalized remote command reported by cliairplay."""
+        command_value = line.removeprefix("[EVENT] remote command=").strip()
+        try:
+            command = AirPlayRemoteCommand(command_value)
+        except ValueError:
+            self.player.logger.warning(
+                "Ignoring unknown cliairplay remote command: %s", command_value
+            )
+            return
+        prov = cast("AirPlayProvider", self.prov)
+        prov.handle_remote_command(self.player, command)
 
     def _parse_mrp_status(self, line: str) -> None:
         """Parse the [STATUS] mrp line and log the now-playing push result."""
@@ -565,25 +696,9 @@ class AirPlayStream:
         async for line in self._cli_proc.iter_stderr():
             if self._stopped:
                 break
-
-            if "[STATUS] connected" in line:
-                self._connected.set()
-            elif "[STATUS] playing elapsed_ms=" in line:
-                try:
-                    millis = int(line.split("elapsed_ms=")[1])
-                except ValueError, IndexError:
-                    pass
-                else:
-                    self._update_elapsed(millis / 1000)
-            elif "[STATUS] paused" in line:
-                player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
-            elif "[STATUS] eof" in line:
-                logger.debug("End of stream reached")
+            if self._handle_status_line(line):
                 expected_eof = True
                 break
-            elif "[ERROR]" in line:
-                logger.error("cliairplay: %s", line.strip())
-
             logger.log(VERBOSE_LOG_LEVEL, line)
             await asyncio.sleep(0)
 
@@ -607,35 +722,60 @@ class AirPlayStream:
                 player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
             finally:
                 await self.commands_pipe.remove()
-                await self._cleanup_artwork()
+
+    def _handle_status_line(self, line: str) -> bool:
+        """Dispatch one cliairplay status line; True ends the stderr loop."""
+        player = self.player
+        if "[STATUS] connected" in line:
+            self._connected.set()
+        elif "[STATUS] playing elapsed_ms=" in line:
+            try:
+                millis = int(line.split("elapsed_ms=")[1])
+            except ValueError, IndexError:
+                pass
+            else:
+                self._update_elapsed(millis / 1000)
+        elif "[STATUS] paused" in line:
+            player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
+        elif "[STATUS] flushed" in line:
+            self._flushed.set()
+        elif "[STATUS] audio " in line:
+            self._audio_present.set()
+        elif "[STATUS] idle_timeout" in line:
+            # a parked (paused) session outlived the binary's idle cap;
+            # treat it as a normal end of stream
+            player.logger.debug("cliairplay idle timeout reached")
+            return True
+        elif "[STATUS] eof" in line:
+            player.logger.debug("End of stream reached")
+            return True
+        elif "[ERROR]" in line:
+            player.logger.error("cliairplay: %s", line.strip())
+        return False
 
     def _update_elapsed(self, elapsed_time: float) -> None:
-        """Update elapsed time with session offset compensation."""
-        if self._elapsed_time_offset is None and self.session:
-            self._elapsed_time_offset = max(0, time.time() - self.session.start_time - elapsed_time)
-        if self._elapsed_time_offset:
-            elapsed_time += self._elapsed_time_offset
+        """Update elapsed time against the current start anchor's media position."""
+        # the binary's elapsed restarts at each START; report against its base
+        elapsed_time += self._start_position
         # The binary only emits this status while actually playing, so it is
         # also the signal that drives the player into the PLAYING state.
         self.player.set_state_from_stream(
             state=PlaybackState.PLAYING, elapsed_time=elapsed_time, stream=self
         )
 
-    async def _prepare_artwork(self, image_url: str, generation: int) -> str | None:
+    async def _prepare_artwork(self, image_url: str, _generation: int) -> str | None:
         """
-        Render cover art to a local JPEG file the binary can embed.
+        Return a cached JPEG path for the binary to embed.
 
         The binary consumes artwork as a local file only; it does not fetch
-        URLs. The image is flattened to JPEG (legacy AirPlay receivers cannot
-        be assumed to handle transparency) and written to a per-stream path.
+        URLs. The image is flattened to JPEG and stored in the shared thumbnail
+        cache.
 
         :param image_url: The (imageproxy or remote) cover-art URL.
-        :param generation: Metadata generation the rendered file belongs to.
+        :param _generation: Metadata generation associated with the render request.
         """
-        artwork_path = self._get_artwork_path(generation)
-        self._artwork_paths.add(artwork_path)
         try:
-            jpeg = await get_image_thumb(
+            return await get_image_thumb_path(
                 self.mass,
                 image_url,
                 AIRPLAY_ARTWORK_SIZE,
@@ -643,65 +783,50 @@ class AirPlayStream:
                 image_format="JPEG",
                 flatten_transparency=True,
             )
-            if self._teardown_started():
-                self._artwork_paths.discard(artwork_path)
-                await self._delete_artwork_file(artwork_path)
-                return None
-            async with aiofiles.open(artwork_path, "wb") as artfile:
-                await artfile.write(jpeg)
-            if self._teardown_started():
-                self._artwork_paths.discard(artwork_path)
-                await self._delete_artwork_file(artwork_path)
-                return None
         except Exception as err:
             self.player.logger.debug("Could not prepare artwork: %s", err)
-            self._artwork_paths.discard(artwork_path)
-            await self._delete_artwork_file(artwork_path)
             return None
-        return artwork_path
 
-    async def _remove_artwork(self, artwork_path: str) -> None:
-        """Remove a rendered artwork file."""
-        if artwork_path not in self._artwork_paths:
+    async def _send_current_metadata(self, send_artwork: bool = True) -> None:
+        """
+        Send metadata for the media owned by the active stream.
+
+        :param send_artwork: Whether artwork should be rendered and sent.
+        """
+        metadata = self.session.media if self.session else self.player.current_media
+        if not metadata:
             return
-        self._artwork_paths.discard(artwork_path)
-        was_current = self._current_artwork_path == artwork_path
-        if was_current:
-            self._current_artwork_path = None
+        progress = int(metadata.corrected_elapsed_time or 0)
+        await self.send_metadata(progress, metadata, send_artwork=send_artwork)
+
+    async def _cleanup_failed_start(self) -> None:
+        """Release all resources owned by a cliairplay process that failed to start."""
+        self._stopping = True
+        self._stopped = True
+        stdout_reader_task = self._stdout_reader_task
+        if stdout_reader_task and not stdout_reader_task.done():
+            stdout_reader_task.cancel()
+            try:
+                await stdout_reader_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as err:
+                self.player.logger.debug("cliairplay stdout reader cleanup failed: %s", err)
         try:
-            await self._delete_artwork_file(artwork_path)
-        except OSError:
-            self._artwork_paths.add(artwork_path)
-            if was_current:
-                self._current_artwork_path = artwork_path
-            raise
+            if self._cli_proc and not self._cli_proc.closed:
+                await self._cli_proc.kill()
+        finally:
+            await self.commands_pipe.remove()
+            self._cleanup_complete = True
+            self._cli_proc = None
 
-    async def _delete_artwork_file(self, artwork_path: str) -> None:
-        """Delete an artwork file even when teardown already released its ownership."""
-        with suppress(FileNotFoundError):
-            await remove_file(artwork_path)
-
-    async def _cleanup_artwork(self) -> None:
-        """Remove all rendered artwork files owned by this stream."""
-        for artwork_path in tuple(self._artwork_paths):
-            await self._remove_artwork(artwork_path)
-
-    async def _write_cli_command(self, command: str) -> None:
+    async def _write_cli_command(self, command: str) -> bool:
         """Write an interactive command regardless of stream teardown state."""
         if not self._cli_proc or self._cli_proc.closed:
-            return
-        self.player.last_command_sent = time.time()
+            return False
         if not command.endswith("\n"):
             command += "\n"
-        await self.commands_pipe.write(command.encode("utf-8"))
-
-    def _get_artwork_path(self, generation: int) -> str:
-        """Return the artwork path owned by this stream and metadata generation."""
-        return (
-            f"/tmp/cliairplay-art-{self.player.player_id}-"  # noqa: S108
-            f"{self._stream_id}-{generation}.jpg"
-        )
-
-    def _teardown_started(self) -> bool:
-        """Return whether stream teardown has started or completed."""
-        return self._stopping or self._stopped
+        command_delivered = await self.commands_pipe.write(command.encode("utf-8"))
+        if command_delivered:
+            self.player.last_command_sent = time.time()
+        return command_delivered

@@ -47,8 +47,8 @@ class PodcastIndexProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self.api_key = str(self.config.get_value(CONF_API_KEY))
-        self.api_secret = str(self.config.get_value(CONF_API_SECRET))
+        self.api_key = str(self.get_setup_value(CONF_API_KEY))
+        self.api_secret = str(self.get_setup_value(CONF_API_SECRET))
 
         if not self.api_key or not self.api_secret:
             raise LoginFailed("API key and secret are required")

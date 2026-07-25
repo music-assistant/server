@@ -7,12 +7,11 @@ https://github.com/music-assistant/aiosonos
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ProviderFeature
 
-from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
 
 from .provider import SonosPlayerProvider
 
@@ -32,13 +31,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    prov = SonosPlayerProvider(mass, manifest, config, SUPPORTED_FEATURES)
-    # set-up aiosonos logging
-    if prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
-        logging.getLogger("aiosonos").setLevel(logging.DEBUG)
-    else:
-        logging.getLogger("aiosonos").setLevel(prov.logger.level + 10)
-    return prov
+    return SonosPlayerProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
 async def get_config_entries(

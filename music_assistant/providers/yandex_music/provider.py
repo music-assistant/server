@@ -6,6 +6,7 @@ import asyncio
 import logging
 import random
 import uuid
+import zlib
 from collections.abc import AsyncGenerator, Sequence
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
@@ -292,26 +293,24 @@ class YandexMusicProvider(MusicProvider):
             ) from err2
         except LoginFailed as err2:
             self.logger.warning("Session and refresh tokens are both expired")
-            self._update_config_value(CONF_TOKEN, None, encrypted=True)
-            self._update_config_value(CONF_X_TOKEN, None, encrypted=True)
-            self._update_config_value(CONF_REFRESH_TOKEN, None, encrypted=True)
+            self._update_setup_data(CONF_TOKEN, None)
+            self._update_setup_data(CONF_X_TOKEN, None)
+            self._update_setup_data(CONF_REFRESH_TOKEN, None)
             raise LoginFailed("Session expired. Please re-authenticate.") from err2
 
         new_music_token = new_creds.music_token
         new_refresh_token = new_creds.refresh_token
         if new_music_token is None or new_refresh_token is None:
-            self._update_config_value(CONF_TOKEN, None, encrypted=True)
-            self._update_config_value(CONF_X_TOKEN, None, encrypted=True)
-            self._update_config_value(CONF_REFRESH_TOKEN, None, encrypted=True)
+            self._update_setup_data(CONF_TOKEN, None)
+            self._update_setup_data(CONF_X_TOKEN, None)
+            self._update_setup_data(CONF_REFRESH_TOKEN, None)
             raise LoginFailed(
                 "Credential refresh returned an incomplete response."
             ) from original_err
 
-        self._update_config_value(CONF_TOKEN, new_music_token.get_secret(), encrypted=True)
-        self._update_config_value(CONF_X_TOKEN, new_creds.x_token.get_secret(), encrypted=True)
-        self._update_config_value(
-            CONF_REFRESH_TOKEN, new_refresh_token.get_secret(), encrypted=True
-        )
+        self._update_setup_data(CONF_TOKEN, new_music_token.get_secret())
+        self._update_setup_data(CONF_X_TOKEN, new_creds.x_token.get_secret())
+        self._update_setup_data(CONF_REFRESH_TOKEN, new_refresh_token.get_secret())
         restrictive = bool(self.config.get_value(CONF_RESTRICTIVE_RATE_LIMITS, False))
         self._client = YandexMusicClient(
             new_music_token, base_url=base_url, restrictive_rate_limits=restrictive
@@ -321,9 +320,9 @@ class YandexMusicProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        token = self.config.get_value(CONF_TOKEN)
-        x_token = self.config.get_value(CONF_X_TOKEN)
-        refresh_token = self.config.get_value(CONF_REFRESH_TOKEN)
+        token = self.get_setup_value(CONF_TOKEN)
+        x_token = self.get_setup_value(CONF_X_TOKEN)
+        refresh_token = self.get_setup_value(CONF_REFRESH_TOKEN)
         base_url = self.config.get_value(CONF_BASE_URL, DEFAULT_BASE_URL)
         restrictive = bool(self.config.get_value(CONF_RESTRICTIVE_RATE_LIMITS, False))
 
@@ -342,7 +341,7 @@ class YandexMusicProvider(MusicProvider):
             except LoginFailed:
                 self.logger.warning("Music token is invalid or expired")
                 # Clear the dead token so restarts go straight to refresh
-                self._update_config_value(CONF_TOKEN, None, encrypted=True)
+                self._update_setup_data(CONF_TOKEN, None)
                 if x_token:
                     self.logger.info("Attempting to refresh from session token")
                     token = None
@@ -354,7 +353,7 @@ class YandexMusicProvider(MusicProvider):
         if not token and x_token:
             try:
                 new_music_token = await refresh_music_token(SecretStr(str(x_token)))
-                self._update_config_value(CONF_TOKEN, new_music_token.get_secret(), encrypted=True)
+                self._update_setup_data(CONF_TOKEN, new_music_token.get_secret())
                 self._client = YandexMusicClient(
                     new_music_token,
                     base_url=str(base_url),
@@ -373,8 +372,8 @@ class YandexMusicProvider(MusicProvider):
                 else:
                     # Definitive auth failure — clear dead credentials
                     self.logger.warning("Session token is invalid or expired")
-                    self._update_config_value(CONF_TOKEN, None, encrypted=True)
-                    self._update_config_value(CONF_X_TOKEN, None, encrypted=True)
+                    self._update_setup_data(CONF_TOKEN, None)
+                    self._update_setup_data(CONF_X_TOKEN, None)
                     raise LoginFailed("Session token expired. Please re-authenticate.") from err
             except asyncio.CancelledError:
                 raise
@@ -2617,61 +2616,127 @@ class YandexMusicProvider(MusicProvider):
                 self.logger.debug("Error parsing similar artist: %s", err)
         return artists
 
-    async def recommendations(self) -> list[RecommendationFolder]:
+    async def get_recommendations(self) -> list[RecommendationFolder]:
         """
-        Get recommendations with multiple discovery folders.
+        Get the available recommendation rows, without items.
 
-        Returns My Wave, Feed (Made for You), Chart, New Releases, and
-        New Playlists sections.
-
-        :return: List of recommendation folders.
+        Returns My Wave, Made for You, Chart, New Releases, New Playlists,
+        Top Picks, Mood Mix, Activity Mix and Seasonal Mix rows.
         """
-        folders: list[RecommendationFolder] = []
+        # The seasonal row title carries the current season, derived locally from the month.
+        seasonal_tag = TAG_SEASONAL_MAP.get(utc().month, "autumn")
+        seasonal_name, _ = self._media_label(
+            "folder", _media_label_key(seasonal_tag), seasonal_tag.title()
+        )
+        return [
+            RecommendationFolder(
+                item_id=MY_WAVE_PLAYLIST_ID,
+                provider=self.instance_id,
+                name="My Wave",
+                translation_key=MY_WAVE_PLAYLIST_ID,
+                icon="mdi-waveform",
+            ),
+            RecommendationFolder(
+                item_id="feed",
+                provider=self.instance_id,
+                name="Made for You",
+                translation_key="feed",
+                icon="mdi-account-music",
+            ),
+            RecommendationFolder(
+                item_id="chart",
+                provider=self.instance_id,
+                name="Chart",
+                translation_key="chart",
+                icon="mdi-chart-line",
+            ),
+            RecommendationFolder(
+                item_id="new_releases",
+                provider=self.instance_id,
+                name="New Releases",
+                translation_key="new_releases",
+                icon="mdi-new-box",
+            ),
+            RecommendationFolder(
+                item_id="new_playlists",
+                provider=self.instance_id,
+                name="New Playlists",
+                translation_key="new_playlists",
+                icon="mdi-playlist-star",
+            ),
+            RecommendationFolder(
+                item_id="top_picks",
+                provider=self.instance_id,
+                name="Top Picks",
+                translation_key="top_picks",
+                icon="mdi-star",
+            ),
+            # Mood/Activity rows have a static title; the hourly rotating tag - derived
+            # deterministically, so the items call independently computes the same one -
+            # shows as the row subtitle (cache-only tag-list read, no backend I/O).
+            RecommendationFolder(
+                item_id="mood_mix",
+                provider=self.instance_id,
+                name="Mood Mix",
+                translation_key="mood_mix",
+                subtitle=await self._rotating_row_tag_subtitle("mood"),
+                icon="mdi-emoticon-outline",
+            ),
+            RecommendationFolder(
+                item_id="activity_mix",
+                provider=self.instance_id,
+                name="Activity Mix",
+                translation_key="activity_mix",
+                subtitle=await self._rotating_row_tag_subtitle("activity"),
+                icon="mdi-run",
+            ),
+            RecommendationFolder(
+                item_id="seasonal_mix",
+                provider=self.instance_id,
+                name=f"Seasonal: {seasonal_name}",
+                translation_key="seasonal_mix",
+                translation_params=[seasonal_name],
+                icon="mdi-weather-sunny",
+            ),
+        ]
 
-        folder = await self._get_my_wave_recommendations()
-        if folder:
-            folders.append(folder)
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
 
-        folder = await self._get_feed_recommendations()
-        if folder:
-            folders.append(folder)
-
-        folder = await self._get_chart_recommendations()
-        if folder:
-            folders.append(folder)
-
-        folder = await self._get_new_releases_recommendations()
-        if folder:
-            folders.append(folder)
-
-        folder = await self._get_new_playlists_recommendations()
-        if folder:
-            folders.append(folder)
-
-        # Picks & Mixes recommendations
-        folder = await self._get_top_picks_recommendations()
-        if folder:
-            folders.append(folder)
-
-        # Mood mix: select tag outside cache so rotation actually works
-        mood_tag = await self._pick_random_tag_for_category("mood")
-        if mood_tag:
-            folder = await self._get_mood_mix_recommendations(mood_tag)
-            if folder:
-                folders.append(folder)
-
-        # Activity mix: select tag outside cache so rotation actually works
-        activity_tag = await self._pick_random_tag_for_category("activity")
-        if activity_tag:
-            folder = await self._get_activity_mix_recommendations(activity_tag)
-            if folder:
-                folders.append(folder)
-
-        folder = await self._get_seasonal_mix_recommendations()
-        if folder:
-            folders.append(folder)
-
-        return folders
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        folder: RecommendationFolder | None = None
+        if item_id == MY_WAVE_PLAYLIST_ID:
+            folder = await self._get_my_wave_recommendations()
+        elif item_id == "feed":
+            folder = await self._get_feed_recommendations()
+        elif item_id == "chart":
+            folder = await self._get_chart_recommendations()
+        elif item_id == "new_releases":
+            folder = await self._get_new_releases_recommendations()
+        elif item_id == "new_playlists":
+            folder = await self._get_new_playlists_recommendations()
+        elif item_id == "top_picks":
+            folder = await self._get_top_picks_recommendations()
+        elif item_id == "mood_mix":
+            # the deterministic hourly tag keeps the served items matching the row subtitle
+            if mood_tags := await self._get_valid_tags_for_category("mood"):
+                folder = await self._get_mood_mix_recommendations(
+                    self._rotating_row_tag("mood", mood_tags)
+                )
+        elif item_id == "activity_mix":
+            if activity_tags := await self._get_valid_tags_for_category("activity"):
+                folder = await self._get_activity_mix_recommendations(
+                    self._rotating_row_tag("activity", activity_tags)
+                )
+        elif item_id == "seasonal_mix":
+            folder = await self._get_seasonal_mix_recommendations()
+        if folder is None:
+            return UniqueList()
+        return folder.items
 
     @use_cache(600, allow_expired_cache=True)
     async def _get_my_wave_recommendations(self) -> RecommendationFolder | None:
@@ -2910,18 +2975,6 @@ class YandexMusicProvider(MusicProvider):
             items=UniqueList(items),
             icon="mdi-star",
         )
-
-    async def _pick_random_tag_for_category(self, category: str) -> str | None:
-        """
-        Pick a random valid tag for a category (not cached — enables rotation).
-
-        :param category: Category name ('mood', 'activity', etc.).
-        :return: Random tag slug, or None if no valid tags.
-        """
-        valid_tags = await self._get_valid_tags_for_category(category)
-        if not valid_tags:
-            return None
-        return random.choice(valid_tags)
 
     @use_cache(1800, allow_expired_cache=True)
     async def _get_mood_mix_recommendations(self, mood_tag: str) -> RecommendationFolder | None:
@@ -3806,3 +3859,41 @@ class YandexMusicProvider(MusicProvider):
             total_played_seconds=offset,
             end_position_seconds=offset,
         )
+
+    async def _rotating_row_tag_subtitle(self, category: str) -> str | None:
+        """
+        Return the display label of the current rotating tag for a mood/activity row.
+
+        Cache-only read of the validated tag list (rows must stay free of backend I/O):
+        returns None - no subtitle - until an items fetch has warmed that cache.
+
+        :param category: Tag category ('mood' or 'activity').
+        """
+        # key mirrors the @use_cache key construction on _get_valid_tags_for_category:
+        # the wrapped function's __name__ (preserved by functools.wraps, so it survives
+        # renames) plus its positional args, joined by dots
+        tags, _, found = await self.mass.cache.get_with_freshness(
+            f"{self._get_valid_tags_for_category.__name__}.{category}",
+            provider=self.instance_id,
+            include_expired=True,
+        )
+        if not found or not tags:
+            return None
+        tag = self._rotating_row_tag(category, tags)
+        return self._media_label("folder", _media_label_key(tag), tag.title())[0]
+
+    def _rotating_row_tag(self, category: str, valid_tags: list[str]) -> str:
+        """
+        Deterministically pick the current hour's tag for a mood/activity row.
+
+        Rows and items derive the same tag independently - no shared state, so
+        concurrent clients (or multiple users on one instance) can never make the
+        served items mismatch the row subtitle. The pick rotates hourly and
+        differs per provider instance.
+
+        :param category: Tag category the tags belong to.
+        :param valid_tags: Non-empty list of valid tag slugs to pick from.
+        """
+        hour_bucket = int(utc().timestamp()) // 3600
+        seed = f"{self.instance_id}.{category}.{hour_bucket}".encode()
+        return sorted(valid_tags)[zlib.crc32(seed) % len(valid_tags)]

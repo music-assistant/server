@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ImageType
+from music_assistant_models.enums import ImageType, ProviderIconVariant
 from music_assistant_models.media_items import MediaItemImage
 from PIL import Image
 
@@ -21,9 +21,12 @@ from music_assistant.helpers import images
 from music_assistant.helpers.images import (
     _SOURCE_CACHE_TTL,
     create_thumb_hash,
+    detect_provider_icons,
     get_image_data,
     get_image_thumb,
+    get_image_thumb_path,
     invalidate_cached_image,
+    load_provider_icon,
 )
 from music_assistant.models.metadata_provider import MetadataProvider
 
@@ -88,6 +91,62 @@ async def test_multiple_thumb_sizes_fetch_source_once(
     assert thumb_256
     assert jpeg_flat
     assert fetch_calls == [("builtin", image_path)]
+
+
+async def test_thumb_path_reuses_existing_cache_file(
+    mass_minimal: MusicAssistant, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A repeated path lookup returns the same existing file without rewriting it."""
+    image_path = _make_png_file(tmp_path)
+    first_path = await get_image_thumb_path(mass_minimal, image_path, 256, "builtin")
+
+    async def unexpected_write(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("existing thumbnail was rewritten")
+
+    monkeypatch.setattr(images, "_write_thumb_to_disk", unexpected_write)
+    second_path = await get_image_thumb_path(mass_minimal, image_path, 256, "builtin")
+
+    assert second_path == first_path
+    assert Path(second_path).is_file()
+
+
+async def test_thumb_path_restores_missing_disk_file_from_memory(
+    mass_minimal: MusicAssistant, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A memory hit recreates its missing disk file without regenerating the thumbnail."""
+    image_path = _make_png_file(tmp_path)
+    thumb_data = await get_image_thumb(mass_minimal, image_path, 256, "builtin")
+    thumb_hash = create_thumb_hash("builtin", image_path)
+    cache_filename = images._thumb_cache_filename(thumb_hash, 256, "PNG")
+    cache_path = Path(mass_minimal.cache_path, "thumbnails", cache_filename)
+    cache_path.unlink()
+
+    async def unexpected_generate(*_args: object, **_kwargs: object) -> bytes:
+        raise AssertionError("memory-cached thumbnail was regenerated")
+
+    monkeypatch.setattr(images, "_generate_and_cache_thumb", unexpected_generate)
+    restored_path = await get_image_thumb_path(mass_minimal, image_path, 256, "builtin")
+
+    assert restored_path == str(cache_path.resolve())
+    assert cache_path.read_bytes() == thumb_data
+
+
+async def test_thumb_path_surfaces_cache_write_error(
+    mass_minimal: MusicAssistant, tmp_path: Path
+) -> None:
+    """A path request raises when the thumbnail cache cannot be persisted."""
+    invalid_cache_path = tmp_path / "not-a-directory"
+    invalid_cache_path.write_text("file")
+    mass_minimal.cache_path = str(invalid_cache_path)
+    image_data = b64encode(_make_png_bytes()).decode()
+
+    with pytest.raises(NotADirectoryError, match="not-a-directory"):
+        await get_image_thumb_path(
+            mass_minimal,
+            f"data:image/png;base64,{image_data}",
+            256,
+            "builtin",
+        )
 
 
 async def test_concurrent_requests_share_one_fetch(
@@ -383,3 +442,57 @@ async def test_create_collage_fetches_each_unique_image_once(
     assert collage.startswith(b"\xff\xd8")  # JPEG magic
     # each unique image was fetched exactly once (incl. the one failed attempt)
     assert sorted(path for _prov, path in fetch_calls) == sorted(paths)
+
+
+# Provider icon helpers tests
+async def test_load_provider_icon_svg(tmp_path: Path) -> None:
+    """Test loading an SVG icon file returns minified UTF-8 bytes."""
+    icon = tmp_path / "icon.svg"
+    icon.write_text("<svg>\n  <path/>\n</svg>\n")
+    mime, data = await load_provider_icon(str(icon))
+    assert mime == "image/svg+xml"
+    assert data == b"<svg>  <path/></svg>"
+
+
+async def test_load_provider_icon_png(tmp_path: Path) -> None:
+    """Test loading a PNG icon file returns raw bytes."""
+    icon = tmp_path / "icon.png"
+    raw = b"\x89PNG\r\n\x1a\n\x00\x00"
+    icon.write_bytes(raw)
+    mime, data = await load_provider_icon(str(icon))
+    assert mime == "image/png"
+    assert data == raw
+
+
+async def test_load_provider_icon_bad_ext(tmp_path: Path) -> None:
+    """Test loading an unsupported file format raises ValueError."""
+    icon = tmp_path / "icon.gif"
+    icon.write_bytes(b"gif")
+    with pytest.raises(ValueError, match="Unsupported"):
+        await load_provider_icon(str(icon))
+
+
+async def test_detect_provider_icons_svg_preferred(tmp_path: Path) -> None:
+    """Test that SVG is preferred over PNG when both exist."""
+    # both svg and png present for default -> svg wins
+    (tmp_path / "icon.svg").write_text("<svg/>")
+    (tmp_path / "icon.png").write_bytes(b"PNGDATA")
+    icons = await detect_provider_icons(str(tmp_path))
+    assert icons[ProviderIconVariant.DEFAULT] == ("image/svg+xml", b"<svg/>")
+    assert set(icons) == {ProviderIconVariant.DEFAULT}
+
+
+async def test_detect_provider_icons_png_and_variants(tmp_path: Path) -> None:
+    """Test detecting multiple icon variants."""
+    (tmp_path / "icon.png").write_bytes(b"PNGDATA")
+    (tmp_path / "icon_dark.svg").write_text("<svg/>")
+    (tmp_path / "icon_monochrome.png").write_bytes(b"MONO")
+    icons = await detect_provider_icons(str(tmp_path))
+    assert icons[ProviderIconVariant.DEFAULT] == ("image/png", b"PNGDATA")
+    assert icons[ProviderIconVariant.DARK] == ("image/svg+xml", b"<svg/>")
+    assert icons[ProviderIconVariant.MONOCHROME] == ("image/png", b"MONO")
+
+
+async def test_detect_provider_icons_none(tmp_path: Path) -> None:
+    """Test detecting icons in an empty directory returns empty dict."""
+    assert await detect_provider_icons(str(tmp_path)) == {}

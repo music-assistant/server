@@ -11,8 +11,7 @@ from typing import TYPE_CHECKING
 from aiojellyfin import MediaLibrary as JellyMediaLibrary
 from aiojellyfin import NotFound, authenticate_by_name
 from aiojellyfin.session import SessionConfiguration
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
-from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderFeature, StreamType
+from music_assistant_models.enums import MediaType, ProviderFeature, StreamType
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
@@ -55,6 +54,7 @@ from .const import (
 )
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
 CONF_URL = "url"
@@ -93,32 +93,8 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    # config flow auth action/step (authenticate button clicked)
     # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_URL,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_VERIFY_SSL,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            advanced=True,
-            default_value=True,
-        ),
-    )
+    return ()
 
 
 class JellyfinProvider(MusicProvider):
@@ -126,7 +102,7 @@ class JellyfinProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Initialize provider(instance) with given configuration."""
-        username = str(self.config.get_value(CONF_USERNAME))
+        username = str(self.get_setup_value(CONF_USERNAME))
 
         # Device ID should be stable between reboots
         # Otherwise every time the provider starts we "leak" a new device
@@ -143,13 +119,13 @@ class JellyfinProvider(MusicProvider):
         # to be an opaque identifier
 
         device_id = hashlib.sha256(f"{self.mass.server_id}+{username}".encode()).hexdigest()
-        verify_ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
+        verify_ssl = bool(self.get_setup_value(CONF_VERIFY_SSL))
         http_session = self.mass.http_session if verify_ssl else self.mass.http_session_no_ssl
 
         session_config = SessionConfiguration(
             session=http_session,
-            url=str(self.config.get_value(CONF_URL)),
-            verify_ssl=bool(self.config.get_value(CONF_VERIFY_SSL)),
+            url=str(self.get_setup_value(CONF_URL)),
+            verify_ssl=verify_ssl,
             app_name=USER_APP_NAME,
             app_version=self.mass.version,
             device_name=socket.gethostname(),
@@ -160,7 +136,7 @@ class JellyfinProvider(MusicProvider):
             self._client = await authenticate_by_name(
                 session_config,
                 username,
-                str(self.config.get_value(CONF_PASSWORD) or ""),
+                str(self.get_setup_value(CONF_PASSWORD) or ""),
             )
         except Exception as err:
             raise LoginFailed(f"Authentication failed: {err}") from err

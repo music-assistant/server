@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import re
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ContentType
@@ -13,7 +14,6 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant.constants import CONF_ZEROCONF_INTERFACES
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.util import get_source_ip_for_target
-from music_assistant.providers.airplay.constants import BROKEN_AIRPLAY_MODELS
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
@@ -22,6 +22,13 @@ if TYPE_CHECKING:
     from music_assistant.providers.airplay.player import AirPlayPlayer
 
 _LOGGER = logging.getLogger(__name__)
+_COMPANION_PAIRING_DISABLED = 0x04
+_COMPANION_PAIRING_WITH_PIN = 0x4000
+# Bound the binary's `--check` probe. It normally answers instantly, but the first
+# execution of a freshly-fetched binary can stall (e.g. macOS Gatekeeper verification
+# of an unsigned download), and a wedged binary would otherwise block provider load or
+# a stream start indefinitely.
+_CLI_BINARY_CHECK_TIMEOUT = 15.0
 
 
 async def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
@@ -122,12 +129,18 @@ def get_model_info(info: AsyncServiceInfo) -> tuple[str, str]:  # noqa: PLR0911
     return (manufacturer or "AirPlay", model)
 
 
-def is_broken_airplay_model(manufacturer: str, model: str) -> bool:
-    """Check if a model is known to have broken AirPlay support."""
-    for broken_manufacturer, broken_model in BROKEN_AIRPLAY_MODELS:
-        if broken_manufacturer in (manufacturer, "*") and broken_model in (model, "*"):
-            return True
-    return False
+def parse_airplay_features(features_value: str | None) -> int:
+    """Return an AirPlay features bitmask, or zero for an invalid value."""
+    if not features_value:
+        return 0
+    try:
+        parts = features_value.split(",")
+        features = int(parts[0], 16)
+        if len(parts) > 1:
+            features |= int(parts[1], 16) << 32
+    except TypeError, ValueError:
+        return 0
+    return features
 
 
 def supports_airplay2(features_value: str | None) -> bool:
@@ -138,15 +151,7 @@ def supports_airplay2(features_value: str | None) -> bool:
         (``features`` on the _airplay service or ``ft`` on the _raop service),
         formatted as ``0xLOW`` or ``0xLOW,0xHIGH``.
     """
-    if not features_value:
-        return False
-    try:
-        parts = features_value.split(",")
-        features = int(parts[0], 16)
-        if len(parts) > 1:
-            features |= int(parts[1], 16) << 32
-    except ValueError, TypeError:
-        return False
+    features = parse_airplay_features(features_value)
     # SupportsUnifiedMediaControl (bit 38) / SupportsCoreUtilsPairingAndEncryption
     # (bit 48): either one means the device speaks AirPlay 2. This mirrors the
     # test the cliairplay binary uses for its automatic route selection.
@@ -167,26 +172,118 @@ def is_apple_device(manufacturer: str, model: str) -> bool:
     )
 
 
+def is_apple_tv(manufacturer: str, model: str) -> bool:
+    """
+    Check if a device identifies as an Apple TV (and not a HomePod).
+
+    Only Apple TVs run the tvOS dashboard app, so this narrows :func:`is_apple_device`
+    to the Apple TV family. The model strings come from :func:`get_model_info`
+    (e.g. "Apple TV 4K", "Apple TV Gen4").
+    """
+    return manufacturer.lower().startswith("apple") and "apple tv" in model.lower()
+
+
+def get_decoded_property(discovery_info: AsyncServiceInfo, key: str) -> str | None:
+    """
+    Return an mDNS TXT property value by case-insensitive key.
+
+    TXT record keys are case-insensitive (RFC 6763) and zeroconf preserves the
+    casing as advertised on the wire, which differs per device (e.g. Companion
+    services advertise ``rpFl``, MRP services ``SystemBuildVersion``).
+
+    :param discovery_info: The mDNS service info to read the property from.
+    :param key: The TXT record key to look up (any casing).
+    """
+    decoded_properties = discovery_info.decoded_properties
+    if (value := decoded_properties.get(key)) is not None:
+        return value
+    folded_key = key.casefold()
+    for prop_key, prop_value in decoded_properties.items():
+        if prop_key.casefold() == folded_key:
+            return prop_value
+    return None
+
+
+def supports_companion_pairing(discovery_info: AsyncServiceInfo | None) -> bool:
+    """Return whether a Companion service supports PIN pairing."""
+    if discovery_info is None:
+        return False
+    raw_flags = get_decoded_property(discovery_info, "rpFl")
+    if raw_flags is None:
+        return False
+    try:
+        flags = int(raw_flags, 16)
+    except TypeError, ValueError:
+        return False
+    return bool(flags & _COMPANION_PAIRING_WITH_PIN) and not bool(
+        flags & _COMPANION_PAIRING_DISABLED
+    )
+
+
+def supports_mrp_tunnel(discovery_info: AsyncServiceInfo | None) -> bool:
+    """Return whether an AirPlay service advertises tunneled MRP control."""
+    if discovery_info is None:
+        return False
+    features = parse_airplay_features(
+        discovery_info.decoded_properties.get("features")
+        or discovery_info.decoded_properties.get("ft")
+    )
+    return bool((features >> 58) & 1)
+
+
+def supports_transient_mrp(discovery_info: AsyncServiceInfo | None) -> bool:
+    """Return whether an AirPlay MRP tunnel supports transient authentication."""
+    if not supports_mrp_tunnel(discovery_info):
+        return False
+    assert discovery_info is not None
+    features = parse_airplay_features(
+        discovery_info.decoded_properties.get("features")
+        or discovery_info.decoded_properties.get("ft")
+    )
+    return bool((features >> 43) & 1 or (features >> 48) & 1)
+
+
+def supports_mrp_service(discovery_info: AsyncServiceInfo | None) -> bool:
+    """Return whether a native MRP service is usable."""
+    if discovery_info is None or discovery_info.port is None:
+        return False
+    build = get_decoded_property(discovery_info, "SystemBuildVersion") or ""
+    match = re.match(r"^(\d+)[A-Z]", build)
+    return match is None or int(match.group(1)) < 19
+
+
 async def get_cli_binary() -> str:
     """
     Find the cliairplay binary for the current platform.
 
     :raises RuntimeError: If the binary cannot be found.
     """
+    system = platform.system()
+    architecture = platform.machine()
+    binary_name = _get_cli_binary_name(system, architecture)
+    if binary_name is None:
+        msg = f"Unsupported cliairplay platform: {system.lower()}/{architecture.lower()}"
+        raise RuntimeError(msg)
     base_path = os.path.join(os.path.dirname(__file__), "bin")
-    system = platform.system().lower().replace("darwin", "macos")
-    architecture = platform.machine().lower()
-    binary_path = os.path.join(base_path, f"cliairplay-{system}-{architecture}")
+    binary_path = os.path.join(base_path, binary_name)
 
     try:
-        returncode, output = await check_output(binary_path, "--check")
+        returncode, output = await check_output(
+            binary_path, "--check", timeout=_CLI_BINARY_CHECK_TIMEOUT
+        )
         output_str = output.strip().decode()
         if returncode == 0 and "cliairplay" in output_str and "check" in output_str:
             return binary_path
+    except TimeoutError:
+        msg = (
+            f"{binary_name} did not respond to --check within "
+            f"{_CLI_BINARY_CHECK_TIMEOUT:.0f}s (first-run verification or a wedged binary)"
+        )
+        raise RuntimeError(msg) from None
     except OSError:
         pass
 
-    msg = f"Unable to locate cliairplay binary for {system}/{architecture}"
+    msg = f"Unable to locate {binary_name} for {system.lower()}/{architecture.lower()}"
     raise RuntimeError(msg)
 
 
@@ -253,3 +350,19 @@ def get_final_output_format(
         bit_depth=audio_format.bit_depth,
         channels=audio_format.channels,
     )
+
+
+def _get_cli_binary_name(system: str, machine: str) -> str | None:
+    """Return the cliairplay release asset name for a platform."""
+    normalized_system = system.lower().replace("darwin", "macos")
+    normalized_machine = machine.lower()
+
+    if normalized_machine in ("amd64", "x86_64"):
+        architecture = "x86_64"
+    elif normalized_machine in ("aarch64", "arm64"):
+        architecture = "arm64" if normalized_system == "macos" else "aarch64"
+    else:
+        return None
+    if normalized_system not in ("linux", "macos"):
+        return None
+    return f"cliairplay-{normalized_system}-{architecture}"

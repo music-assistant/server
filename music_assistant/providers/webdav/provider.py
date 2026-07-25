@@ -48,13 +48,15 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         config: ProviderConfig,
     ) -> None:
         """Initialize WebDAV FileSystem Provider."""
-        base_url = cast("str", config.get_value(CONF_URL)).rstrip("/")
-        super().__init__(mass, manifest, config, base_url)
-        self.base_url = base_url
-        self.username = cast("str | None", config.get_value(CONF_USERNAME))
-        self.password = cast("str | None", config.get_value(CONF_PASSWORD))
-        self.verify_ssl = cast("bool", config.get_value(CONF_VERIFY_SSL))
-        self.media_content_type = cast("str", config.get_value(CONF_CONTENT_TYPE))
+        # the base path (WebDAV URL) is resolved from the setup data below, which needs
+        # the initialized instance, so hand the base class a placeholder and set it after
+        super().__init__(mass, manifest, config, base_path="")
+        self.base_url = cast("str", self.get_setup_value(CONF_URL)).rstrip("/")
+        self.base_path = self.base_url
+        self.username = cast("str | None", self.get_setup_value(CONF_USERNAME))
+        self.password = cast("str | None", self.get_setup_value(CONF_PASSWORD))
+        self.verify_ssl = cast("bool", self.get_setup_value(CONF_VERIFY_SSL))
+        self.media_content_type = cast("str", self.get_setup_value(CONF_CONTENT_TYPE))
 
     @property
     def instance_name_postfix(self) -> str | None:

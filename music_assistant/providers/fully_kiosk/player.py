@@ -28,9 +28,12 @@ from music_assistant.constants import (
     CONF_VERIFY_SSL,
 )
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.setup_flow import SetupFlowError
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType
+
+    from music_assistant.models.setup_flow import SetupSession
 
     from .provider import FullyKioskProvider
 
@@ -86,6 +89,7 @@ class FullyKioskPlayer(Player):
         self.port = port
         self.fully_kiosk: FullyKiosk | None = None
         self._attr_needs_setup = True
+        self._attr_setup_reason = "password_required"
         self._attr_available = False
         self._attr_name = f"Fully Kiosk ({host})"
         self._attr_supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.VOLUME_SET}
@@ -107,11 +111,6 @@ class FullyKioskPlayer(Player):
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return [
-            ConfigEntry(
-                key=CONF_PASSWORD,
-                type=ConfigEntryType.SECURE_STRING,
-                required=True,
-            ),
             ConfigEntry(
                 key=CONF_USE_SSL,
                 type=ConfigEntryType.BOOLEAN,
@@ -135,14 +134,29 @@ class FullyKioskPlayer(Player):
 
     async def on_config_updated(self) -> None:
         """Reconnect to the Fully Kiosk device when player configuration changes."""
-        password = cast("str | None", self.config.get_value(CONF_PASSWORD) or None)
+        password = cast("str | None", self.get_setup_value(CONF_PASSWORD) or None)
         if not password:
             self.fully_kiosk = None
             self._attr_needs_setup = True
+            self._attr_setup_reason = "password_required"
             self._attr_available = False
             self.update_state()
             return
         await self._connect()
+
+    async def run_setup_flow(self, session: SetupSession) -> None:
+        """Run the setup flow: collect the Fully Kiosk API password."""
+        entries = [
+            ConfigEntry(key=CONF_PASSWORD, type=ConfigEntryType.SECURE_STRING, required=True)
+        ]
+        errors: dict[str, str] | None = None
+        while True:
+            values = await session.form(entries, step_id="user", errors=errors, last_step=True)
+            try:
+                await session.finish({CONF_PASSWORD: str(values[CONF_PASSWORD])})
+                return
+            except SetupFlowError as err:
+                errors = {"base": err.translation_key or str(err)}
 
     async def poll(self) -> None:
         """Poll player for state updates."""
@@ -201,9 +215,10 @@ class FullyKioskPlayer(Player):
 
     async def _connect(self) -> None:
         """Establish a connection to the Fully Kiosk device."""
-        password = cast("str | None", self.config.get_value(CONF_PASSWORD) or None)
+        password = cast("str | None", self.get_setup_value(CONF_PASSWORD) or None)
         if not password:
             self._attr_needs_setup = True
+            self._attr_setup_reason = "password_required"
             self._attr_available = False
             self.fully_kiosk = None
             self.update_state()
@@ -276,6 +291,7 @@ class FullyKioskPlayer(Player):
         )
         self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, address)
         self._attr_needs_setup = False
+        self._attr_setup_reason = None
         self._attr_available = True
         self._sync_state()
         self.update_state()

@@ -127,6 +127,7 @@ if TYPE_CHECKING:
         CoreConfig,
         PlayerConfig,
     )
+    from music_assistant_models.player import OutputProtocol
     from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant import MusicAssistant
@@ -1079,6 +1080,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 announcement_url=url,
                 pre_announce=bool(pre_announce),
                 pre_announce_url=pre_announce_url,
+                announce_player_id=(announce_player.player_id if native_announce_support else None),
             )
             announcement = PlayerMedia(
                 uri=self.mass.streams.get_announcement_url(player_id, announce_data=announce_data),
@@ -3489,6 +3491,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 filtered_native_remove,
             )
             if filtered_native_add or filtered_native_remove:
+                if PlayerFeature.SET_MEMBERS not in parent_player.state.supported_features:
+                    return
                 self.logger.info(
                     "Calling set_members on native player %s with add=%s, remove=%s",
                     parent_player.state.name,
@@ -3888,12 +3892,18 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             player.set_active_mass_source(media.source_id)
 
         # Determine output protocol to use:
-        # If player already has an active protocol set, prefer that.
-        # Otherwise, select best protocol based on current state.
+        # While a session is active (playing/paused), keep using the already active
+        # protocol so mid-session commands stay on the same output.
+        # On a fresh start always (re)select: a leftover active protocol from a
+        # previous session must not overrule user preference, a grouped protocol
+        # or native playback (and it may point at a player that is gone by now).
+        target_player: Player | None = None
+        output_protocol: OutputProtocol | None = None
         if (
-            player.active_output_protocol
+            player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+            and player.active_output_protocol
             and player.active_output_protocol != "native"
-            and (target_player := self.get_player(player.active_output_protocol))
+            and (protocol_player := self.get_player(player.active_output_protocol))
         ):
             # Use the already-set protocol directly
             output_protocol = next(
@@ -3904,7 +3914,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 ),
                 None,
             )
-        else:
+            if output_protocol is not None:
+                target_player = protocol_player
+        if target_player is None:
             target_player, output_protocol = self._select_best_output_protocol(player)
 
         if target_player.player_id != player.player_id:
@@ -4043,16 +4055,25 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         player = self.get_player(player_id, raise_unavailable=True)
         assert player is not None
+        protocol_player: Player | None = None
+        if player.active_output_protocol and player.active_output_protocol != "native":
+            protocol_player = self.get_player(player.active_output_protocol)
         if player.state.playback_state == PlaybackState.IDLE:
+            # The player already reports idle but an output protocol is still marked
+            # active: the protocol player may never have received a stop at all
+            # (e.g. the source stream ended on its own before this stop command
+            # arrived). Forward an (idempotent) stop and schedule the protocol clear
+            # so no stale session lingers on the device and the next playback
+            # (re)selects the output protocol.
+            if protocol_player is not None:
+                await protocol_player.stop()
+                if len(protocol_player.group_members) <= 1:
+                    self.schedule_active_output_protocol_clear(player)
             return
         player.mark_stop_called()
         # Delegate to active protocol player if one is active
         target_player = player
-        if (
-            player.active_output_protocol
-            and player.active_output_protocol != "native"
-            and (protocol_player := self.get_player(player.active_output_protocol))
-        ):
+        if protocol_player is not None:
             target_player = protocol_player
             if PlayerFeature.POWER in target_player.supported_features:
                 # if protocol player supports/requires power,

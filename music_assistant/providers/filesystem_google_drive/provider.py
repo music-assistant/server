@@ -20,16 +20,17 @@ from music_assistant_models.errors import (
     SetupFailedError,
 )
 
-from music_assistant.providers.filesystem_cloud.base import CloudFileSystemProvider
-
-from .auth import MAGoogleDriveAuth
-from .constants import (
+from music_assistant.providers.filesystem_cloud.base import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
     CONF_FOLDER_ID,
     CONF_REFRESH_TOKEN,
-    FOLDER_MIME_TYPE,
+    CloudFileSystemProvider,
+    read_setup_value,
 )
+
+from .auth import MAGoogleDriveAuth
+from .constants import FOLDER_MIME_TYPE
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -55,15 +56,19 @@ class GoogleDriveFileSystemProvider(CloudFileSystemProvider):
         config: ProviderConfig,
     ) -> None:
         """Initialize Google Drive FileSystem Provider."""
-        # the "root" for this provider is a Google Drive folder ID
+        # the "root" for this provider is a Google Drive folder ID; read it setup-data-aware
+        # here since the instance (and self.get_setup_value) does not exist yet
         super().__init__(
-            mass, manifest, config, cast("str", config.get_value(CONF_FOLDER_ID) or "root")
+            mass,
+            manifest,
+            config,
+            cast("str", read_setup_value(mass, config, CONF_FOLDER_ID) or "root"),
         )
         self.auth = MAGoogleDriveAuth(
             mass,
-            cast("str", config.get_value(CONF_CLIENT_ID)),
-            cast("str", config.get_value(CONF_CLIENT_SECRET)),
-            cast("str", config.get_value(CONF_REFRESH_TOKEN)),
+            cast("str", self.get_setup_value(CONF_CLIENT_ID)),
+            cast("str", self.get_setup_value(CONF_CLIENT_SECRET)),
+            cast("str", self.get_setup_value(CONF_REFRESH_TOKEN)),
         )
         self.api = GoogleDriveApi(self.auth)
         self._root_folder_name: str | None = None

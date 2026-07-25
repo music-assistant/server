@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 import logging
 from typing import TYPE_CHECKING, Any, cast, overload
@@ -72,6 +73,8 @@ class ProviderConfigMixin:
         def remove(self, key: str) -> None: ...  # noqa: D102
 
         def encrypt_string(self, str_value: str) -> str: ...  # noqa: D102
+
+        def decrypt_string(self, encrypted_str: str) -> str: ...  # noqa: D102
 
         async def set_onboard_complete(self) -> None: ...  # noqa: D102
 
@@ -389,6 +392,27 @@ class ProviderConfigMixin:
             ),
         )
 
+    def get_provider_setup_value(
+        self, instance_id: str, key: str, default: ConfigValueType = None
+    ) -> ConfigValueType:
+        """
+        Return a single (decrypted) setup_data value for a provider from storage.
+
+        Returns the given default when the key is not present in setup_data.
+        Works without a loaded provider instance.
+
+        :param instance_id: The provider instance ID.
+        :param key: The setup data key to retrieve.
+        :param default: Value to return when the key is not present in setup_data.
+        """
+        setup_data = self.get(f"{CONF_PROVIDERS}/{instance_id}/setup_data") or {}
+        if key not in setup_data:
+            return default
+        value = cast("ConfigValueType", setup_data[key])
+        if isinstance(value, str):
+            return self.decrypt_string(value)
+        return value
+
     def set_raw_provider_config_value(
         self,
         provider_instance: str,
@@ -454,6 +478,16 @@ class ProviderConfigMixin:
         # provider wants to manipulate the config during load
         conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
         raw_conf = config.to_raw()
+        # Preserve stored values that don't have config entries in the current context
+        # (e.g. values written by a provider at runtime while its declared entries
+        # changed) - to_raw() only rebuilds the values from the declared entries.
+        existing_values = (self.get(conf_key) or {}).get("values", {})
+        new_values = raw_conf.get("values", {})
+        config_entry_keys = set(config.values.keys())
+        for key, value in existing_values.items():
+            if key not in new_values and key not in config_entry_keys:
+                new_values[key] = value
+        raw_conf["values"] = new_values
         self.set(conf_key, raw_conf)
         if config.enabled and prov_instance and available:
             # update config for existing/loaded provider instance
@@ -510,6 +544,32 @@ class ProviderConfigMixin:
             if not any(dep_conf.enabled for dep_conf in dep_configs):
                 msg = f"Provider {manifest.name} depends on {prov.depends_on}"
                 raise ValueError(msg)
+        return await self._create_provider_instance(provider_domain, values)
+
+    async def _create_provider_instance(
+        self,
+        provider_domain: str,
+        values: dict[str, ConfigValueType],
+        setup_data: dict[str, Any] | None = None,
+    ) -> ProviderConfig:
+        """
+        Create, persist and load a new provider instance.
+
+        Shared creation tail used by both the provider config save path and the
+        setup flow finish path. The created config is removed again when loading
+        the provider with it fails.
+
+        :param provider_domain: Domain of the provider to create an instance of.
+        :param values: The raw values for the (options) config entries.
+        :param setup_data: Optional setup flow data (pre-encrypted) to store on the config.
+        """
+        for prov in self.mass.get_provider_manifests():
+            if prov.domain == provider_domain:
+                manifest = prov
+                break
+        else:
+            msg = f"Unknown provider domain: {provider_domain}"
+            raise KeyError(msg)
         # create new provider config with given values
         existing = {
             x.instance_id for x in await self.get_provider_configs(provider_domain=provider_domain)
@@ -536,6 +596,7 @@ class ProviderConfigMixin:
                     "instance_id": instance_id,
                     "default_name": manifest.name,
                     "values": values,
+                    "setup_data": setup_data or {},
                 },
             ),
         )
@@ -548,6 +609,11 @@ class ProviderConfigMixin:
         # try to load the provider
         try:
             await self.mass.load_provider_config(config)
+        except asyncio.CancelledError:
+            # a cancelled load (e.g. an aborted setup flow) must not leave a
+            # half-created config behind either
+            self.remove(conf_key)
+            raise
         except Exception:
             # loading failed, remove config
             self.remove(conf_key)

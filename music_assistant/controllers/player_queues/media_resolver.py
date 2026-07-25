@@ -23,6 +23,7 @@ from music_assistant_models.media_items import (
     BrowseFolder,
     Genre,
     ItemMapping,
+    MediaCollection,
     MediaItemType,
     Playlist,
     Podcast,
@@ -39,6 +40,7 @@ from music_assistant.controllers.player_queues.constants import (
     ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
 )
 from music_assistant.controllers.player_queues.helpers import sort_tracks
+from music_assistant.helpers.collections import get_collection_item_media_type_from_item_id
 
 if TYPE_CHECKING:
     from music_assistant.controllers.player_queues.controller import PlayerQueuesController
@@ -296,6 +298,7 @@ class MediaResolver:
         podcast: Podcast | None,
         episode: PodcastEpisode | str | None,
         userid: str | None = None,
+        start_from_beginning: bool = False,
     ) -> UniqueList[PodcastEpisode]:
         """
         Return the next episode(s) and resume point for the given podcast.
@@ -306,6 +309,8 @@ class MediaResolver:
             a case-insensitive substring of an episode name, or one of the
             reserved lowercase keywords `"latest"` / `"newest"`.
         :param userid: User whose resume position should be applied.
+        :param start_from_beginning: When True, the resolved episode starts at position 0,
+            ignoring any saved resume position. The stored progress itself is left untouched.
         """
         if podcast is None and isinstance(episode, str | NoneType):
             raise InvalidDataError("Either podcast or episode must be provided")
@@ -316,12 +321,7 @@ class MediaResolver:
                 "Fetching resume point to play for Podcast episode %s",
                 episode.name,
             )
-            (
-                fully_played,
-                resume_position_ms,
-            ) = await self.mass.music.get_resume_position(episode, userid=userid)
-            episode.fully_played = fully_played
-            episode.resume_position_ms = 0 if fully_played else resume_position_ms
+            await self._set_episode_resume_point(episode, userid, start_from_beginning)
             return UniqueList([episode])
         # podcast with optional start episode requested
         self.logger.debug(
@@ -339,12 +339,7 @@ class MediaResolver:
                 raise InvalidDataError(
                     f"Unable to resolve episode to play for Podcast {podcast.name}"
                 )
-            (
-                fully_played,
-                resume_position_ms,
-            ) = await self.mass.music.get_resume_position(latest, userid=userid)
-            latest.fully_played = fully_played
-            latest.resume_position_ms = 0 if fully_played else resume_position_ms
+            await self._set_episode_resume_point(latest, userid, start_from_beginning)
             return UniqueList([latest])
         all_episodes = [
             x async for x in self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider)
@@ -393,10 +388,33 @@ class MediaResolver:
                 resolved_episode = next((x for x in all_episodes), None)
         if resolved_episode is None:
             raise InvalidDataError(f"Unable to resolve episode to play for Podcast {podcast.name}")
+        if start_from_beginning:
+            # play the resolved episode from position 0 without touching stored progress
+            resolved_episode.fully_played = False
+            resolved_episode.resume_position_ms = 0
         # get the index of the episode
         episode_index = all_episodes.index(resolved_episode)
         # return the (remaining) episode(s) to play
         return UniqueList(all_episodes[episode_index:])
+
+    async def _set_episode_resume_point(
+        self, episode: PodcastEpisode, userid: str | None, start_from_beginning: bool
+    ) -> None:
+        """
+        Apply the resume point to a resolved podcast episode.
+
+        When start_from_beginning is set the episode starts at position 0 and the resume
+        lookup is skipped; the stored progress itself is left untouched.
+        """
+        if start_from_beginning:
+            episode.fully_played = False
+            episode.resume_position_ms = 0
+            return
+        fully_played, resume_position_ms = await self.mass.music.get_resume_position(
+            episode, userid=userid
+        )
+        episode.fully_played = fully_played
+        episode.resume_position_ms = 0 if fully_played else resume_position_ms
 
     async def _resolve_library_artist(self, artist: Artist) -> Artist | None:
         """
@@ -443,6 +461,7 @@ class MediaResolver:
         userid: str | None = None,
         queue_id: str | None = None,
         sort_by: str | None = None,
+        start_from_beginning: bool = False,
     ) -> list[MediaItemType]:
         """Resolve/unwrap media items to enqueue."""
         # resolve Itemmapping to full media item
@@ -484,6 +503,33 @@ class MediaResolver:
                 media_item, start_item, userid=userid
             )
             return [media_item]
+        if media_item.media_type == MediaType.COLLECTION:
+            collection_item_media_type = get_collection_item_media_type_from_item_id(
+                media_item.item_id
+            )
+            if collection_item_media_type != MediaType.AUDIOBOOK:
+                self.logger.error("Collections are only available for audiobooks.")
+                return []
+            if TYPE_CHECKING:
+                assert isinstance(media_item, MediaCollection)
+            book: Audiobook | None = None
+            for item in media_item.items:
+                if TYPE_CHECKING:
+                    assert isinstance(item, Audiobook)
+                # enqueue the first not fully finished audiobook
+                fully_played, resume_position_ms = await self.mass.music.get_resume_position(
+                    item, userid=userid
+                )
+                if not fully_played:
+                    item.resume_position_ms = resume_position_ms
+                    book = item
+                    break
+            if book is None:
+                if len(media_item.items) > 0:
+                    return [media_item.items[0]]
+                return []
+            return [book]
+
         if media_item.media_type == MediaType.PODCAST:
             media_item = cast("Podcast", media_item)
             self.mass.create_task(
@@ -491,10 +537,18 @@ class MediaResolver:
                     media_item, userid=userid, queue_id=queue_id, user_initiated=True
                 )
             )
-            return list(await self.get_next_podcast_episodes(media_item, start_item, userid=userid))
+            return list(
+                await self.get_next_podcast_episodes(
+                    media_item, start_item, userid=userid, start_from_beginning=start_from_beginning
+                )
+            )
         if media_item.media_type == MediaType.PODCAST_EPISODE:
             media_item = cast("PodcastEpisode", media_item)
-            return list(await self.get_next_podcast_episodes(None, media_item, userid=userid))
+            return list(
+                await self.get_next_podcast_episodes(
+                    None, media_item, userid=userid, start_from_beginning=start_from_beginning
+                )
+            )
         if media_item.media_type == MediaType.FOLDER:
             media_item = cast("BrowseFolder", media_item)
             return list(await self._get_folder_tracks(media_item))

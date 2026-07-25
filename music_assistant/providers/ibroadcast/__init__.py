@@ -6,9 +6,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse, urlunparse
 
 from ibroadcastaio import IBroadcastClient
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -53,7 +51,7 @@ SUPPORTED_FEATURES = {
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -64,9 +62,6 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    if not config.get_value(CONF_USERNAME) or not config.get_value(CONF_PASSWORD):
-        msg = "Invalid login credentials"
-        raise LoginFailed(msg)
     return IBroadcastProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
@@ -84,18 +79,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-        ),
-    )
+    return ()
 
 
 class IBroadcastProvider(MusicProvider):
@@ -106,11 +90,13 @@ class IBroadcastProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Set up the iBroadcast provider."""
+        username = self.get_setup_value(CONF_USERNAME)
+        password = self.get_setup_value(CONF_PASSWORD)
+        if not username or not password:
+            msg = "Invalid login credentials"
+            raise LoginFailed(msg)
         self._client = IBroadcastClient(self.mass.http_session)
-        status = await self._client.login(
-            self.config.get_value(CONF_USERNAME),
-            self.config.get_value(CONF_PASSWORD),
-        )
+        status = await self._client.login(username, password)
         self._user_id = status["user"]["id"]
 
         # temporary call to refresh library until ibroadcast provides a detailed api

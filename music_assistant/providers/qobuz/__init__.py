@@ -121,16 +121,6 @@ async def get_config_entries(
     return (
         CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-        ),
-        ConfigEntry(
             key=CONF_QUALITY,
             type=ConfigEntryType.STRING,
             default_value="27",
@@ -154,13 +144,13 @@ class QobuzProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_PASSWORD):
+        if not self.get_setup_value(CONF_USERNAME) or not self.get_setup_value(CONF_PASSWORD):
             msg = "Invalid login credentials"
             raise LoginFailed(msg)
         # try to get a token, raise if that fails
         token = await self._auth_token()
         if not token:
-            msg = f"Login failed for user {self.config.get_value(CONF_USERNAME)}"
+            msg = f"Login failed for user {self.get_setup_value(CONF_USERNAME)}"
             raise LoginFailed(msg)
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
@@ -818,8 +808,8 @@ class QobuzProvider(MusicProvider):
         # TODO: move credentials from query string to POST body to remove the
         # residual exposure via HTTP session tracing / upstream proxy logs.
         params: dict[str, Any] = {
-            "username": self.config.get_value(CONF_USERNAME),
-            "password": self.config.get_value(CONF_PASSWORD),
+            "username": self.get_setup_value(CONF_USERNAME),
+            "password": self.get_setup_value(CONF_PASSWORD),
             "device_manufacturer_id": "music_assistant",
         }
         details = await self._get_data("user/login", **params)

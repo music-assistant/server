@@ -77,6 +77,13 @@
       "label": "Clear authentication",
       "description": "Clear the current authentication details.",
       "action_label": "Clear authentication"
+    },
+    "auth_method": {
+      "label": "How do you want to sign in?",
+      "options": {
+        "myplex": "Plex account (recommended)",
+        "local": "Local username and password"
+      }
     }
   },
   "manifest": {

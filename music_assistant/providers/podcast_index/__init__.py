@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, ProviderFeature
 
-from .constants import CONF_API_KEY, CONF_API_SECRET, CONF_STORED_PODCASTS
+from .constants import CONF_STORED_PODCASTS
 from .provider import PodcastIndexProvider
 
 if TYPE_CHECKING:
@@ -45,16 +45,6 @@ async def get_config_entries(
     """
     # ruff: noqa: ARG001
     return (
-        ConfigEntry(
-            key=CONF_API_KEY,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_API_SECRET,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-        ),
         ConfigEntry(
             key=CONF_STORED_PODCASTS,
             type=ConfigEntryType.STRING,

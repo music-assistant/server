@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -157,6 +158,42 @@ class TestCacheInvalidationAfterGrouping:
         # Note: The actual cache clearing happens via trigger_player_update
         # which schedules update_state to be called later
         # In a real scenario, this would clear all players' caches
+
+
+class TestNativeSetMembersGuard:
+    """Test the SET_MEMBERS feature guard on native set_members forwarding."""
+
+    async def test_native_set_members_skipped_without_feature(self, mock_mass: MagicMock) -> None:
+        """
+        Test that set_members is not called on a player without SET_MEMBERS support.
+
+        Regression test for: NotImplementedError raised from
+        _cleanup_player_memberships when removing a member from a native player
+        whose group membership is managed externally (e.g. a Google Cast group,
+        which never advertises SET_MEMBERS).
+        """
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+        # a native group-like player WITHOUT SET_MEMBERS in supported_features,
+        # whose set_members behaves like the Player base class (raises)
+        parent = MockPlayer(provider, "cast_group", "Cast Group")
+        parent._attr_group_members = ["cast_group", "member"]
+        parent.set_members = AsyncMock(  # type: ignore[method-assign]
+            side_effect=NotImplementedError(
+                "set_members needs to be implemented when PlayerFeature.SET_MEMBERS is set"
+            )
+        )
+        member = MockPlayer(provider, "member", "Member")
+
+        controller._players = {"cast_group": parent, "member": member}
+        mock_mass.players = controller
+
+        # must complete without raising NotImplementedError
+        await controller._handle_set_members_with_protocols(
+            parent, player_ids_to_add=[], player_ids_to_remove=["member"]
+        )
+        parent.set_members.assert_not_called()
 
 
 class TestGroupUngroup:
@@ -768,7 +805,12 @@ class TestPlayMediaOverride:
         controller._player_command_locks = {}
 
         media = MagicMock(uri="x", source_id="src")
-        await controller.play_media("member", media)
+        with patch.object(
+            controller,
+            "wait_for_player_update",
+            _skip_player_update_wait,
+        ):
+            await controller.play_media("member", media)
 
         # the member was removed from the group ...
         assert set_members_calls == [{"player_id": "g1", "remove": ["member"]}]
@@ -832,7 +874,12 @@ class TestPlayMediaOverride:
         controller._player_command_locks = {}
 
         media = MagicMock(uri="x", source_id="src")
-        await controller.play_media("member", media)
+        with patch.object(
+            controller,
+            "wait_for_player_update",
+            _skip_player_update_wait,
+        ):
+            await controller.play_media("member", media)
 
         # powerless group + static member: we should have stopped the group ...
         assert stop_calls == ["g1"]
@@ -1342,6 +1389,15 @@ class TestScheduleActiveOutputProtocolClear:
 
         wait_mock.assert_awaited_once_with(player, PlaybackState.IDLE, timeout=10)
         player.set_active_output_protocol.assert_called_once_with(None)
+
+
+@contextlib.asynccontextmanager
+async def _skip_player_update_wait(
+    *_args: object,
+    **_kwargs: object,
+) -> AsyncIterator[None]:
+    """Skip provider-driven state propagation in command-routing tests."""
+    yield
 
 
 if __name__ == "__main__":
