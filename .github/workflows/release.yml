@@ -1833,16 +1833,32 @@ jobs:
             exit 1
           fi
 
+      - name: Resolve add-on target branch
+        id: addon-repository
+        env:
+          GH_TOKEN: ${{ steps.addon-app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+
+          BRANCH=$(gh api repos/music-assistant/home-assistant-addon --jq .default_branch)
+          if [[ -z "$BRANCH" ]]; then
+            echo "::error::Unable to resolve the add-on repository default branch"
+            exit 1
+          fi
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
       - name: Check out add-on repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: music-assistant/home-assistant-addon
           token: ${{ steps.addon-app-token.outputs.token }}
+          ref: ${{ steps.addon-repository.outputs.branch }}
           path: addon-repo
           fetch-depth: 0
 
       - name: Update add-on release state
         env:
+          ADDON_BRANCH: ${{ steps.addon-repository.outputs.branch }}
           ADDON_FOLDER: ${{ steps.addon.outputs.folder }}
           APP_SLUG: ${{ steps.addon-app-token.outputs.app-slug }}
           APP_TOKEN: ${{ steps.addon-app-token.outputs.token }}
@@ -1892,17 +1908,16 @@ jobs:
           git config user.email "${APP_USER_ID}+${APP_SLUG}[bot]@users.noreply.github.com"
           git add "$ADDON_FOLDER/config.yaml" "$ADDON_FOLDER/CHANGELOG.md"
           git commit -m "Bump $CHANNEL add-on to version $VERSION"
-          BRANCH=$(git branch --show-current)
-          git pull --rebase origin "$BRANCH"
+          git pull --rebase origin "$ADDON_BRANCH"
           for ATTEMPT in {1..3}; do
-            if git push origin "HEAD:$BRANCH"; then
+            if git push origin "HEAD:$ADDON_BRANCH"; then
               exit 0
             fi
             if [[ "$ATTEMPT" == "3" ]]; then
               echo "::error::Unable to push add-on update after three attempts"
               exit 1
             fi
-            git pull --rebase origin "$BRANCH"
+            git pull --rebase origin "$ADDON_BRANCH"
           done
 
   update-remote-app:
