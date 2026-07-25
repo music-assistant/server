@@ -49,11 +49,15 @@ Only one release workflow runs at a time, and queued runs are never cancelled.
    - Stable: `X.Y`, `X`, `stable`, `latest`
    - RC and beta: `beta`
    - Nightly: `nightly`
+   Each alias's current amd64 and arm64 image labels are checked independently. An alias
+   that already points to a newer release is never moved backward.
 10. Deterministically update the matching Home Assistant add-on and dispatch the
     frontend version from `source_sha` to `app.music-assistant.io`.
 
 The exact image tag is already the full version (`X.Y.Z`, `X.Y.ZbN`, `X.Y.ZrcN`, or
 `X.Y.Z.devN`). Rolling aliases are never pushed before the immutable release verifies.
+Normal channel releases are forward-only. This workflow does not define a legacy-branch
+backport process for publishing an older version after a newer channel release.
 
 ## Starting a release
 
@@ -96,7 +100,7 @@ The App installation must include these selected repositories:
 
 The App itself must be approved for Administration read and Contents write. Each minted
 token is downscoped from those installation permissions. The workflow verifies that the
-token's App slug is `musicassistant-bot`.
+token's App slug is `musicassistant-bot` and its installation ID is `146062122`.
 
 ## Recovery
 
@@ -120,8 +124,15 @@ that supersedes it. A published mutable release is also never adopted by this wo
 
 The add-on changelog update removes duplicate entries for the same version, prepends one
 canonical entry using the GitHub publication date, and retains three distinct releases.
-Repeated frontend dispatches carry the same channel, frontend version, server version,
-source SHA, and image digest; the receiver converges on the same channel state.
+The add-on repository's default branch is resolved through GitHub, and non-fast-forward
+updates retry a bounded pull/rebase/push sequence.
+
+Frontend recovery reads the target repository's `channels.json` first. Equal or newer
+frontend state suppresses the dispatch; an older state receives a payload containing a
+stable `server@$VERSION` idempotency key, channel, frontend and server versions, source
+SHA, and image digest. The receiver does not yet persist the idempotency key itself, so
+an immediate rerun while the first dispatch is still in flight can enqueue a replacement;
+the receiver's per-channel concurrency cancels the older in-flight run.
 
 ## Rollout
 

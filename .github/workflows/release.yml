@@ -46,6 +46,7 @@ env:
   BASE_IMAGE_VERSION_BETA: "1.6.0"
   BASE_IMAGE_VERSION_NIGHTLY: "1.6.0"
   EXPECTED_APP_SLUG: musicassistant-bot
+  EXPECTED_APP_INSTALLATION_ID: "146062122"
 
 permissions:
   contents: read
@@ -161,9 +162,11 @@ jobs:
       - name: Verify GitHub App identity
         env:
           APP_SLUG: ${{ steps.immutable_token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.immutable_token.outputs.installation-id }}
         run: |
-          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ]; then
-            echo "Unexpected GitHub App: $APP_SLUG" >&2
+          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
+             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
+            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
             exit 1
           fi
 
@@ -321,7 +324,6 @@ jobs:
     if: needs.resolve.outputs.release_state != 'published'
     permissions:
       contents: read
-      pull-requests: read
     uses: ./.github/workflows/test.yml
     with:
       ref: ${{ needs.resolve.outputs.source_sha }}
@@ -393,9 +395,11 @@ jobs:
         if: needs.resolve.outputs.assets_ready != 'true'
         env:
           APP_SLUG: ${{ steps.appvars_token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.appvars_token.outputs.installation-id }}
         run: |
-          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ]; then
-            echo "Unexpected GitHub App: $APP_SLUG" >&2
+          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
+             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
+            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
             exit 1
           fi
 
@@ -842,9 +846,11 @@ jobs:
             MASS_VERSION=${{ inputs.version }}
             BASE_IMAGE_VERSION=${{ needs.resolve.outputs.base_image_version }}
           labels: |
+            org.opencontainers.image.version=${{ inputs.version }}
             org.opencontainers.image.revision=${{ needs.resolve.outputs.source_sha }}
             io.music-assistant.wheel.sha256=${{ needs.prepare_draft.outputs.wheel_sha256 }}
           annotations: |
+            index:org.opencontainers.image.version=${{ inputs.version }}
             index:org.opencontainers.image.revision=${{ needs.resolve.outputs.source_sha }}
             index:io.music-assistant.wheel.sha256=${{ needs.prepare_draft.outputs.wheel_sha256 }}
 
@@ -1000,9 +1006,11 @@ jobs:
         if: steps.publication_state.outputs.already_published != 'true'
         env:
           APP_SLUG: ${{ steps.immutable_token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.immutable_token.outputs.installation-id }}
         run: |
-          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ]; then
-            echo "Unexpected GitHub App: $APP_SLUG" >&2
+          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
+             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
+            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
             exit 1
           fi
 
@@ -1143,8 +1151,16 @@ jobs:
     needs: [resolve, exact_image, publish_release]
     if: needs.resolve.outputs.is_current == 'true'
     permissions:
+      contents: read
       packages: write
     steps:
+      - name: Check out release workflow
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-workflow
+          persist-credentials: false
+
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
         with:
@@ -1184,7 +1200,75 @@ jobs:
               ;;
           esac
 
+          promotion_aliases=()
           for alias in "${aliases[@]}"; do
+            target="$IMAGE_REPOSITORY:$alias"
+            error_file="$RUNNER_TEMP/alias-$alias-error.txt"
+            manifest_file="$RUNNER_TEMP/alias-$alias-manifest.json"
+            if docker buildx imagetools inspect "$target" \
+              --format '{{json .Manifest}}' \
+              > "$manifest_file" 2> "$error_file"; then
+              platforms=$(jq -r \
+                '.manifests[]
+                 | select(.platform.os != "unknown")
+                 | "\(.platform.os)/\(.platform.architecture)"' \
+                "$manifest_file" | sort)
+              if [ "$platforms" != $'linux/amd64\nlinux/arm64' ]; then
+                echo "$target has an unexpected platform set: $platforms" >&2
+                exit 1
+              fi
+
+              versions_file="$RUNNER_TEMP/alias-$alias-versions.txt"
+              : > "$versions_file"
+              while read -r runtime_digest; do
+                docker buildx imagetools inspect \
+                  "$IMAGE_REPOSITORY@$runtime_digest" \
+                  --format '{{json .Image}}' > "$RUNNER_TEMP/alias-image.json"
+                current_version=$(jq -r \
+                  '.config.Labels["org.opencontainers.image.version"]
+                   // .config.Labels["io.hass.version"]
+                   // empty' \
+                  "$RUNNER_TEMP/alias-image.json")
+                if [ -z "$current_version" ]; then
+                  echo "$target has no release version label" >&2
+                  exit 1
+                fi
+                echo "$current_version" >> "$versions_file"
+              done < <(jq -r \
+                '.manifests[]
+                 | select(.platform.os == "linux")
+                 | .digest' \
+                "$manifest_file")
+
+              mapfile -t current_versions < <(sort -u "$versions_file")
+              if [ "${#current_versions[@]}" -ne 1 ]; then
+                echo "$target has inconsistent release version labels" >&2
+                exit 1
+              fi
+              relation=$(python3 \
+                .release-workflow/scripts/release_workflow.py \
+                compare-release-versions \
+                --current "${current_versions[0]}" \
+                --requested "$VERSION" |
+                sed -n 's/^current_relation=//p')
+              if [ "$relation" = "newer" ]; then
+                echo "$target already points to newer version ${current_versions[0]}" >&2
+                exit 1
+              fi
+              current_digest=$(jq -r '.digest' "$manifest_file")
+              if [ "$relation" = "equal" ] && [ "$current_digest" = "$DIGEST" ]; then
+                echo "$target already points to $VERSION@$DIGEST"
+                continue
+              fi
+            elif ! grep -Eqi 'not found|manifest unknown|status.*404' "$error_file"; then
+              cat "$error_file" >&2
+              echo "Unable to inspect $target" >&2
+              exit 1
+            fi
+            promotion_aliases+=("$alias")
+          done
+
+          for alias in "${promotion_aliases[@]}"; do
             target="$IMAGE_REPOSITORY:$alias"
             docker buildx imagetools create \
               --tag "$target" \
@@ -1232,22 +1316,39 @@ jobs:
         env:
           APP_SLUG: ${{ steps.addon_token.outputs.app-slug }}
           GH_TOKEN: ${{ steps.addon_token.outputs.token }}
+          INSTALLATION_ID: ${{ steps.addon_token.outputs.installation-id }}
         run: |
-          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ]; then
-            echo "Unexpected GitHub App: $APP_SLUG" >&2
+          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
+             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
+            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
             exit 1
           fi
           user_id=$(gh api "/users/$APP_SLUG%5Bbot%5D" --jq '.id')
           echo "slug=$APP_SLUG" >> "$GITHUB_OUTPUT"
           echo "user_id=$user_id" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve add-on default branch
+        id: addon_repository
+        env:
+          GH_TOKEN: ${{ steps.addon_token.outputs.token }}
+        run: |
+          default_branch=$(gh api \
+            repos/music-assistant/home-assistant-addon \
+            --jq '.default_branch')
+          if [ -z "$default_branch" ]; then
+            echo "Unable to resolve the add-on default branch" >&2
+            exit 1
+          fi
+          echo "default_branch=$default_branch" >> "$GITHUB_OUTPUT"
+
       - name: Check out add-on repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: music-assistant/home-assistant-addon
-          ref: main
+          ref: ${{ steps.addon_repository.outputs.default_branch }}
           token: ${{ steps.addon_token.outputs.token }}
           path: addon-repo
+          fetch-depth: 0
 
       - name: Resolve add-on channel
         id: channel
@@ -1292,6 +1393,7 @@ jobs:
           ADDON_FOLDER: ${{ steps.channel.outputs.folder }}
           APP_SLUG: ${{ steps.app.outputs.slug }}
           APP_USER_ID: ${{ steps.app.outputs.user_id }}
+          ADDON_BRANCH: ${{ steps.addon_repository.outputs.default_branch }}
           CHANNEL: ${{ inputs.channel }}
           VERSION: ${{ inputs.version }}
         run: |
@@ -1305,7 +1407,18 @@ jobs:
           git config user.email \
             "${APP_USER_ID}+${APP_SLUG}[bot]@users.noreply.github.com"
           git commit -m "🤖 Bump $CHANNEL add-on to version $VERSION"
-          git push origin HEAD:main
+          for attempt in {1..3}; do
+            if git pull --rebase origin "$ADDON_BRANCH" &&
+               git push origin "HEAD:$ADDON_BRANCH"; then
+              exit 0
+            fi
+            git rebase --abort 2>/dev/null || true
+            if [ "$attempt" -eq 3 ]; then
+              echo "Unable to push the add-on update after three attempts" >&2
+              exit 1
+            fi
+            sleep 5
+          done
 
   update_remote_app:
     name: Update app.music-assistant.io
@@ -1314,6 +1427,13 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Check out release workflow
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-workflow
+          persist-credentials: false
+
       - name: Check out exact release source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -1354,9 +1474,11 @@ jobs:
       - name: Verify GitHub App identity
         env:
           APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.app_token.outputs.installation-id }}
         run: |
-          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ]; then
-            echo "Unexpected GitHub App: $APP_SLUG" >&2
+          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
+             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
+            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
             exit 1
           fi
 
@@ -1369,12 +1491,34 @@ jobs:
           SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           VERSION: ${{ inputs.version }}
         run: |
+          gh api \
+            -H "Accept: application/vnd.github.raw+json" \
+            repos/music-assistant/app.music-assistant.io/contents/channels.json \
+            > "$RUNNER_TEMP/channels.json"
+          current_version=$(jq -r \
+            --arg channel "$CHANNEL" \
+            '.[$channel] // empty' \
+            "$RUNNER_TEMP/channels.json")
+          if [ -n "$current_version" ]; then
+            relation=$(python3 \
+              .release-workflow/scripts/release_workflow.py \
+              compare-frontend-versions \
+              --current "$current_version" \
+              --requested "$FRONTEND_VERSION" |
+              sed -n 's/^current_relation=//p')
+            if [ "$relation" != "older" ]; then
+              echo "Skipping frontend dispatch: $CHANNEL already uses $current_version"
+              exit 0
+            fi
+          fi
+
           jq -n \
             --arg channel "$CHANNEL" \
             --arg frontend_version "$FRONTEND_VERSION" \
             --arg server_version "$VERSION" \
             --arg source_sha "$SOURCE_SHA" \
             --arg image_digest "$IMAGE_DIGEST" \
+            --arg idempotency_key "$GITHUB_REPOSITORY@$VERSION" \
             '{
               event_type: "frontend-update",
               client_payload: {
@@ -1382,7 +1526,8 @@ jobs:
                 frontend_version: $frontend_version,
                 server_version: $server_version,
                 source_sha: $source_sha,
-                image_digest: $image_digest
+                image_digest: $image_digest,
+                idempotency_key: $idempotency_key
               }
             }' > "$RUNNER_TEMP/dispatch.json"
           gh api --method POST \

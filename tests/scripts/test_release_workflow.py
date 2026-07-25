@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scripts.release_workflow import (
     OCI_REVISION_ANNOTATION,
@@ -17,6 +18,8 @@ from scripts.release_workflow import (
     GitRepository,
     ReleaseWorkflowError,
     channel_branch,
+    compare_frontend_versions,
+    compare_release_versions,
     determine_auto_release,
     inspect_assets,
     is_current_release,
@@ -142,6 +145,44 @@ def test_current_release_combines_beta_and_rc_channels(
         False,
         "2.10.0rc1",
     )
+
+
+@pytest.mark.parametrize(
+    ("current", "requested", "relation"),
+    [
+        ("2.10.0.dev2026072502", "2.10.0.dev2026072501", "newer"),
+        ("2.10.0b1", "2.10.0.dev2026072502", "newer"),
+        ("2.10.0rc1", "2.10.0b20", "newer"),
+        ("2.10.0", "2.10.0rc4", "newer"),
+        ("2.9.10", "2.10.0", "older"),
+        ("2.10.0b8", "2.10.0b8", "equal"),
+    ],
+)
+def test_release_version_order(
+    current: str,
+    requested: str,
+    relation: str,
+) -> None:
+    """Rolling aliases use release ordering across all supported stages."""
+    assert compare_release_versions(current, requested) == relation
+
+
+@pytest.mark.parametrize(
+    ("current", "requested", "relation"),
+    [
+        ("2.17.235", "2.17.234", "newer"),
+        ("2.17.186.post3", "2.17.186", "newer"),
+        ("2.17.186", "2.17.186.post1", "older"),
+        ("2.17.228", "2.17.228.0", "equal"),
+    ],
+)
+def test_frontend_version_order(
+    current: str,
+    requested: str,
+    relation: str,
+) -> None:
+    """Frontend dispatches compare numeric and post-release versions."""
+    assert compare_frontend_versions(current, requested) == relation
 
 
 def test_release_assets_match_names_sizes_and_digests(tmp_path: Path) -> None:
@@ -279,12 +320,41 @@ def test_release_workflows_pin_external_actions_and_drop_legacy_token() -> None:
     action_pattern = re.compile(r"^\s*uses:\s+([^./][^@]+)@(\S+)(?:\s+#\s+(.+))?$", re.MULTILINE)
     for workflow_path in PINNED_WORKFLOW_FILES:
         workflow = workflow_path.read_text(encoding="utf-8")
-        assert "PRIVILEGED_GITHUB_TOKEN" not in workflow
+        for forbidden in (
+            "PRIVILEGED_GITHUB_TOKEN",
+            "TRIAGE_GITHUB_TOKEN",
+            "music-assistant-machine",
+        ):
+            assert forbidden not in workflow
         matches = action_pattern.findall(workflow)
         assert matches
         for _action, ref, comment in matches:
             assert re.fullmatch(r"[0-9a-f]{40}", ref)
             assert re.fullmatch(r"v\d+(?:\.\d+){0,2}", comment)
+
+
+def test_release_workflow_uses_minimum_preflight_permissions_and_expected_app() -> None:
+    """Resolve and preflight stay read-only and every App token checks its installation."""
+    workflow_path = ROOT / ".github" / "workflows" / "release.yml"
+    workflow = workflow_path.read_text(encoding="utf-8")
+    jobs = yaml.safe_load(workflow)["jobs"]
+
+    assert jobs["resolve"]["permissions"] == {"contents": "read"}
+    assert jobs["preflight"]["permissions"] == {"contents": "read"}
+    assert workflow.count("actions/create-github-app-token@") == 5
+    assert workflow.count("outputs.installation-id") == 5
+    assert 'EXPECTED_APP_INSTALLATION_ID: "146062122"' in workflow
+    assert set(re.findall(r"secrets\.([A-Z0-9_]+)", workflow)) == {
+        "MUSIC_ASSISTANT_BOT_PRIVATE_KEY"
+    }
+    assert set(re.findall(r"vars\.([A-Z0-9_]+)", workflow)) == {"MUSIC_ASSISTANT_BOT_CLIENT_ID"}
+    assert "ref: main" not in workflow
+    assert "HEAD:main" not in workflow
+    assert "compare-release-versions" in workflow
+    assert "compare-frontend-versions" in workflow
+    assert "idempotency_key" in workflow
+    assert "repos/music-assistant/home-assistant-addon" in workflow
+    assert "'.default_branch'" in workflow
 
 
 def _api_asset(path: Path) -> dict[str, str | int]:

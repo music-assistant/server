@@ -15,6 +15,7 @@ import json
 import re
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -35,6 +36,7 @@ CHANNEL_BRANCHES = {
 SHA256_PATTERN = re.compile(r"^sha256:[0-9a-f]{64}$")
 OCI_REVISION_ANNOTATION = "org.opencontainers.image.revision"
 OCI_WHEEL_ANNOTATION = "io.music-assistant.wheel.sha256"
+FRONTEND_VERSION_PATTERN = re.compile(r"^(?P<base>\d+(?:\.\d+)+)(?:\.post(?P<post>\d+))?$")
 
 
 class ReleaseWorkflowError(RuntimeError):
@@ -279,6 +281,34 @@ def is_current_release(
     return latest_tag is None or _release_version_key(version) >= _release_version_key(
         latest_tag
     ), latest_tag
+
+
+def compare_release_versions(current: str, requested: str) -> str:
+    """
+    Compare a deployed release version with a requested release version.
+
+    :param current: Version currently deployed to an alias.
+    :param requested: Version requested for promotion.
+    """
+    return _version_relation(
+        _release_version_key(current),
+        _release_version_key(requested),
+    )
+
+
+def compare_frontend_versions(current: str, requested: str) -> str:
+    """
+    Compare a deployed frontend version with a requested frontend version.
+
+    :param current: Frontend version currently configured for the channel.
+    :param requested: Frontend version requested for deployment.
+    """
+    current_base, current_post = _frontend_version_parts(current)
+    requested_base, requested_post = _frontend_version_parts(requested)
+    width = max(len(current_base), len(requested_base))
+    current_key = (*current_base, *((0,) * (width - len(current_base))), current_post)
+    requested_key = (*requested_base, *((0,) * (width - len(requested_base))), requested_post)
+    return _version_relation(current_key, requested_key)
 
 
 def inspect_assets(
@@ -540,6 +570,23 @@ def _release_version_key(version: str) -> tuple[int, int, int, int, int]:
     raise ReleaseWorkflowError(f"Unsupported release version: {version}")
 
 
+def _frontend_version_parts(version: str) -> tuple[tuple[int, ...], int]:
+    match = FRONTEND_VERSION_PATTERN.fullmatch(version)
+    if match is None:
+        raise ReleaseWorkflowError(f"Unsupported frontend version: {version}")
+    base = tuple(int(part) for part in match.group("base").split("."))
+    post = int(match.group("post")) if match.group("post") is not None else -1
+    return base, post
+
+
+def _version_relation(current: tuple[int, ...], requested: tuple[int, ...]) -> str:
+    if current > requested:
+        return "newer"
+    if current < requested:
+        return "older"
+    return "equal"
+
+
 def _first(values: list[str]) -> str | None:
     return values[0] if values else None
 
@@ -575,7 +622,10 @@ def _changelog_blocks(content: str) -> list[tuple[str, str]]:
     return blocks
 
 
-def _write_outputs(values: dict[str, str | int | bool | None], output_path: Path | None) -> None:
+def _write_outputs(
+    values: Mapping[str, str | int | bool | None],
+    output_path: Path | None,
+) -> None:
     lines = [
         f"{key}={str(value).lower() if isinstance(value, bool) else '' if value is None else value}"
         for key, value in values.items()
@@ -628,6 +678,16 @@ def _build_parser() -> argparse.ArgumentParser:
     current_parser.add_argument("--version", required=True)
     current_parser.add_argument("--repository", type=Path, default=Path.cwd())
     current_parser.add_argument("--github-output", type=Path)
+
+    release_order_parser = subparsers.add_parser("compare-release-versions")
+    release_order_parser.add_argument("--current", required=True)
+    release_order_parser.add_argument("--requested", required=True)
+    release_order_parser.add_argument("--github-output", type=Path)
+
+    frontend_order_parser = subparsers.add_parser("compare-frontend-versions")
+    frontend_order_parser.add_argument("--current", required=True)
+    frontend_order_parser.add_argument("--requested", required=True)
+    frontend_order_parser.add_argument("--github-output", type=Path)
 
     assets_parser = subparsers.add_parser("assets")
     assets_parser.add_argument("--version", required=True)
@@ -693,6 +753,26 @@ def main() -> int:
                 {
                     "is_current": is_current,
                     "latest_channel_tag": latest_tag,
+                },
+                args.github_output,
+            )
+        elif args.command == "compare-release-versions":
+            _write_outputs(
+                {
+                    "current_relation": compare_release_versions(
+                        args.current,
+                        args.requested,
+                    )
+                },
+                args.github_output,
+            )
+        elif args.command == "compare-frontend-versions":
+            _write_outputs(
+                {
+                    "current_relation": compare_frontend_versions(
+                        args.current,
+                        args.requested,
+                    )
                 },
                 args.github_output,
             )
