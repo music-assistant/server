@@ -342,7 +342,10 @@ def test_automation_drops_legacy_credentials() -> None:
 
 def test_automation_pins_external_actions() -> None:
     """Ensure migrated automation pins external actions to immutable commits."""
-    action_pattern = re.compile(r"^\s*uses:\s+([^./][^@]+)@(\S+)(?:\s+#\s+(.+))?$", re.MULTILINE)
+    action_pattern = re.compile(
+        r"^\s*(?:-\s+)?uses:\s+([^./][^@]+)@(\S+)(?:\s+#\s+(.+))?$",
+        re.MULTILINE,
+    )
     for workflow_path in PINNED_ACTION_FILES:
         workflow = workflow_path.read_text(encoding="utf-8")
         matches = action_pattern.findall(workflow)
