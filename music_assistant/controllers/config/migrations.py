@@ -291,6 +291,13 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     if _migrate_output_limiter(data):
         changed = True
 
+        # Move player-owned credential/pairing keys (AirPlay creds, Fully Kiosk / MPD password)
+    # from the player config `values` into the player's encrypted `setup_data`, so those reads
+    # switch to Player.get_setup_value now that pairing/credentials are owned by the setup flows.
+    # TODO: remove after 2.11 release
+    if _migrate_player_setup_data(data):
+        changed = True
+
     return changed
 
 
@@ -893,4 +900,72 @@ def _migrate_output_limiter(data: dict[str, Any]) -> bool:
             changed = True
     if changed:
         LOGGER.info("Removed the obsolete output limiter setting from the player configuration(s)")
+    return changed
+
+
+_PLAYER_SETUP_DATA_KEYS: dict[str, tuple[str, ...]] = {
+    "airplay": (
+        "raop_credentials",
+        "airplay_credentials",
+        "companion_credentials",
+        "mrp_credentials",
+        "native_mrp_credentials",
+    ),
+    "fully_kiosk": ("password",),
+    "mpd": ("password",),
+}
+
+
+_PLAYER_DEAD_SETUP_KEYS: dict[str, tuple[str, ...]] = {
+    "airplay": ("ap2password",),
+}
+
+
+def _migrate_player_setup_data(data: dict[str, Any]) -> bool:
+    """
+    Move player-owned credential/pairing keys from player `values` into `setup_data`.
+
+    Idempotent (only moves a key still present in `values` and absent from `setup_data`)
+    and multi-instance safe (matches on the player provider domain). Values are moved
+    as-is: they are already encrypted SECURE_STRINGs, which is exactly the at-rest form
+    setup_data expects. Also drops keys that are dead now (never read at runtime).
+    """
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    changed = False
+    for player_id, player_cfg in all_player_configs.items():
+        if not isinstance(player_cfg, dict):
+            continue
+        domain = str(player_cfg.get("provider", "")).split("--", 1)[0]
+        move_keys = _PLAYER_SETUP_DATA_KEYS.get(domain, ())
+        dead_keys = _PLAYER_DEAD_SETUP_KEYS.get(domain, ())
+        if not move_keys and not dead_keys:
+            continue
+        values = player_cfg.get("values")
+        if not isinstance(values, dict):
+            continue
+        setup_data = player_cfg.get("setup_data")
+        if not isinstance(setup_data, dict):
+            setup_data = {}
+        moved = False
+        for key in move_keys:
+            if key not in values:
+                continue
+            value = values.pop(key)
+            moved = True
+            # a stored null is just dropped; only real values move across
+            if value is not None and key not in setup_data:
+                setup_data[key] = value
+        for key in dead_keys:
+            if key in values:
+                del values[key]
+                moved = True
+        if moved:
+            if setup_data:
+                player_cfg["setup_data"] = setup_data
+            LOGGER.info(
+                "Migrated credential/pairing values into setup_data for player %s", player_id
+            )
+            changed = True
     return changed

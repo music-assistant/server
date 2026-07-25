@@ -285,6 +285,40 @@ class SetupSession:
         self._publish_step(step)
         return result
 
+    def retarget(
+        self,
+        *,
+        domain: str,
+        instance_id: str | None,
+        player_id: str,
+        setup_data: dict[str, Any],
+        values: dict[str, ConfigValueType],
+    ) -> None:
+        """
+        Re-point this running flow at a different (child) player.
+
+        Used by a parent player's wrapper flow to delegate to one of its protocol
+        children: after re-pointing, the child's steps localize under the child's
+        provider namespace and ``finish()`` persists to the child's config. The steps
+        published before the retarget (e.g. a "which device" selection form owned by
+        the parent) keep the parent's namespace.
+
+        :param domain: The child provider's domain.
+        :param instance_id: The child provider instance id.
+        :param player_id: The child player id (the new persist/finish target).
+        :param setup_data: The child's decrypted setup_data, for prefill.
+        :param values: The child's existing config values, for prefill.
+        """
+        self.context = replace(
+            self.context,
+            domain=domain,
+            instance_id=instance_id,
+            player_id=player_id,
+            setup_data=setup_data,
+            values=values,
+        )
+        self._translation_owner = f"provider.{domain}"
+
     # ------------------------------------------------------------------------------
     # Engine-facing methods below: called by the SetupFlowMixin, never by flow authors
     # ------------------------------------------------------------------------------

@@ -13,13 +13,20 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
-from music_assistant_models.enums import ConfigEntryType, EventType, FlowStepType, ProviderType
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    EventType,
+    FlowStepType,
+    PlayerType,
+    ProviderType,
+)
 from music_assistant_models.errors import ActionUnavailable, LoginFailed, PlayerUnavailableError
+from music_assistant_models.player import OutputProtocol
 from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, ENCRYPT_SUFFIX
 from music_assistant.mass import MusicAssistant
-from music_assistant.models.player import Player
+from music_assistant.models.player import Player, _state_fingerprint
 from music_assistant.models.setup_flow import AbortFlow, SetupSession, StepExpiredError
 from music_assistant.providers.filesystem_local.setup_flow import (
     run_setup as filesystem_local_run_setup,
@@ -767,6 +774,159 @@ async def test_player_setup_flow_finish(flow_mass: MusicAssistant) -> None:
     assert flow_mass.config.decrypt_string(raw_conf["setup_data"]["pin"]) == "1234"
     config_event = await _wait_for(lambda: next(iter(events), None))
     assert config_event.object_id == player_id
+
+
+class _ProtocolChildPlayer(MockPlayer):
+    """A protocol child player that needs setup and implements a pairing flow."""
+
+    def __init__(self, provider: MockProvider, player_id: str, name: str) -> None:
+        super().__init__(provider, player_id, name, player_type=PlayerType.PROTOCOL)
+        self._attr_needs_setup = True
+        self._attr_setup_reason = "pairing_required"
+
+    async def run_setup_flow(self, session: SetupSession) -> None:
+        values = await session.form(
+            [ConfigEntry(key="pin", type=ConfigEntryType.STRING)], step_id="user"
+        )
+        await session.finish(values)
+
+
+def _child_output_protocol(child: MockPlayer) -> OutputProtocol:
+    """Build a (non-native) output protocol entry pointing at the given child player."""
+    return OutputProtocol(
+        output_protocol_id=child.player_id,
+        name=child.display_name,
+        protocol_domain=child.provider.domain,
+        is_native=False,
+        priority=10,
+        available=False,
+    )
+
+
+def _set_player_conf(flow_mass: MusicAssistant, player: MockPlayer) -> None:
+    """Persist a minimal player config for the given player."""
+    flow_mass.config.set(
+        f"{CONF_PLAYERS}/{player.player_id}",
+        {
+            "player_id": player.player_id,
+            "provider": player.provider.instance_id,
+            "enabled": True,
+        },
+    )
+
+
+async def test_player_setup_delegates_to_single_child(flow_mass: MusicAssistant) -> None:
+    """A wrapper player with one protocol child needing setup runs that child's flow."""
+    parent_provider = MockProvider("universal_player", instance_id="universal_player")
+    child_provider = MockProvider("airplay", instance_id="airplay")
+    parent = MockPlayer(parent_provider, "up_parent", "Living Room")
+    child = _ProtocolChildPlayer(child_provider, "ap_child", "Living Room AirPlay")
+    # native option (skipped) + the protocol child that needs setup
+    parent._cache["output_protocols"] = [
+        OutputProtocol(
+            output_protocol_id="native", name="", protocol_domain="", is_native=True, available=True
+        ),
+        _child_output_protocol(child),
+    ]
+    _set_player_conf(flow_mass, parent)
+    _set_player_conf(flow_mass, child)
+    players = {parent.player_id: parent, child.player_id: child}
+    child_config = PlayerConfig(
+        values={}, provider=child_provider.instance_id, player_id=child.player_id
+    )
+    with (
+        patch.object(
+            flow_mass.players, "get_player", side_effect=lambda pid, *_a, **_k: players.get(pid)
+        ),
+        patch.object(flow_mass.config, "get_player_config", AsyncMock(return_value=child_config)),
+    ):
+        step = await flow_mass.config.setup_player(parent.player_id)
+        assert step.type == FlowStepType.FORM
+        assert step.step_id == "user"
+        # the flow runs as the CHILD: its steps localize under the child provider
+        assert step.translation_owner == "provider.airplay"
+        finish_step = await flow_mass.config.submit_setup_flow(step.flow_id, {"pin": "4321"})
+    assert finish_step.type == FlowStepType.FINISH
+    # persisted to the CHILD's config, not the parent's
+    assert finish_step.result == {"player_id": child.player_id}
+    child_raw = flow_mass.config.get(f"{CONF_PLAYERS}/{child.player_id}")
+    assert flow_mass.config.decrypt_string(child_raw["setup_data"]["pin"]) == "4321"
+    assert "setup_data" not in flow_mass.config.get(f"{CONF_PLAYERS}/{parent.player_id}")
+
+
+async def test_player_setup_multi_child_selection(flow_mass: MusicAssistant) -> None:
+    """A wrapper player with several children needing setup first asks which to set up."""
+    parent_provider = MockProvider("universal_player", instance_id="universal_player")
+    ap_provider = MockProvider("airplay", instance_id="airplay")
+    ss_provider = MockProvider("sendspin", instance_id="sendspin")
+    parent = MockPlayer(parent_provider, "up_parent", "Kitchen")
+    child_a = _ProtocolChildPlayer(ap_provider, "ap_child", "Kitchen AirPlay")
+    child_b = _ProtocolChildPlayer(ss_provider, "ss_child", "Kitchen Sendspin")
+    parent._cache["output_protocols"] = [
+        _child_output_protocol(child_a),
+        _child_output_protocol(child_b),
+    ]
+    for player in (parent, child_a, child_b):
+        _set_player_conf(flow_mass, player)
+    players = {p.player_id: p for p in (parent, child_a, child_b)}
+
+    def _get_config(pid: str) -> PlayerConfig:
+        return PlayerConfig(values={}, provider=players[pid].provider.instance_id, player_id=pid)
+
+    with (
+        patch.object(
+            flow_mass.players, "get_player", side_effect=lambda pid, *_a, **_k: players.get(pid)
+        ),
+        patch.object(flow_mass.config, "get_player_config", AsyncMock(side_effect=_get_config)),
+    ):
+        step = await flow_mass.config.setup_player(parent.player_id)
+        # first a parent-owned selection form listing both children
+        assert step.type == FlowStepType.FORM
+        assert step.step_id == "select_child"
+        assert step.translation_owner == "provider.universal_player"
+        child_entry = next(entry for entry in step.entries if entry.key == "child")
+        assert {option.value for option in child_entry.options} == {"ap_child", "ss_child"}
+        # pick the sendspin child -> the flow retargets and runs the child's flow
+        next_step = await flow_mass.config.submit_setup_flow(step.flow_id, {"child": "ss_child"})
+        assert next_step.type == FlowStepType.FORM
+        assert next_step.step_id == "user"
+        assert next_step.translation_owner == "provider.sendspin"
+        finish_step = await flow_mass.config.submit_setup_flow(step.flow_id, {"pin": "9999"})
+    assert finish_step.type == FlowStepType.FINISH
+    assert finish_step.result == {"player_id": "ss_child"}
+    child_raw = flow_mass.config.get(f"{CONF_PLAYERS}/ss_child")
+    assert flow_mass.config.decrypt_string(child_raw["setup_data"]["pin"]) == "9999"
+
+
+async def test_player_setup_no_children_needing_setup_aborts(flow_mass: MusicAssistant) -> None:
+    """A wrapper player whose children are all set up reports nothing to configure."""
+    parent_provider = MockProvider("universal_player", instance_id="universal_player")
+    child_provider = MockProvider("airplay", instance_id="airplay")
+    parent = MockPlayer(parent_provider, "up_parent", "Bedroom")
+    child = _ProtocolChildPlayer(child_provider, "ap_child", "Bedroom AirPlay")
+    child._attr_needs_setup = False  # already set up
+    parent._cache["output_protocols"] = [_child_output_protocol(child)]
+    _set_player_conf(flow_mass, parent)
+    players = {parent.player_id: parent, child.player_id: child}
+    with patch.object(
+        flow_mass.players, "get_player", side_effect=lambda pid, *_a, **_k: players.get(pid)
+    ):
+        step = await flow_mass.config.setup_player(parent.player_id)
+    assert step.type == FlowStepType.ABORT
+    assert step.reason == "nothing_to_configure"
+
+
+async def test_player_setup_reason_in_state_fingerprint() -> None:
+    """setup_reason is exposed on the player and tracked in the state fingerprint."""
+    provider = MockProvider("test_players", instance_id="test_players--1")
+    player = MockPlayer(provider, "sr_player", "Reason Player")
+    player._attr_needs_setup = True
+    player._attr_setup_reason = "pairing_required"
+    assert player.setup_reason == "pairing_required"
+    # the reason is a tracked leaf of the state fingerprint (so it drives change events)
+    player_state = player.state
+    player_state.setup_reason = "pairing_required"
+    assert _state_fingerprint(player_state)["setup_reason"] == "pairing_required"
 
 
 async def test_secure_values_never_echoed_on_step(flow_mass: MusicAssistant) -> None:

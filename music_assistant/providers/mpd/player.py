@@ -20,6 +20,7 @@ from music_assistant_models.player import DeviceInfo, PlayerMedia
 
 from music_assistant.constants import CONF_PASSWORD
 from music_assistant.models.player import Player
+from music_assistant.models.setup_flow import SetupFlowError
 
 from .constants import (
     CONF_ENTRY_OUTPUT_CODEC_MPD,
@@ -30,6 +31,8 @@ from .constants import (
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigValueType
+
+    from music_assistant.models.setup_flow import SetupSession
 
     from .provider import MPDPlayerProvider
 
@@ -67,6 +70,7 @@ class MPDPlayer(Player):
         self._idle_client: MPDClient | None = None
         self._idle_task: asyncio.Task[None] | None = None
         self._attr_needs_setup: bool = False
+        self._attr_setup_reason: str | None = None
 
         self._attr_name = f"MPD ({host})"
         self._attr_supported_features = {
@@ -115,20 +119,30 @@ class MPDPlayer(Player):
         :return: List of ConfigEntry objects for this player.
         """
         return [
-            ConfigEntry(
-                key=CONF_PASSWORD,
-                type=ConfigEntryType.SECURE_STRING,
-                required=False,
-            ),
             CONF_ENTRY_OUTPUT_CODEC_MPD,
         ]
 
     async def on_config_updated(self) -> None:
         """Reconnect to MPD when player configuration changes."""
-        self.password = cast("str | None", self.config.get_value(CONF_PASSWORD) or None)
+        self.password = cast("str | None", self.get_setup_value(CONF_PASSWORD) or None)
         self._attr_needs_setup = False
+        self._attr_setup_reason = None
         await self._disconnect()
         await self._connect()
+
+    async def run_setup_flow(self, session: SetupSession) -> None:
+        """Run the setup flow: collect the MPD server password."""
+        entries = [
+            ConfigEntry(key=CONF_PASSWORD, type=ConfigEntryType.SECURE_STRING, required=True)
+        ]
+        errors: dict[str, str] | None = None
+        while True:
+            values = await session.form(entries, step_id="user", errors=errors, last_step=True)
+            try:
+                await session.finish({CONF_PASSWORD: str(values[CONF_PASSWORD])})
+                return
+            except SetupFlowError as err:
+                errors = {"base": err.translation_key or str(err)}
 
     async def poll(self) -> None:
         """Fetch current MPD state to update elapsed time."""
@@ -154,6 +168,7 @@ class MPDPlayer(Player):
             status = await self._client.status()
             self._attr_available = True
             self._attr_needs_setup = False
+            self._attr_setup_reason = None
             self._attr_device_info = DeviceInfo(
                 model=f"MPD {self._client.mpd_version}",
                 manufacturer="Music Player Daemon",
@@ -173,6 +188,7 @@ class MPDPlayer(Player):
                 )
                 self._attr_available = False
                 self._attr_needs_setup = True
+                self._attr_setup_reason = "password_required"
                 self.update_state()
             else:
                 self.logger.warning("MPD command error at %s:%s: %s", self.host, self.port, err)
