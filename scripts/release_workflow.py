@@ -681,10 +681,6 @@ def _asset_outputs(assets: tuple[Asset, Asset]) -> dict[str, str | int]:
     }
 
 
-def _add_select_release_parser(subparsers: Any) -> None:
-    _configure_release_parser(subparsers.add_parser("select-release"))
-
-
 def _configure_release_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--version", required=True)
     parser.add_argument("--releases-json", type=Path, required=True)
@@ -733,7 +729,7 @@ def _build_parser() -> argparse.ArgumentParser:
     frontend_order_parser.add_argument("--requested", required=True)
     frontend_order_parser.add_argument("--github-output", type=Path)
 
-    _add_select_release_parser(subparsers)
+    _configure_release_parser(subparsers.add_parser("select-release"))
 
     assets_parser = subparsers.add_parser("assets")
     assets_parser.add_argument("--version", required=True)
