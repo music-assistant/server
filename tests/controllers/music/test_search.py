@@ -8,7 +8,7 @@ import time
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, Mock
 
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import MediaType, ProviderFeature, ProviderSearchStatus
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import (
     Artist,
@@ -134,13 +134,14 @@ async def _wait_for(condition: Callable[[], bool], timeout: float = 1.0) -> None
 
 
 async def test_search_provider_returns_none_on_provider_error() -> None:
-    """A provider error during search yields None instead of raising."""
+    """A provider error during search yields (None, FAILED) instead of raising."""
     prov = _make_search_provider("prov_a")
     controller = _make_controller([prov])
     for error in (MusicAssistantError("rate limited"), ValueError("unexpected")):
         prov.search.side_effect = error
-        result = await controller._search_provider("query", "prov_a", [MediaType.TRACK])
+        result, status = await controller._search_provider("query", "prov_a", [MediaType.TRACK])
         assert result is None
+        assert status == ProviderSearchStatus.FAILED
 
 
 async def test_global_search_returns_partial_results_when_provider_fails() -> None:
@@ -159,6 +160,11 @@ async def test_global_search_returns_partial_results_when_provider_fails() -> No
     prov_bad.search.assert_awaited_once()
     # an incomplete result may not be cached so the failed provider is retried
     assert not _cache_writes(controller, "music")
+    assert result.provider_search_statuses == {
+        "library": ProviderSearchStatus.COMPLETE,
+        "prov_ok": ProviderSearchStatus.COMPLETE,
+        "prov_bad": ProviderSearchStatus.FAILED,
+    }
 
 
 async def test_global_search_soft_timeout_returns_partial_and_caches_late(
@@ -168,19 +174,19 @@ async def test_global_search_soft_timeout_returns_partial_and_caches_late(
     monkeypatch.setattr(
         "music_assistant.controllers.music.controller.SEARCH_PROVIDER_SOFT_TIMEOUT", 0.1
     )
-    prov_fast = _make_search_provider("prov_fast")
-    prov_fast.search.return_value = SearchResults(
-        tracks=[_make_track("track1", "prov_fast", "My Song")]
+    fast_provider = _make_search_provider("fast_provider")
+    fast_provider.search.return_value = SearchResults(
+        tracks=[_make_track("track1", "fast_provider", "My Song")]
     )
-    prov_slow = _make_search_provider("prov_slow")
-    slow_results = SearchResults(tracks=[_make_track("track2", "prov_slow", "My Song")])
+    slow_provider = _make_search_provider("slow_provider")
+    slow_results = SearchResults(tracks=[_make_track("track2", "slow_provider", "My Song")])
 
     async def _slow_search(*_args: Any, **_kwargs: Any) -> SearchResults:
         await asyncio.sleep(0.5)
         return slow_results
 
-    prov_slow.search.side_effect = _slow_search
-    controller = _make_controller([prov_fast, prov_slow])
+    slow_provider.search.side_effect = _slow_search
+    controller = _make_controller([fast_provider, slow_provider])
 
     start = time.monotonic()
     result = await controller.search("My Song", media_types=[MediaType.TRACK], limit=5)
@@ -190,9 +196,14 @@ async def test_global_search_soft_timeout_returns_partial_and_caches_late(
     assert duration < 0.4
     assert [track.item_id for track in result.tracks] == ["track1"]
     assert not _cache_writes(controller, "music")
+    assert result.provider_search_statuses == {
+        "library": ProviderSearchStatus.COMPLETE,
+        "fast_provider": ProviderSearchStatus.COMPLETE,
+        "slow_provider": ProviderSearchStatus.TIMEOUT,
+    }
     # the slow provider search completes in the background and caches its result
-    await _wait_for(lambda: bool(_cache_writes(controller, "prov_slow")))
-    late_writes = _cache_writes(controller, "prov_slow")
+    await _wait_for(lambda: bool(_cache_writes(controller, "slow_provider")))
+    late_writes = _cache_writes(controller, "slow_provider")
     assert len(late_writes) == 1
     assert late_writes[0].kwargs["data"] == slow_results.to_dict()
 
@@ -207,7 +218,7 @@ async def test_global_search_hard_timeout_aborts_provider_search(
     monkeypatch.setattr(
         "music_assistant.controllers.music.controller.SEARCH_PROVIDER_HARD_TIMEOUT", 0.1
     )
-    prov_hung = _make_search_provider("prov_hung")
+    hung_provider = _make_search_provider("hung_provider")
     search_aborted = asyncio.Event()
 
     async def _hung_search(*_args: Any, **_kwargs: Any) -> SearchResults:
@@ -217,16 +228,73 @@ async def test_global_search_hard_timeout_aborts_provider_search(
             search_aborted.set()
         return SearchResults()
 
-    prov_hung.search.side_effect = _hung_search
-    controller = _make_controller([prov_hung])
+    hung_provider.search.side_effect = _hung_search
+    controller = _make_controller([hung_provider])
 
     result = await controller.search("My Song", media_types=[MediaType.TRACK], limit=5)
 
     assert result.tracks == []
+    # the soft timeout (0.05s) elapses before the hard timeout (0.1s), so the
+    # caller-visible status is TIMEOUT; the hard timeout only aborts the
+    # still-running background task afterwards
+    assert result.provider_search_statuses == {
+        "library": ProviderSearchStatus.COMPLETE,
+        "hung_provider": ProviderSearchStatus.TIMEOUT,
+    }
     # the hard timeout cancels the provider search and nothing is cached
     await _wait_for(search_aborted.is_set)
     cache_set = cast("AsyncMock", controller.mass.cache.set)
     assert not cache_set.await_args_list
+
+
+async def test_global_search_hard_timeout_within_soft_window_reports_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hard timeout that fires before the soft timeout reports status FAILED."""
+    monkeypatch.setattr(
+        "music_assistant.controllers.music.controller.SEARCH_PROVIDER_SOFT_TIMEOUT", 1.0
+    )
+    monkeypatch.setattr(
+        "music_assistant.controllers.music.controller.SEARCH_PROVIDER_HARD_TIMEOUT", 0.05
+    )
+    hung_provider = _make_search_provider("hung_provider")
+
+    async def _hung_search(*_args: Any, **_kwargs: Any) -> SearchResults:
+        await asyncio.sleep(5)
+        return SearchResults()
+
+    hung_provider.search.side_effect = _hung_search
+    controller = _make_controller([hung_provider])
+
+    result = await controller.search("My Song", media_types=[MediaType.TRACK], limit=5)
+
+    assert result.tracks == []
+    # the hard timeout aborts the background task before the soft timeout would
+    # have fired, so _search_provider observes a completed task with a None
+    # result rather than raising its own TimeoutError
+    assert result.provider_search_statuses == {
+        "library": ProviderSearchStatus.COMPLETE,
+        "hung_provider": ProviderSearchStatus.FAILED,
+    }
+
+
+async def test_global_search_all_providers_succeed_reports_complete_and_caches_combined() -> None:
+    """When every provider (and the library) completes, all statuses are COMPLETE."""
+    prov_a = _make_search_provider("prov_a")
+    prov_a.search.return_value = SearchResults(tracks=[_make_track("track1", "prov_a", "My Song")])
+    prov_b = _make_search_provider("prov_b")
+    prov_b.search.return_value = SearchResults(tracks=[_make_track("track2", "prov_b", "My Song")])
+    controller = _make_controller([prov_a, prov_b])
+
+    result = await controller.search("My Song", media_types=[MediaType.TRACK], limit=5)
+
+    assert result.provider_search_statuses == {
+        "library": ProviderSearchStatus.COMPLETE,
+        "prov_a": ProviderSearchStatus.COMPLETE,
+        "prov_b": ProviderSearchStatus.COMPLETE,
+    }
+    # a fully complete search caches the combined result for a next identical search
+    assert _cache_writes(controller, "music")
 
 
 async def test_search_provider_cache_hit_avoids_provider_call() -> None:
@@ -376,6 +444,8 @@ async def test_search_providers_param_restricts_search() -> None:
     assert [track.item_id for track in result.tracks] == ["track1"]
     prov_a.search.assert_not_awaited()
     prov_b.search.assert_awaited_once()
+    # statuses only cover the actually targeted provider, no library/other entries
+    assert result.provider_search_statuses == {"spotify--abc": ProviderSearchStatus.COMPLETE}
 
     # the special value "library" selects the library only
     prov_b.search.reset_mock()
@@ -385,6 +455,7 @@ async def test_search_providers_param_restricts_search() -> None:
     assert [track.item_id for track in result.tracks] == ["lib1"]
     prov_a.search.assert_not_awaited()
     prov_b.search.assert_not_awaited()
+    assert result.provider_search_statuses == {"library": ProviderSearchStatus.COMPLETE}
 
 
 async def test_search_library_only_maps_to_library_provider() -> None:
@@ -415,6 +486,11 @@ async def test_search_exact_library_match_skips_provider_media_types() -> None:
     result = await controller.search("Nirvana", media_types=[MediaType.ARTIST], limit=5)
     assert [artist.item_id for artist in result.artists] == ["lib1"]
     prov.search.assert_not_awaited()
+    # a deliberately skipped provider still reports COMPLETE (nothing pending)
+    assert result.provider_search_statuses == {
+        "library": ProviderSearchStatus.COMPLETE,
+        "prov_a": ProviderSearchStatus.COMPLETE,
+    }
 
     # other media types are still searched on the provider
     await controller.search("Nirvana", media_types=[MediaType.ARTIST, MediaType.TRACK], limit=5)
