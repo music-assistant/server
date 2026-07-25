@@ -56,8 +56,8 @@ def get_released_pr_numbers(repo, merge_base_sha, previous_tag):
     return released
 
 
-def get_prs_between_tags(repo, previous_tag, current_branch):
-    """Get all merged PRs between the previous tag and current HEAD."""
+def get_prs_between_tags(repo, previous_tag, source_sha):
+    """Get all merged PRs between the previous tag and source commit."""
     pr_pattern = re.compile(r"#(\d+)")
     merge_pattern = re.compile(r"Merge pull request #(\d+)")
 
@@ -66,12 +66,12 @@ def get_prs_between_tags(repo, previous_tag, current_branch):
     if not previous_tag:
         print("No previous tag specified, will include all PRs from branch history")  # noqa: T201
         # Get the first commit on the branch
-        commits = list(repo.get_commits(sha=current_branch))
+        commits = list(repo.get_commits(sha=source_sha))
         # Limit to last 100 commits to avoid going too far back
         commits = commits[:100]
     else:
-        print(f"Finding PRs between {previous_tag} and {current_branch}")  # noqa: T201
-        comparison = repo.compare(previous_tag, current_branch)
+        print(f"Finding PRs between {previous_tag} and {source_sha}")  # noqa: T201
+        comparison = repo.compare(previous_tag, source_sha)
         commits = comparison.commits
         print(f"Found {comparison.total_commits} commits")  # noqa: T201
         if comparison.behind_by:
@@ -83,7 +83,7 @@ def get_prs_between_tags(repo, previous_tag, current_branch):
             merge_base = comparison.merge_base_commit
             cutoff_date = merge_base.commit.committer.date
             print(  # noqa: T201
-                f"Previous tag {previous_tag} has diverged from {current_branch}, "
+                f"Previous tag {previous_tag} has diverged from {source_sha}, "
                 f"using merge base date {cutoff_date} as cutoff"
             )
             released_pr_numbers = get_released_pr_numbers(repo, merge_base.sha, previous_tag)
@@ -396,24 +396,26 @@ def generate_release_notes(  # noqa: PLR0915
     return "\n".join(lines)
 
 
-def main():
+def main():  # noqa: PLR0915
     """Generate release notes for the target version."""
     # Get environment variables
     github_token = os.environ.get("GITHUB_TOKEN")
     version = os.environ.get("VERSION")
     previous_tag = os.environ.get("PREVIOUS_TAG", "")
     branch = os.environ.get("BRANCH")
+    source_sha = os.environ.get("SOURCE_SHA")
     channel = os.environ.get("CHANNEL")
     repo_name = os.environ.get("GITHUB_REPOSITORY")
     important_notes = os.environ.get("IMPORTANT_NOTES", "")
 
-    if not all([github_token, version, branch, channel, repo_name]):
+    if not all([github_token, version, branch, source_sha, channel, repo_name]):
         print("Error: Missing required environment variables")  # noqa: T201
         sys.exit(1)
 
     print(f"Generating release notes for {version} ({channel} channel)")  # noqa: T201
     print(f"Repository: {repo_name}")  # noqa: T201
     print(f"Branch: {branch}")  # noqa: T201
+    print(f"Source SHA: {source_sha}")  # noqa: T201
     print(f"Previous tag: {previous_tag or 'None (first release)'}")  # noqa: T201
 
     # Initialize GitHub API
@@ -425,7 +427,7 @@ def main():
     print(f"Loaded config with {len(config.get('categories', []))} categories")  # noqa: T201
 
     # Get PRs between tags
-    prs = get_prs_between_tags(repo, previous_tag, branch)
+    prs = get_prs_between_tags(repo, previous_tag, source_sha)
     print(f"Processing {len(prs)} merged PRs")  # noqa: T201
 
     if not prs:

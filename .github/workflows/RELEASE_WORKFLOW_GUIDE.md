@@ -1,199 +1,119 @@
 # Release Workflow Guide
 
-This document explains how to use the new release workflow for Music Assistant.
+## Prerequisites
 
-## Overview
+Before running a release:
 
-The release workflow has been completely reworked to **create releases** rather than being triggered by them. This gives you more control over the release process and ensures consistency across different release channels.
+- Enable **immutable releases** for `music-assistant/server`.
+- Ensure `PRIVILEGED_GITHUB_TOKEN` authenticates as `music-assistant-machine` and has
+  Administration read access to this repository.
+- Keep same-repository release, tag, asset, and GHCR writes on the workflow
+  `GITHUB_TOKEN`.
 
-## How to Create a Release
+The workflow only reads the immutable-release setting. It never enables or changes it.
 
-1. Go to the **Actions** tab in GitHub
-2. Select the **"Create Release"** workflow
-3. Click **"Run workflow"**
-4. Fill in the required inputs:
-   - **Version number**: Enter the version in the appropriate format (see below)
-   - **Release channel**: Select from `stable`, `beta`, or `nightly`
-5. Click **"Run workflow"** to start the release process
+## Release Sources
 
-## Version Format Requirements
+Every release uses one full source commit SHA for tests, notes, distributions, the Git
+tag, the container image, and frontend version extraction.
 
-The workflow validates version numbers based on the selected channel:
+Release tooling is checked out from the workflow commit separately from the release
+source. This allows a stable patch to build stable code while still using the current
+release action and OCI verification logic.
 
-### Stable Channel
-- **Format**: `X.Y.Z` (e.g., `2.1.0`, `2.1.1`)
-- **Examples**:
-  - ✅ `2.1.0`
-  - ✅ `1.5.3`
-  - ❌ `2.1.0.b1` (beta suffix not allowed for stable)
+| Channel | Source branch | Version format | Rolling container aliases |
+|---|---|---|---|
+| Stable | `stable` | `X.Y.Z` | `X.Y`, `X`, `stable`, `latest` |
+| RC | `stable` | `X.Y.ZrcN` | `beta` |
+| Beta | `dev` | `X.Y.ZbN` | `beta` |
+| Nightly | `dev` | `X.Y.Z.devYYYYMMDDHH` | `nightly` |
 
-### Beta Channel
-- **Format**: `X.Y.Z.bN` (e.g., `2.1.0.b1`, `2.1.0.b2`)
-- **Examples**:
-  - ✅ `2.1.0.b1`
-  - ✅ `2.2.0.b3`
-  - ❌ `2.1.0` (must have beta suffix)
+`auto-release.yml` checks out the channel branch, captures its SHA, calculates a
+version, and passes both values to `release.yml`. A direct **Create Release** run
+resolves the selected channel branch once. Branch movement after that point cannot
+change the release contents.
 
-### Nightly Channel
-- **Format**: `X.Y.Z.devN` (e.g., `2.1.0.dev1`, `2.1.0.dev20251023`)
-- **Examples**:
-  - ✅ `2.1.0.dev1`
-  - ✅ `2.1.0.dev20251023`
-  - ❌ `2.1.0` (must have dev suffix)
+Automatic version discovery uses strict Git tag formats and commit ancestry rather
+than release creation dates:
 
-## What the Workflow Does
+- Nightlies require at least two commits after the latest reachable nightly tag.
+- Beta and RC numbers advance from their strict channel tags.
+- Stable automation only increments the latest stable patch version.
+- A planned stable minor promotion must use **Create Release** with an explicit
+  version.
 
-### 1. Validation & Build (`validate-and-build` job)
-- ✅ Validates the version number format matches the selected channel
-- ✅ Updates the version in `pyproject.toml`
-- ✅ Builds the Python package (wheel and source distribution)
-- ✅ Uploads artifacts for use in subsequent jobs
+Tags remain authoritative even if a release record is missing, so deleted records and
+reserved immutable versions cannot be selected again.
 
-### 2. Create Release (`create-release` job)
-- ✅ Checks out the correct branch (stable for stable releases, dev for beta/nightly)
-- ✅ Determines the previous release tag for the same channel
-- ✅ Uses Release Drafter to generate release notes from PRs/commits on that branch
-- ✅ **Extracts and appends frontend changes** from music-assistant-frontend update PRs
-- ✅ **Merges and deduplicates contributors** from both server and frontend PRs
-- ✅ Creates a GitHub release (marked as prerelease for beta/nightly)
-- ✅ Attaches the built Python packages to the release
+## Publication Sequence
 
-#### Branch Strategy
-- **Stable releases** (`X.Y.Z`): Built from the `stable` branch
-- **Beta releases** (`X.Y.Z.bN`): Built from the `dev` branch
-- **Nightly releases** (`X.Y.Z.devN`): Built from the `dev` branch
+1. Assert the privileged token identity and read the immutable-release setting.
+2. Resolve the exact branch SHA and inspect the requested version.
+3. For a new release or matching draft, run the repository test workflow.
+4. Build a deterministic wheel and source distribution. The server is not uploaded to
+   PyPI; both files are GitHub release assets, and the wheel is also installed into the
+   container image.
+5. Generate final release notes and create or resume an exact matching draft.
+6. Replace assets while the release is still a draft, then verify their names, sizes,
+   uploaded state, upload identity, and SHA-256 digests.
+7. Build and push only `ghcr.io/music-assistant/server:$VERSION`, then verify its
+   amd64/arm64 manifest, source SHA, version, wheel digest, and OCI digest.
+8. Bind the exact OCI digest into the draft's release metadata.
+9. Recheck the privileged identity and immutable-release setting immediately before
+   publishing the draft.
+10. Create or validate the bot-authored annotated tag containing the source SHA, exact
+    OCI digest, and wheel digest, then publish the draft once.
+11. Require `isImmutable=true`, the exact source tag, matching asset digests, and valid
+   `gh release verify` and `gh release verify-asset` attestations.
+12. Promote the verified exact OCI digest to rolling aliases without rebuilding.
+13. Update the Home Assistant add-on and dispatch the matching frontend version to
+    `app.music-assistant.io`.
 
-This ensures stable releases only include changes that have been merged to stable, while beta and nightly releases include the latest development changes.
+No public GitHub release exists if tests, package creation, draft upload, or exact image
+creation fails. Rolling aliases and downstream repositories are changed only after the
+immutable release passes verification.
 
-#### Frontend Changes Integration
-The workflow automatically finds all "⬆️ Update music-assistant-frontend to X.X.X" PRs that were merged since the last release and extracts their release notes. These are appended to the server release notes under a "🎨 Frontend Changes" section as a unified list of all frontend changes across all versions. This ensures users can see both server and frontend changes in one place.
+## Retry and Recovery
 
-#### Contributor Merging
-The workflow also extracts all `@username` mentions from both the server release notes (generated by Release Drafter) and the frontend PR descriptions, then merges and deduplicates them. The final "Thanks to our contributors" section includes everyone who contributed to both the server and frontend in this release cycle.
+Release concurrency is non-cancelling, keeps the maximum pending queue, and serializes
+RC and beta publication because they share the same rolling channel.
 
-**Example of final release notes structure:**
-```markdown
-## ⚠ Breaking Changes
-- Server breaking change (by @serverdev in #123)
+| Existing state | Retry behavior |
+|---|---|
+| No release | Build distributions, prepare a draft, build the exact image, and publish. |
+| Matching draft | Rebuild from the same source and pinned app-secrets commit, replace draft assets, and resume before publication. |
+| Published immutable release | Skip tests, builds, and all asset mutation; verify the release and exact image, then resume aliases and downstream updates. |
+| Conflicting draft, tag, or mutable release | Stop without changing it. |
+| Invalid immutable release | Stop and create a new version; immutable releases are never repaired or reused. |
 
-## 🚀 Features and enhancements
-- Server feature 1 (by @contributor1 in #124)
-- Server feature 2 (by @contributor2 in #125)
+The exact GHCR version tag is write-once. A retry verifies and reuses it only when its
+digest matches the immutable annotated release tag and its source and wheel labels
+match. Each rolling alias and each downstream update is idempotent, so a
+post-publication retry can safely resume incomplete rollout work. Retrying an older
+release never replaces newer rolling aliases or downgrades downstream channels. A
+manual patch for an older stable line may still advance its own `X.Y` alias while
+newer `X`, `stable`, and `latest` aliases remain unchanged.
+The frontend dispatcher also compares the currently deployed frontend version and
+ignores a stale downgrade request.
 
-## 🐛 Bugfixes
-- Server bugfix (by @contributor1 in #126)
+## Manual Releases
 
-## 🎨 Frontend Changes
-• Add the provider type on items on search (by @frontenddev in #1174)
-• Fix player menu position (by @contributor3 in #1175)
-• Update translations (by @translator in #1170)
-• Fix dark mode styling issue (by @frontenddev in #1171)
+Open **Actions** on the `dev` workflow revision, select **Create Release**, and provide:
 
-## :bow: Thanks to our contributors
+- the version in the format for its channel;
+- the channel;
+- optional important notes.
 
-Special thanks to the following contributors who helped with this release:
-
-@contributor1, @contributor2, @contributor3, @frontenddev, @serverdev, @translator
-```
-
-### 3. Docker Image Build (`build-and-push-container-image` job)
-- ✅ Builds multi-platform Docker images (amd64 + arm64)
-- ✅ Uses the correct base image version for the channel
-- ✅ Tags images appropriately based on the channel:
-
-#### Stable Release Tags
-- `ghcr.io/music-assistant/server:X.Y.Z`
-- `ghcr.io/music-assistant/server:X.Y`
-- `ghcr.io/music-assistant/server:X`
-- `ghcr.io/music-assistant/server:stable`
-- `ghcr.io/music-assistant/server:latest`
-
-#### Beta Release Tags
-- `ghcr.io/music-assistant/server:X.Y.Z.bN`
-- `ghcr.io/music-assistant/server:beta`
-
-#### Nightly Release Tags
-- `ghcr.io/music-assistant/server:X.Y.Z.devN`
-- `ghcr.io/music-assistant/server:nightly`
-
-### 4. Update Add-on Repository (`update-addon-repository` job)
-- ✅ Determines the correct add-on folder based on channel:
-  - **Stable**: `music_assistant`
-  - **Beta**: `music_assistant_beta`
-  - **Nightly**: `music_assistant_nightly`
-- ✅ Updates `config.yaml` with the new version number
-- ✅ Updates `CHANGELOG.md` with the full release notes
-- ✅ Keeps only the last 2 versions in the changelog (removes older entries)
-- ✅ Commits and pushes changes directly to the `music-assistant/home-assistant-addon` repository
-
-This ensures the Home Assistant add-on is automatically updated with each release, making it immediately available to users!
-
-## Base Image Versions
-
-The workflow uses different base image versions per channel (configured in workflow env vars):
-
-- **Stable**: `1.3.1`
-- **Beta**: `1.3.2`
-- **Nightly**: `1.3.2`
-
-These can be updated in the workflow file's `env` section.
-
-## Release Notes
-
-Release notes are automatically generated by our custom release notes generator based on:
-- Merged pull requests since the last release of the same channel
-- PR labels (breaking-change, feature, bugfix, etc.)
-- Contributors list (merged from server and frontend PRs)
-- Frontend changes extracted from frontend update PRs
-
-The configuration is in `.github/release-notes-config.yml`.
-
-See `.github/actions/generate-release-notes/README.md` for more details on how the generator works.
-
-## Examples
-
-### Creating a Stable Release
-```
-Version: 2.1.0
-Channel: stable
-```
-This will:
-- Create release `2.1.0` (not a prerelease)
-- Tag Docker images with `2.1.0`, `2.1`, `2`, `stable`, and `latest`
-
-### Creating a Beta Release
-```
-Version: 2.2.0.b1
-Channel: beta
-```
-This will:
-- Create release `2.2.0.b1` (marked as prerelease)
-- Tag Docker images with `2.2.0.b1` and `beta`
-
-### Creating a Nightly Release
-```
-Version: 2.2.0.dev20251023
-Channel: nightly
-```
-This will:
-- Create release `2.2.0.dev20251023` (marked as prerelease)
-- Tag Docker images with `2.2.0.dev20251023` and `nightly`
+The immutable-release setting must already be enabled. Do not create the tag or
+release manually.
 
 ## Troubleshooting
 
-### Workflow Fails During Validation
-- Check that your version number matches the format for the selected channel
-- Ensure the version doesn't already exist as a tag
-
-### Docker Build Fails
-- Check that the base image version exists
-- Verify the Dockerfile is compatible with the version being built
-
-## Migration Notes
-
-This workflow replaces the previous `release.yml` which was triggered by creating a release in GitHub. Key differences:
-
-- **Before**: Create a release manually → workflow publishes it
-- **Now**: Trigger workflow → it creates and publishes the release
-
-The new approach provides better automation, validation, and consistency across channels.
+- **Privileged token error:** confirm the secret authenticates exactly as
+  `music-assistant-machine` and can read repository Administration settings.
+- **Immutable releases disabled:** enable the repository setting, then rerun.
+- **Tag or draft conflict:** inspect the reported version and use a new version unless
+  it is the workflow's matching draft.
+- **Published verification failure:** do not edit or reuse the release; supersede it.
+- **Downstream failure:** rerun the same version. The immutable release and exact image
+  are verified and skipped before rollout resumes.

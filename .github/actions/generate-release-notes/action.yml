@@ -11,6 +11,13 @@ inputs:
   branch:
     description: 'The branch being released from'
     required: true
+  source-sha:
+    description: 'The exact source commit used as the comparison head'
+    required: true
+  working-directory:
+    description: 'Repository checkout containing the release source'
+    required: false
+    default: '.'
   channel:
     description: 'The release channel (stable, rc, beta, nightly)'
     required: true
@@ -29,9 +36,9 @@ runs:
   using: 'composite'
   steps:
     - name: Set up Python
-      uses: actions/setup-python@v6.2.0
+      uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
       with:
-        python-version-file: '.python-version'
+        python-version-file: '${{ inputs.working-directory }}/.python-version'
         check-latest: true
 
     - name: Install dependencies
@@ -47,10 +54,12 @@ runs:
         VERSION: ${{ inputs.version }}
         PREVIOUS_TAG: ${{ inputs.previous-tag }}
         BRANCH: ${{ inputs.branch }}
+        SOURCE_SHA: ${{ inputs.source-sha }}
         CHANNEL: ${{ inputs.channel }}
         GITHUB_REPOSITORY: ${{ github.repository }}
         GITHUB_SERVER_URL: ${{ github.server_url }}
         IMPORTANT_NOTES: ${{ inputs.important-notes }}
       run: |
         chmod +x ${{ github.action_path }}/generate_notes.py
+        cd "${{ inputs.working-directory }}"
         python3 ${{ github.action_path }}/generate_notes.py
