@@ -118,7 +118,7 @@ class TeddyCloudProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Read config, prepare the HTTP client and verify connectivity."""
-        base_url = str(self.config.get_value(CONF_URL)).rstrip("/")
+        base_url = str(self.get_setup_value(CONF_URL)).rstrip("/")
         # accept a bare host/IP and default to http:// (TeddyCloud is usually plain HTTP on
         # the local network); an explicit http(s):// scheme is always respected.
         if not base_url.startswith(("http://", "https://")):

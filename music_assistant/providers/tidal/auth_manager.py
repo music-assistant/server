@@ -7,11 +7,9 @@ import time
 import urllib
 from collections.abc import Callable
 from dataclasses import dataclass
-from types import TracebackType
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any
 
 import pkce
-from music_assistant_models.enums import EventType
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.helpers.app_vars import app_var
@@ -20,8 +18,6 @@ from .constants import AUTH_URL, LOGIN_URL, REDIRECT_URI, SESSIONS_URL
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession
-
-    from music_assistant.mass import MusicAssistant
 
 TOKEN_REFRESH_BUFFER = 60 * 7  # 7 minutes
 # Minimum time between two token refreshes, so that (concurrent) requests
@@ -39,37 +35,6 @@ class TidalUser:
     profile_name: str | None = None
     user_name: str | None = None
     email: str | None = None
-
-
-class ManualAuthenticationHelper:
-    """
-    Helper for authentication flows that require manual user intervention.
-
-    For Tidal where the OAuth flow doesn't redirect to our callback,
-    but instead requires the user to manually copy a URL after authentication.
-    """
-
-    def __init__(self, mass: MusicAssistant, session_id: str) -> None:
-        """Initialize the Manual Authentication Helper."""
-        self.mass = mass
-        self.session_id = session_id
-
-    async def __aenter__(self) -> Self:
-        """Enter context manager."""
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: TracebackType | None,
-    ) -> bool | None:
-        """Exit context manager."""
-        return None
-
-    def send_url(self, auth_url: str) -> None:
-        """Send the URL to the user for authentication."""
-        self.mass.signal_event(EventType.AUTH_SESSION, self.session_id, auth_url)
 
 
 class TidalAuthManager:
@@ -163,13 +128,17 @@ class TidalAuthManager:
         )
 
     @staticmethod
-    async def generate_auth_url(auth_helper: ManualAuthenticationHelper, quality: str) -> str:
-        """Generate the Tidal authentication URL."""
-        # Generate PKCE challenge
+    def build_pkce_login(quality: str) -> tuple[str, dict[str, Any]]:
+        """
+        Build a fresh PKCE login: the Tidal authorize URL and its matching auth params.
+
+        The returned auth_params dict carries the (single-use) PKCE code_verifier and must
+        be handed back to :meth:`process_pkce_login` to exchange the pasted redirect URL.
+
+        :param quality: The audio quality carried through to the token exchange.
+        """
         code_verifier, code_challenge = pkce.generate_pkce_pair()
-        # Generate unique client key
         client_unique_key = format(random.getrandbits(64), "02x")
-        # Store these values for later use
         auth_params = {
             "code_verifier": code_verifier,
             "client_unique_key": client_unique_key,
@@ -177,8 +146,6 @@ class TidalAuthManager:
             "client_secret": app_var("tidal_client_secret"),
             "quality": quality,
         }
-
-        # Create auth URL
         params = {
             "response_type": "code",
             "redirect_uri": REDIRECT_URI,
@@ -190,14 +157,8 @@ class TidalAuthManager:
             "code_challenge_method": "S256",
             "restrict_signup": "true",
         }
-
-        url = f"{LOGIN_URL}?{urllib.parse.urlencode(params)}"
-
-        # Send URL to user
-        auth_helper.mass.loop.call_soon_threadsafe(auth_helper.send_url, url)
-
-        # Return serialized auth params
-        return json.dumps(auth_params)
+        authorize_url = f"{LOGIN_URL}?{urllib.parse.urlencode(params)}"
+        return authorize_url, auth_params
 
     @staticmethod
     async def process_pkce_login(

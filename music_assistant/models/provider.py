@@ -280,9 +280,9 @@ class Provider:
         """
         Return a value collected by this provider's setup flow (from setup_data).
 
-        Encrypted (string) values are decrypted transparently. Falls back to the
-        legacy config values for installs that were configured before setup flows
-        existed, so no data migration is needed.
+        Encrypted (string) values are decrypted transparently. When the key is not
+        present in setup_data, the active config entry value or the given default is
+        returned.
 
         :param key: The setup data key to retrieve.
         :param default: Value to return when the key is not present anywhere.
@@ -291,11 +291,7 @@ class Provider:
         if key in setup_data:
             value = setup_data[key]
             return self.mass.config.decrypt_string(value) if isinstance(value, str) else value
-        # read-through to the legacy (pre-setup-flow) config values, no migration
-        value = self.mass.config.get_raw_provider_config_value(self.instance_id, key)
-        if value is None:
-            return self.get_config_value(key, default)
-        return self.mass.config.decrypt_string(value) if isinstance(value, str) else value
+        return self.get_config_value(key, default)
 
     def _update_setup_data(self, key: str, value: ConfigValueType, immediate: bool = True) -> None:
         """

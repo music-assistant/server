@@ -101,12 +101,6 @@ async def get_config_entries(
     return (
         CONF_ENTRY_UNOFFICIAL_PROVIDER,
         ConfigEntry(
-            key=CONF_IDENTITY,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-            value=values.get(CONF_IDENTITY) if values else None,
-        ),
-        ConfigEntry(
             key=CONF_TOP_TRACKS_LIMIT,
             type=ConfigEntryType.INTEGER,
             required=False,
@@ -150,7 +144,7 @@ class BandcampProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async init of the Bandcamp provider."""
-        identity = self.config.get_value(CONF_IDENTITY)
+        identity = self.get_setup_value(CONF_IDENTITY)
         self.top_tracks_limit = cast(
             "int", self.config.get_value(CONF_TOP_TRACKS_LIMIT, DEFAULT_TOP_TRACKS_LIMIT)
         )

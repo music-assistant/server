@@ -260,7 +260,6 @@ class SendspinProvider(PlayerProvider):
         self._client_event_task_counts = {}
         self._virtual_players = {}
         self._pin_sessions: dict[str, PinPairingSession] = {}
-        self._token_pairing: set[str] = set()
         self._management_sessions: dict[str, ManagementSession] = {}
         self._pairing_config_snapshots: dict[
             str, tuple[SendspinConnection, ManagementResultData]
@@ -578,18 +577,6 @@ class SendspinProvider(PlayerProvider):
             self._cancel_pin_idle_timeout(client_id)
             self._pin_sessions.pop(client_id, None)
 
-    def is_token_pairing(self, client_id: str) -> bool:
-        """Whether the operator is in the token-entry pairing submenu for a client."""
-        return client_id in self._token_pairing
-
-    def open_token_pairing(self, client_id: str) -> None:
-        """Enter the token-entry pairing submenu for a client."""
-        self._token_pairing.add(client_id)
-
-    def close_token_pairing(self, client_id: str) -> None:
-        """Leave the token-entry pairing submenu for a client."""
-        self._token_pairing.discard(client_id)
-
     async def start_pin_pairing(
         self, client_id: str, *, verify: bool = False, static: bool = False
     ) -> PinPairingSession:
@@ -816,7 +803,6 @@ class SendspinProvider(PlayerProvider):
                 session.task.cancel()
             self._cancel_pin_idle_timeout(session.client_id)
         self._pin_sessions.clear()
-        self._token_pairing.clear()
         for management_session in self._management_sessions.values():
             self.mass.cancel_timer(_management_idle_task_id(management_session.client_id))
         self._management_sessions.clear()

@@ -79,6 +79,10 @@ def mass_mock() -> Mock:
     mass.http_session = Mock()
     mass.cache.get = AsyncMock(return_value=None)
     mass.cache.set = AsyncMock()
+    # setup_data is unset in these unit tests, so get_setup_value falls through to
+    # the provider config's get_value (which the config mock below stubs)
+    mass.config.get = Mock(return_value=None)
+    mass.config.get_raw_provider_config_value = Mock(return_value=None)
     return mass
 
 
@@ -97,6 +101,8 @@ def config_mock() -> Mock:
     config.name = "TeddyCloud Test"
     config.instance_id = "teddycloud_test"
     config.enabled = True
+    # empty values dict so get_setup_value falls through to config.get_value below
+    config.values = {}
     # the base provider reads the log level from config on init; return a valid level.
     config.get_value.side_effect = lambda key, default=None: (
         "INFO" if key == "log_level" else default
@@ -344,6 +350,7 @@ async def test_handle_async_init_prepends_scheme(
     """A server entered as a bare host/IP is normalized to an http:// base URL."""
     config = Mock()
     config.instance_id = "teddycloud_test"
+    config.values = {}
     values: dict[str, Any] = {"url": "192.168.3.225", "log_level": "INFO"}
     config.get_value.side_effect = lambda key, default=None: values.get(key, default)
     prov = TeddyCloudProvider(mass_mock, manifest_mock, config, SUPPORTED_FEATURES)

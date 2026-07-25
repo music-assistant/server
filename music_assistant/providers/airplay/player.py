@@ -23,6 +23,7 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.models.setup_flow import AbortFlow
 
 from .constants import (
     AIRPLAY_AP2_SETUP_LEAD_MS,
@@ -32,11 +33,7 @@ from .constants import (
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_RAOP_SETUP_LEAD_MS,
     BASE_PLAYER_FEATURES,
-    CONF_ACTION_FINISH_PAIRING,
-    CONF_ACTION_RESET_PAIRING,
-    CONF_ACTION_START_PAIRING,
     CONF_AIRPLAY_CREDENTIALS,
-    CONF_AP2PASSWORD,
     CONF_ENCRYPTION,
     CONF_ENTRY_SYNC_ADJUST_AIRPLAY,
     CONF_FORCE_RAOP,
@@ -64,6 +61,8 @@ from .stream_session import AirPlayStreamSession
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
+
+    from music_assistant.models.setup_flow import SetupSession
 
     from .pairing import AirPlayPairing
     from .provider import AirPlayProvider
@@ -96,7 +95,6 @@ class AirPlayPlayer(Player):
         self.stream: AirPlayStream | None = None
         self.last_command_sent = 0.0
         self._lock = asyncio.Lock()
-        self._active_pairing: AirPlayPairing | None = None
         self._transitioning = False  # Set during stream replacement to ignore stale DACP messages
         # Set (static) player attributes
         self._attr_name = display_name
@@ -167,11 +165,16 @@ class AirPlayPlayer(Player):
             # in the player config still offers pairing for the active protocol
             # (e.g. to upgrade a legacy RAOP pairing to AirPlay 2).
             if not (
-                self.config.get_value(CONF_AIRPLAY_CREDENTIALS)
-                or self.config.get_value(CONF_RAOP_CREDENTIALS)
+                self.get_setup_value(CONF_AIRPLAY_CREDENTIALS)
+                or self.get_setup_value(CONF_RAOP_CREDENTIALS)
             ):
                 return True
         return False
+
+    @property
+    def setup_reason(self) -> str | None:
+        """Return why the player needs setup, or None when it is ready to use."""
+        return "pairing_required" if self.needs_setup else None
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -215,16 +218,9 @@ class AirPlayPlayer(Player):
         values: dict[str, ConfigValueType] | None = None,
     ) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
+        # Pairing/credentials are no longer config entries: they are collected by the
+        # interactive setup flow (run_setup_flow) and stored in the player's setup_data.
         base_entries: list[ConfigEntry] = []
-        require_authentication = self._requires_pin_pairing() or self._requires_password_pairing()
-
-        # Handle pairing actions
-        if action and require_authentication:
-            await self._handle_pairing_action(action=action, values=values)
-
-        # Add pairing config entries for Apple TV and macOS devices
-        if require_authentication:
-            base_entries = [*self._get_pairing_config_entries(values)]
 
         # Effective RAOP state reflects the force-RAOP toggle currently in the form
         # (falling back to stored config) so the RAOP device password and the hi-res
@@ -290,6 +286,16 @@ class AirPlayPlayer(Player):
         ]
 
         return base_entries
+
+    async def run_setup_flow(self, session: SetupSession) -> None:
+        """
+        Run the interactive setup flow for this AirPlay player (streaming pairing).
+
+        :param session: The setup flow session used to interact with the user.
+        """
+        collected: dict[str, ConfigValueType] = {}
+        await self._run_streaming_pairing(session, collected)
+        await session.finish(collected)
 
     async def stop(self) -> None:
         """Send STOP command to player."""
@@ -681,9 +687,6 @@ class AirPlayPlayer(Player):
             if self.stream.running and self.stream.session:
                 await self.stream.session.remove_client(self, reason="player unloaded")
             self.stream = None
-        if self._active_pairing:
-            await self._active_pairing.close()
-            self._active_pairing = None
 
     @property
     def _has_native_protocol_parent(self) -> bool:
@@ -791,199 +794,115 @@ class AirPlayPlayer(Player):
             is True
         )
 
-    def _get_pairing_config_entries(
-        self, values: dict[str, ConfigValueType] | None
-    ) -> list[ConfigEntry]:
-        """
-        Return pairing config entries for Apple TV and macOS devices.
-
-        Uses native pairing for both AirPlay 2 (HAP) and RAOP protocols.
-        """
-        self.logger.debug(f"_get_pairing_config_entries with values: {values}")
-        entries: list[ConfigEntry] = []
-
-        # Pairing flavor follows capability detection: an AirPlay 2 capable device
-        # (always the case for a genuine HomePod / Apple TV 4+) pairs over HAP
-        # ("AirPlay"), while a legacy RAOP-only device (including older Apple TVs)
-        # uses the RAOP pairing flavor. Non-Apple AirPlay 2 receivers essentially
-        # never require pairing, so the force-RAOP toggle never reaches this path.
-        protocol = self.protocol
-        protocol_name = "RAOP" if protocol == StreamingProtocol.RAOP else "AirPlay"
-        protocol_key = (
-            CONF_RAOP_CREDENTIALS
-            if protocol == StreamingProtocol.RAOP
-            else CONF_AIRPLAY_CREDENTIALS
-        )
-        has_creds_for_current_protocol = (
-            values.get(protocol_key) if values else self.config.get_value(protocol_key)
-        )
-        self.logger.debug(
-            f"Has credentials for {protocol_name}: {has_creds_for_current_protocol!s}"
-        )
-
-        if not has_creds_for_current_protocol:
-            # If pairing was started, show PIN or password entry (depending on device configuration)
-            if self._active_pairing and self._active_pairing.is_pairing:
-                if self._requires_pin_pairing():
-                    self.logger.debug(f"Device requires PIN pairing for {protocol_name}")
-                    entries.append(
-                        ConfigEntry(
-                            key=CONF_PAIRING_PIN,
-                            type=ConfigEntryType.STRING,
-                            required=True,
-                            category="protocol_generic",
-                        )
-                    )
-                    entries.append(
-                        ConfigEntry(
-                            key=CONF_ACTION_FINISH_PAIRING,
-                            type=ConfigEntryType.ACTION,
-                            translation_key="finish_pairing_pin",
-                            translation_params=[protocol_name],
-                            action=CONF_ACTION_FINISH_PAIRING,
-                            category="protocol_generic",
-                        )
-                    )
-                elif self._requires_password_pairing():
-                    self.logger.debug(f"Device requires password pairing for {protocol_name}")
-                    entries.append(
-                        ConfigEntry(
-                            key=CONF_PAIRING_PASSWORD,
-                            type=ConfigEntryType.SECURE_STRING,
-                            required=True,
-                            category="protocol_generic",
-                        )
-                    )
-                    entries.append(
-                        ConfigEntry(
-                            key=CONF_ACTION_FINISH_PAIRING,
-                            type=ConfigEntryType.ACTION,
-                            translation_key="finish_pairing_password",
-                            translation_params=[protocol_name],
-                            action=CONF_ACTION_FINISH_PAIRING,
-                            category="protocol_generic",
-                        )
-                    )
-            else:
-                # Show pairing instructions and start button
-                self.logger.debug(
-                    f"Device requires pairing for {protocol_name}, but no active pairing session"
-                )
-                entries.append(
-                    ConfigEntry(
-                        key="pairing_instructions",
-                        type=ConfigEntryType.LABEL,
-                        translation_params=[protocol_name],
-                        category="protocol_generic",
-                    )
-                )
-                entries.append(
-                    ConfigEntry(
-                        key=CONF_ACTION_START_PAIRING,
-                        type=ConfigEntryType.ACTION,
-                        translation_key="start_pairing",
-                        translation_params=[protocol_name],
-                        action=CONF_ACTION_START_PAIRING,
-                        category="protocol_generic",
-                    )
-                )
-        else:
-            self.logger.debug(f"Device is already paired for {protocol_name}, showing reset option")
-            # Show paired status
-            entries.append(
-                ConfigEntry(
-                    key="pairing_status",
-                    type=ConfigEntryType.LABEL,
-                    translation_params=[protocol_name],
-                    category="protocol_generic",
-                )
-            )
-            # Add reset pairing button
-            entries.append(
-                ConfigEntry(
-                    key=CONF_ACTION_RESET_PAIRING,
-                    type=ConfigEntryType.ACTION,
-                    translation_key="reset_pairing",
-                    translation_params=[protocol_name],
-                    action=CONF_ACTION_RESET_PAIRING,
-                    category="protocol_generic",
-                )
-            )
-
-        # Store credentials (hidden from UI)
-        for protocol in (StreamingProtocol.RAOP, StreamingProtocol.AIRPLAY2):
-            conf_key = self._get_credentials_key(protocol)
-            entries.append(
-                ConfigEntry(
-                    key=conf_key,
-                    type=ConfigEntryType.SECURE_STRING,
-                    label=conf_key,
-                    default_value=None,
-                    value=values.get(conf_key) if values else None,
-                    required=False,
-                    hidden=True,
-                    category="protocol_generic",
-                )
-            )
-            if protocol is StreamingProtocol.AIRPLAY2:
-                entries.append(
-                    ConfigEntry(
-                        key=CONF_AP2PASSWORD,
-                        type=ConfigEntryType.SECURE_STRING,
-                        label=CONF_AP2PASSWORD,
-                        default_value=None,
-                        value=values.get(CONF_PAIRING_PASSWORD) if values else None,
-                        required=False,
-                        hidden=True,
-                        category="protocol_generic",
-                    )
-                )
-        return entries
-
-    async def _handle_pairing_action(
-        self, action: str, values: dict[str, ConfigValueType] | None
+    async def _run_streaming_pairing(
+        self, session: SetupSession, collected: dict[str, ConfigValueType]
     ) -> None:
         """
-        Handle pairing actions.
+        Pair the streaming protocol (RAOP or AirPlay 2), unless already paired.
 
-        Uses native pairing for both AirPlay 2 (HAP) and RAOP protocols.
-        Both produce credentials compatible with cliairplay.
+        Credentials for either protocol keep the player usable, so this no-ops when
+        any are already stored (e.g. when the flow is re-launched from the player
+        settings). The obtained credentials are added to ``collected`` under the
+        protocol-specific key.
+
+        :param session: The setup flow session used to interact with the user.
+        :param collected: The values collected so far; updated in place.
         """
-        self.logger.debug(f"_handle_pairing_action with action: {action} and values: {values}")
-        # Pair with the flavor matching the resolved streaming protocol
-        # (see _get_pairing_config_entries for the capability-based rationale).
-        protocol = self.protocol
-        protocol_name = "RAOP" if protocol == StreamingProtocol.RAOP else "AirPlay"
-
-        if action == CONF_ACTION_START_PAIRING:
-            await self._reset_pairing(values, protocol, protocol_name)
-            await self._start_pairing(protocol, protocol_name)
-        elif action == CONF_ACTION_FINISH_PAIRING:
-            await self._finish_pairing(values, protocol, protocol_name)
-        elif action == CONF_ACTION_RESET_PAIRING:
-            await self._reset_pairing(values, protocol, protocol_name)
-
-    async def _start_pairing(self, protocol: StreamingProtocol, protocol_name: str) -> None:
-        """Begin a new pairing session for the given protocol."""
-        self.logger.debug(f"_start_pairing for protocol: {protocol_name}")
-        if self._active_pairing and self._active_pairing.is_pairing:
-            self.logger.warning("Pairing process already in progress for %s", self.display_name)
+        if self.get_setup_value(CONF_AIRPLAY_CREDENTIALS) or self.get_setup_value(
+            CONF_RAOP_CREDENTIALS
+        ):
+            return
+        pin_pairing = self._requires_pin_pairing()
+        # a password only replaces PIN pairing on the native AirPlay 2 flow
+        password_pairing = (
+            self._requires_password_pairing() and self.protocol == StreamingProtocol.AIRPLAY2
+        )
+        if not (pin_pairing or password_pairing):
             return
 
-        self.logger.info("Starting %s pairing for %s", protocol_name, self.display_name)
+        protocol = self.protocol
+        cred_key = self._get_credentials_key(protocol)
+        if pin_pairing:
+            step_id, field_key, field_type = "pair_pin", CONF_PAIRING_PIN, ConfigEntryType.STRING
+        else:
+            step_id, field_key, field_type = (
+                "pair_password",
+                CONF_PAIRING_PASSWORD,
+                ConfigEntryType.SECURE_STRING,
+            )
 
+        errors: dict[str, str] | None = None
+        while True:
+            # Each attempt uses a fresh session: finish_pairing() closes the live
+            # subprocess/session on completion, so a rejected PIN needs a new one
+            # (and the device re-shows its PIN).
+            pairing = await self._prepare_streaming_pairing(protocol, pin_pairing=pin_pairing)
+            try:
+                values = await session.form(
+                    [
+                        ConfigEntry(
+                            key=field_key,
+                            type=field_type,
+                            required=True,
+                            category="protocol_generic",
+                        )
+                    ],
+                    step_id=step_id,
+                    errors=errors,
+                )
+                credentials = await pairing.finish_pairing(pin=str(values[field_key]))
+            except PlayerCommandFailed as err:
+                errors = {"base": err.translation_key or str(err)}
+                continue
+            finally:
+                # tears down the subprocess on retry, success and abort (cancellation)
+                await pairing.close()
+            collected[cred_key] = credentials
+            return
+
+    async def _prepare_streaming_pairing(
+        self, protocol: StreamingProtocol, *, pin_pairing: bool
+    ) -> AirPlayPairing:
+        """
+        Build and start a streaming pairing session (the device shows its PIN).
+
+        A failure here cannot be recovered by re-prompting the user, so it aborts the
+        flow; a partially started session is torn down first.
+
+        :param protocol: The streaming protocol to pair (RAOP or AirPlay 2).
+        :param pin_pairing: Whether the device shows a PIN the user must enter.
+        """
+        pairing: AirPlayPairing | None = None
+        started = False
+        try:
+            pairing = self._build_streaming_pairing(protocol)
+            await pairing.start_pairing_session()
+            if pin_pairing:
+                await pairing.start_pin_pairing()
+            started = True
+        except PlayerCommandFailed as err:
+            raise AbortFlow("pairing_failed") from err
+        finally:
+            if not started and pairing is not None:
+                await pairing.close()
+        assert pairing is not None  # reached only when started, i.e. a live session
+        return pairing
+
+    def _build_streaming_pairing(self, protocol: StreamingProtocol) -> AirPlayPairing:
+        """
+        Build an AirPlayPairing for the given streaming protocol.
+
+        :param protocol: The streaming protocol to pair (RAOP or AirPlay 2).
+        """
         from .pairing import AirPlayPairing  # noqa: PLC0415
 
-        # Determine port based on protocol
-        # Note: For Apple devices, pairing always happens on the AirPlay port (7000)
-        # even when streaming will use RAOP. The RAOP port (5000) is only for streaming.
+        # For Apple devices pairing always happens on the AirPlay port (7000) even
+        # when streaming will use RAOP; the RAOP port (5000) is only for streaming.
         port: int | None = None
         if self.airplay_discovery_info:
             port = self.airplay_discovery_info.port or 7000
         elif self.raop_discovery_info:
-            # Fallback for devices without AirPlay service
             port = self.raop_discovery_info.port or 5000
-        # Get the DACP ID from the provider - must match what cliairplay uses
         provider = cast("AirPlayProvider", self.provider)
         device_id = provider.dacp_id
         pairing_address = self.address
@@ -1000,80 +919,13 @@ class AirPlayPlayer(Player):
                     pairing_address = discovered_address
             if not isinstance(ipaddress.ip_address(pairing_address), ipaddress.IPv4Address):
                 raise PlayerCommandFailed("AirPlay pairing requires an IPv4 device address")
-
-        self._active_pairing = AirPlayPairing(
+        return AirPlayPairing(
             address=pairing_address,
             name=self.display_name,
             protocol=protocol,
             logger=self.logger,
             port=port,
             device_id=device_id,
-        )
-        await self._active_pairing.start_pairing_session()
-
-        if self._requires_pin_pairing():
-            await self._active_pairing.start_pin_pairing()
-
-    async def _finish_pairing(
-        self,
-        values: dict[str, ConfigValueType] | None,
-        protocol: StreamingProtocol,
-        protocol_name: str,
-    ) -> None:
-        """
-        Complete an in-progress pairing session.
-
-        ``values`` may contain a PIN or a password supplied by the user when required.
-        """
-        self.logger.debug(f"_finish_pairing for protocol: {protocol_name} with values: {values}")
-        if not values:
-            return
-        pin = None
-        if self._requires_pin_pairing():
-            pin = values.get(CONF_PAIRING_PIN)
-            if not pin:
-                self.logger.warning("No PIN provided for pairing")
-                return
-        elif self._requires_password_pairing():
-            pin = values.get(CONF_PAIRING_PASSWORD)
-            if not pin:
-                self.logger.warning("No password configured for pairing")
-                return
-
-        if not self._active_pairing:
-            self.logger.warning(f"No active pairing session for {self.display_name}")
-            return
-        if not pin:
-            self.logger.warning("No authentication method provided (PIN or password)")
-            return
-        credentials = await self._active_pairing.finish_pairing(pin=str(pin))
-        self._active_pairing = None
-
-        # Store credentials with the protocol-specific key. The get_entries action
-        # flow never persists `values` itself, so save the credentials through
-        # save_player_config to make them live and persisted (encrypted) right away.
-        cred_key = self._get_credentials_key(protocol)
-        values[cred_key] = credentials
-        await self.mass.config.save_player_config(self.player_id, {cred_key: credentials})
-
-        self.logger.info(f"Finished {protocol_name} pairing for {self.display_name}")
-
-    async def _reset_pairing(
-        self,
-        values: dict[str, ConfigValueType] | None,
-        protocol: StreamingProtocol,
-        protocol_name: str,
-    ) -> None:
-        """Clear stored credentials for the given protocol."""
-        cred_key = self._get_credentials_key(protocol)
-        self.logger.info(f"Resetting {protocol_name} pairing for {self.display_name}")
-        if values is not None:
-            values[cred_key] = None
-            values[CONF_AP2PASSWORD] = None
-        # Persist the cleared credentials immediately so a restart cannot
-        # resurrect them from the stored config.
-        await self.mass.config.save_player_config(
-            self.player_id, {cred_key: None, CONF_AP2PASSWORD: None}
         )
 
     def _on_player_media_updated(self) -> None:

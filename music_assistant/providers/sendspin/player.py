@@ -74,6 +74,7 @@ from music_assistant.constants import HIDDEN_ANNOUNCE_VOLUME_CONFIG_ENTRIES
 from music_assistant.controllers.streams.audio_analysis import SMART_FADES_ANALYSIS_DOMAIN
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player, PlayerMedia
+from music_assistant.models.setup_flow import AbortFlow, StepExpiredError
 
 from .constants import (
     BRIDGE_PREFIX,
@@ -88,20 +89,19 @@ from .constants import (
     CONF_ACTION_MANAGEMENT_UNPAIRED_ENABLE,
     CONF_ACTION_PAIR_PIN_CANCEL,
     CONF_ACTION_PAIR_PIN_RETRY,
-    CONF_ACTION_PAIR_PIN_START,
     CONF_ACTION_PAIR_PIN_SUBMIT,
-    CONF_ACTION_PAIR_STATIC_PIN_START,
-    CONF_ACTION_PAIR_TOKEN,
-    CONF_ACTION_PAIR_TOKEN_CANCEL,
-    CONF_ACTION_PAIR_TOKEN_SUBMIT,
     CONF_ACTION_REVOKE_UNPAIRED,
     CONF_ACTION_UNPAIR,
     CONF_ACTION_VERIFY_PIN_START,
     CONF_CAST_AUDIO_UNSUPPORTED,
+    CONF_PAIRING_METHOD,
     CONF_PAIRING_PIN,
     CONF_PAIRING_TOKEN,
     CONF_SENDSPIN_STATIC_DELAY,
     DEFAULT_SENDSPIN_STATIC_DELAY,
+    PAIR_METHOD_PIN,
+    PAIR_METHOD_STATIC_PIN,
+    PAIR_METHOD_TOKEN,
 )
 from .helpers import (
     AlertText,
@@ -200,6 +200,34 @@ _MANAGEMENT_ACTIONS = {
     ),
 }
 
+# Seconds the setup flow waits for the device to enter pairing mode (show its PIN).
+PAIR_GESTURE_TIMEOUT = 120.0
+# Seconds the setup flow waits for pairing to complete after the PIN is submitted.
+PAIR_CONFIRM_TIMEOUT = 30.0
+
+# Terminal pairing-error slugs that map to a dedicated setup_flow.abort reason;
+# anything else falls back to the generic "pairing_failed" abort.
+_PAIRING_ABORT_REASONS = {
+    "pairing_error_locked_out": "pairing_error_locked_out",
+    "pairing_error_no_pin_method": "no_pair_methods",
+    "pairing_error_not_connected": "pairing_error_not_connected",
+}
+
+
+def _pin_error_slug(error: Exception | None) -> str:
+    """Return the strings.json errors slug for a retryable PIN failure (re-rendered form)."""
+    if error is None:
+        return "pairing_error_generic"
+    return error_alert(error).key
+
+
+def _pairing_abort_reason(error: Exception | None) -> str:
+    """Return the setup_flow.abort reason slug for a terminal pairing failure."""
+    if error is None:
+        return "pairing_failed"
+    key = error.alert_key if isinstance(error, SecurityActionError) else error_alert(error).key
+    return _PAIRING_ABORT_REASONS.get(key, "pairing_failed")
+
 
 if TYPE_CHECKING:
     from aiosendspin.models.core import ClientHelloPayload
@@ -213,6 +241,7 @@ if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.controllers.player_queues.state import PlayerQueueData
+    from music_assistant.models.setup_flow import SetupSession
     from music_assistant.providers.chromecast.sendspin_bridge import SendspinBridgeManager
     from music_assistant.providers.hass import HomeAssistantProvider
 
@@ -331,6 +360,11 @@ class SendspinBasePlayer(Player):
             return False
         return not self.api.active_roles
 
+    @property
+    def setup_reason(self) -> str | None:
+        """Return the reason this device needs setup (pairing), or None when it does not."""
+        return "pairing_required" if self.needs_setup else None
+
     async def get_config_entries(
         self,
         action: str | None = None,
@@ -340,6 +374,46 @@ class SendspinBasePlayer(Player):
         entries = await super().get_config_entries(action, values)
         entries.extend(await self._get_security_config_entries(action, values))
         return entries
+
+    async def run_setup_flow(self, session: SetupSession) -> None:
+        """
+        Drive the initial pairing of this (encrypted, unpaired) Sendspin device.
+
+        Pairing succeeds as a side effect of the provider pairing calls; the flow only
+        drives and confirms it, then finishes with no persisted values. Bridge/web
+        players and unencrypted (legacy) connections have nothing to pair.
+
+        :param session: The setup flow session used to interact with the user.
+        """
+        if self._is_bridge_or_web_player or self.api.connection_security is None:
+            raise AbortFlow("nothing_to_configure")
+        provider = cast("SendspinProvider", self.provider)
+        options = self._pairing_method_options(provider)
+        if not options:
+            raise AbortFlow("no_pair_methods")
+        if len(options) == 1:
+            method = options[0]
+        else:
+            values = await session.form(
+                [
+                    ConfigEntry(
+                        key=CONF_PAIRING_METHOD,
+                        type=ConfigEntryType.STRING,
+                        required=True,
+                        default_value=options[0],
+                        options=[ConfigValueOption(value=option) for option in options],
+                    )
+                ],
+                step_id="select_method",
+            )
+            method = str(values[CONF_PAIRING_METHOD])
+        if method == PAIR_METHOD_TOKEN:
+            await self._run_token_pairing_flow(session, provider)
+        else:
+            await self._run_pin_pairing_flow(
+                session, provider, static=method == PAIR_METHOD_STATIC_PIN
+            )
+        await session.finish({})
 
     @property
     def _is_bridge_or_web_player(self) -> bool:
@@ -579,19 +653,14 @@ class SendspinBasePlayer(Player):
                 await self._paired_entries(provider, info, record, pin_session, pairing_config),
             )
 
+        # Initial pairing of an unpaired device is driven by the interactive setup flow
+        # (run_setup_flow), not from this page; only the unpaired-access toggle is offered here.
         status = (
             ConfigEntry(key="security_status_unpaired", type=ConfigEntryType.ALERT)
             if trusted_unpaired
             else None
         )
-
-        if pin_session is not None:
-            return status, self._pin_session_entries(pin_session)
-
-        if provider.is_token_pairing(self.player_id):
-            return status, self._token_session_entries()
-
-        actions = self._pair_offer_entries(info, pairing_config)
+        actions: list[ConfigEntry] = []
         if trusted_unpaired:
             actions.append(action_entry(CONF_ACTION_REVOKE_UNPAIRED, advanced=True))
         elif effective_unpaired_access(info, pairing_config):
@@ -670,22 +739,6 @@ class SendspinBasePlayer(Player):
         return entries
 
     @staticmethod
-    def _token_session_entries() -> list[ConfigEntry]:
-        """Return the entries for the token-entry pairing submenu."""
-        return [
-            ConfigEntry(key="pairing_token_prompt", type=ConfigEntryType.LABEL),
-            ConfigEntry(
-                key=CONF_PAIRING_TOKEN,
-                type=ConfigEntryType.STRING,
-                required=False,
-                default_value="",
-                value="",
-            ),
-            action_entry(CONF_ACTION_PAIR_TOKEN_SUBMIT),
-            action_entry(CONF_ACTION_PAIR_TOKEN_CANCEL),
-        ]
-
-    @staticmethod
     def _management_section_entries(config: ManagementResultData) -> list[ConfigEntry]:
         """Return the entries for the open device-management section."""
         entries: list[ConfigEntry] = [
@@ -728,37 +781,6 @@ class SendspinBasePlayer(Player):
         return [action_entry(action)]
 
     @staticmethod
-    def _pair_offer_entries(
-        info: ClientHelloPayload | None, pairing_config: ManagementResultData | None
-    ) -> list[ConfigEntry]:
-        """Return the pairing entries matching the client's offered pair methods."""
-        pair_methods = effective_pair_methods(info, pairing_config)
-        offers_token = any(
-            descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods
-        )
-        pin_descriptors = [
-            descriptor
-            for descriptor in pair_methods
-            if descriptor.method in (PairMethod.DYNAMIC_PIN, PairMethod.STATIC_PIN)
-        ]
-        usable_pin_methods = {
-            descriptor.method for descriptor in pin_descriptors if not descriptor.locked_out
-        }
-
-        entries: list[ConfigEntry] = []
-        if usable_pin_methods:
-            entries.append(action_entry(CONF_ACTION_PAIR_PIN_START))
-            if usable_pin_methods >= {PairMethod.DYNAMIC_PIN, PairMethod.STATIC_PIN}:
-                entries.append(action_entry(CONF_ACTION_PAIR_STATIC_PIN_START, advanced=True))
-        elif pin_descriptors:
-            entries.append(ConfigEntry(key="pin_locked_out", type=ConfigEntryType.ALERT))
-        if offers_token:
-            entries.append(action_entry(CONF_ACTION_PAIR_TOKEN))
-        if not pair_methods:
-            entries.append(ConfigEntry(key="no_pair_methods", type=ConfigEntryType.ALERT))
-        return entries
-
-    @staticmethod
     def _verify_offer_entry(
         info: ClientHelloPayload | None,
         record: ServerPairingRecord | None,
@@ -783,23 +805,9 @@ class SendspinBasePlayer(Player):
         action: str,
         values: dict[str, ConfigValueType],
     ) -> AlertText | None:
-        """Execute a pairing action, returning a localized alert for the UI on failure."""
+        """Execute a device-presence/management action, returning a localized alert on failure."""
         try:
-            if action == CONF_ACTION_PAIR_TOKEN:
-                provider.open_token_pairing(self.player_id)
-            elif action == CONF_ACTION_PAIR_TOKEN_SUBMIT:
-                token_value = str(values.get(CONF_PAIRING_TOKEN) or "").strip()
-                if not token_value:
-                    return AlertText("pairing_token_required")
-                await provider.pair_with_token(self.player_id, token_value)
-                provider.close_token_pairing(self.player_id)
-            elif action == CONF_ACTION_PAIR_TOKEN_CANCEL:
-                provider.close_token_pairing(self.player_id)
-            elif action == CONF_ACTION_PAIR_PIN_START:
-                await provider.start_pin_pairing(self.player_id)
-            elif action == CONF_ACTION_PAIR_STATIC_PIN_START:
-                await provider.start_pin_pairing(self.player_id, static=True)
-            elif action == CONF_ACTION_PAIR_PIN_RETRY:
+            if action == CONF_ACTION_PAIR_PIN_RETRY:
                 # A retryable session resumes in place, preserving its method and verify mode.
                 await provider.start_pin_pairing(self.player_id)
             elif action == CONF_ACTION_VERIFY_PIN_START:
@@ -840,6 +848,126 @@ class SendspinBasePlayer(Player):
         ) as err:
             return error_alert(err)
         return None
+
+    def _pairing_method_options(self, provider: SendspinProvider) -> list[str]:
+        """Return the pairing-method option values the device currently offers for setup."""
+        info = self.api.info_or_none
+        pairing_config = provider.pairing_config_snapshot(self.player_id)
+        pair_methods = effective_pair_methods(info, pairing_config)
+        usable_pin_methods = {
+            descriptor.method
+            for descriptor in pair_methods
+            if descriptor.method in (PairMethod.DYNAMIC_PIN, PairMethod.STATIC_PIN)
+            and not descriptor.locked_out
+        }
+        options: list[str] = []
+        if usable_pin_methods:
+            options.append(PAIR_METHOD_PIN)
+            # Static PIN is only a distinct, meaningful choice when both PIN methods are usable.
+            if usable_pin_methods >= {PairMethod.DYNAMIC_PIN, PairMethod.STATIC_PIN}:
+                options.append(PAIR_METHOD_STATIC_PIN)
+        if any(descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods):
+            options.append(PAIR_METHOD_TOKEN)
+        return options
+
+    def _pairing_succeeded(self, pin_session: PinPairingSession) -> bool:
+        """Whether pairing activated the device's roles (or otherwise finished cleanly)."""
+        return not self.needs_setup or (pin_session.finished and pin_session.error is None)
+
+    async def _run_pin_pairing_flow(
+        self, session: SetupSession, provider: SendspinProvider, *, static: bool
+    ) -> None:
+        """
+        Pair via PIN: drive the gesture wait, PIN entry and the retry-in-place loop.
+
+        A retryable failure re-renders the PIN form (start_pin_pairing resumes the session in
+        place); a terminal failure aborts the flow. On any non-success exit the finally tears
+        down a device-side session still in flight - including when the flow is cancelled.
+
+        :param static: Pair with the device's static PIN instead of a dynamic one.
+        """
+        paired = False
+        errors: dict[str, str] | None = None
+        try:
+            while True:
+                try:
+                    pin_session = await provider.start_pin_pairing(self.player_id, static=static)
+                except SecurityActionError as err:
+                    raise AbortFlow(_pairing_abort_reason(err)) from err
+                if pin_session.awaiting_gesture:
+                    try:
+                        await session.progress_until(
+                            pin_session.pin_request_event.wait(),
+                            step_id="awaiting_gesture",
+                            text="awaiting_gesture",
+                            expires_in=PAIR_GESTURE_TIMEOUT,
+                        )
+                    except StepExpiredError:
+                        # The device never entered pairing mode; wait for the gesture afresh.
+                        errors = {"base": "pairing_error_timeout"}
+                        continue
+                if not pin_session.awaiting_pin:
+                    # The attempt ended before a PIN could be entered.
+                    if self._pairing_succeeded(pin_session):
+                        paired = True
+                        return
+                    if pin_session.can_retry:
+                        errors = {"base": _pin_error_slug(pin_session.error)}
+                        continue
+                    raise AbortFlow(_pairing_abort_reason(pin_session.error))
+                pin_values = await session.form(
+                    [ConfigEntry(key=CONF_PAIRING_PIN, type=ConfigEntryType.STRING, required=True)],
+                    step_id="enter_pin",
+                    errors=errors,
+                )
+                errors = None
+                await provider.submit_pin(self.player_id, str(pin_values[CONF_PAIRING_PIN]).strip())
+                task = pin_session.task
+                if task is not None and not task.done():
+                    # Shield the pairing task: the step deadline must not cancel it.
+                    with suppress(StepExpiredError):
+                        await session.progress_until(
+                            asyncio.shield(task),
+                            step_id="confirming",
+                            text="confirming",
+                            expires_in=PAIR_CONFIRM_TIMEOUT,
+                        )
+                if self._pairing_succeeded(pin_session):
+                    paired = True
+                    return
+                if pin_session.can_retry:
+                    errors = {"base": _pin_error_slug(pin_session.error)}
+                    continue
+                raise AbortFlow(_pairing_abort_reason(pin_session.error))
+        finally:
+            if not paired and provider.get_pin_session(self.player_id) is not None:
+                await provider.cancel_pin_pairing(self.player_id)
+
+    async def _run_token_pairing_flow(
+        self, session: SetupSession, provider: SendspinProvider
+    ) -> None:
+        """Pair via a pasted pairing token, re-rendering the form on a recoverable failure."""
+        errors: dict[str, str] | None = None
+        while True:
+            token_values = await session.form(
+                [ConfigEntry(key=CONF_PAIRING_TOKEN, type=ConfigEntryType.STRING, required=True)],
+                step_id="enter_token",
+                errors=errors,
+            )
+            try:
+                await provider.pair_with_token(
+                    self.player_id, str(token_values[CONF_PAIRING_TOKEN]).strip()
+                )
+            except (
+                SecurityActionError,
+                PairingError,
+                HandshakeAbortedError,
+                TimeoutError,
+                OSError,
+            ) as err:
+                errors = {"base": error_alert(err).key}
+                continue
+            return
 
 
 class SendspinPlayer(SendspinBasePlayer):

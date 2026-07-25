@@ -254,6 +254,7 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
         "mute_control": state.mute_control,
         "active_output_protocol": state.active_output_protocol,
         "needs_setup": state.needs_setup,
+        "setup_reason": state.setup_reason,
         "sleep_timer_expires_at": state.sleep_timer_expires_at,
         "supported_features": frozenset(state.supported_features),
         "sound_mode_list": tuple((m.id, m.name, m.passive) for m in state.sound_mode_list),
@@ -330,6 +331,7 @@ class Player(ABC):
     _attr_expose_to_ha_by_default: bool = True
     _attr_enabled_by_default: bool = True
     _attr_needs_setup: bool = False
+    _attr_setup_reason: str | None = None
     _attr_supported_sample_rates: list[tuple[int, int]] | None = None
     _attr_underlying_player_id: str | None = None
 
@@ -493,6 +495,17 @@ class Player(ABC):
         such as completing an authentication flow or providing additional configuration.
         """
         return self._attr_needs_setup
+
+    @property
+    def setup_reason(self) -> str | None:
+        """
+        Return a short (translatable) slug describing why the player needs setup.
+
+        Only meaningful while ``needs_setup`` is True; surfaced next to the "Setup
+        required" indicator so the UI can explain what to do (e.g. "pairing_required"
+        or "password_required"). Returns None when there is no specific reason.
+        """
+        return self._attr_setup_reason
 
     @property
     def powered(self) -> bool | None:
@@ -921,6 +934,23 @@ class Player(ABC):
             specified type matches the actual config value type.
         """
         return self.config.get_value(key, default)
+
+    def get_setup_value(self, key: str, default: ConfigValueType = None) -> ConfigValueType:
+        """
+        Return a value collected by this player's setup flow (from setup_data).
+
+        Encrypted (string) values are decrypted transparently. Reads setup_data only
+        (no fallback to the config values): player-owned credentials/pairing data live
+        exclusively in setup_data, with a one-time migration moving any legacy values.
+
+        :param key: The setup data key to retrieve.
+        :param default: Value to return when the key is not present.
+        """
+        setup_data = self.mass.config.get(f"{CONF_PLAYERS}/{self.player_id}/setup_data") or {}
+        if key in setup_data:
+            value = setup_data[key]
+            return self.mass.config.decrypt_string(value) if isinstance(value, str) else value
+        return default
 
     @final
     def resolve_output_player(self) -> Player:
@@ -1876,6 +1906,28 @@ class Player(ABC):
                 f"Player {self.display_name} does not support feature {feature.name}"
             )
 
+    def _update_setup_data(self, key: str, value: ConfigValueType, immediate: bool = True) -> None:
+        """
+        Update a single setup_data value for this player (e.g. a rotated pairing credential).
+
+        :param key: The setup data key to update.
+        :param value: The new value; strings are encrypted at rest.
+        :param immediate: Persist to disk right away (the default) instead of on the
+            debounced save timer, so a critical value survives a crash.
+        """
+        if not self.mass.config.get(f"{CONF_PLAYERS}/{self.player_id}"):
+            # only allow setting setup data if the main config entry exists
+            msg = f"Invalid player: {self.player_id}"
+            raise KeyError(msg)
+        stored_value = self.mass.config.encrypt_string(value) if isinstance(value, str) else value
+        self.mass.config.set(
+            f"{CONF_PLAYERS}/{self.player_id}/setup_data/{key}",
+            stored_value,
+            immediate=immediate,
+        )
+        # keep the in-memory config copy in sync with storage
+        self.config.setup_data[key] = stored_value
+
     @final
     def _check_feature_with_active_protocol(
         self, feature: PlayerFeature, active_only: bool = False
@@ -1974,6 +2026,7 @@ class Player(ABC):
             "available": self.available,
             "name": self.name,
             "needs_setup": self.needs_setup,
+            "setup_reason": self.setup_reason,
             "playback_state": self.playback_state,
             "powered": self.powered,
             "volume_level": self.volume_level,
@@ -2125,6 +2178,7 @@ class Player(ABC):
             output_protocols=self.output_protocols,
             active_output_protocol=self.__attr_active_output_protocol,
             needs_setup=self.needs_setup,
+            setup_reason=self.setup_reason,
             sleep_timer_expires_at=self.sleep_timer_expires_at,
         )
         media_position_jumped = self.__reconcile_current_media_anchor(

@@ -92,7 +92,7 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async init of the Deezer provider."""
-        arl_token = str(self.config.get_value(CONF_ARL_TOKEN))
+        arl_token = str(self.get_setup_value(CONF_ARL_TOKEN))
 
         try:
             self.gql_client = DeezerGQLClient(arl=arl_token, session=self.mass.http_session)

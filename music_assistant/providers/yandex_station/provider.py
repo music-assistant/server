@@ -276,7 +276,7 @@ class YandexStationProvider(PlayerProvider):
         credentials — the linked instance stays the single writer/rotator.
         Returns None for the provider's own login.
         """
-        ym_instance = cast("str | None", self.config.get_value(CONF_YM_INSTANCE))
+        ym_instance = cast("str | None", self.get_setup_value(CONF_YM_INSTANCE))
         if not ym_instance or ym_instance == BORROW_SOURCE_OWN:
             return None
         return BorrowedCredentialSource(self.mass, ym_instance)
@@ -298,8 +298,8 @@ class YandexStationProvider(PlayerProvider):
                 refresh_token=CONF_REFRESH_TOKEN,
                 remember_session=CONF_REMEMBER_SESSION,
             ),
-            get_value=self.config.get_value,
-            set_value=lambda key, value: self._update_config_value(key, value, encrypted=True),
+            get_value=self.get_setup_value,
+            set_value=lambda key, value: self._update_setup_data(key, value),
             hooks=CascadeHooks(
                 fast_path=self._fast_path,
                 apply_music_token=self._apply_music_token,
@@ -336,9 +336,9 @@ class YandexStationProvider(PlayerProvider):
             if self._borrow_source is not None:
                 return await self._init_session_borrowed()
 
-            music_token_val = self.config.get_value(CONF_MUSIC_TOKEN)
-            x_token_val = self.config.get_value(CONF_X_TOKEN)
-            refresh_token_val = self.config.get_value(CONF_REFRESH_TOKEN)
+            music_token_val = self.get_setup_value(CONF_MUSIC_TOKEN)
+            x_token_val = self.get_setup_value(CONF_X_TOKEN)
+            refresh_token_val = self.get_setup_value(CONF_REFRESH_TOKEN)
 
             if not music_token_val and not x_token_val:
                 self.logger.warning("No credentials configured, cannot discover devices")

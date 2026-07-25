@@ -50,6 +50,8 @@ class _StubConfig:
         self.values: dict[str, _StubConfigValue] = {
             k: _StubConfigValue(v) for k, v in values.items()
         }
+        # in-memory setup_data mirror kept in sync by Provider._update_setup_data
+        self.setup_data: dict[str, Any] = {}
 
     def get_value(self, key: str, default: Any = None) -> Any:
         entry = self.values.get(key)
@@ -78,6 +80,34 @@ class _StubCoreConfig:
     def get_raw_provider_config_value(self, instance_id: str, key: str) -> Any:
         """Read-back used by Provider._update_config_value on current MA core."""
         return self._raw.get((instance_id, key))
+
+    def get(self, path: str) -> Any:
+        """
+        Serve config paths used by Provider.get_setup_value / _update_setup_data.
+
+        Returns an empty setup_data dict so setup-data reads fall through to the
+        config entry value (config.get_value, via get_config_value), and a truthy
+        marker for the provider-exists precondition in _update_setup_data.
+        """
+        if path.endswith("/setup_data"):
+            return {}
+        return {"exists": True}
+
+    def set(self, path: str, value: Any, immediate: bool = False) -> None:
+        """Record a setup_data write (mirrors set_raw_provider_config_value)."""
+        _ = immediate
+        parts = path.split("/")
+        instance_id, key = parts[1], parts[-1]
+        self.updates.append((instance_id, key, value, True))
+        self._raw[(instance_id, key)] = value
+
+    def encrypt_string(self, value: str) -> str:
+        """Identity encrypt for tests."""
+        return value
+
+    def decrypt_string(self, value: str) -> str:
+        """Identity decrypt for tests."""
+        return value
 
 
 class _StubMass:

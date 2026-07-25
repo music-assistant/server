@@ -26,16 +26,17 @@ from onedrive_personal_sdk.clients.client import OneDriveClient
 from onedrive_personal_sdk.exceptions import AuthenticationError, OneDriveException
 from onedrive_personal_sdk.models.items import Folder
 
-from music_assistant.providers.filesystem_cloud.base import CloudFileSystemProvider
-
-from .auth import MAOneDriveAuth
-from .constants import (
+from music_assistant.providers.filesystem_cloud.base import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
     CONF_FOLDER_ID,
     CONF_REFRESH_TOKEN,
-    GRAPH_BASE_URL,
+    CloudFileSystemProvider,
+    read_setup_value,
 )
+
+from .auth import MAOneDriveAuth
+from .constants import GRAPH_BASE_URL
 
 if TYPE_CHECKING:
     from aiohttp import ClientResponse
@@ -56,17 +57,21 @@ class OneDriveFileSystemProvider(CloudFileSystemProvider):
         config: ProviderConfig,
     ) -> None:
         """Initialize OneDrive FileSystem Provider."""
-        # the configured "root" is a folder path; handle_async_init resolves it
-        # to the Graph item ID everything else works off
+        # the configured "root" is a folder path; handle_async_init resolves it to the Graph
+        # item ID everything else works off. Read it setup-data-aware here since the instance
+        # (and self.get_setup_value) does not exist yet
         super().__init__(
-            mass, manifest, config, cast("str", config.get_value(CONF_FOLDER_ID) or "root")
+            mass,
+            manifest,
+            config,
+            cast("str", read_setup_value(mass, config, CONF_FOLDER_ID) or "root"),
         )
         self.auth = MAOneDriveAuth(
             mass,
             config.instance_id,
-            cast("str", config.get_value(CONF_CLIENT_ID)),
-            cast("str", config.get_value(CONF_CLIENT_SECRET)),
-            cast("str", config.get_value(CONF_REFRESH_TOKEN)),
+            cast("str", self.get_setup_value(CONF_CLIENT_ID)),
+            cast("str", self.get_setup_value(CONF_CLIENT_SECRET)),
+            cast("str", self.get_setup_value(CONF_REFRESH_TOKEN)),
         )
         # the SDK just needs a coroutine that returns a fresh access token
         self.client = OneDriveClient(self.auth.async_get_access_token, mass.http_session)

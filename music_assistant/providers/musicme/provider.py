@@ -75,7 +75,7 @@ class MusicMeProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_PASSWORD):
+        if not self.get_setup_value(CONF_USERNAME) or not self.get_setup_value(CONF_PASSWORD):
             msg = "Missing MusicMe email or password"
             raise SetupFailedError(msg)
         # Dedicated session with its own cookie jar to support multi-instance
@@ -768,8 +768,8 @@ class MusicMeProvider(MusicProvider):
 
     async def _login(self) -> None:
         """Authenticate with MusicMe via web login and extract the userId."""
-        email = self.config.get_value(CONF_USERNAME)
-        password = self.config.get_value(CONF_PASSWORD)
+        email = self.get_setup_value(CONF_USERNAME)
+        password = self.get_setup_value(CONF_PASSWORD)
 
         try:
             async with self.http_session.post(
