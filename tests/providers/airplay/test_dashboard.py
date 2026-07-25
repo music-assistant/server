@@ -348,3 +348,19 @@ async def test_launch_failure_leaves_no_controller_session() -> None:
         )
 
     assert dashboard_id not in controller._sessions
+
+
+async def test_reconcile_after_unload_does_not_register() -> None:
+    """A provider unload during the eligibility await must not resurrect an endpoint."""
+    dashboards = _make_dashboards()
+    player = _make_player()
+    dashboards.mass.players.get_player.return_value = player  # type: ignore[attr-defined]
+
+    async def _eligible_then_unload(_player: AirPlayControlPlayer) -> bool:
+        dashboards._unloaded = True
+        return True
+
+    with patch.object(dashboards, "_is_eligible", side_effect=_eligible_then_unload):
+        await dashboards._async_reconcile(PLAYER_ID)
+
+    assert PLAYER_ID not in dashboards._unregister_callbacks

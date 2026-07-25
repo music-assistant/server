@@ -130,6 +130,9 @@ class AirPlayDashboards:
 
     def _register(self, player: AirPlayControlPlayer) -> None:
         """Register (or refresh) a player as a dashboard endpoint with the controller."""
+        # a reconcile awaiting the app list may resolve after unload(); never resurrect
+        if self._unloaded:
+            return
         device = DashboardDevice(
             dashboard_id=self._dashboard_id(player.player_id),
             name=player.display_name,

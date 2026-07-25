@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
+from music_assistant_models.errors import PlayerCommandFailed
 from pyatv import exceptions as pyatv_exceptions
 from pyatv.const import (
     DeviceState,
@@ -1036,3 +1037,60 @@ async def test_reset_companion_pairing_reconnects_mrp() -> None:
     cast("MagicMock", player.mass.config).save_player_config.assert_awaited_once_with(
         PLAYER_ID, {CONF_COMPANION_CREDENTIALS: None}
     )
+
+
+async def test_list_installed_app_ids_none_when_feature_unavailable() -> None:
+    """No AppList feature available on the device returns None."""
+    player = _make_control_player()
+    with patch.object(player, "_device_for_feature", return_value=None):
+        assert await player.async_list_installed_app_ids() is None
+
+
+async def test_list_installed_app_ids_none_on_command_error() -> None:
+    """A control-channel error while listing apps returns None."""
+    player = _make_control_player()
+    device = MagicMock()
+    device.apps.app_list = AsyncMock(side_effect=pyatv_exceptions.CommandError("boom"))
+    with patch.object(player, "_device_for_feature", return_value=device):
+        assert await player.async_list_installed_app_ids() is None
+
+
+async def test_list_installed_app_ids_returns_bundle_ids() -> None:
+    """A successful app list returns the set of installed bundle ids."""
+    player = _make_control_player()
+    device = MagicMock()
+    device.apps.app_list = AsyncMock(return_value=[App("App A", "com.a"), App("App B", "com.b")])
+    with patch.object(player, "_device_for_feature", return_value=device):
+        assert await player.async_list_installed_app_ids() == {"com.a", "com.b"}
+
+
+async def test_launch_app_raises_when_feature_unavailable() -> None:
+    """Launching with no LaunchApp feature raises PlayerCommandFailed."""
+    player = _make_control_player()
+    with (
+        patch.object(player, "_device_for_feature", return_value=None),
+        pytest.raises(PlayerCommandFailed),
+    ):
+        await player.async_launch_app("musicassistant://dashboard/show")
+
+
+async def test_launch_app_wraps_command_error() -> None:
+    """A control-channel error while launching raises PlayerCommandFailed."""
+    player = _make_control_player()
+    device = MagicMock()
+    device.apps.launch_app = AsyncMock(side_effect=pyatv_exceptions.CommandError("nope"))
+    with (
+        patch.object(player, "_device_for_feature", return_value=device),
+        pytest.raises(PlayerCommandFailed),
+    ):
+        await player.async_launch_app("musicassistant://dashboard/show")
+
+
+async def test_launch_app_dispatches_to_device() -> None:
+    """Launching on an available device dispatches the value over Companion."""
+    player = _make_control_player()
+    device = MagicMock()
+    device.apps.launch_app = AsyncMock()
+    with patch.object(player, "_device_for_feature", return_value=device):
+        await player.async_launch_app("musicassistant://dashboard/show")
+    device.apps.launch_app.assert_awaited_once_with("musicassistant://dashboard/show")

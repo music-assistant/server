@@ -274,7 +274,9 @@ class AirPlayProvider(PlayerProvider):
         if player := cast("AirPlayPlayer | None", self.mass.players.get_player(player_id)):
             # update the latest discovery info for existing player
             player.set_discovery_info(info, display_name)
-            self.dashboards.reconcile(player_id)
+            # only control players can ever be dashboard endpoints
+            if isinstance(player, AirPlayControlPlayer):
+                self.dashboards.reconcile(player_id)
             return
         await self._setup_player(player_id, display_name, info)
 
