@@ -954,6 +954,8 @@ class MusicQuizPlugin(PluginProvider):
             if track_uri in rejected_uris:
                 quiz_type.reject_track(track_uri)
                 continue
+            if await self._advance_to_queued_track(track_uri):
+                return next_round
             try:
                 # This public queue operation is both the production resolution boundary and
                 # the intended start of playback. A temporary QueueItem would bypass URI,
@@ -1419,6 +1421,44 @@ class MusicQuizPlugin(PluginProvider):
             await self._enqueue_track(game_round.track_uri)
         except MusicAssistantError as err:
             self.logger.debug("Could not pre-queue next Music Quiz track: %s", err)
+
+    async def _advance_to_queued_track(self, track_uri: str) -> bool:
+        """
+        Start a track that is already queued (and stream-resolved) for this game.
+
+        :param track_uri: URI of the round's track.
+        :return: True when playback started, False when the caller must fall back
+            to the regular play path.
+        """
+        with _system_auth_context():
+            session = self._playback_session
+            if session is None:
+                return False
+            # match the round's own track explicitly: the queue's next-item helpers
+            # silently skip unplayable items, which would desync the played track
+            # from the answer this round is scored against
+            queued_item = next(
+                (
+                    item
+                    for item in self.mass.player_queues.items(session.queue_id)
+                    if item.uri == track_uri and item.available
+                ),
+                None,
+            )
+            if queued_item is None:
+                return False
+            try:
+                await self.mass.player_queues.play_index(
+                    session.queue_id, queued_item.queue_item_id
+                )
+            except (AudioError, MediaNotFoundError) as err:
+                self.logger.warning(
+                    "Queued Music Quiz track %s could not start; falling back: %s",
+                    track_uri,
+                    err,
+                )
+                return False
+            return True
 
     async def _stop_playback(self) -> None:
         """Stop playback on the game's playback session, if any."""

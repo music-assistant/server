@@ -5407,3 +5407,49 @@ async def test_prefetch_round_starts_warm_task() -> None:
         await plugin._warm_next_track_task
 
     assert warmed == ["library://track/1"]
+
+
+@pytest.mark.asyncio
+async def test_advance_uses_queued_item_when_available() -> None:
+    """An already-queued track is started via play_index, not a fresh play_media."""
+    plugin = _create_plugin()
+    session = _mock_playback_session("venue_player", "venue_player")
+    plugin._playback_session = session
+
+    queued_item = MagicMock()
+    queued_item.queue_item_id = "item-warm"
+    queued_item.available = True
+    queued_item.uri = "library://track/warm"
+    cast("MagicMock", plugin.mass.player_queues).items = MagicMock(return_value=[queued_item])
+    play_index = AsyncMock()
+    cast("MagicMock", plugin.mass.player_queues).play_index = play_index
+
+    plugin._advance_to_queued_track = (  # type: ignore[method-assign]
+        MusicQuizPlugin._advance_to_queued_track.__get__(plugin, MusicQuizPlugin)
+    )
+
+    assert await plugin._advance_to_queued_track("library://track/warm") is True
+    play_index.assert_awaited_once_with("venue_player", "item-warm")
+
+
+@pytest.mark.asyncio
+async def test_advance_falls_back_when_track_not_queued() -> None:
+    """A track that is not in the queue (or unavailable) falls back to the play path."""
+    plugin = _create_plugin()
+    session = _mock_playback_session("venue_player", "venue_player")
+    plugin._playback_session = session
+
+    unavailable = MagicMock()
+    unavailable.queue_item_id = "item-dead"
+    unavailable.available = False
+    unavailable.uri = "library://track/warm"
+    cast("MagicMock", plugin.mass.player_queues).items = MagicMock(return_value=[unavailable])
+    play_index = AsyncMock()
+    cast("MagicMock", plugin.mass.player_queues).play_index = play_index
+
+    plugin._advance_to_queued_track = (  # type: ignore[method-assign]
+        MusicQuizPlugin._advance_to_queued_track.__get__(plugin, MusicQuizPlugin)
+    )
+
+    assert await plugin._advance_to_queued_track("library://track/warm") is False
+    play_index.assert_not_awaited()
