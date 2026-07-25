@@ -252,7 +252,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
     async def power(self, powered: bool) -> None:
         """Turn the controlled device on or off."""
         feature = FeatureName.TurnOn if powered else FeatureName.TurnOff
-        device = self._device_for_feature(feature)
+        device = self._device_for_power_feature(feature)
         if device is None:
             raise PlayerCommandFailed(f"Power control is unavailable for {self.display_name}")
         if powered:

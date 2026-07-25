@@ -233,6 +233,19 @@ def test_power_feature_skips_transient_mrp_tunnels() -> None:
     assert PlayerFeature.POWER not in homepod.supported_features
 
 
+async def test_power_command_refuses_transient_mrp_tunnels() -> None:
+    """A power command never reaches a tunnel that cannot serve it."""
+    homepod = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.TurnOn
+    homepod._mrp_device = device
+
+    with pytest.raises(PlayerCommandFailed):
+        await homepod.power(True)
+
+    device.power.turn_on.assert_not_called()
+
+
 def test_native_transport_features_follow_live_capabilities() -> None:
     """External next/previous controls are advertised only while available."""
     player = _make_control_player()
