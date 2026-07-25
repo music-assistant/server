@@ -4,8 +4,8 @@
 
 Before running a release:
 
-- Make `MUSIC_ASSISTANT_BOT_CLIENT_ID` and `MUSIC_ASSISTANT_BOT_PRIVATE_KEY` available
-  to this repository as an Actions variable and secret.
+- Make `TRIAGE_APP_ID` and `TRIAGE_APP_PRIVATE_KEY` available to this repository as
+  Actions secrets.
 - Grant the `musicassistant-bot` GitHub App Administration read, Contents read/write,
   Issues write, and Pull requests write permissions.
 - Select `server`, `appvars`, `home-assistant-addon`, and
@@ -121,14 +121,14 @@ release manually.
 1. Merge this workflow change while immutable releases remain disabled.
 2. Update the `musicassistant-bot` App permissions and selected repositories listed
    above.
-3. Approve the installation changes and confirm the Client ID variable and private-key
-   secret are available to `server`.
+3. Approve the installation changes and confirm the App ID and private-key secrets are
+   available to `server`.
 4. Enable immutable releases for `music-assistant/server`.
 5. Run the intended release version. Do not pre-create its tag or GitHub release.
 
 ## Troubleshooting
 
-- **App token error:** confirm the Client ID/private key belong to `musicassistant-bot`,
+- **App token error:** confirm the App ID/private key belong to `musicassistant-bot`,
   installation `146062122` contains the target repository, and its requested
   permissions were approved.
 - **Immutable releases disabled:** enable the repository setting, then rerun.
