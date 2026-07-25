@@ -334,13 +334,16 @@ def test_release_workflows_pin_external_actions_and_drop_legacy_token() -> None:
 
 
 def test_release_workflow_uses_minimum_preflight_permissions_and_expected_app() -> None:
-    """Resolve and preflight stay read-only and every App token checks its installation."""
+    """Resolve stays read-only, preflight covers pull requests, and every App token checks its installation."""
     workflow_path = ROOT / ".github" / "workflows" / "release.yml"
     workflow = workflow_path.read_text(encoding="utf-8")
     jobs = yaml.safe_load(workflow)["jobs"]
 
     assert jobs["resolve"]["permissions"] == {"contents": "read"}
-    assert jobs["preflight"]["permissions"] == {"contents": "read"}
+    assert jobs["preflight"]["permissions"] == {
+        "contents": "read",
+        "pull-requests": "read",
+    }
     assert workflow.count("actions/create-github-app-token@") == 5
     assert workflow.count("outputs.installation-id") == 5
     assert 'EXPECTED_APP_INSTALLATION_ID: "146062122"' in workflow
