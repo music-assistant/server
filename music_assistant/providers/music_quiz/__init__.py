@@ -1448,9 +1448,7 @@ class MusicQuizPlugin(PluginProvider):
                 await self.mass.player_queues.load_next_queue_item(
                     session.queue_id, queue.current_item.queue_item_id
                 )
-            except asyncio.CancelledError:
-                raise
-            except Exception as err:
+            except MusicAssistantError as err:
                 # the round is resolved on demand instead if this best-effort warm-up misses
                 self.logger.debug("Could not resolve next Music Quiz track: %s", err)
 

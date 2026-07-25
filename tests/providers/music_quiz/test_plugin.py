@@ -5370,6 +5370,10 @@ async def test_prefetch_enqueues_next_track_for_preloading() -> None:
         enqueued.append((track_uri, option))
 
     cast("MagicMock", plugin.mass.player_queues).play_media = AsyncMock(side_effect=_play_media)
+    cast("MagicMock", plugin.mass.player_queues).get = MagicMock(
+        return_value=SimpleNamespace(current_item=SimpleNamespace(queue_item_id="item-current"))
+    )
+    cast("MagicMock", plugin.mass.player_queues).load_next_queue_item = AsyncMock()
     plugin._enqueue_track = MusicQuizPlugin._enqueue_track.__get__(  # type: ignore[method-assign]
         plugin,
         MusicQuizPlugin,
