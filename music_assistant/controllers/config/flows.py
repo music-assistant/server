@@ -74,6 +74,10 @@ class SetupFlowMixin:
     # registry of running flows, keyed by flow_id (lazily created per instance)
     _flows: dict[str, ActiveSetupFlow] | None = None
     _flow_sweep_handle: asyncio.TimerHandle | None = None
+    # required scopes of recently finished flows: terminal steps can publish after
+    # the registry pop (cancel-driven aborts), and the event-scope filter still
+    # needs to resolve them; bounded FIFO
+    _finished_flow_scopes: dict[str, Scope] | None = None
 
     # Type hints for attributes/methods provided by the class this mixin is used with
     if TYPE_CHECKING:
@@ -299,13 +303,28 @@ class SetupFlowMixin:
 
     def get_setup_flow_required_scope(self, flow_id: str) -> Scope | None:
         """
-        Return the scope required to interact with the given running setup flow.
+        Return the scope required to receive/interact with the given setup flow.
 
-        :param flow_id: The id of the flow; None is returned when no such flow runs.
+        Also resolves recently finished flows: their terminal step can publish
+        just after the registry pop.
+
+        :param flow_id: The id of the flow; None when the flow is unknown.
         """
         if flow := self._setup_flows.get(flow_id):
             return flow.required_scope
+        if self._finished_flow_scopes:
+            return self._finished_flow_scopes.get(flow_id)
         return None
+
+    def _pop_flow(self, flow: ActiveSetupFlow) -> None:
+        """Remove a flow from the registry, retaining its scope for late events."""
+        self._setup_flows.pop(flow.session.flow_id, None)
+        if self._finished_flow_scopes is None:
+            self._finished_flow_scopes = {}
+        finished = self._finished_flow_scopes
+        finished[flow.session.flow_id] = flow.required_scope
+        while len(finished) > 64:
+            finished.pop(next(iter(finished)))
 
     async def _start_flow(
         self,
@@ -370,7 +389,7 @@ class SetupFlowMixin:
                 session.publish_abort("internal_error")
         finally:
             session.close()
-            self._setup_flows.pop(session.flow_id, None)
+            self._pop_flow(flow)
 
     async def _abort_flow(self, flow: ActiveSetupFlow, reason: str) -> None:
         """
@@ -396,7 +415,7 @@ class SetupFlowMixin:
                 # the wedged task never reaches _run_flow's finally: close the
                 # session here so the unauthenticated callback route is dropped
                 flow.session.close()
-        self._setup_flows.pop(flow.session.flow_id, None)
+        self._pop_flow(flow)
         current_step = flow.session.current_step
         if current_step is None or current_step.type not in (
             FlowStepType.FINISH,

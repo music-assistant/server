@@ -585,6 +585,33 @@ async def test_submit_timeout_returns_transient_progress(flow_mass: MusicAssista
         assert next_step.type == FlowStepType.FORM
 
 
+async def test_aborted_flow_scope_still_resolvable(flow_mass: MusicAssistant) -> None:
+    """A cancel-driven ABORT publishes after the pop; its scope must still resolve."""
+
+    async def run_setup(session: SetupSession) -> None:
+        await session.form([USERNAME_ENTRY])
+        await session.finish({})
+
+    resolvable_at_publish: list[bool] = []
+
+    def on_event(event: MassEvent) -> None:
+        if event.data.type == FlowStepType.ABORT and event.object_id:
+            resolvable_at_publish.append(
+                flow_mass.config.get_setup_flow_required_scope(event.object_id) is not None
+            )
+
+    flow_mass.subscribe(on_event, EventType.SETUP_FLOW_UPDATED)
+    with _use_flow(flow_mass, run_setup):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        await flow_mass.config.abort_setup_flow(step.flow_id)
+    # event delivery is async (call_soon); wait for the callback to run
+    await _wait_for(lambda: resolvable_at_publish)
+    assert resolvable_at_publish == [True]
+    assert (
+        flow_mass.config.get_setup_flow_required_scope(step.flow_id) == Scope.CONFIG_PROVIDERS_WRITE
+    )
+
+
 async def test_setup_flow_required_scope_accessor(flow_mass: MusicAssistant) -> None:
     """The event filter's scope accessor reports the flow's scope while it runs."""
 
