@@ -442,11 +442,16 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         """
         Try to resume playback from playlog when queue is empty.
 
-        Attempts to find user-initiated recently played items in the following order:
+        Attempts to find user-initiated recently played items for *this* queue
+        or its user, in the following order:
         1. By userid AND queue_id
         2. By queue_id only
         3. By userid only (if available)
-        4. Any recently played item
+
+        Only this queue's/user's own history is considered — a resume must never
+        start a track that was played elsewhere. The former global "any recent
+        item" fallback was removed because it resumed an unrelated track (e.g.
+        after an announcement on an idle player or sync group). See support #5913.
 
         :param queue: The queue to resume playback on.
         :return: True if playback was started, False otherwise.
@@ -459,7 +464,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         filter_attempts.append((None, queue.queue_id, "queue_id match"))
         if queue_data.userid:
             filter_attempts.append((queue_data.userid, None, "userid match"))
-        filter_attempts.append((None, None, "any recent item"))
 
         for userid, queue_id, match_type in filter_attempts:
             items = await self.mass.music.recently_played(
