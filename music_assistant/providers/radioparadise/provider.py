@@ -39,9 +39,8 @@ class RadioParadiseProvider(MusicProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
-        return (
-            # we (currently) don't have any config entries to set up
-        )
+        # we (currently) do not have any config entries to set up
+        return ()
 
     @property
     def is_streaming_provider(self) -> bool:
