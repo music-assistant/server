@@ -880,7 +880,11 @@ class AirPlayPlayer(Player):
             if pin_pairing:
                 await pairing.start_pin_pairing()
             started = True
-        except PlayerCommandFailed as err:
+        except Exception as err:
+            # a failure starting the session (device unreachable, binary/system
+            # issue, ...) cannot be fixed by re-prompting, so abort with a clear
+            # reason instead of letting it surface as a generic internal error
+            self.logger.warning("Could not start AirPlay pairing session: %s", err)
             raise AbortFlow("pairing_failed") from err
         finally:
             if not started and pairing is not None:

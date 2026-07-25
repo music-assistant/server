@@ -9,10 +9,11 @@ import time
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from music_assistant_models.enums import FlowStepType
 from music_assistant_models.errors import PlayerCommandFailed
 
-from music_assistant.models.setup_flow import SetupFlowContext, SetupSession
+from music_assistant.models.setup_flow import AbortFlow, SetupFlowContext, SetupSession
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_DISCOVERY_TYPE,
     COMPANION_DISCOVERY_TYPE,
@@ -339,6 +340,34 @@ async def test_abort_mid_pairing_closes_session() -> None:
         with contextlib.suppress(asyncio.CancelledError):
             await task
 
+    pairing.close.assert_awaited()
+
+
+async def test_pairing_start_failure_aborts_with_reason() -> None:
+    """
+    A failure starting the pairing session aborts cleanly, not as a raw crash.
+
+    The engine turns an uncaught exception into a generic ``internal_error``; the flow
+    instead raises ``AbortFlow("pairing_failed")`` so the user sees an actionable reason,
+    and the half-started session is still torn down.
+    """
+
+    async def finish(_session: SetupSession, _values: dict[str, Any]) -> dict[str, str]:
+        return {"player_id": "test_player"}
+
+    session, _mass = _make_session(finish)
+    player = _streaming_player()
+    pairing = AsyncMock()
+    # a device/binary/system failure surfaces from starting the session, not from finish
+    pairing.start_pairing_session = AsyncMock(
+        side_effect=RuntimeError("Unable to locate cliairplay binary")
+    )
+
+    with patch(_PAIRING_TARGET, return_value=pairing), pytest.raises(AbortFlow) as exc:
+        await player.run_setup_flow(session)
+
+    assert exc.value.reason == "pairing_failed"
+    # the half-started session is still torn down
     pairing.close.assert_awaited()
 
 
