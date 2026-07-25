@@ -35,7 +35,7 @@ def _state(entity_id: str, friendly_name: str) -> dict[str, Any]:
 
 
 def _config(**values: str) -> MagicMock:
-    """Return a provider config with the given persisted (legacy) values."""
+    """Return a provider config exposing the given values via get_value (entry defaults)."""
     persisted_values = {
         CONF_URL: "http://homeassistant.local:8123",
         CONF_AUTH_TOKEN: "token",

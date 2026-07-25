@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import CrossfadeMode
@@ -31,30 +31,125 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_SMART_SHUFFLE_SONG_RECENCY,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 LOGGER = logging.getLogger(__name__)
 
 # removed player config key, only referenced by its migration
 LEGACY_CONF_OUTPUT_LIMITER = "output_limiter"
 
-# Player-owned credential/pairing keys that moved from the player config `values` dict
-# into the player's (encrypted) `setup_data`, keyed by player provider domain. The stored
-# values are already encrypted SECURE_STRINGs, so they move across as-is (setup_data holds
-# the same at-rest form and get_setup_value decrypts on read).
-_PLAYER_SETUP_DATA_KEYS: dict[str, tuple[str, ...]] = {
-    "airplay": (
-        "raop_credentials",
-        "airplay_credentials",
-        "companion_credentials",
-        "mrp_credentials",
-        "native_mrp_credentials",
+# Config keys each provider's setup flow owns: the keys it reads back with
+# get_setup_value / get_provider_setup_value (and rotates via _update_setup_data) from
+# `setup_data` rather than `values`. The one-off migrate_provider_setup_data step below
+# moves these keys from the raw `values` dict into `setup_data` (encrypting string values
+# at rest) for installs that were configured before setup flows existed. Keys that stayed
+# regular options (quality, sync toggles, output settings, ...) are intentionally absent:
+# they keep being read via get_config_value from `values`.
+# The literal strings are the persisted config keys, not the CONF_* symbol names; some
+# providers redefine common names (e.g. the Hue bridge stores its user under
+# "hue_username", the scrobblers under "_username", Open Subsonic its url under "baseURL").
+# Notes on the non-obvious entries:
+# - the filesystem providers' "content_type" is also surfaced by get_config_entries, but
+#   only as a read-only LABEL mirror (UI_ONLY, never persisted back to values), so moving
+#   it to setup_data is safe and required (it is read via get_provider_setup_value).
+# - hass "url"/"token"/"verify_ssl": on a Home Assistant add-on these come from fixed
+#   (hidden) config entries whose values equal what a stored copy would hold, so moving a
+#   stored copy is a harmless no-op there while restoring normal installs.
+# - spotify is deliberately absent: its own _migrate_legacy_token still reads the legacy
+#   "refresh_token" and "client_id" from `values`, so this migration must not move them.
+# TODO: remove after 2.13 release
+PROVIDER_SETUP_FLOW_KEYS: dict[str, tuple[str, ...]] = {
+    "alexa": ("url", "username", "password", "api_url", "api_username", "api_password"),
+    "amplipi": ("host",),
+    "apple_music": ("music_app_token", "music_user_token", "music_user_manual_token"),
+    "ard_audiothek": ("email", "password", "token", "user_id", "token_expiry", "display_name"),
+    "audible": ("auth_file", "locale"),
+    "audiobookshelf": ("url", "username", "password", "token", "api_token", "verify_ssl"),
+    "bandcamp": ("identity",),
+    "bbc_sounds": ("username", "password"),
+    "bose_soundtouch": ("app_key",),
+    "deezer": ("arl_token",),
+    "digitally_incorporated": ("listen_key",),
+    "emby": ("ip_address", "username", "password"),
+    "filesystem_google_drive": (
+        "content_type",
+        "client_id",
+        "client_secret",
+        "folder_id",
+        "refresh_token",
     ),
-    "fully_kiosk": ("password",),
-    "mpd": ("password",),
-}
-# Player keys dropped entirely by the setup-flow migration (dead: never read at runtime),
-# keyed by player provider domain.
-_PLAYER_DEAD_SETUP_KEYS: dict[str, tuple[str, ...]] = {
-    "airplay": ("ap2password",),
+    "filesystem_local": ("content_type", "path"),
+    "filesystem_nfs": ("content_type", "host", "export_path", "subfolder", "nfs_version"),
+    "filesystem_onedrive": (
+        "content_type",
+        "client_id",
+        "client_secret",
+        "folder_id",
+        "refresh_token",
+    ),
+    "filesystem_smb": (
+        "content_type",
+        "host",
+        "share",
+        "username",
+        "password",
+        "subfolder",
+        "smb_version",
+    ),
+    "gpodder": ("url", "username", "password", "device_id", "token", "url_nc", "verify_ssl"),
+    "hass": ("url", "token", "verify_ssl"),
+    "hue_entertainment": ("bridge_host", "hue_username", "hue_clientkey", "bridge_id"),
+    "ibroadcast": ("username", "password"),
+    "jellyfin": ("url", "username", "password", "verify_ssl"),
+    "lastfm_scrobble": ("_provider", "_api_session_key", "_username", "_api_key", "_api_secret"),
+    "listenbrainz_scrobble": ("_user_token", "api_base_url"),
+    "musicme": ("username", "password"),
+    "neteasecloudmusic": ("api_base_url", "cookie", "uid"),
+    "nicovideo": ("mail", "password", "user_session"),
+    "nugs": ("username", "password"),
+    "opensubsonic": ("username", "password", "baseURL", "port", "path"),
+    "plex": (
+        "token",
+        "local_server_ip",
+        "local_server_port",
+        "local_server_ssl",
+        "local_server_verify_cert",
+        "library_id",
+        "library_type",
+    ),
+    "pocketcasts": ("username", "password"),
+    "podcast_index": ("api_key", "api_secret"),
+    "podcastfeed": ("feed_url",),
+    "qobuz": ("username", "password"),
+    "qqmusic": ("uin", "musicid", "musickey", "login_type", "credential_json"),
+    "siriusxm": ("sxm_email_address", "sxm_password", "sxm_region"),
+    "soundcloud": ("client_id", "authorization"),
+    "teddycloud": ("url",),
+    "tidal": ("auth_token", "refresh_token", "expiry_time", "user_id"),
+    "tunein": ("username",),
+    "webdav": ("content_type", "url", "username", "password", "verify_ssl"),
+    "yandex_music": ("token", "x_token", "refresh_token"),
+    "yandex_smarthome": (
+        "connection_type",
+        "cloud_instance_id",
+        "cloud_instance_password",
+        "cloud_connection_token",
+        "skill_id",
+        "skill_token",
+        "direct_access_token",
+        "direct_client_secret",
+    ),
+    "yandex_station": (
+        "ym_instance",
+        "music_token",
+        "x_token",
+        "refresh_token",
+        "remember_session",
+    ),
+    "yandex_ynison": ("ym_instance", "token", "x_token"),
+    "yousee": ("username", "password"),
+    "ytmusic": ("username", "cookie", "po_token_server_url"),
 }
 
 
@@ -196,13 +291,54 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     if _migrate_output_limiter(data):
         changed = True
 
-    # Move player-owned credential/pairing keys (AirPlay creds, Fully Kiosk / MPD password)
+        # Move player-owned credential/pairing keys (AirPlay creds, Fully Kiosk / MPD password)
     # from the player config `values` into the player's encrypted `setup_data`, so those reads
     # switch to Player.get_setup_value now that pairing/credentials are owned by the setup flows.
     # TODO: remove after 2.11 release
     if _migrate_player_setup_data(data):
         changed = True
 
+    return changed
+
+
+def migrate_provider_setup_data(data: dict[str, Any], encrypt: Callable[[str], str]) -> bool:
+    """
+    Move each provider's setup-flow-owned keys from `values` to `setup_data` in-place.
+
+    Runs after encryption is initialized (unlike migrate()), so string values are
+    encrypted at rest with the given callback - matching how the setup flows persist
+    collected values. Returns True if anything changed.
+
+    :param data: The persistent settings data to migrate in-place.
+    :param encrypt: Callback that encrypts a string value (idempotent for already
+        encrypted values), used to encrypt migrated string values at rest.
+    """
+    all_provider_configs = data.get(CONF_PROVIDERS, {})
+    if not isinstance(all_provider_configs, dict):
+        return False
+    changed = False
+    for provider_cfg in all_provider_configs.values():
+        if not isinstance(provider_cfg, dict):
+            continue
+        owned_keys = PROVIDER_SETUP_FLOW_KEYS.get(provider_cfg.get("domain", ""))
+        if not owned_keys:
+            continue
+        values = provider_cfg.get("values")
+        if not isinstance(values, dict):
+            continue
+        movable_keys = [key for key in owned_keys if key in values]
+        if not movable_keys:
+            continue
+        setup_data = provider_cfg.setdefault("setup_data", {})
+        for key in movable_keys:
+            # a value already collected into setup_data wins; only drop the stale copy
+            if key not in setup_data:
+                value = values[key]
+                setup_data[key] = encrypt(value) if isinstance(value, str) else value
+            del values[key]
+        changed = True
+    if changed:
+        LOGGER.info("Migrated provider setup values into setup_data")
     return changed
 
 
@@ -749,6 +885,42 @@ def _migrate_airplay_apple_power_control(data: dict[str, Any]) -> bool:
     return changed
 
 
+def _migrate_output_limiter(data: dict[str, Any]) -> bool:
+    """Remove the stored values of the removed per-player output limiter setting."""
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    changed = False
+    for player_cfg in all_player_configs.values():
+        if not isinstance(player_cfg, dict):
+            continue
+        player_values = player_cfg.get("values")
+        if isinstance(player_values, dict) and LEGACY_CONF_OUTPUT_LIMITER in player_values:
+            del player_values[LEGACY_CONF_OUTPUT_LIMITER]
+            changed = True
+    if changed:
+        LOGGER.info("Removed the obsolete output limiter setting from the player configuration(s)")
+    return changed
+
+
+_PLAYER_SETUP_DATA_KEYS: dict[str, tuple[str, ...]] = {
+    "airplay": (
+        "raop_credentials",
+        "airplay_credentials",
+        "companion_credentials",
+        "mrp_credentials",
+        "native_mrp_credentials",
+    ),
+    "fully_kiosk": ("password",),
+    "mpd": ("password",),
+}
+
+
+_PLAYER_DEAD_SETUP_KEYS: dict[str, tuple[str, ...]] = {
+    "airplay": ("ap2password",),
+}
+
+
 def _migrate_player_setup_data(data: dict[str, Any]) -> bool:
     """
     Move player-owned credential/pairing keys from player `values` into `setup_data`.
@@ -796,22 +968,4 @@ def _migrate_player_setup_data(data: dict[str, Any]) -> bool:
                 "Migrated credential/pairing values into setup_data for player %s", player_id
             )
             changed = True
-    return changed
-
-
-def _migrate_output_limiter(data: dict[str, Any]) -> bool:
-    """Remove the stored values of the removed per-player output limiter setting."""
-    all_player_configs = data.get(CONF_PLAYERS, {})
-    if not isinstance(all_player_configs, dict):
-        return False
-    changed = False
-    for player_cfg in all_player_configs.values():
-        if not isinstance(player_cfg, dict):
-            continue
-        player_values = player_cfg.get("values")
-        if isinstance(player_values, dict) and LEGACY_CONF_OUTPUT_LIMITER in player_values:
-            del player_values[LEGACY_CONF_OUTPUT_LIMITER]
-            changed = True
-    if changed:
-        LOGGER.info("Removed the obsolete output limiter setting from the player configuration(s)")
     return changed

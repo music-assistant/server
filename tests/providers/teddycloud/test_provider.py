@@ -101,7 +101,7 @@ def config_mock() -> Mock:
     config.name = "TeddyCloud Test"
     config.instance_id = "teddycloud_test"
     config.enabled = True
-    # empty values dict so get_setup_value's read-through reaches config.get_value below
+    # empty values dict so get_setup_value falls through to config.get_value below
     config.values = {}
     # the base provider reads the log level from config on init; return a valid level.
     config.get_value.side_effect = lambda key, default=None: (

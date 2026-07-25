@@ -86,8 +86,8 @@ class _StubCoreConfig:
         Serve config paths used by Provider.get_setup_value / _update_setup_data.
 
         Returns an empty setup_data dict so setup-data reads fall through to the
-        legacy config value (config.get_value), and a truthy marker for the
-        provider-exists precondition in _update_setup_data.
+        config entry value (config.get_value, via get_config_value), and a truthy
+        marker for the provider-exists precondition in _update_setup_data.
         """
         if path.endswith("/setup_data"):
             return {}
