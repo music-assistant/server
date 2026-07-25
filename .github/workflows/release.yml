@@ -1,5 +1,10 @@
 name: Create Release
 
+# Builds, tags and publishes an immutable GitHub release for the exact commit
+# resolved at the start of the run, then promotes its container image and
+# notifies downstream repositories. Can be triggered manually or called by the
+# auto-release workflow, which supplies the exact commit to release.
+
 on:
   workflow_dispatch:
     inputs:
@@ -29,15 +34,21 @@ on:
         description: "Release channel"
         required: true
         type: string
+      source_sha:
+        description: "Exact commit SHA to release"
+        required: true
+        type: string
       important_notes:
         description: "Important notes (breaking changes, critical info, etc.)"
         required: false
         type: string
     secrets:
-      PRIVILEGED_GITHUB_TOKEN:
+      MUSIC_ASSISTANT_BOT_PRIVATE_KEY:
         required: true
 
 env:
+  IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/server
+  GITHUB_API_VERSION: "2026-03-10"
   BASE_IMAGE_VERSION_STABLE: "1.5.4"
   BASE_IMAGE_VERSION_BETA: "1.6.0"
   BASE_IMAGE_VERSION_NIGHTLY: "1.6.0"
@@ -45,56 +56,110 @@ env:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ inputs.channel }}
+  cancel-in-progress: false
+
 jobs:
-  determine-branch:
-    name: Determine release branch
+  resolve-source:
+    name: Resolve release branch and commit
     runs-on: ubuntu-latest
     outputs:
-      branch: ${{ steps.branch.outputs.branch }}
+      branch: ${{ steps.resolve.outputs.branch }}
+      sha: ${{ steps.resolve.outputs.sha }}
     steps:
-      - name: Determine branch to use
-        id: branch
+      - name: Determine branch and exact commit
+        id: resolve
         run: |
-          CHANNEL="${{ inputs.channel }}"
+          set -euo pipefail
 
-          if [ "$CHANNEL" = "stable" ] || [ "$CHANNEL" = "rc" ]; then
-            echo "branch=stable" >> $GITHUB_OUTPUT
-            echo "Using stable branch for $CHANNEL release"
+          if [[ "$CHANNEL" == "stable" || "$CHANNEL" == "rc" ]]; then
+            BRANCH="stable"
           else
-            echo "branch=dev" >> $GITHUB_OUTPUT
-            echo "Using dev branch for $CHANNEL release"
+            BRANCH="dev"
+          fi
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+          if [[ -n "$SOURCE_SHA" ]]; then
+            SHA="$SOURCE_SHA"
+          else
+            # Direct dispatch: if this version's tag already exists (e.g. resuming
+            # a previously failed run), reuse the commit it points at so a rerun
+            # always keeps releasing the same code, even if the branch has since
+            # advanced. Otherwise resolve the branch tip now.
+            TAG_REF=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${VERSION}" 2>/dev/null || true)
+            if [[ -n "$TAG_REF" ]]; then
+              TAG_OBJECT_SHA=$(jq -r '.object.sha' <<<"$TAG_REF")
+              TAG_OBJECT_TYPE=$(jq -r '.object.type' <<<"$TAG_REF")
+              if [[ "$TAG_OBJECT_TYPE" == "tag" ]]; then
+                SHA=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_OBJECT_SHA}" --jq '.object.sha')
+              else
+                SHA="$TAG_OBJECT_SHA"
+              fi
+              echo "Reusing existing tag ${VERSION} at ${SHA}"
+            else
+              SHA=$(gh api "repos/${GITHUB_REPOSITORY}/commits/${BRANCH}" --jq .sha)
+            fi
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "Releasing ${CHANNEL} from ${BRANCH}@${SHA}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHANNEL: ${{ inputs.channel }}
+          SOURCE_SHA: ${{ inputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+
+  verify-immutable-settings:
+    name: Verify release immutability is enabled
+    needs: resolve-source
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create release settings token
+        id: release_settings_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          permission-administration: read
+
+      - name: Verify bot token and immutable releases
+        run: |
+          set -euo pipefail
+
+          if [[ "$APP_SLUG" != "musicassistant-bot" ]]; then
+            echo "::error::GitHub App token belongs to ${APP_SLUG}, expected musicassistant-bot."
+            exit 1
           fi
 
-  preflight-checks:
-    name: Run tests and linting before release
-    needs: determine-branch
-    permissions:
-      contents: read
-      pull-requests: read
-    uses: ./.github/workflows/test.yml
-    with:
-      ref: ${{ needs.determine-branch.outputs.branch }}
+          # This endpoint requires repository administration read access.
+          ENABLED=$(
+            gh api \
+              --method GET \
+              --header "X-GitHub-Api-Version: ${GITHUB_API_VERSION}" \
+              "repos/${GITHUB_REPOSITORY}/immutable-releases" \
+              --jq '.enabled'
+          )
 
-  validate-and-build:
-    name: Validate version and build Python artifact
+          if [[ "$ENABLED" != "true" ]]; then
+            echo "::error::Enable release immutability under Settings > General > Releases before publishing."
+            exit 1
+          fi
+        env:
+          APP_SLUG: ${{ steps.release_settings_token.outputs.app-slug }}
+          GH_TOKEN: ${{ steps.release_settings_token.outputs.token }}
+
+  validate-version:
+    name: Validate version format
+    needs: resolve-source
     runs-on: ubuntu-latest
-    needs: [determine-branch, preflight-checks]
     outputs:
-      version: ${{ inputs.version }}
       is_prerelease: ${{ steps.validate.outputs.is_prerelease }}
       base_image_version: ${{ steps.validate.outputs.base_image_version }}
-      branch: ${{ needs.determine-branch.outputs.branch }}
     steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.determine-branch.outputs.branch }}
-          fetch-depth: 0
-
       - name: Validate version number format
         id: validate
         run: |
-          VERSION="${{ inputs.version }}"
-          CHANNEL="${{ inputs.channel }}"
+          set -euo pipefail
 
           # Regex patterns for each channel
           STABLE_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+$'
@@ -102,50 +167,140 @@ jobs:
           RC_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+rc[0-9]+$'
           NIGHTLY_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$'
 
-          # Validate version format matches channel
           case "$CHANNEL" in
             stable)
               if ! [[ "$VERSION" =~ $STABLE_PATTERN ]]; then
-                echo "Error: Stable channel requires version format: X.Y.Z (e.g., 1.2.3)"
+                echo "::error::Stable channel requires version format: X.Y.Z (e.g., 1.2.3)"
                 exit 1
               fi
-              echo "is_prerelease=false" >> $GITHUB_OUTPUT
-              echo "base_image_version=${{ env.BASE_IMAGE_VERSION_STABLE }}" >> $GITHUB_OUTPUT
+              echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+              echo "base_image_version=${BASE_IMAGE_VERSION_STABLE}" >> "$GITHUB_OUTPUT"
               ;;
             beta)
               if ! [[ "$VERSION" =~ $BETA_PATTERN ]]; then
-                echo "Error: Beta channel requires version format: X.Y.ZbN (e.g., 1.2.3b1)"
+                echo "::error::Beta channel requires version format: X.Y.ZbN (e.g., 1.2.3b1)"
                 exit 1
               fi
-              echo "is_prerelease=true" >> $GITHUB_OUTPUT
-              echo "base_image_version=${{ env.BASE_IMAGE_VERSION_BETA }}" >> $GITHUB_OUTPUT
+              echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+              echo "base_image_version=${BASE_IMAGE_VERSION_BETA}" >> "$GITHUB_OUTPUT"
               ;;
             rc)
               if ! [[ "$VERSION" =~ $RC_PATTERN ]]; then
-                echo "Error: RC channel requires version format: X.Y.ZrcN (e.g., 1.2.3rc1)"
+                echo "::error::RC channel requires version format: X.Y.ZrcN (e.g., 1.2.3rc1)"
                 exit 1
               fi
-              echo "is_prerelease=true" >> $GITHUB_OUTPUT
-              echo "base_image_version=${{ env.BASE_IMAGE_VERSION_STABLE }}" >> $GITHUB_OUTPUT
+              echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+              echo "base_image_version=${BASE_IMAGE_VERSION_STABLE}" >> "$GITHUB_OUTPUT"
               ;;
             nightly)
               if ! [[ "$VERSION" =~ $NIGHTLY_PATTERN ]]; then
-                echo "Error: Nightly channel requires version format: X.Y.Z.devN (e.g., 1.2.3.dev1)"
+                echo "::error::Nightly channel requires version format: X.Y.Z.devN (e.g., 1.2.3.dev1)"
                 exit 1
               fi
-              echo "is_prerelease=true" >> $GITHUB_OUTPUT
-              echo "base_image_version=${{ env.BASE_IMAGE_VERSION_NIGHTLY }}" >> $GITHUB_OUTPUT
+              echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+              echo "base_image_version=${BASE_IMAGE_VERSION_NIGHTLY}" >> "$GITHUB_OUTPUT"
               ;;
             *)
-              echo "Error: Invalid channel: $CHANNEL"
+              echo "::error::Invalid channel: $CHANNEL"
               exit 1
               ;;
           esac
 
           echo "✅ Version $VERSION is valid for $CHANNEL channel"
+        env:
+          VERSION: ${{ inputs.version }}
+          CHANNEL: ${{ inputs.channel }}
+
+  check-release-state:
+    name: Create release tag and resolve release state
+    needs: [resolve-source, validate-version]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      state: ${{ steps.state.outputs.state }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve-source.outputs.sha }}
+          fetch-depth: 0
+
+      - name: Create or verify release tag
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          if git show-ref --verify --quiet "refs/tags/${VERSION}"; then
+            TAG_SHA=$(git rev-list -n 1 "$VERSION")
+            if [[ "$TAG_SHA" != "$SOURCE_SHA" ]]; then
+              echo "::error::Tag ${VERSION} already exists and points at ${TAG_SHA}, not the expected ${SOURCE_SHA}. Bump the version to release this commit."
+              exit 1
+            fi
+            echo "Reusing existing tag ${VERSION} (matches ${SOURCE_SHA})"
+          else
+            git tag -a "$VERSION" "$SOURCE_SHA" -m "Release $VERSION"
+            git push origin "refs/tags/${VERSION}"
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ needs.resolve-source.outputs.sha }}
+
+      - name: Determine release state
+        id: state
+        run: |
+          set -euo pipefail
+
+          ERROR_FILE="${RUNNER_TEMP}/release-lookup-error"
+          if RELEASE_JSON=$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION}" 2>"$ERROR_FILE"); then
+            IS_DRAFT=$(jq -r '.draft' <<<"$RELEASE_JSON")
+            IS_IMMUTABLE=$(jq -r '.immutable // false' <<<"$RELEASE_JSON")
+
+            if [[ "$IS_DRAFT" == "true" ]]; then
+              echo "state=pending" >> "$GITHUB_OUTPUT"
+              echo "Resuming existing draft release ${VERSION}"
+            elif [[ "$IS_IMMUTABLE" == "true" ]]; then
+              echo "state=published" >> "$GITHUB_OUTPUT"
+              echo "Release ${VERSION} is already published and immutable; resuming downstream steps only"
+            else
+              echo "::error::Release ${VERSION} is already published but is not immutable. Publish a new version instead of reusing this one."
+              exit 1
+            fi
+          elif grep -q "(HTTP 404)" "$ERROR_FILE"; then
+            echo "state=pending" >> "$GITHUB_OUTPUT"
+            echo "No release found for ${VERSION} yet; a draft will be created"
+          else
+            cat "$ERROR_FILE" >&2
+            exit 1
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+
+  preflight-checks:
+    name: Run tests and linting before release
+    needs: [resolve-source, verify-immutable-settings, check-release-state]
+    if: needs.check-release-state.outputs.state == 'pending'
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/test.yml
+    with:
+      ref: ${{ needs.resolve-source.outputs.sha }}
+
+  build-package:
+    name: Build Python package
+    needs: [resolve-source, check-release-state, preflight-checks]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve-source.outputs.sha }}
 
       - name: Set up Python
-        uses: actions/setup-python@v7.0.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version-file: ".python-version"
           check-latest: true
@@ -156,77 +311,80 @@ jobs:
 
       - name: Update version in pyproject.toml
         shell: python
+        env:
+          VERSION: ${{ inputs.version }}
         run: |-
+          import os
+
           import tomli
           import tomli_w
 
           with open("pyproject.toml", "rb") as f:
             pyproject = tomli.load(f)
 
-          pyproject["project"]["version"] = "${{ inputs.version }}"
+          pyproject["project"]["version"] = os.environ["VERSION"]
 
           with open("pyproject.toml", "wb") as f:
             tomli_w.dump(pyproject, f)
 
-          print(f"✅ Updated pyproject.toml version to ${{ inputs.version }}")
+      - name: Create app secrets token
+        id: appvars_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: appvars
+          permission-contents: read
 
       - name: Provision app secrets
-        env:
-          TOKEN: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
         run: |
-          curl -fsSL -H "Authorization: token ${TOKEN}" \
-            https://raw.githubusercontent.com/music-assistant/appvars/main/app_secrets.json \
-            -o music_assistant/helpers/app_secrets.json
+          set -euo pipefail
+          gh api repos/music-assistant/appvars/contents/app_secrets.json \
+            --jq '.content' | base64 --decode > music_assistant/helpers/app_secrets.json
+        env:
+          GH_TOKEN: ${{ steps.appvars_token.outputs.token }}
 
       - name: Build python package
         run: >-
           python3 -m build
 
       - name: Upload distributions
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-dists
           path: dist/
 
-  create-release:
-    name: Create GitHub Release with Release Drafter
+  prepare-draft-release:
+    name: Finalize release notes and draft
+    needs: [resolve-source, validate-version, check-release-state]
+    if: needs.check-release-state.outputs.state == 'pending'
     runs-on: ubuntu-latest
-    needs: validate-and-build
     permissions:
       contents: write
       pull-requests: read
-    outputs:
-      release_id: ${{ steps.create_release.outputs.id }}
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.validate-and-build.outputs.branch }}
+          ref: ${{ needs.resolve-source.outputs.sha }}
           fetch-depth: 0
-
-      - name: Download distributions
-        uses: actions/download-artifact@v8
-        with:
-          name: release-dists
-          path: dist/
 
       - name: Determine previous version tag
         id: prev_version
         run: |
-          CHANNEL="${{ inputs.channel }}"
+          set -euo pipefail
 
           # Find the previous tag of this channel
           case "$CHANNEL" in
             stable)
-              PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
+              PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | grep -v "^${VERSION}$" | head -n 1 || true)
               ;;
             beta)
               # Include both beta (bN) and RC (rcN) tags since both go to the beta channel
-              PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(b|rc)[0-9]+$' | head -n 1)
+              PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(b|rc)[0-9]+$' | grep -v "^${VERSION}$" | head -n 1 || true)
               ;;
             rc)
               # RC1 diffs against latest beta, RC2+ diffs against previous RC
-              VERSION="${{ inputs.version }}"
               if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)rc([0-9]+)$ ]]; then
                 BASE_VER="${BASH_REMATCH[1]}"
                 RC_NUM="${BASH_REMATCH[2]}"
@@ -236,28 +394,29 @@ jobs:
                   PREV_TAG="${BASE_VER}rc${PREV_RC_NUM}"
                   # Verify tag exists, fall back to latest beta if not
                   if ! git tag -l "$PREV_TAG" | grep -q .; then
-                    PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+b[0-9]+$' | head -n 1)
+                    PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+b[0-9]+$' | head -n 1 || true)
                   fi
                 else
                   # RC1: diff against latest beta
-                  PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+b[0-9]+$' | head -n 1)
+                  PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+b[0-9]+$' | head -n 1 || true)
                 fi
               fi
               ;;
             nightly)
-              PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$' | head -n 1)
+              PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$' | grep -v "^${VERSION}$" | head -n 1 || true)
               ;;
           esac
 
           if [ -z "$PREV_TAG" ]; then
             echo "⚠️  No previous $CHANNEL release found"
-            echo "prev_tag=" >> $GITHUB_OUTPUT
-            echo "has_prev_tag=false" >> $GITHUB_OUTPUT
+            echo "prev_tag=" >> "$GITHUB_OUTPUT"
           else
             echo "✅ Previous $CHANNEL release: $PREV_TAG"
-            echo "prev_tag=$PREV_TAG" >> $GITHUB_OUTPUT
-            echo "has_prev_tag=true" >> $GITHUB_OUTPUT
+            echo "prev_tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
           fi
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          VERSION: ${{ inputs.version }}
 
       - name: Generate complete release notes
         id: generate_notes
@@ -265,7 +424,7 @@ jobs:
         with:
           version: ${{ inputs.version }}
           previous-tag: ${{ steps.prev_version.outputs.prev_tag }}
-          branch: ${{ needs.validate-and-build.outputs.branch }}
+          branch: ${{ needs.resolve-source.outputs.sha }}
           channel: ${{ inputs.channel }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
           important-notes: ${{ inputs.important_notes }}
@@ -273,33 +432,26 @@ jobs:
       - name: Format release title
         id: format_title
         run: |
-          VERSION="${{ inputs.version }}"
-          CHANNEL="${{ inputs.channel }}"
+          set -euo pipefail
 
           if [[ "$CHANNEL" == "nightly" ]]; then
             # Extract base version and date from X.Y.Z.devYYYYMMDD
             if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.dev([0-9]+)$ ]]; then
-              BASE="${BASH_REMATCH[1]}"
-              DATE="${BASH_REMATCH[2]}"
-              TITLE="$BASE NIGHTLY $DATE"
+              TITLE="${BASH_REMATCH[1]} NIGHTLY ${BASH_REMATCH[2]}"
             else
               TITLE="$VERSION NIGHTLY"
             fi
           elif [[ "$CHANNEL" == "beta" ]]; then
             # Extract base version and beta number from X.Y.ZbN
             if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)b([0-9]+)$ ]]; then
-              BASE="${BASH_REMATCH[1]}"
-              BETA_NUM="${BASH_REMATCH[2]}"
-              TITLE="$BASE BETA $BETA_NUM"
+              TITLE="${BASH_REMATCH[1]} BETA ${BASH_REMATCH[2]}"
             else
               TITLE="$VERSION BETA"
             fi
           elif [[ "$CHANNEL" == "rc" ]]; then
             # Extract base version and RC number from X.Y.ZrcN
             if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)rc([0-9]+)$ ]]; then
-              BASE="${BASH_REMATCH[1]}"
-              RC_NUM="${BASH_REMATCH[2]}"
-              TITLE="$BASE RC $RC_NUM"
+              TITLE="${BASH_REMATCH[1]} RC ${BASH_REMATCH[2]}"
             else
               TITLE="$VERSION RC"
             fi
@@ -308,187 +460,438 @@ jobs:
             TITLE="$VERSION"
           fi
 
-          echo "title=$TITLE" >> $GITHUB_OUTPUT
+          echo "title=$TITLE" >> "$GITHUB_OUTPUT"
           echo "Release title: $TITLE"
-
-      - name: Create GitHub Release
-        id: create_release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ inputs.version }}
-          name: ${{ steps.format_title.outputs.title }}
-          body: ${{ steps.generate_notes.outputs.release-notes }}
-          prerelease: ${{ needs.validate-and-build.outputs.is_prerelease }}
-          target_commitish: ${{ needs.validate-and-build.outputs.branch }}
-          files: dist/*
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          CHANNEL: ${{ inputs.channel }}
 
-      - name: Output release info
+      - name: Create or update draft release
         run: |
-          echo "✅ Created release ${{ inputs.version }}"
-          echo "Release URL: ${{ steps.create_release.outputs.url }}"
+          set -euo pipefail
 
-  build-and-push-container-image:
-    name: Build and push Music Assistant Server container to ghcr.io
+          RELEASE_NOTES_FILE="${RUNNER_TEMP}/release-notes.md"
+          printf '%s\n' "$RELEASE_BODY" > "$RELEASE_NOTES_FILE"
+
+          if IS_DRAFT=$(gh release view "$VERSION" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [[ "$IS_DRAFT" != "true" ]]; then
+              echo "::error::Release ${VERSION} was published while preparing its draft."
+              exit 1
+            fi
+            gh release edit "$VERSION" \
+              --title "$TITLE" \
+              --notes-file "$RELEASE_NOTES_FILE" \
+              --prerelease="$IS_PRERELEASE" \
+              --verify-tag
+          else
+            gh release create "$VERSION" \
+              --title "$TITLE" \
+              --notes-file "$RELEASE_NOTES_FILE" \
+              --prerelease="$IS_PRERELEASE" \
+              --draft \
+              --verify-tag
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          TITLE: ${{ steps.format_title.outputs.title }}
+          IS_PRERELEASE: ${{ needs.validate-version.outputs.is_prerelease }}
+          RELEASE_BODY: ${{ steps.generate_notes.outputs.release-notes }}
+
+  attach-release-assets:
+    name: Replace and verify draft release assets
+    needs: [check-release-state, build-package, prepare-draft-release]
     runs-on: ubuntu-latest
     permissions:
-      packages: write
-    needs:
-      - validate-and-build
-      - create-release
+      contents: write
+    outputs:
+      wheel_name: ${{ steps.verify.outputs.wheel_name }}
+      wheel_digest: ${{ steps.verify.outputs.wheel_digest }}
+      sdist_name: ${{ steps.verify.outputs.sdist_name }}
+      sdist_digest: ${{ steps.verify.outputs.sdist_digest }}
     steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.validate-and-build.outputs.branch }}
-
       - name: Download distributions
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: release-dists
           path: dist/
 
+      - name: Replace draft release assets
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          ASSETS=(dist/*.whl dist/*.tar.gz)
+          if (( ${#ASSETS[@]} != 2 )); then
+            echo "::error::Expected exactly one wheel and one sdist, found ${#ASSETS[@]} build artifact(s)."
+            exit 1
+          fi
+
+          EXISTING_ASSETS=$(gh release view "$VERSION" --json assets --jq '.assets[].apiUrl')
+          while IFS= read -r ASSET_URL; do
+            if [[ -n "$ASSET_URL" ]]; then
+              gh api --method DELETE "${ASSET_URL#https://api.github.com/}"
+            fi
+          done <<<"$EXISTING_ASSETS"
+
+          gh release upload "$VERSION" "${ASSETS[@]}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+
+      - name: Verify draft release assets
+        id: verify
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+
+          ASSETS=(dist/*.whl dist/*.tar.gz)
+          RELEASE_ASSETS=$(gh release view "$VERSION" --json assets)
+          RELEASE_ASSET_COUNT=$(jq '.assets | length' <<<"$RELEASE_ASSETS")
+
+          if (( RELEASE_ASSET_COUNT != ${#ASSETS[@]} )); then
+            echo "::error::The draft release contains an unexpected set of assets."
+            exit 1
+          fi
+
+          for ASSET_PATH in "${ASSETS[@]}"; do
+            ASSET_NAME=$(basename "$ASSET_PATH")
+            ASSET_SIZE=$(stat --format="%s" "$ASSET_PATH")
+            ASSET_DIGEST="sha256:$(sha256sum "$ASSET_PATH" | cut -d " " -f 1)"
+
+            if ! jq -e \
+              --arg name "$ASSET_NAME" \
+              --arg digest "$ASSET_DIGEST" \
+              --argjson size "$ASSET_SIZE" \
+              '.assets[] | select(
+                .name == $name
+                and .state == "uploaded"
+                and .size == $size
+                and .digest == $digest
+              )' <<<"$RELEASE_ASSETS" >/dev/null; then
+              echo "::error::Release asset ${ASSET_NAME} was not uploaded intact."
+              exit 1
+            fi
+
+            if [[ "$ASSET_NAME" == *.whl ]]; then
+              echo "wheel_name=${ASSET_NAME}" >> "$GITHUB_OUTPUT"
+              echo "wheel_digest=${ASSET_DIGEST}" >> "$GITHUB_OUTPUT"
+            else
+              echo "sdist_name=${ASSET_NAME}" >> "$GITHUB_OUTPUT"
+              echo "sdist_digest=${ASSET_DIGEST}" >> "$GITHUB_OUTPUT"
+            fi
+          done
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+
+  build-and-push-image:
+    name: Build and push exact container image
+    needs:
+      - resolve-source
+      - check-release-state
+      - validate-version
+      - attach-release-assets
+    # Runs even when upstream build/test jobs are skipped in "published" recovery
+    # reruns (verify-only), but must stay closed if they failed or were skipped
+    # for any other reason - only a successful fresh build or an already-published
+    # release may reach the registry.
+    if: |
+      always() &&
+      needs.check-release-state.result == 'success' &&
+      needs.validate-version.result == 'success' &&
+      (needs.check-release-state.outputs.state == 'published' || needs.attach-release-assets.result == 'success')
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    outputs:
+      digest: ${{ steps.manifest.outputs.digest }}
+    steps:
       - name: Log in to the GitHub container registry
-        uses: docker/login-action@v4.5.1
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4.2.0
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
-      - name: Generate Docker tags
-        id: tags
-        run: |
-          VERSION="${{ inputs.version }}"
-          CHANNEL="${{ inputs.channel }}"
-
-          # Extract version components
-          if [[ "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
-            MAJOR="${BASH_REMATCH[1]}"
-            MINOR="${BASH_REMATCH[2]}"
-            PATCH="${BASH_REMATCH[3]}"
-          fi
-
-          TAGS="ghcr.io/${{ github.repository_owner }}/server:$VERSION"
-
-          case "$CHANNEL" in
-            stable)
-              # For stable: add major, minor, major.minor, stable, and latest tags
-              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:$MAJOR.$MINOR.$PATCH"
-              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:$MAJOR.$MINOR"
-              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:$MAJOR"
-              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:stable"
-              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:latest"
-              ;;
-            beta)
-              # For beta: add beta tag
-              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:beta"
-              ;;
-            rc)
-              # For RC: add beta rolling tag (RC updates the beta addon)
-              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:beta"
-              ;;
-            nightly)
-              # For nightly: add nightly tag
-              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:nightly"
-              ;;
-          esac
-
-          echo "tags=$TAGS" >> $GITHUB_OUTPUT
-          echo "Docker tags: $TAGS"
+      - name: Checkout repository
+        if: needs.check-release-state.outputs.state == 'pending'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve-source.outputs.sha }}
 
       - name: Build and push Docker image
-        uses: docker/build-push-action@v7.3.0
+        if: needs.check-release-state.outputs.state == 'pending'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           file: Dockerfile
-          tags: ${{ steps.tags.outputs.tags }}
+          tags: ${{ env.IMAGE_NAME }}:${{ inputs.version }}
           push: true
           build-args: |
             MASS_VERSION=${{ inputs.version }}
-            BASE_IMAGE_VERSION=${{ needs.validate-and-build.outputs.base_image_version }}
+            BASE_IMAGE_VERSION=${{ needs.validate-version.outputs.base_image_version }}
+
+      - name: Verify multi-arch manifest and capture digest
+        id: manifest
+        run: |
+          set -euo pipefail
+
+          INSPECT_OUTPUT=$(docker buildx imagetools inspect "$TAG")
+
+          for PLATFORM in linux/amd64 linux/arm64; do
+            if ! grep -q "Platform:.*${PLATFORM}" <<<"$INSPECT_OUTPUT"; then
+              echo "::error::Published image ${TAG} is missing the ${PLATFORM} platform."
+              exit 1
+            fi
+          done
+
+          DIGEST=$(awk '/^Digest:/{print $2; exit}' <<<"$INSPECT_OUTPUT")
+          if [[ -z "$DIGEST" ]]; then
+            echo "::error::Could not determine the manifest digest for ${TAG}."
+            exit 1
+          fi
+
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          echo "✅ ${TAG} resolves to ${DIGEST} (linux/amd64, linux/arm64)"
+        env:
+          TAG: ${{ env.IMAGE_NAME }}:${{ inputs.version }}
+
+  recheck-and-publish:
+    name: Recheck immutability and publish release
+    needs: [resolve-source, check-release-state, build-and-push-image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create release settings token
+        id: release_settings_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          permission-administration: read
+
+      - name: Recheck immutable release setting
+        run: |
+          set -euo pipefail
+
+          if [[ "$APP_SLUG" != "musicassistant-bot" ]]; then
+            echo "::error::GitHub App token belongs to ${APP_SLUG}, expected musicassistant-bot."
+            exit 1
+          fi
+
+          ENABLED=$(
+            gh api \
+              --method GET \
+              --header "X-GitHub-Api-Version: ${GITHUB_API_VERSION}" \
+              "repos/${GITHUB_REPOSITORY}/immutable-releases" \
+              --jq '.enabled'
+          )
+
+          if [[ "$ENABLED" != "true" ]]; then
+            echo "::error::Release immutability must remain enabled while publishing."
+            exit 1
+          fi
+        env:
+          APP_SLUG: ${{ steps.release_settings_token.outputs.app-slug }}
+          GH_TOKEN: ${{ steps.release_settings_token.outputs.token }}
+
+      - name: Publish release
+        if: needs.check-release-state.outputs.state == 'pending'
+        run: gh release edit "$VERSION" --draft=false --verify-tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+
+      - name: Verify published release
+        run: |
+          set -euo pipefail
+
+          for ATTEMPT in {1..12}; do
+            if IS_IMMUTABLE=$(gh release view "$VERSION" --json isDraft,isImmutable --jq 'select(.isDraft == false) | .isImmutable' 2>/dev/null); then
+              if [[ "$IS_IMMUTABLE" == "true" ]] && gh release verify "$VERSION"; then
+                break
+              fi
+            fi
+            if (( ATTEMPT == 12 )); then
+              echo "::error::GitHub did not verify release ${VERSION} as immutable."
+              exit 1
+            fi
+            sleep 5
+          done
+
+          # Confirm the release tag still points at the exact commit that was tested and built
+          TAG_REF=$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${VERSION}")
+          OBJ_SHA=$(jq -r '.object.sha' <<<"$TAG_REF")
+          OBJ_TYPE=$(jq -r '.object.type' <<<"$TAG_REF")
+          if [[ "$OBJ_TYPE" == "tag" ]]; then
+            COMMIT_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${OBJ_SHA}" --jq '.object.sha')
+          else
+            COMMIT_SHA="$OBJ_SHA"
+          fi
+          if [[ "$COMMIT_SHA" != "$SOURCE_SHA" ]]; then
+            echo "::error::Tag ${VERSION} points at ${COMMIT_SHA}, expected ${SOURCE_SHA}."
+            exit 1
+          fi
+
+          # Confirm exactly the expected build assets are attached and intact
+          ASSETS=$(gh release view "$VERSION" --json assets --jq '.assets')
+          if [[ "$(jq 'length' <<<"$ASSETS")" != "2" ]]; then
+            echo "::error::Release ${VERSION} does not have exactly two assets."
+            exit 1
+          fi
+          if ! jq -e '[.[] | select(.name | test("\\.whl$"))] | length == 1' <<<"$ASSETS" >/dev/null ||
+            ! jq -e '[.[] | select(.name | test("\\.tar\\.gz$"))] | length == 1' <<<"$ASSETS" >/dev/null; then
+            echo "::error::Release ${VERSION} does not contain exactly one wheel and one sdist."
+            exit 1
+          fi
+          if ! jq -e '[.[] | select(.state == "uploaded" and (.digest | length) > 0)] | length == 2' <<<"$ASSETS" >/dev/null; then
+            echo "::error::Release ${VERSION} assets are missing a verified digest."
+            exit 1
+          fi
+
+          echo "✅ Release ${VERSION} is published, immutable, matches ${SOURCE_SHA}, and its assets are intact."
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          SOURCE_SHA: ${{ needs.resolve-source.outputs.sha }}
+
+  promote-rolling-tags:
+    name: Promote image digest to rolling tags
+    needs: [validate-version, build-and-push-image, recheck-and-publish]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - name: Log in to the GitHub container registry
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Promote digest to rolling aliases
+        run: |
+          set -euo pipefail
+
+          if [[ "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+            MAJOR="${BASH_REMATCH[1]}"
+            MINOR="${BASH_REMATCH[2]}"
+          fi
+
+          case "$CHANNEL" in
+            stable)
+              ALIASES=("$MAJOR.$MINOR" "$MAJOR" "stable" "latest")
+              ;;
+            beta | rc)
+              # RC updates the same rolling tag as beta
+              ALIASES=("beta")
+              ;;
+            nightly)
+              ALIASES=("nightly")
+              ;;
+          esac
+
+          SOURCE="${IMAGE_NAME}@${DIGEST}"
+          for ALIAS in "${ALIASES[@]}"; do
+            echo "Promoting ${SOURCE} to ${IMAGE_NAME}:${ALIAS}"
+            docker buildx imagetools create --tag "${IMAGE_NAME}:${ALIAS}" "$SOURCE"
+          done
+        env:
+          VERSION: ${{ inputs.version }}
+          CHANNEL: ${{ inputs.channel }}
+          DIGEST: ${{ needs.build-and-push-image.outputs.digest }}
 
   update-addon-repository:
     name: Update Home Assistant Add-on Repository
+    needs: [resolve-source, promote-rolling-tags]
     runs-on: ubuntu-latest
-    needs:
-      - validate-and-build
-      - create-release
-      - build-and-push-container-image
+    permissions:
+      contents: read
     steps:
       - name: Determine addon folder
         id: addon_folder
         run: |
-          CHANNEL="${{ inputs.channel }}"
+          set -euo pipefail
 
           case "$CHANNEL" in
             stable)
-              echo "folder=music_assistant" >> $GITHUB_OUTPUT
+              echo "folder=music_assistant" >> "$GITHUB_OUTPUT"
               echo "Updating stable add-on"
               ;;
-            beta)
-              echo "folder=music_assistant_beta" >> $GITHUB_OUTPUT
+            beta | rc)
+              echo "folder=music_assistant_beta" >> "$GITHUB_OUTPUT"
               echo "Updating beta add-on"
               ;;
-            rc)
-              echo "folder=music_assistant_beta" >> $GITHUB_OUTPUT
-              echo "Updating beta add-on (RC release)"
-              ;;
             nightly)
-              echo "folder=music_assistant_nightly" >> $GITHUB_OUTPUT
+              echo "folder=music_assistant_nightly" >> "$GITHUB_OUTPUT"
               echo "Updating nightly add-on"
               ;;
           esac
+        env:
+          CHANNEL: ${{ inputs.channel }}
+
+      - name: Create add-on repository token
+        id: addon_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: home-assistant-addon
+          permission-contents: write
 
       - name: Checkout add-on repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: music-assistant/home-assistant-addon
-          token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
+          token: ${{ steps.addon_token.outputs.token }}
           path: addon-repo
 
       - name: Get release notes
-        id: get_notes
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          cd addon-repo
+          set -euo pipefail
 
           # Get the release body from the server repository
-          RELEASE_NOTES=$(gh release view "${{ inputs.version }}" --repo music-assistant/server --json body --jq .body)
-
-          # Save to file for processing
-          echo "$RELEASE_NOTES" > /tmp/release_notes.md
+          gh release view "$VERSION" --repo music-assistant/server --json body --jq .body > /tmp/release_notes.md
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ inputs.version }}
 
       - name: Update config.yaml version
         run: |
-          ADDON_FOLDER="${{ steps.addon_folder.outputs.folder }}"
-          VERSION="${{ inputs.version }}"
+          set -euo pipefail
 
-          cd addon-repo/$ADDON_FOLDER
-
-          # Update version in config.yaml using sed
+          cd "addon-repo/${ADDON_FOLDER}"
           sed -i "s/^version: .*/version: $VERSION/" config.yaml
-
           echo "✅ Updated config.yaml to version $VERSION"
+        env:
+          ADDON_FOLDER: ${{ steps.addon_folder.outputs.folder }}
+          VERSION: ${{ inputs.version }}
 
       - name: Update CHANGELOG.md
         run: |
-          ADDON_FOLDER="${{ steps.addon_folder.outputs.folder }}"
-          VERSION="${{ inputs.version }}"
+          set -euo pipefail
 
-          cd addon-repo/$ADDON_FOLDER
+          cd "addon-repo/${ADDON_FOLDER}"
 
-          # Get current date
+          # Idempotent: a rerun after this version was already recorded is a no-op
+          if [ -f CHANGELOG.md ] && grep -q "^# \[${VERSION}\]" CHANGELOG.md; then
+            echo "CHANGELOG.md already has an entry for ${VERSION}, skipping"
+            exit 0
+          fi
+
           RELEASE_DATE=$(date +"%d.%m.%Y")
-
-          # Read the new release notes
           NEW_NOTES=$(cat /tmp/release_notes.md)
 
-          # Create new changelog entry
           {
             echo "# [$VERSION] - $RELEASE_DATE"
             echo ""
@@ -499,32 +902,28 @@ jobs:
 
           # If CHANGELOG.md exists, keep only the last 2 versions
           if [ -f CHANGELOG.md ]; then
-            # Extract headers to count versions
             VERSION_COUNT=$(grep -c "^# \[" CHANGELOG.md || echo "0")
 
             if [ "$VERSION_COUNT" -ge 2 ]; then
               # Keep only first 2 versions (extract everything before the 3rd version header)
               awk '/^# \[/{i++}i==3{exit}1' CHANGELOG.md > /tmp/old_changelog.md
-
-              # Combine new entry with trimmed old changelog
               cat /tmp/new_changelog.md /tmp/old_changelog.md > CHANGELOG.md
             else
-              # Less than 2 versions, just prepend
               cat /tmp/new_changelog.md CHANGELOG.md > /tmp/combined_changelog.md
               mv /tmp/combined_changelog.md CHANGELOG.md
             fi
           else
-            # No existing changelog, create new
             mv /tmp/new_changelog.md CHANGELOG.md
           fi
 
           echo "✅ Updated CHANGELOG.md with new release"
+        env:
+          ADDON_FOLDER: ${{ steps.addon_folder.outputs.folder }}
+          VERSION: ${{ inputs.version }}
 
       - name: Commit and push changes
         run: |
-          ADDON_FOLDER="${{ steps.addon_folder.outputs.folder }}"
-          VERSION="${{ inputs.version }}"
-          CHANNEL="${{ inputs.channel }}"
+          set -euo pipefail
 
           cd addon-repo
 
@@ -538,33 +937,61 @@ jobs:
             exit 0
           }
 
-          git push
+          # Other channels may push to this same repo concurrently; retry on a
+          # non-fast-forward rejection by rebasing onto the latest remote tip.
+          for ATTEMPT in 1 2 3 4 5; do
+            if git push; then
+              break
+            fi
+            if (( ATTEMPT == 5 )); then
+              echo "::error::Failed to push add-on repository update after ${ATTEMPT} attempts."
+              exit 1
+            fi
+            echo "Push rejected, rebasing onto latest remote changes and retrying..."
+            git fetch origin
+            git rebase "origin/$(git rev-parse --abbrev-ref HEAD)"
+          done
 
           echo "✅ Successfully updated add-on repository"
+        env:
+          ADDON_FOLDER: ${{ steps.addon_folder.outputs.folder }}
+          VERSION: ${{ inputs.version }}
+          CHANNEL: ${{ inputs.channel }}
 
   update-remote-app:
     name: Update app.music-assistant.io frontend
+    needs: [resolve-source, promote-rolling-tags]
     runs-on: ubuntu-latest
-    needs:
-      - validate-and-build
-      - create-release
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.validate-and-build.outputs.branch }}
+          ref: ${{ needs.resolve-source.outputs.sha }}
 
       - name: Extract frontend version from pyproject.toml
         id: frontend
         run: |
-          # Extract frontend version from pyproject.toml
+          set -euo pipefail
+
           FRONTEND_VERSION=$(grep 'music-assistant-frontend==' pyproject.toml | sed 's/.*==\([^"]*\).*/\1/')
-          echo "version=${FRONTEND_VERSION}" >> $GITHUB_OUTPUT
+          echo "version=${FRONTEND_VERSION}" >> "$GITHUB_OUTPUT"
           echo "Frontend version: ${FRONTEND_VERSION}"
 
-      - name: Trigger app.music-assistant.io update
-        uses: peter-evans/repository-dispatch@v4
+      - name: Create app.music-assistant.io repository token
+        id: app_repo_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
-          token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: app.music-assistant.io
+          permission-contents: write
+
+      - name: Trigger app.music-assistant.io update
+        uses: peter-evans/repository-dispatch@28959ce8df70de7be546dd1250a005dd32156697 # v4.0.1
+        with:
+          token: ${{ steps.app_repo_token.outputs.token }}
           repository: music-assistant/app.music-assistant.io
           event-type: frontend-update
           client-payload: |

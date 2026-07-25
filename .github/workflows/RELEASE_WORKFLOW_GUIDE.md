@@ -1,199 +1,116 @@
 # Release Workflow Guide
 
-This document explains how to use the new release workflow for Music Assistant.
+This document explains how releases are created for Music Assistant.
 
 ## Overview
 
-The release workflow has been completely reworked to **create releases** rather than being triggered by them. This gives you more control over the release process and ensures consistency across different release channels.
+Releases are built around GitHub's **immutable releases** setting. Once a release
+is published, its tag, notes and assets can never change — so the workflow does
+all of its validation, building and verification *before* publishing, and only
+publishes once, atomically. Two workflows work together:
+
+- **`auto-release.yml`** — resolves a channel to its source branch, decides the
+  next version from existing Git tags, and triggers `release.yml` with the exact
+  commit to release. Runs nightly on a schedule, or manually for beta/rc/stable.
+- **`release.yml`** — the reusable workflow that validates, builds, publishes and
+  promotes a single release. Can also be triggered directly for one-off releases.
 
 ## How to Create a Release
 
+### Automatically (recommended)
+Nightly releases are created automatically every day at 05:00 Europe/Amsterdam
+time, provided there are at least 2 new commits on `dev` since the last nightly.
+
+### Manually
 1. Go to the **Actions** tab in GitHub
-2. Select the **"Create Release"** workflow
-3. Click **"Run workflow"**
-4. Fill in the required inputs:
-   - **Version number**: Enter the version in the appropriate format (see below)
-   - **Release channel**: Select from `stable`, `beta`, or `nightly`
-5. Click **"Run workflow"** to start the release process
+2. Select **"Auto Release"** (computes the next version for you) or
+   **"Create Release"** (lets you specify an exact version)
+3. Click **"Run workflow"** and pick the channel: `nightly`, `beta`, `rc` or `stable`
+4. For **"Create Release"**, also fill in the version number (see formats below)
 
 ## Version Format Requirements
 
-The workflow validates version numbers based on the selected channel:
+| Channel | Format | Example | Source branch |
+|---|---|---|---|
+| stable | `X.Y.Z` | `2.1.0` | `stable` |
+| rc | `X.Y.ZrcN` | `2.1.0rc1` | `stable` |
+| beta | `X.Y.ZbN` | `2.1.0b1` | `dev` |
+| nightly | `X.Y.Z.devN` | `2.1.0.dev2025102305` | `dev` |
 
-### Stable Channel
-- **Format**: `X.Y.Z` (e.g., `2.1.0`, `2.1.1`)
-- **Examples**:
-  - ✅ `2.1.0`
-  - ✅ `1.5.3`
-  - ❌ `2.1.0.b1` (beta suffix not allowed for stable)
+Stable releases bump the patch version. Beta and nightly versions are always one
+minor version ahead of the latest stable release. RC versions are based on the
+latest beta of the same base version.
 
-### Beta Channel
-- **Format**: `X.Y.Z.bN` (e.g., `2.1.0.b1`, `2.1.0.b2`)
-- **Examples**:
-  - ✅ `2.1.0.b1`
-  - ✅ `2.2.0.b3`
-  - ❌ `2.1.0` (must have beta suffix)
+## Release State Machine
 
-### Nightly Channel
-- **Format**: `X.Y.Z.devN` (e.g., `2.1.0.dev1`, `2.1.0.dev20251023`)
-- **Examples**:
-  - ✅ `2.1.0.dev1`
-  - ✅ `2.1.0.dev20251023`
-  - ❌ `2.1.0` (must have dev suffix)
+Every release goes through the same sequence, keyed off the **exact commit SHA**
+resolved at the start of the run (not a moving branch tip), so a rerun always
+targets the same code:
 
-## What the Workflow Does
+1. **Resolve source** — pins the exact commit to release.
+2. **Verify immutable releases are enabled** — fails the run immediately if the
+   repository setting is off, before anything else happens.
+3. **Validate version** — checks the version format matches the channel.
+4. **Create the release tag** — creates it if missing, or confirms an existing
+   tag points at the same commit (rejects conflicting tags/versions).
+5. **Run tests** — the full test suite against the exact commit.
+6. **Build the package and Docker image, draft the release** — builds the wheel
+   and sdist, generates release notes, creates (or resumes) a **draft** release
+   pinned to the tag, uploads the built assets, and builds+pushes a single exact
+   image tag (`ghcr.io/music-assistant/server:$VERSION`) — no rolling aliases yet.
+7. **Recheck and publish** — rechecks the immutable setting one more time, then
+   publishes the release exactly once, and verifies the published release is
+   immutable, matches the exact commit, and its assets are intact.
+8. **Promote rolling tags** — retags the *same* image digest (no rebuild) as the
+   channel's rolling aliases (e.g. `stable`, `latest`, `2.1`, `2`).
+9. **Update downstream repositories** — bumps the Home Assistant add-on and
+   notifies `app.music-assistant.io` of the new frontend version.
 
-### 1. Validation & Build (`validate-and-build` job)
-- ✅ Validates the version number format matches the selected channel
-- ✅ Updates the version in `pyproject.toml`
-- ✅ Builds the Python package (wheel and source distribution)
-- ✅ Uploads artifacts for use in subsequent jobs
+If a run fails partway through, simply rerun it: steps already completed
+(tag, draft, assets, published release) are detected and reused rather than
+redone, and a run that failed after publishing resumes from the downstream
+update steps only. A published release that is somehow not immutable is never
+reused — release a new version instead.
 
-### 2. Create Release (`create-release` job)
-- ✅ Checks out the correct branch (stable for stable releases, dev for beta/nightly)
-- ✅ Determines the previous release tag for the same channel
-- ✅ Uses Release Drafter to generate release notes from PRs/commits on that branch
-- ✅ **Extracts and appends frontend changes** from music-assistant-frontend update PRs
-- ✅ **Merges and deduplicates contributors** from both server and frontend PRs
-- ✅ Creates a GitHub release (marked as prerelease for beta/nightly)
-- ✅ Attaches the built Python packages to the release
+## Credentials
 
-#### Branch Strategy
-- **Stable releases** (`X.Y.Z`): Built from the `stable` branch
-- **Beta releases** (`X.Y.Z.bN`): Built from the `dev` branch
-- **Nightly releases** (`X.Y.Z.devN`): Built from the `dev` branch
+- Operations on this repository (tags, releases, assets, container images) use
+  the default `GITHUB_TOKEN`.
+- Cross-repository and administrative operations (checking the immutable
+  setting, updating the add-on repository, notifying the frontend app) use
+  short-lived tokens minted per job from the `music-assistant-bot` GitHub App,
+  each scoped to only the repository and permission it needs.
 
-This ensures stable releases only include changes that have been merged to stable, while beta and nightly releases include the latest development changes.
+## Docker Image Tags
 
-#### Frontend Changes Integration
-The workflow automatically finds all "⬆️ Update music-assistant-frontend to X.X.X" PRs that were merged since the last release and extracts their release notes. These are appended to the server release notes under a "🎨 Frontend Changes" section as a unified list of all frontend changes across all versions. This ensures users can see both server and frontend changes in one place.
+### Stable
+`X.Y.Z`, `X.Y`, `X`, `stable`, `latest`
 
-#### Contributor Merging
-The workflow also extracts all `@username` mentions from both the server release notes (generated by Release Drafter) and the frontend PR descriptions, then merges and deduplicates them. The final "Thanks to our contributors" section includes everyone who contributed to both the server and frontend in this release cycle.
+### Beta / RC
+`X.Y.ZbN` / `X.Y.ZrcN`, `beta`
 
-**Example of final release notes structure:**
-```markdown
-## ⚠ Breaking Changes
-- Server breaking change (by @serverdev in #123)
+### Nightly
+`X.Y.Z.devN`, `nightly`
 
-## 🚀 Features and enhancements
-- Server feature 1 (by @contributor1 in #124)
-- Server feature 2 (by @contributor2 in #125)
-
-## 🐛 Bugfixes
-- Server bugfix (by @contributor1 in #126)
-
-## 🎨 Frontend Changes
-• Add the provider type on items on search (by @frontenddev in #1174)
-• Fix player menu position (by @contributor3 in #1175)
-• Update translations (by @translator in #1170)
-• Fix dark mode styling issue (by @frontenddev in #1171)
-
-## :bow: Thanks to our contributors
-
-Special thanks to the following contributors who helped with this release:
-
-@contributor1, @contributor2, @contributor3, @frontenddev, @serverdev, @translator
-```
-
-### 3. Docker Image Build (`build-and-push-container-image` job)
-- ✅ Builds multi-platform Docker images (amd64 + arm64)
-- ✅ Uses the correct base image version for the channel
-- ✅ Tags images appropriately based on the channel:
-
-#### Stable Release Tags
-- `ghcr.io/music-assistant/server:X.Y.Z`
-- `ghcr.io/music-assistant/server:X.Y`
-- `ghcr.io/music-assistant/server:X`
-- `ghcr.io/music-assistant/server:stable`
-- `ghcr.io/music-assistant/server:latest`
-
-#### Beta Release Tags
-- `ghcr.io/music-assistant/server:X.Y.Z.bN`
-- `ghcr.io/music-assistant/server:beta`
-
-#### Nightly Release Tags
-- `ghcr.io/music-assistant/server:X.Y.Z.devN`
-- `ghcr.io/music-assistant/server:nightly`
-
-### 4. Update Add-on Repository (`update-addon-repository` job)
-- ✅ Determines the correct add-on folder based on channel:
-  - **Stable**: `music_assistant`
-  - **Beta**: `music_assistant_beta`
-  - **Nightly**: `music_assistant_nightly`
-- ✅ Updates `config.yaml` with the new version number
-- ✅ Updates `CHANGELOG.md` with the full release notes
-- ✅ Keeps only the last 2 versions in the changelog (removes older entries)
-- ✅ Commits and pushes changes directly to the `music-assistant/home-assistant-addon` repository
-
-This ensures the Home Assistant add-on is automatically updated with each release, making it immediately available to users!
-
-## Base Image Versions
-
-The workflow uses different base image versions per channel (configured in workflow env vars):
-
-- **Stable**: `1.3.1`
-- **Beta**: `1.3.2`
-- **Nightly**: `1.3.2`
-
-These can be updated in the workflow file's `env` section.
-
-## Release Notes
-
-Release notes are automatically generated by our custom release notes generator based on:
-- Merged pull requests since the last release of the same channel
-- PR labels (breaking-change, feature, bugfix, etc.)
-- Contributors list (merged from server and frontend PRs)
-- Frontend changes extracted from frontend update PRs
-
-The configuration is in `.github/release-notes-config.yml`.
-
-See `.github/actions/generate-release-notes/README.md` for more details on how the generator works.
-
-## Examples
-
-### Creating a Stable Release
-```
-Version: 2.1.0
-Channel: stable
-```
-This will:
-- Create release `2.1.0` (not a prerelease)
-- Tag Docker images with `2.1.0`, `2.1`, `2`, `stable`, and `latest`
-
-### Creating a Beta Release
-```
-Version: 2.2.0.b1
-Channel: beta
-```
-This will:
-- Create release `2.2.0.b1` (marked as prerelease)
-- Tag Docker images with `2.2.0.b1` and `beta`
-
-### Creating a Nightly Release
-```
-Version: 2.2.0.dev20251023
-Channel: nightly
-```
-This will:
-- Create release `2.2.0.dev20251023` (marked as prerelease)
-- Tag Docker images with `2.2.0.dev20251023` and `nightly`
+The exact version tag is built and pushed first; the rolling aliases above are
+applied afterwards by retagging that same image digest — they never trigger a
+separate build.
 
 ## Troubleshooting
 
-### Workflow Fails During Validation
-- Check that your version number matches the format for the selected channel
-- Ensure the version doesn't already exist as a tag
+### "Enable release immutability" error
+The repository's immutable-releases setting (Settings → General → Releases) is
+off. Enable it — the workflow refuses to run without it.
 
-### Docker Build Fails
-- Check that the base image version exists
-- Verify the Dockerfile is compatible with the version being built
+### "Tag already exists and points at a different commit"
+The version you asked for was already released from a different commit. Bump
+the version number to release the new commit.
 
-## Migration Notes
+### "Release is already published but is not immutable"
+A release for that version exists but predates the immutable-releases setting
+(or was created outside this workflow). Use a new version number instead of
+reusing it.
 
-This workflow replaces the previous `release.yml` which was triggered by creating a release in GitHub. Key differences:
-
-- **Before**: Create a release manually → workflow publishes it
-- **Now**: Trigger workflow → it creates and publishes the release
-
-The new approach provides better automation, validation, and consistency across channels.
+### Docker build fails
+Check that the base image version (configured in `release.yml`'s `env` section)
+exists and that the `Dockerfile` is compatible with the version being built.
