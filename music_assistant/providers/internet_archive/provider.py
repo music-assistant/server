@@ -46,7 +46,7 @@ from .parsers import (
 from .streaming import InternetArchiveStreaming
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
 
@@ -70,6 +70,10 @@ class InternetArchiveProvider(MusicProvider):
         )
         self.client = InternetArchiveClient(mass)
         self.streaming = InternetArchiveStreaming(self)
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return ()
 
     @property
     def is_streaming_provider(self) -> bool:

@@ -162,7 +162,7 @@ class CoreConfigMixin:
             for entry in all_entries:
                 if entry.key == CONF_AUTOPLAY_PLAYLIST:
                     entry.options = playlist_options
-        return _with_translation_owner(all_entries, f"core.{domain}", action, values)
+        return _with_translation_owner(all_entries, f"core.{domain}")
 
     @api_command("config/core/save", required_scope=Scope.CONFIG_CORE_WRITE)
     async def save_core_config(

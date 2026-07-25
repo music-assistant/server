@@ -17,7 +17,7 @@ from music_assistant.models.plugin import PluginProvider
 from .constants import HOT_SWAPPABLE_KEYS
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
 
     from .server import MCPServerRuntime
 
@@ -29,6 +29,33 @@ class MCPServerProvider(PluginProvider):
     """Music Assistant plugin provider wrapping an MCP server runtime."""
 
     _runtime: MCPServerRuntime | None = None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        from .config import build_config_entries  # noqa: PLC0415
+        from .constants import CONF_MOUNT_PATH, DEFAULT_MOUNT_PATH  # noqa: PLC0415
+
+        return build_config_entries(
+            self.mass, str(self.get_config_value(CONF_MOUNT_PATH, DEFAULT_MOUNT_PATH))
+        )
+
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+        """Handle a one-shot config action button press and re-render the entries."""
+        if action == "open_connect":
+            from ._init_helpers import _dispatch_open_connect  # noqa: PLC0415
+            from .constants import CONF_CONNECT_EXTERNAL_URL, CONF_MOUNT_PATH  # noqa: PLC0415
+
+            # the no-values contract reads current values from stored config; session_id
+            # (a per-open frontend correlation id) is not available here.
+            await _dispatch_open_connect(
+                self.mass,
+                {
+                    CONF_MOUNT_PATH: self.get_config_value(CONF_MOUNT_PATH),
+                    CONF_CONNECT_EXTERNAL_URL: self.get_config_value(CONF_CONNECT_EXTERNAL_URL),
+                },
+            )
+            return await self.get_config_entries()
+        return await super().handle_config_action(action)
 
     async def handle_async_init(self) -> None:
         """Build and start the FastMCP runtime."""

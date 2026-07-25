@@ -61,7 +61,6 @@ from typing import TYPE_CHECKING, Any, TypedDict, cast
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
     ConfigEntry,
-    ConfigValueType,
     ProviderConfig,
 )
 from music_assistant_models.enums import ConfigEntryType, PlayerType, ProviderFeature, QueueOption
@@ -204,42 +203,6 @@ async def setup(
     return MusicQuizPlugin(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    :param mass: MusicAssistant instance.
-    :param instance_id: ID of an existing provider instance (None if new instance setup).
-    :param action: Optional action key called from config entries UI.
-    :param values: The (intermediate) raw values for config entries sent with the action.
-    """
-    ai_available = any(
-        isinstance(provider, PluginProvider)
-        for provider in mass.get_providers_supporting_feature(ProviderFeature.AI_QUERY)
-    )
-    ai_setting = ConfigEntry(
-        key=CONF_USE_AI_DISTRACTORS,
-        type=ConfigEntryType.BOOLEAN,
-        required=False,
-        default_value=False,
-        read_only=not ai_available,
-    )
-    if ai_available:
-        return (ai_setting,)
-    return (
-        ai_setting,
-        ConfigEntry(
-            key="ai_unavailable",
-            type=ConfigEntryType.ALERT,
-        ),
-    )
-
-
 class MusicQuizPlugin(PluginProvider):
     """Music Quiz plugin provider for Music Assistant."""
 
@@ -262,6 +225,29 @@ class MusicQuizPlugin(PluginProvider):
         self._next_round_task: asyncio.Task[MusicQuizRound] | None = None
         self._reveal_playback_task: asyncio.Task[None] | None = None
         self._unregister_handles: list[Callable[[], None]] = []
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        ai_available = any(
+            isinstance(provider, PluginProvider)
+            for provider in self.mass.get_providers_supporting_feature(ProviderFeature.AI_QUERY)
+        )
+        ai_setting = ConfigEntry(
+            key=CONF_USE_AI_DISTRACTORS,
+            type=ConfigEntryType.BOOLEAN,
+            required=False,
+            default_value=False,
+            read_only=not ai_available,
+        )
+        if ai_available:
+            return (ai_setting,)
+        return (
+            ai_setting,
+            ConfigEntry(
+                key="ai_unavailable",
+                type=ConfigEntryType.ALERT,
+            ),
+        )
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""

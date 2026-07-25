@@ -23,6 +23,7 @@ from .constants import PLAYER_ID_PREFIX
 from .player import WiimPlayer
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
     from zeroconf.asyncio import AsyncServiceInfo
 
 
@@ -32,6 +33,10 @@ class WiimProvider(PlayerProvider):
 
     This provides a WiiM player implementation for Music Assistant.
     """
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (CONF_ENTRY_MANUAL_DISCOVERY_IPS,)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

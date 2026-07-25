@@ -15,7 +15,8 @@ from libopensonic.errors import (
     SonicError,
 )
 from libopensonic.media import PodcastChannel
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, StreamType
 from music_assistant_models.errors import (
     ActionUnavailable,
     LoginFailed,
@@ -106,6 +107,60 @@ class OpenSonicProvider(MusicProvider):
     _pagination_size: int = 200
     _id_lyrics: bool = False
     _raw_file: bool = True
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_ENABLE_PODCASTS,
+                type=ConfigEntryType.BOOLEAN,
+                required=True,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_LEGACY_AUTH,
+                type=ConfigEntryType.BOOLEAN,
+                required=True,
+                default_value=False,
+            ),
+            ConfigEntry(
+                key=CONF_RECO_FAVES,
+                type=ConfigEntryType.BOOLEAN,
+                required=True,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_NEW_ALBUMS,
+                type=ConfigEntryType.BOOLEAN,
+                required=True,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_PLAYED_ALBUMS,
+                type=ConfigEntryType.BOOLEAN,
+                required=True,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_RECO_SIZE,
+                type=ConfigEntryType.INTEGER,
+                required=True,
+                default_value=10,
+            ),
+            ConfigEntry(
+                key=CONF_RAW_FILE,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_PAGE_SIZE,
+                type=ConfigEntryType.INTEGER,
+                required=True,
+                default_value=200,
+                advanced=True,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Set up the music provider and test the connection."""

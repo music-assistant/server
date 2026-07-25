@@ -8,7 +8,7 @@ from time import time
 from typing import TYPE_CHECKING, cast
 
 from aiohttp import HttpVersion11, web
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.constants import PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -177,11 +177,7 @@ class UniversalGroupPlayer(Player):
         """Return if the player is a dynamic group player."""
         return bool(self.config.get_value(CONF_DYNAMIC_GROUP_MEMBERS, False))
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return [
             # add universal group specific entries

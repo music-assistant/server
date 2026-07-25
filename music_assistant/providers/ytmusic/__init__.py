@@ -88,7 +88,7 @@ from .helpers import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant import MusicAssistant
@@ -158,22 +158,6 @@ async def setup(
     return YoutubeMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
-
-
 class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     """Provider for Youtube Music."""
 
@@ -184,6 +168,10 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     _yt_user: str | None
     _cookie: str
     _yt_dlp_module = None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
 
     async def handle_async_init(self) -> None:
         """Set up the YTMusic provider."""

@@ -29,6 +29,8 @@ from .constants import CONF_DEVICE_IDENTIFIERS, CONF_DEVICE_INFO, UNIVERSAL_PLAY
 from .player import UniversalPlayer
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
+
     from music_assistant.models.player import Player
 
 
@@ -42,6 +44,11 @@ class UniversalPlayerProvider(PlayerProvider):
     are registered, providing a unified interface while delegating playback to the
     underlying protocol player(s).
     """
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        # Nothing to configure - universal players are auto-created
+        return ()
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

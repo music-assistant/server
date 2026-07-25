@@ -12,6 +12,8 @@ import logging
 from typing import TYPE_CHECKING
 
 from hue_entertainment import HueEntertainmentAPI
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import ConfigEntryType
 from zeroconf import ServiceStateChange
 
 from music_assistant.models.plugin import PluginProvider
@@ -54,6 +56,38 @@ class HueEntertainmentProvider(PluginProvider):
         super().__init__(mass, manifest, config, supported_features)
         self._hue_api: HueEntertainmentAPI | None = None
         self._bridge_manager: HueEntertainmentBridgeManager | None = None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the (options) config entries for the Hue Entertainment provider.
+
+        Bridge pairing runs in the interactive setup flow (see ``setup_flow.py``); only the
+        playback/visualization settings are configured here.
+        """
+        return (
+            ConfigEntry(
+                key=CONF_BRIGHTNESS,
+                type=ConfigEntryType.INTEGER,
+                default_value=100,
+                range=(0, 100),
+                category="settings",
+            ),
+            ConfigEntry(
+                key=CONF_COLOR_MODE,
+                type=ConfigEntryType.STRING,
+                default_value=DEFAULT_COLOR_MODE,
+                options=[ConfigValueOption(mode, title=mode.capitalize()) for mode in COLOR_MODES],
+                category="settings",
+            ),
+            ConfigEntry(
+                key=CONF_HUE_LATENCY_MS,
+                type=ConfigEntryType.INTEGER,
+                default_value=DEFAULT_HUE_LATENCY_MS,
+                range=(0, 3000),
+                immediate_apply=True,
+                category="settings",
+            ),
+        )
 
     @property
     def hue_api(self) -> HueEntertainmentAPI | None:

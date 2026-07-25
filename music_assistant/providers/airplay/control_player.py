@@ -214,15 +214,11 @@ class AirPlayControlPlayer(AirPlayPlayer):
         """Return whether the Companion control channel is currently connected."""
         return self._companion_device is not None
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return player configuration entries."""
         # Companion/MRP pairing is handled by the interactive setup flow
         # (run_setup_flow) and stored in setup_data, no longer as config entries.
-        return await super().get_config_entries(action, values)
+        return await super().get_config_entries()
 
     async def run_setup_flow(self, session: SetupSession) -> None:
         """

@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Literal
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
-    ConfigValueType,
     ProviderConfig,
 )
 from music_assistant_models.enums import ConfigEntryType, ImageType, MediaType, ProviderFeature
@@ -81,46 +80,6 @@ async def setup(
     return instance
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-
-    return (
-        CONF_ENTRY_UNOFFICIAL_PROVIDER,
-        ConfigEntry(
-            key=_Constants.CONF_INTRO,
-            type=ConfigEntryType.LABEL,
-        ),
-        ConfigEntry(
-            key=_Constants.CONF_SHOW_LOCAL,
-            advanced=True,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-        ),
-        ConfigEntry(
-            key=_Constants.CONF_STREAM_FORMAT,
-            advanced=True,
-            type=ConfigEntryType.STRING,
-            options=[
-                ConfigValueOption(_Constants.CONF_STREAM_FORMAT_HLS),
-                ConfigValueOption(_Constants.CONF_STREAM_FORMAT_DASH),
-            ],
-            default_value=_Constants.CONF_STREAM_FORMAT_HLS,
-        ),
-    )
-
-
 class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
     """A MusicProvider class to interact with the BBC Sounds API via auntie-sounds."""
 
@@ -130,6 +89,32 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
     client: SoundsClient
     menu: Menu | None = None
     logged_in: bool = False
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=_Constants.CONF_INTRO,
+                type=ConfigEntryType.LABEL,
+            ),
+            ConfigEntry(
+                key=_Constants.CONF_SHOW_LOCAL,
+                advanced=True,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+            ),
+            ConfigEntry(
+                key=_Constants.CONF_STREAM_FORMAT,
+                advanced=True,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(_Constants.CONF_STREAM_FORMAT_HLS),
+                    ConfigValueOption(_Constants.CONF_STREAM_FORMAT_DASH),
+                ],
+                default_value=_Constants.CONF_STREAM_FORMAT_HLS,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

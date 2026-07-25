@@ -79,7 +79,6 @@ from aioaudiobookshelf.schema.shelf import ShelfType as AbsShelfType
 from aiohttp import web
 from music_assistant_models.config_entries import (
     ConfigEntry,
-    ConfigValueType,
     ProviderConfig,
 )
 from music_assistant_models.enums import (
@@ -167,31 +166,6 @@ async def setup(
     return Audiobookshelf(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_HIDE_EMPTY_PODCASTS,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            advanced=True,
-            default_value=False,
-        ),
-    )
-
-
 R = TypeVar("R")
 P = ParamSpec("P")
 
@@ -218,6 +192,18 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
                 return await method(*args, **kwargs)
 
         return wrapper
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_HIDE_EMPTY_PODCASTS,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                advanced=True,
+                default_value=False,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Pass config values to client and initialize."""

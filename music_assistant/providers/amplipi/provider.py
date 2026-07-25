@@ -24,6 +24,7 @@ from .constants import (
 from .player import AmpliPiZonePlayer
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
     from pyamplipi.models import Status
     from pyamplipi.models import Stream as AmpliPiStream
 
@@ -64,6 +65,10 @@ class AmpliPiPlayerProvider(PlayerProvider):
     # per-source locks for ensure_stream: concurrent callers for the same source cannot
     # create duplicate streams, while different sources still proceed in parallel
     _stream_locks: dict[int, asyncio.Lock]
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return ()
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

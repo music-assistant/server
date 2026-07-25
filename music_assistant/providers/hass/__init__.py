@@ -90,106 +90,6 @@ async def setup(
     return HomeAssistantProvider(mass, manifest, config, set())
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    The connection URL and authentication token are collected by the setup flow (see
-    setup_flow.py) unless running as a Home Assistant add-on, where they are fixed; only
-    the player-control and feature options are configurable here.
-
-    :param mass: The MusicAssistant instance.
-    :param instance_id: id of an existing provider instance (None if new instance setup).
-    :param action: [optional] action key called from config entries UI.
-    :param values: the (intermediate) raw values for config entries sent with the action.
-    """
-    base_entries: tuple[ConfigEntry, ...]
-    if mass.running_as_hass_addon:
-        # on supervisor, we use the internal url
-        # token set to None for auto retrieval
-        base_entries = (
-            ConfigEntry(
-                key=CONF_URL,
-                type=ConfigEntryType.STRING,
-                label=CONF_URL,
-                required=True,
-                default_value="http://supervisor/core/api",
-                value="http://supervisor/core/api",
-                hidden=True,
-            ),
-            ConfigEntry(
-                key=CONF_AUTH_TOKEN,
-                type=ConfigEntryType.STRING,
-                label=CONF_AUTH_TOKEN,
-                required=False,
-                default_value=None,
-                value=None,
-                hidden=True,
-            ),
-            ConfigEntry(
-                key=CONF_VERIFY_SSL,
-                type=ConfigEntryType.BOOLEAN,
-                label=CONF_VERIFY_SSL,
-                required=False,
-                default_value=False,
-                hidden=True,
-            ),
-        )
-    else:
-        # url/token/verify_ssl are collected by the setup flow instead (see setup_flow.py)
-        base_entries = ()
-
-    # append player controls entries (if we have an active instance)
-    if instance_id and (hass_prov := mass.get_provider(instance_id)) and hass_prov.available:
-        hass_prov = cast("HomeAssistantProvider", hass_prov)
-        return (
-            *base_entries,
-            *(await _get_config_entries(hass_prov)),
-        )
-
-    return (
-        *base_entries,
-        ConfigEntry(
-            key=CONF_POWER_CONTROLS,
-            type=ConfigEntryType.STRING,
-            multi_value=True,
-            label=CONF_POWER_CONTROLS,
-            default_value=[],
-        ),
-        ConfigEntry(
-            key=CONF_VOLUME_CONTROLS,
-            type=ConfigEntryType.STRING,
-            multi_value=True,
-            label=CONF_VOLUME_CONTROLS,
-            default_value=[],
-        ),
-        ConfigEntry(
-            key=CONF_MUTE_CONTROLS,
-            type=ConfigEntryType.STRING,
-            multi_value=True,
-            label=CONF_MUTE_CONTROLS,
-            default_value=[],
-        ),
-        ConfigEntry(
-            key=CONF_TTS_ENTITY,
-            type=ConfigEntryType.STRING,
-            label=CONF_TTS_ENTITY,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_AI_TASK_ENTITY,
-            type=ConfigEntryType.STRING,
-            label=CONF_AI_TASK_ENTITY,
-            required=False,
-        ),
-    )
-
-
 async def _get_config_entries(hass_prov: HomeAssistantProvider) -> tuple[ConfigEntry, ...]:
     """Return the (entity based) config entries."""
     all_power_entities: list[ConfigValueOption] = []
@@ -293,6 +193,94 @@ class HomeAssistantProvider(PluginProvider):
     _tts_entity_id: str | None = None
     _ai_task_entity_id: str | None = None
     _startup_complete: bool = False
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the (options) config entries for the Home Assistant provider.
+
+        The connection URL and authentication token are collected by the setup flow (see
+        setup_flow.py) unless running as a Home Assistant add-on, where they are fixed; only
+        the player-control and feature options are configurable here.
+        """
+        base_entries: tuple[ConfigEntry, ...]
+        if self.mass.running_as_hass_addon:
+            # on supervisor, we use the internal url
+            # token set to None for auto retrieval
+            base_entries = (
+                ConfigEntry(
+                    key=CONF_URL,
+                    type=ConfigEntryType.STRING,
+                    label=CONF_URL,
+                    required=True,
+                    default_value="http://supervisor/core/api",
+                    value="http://supervisor/core/api",
+                    hidden=True,
+                ),
+                ConfigEntry(
+                    key=CONF_AUTH_TOKEN,
+                    type=ConfigEntryType.STRING,
+                    label=CONF_AUTH_TOKEN,
+                    required=False,
+                    default_value=None,
+                    value=None,
+                    hidden=True,
+                ),
+                ConfigEntry(
+                    key=CONF_VERIFY_SSL,
+                    type=ConfigEntryType.BOOLEAN,
+                    label=CONF_VERIFY_SSL,
+                    required=False,
+                    default_value=False,
+                    hidden=True,
+                ),
+            )
+        else:
+            # url/token/verify_ssl are collected by the setup flow instead (see setup_flow.py)
+            base_entries = ()
+
+        # append player controls entries (if we have an active instance)
+        if self.available:
+            return (
+                *base_entries,
+                *(await _get_config_entries(self)),
+            )
+
+        return (
+            *base_entries,
+            ConfigEntry(
+                key=CONF_POWER_CONTROLS,
+                type=ConfigEntryType.STRING,
+                multi_value=True,
+                label=CONF_POWER_CONTROLS,
+                default_value=[],
+            ),
+            ConfigEntry(
+                key=CONF_VOLUME_CONTROLS,
+                type=ConfigEntryType.STRING,
+                multi_value=True,
+                label=CONF_VOLUME_CONTROLS,
+                default_value=[],
+            ),
+            ConfigEntry(
+                key=CONF_MUTE_CONTROLS,
+                type=ConfigEntryType.STRING,
+                multi_value=True,
+                label=CONF_MUTE_CONTROLS,
+                default_value=[],
+            ),
+            ConfigEntry(
+                key=CONF_TTS_ENTITY,
+                type=ConfigEntryType.STRING,
+                label=CONF_TTS_ENTITY,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_AI_TASK_ENTITY,
+                type=ConfigEntryType.STRING,
+                label=CONF_AI_TASK_ENTITY,
+                required=False,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the plugin."""

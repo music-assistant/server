@@ -39,7 +39,7 @@ from music_assistant.helpers.track_filter import get_track_filter
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.media_items import MediaItemType
     from music_assistant_models.provider import ProviderManifest
 
@@ -54,16 +54,6 @@ async def setup(
     return RadioPlaylistProvider(mass, manifest, config, set())
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider (none needed)."""
-    return ()
-
-
 def radio_playlist_uri(seed: MediaItemType) -> str:
     """
     Return the radio-playlist URI for a seed media item.
@@ -75,6 +65,10 @@ def radio_playlist_uri(seed: MediaItemType) -> str:
 
 class RadioPlaylistProvider(PluginProvider):
     """Always-on provider that generates dynamic radio playlists from a seed media item."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider (none needed)."""
+        return ()
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """

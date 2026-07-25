@@ -31,8 +31,6 @@ from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.setup_flow import SetupFlowError
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType
-
     from music_assistant.models.setup_flow import SetupSession
 
     from .provider import FullyKioskProvider
@@ -104,11 +102,7 @@ class FullyKioskPlayer(Player):
         """Return if the player requires flow mode."""
         return True
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return [
             ConfigEntry(

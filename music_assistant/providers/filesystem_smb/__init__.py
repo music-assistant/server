@@ -7,7 +7,7 @@ import platform
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import LoginFailed
 
@@ -55,52 +55,6 @@ async def setup(
     return SMBFileSystemProvider(mass, manifest, config, base_path)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # connection details and content type are collected by the setup flow; surface the
-    # (immutable) content type read-only so the sync options' depends_on chains resolve
-    content_type = "music"
-    if instance_id:
-        # read the persisted value so the depends_on chains resolve correctly
-        # even when the provider (instance) is not currently loaded
-        content_type = str(
-            mass.config.get_provider_setup_value(instance_id, CONF_CONTENT_TYPE, "music")
-        )
-    return (
-        ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
-        ConfigEntry(
-            key=CONF_CACHE_MODE,
-            type=ConfigEntryType.STRING,
-            required=False,
-            advanced=True,
-            default_value="loose",
-            options=[
-                ConfigValueOption("strict"),
-                ConfigValueOption("loose"),
-                ConfigValueOption("none"),
-            ],
-        ),
-        CONF_ENTRY_MISSING_ALBUM_ARTIST,
-        CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
-        CONF_ENTRY_LIBRARY_SYNC_TRACKS,
-        CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
-        CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
-        CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
-        CONF_ENTRY_PROPAGATE_GENRES,
-    )
-
-
 class SMBFileSystemProvider(LocalFileSystemProvider):
     """
     Implementation of an SMB File System Provider.
@@ -121,6 +75,34 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         if share:
             return share
         return None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        # connection details and content type are collected by the setup flow; surface the
+        # (immutable) content type read-only so the sync options' depends_on chains resolve
+        content_type = str(self.get_setup_value(CONF_CONTENT_TYPE, "music"))
+        return (
+            ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
+            ConfigEntry(
+                key=CONF_CACHE_MODE,
+                type=ConfigEntryType.STRING,
+                required=False,
+                advanced=True,
+                default_value="loose",
+                options=[
+                    ConfigValueOption("strict"),
+                    ConfigValueOption("loose"),
+                    ConfigValueOption("none"),
+                ],
+            ),
+            CONF_ENTRY_MISSING_ALBUM_ARTIST,
+            CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+            CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+            CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+            CONF_ENTRY_PROPAGATE_GENRES,
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

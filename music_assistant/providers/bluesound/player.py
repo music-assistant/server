@@ -6,7 +6,7 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import IdentifierType, PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 from pyblu import Player as BluosPlayer
@@ -32,7 +32,7 @@ from music_assistant.providers.bluesound.const import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.config_entries import ConfigEntry
 
     from .provider import BluesoundDiscoveryInfo, BluesoundPlayerProvider
 
@@ -89,11 +89,7 @@ class BluesoundPlayer(Player):
         await self.update_attributes()
         await self.mass.players.register_or_update(self)
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         return [
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,

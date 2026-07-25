@@ -117,6 +117,16 @@ class LastFMScrobbleProvider(PluginProvider):
     _network: pylast._Network | None
     _on_unload: list[Callable[[], None]]
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return config entries to configure this provider.
+
+        Authentication (network, credentials and session key) is handled by the setup
+        flow (see setup_flow.py); only the genuine scrobble-filter options are
+        configurable here.
+        """
+        return tuple(await ScrobblerConfig.get_shared_config_entries(self.mass, None))
+
     async def handle_async_init(self) -> None:
         """Handle async setup."""
         self._on_unload: list[Callable[[], None]] = []
@@ -211,28 +221,6 @@ class LastFMEventHandler(ScrobblerHelper):
             duration=report.duration,
             mbid=report.mbid,
         )
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return config entries to setup this provider.
-
-    Authentication (network, credentials and session key) is handled by the setup
-    flow (see setup_flow.py); only the genuine scrobble-filter options are
-    configurable here.
-
-    :param mass: The MusicAssistant instance.
-    :param instance_id: ID of an existing provider instance (None if new instance setup).
-    :param action: Optional action key called from config entries UI.
-    :param values: The (intermediate) raw values for config entries sent with the action.
-    :returns: Tuple of ConfigEntry objects for the frontend to render.
-    """
-    return tuple(await ScrobblerConfig.get_shared_config_entries(mass, values))
 
 
 def get_network(config: dict[str, ConfigValueType]) -> pylast._Network:

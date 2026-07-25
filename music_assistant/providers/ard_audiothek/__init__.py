@@ -55,7 +55,7 @@ from music_assistant.providers.ard_audiothek.database_queries import (
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -136,51 +136,38 @@ def _create_aiohttptransport(headers: dict[str, str] | None = None) -> AIOHTTPTr
     return AIOHTTPTransport(url=ARD_AUDIOTHEK_GRAPHQL, headers=headers, ssl=True)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    # credentials and the token/user-id/expiry stash are collected/persisted by the
-    # setup flow; the options surface only shows who is signed in plus the tunables
-    display_name = ""
-    email = ""
-    if instance_id and (prov := mass.get_provider(instance_id, return_unavailable=True)):
-        display_name = str(prov.get_setup_value(CONF_DISPLAY_NAME) or "")
-        email = str(prov.get_setup_value(CONF_EMAIL) or "")
-    return (
-        ConfigEntry(
-            key="label_text",
-            type=ConfigEntryType.LABEL,
-            translation_params=[display_name, email.replace("@", "(at)")],
-            hidden=not display_name,
-        ),
-        ConfigEntry(
-            key=CONF_MAX_BITRATE,
-            type=ConfigEntryType.INTEGER,
-            required=False,
-            default_value=0,
-        ),
-        ConfigEntry(
-            key=CONF_PODCAST_FINISHED,
-            type=ConfigEntryType.INTEGER,
-            required=False,
-            default_value=95,
-        ),
-    )
-
-
 class ARDAudiothek(MusicProvider):
     """ARD Audiothek Music provider."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the configuration (options) entries for the ARD Audiothek provider.
+
+        Credentials and the token/user-id/expiry stash are collected/persisted by the
+        setup flow; the options surface only shows who is signed in plus the tunables.
+        """
+        display_name = str(self.get_setup_value(CONF_DISPLAY_NAME) or "")
+        email = str(self.get_setup_value(CONF_EMAIL) or "")
+        return (
+            ConfigEntry(
+                key="label_text",
+                type=ConfigEntryType.LABEL,
+                translation_params=[display_name, email.replace("@", "(at)")],
+                hidden=not display_name,
+            ),
+            ConfigEntry(
+                key=CONF_MAX_BITRATE,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=0,
+            ),
+            ConfigEntry(
+                key=CONF_PODCAST_FINISHED,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=95,
+            ),
+        )
 
     async def get_client(self) -> Client:
         """

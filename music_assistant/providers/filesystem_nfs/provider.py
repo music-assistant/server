@@ -5,6 +5,8 @@ from __future__ import annotations
 import platform
 from pathlib import PurePosixPath
 
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
@@ -18,6 +20,16 @@ from music_assistant.providers.filesystem_local import (
     ismount,
     makedirs,
 )
+from music_assistant.providers.filesystem_local.constants import (
+    CONF_CONTENT_TYPE,
+    CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+    CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+    CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+    CONF_ENTRY_MISSING_ALBUM_ARTIST,
+    CONF_ENTRY_PROPAGATE_GENRES,
+)
 
 from .constants import CONF_EXPORT_PATH, CONF_HOST, CONF_NFS_VERSION, CONF_SUBFOLDER
 
@@ -30,6 +42,22 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
     an NFS export to a temporary location. Once mounted, all file operations
     are handled by the base LocalFileSystemProvider.
     """
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        # connection details and content type are collected by the setup flow; surface the
+        # (immutable) content type read-only so the sync options' depends_on chains resolve
+        content_type = str(self.get_setup_value(CONF_CONTENT_TYPE, "music"))
+        return (
+            ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
+            CONF_ENTRY_MISSING_ALBUM_ARTIST,
+            CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+            CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+            CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+            CONF_ENTRY_PROPAGATE_GENRES,
+        )
 
     @property
     def instance_name_postfix(self) -> str | None:

@@ -23,7 +23,7 @@ from .constants import PLAYER_CONFIG_ENTRIES
 
 if TYPE_CHECKING:
     from async_upnp_client.client import UpnpDevice, UpnpService, UpnpStateVariable
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.config_entries import ConfigEntry
     from music_assistant_models.player import PlayerMedia
 
     from .provider import DLNAPlayerProvider
@@ -192,11 +192,7 @@ class DLNAPlayer(Player):
                     self.device.media_position_updated_at.timestamp()
                 )
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return [*PLAYER_CONFIG_ENTRIES]
 

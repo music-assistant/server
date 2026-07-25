@@ -212,23 +212,15 @@ class AirPlayPlayer(Player):
             return AIRPLAY_RAOP_SETUP_LEAD_MS
         return AIRPLAY_AP2_SETUP_LEAD_MS
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         # Pairing/credentials are no longer config entries: they are collected by the
         # interactive setup flow (run_setup_flow) and stored in the player's setup_data.
         base_entries: list[ConfigEntry] = []
 
-        # Effective RAOP state reflects the force-RAOP toggle currently in the form
-        # (falling back to stored config) so the RAOP device password and the hi-res
-        # option show/hide consistently with it, not against stale stored state.
-        if values is not None and CONF_FORCE_RAOP in values:
-            force_raop = self._force_raop_available and bool(values[CONF_FORCE_RAOP])
-        else:
-            force_raop = self._force_raop_active
+        # Effective RAOP state from the current (stored) force-RAOP setting, so the RAOP
+        # device password and the hi-res option show/hide consistently with it.
+        force_raop = self._force_raop_active
         is_raop = force_raop or not self._is_airplay2_capable
 
         # "Force RAOP" escape hatch: only for AirPlay-2-capable non-Apple receivers

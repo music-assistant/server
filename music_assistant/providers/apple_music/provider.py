@@ -18,6 +18,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
@@ -38,7 +39,7 @@ from .streaming import AppleMusicStreamingManager
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.enums import MediaType
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
@@ -66,6 +67,15 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         self.media_manager = AppleMusicMediaManager(self)
         self.recommendation_manager = AppleMusicRecommendationManager(self)
         self.streaming_manager = AppleMusicStreamingManager(self)
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return Config entries to configure this provider.
+
+        Authentication is handled by the setup flow (see setup_flow.py); only the
+        informational note is surfaced here.
+        """
+        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

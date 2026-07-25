@@ -11,7 +11,7 @@ import pytest
 from music_assistant_models.errors import PlayerCommandFailed, SetupFailedError
 from pyamplipi.error import AmpliPiUnreachableError
 
-from music_assistant.providers.amplipi import get_config_entries, setup, setup_flow
+from music_assistant.providers.amplipi import setup, setup_flow
 from music_assistant.providers.amplipi.constants import CONF_HOST, MA_STREAM_NAME, MA_STREAM_TYPE
 from music_assistant.providers.amplipi.provider import AmpliPiPlayerProvider
 
@@ -419,7 +419,7 @@ class TestModuleEntryPoints:
 
     async def test_get_config_entries_has_no_setup_entries(self) -> None:
         """The host moved to the setup flow, so the options entries no longer expose it."""
-        entries = await get_config_entries(MagicMock())
+        entries = await _provider().get_config_entries()
         assert all(e.key != CONF_HOST for e in entries)
 
     async def test_setup_flow_exposes_host(self) -> None:

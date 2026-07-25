@@ -15,7 +15,6 @@ from qqmusic_api.modules.song import SongFileType
 from music_assistant.providers.qqmusic import (
     SUPPORTED_FEATURES,
     QQMusicProvider,
-    get_config_entries,
 )
 from music_assistant.providers.qqmusic.constants import (
     CONF_QUALITY,
@@ -320,7 +319,8 @@ def test_parse_track_album_mapping_accepts_album_id_fallback() -> None:
 @pytest.mark.asyncio
 async def test_get_config_entries_exposes_quality_option_without_actions() -> None:
     """Migrated config entries expose only the quality option and no auth/QR actions."""
-    entries = await get_config_entries(mass=None)
+    provider = QQMusicProvider.__new__(QQMusicProvider)
+    entries = await provider.get_config_entries()
     quality_entry = next(entry for entry in entries if entry.key == CONF_QUALITY)
     assert [option.value for option in quality_entry.options] == [
         "mp3_128",

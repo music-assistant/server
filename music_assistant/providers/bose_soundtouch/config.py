@@ -29,10 +29,11 @@ from music_assistant_models.media_items import (
 from .const import PRESET_IDS
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType
     from music_assistant_models.media_items import SearchResults
 
     from music_assistant.mass import MusicAssistant
+
+    from .player import BoseSoundTouchPlayer
 
 SearchResultItem = (
     Artist | Album | Track | Radio | Playlist | Audiobook | Podcast | Genre | ItemMapping
@@ -68,35 +69,45 @@ def preset_media_type_key(preset_id: int) -> str:
     return f"preset_{preset_id}_media_type"
 
 
+def preset_selected_media_key(preset_id: int) -> str:
+    """Return the config key holding the selected search result for the given preset."""
+    return f"preset_{preset_id}_selected_media"
+
+
 async def build_preset_config_entries(
-    mass: MusicAssistant,
-    action: str | None,
-    values: dict[str, ConfigValueType] | None,
+    player: BoseSoundTouchPlayer,
+    *,
+    refresh_preset_id: int | None = None,
 ) -> list[ConfigEntry]:
-    """Return the preset config entries for a SoundTouch player."""
+    """
+    Return the preset config entries for a SoundTouch player.
+
+    Field values are read from the player's stored config (the frontend persists them);
+    the media search is only executed for ``refresh_preset_id`` (the preset whose
+    search/copy button was just pressed) so a plain render never runs six searches.
+
+    :param player: The SoundTouch player whose stored config the entries are built from.
+    :param refresh_preset_id: Preset id whose search results should be (re)fetched, or None.
+    """
     entries: list[ConfigEntry] = []
     for preset_id in PRESET_IDS:
         media_type_key = preset_media_type_key(preset_id)
         search_key = f"preset_{preset_id}_search"
-        selected_key = f"preset_{preset_id}_selected_media"
+        selected_key = preset_selected_media_key(preset_id)
         media_key = preset_media_key(preset_id)
         search_action = f"preset_{preset_id}_search_media"
         copy_action = f"preset_{preset_id}_copy_media"
 
-        media_type = _media_type_config_value(values, media_type_key)
-        query = _string_config_value(values, search_key).strip()
-        selected_media = _string_config_value(values, selected_key)
-        media_value = _string_config_value(values, media_key)
-
-        if action == copy_action and selected_media:
-            media_value = selected_media
+        media_type = _media_type_config_value(player, media_type_key)
+        query = _string_config_value(player, search_key).strip()
+        selected_media = _string_config_value(player, selected_key)
 
         media_options = await _build_preset_media_options(
-            mass=mass,
+            mass=player.mass,
             media_type=media_type,
             query=query,
             selected_media=selected_media,
-            refresh_results=action in (search_action, copy_action),
+            refresh_results=preset_id == refresh_preset_id,
         )
 
         entries.append(
@@ -117,8 +128,7 @@ async def build_preset_config_entries(
                     translation_key="preset_media_type",
                     translation_params=[str(preset_id)],
                     required=False,
-                    default_value=media_type.value,
-                    value=media_type.value,
+                    default_value=DEFAULT_MEDIA_TYPE.value,
                     options=MEDIA_TYPE_OPTIONS,
                     category="presets",
                 ),
@@ -128,8 +138,7 @@ async def build_preset_config_entries(
                     translation_key="preset_search",
                     translation_params=[str(preset_id)],
                     required=False,
-                    default_value=query,
-                    value=query,
+                    default_value="",
                     category="presets",
                 ),
                 ConfigEntry(
@@ -152,8 +161,7 @@ async def build_preset_config_entries(
                         translation_key="preset_result_selection",
                         translation_params=[str(preset_id)],
                         required=False,
-                        default_value=selected_media,
-                        value=selected_media,
+                        default_value="",
                         options=media_options,
                         category="presets",
                     ),
@@ -174,8 +182,7 @@ async def build_preset_config_entries(
                 translation_key="preset_media",
                 translation_params=[str(preset_id)],
                 required=False,
-                default_value=media_value,
-                value=media_value,
+                default_value="",
                 category="presets",
             )
         )
@@ -264,17 +271,13 @@ def _iter_search_result_items(
             return []
 
 
-def _string_config_value(values: dict[str, ConfigValueType] | None, key: str) -> str:
-    """Return a string config value (empty string if missing/not a string)."""
-    if values and isinstance(value := values.get(key), str):
-        return value
-    return ""
+def _string_config_value(player: BoseSoundTouchPlayer, key: str) -> str:
+    """Return a string config value from the player's stored config (empty if unset)."""
+    value = player.get_config_value(key)
+    return value if isinstance(value, str) else ""
 
 
-def _media_type_config_value(
-    values: dict[str, ConfigValueType] | None,
-    key: str,
-) -> MediaType:
-    """Return a searchable media type from config values."""
-    media_type = MediaType(_string_config_value(values, key) or DEFAULT_MEDIA_TYPE.value)
+def _media_type_config_value(player: BoseSoundTouchPlayer, key: str) -> MediaType:
+    """Return a searchable media type from the player's stored config."""
+    media_type = MediaType(_string_config_value(player, key) or DEFAULT_MEDIA_TYPE.value)
     return media_type if media_type in SEARCHABLE_MEDIA_TYPES else DEFAULT_MEDIA_TYPE

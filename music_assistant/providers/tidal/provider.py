@@ -6,7 +6,8 @@ import json
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed
 from music_assistant_models.media_items import (
     Album,
@@ -21,6 +22,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
@@ -30,6 +32,7 @@ from .auth_manager import TidalAuthManager
 from .constants import (
     CONF_AUTH_TOKEN,
     CONF_EXPIRY_TIME,
+    CONF_QUALITY,
     CONF_REFRESH_TOKEN,
     CONF_USER_ID,
 )
@@ -87,6 +90,27 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         self.playlists = TidalPlaylistManager(self)
         self.recommendations_manager = TidalRecommendationManager(self)
         self.streaming = TidalStreamingManager(self)
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the configuration (options) entries for the Tidal provider.
+
+        Authentication runs in the interactive setup flow (see ``setup_flow.py``); the only
+        genuine option configured here is the preferred streaming quality.
+        """
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                required=True,
+                options=[
+                    ConfigValueOption("LOSSLESS"),
+                    ConfigValueOption("HI_RES_LOSSLESS"),
+                ],
+                default_value="HI_RES_LOSSLESS",
+            ),
+        )
 
     def _update_auth_config(self, auth_info: dict[str, Any]) -> None:
         """Update the persisted auth setup data with new (rotated) auth info."""

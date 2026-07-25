@@ -11,7 +11,7 @@ from datetime import UTC
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import client_exceptions
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     AlbumType,
     ConfigEntryType,
@@ -104,36 +104,6 @@ async def setup(
     return QobuzProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    return (
-        CONF_ENTRY_UNOFFICIAL_PROVIDER,
-        ConfigEntry(
-            key=CONF_QUALITY,
-            type=ConfigEntryType.STRING,
-            default_value="27",
-            options=[
-                ConfigValueOption("27"),
-                ConfigValueOption("7"),
-                ConfigValueOption("6"),
-                ConfigValueOption("5"),
-            ],
-        ),
-    )
-
-
 class QobuzProvider(MusicProvider):
     """Provider for the Qobuz music service."""
 
@@ -141,6 +111,23 @@ class QobuzProvider(MusicProvider):
     # Class-level throttler shared across all instances of this provider.
     # This ensures a single rate limit even if multiple Qobuz accounts are configured.
     throttler = ThrottlerManager(rate_limit=2, period=1)
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                default_value="27",
+                options=[
+                    ConfigValueOption("27"),
+                    ConfigValueOption("7"),
+                    ConfigValueOption("6"),
+                    ConfigValueOption("5"),
+                ],
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

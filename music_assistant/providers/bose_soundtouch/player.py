@@ -28,7 +28,7 @@ from .client import (
     play_status_is_paused,
     play_status_is_playing,
 )
-from .config import build_preset_config_entries, preset_media_key
+from .config import build_preset_config_entries, preset_media_key, preset_selected_media_key
 from .const import (
     CONF_APP_KEY,
     KEY_MUTE,
@@ -47,7 +47,7 @@ from .const import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.config_entries import ConfigEntry
 
     from .provider import BoseSoundTouchProvider
 
@@ -57,6 +57,12 @@ PLAYBACK_POLL_INTERVAL = 10
 
 class BoseSoundTouchPlayer(Player):
     """Bose SoundTouch player in Music Assistant."""
+
+    # preset whose media search should be refreshed on the next config render, set by a
+    # search/copy action press (the player config surface re-renders after an action, so
+    # the transient search results are surfaced via this instance flag rather than the
+    # discarded handle_config_action return)
+    _pending_refresh_preset_id: int | None = None
 
     def __init__(
         self,
@@ -145,13 +151,36 @@ class BoseSoundTouchPlayer(Player):
             self._listener_task = None
         await super().on_unload()
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return player-specific config entries (preset button mappings)."""
-        return await build_preset_config_entries(self.mass, action, values)
+        # consume the one-shot refresh flag set by a search/copy action press
+        refresh_preset_id = self._pending_refresh_preset_id
+        self._pending_refresh_preset_id = None
+        return await build_preset_config_entries(self, refresh_preset_id=refresh_preset_id)
+
+    async def handle_config_action(self, action: str) -> list[ConfigEntry]:
+        """
+        Handle a preset search/copy button press and re-render the entries.
+
+        A copy button persists the currently selected search result as that preset's
+        media URI; a search button only re-runs that preset's media search. Values are
+        read from the (already persisted) stored config; no in-flight form is passed.
+
+        :param action: The action id of the pressed button.
+        """
+        preset_id, is_copy = _parse_preset_action(action)
+        if preset_id is None:
+            return await super().handle_config_action(action)
+        if is_copy and (
+            selected := str(self.get_config_value(preset_selected_media_key(preset_id), "") or "")
+        ):
+            self.mass.config.set_raw_player_config_value(
+                self.player_id, preset_media_key(preset_id), selected
+            )
+        # the player config surface re-renders via get_config_entries (the controller
+        # discards this return), so flag the preset to refresh on that next render
+        self._pending_refresh_preset_id = preset_id
+        return await build_preset_config_entries(self, refresh_preset_id=preset_id)
 
     # --- Player commands ---
 
@@ -434,3 +463,17 @@ class BoseSoundTouchPlayer(Player):
 def _source_id(source: str, source_account: str | None) -> str:
     """Build a stable source id from a SoundTouch source and account."""
     return f"{source}:{source_account}" if source_account else source
+
+
+def _parse_preset_action(action: str) -> tuple[int | None, bool]:
+    """
+    Parse a preset action id into its ``(preset_id, is_copy)`` parts.
+
+    Returns ``(None, False)`` for actions that are not preset search/copy buttons.
+    """
+    for preset_id in PRESET_IDS:
+        if action == f"preset_{preset_id}_search_media":
+            return preset_id, False
+        if action == f"preset_{preset_id}_copy_media":
+            return preset_id, True
+    return None, False
