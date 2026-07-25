@@ -218,6 +218,34 @@ def test_power_feature_requires_credentials_or_connection() -> None:
     assert PlayerFeature.POWER in connected.supported_features
 
 
+def test_power_feature_skips_transient_mrp_tunnels() -> None:
+    """A transient MRP tunnel does not count as real power control."""
+    # pyatv reports TurnOn/TurnOff as available on every MRP connection, but a HomePod
+    # reached over the transient tunnel cannot act on them and derives its power state
+    # from logicalDeviceCount, which does not count AirPlay audio sessions.
+    homepod = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    assert homepod._uses_transient_mrp is True
+
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.TurnOn
+    homepod._mrp_device = device
+
+    assert PlayerFeature.POWER not in homepod.supported_features
+
+
+async def test_power_command_refuses_transient_mrp_tunnels() -> None:
+    """A power command never reaches a tunnel that cannot serve it."""
+    homepod = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.TurnOn
+    homepod._mrp_device = device
+
+    with pytest.raises(PlayerCommandFailed):
+        await homepod.power(True)
+
+    device.power.turn_on.assert_not_called()
+
+
 def test_native_transport_features_follow_live_capabilities() -> None:
     """External next/previous controls are advertised only while available."""
     player = _make_control_player()
@@ -300,6 +328,39 @@ def test_duplicate_native_volume_update_is_ignored() -> None:
 
     cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_not_called()
     update_state.assert_not_called()
+
+
+def test_native_volume_update_ignored_while_streaming() -> None:
+    """Native volume reports never overwrite the volume of a running stream."""
+    # volume_set routes to the stream while streaming and leaves the native device
+    # volume alone, so a report about that separate knob must not clobber (or persist)
+    # the level the user just set.
+    player = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    player.stream = MagicMock(running=True)
+    player._attr_volume_level = 62
+    player._attr_volume_muted = False
+
+    with patch.object(player, "update_state") as update_state:
+        player._handle_volume_update("mrp", 10)
+
+    assert player.volume_level == 62
+    assert player.volume_muted is False
+    cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_not_called()
+    update_state.assert_not_called()
+
+
+def test_native_volume_update_applies_when_idle() -> None:
+    """Native volume reports still drive player state while no stream is running."""
+    player = _make_control_player()
+    player.stream = MagicMock(running=False)
+    player._attr_volume_level = 62
+    player._attr_volume_muted = False
+
+    with patch.object(player, "update_state") as update_state:
+        player._handle_volume_update("companion", 10)
+
+    assert player.volume_level == 10
+    update_state.assert_called_once()
 
 
 def test_control_pairing_is_optional_and_never_requires_setup() -> None:
@@ -401,6 +462,28 @@ def test_power_off_update_tracks_sleep_state() -> None:
         assert player.current_media is None
 
         update_state.assert_called_once()
+
+
+def test_power_off_update_ignored_while_streaming() -> None:
+    """A device streaming from Music Assistant is never marked powered off."""
+    # MRP derives power from logicalDeviceCount, which does not count AirPlay audio
+    # sessions, so a playing HomePod reports PowerState.Off. Acting on that would
+    # strand the player as "off" and trip the auto-ungroup in the players controller.
+    player = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    player.stream = MagicMock(running=True)
+    player._attr_powered = True
+    player._power_on_event.set()
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_active_source = "airplay"
+
+    with patch.object(player, "update_state") as update_state:
+        player._handle_power_update("mrp", PowerState.Off)
+
+    assert player.powered is True
+    assert player._power_on_event.is_set()
+    assert player.playback_state == PlaybackState.PLAYING
+    assert player.active_source == "airplay"
+    update_state.assert_not_called()
 
 
 def test_power_on_update_tracks_awake_state() -> None:

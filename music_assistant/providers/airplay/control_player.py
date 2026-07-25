@@ -201,8 +201,8 @@ class AirPlayControlPlayer(AirPlayPlayer):
         # credentials (so the feature does not flap while (re)connecting).
         if (
             self.get_setup_value(CONF_COMPANION_CREDENTIALS)
-            or self._device_for_feature(FeatureName.TurnOn)
-            or self._device_for_feature(FeatureName.TurnOff)
+            or self._device_for_power_feature(FeatureName.TurnOn)
+            or self._device_for_power_feature(FeatureName.TurnOff)
         ):
             features.add(PlayerFeature.POWER)
         if not self._stream_active and not self._device_for_feature(FeatureName.SetVolume):
@@ -252,7 +252,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
     async def power(self, powered: bool) -> None:
         """Turn the controlled device on or off."""
         feature = FeatureName.TurnOn if powered else FeatureName.TurnOff
-        device = self._device_for_feature(feature)
+        device = self._device_for_power_feature(feature)
         if device is None:
             raise PlayerCommandFailed(f"Power control is unavailable for {self.display_name}")
         if powered:
@@ -707,6 +707,28 @@ class AirPlayControlPlayer(AirPlayPlayer):
                 return device
         return None
 
+    def _device_for_power_feature(self, feature: FeatureName) -> AppleTV | None:
+        """
+        Return a connected device facade that can genuinely serve a power command.
+
+        pyatv reports the power commands as available on every MRP connection, but a
+        transient tunnel - the only control channel current HomePod firmware offers -
+        cannot act on them, and derives its power state from ``logicalDeviceCount``,
+        which does not count AirPlay audio sessions. Trusting it would leave a playing
+        HomePod stranded as "off".
+
+        :param feature: The power feature to look for.
+        """
+        if self._companion_device and self._feature_available(self._companion_device, feature):
+            return self._companion_device
+        if (
+            self._mrp_device
+            and not self._uses_transient_mrp
+            and self._feature_available(self._mrp_device, feature)
+        ):
+            return self._mrp_device
+        return None
+
     @staticmethod
     def _feature_available(device: AppleTV, feature: FeatureName) -> bool:
         """Return whether pyatv currently exposes a feature."""
@@ -716,7 +738,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
         """Wake the device before starting or resuming playback."""
         if self.powered is True:
             return
-        device = self._device_for_feature(FeatureName.TurnOn)
+        device = self._device_for_power_feature(FeatureName.TurnOn)
         if device is None:
             return
         self._power_on_event.clear()
@@ -954,12 +976,18 @@ class AirPlayControlPlayer(AirPlayPlayer):
             self._attr_powered = True
             self._power_on_event.set()
         elif power_state == PowerState.Off:
+            # A device streaming from Music Assistant is not powered off, whatever the
+            # control channel claims: MRP derives the state from logicalDeviceCount,
+            # which does not count AirPlay audio sessions, and a Companion SystemStatus
+            # can briefly report sleep mid-stream. Acting on it would strand the player
+            # as "off" and trip the auto-ungroup in the players controller.
+            if self._stream_active:
+                return
             self._attr_powered = False
             self._power_on_event.clear()
-            if not self._stream_active:
-                self._attr_playback_state = PlaybackState.IDLE
-                self._attr_active_source = None
-                self._attr_current_media = None
+            self._attr_playback_state = PlaybackState.IDLE
+            self._attr_active_source = None
+            self._attr_current_media = None
         else:
             self._attr_powered = None
         self.update_state()
@@ -967,6 +995,12 @@ class AirPlayControlPlayer(AirPlayPlayer):
     def _handle_volume_update(self, source: str, volume: float) -> None:
         """Apply a pushed pyatv volume level."""
         if source == "mrp" and self._companion_device is not None:
+            return
+        # While Music Assistant streams, volume_set drives the stream volume and
+        # deliberately leaves the native device volume alone. The two are separate
+        # knobs on a different scale, so a report about the native one must not
+        # overwrite (or persist) the level the user just set on the stream.
+        if source != "command" and self._stream_active:
             return
         volume_level = max(0, min(100, round(volume)))
         if volume_level == 0:
