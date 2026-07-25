@@ -2000,15 +2000,15 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 sql_query, query_params, limit=1, offset=0
             )
             # create a sql json_object which queries all these columns
-            if len(db_rows) > 0:
+            if db_rows:
                 json_object = (
                     "json_object(" + ",".join([f"'{x}',{x}" for x in db_rows[0].keys()]) + ")"  # noqa: SIM118
                 )
+                await self.mass.cache.set(
+                    key=cache_key_json_object, category=int(summary), data=json_object
+                )
             else:
                 json_object = "json_object()"
-            await self.mass.cache.set(
-                key=cache_key_json_object, category=int(summary), data=json_object
-            )
 
         collections_column = "collections" if summary else "json_extract(metadata, '$.collections')"
 
@@ -2051,6 +2051,19 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                         {single_extra_order_keys}
                         json_extract(iter_coll.value, '$.title') as collection_title,
                         json_extract(iter_coll.value, '$.sequence') as collection_sequence,
+                        CASE
+                            WHEN json_type(iter_coll.value, '$.sequence') IN ('integer', 'real')
+                            THEN 1
+                            WHEN json_type(iter_coll.value, '$.sequence') = 'text'
+                                AND json_valid(json_extract(iter_coll.value, '$.sequence'))
+                            THEN CASE
+                                WHEN json_type(json_extract(iter_coll.value, '$.sequence'))
+                                    IN ('integer', 'real')
+                                THEN 1
+                                ELSE 0
+                            END
+                            ELSE 0
+                        END as collection_sequence_is_numeric,
                         {json_object} as media_data
                     FROM (
                         SELECT * FROM joined_table
@@ -2076,24 +2089,13 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 -- null case
                 CASE WHEN collection_sequence IS NULL THEN 1 ELSE 0 END,
                 -- numeric before text
-                CASE
-                    WHEN collection_sequence IS NOT NULL
-                        AND collection_sequence GLOB '[0-9]*'
-                        AND collection_sequence NOT GLOB '*[^0-9]*'
-                    THEN 0
-                        WHEN collection_sequence IS NOT NULL
-                    THEN 1
-                END,
+                CASE WHEN collection_sequence_is_numeric THEN 0 ELSE 1 END,
                 -- order NUMERIC
-                CASE
-                    WHEN collection_sequence IS NOT NULL
-                        AND collection_sequence GLOB '[0-9]*'
-                        AND collection_sequence NOT GLOB '*[^0-9]*'
-                    THEN CAST(collection_sequence AS INTEGER)
+                CASE WHEN collection_sequence_is_numeric
+                    THEN CAST(collection_sequence AS REAL)
                 END,
                 -- order TEXT
-                CASE
-                    WHEN collection_sequence IS NOT NULL
+                CASE WHEN NOT collection_sequence_is_numeric
                     THEN collection_sequence
                 END COLLATE NOCASE,
                 -- order by media name if no sequence given
@@ -2120,8 +2122,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             return sql_query
 
         if search:
-            sql_query += "WHERE search_name LIKE :search"
-            return sql_query
+            sql_query += " WHERE search_name LIKE :search"
 
         if order_by:
             if order_by not in supported_order_keys:
