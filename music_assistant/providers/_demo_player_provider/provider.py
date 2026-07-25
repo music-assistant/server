@@ -50,7 +50,7 @@ class DemoPlayerprovider(PlayerProvider):
                 type=ConfigEntryType.INTEGER,
                 label="Number of Players",
                 required=True,
-                default_value="2",
+                default_value=2,
                 description="Number of demo players to create.",
             ),
         )
