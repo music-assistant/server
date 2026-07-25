@@ -377,6 +377,7 @@ def test_automation_pins_external_actions() -> None:
             "music-assistant/server",
             False,
         ),
+        ("marcelveldt", "User", "6389780", "music-assistant/server", False),
         (
             "musicassistant-bot[bot]",
             "Bot",
@@ -414,6 +415,35 @@ def test_dependency_auto_merge_app_bot_identity_contract(
     assert is_trusted_app is trusted
 
 
+@pytest.mark.parametrize(
+    ("login", "user_type", "user_id", "trusted"),
+    [
+        ("musicassistant-bot[bot]", "Bot", "304008617", True),
+        ("marcelveldt", "User", "6389780", False),
+        ("musicassistant-bot", "Bot", "304008617", False),
+        ("musicassistant-bot[bot]", "User", "304008617", False),
+        ("musicassistant-bot[bot]", "Bot", "123456789", False),
+    ],
+)
+def test_dependency_auto_merge_commit_author_contract(
+    login: str,
+    user_type: str,
+    user_id: str,
+    trusted: bool,
+) -> None:
+    """Accept commits only from the expected GitHub App bot identity."""
+    workflow = yaml.safe_load(DEPENDENCY_AUTO_MERGE_WORKFLOW.read_text(encoding="utf-8"))
+    expected = workflow["env"]
+
+    is_trusted_author = (
+        login == expected["EXPECTED_APP_BOT_LOGIN"]
+        and user_type == "Bot"
+        and user_id == expected["EXPECTED_APP_BOT_ID"]
+    )
+
+    assert is_trusted_author is trusted
+
+
 def test_dependency_auto_merge_enforces_app_bot_identity_contract() -> None:
     """Ensure the workflow enforces the tested App bot identity contract."""
     workflow_text = DEPENDENCY_AUTO_MERGE_WORKFLOW.read_text(encoding="utf-8")
@@ -437,22 +467,25 @@ def test_dependency_auto_merge_enforces_app_bot_identity_contract() -> None:
     }
     source_check = source_step["run"]
     for required_check in (
-        'if [ "$PR_AUTHOR" = "$EXPECTED_APP_BOT_LOGIN" ]; then',
+        'if [ "$PR_AUTHOR" != "$EXPECTED_APP_BOT_LOGIN" ] ||',
         '[ "$PR_AUTHOR_TYPE" != "Bot" ] ||',
         '[ "$PR_AUTHOR_ID" != "$EXPECTED_APP_BOT_ID" ] ||',
         '[ "$HEAD_REPOSITORY" != "$BASE_REPOSITORY" ]; then',
         'gh api "/users/$EXPECTED_APP_BOT_LOGIN"',
-        'elif [ "$PR_AUTHOR_TYPE" = "User" ]; then',
     ):
         assert required_check in source_check
+    assert "collaborators/" not in source_check
 
     author_check = steps["Verify commit authors"]["run"]
     assert '--arg login "$EXPECTED_APP_BOT_LOGIN"' in author_check
     assert '--argjson id "$EXPECTED_APP_BOT_ID"' in author_check
-    assert 'if [ "$AUTHOR" = "$EXPECTED_APP_BOT_LOGIN" ]; then' in author_check
+    assert ".author.login != $login" in author_check
+    assert 'author.type != "Bot"' in author_check
+    assert ".author.id != $id" in author_check
+    assert "UNTRUSTED_AUTHORS" in author_check
     assert "UNATTRIBUTED" in author_check
     assert "COMMIT_COUNT" in author_check
-    assert "collaborators/$AUTHOR/permission" in author_check
+    assert "collaborators/" not in author_check
 
     assert "auto-update-frontend-" in job["if"]
     assert "auto-update-models-" in job["if"]

@@ -37,36 +37,25 @@ jobs:
         run: |
           # GitHub App bots are not collaborators. Trust only the known App account
           # when the event also proves it is a same-repository Bot PR.
-          if [ "$PR_AUTHOR" = "$EXPECTED_APP_BOT_LOGIN" ]; then
-            if [ "$PR_AUTHOR_TYPE" != "Bot" ] || \
-               [ "$PR_AUTHOR_ID" != "$EXPECTED_APP_BOT_ID" ] || \
-               [ "$HEAD_REPOSITORY" != "$BASE_REPOSITORY" ]; then
-              echo "❌ GitHub App PR identity does not match the trusted source"
-              exit 1
-            fi
-
-            if ! BOT_PROFILE=$(gh api "/users/$EXPECTED_APP_BOT_LOGIN" 2>/dev/null); then
-              echo "❌ Could not verify the GitHub App bot profile"
-              exit 1
-            fi
-            if [ "$(jq -r '.login' <<< "$BOT_PROFILE")" != "$EXPECTED_APP_BOT_LOGIN" ] || \
-               [ "$(jq -r '.type' <<< "$BOT_PROFILE")" != "Bot" ] || \
-               [ "$(jq -r '.id' <<< "$BOT_PROFILE")" != "$EXPECTED_APP_BOT_ID" ]; then
-              echo "❌ GitHub App bot profile does not match the trusted identity"
-              exit 1
-            fi
-            echo "✅ PR is from the trusted GitHub App bot"
-          elif [ "$PR_AUTHOR_TYPE" = "User" ]; then
-            if gh api "/repos/$BASE_REPOSITORY/collaborators/$PR_AUTHOR/permission" --jq '.permission' 2>/dev/null | grep -qE "^(admin|write|maintain)$"; then
-              echo "✅ PR is from user with write access: $PR_AUTHOR"
-            else
-              echo "❌ PR author does not have write access: $PR_AUTHOR"
-              exit 1
-            fi
-          else
-            echo "❌ PR is not from the trusted GitHub App bot or a repository user"
+          if [ "$PR_AUTHOR" != "$EXPECTED_APP_BOT_LOGIN" ] || \
+             [ "$PR_AUTHOR_TYPE" != "Bot" ] || \
+             [ "$PR_AUTHOR_ID" != "$EXPECTED_APP_BOT_ID" ] || \
+             [ "$HEAD_REPOSITORY" != "$BASE_REPOSITORY" ]; then
+            echo "❌ GitHub App PR identity does not match the trusted source"
             exit 1
           fi
+
+          if ! BOT_PROFILE=$(gh api "/users/$EXPECTED_APP_BOT_LOGIN" 2>/dev/null); then
+            echo "❌ Could not verify the GitHub App bot profile"
+            exit 1
+          fi
+          if [ "$(jq -r '.login' <<< "$BOT_PROFILE")" != "$EXPECTED_APP_BOT_LOGIN" ] || \
+             [ "$(jq -r '.type' <<< "$BOT_PROFILE")" != "Bot" ] || \
+             [ "$(jq -r '.id' <<< "$BOT_PROFILE")" != "$EXPECTED_APP_BOT_ID" ]; then
+            echo "❌ GitHub App bot profile does not match the trusted identity"
+            exit 1
+          fi
+          echo "✅ PR is from the trusted GitHub App bot"
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BASE_REPOSITORY: ${{ github.repository }}
@@ -131,28 +120,20 @@ jobs:
             exit 1
           fi
 
-          INVALID_APP_AUTHORS=$(echo "$COMMITS" | jq \
+          UNTRUSTED_AUTHORS=$(echo "$COMMITS" | jq \
             --arg login "$EXPECTED_APP_BOT_LOGIN" \
             --argjson id "$EXPECTED_APP_BOT_ID" \
-            '[.[] | select(.author.login == $login and
-              (.author.type != "Bot" or .author.id != $id))] | length')
-          if [ "$INVALID_APP_AUTHORS" -gt 0 ]; then
-            echo "❌ $INVALID_APP_AUTHORS commit(s) have an invalid GitHub App author"
+            '[.[] | select(
+              .author.login != $login or
+              .author.type != "Bot" or
+              .author.id != $id
+            )] | length')
+          if [ "$UNTRUSTED_AUTHORS" -gt 0 ]; then
+            echo "❌ $UNTRUSTED_AUTHORS commit(s) are not authored by the trusted GitHub App bot"
             exit 1
           fi
 
-          COMMIT_AUTHORS=$(echo "$COMMITS" | jq -r '[.[].author.login] | unique | .[]')
-
-          for AUTHOR in $COMMIT_AUTHORS; do
-            if [ "$AUTHOR" = "$EXPECTED_APP_BOT_LOGIN" ]; then
-              echo "✅ Commit author is the trusted GitHub App bot: $AUTHOR"
-            elif gh api "/repos/${{ github.repository }}/collaborators/$AUTHOR/permission" --jq '.permission' 2>/dev/null | grep -qE "^(admin|write|maintain)$"; then
-              echo "✅ Commit author has write access: $AUTHOR"
-            else
-              echo "❌ Commit author does not have write access: $AUTHOR"
-              exit 1
-            fi
-          done
+          echo "✅ All commits are authored by the trusted GitHub App bot"
 
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
