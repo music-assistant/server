@@ -5,19 +5,18 @@ Cover four things, with the Sendspin clock mocked via ``ManualClock`` so the
 tests are deterministic and independent of the host wall-clock:
 
 * the clock-domain conversion turning a Sendspin audible instant (Sendspin's own
-  monotonic clock) into the unix epoch ms used by the generation START command;
+  monotonic clock) into the unix epoch ms used by the START command;
 * the start anchor: byte 0 is anchored to the first chunk Sendspin delivers, so a
   fresh track keeps position 0 and a late joiner lands at the group's live position;
 * the write pacing that keeps the device buffered a bounded amount ahead of real
   time so a late-join catch-up backlog is not dumped into the CLI;
 * the warm handover: a running, connected stream is kept (not torn down) across
-  a new Sendspin stream, and stages/commits a new generation on itself
-  instead of a cold reconnect -- with prime-timeout and superseded-task fallback.
+  a new Sendspin stream and rides the persistent-stdin flush-refill (FLUSH +
+  re-anchoring START) instead of a cold reconnect -- with flush-timeout and
+  superseded-task fallback.
 """
 
 import asyncio
-import errno
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -284,19 +283,15 @@ async def test_failed_cli_write_does_not_advance_pacing_cursor() -> None:
 # --- Commanded cold start and warm handover ------------------------------------
 
 
-async def test_cold_start_connects_then_prepares_and_starts_generation_zero() -> None:
-    """A fresh bridge stream commands generation 0 only after the CLI connects."""
+async def test_cold_start_connects_then_anchors_first_start() -> None:
+    """A fresh bridge stream anchors its first START only after the CLI connects."""
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     bridge._drop_until_us = SENDSPIN_EPOCH_US + AP2_LEAD_MS * 1_000
     bridge._airplay_stream_start_task = asyncio.current_task()
     stream = MagicMock()
-    stream.start = AsyncMock()
+    stream.connect = AsyncMock()
     stream.wait_for_connection = AsyncMock()
-    stream.prepare_generation = AsyncMock()
-    stream.wait_generation_ready = AsyncMock(return_value=True)
-    stream.wait_generation_primed = AsyncMock(return_value=True)
-    stream.discard_generation = AsyncMock()
-    stream.start_generation = AsyncMock()
+    stream.start = AsyncMock()
 
     with (
         patch(
@@ -310,30 +305,26 @@ async def test_cold_start_connects_then_prepares_and_starts_generation_zero() ->
     ):
         await bridge._start_protocol_from_chunk()
 
-    stream.start.assert_awaited_once_with()
+    stream.connect.assert_awaited_once_with()
     stream.wait_for_connection.assert_awaited_once_with()
-    stream.prepare_generation.assert_awaited_once_with(0, "-", 0)
-    stream.wait_generation_ready.assert_awaited_once_with(0)
-    stream.wait_generation_primed.assert_awaited_once_with(0)
-    stream.start_generation.assert_awaited_once_with(0, 0, int(UNIX_NOW_S * 1000) + AP2_LEAD_MS)
+    stream.start.assert_awaited_once_with(int(UNIX_NOW_S * 1000) + AP2_LEAD_MS)
     assert bridge._airplay_stream is stream
     assert bridge.airplay_player.stream is stream
-    assert bridge._generation_started is True
+    assert bridge._started is True
+    assert bridge._airplay_stream_ready.is_set()
 
 
-async def test_cold_start_ready_timeout_discards_generation_zero() -> None:
-    """A cold bridge start FLUSHes generation 0 before stopping its transport."""
+async def test_cold_start_superseded_before_start_stops_transport() -> None:
+    """A cold bridge start that is superseded after connect stops its transport."""
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     bridge._drop_until_us = SENDSPIN_EPOCH_US + AP2_LEAD_MS * 1_000
-    bridge._airplay_stream_start_task = asyncio.current_task()
+    # a different task owns the bridge: this cold start is stale
+    bridge._airplay_stream_start_task = MagicMock()
     stream = MagicMock()
-    stream.start = AsyncMock()
+    stream.connect = AsyncMock()
     stream.stop = AsyncMock()
     stream.wait_for_connection = AsyncMock()
-    stream.prepare_generation = AsyncMock()
-    stream.wait_generation_ready = AsyncMock(return_value=False)
-    stream.discard_generation = AsyncMock()
-    stream.start_generation = AsyncMock()
+    stream.start = AsyncMock()
 
     with (
         patch(
@@ -347,12 +338,11 @@ async def test_cold_start_ready_timeout_discards_generation_zero() -> None:
     ):
         await bridge._start_protocol_from_chunk()
 
-    stream.discard_generation.assert_awaited_once_with(0)
-    stream.start_generation.assert_not_awaited()
+    stream.start.assert_not_awaited()
     stream.stop.assert_awaited_once_with(force=True)
 
 
-# --- Warm handover: a kept stream survives a new stream start and absorbs a generation ---
+# --- Warm handover: a kept stream survives a new stream start and rides flush-refill ---
 
 
 def _make_kept_stream(*, running: bool = True, connected: bool = True) -> MagicMock:
@@ -369,7 +359,7 @@ def test_on_bridge_stream_start_keeps_warm_eligible_stream() -> None:
     kept_stream = _make_kept_stream()
     bridge._airplay_stream = kept_stream
     bridge.airplay_player.stream = kept_stream
-    bridge._generation_started = True
+    bridge._started = True
 
     bridge._on_bridge_stream_start()
 
@@ -379,7 +369,7 @@ def test_on_bridge_stream_start_keeps_warm_eligible_stream() -> None:
 
 
 def test_on_bridge_stream_start_keeps_raop_stream() -> None:
-    """A committed legacy RAOP stream is eligible for warm Sendspin generations."""
+    """A started legacy RAOP stream is eligible for warm Sendspin flush-refill."""
     bridge = _make_bridge(
         clock_now_us=SENDSPIN_EPOCH_US,
         wait_start_ms=RAOP_LEAD_MS,
@@ -388,7 +378,7 @@ def test_on_bridge_stream_start_keeps_raop_stream() -> None:
     old_stream = _make_kept_stream()
     bridge._airplay_stream = old_stream
     bridge.airplay_player.stream = old_stream
-    bridge._generation_started = True
+    bridge._started = True
 
     bridge._on_bridge_stream_start()
 
@@ -406,7 +396,7 @@ def test_sendspin_callbacks_keep_raop_stream_until_warm_handover() -> None:
     kept_stream = _make_kept_stream()
     bridge._airplay_stream = kept_stream
     bridge.airplay_player.stream = kept_stream
-    bridge._generation_started = True
+    bridge._started = True
 
     bridge._on_stream_start(MagicMock())
     bridge._on_bridge_stream_start()
@@ -416,7 +406,7 @@ def test_sendspin_callbacks_keep_raop_stream_until_warm_handover() -> None:
 
 
 def test_on_bridge_stream_start_replaces_uncommitted_stream() -> None:
-    """A connected stream cannot be retained before generation 0 has started."""
+    """A connected stream cannot be retained before its first START."""
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     old_stream = _make_kept_stream()
     bridge._airplay_stream = old_stream
@@ -434,7 +424,7 @@ def test_on_stream_start_keeps_warm_eligible_stream() -> None:
     kept_stream = _make_kept_stream()
     bridge._airplay_stream = kept_stream
     bridge.airplay_player.stream = kept_stream
-    bridge._generation_started = True
+    bridge._started = True
 
     bridge._on_stream_start(MagicMock())
 
@@ -442,358 +432,77 @@ def test_on_stream_start_keeps_warm_eligible_stream() -> None:
     assert bridge.airplay_player.stream is kept_stream
 
 
-async def test_warm_generation_commits_on_kept_stream_instance() -> None:
-    """A warm handover stages and commits a new generation on the same stream instance."""
+async def test_warm_stream_flushes_and_reanchors_on_kept_instance() -> None:
+    """A warm handover flushes and re-anchors START on the same stream instance."""
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     kept_stream = MagicMock()
-    kept_stream.next_generation = MagicMock(return_value=3)
-    kept_stream.prepare_generation = AsyncMock()
-    kept_stream.wait_generation_ready = AsyncMock(return_value=True)
-    kept_stream.wait_generation_primed = AsyncMock(return_value=True)
-    kept_stream.discard_generation = AsyncMock()
-    kept_stream.start_generation = AsyncMock()
+    kept_stream.flush = AsyncMock(return_value=True)
+    kept_stream.start = AsyncMock()
     bridge._airplay_stream = kept_stream
     bridge._airplay_stream_start_task = asyncio.current_task()
-    expected_fifo = f"/tmp/ma-bridge-{bridge.airplay_player.player_id}-3.pcm"  # noqa: S108
 
-    with (
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.unlink"),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.mkfifo"),
-        patch(
-            "music_assistant.providers.airplay.sendspin_bridge.open_named_pipe_writer",
-            new_callable=AsyncMock,
-            return_value=99,
-        ),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.open", return_value=100),
-    ):
-        committed = await bridge._start_warm_generation(kept_stream, 1_784_000_000_000)
+    committed = await bridge._start_warm_stream(kept_stream, 1_784_000_000_000)
 
     assert committed is True
     assert bridge._airplay_stream is kept_stream  # no new instance was built
-    kept_stream.prepare_generation.assert_awaited_once_with(3, expected_fifo, 0)
-    kept_stream.wait_generation_ready.assert_awaited_once_with(3)
-    kept_stream.wait_generation_primed.assert_awaited_once_with(3)
-    kept_stream.discard_generation.assert_not_awaited()
-    kept_stream.start_generation.assert_awaited_once_with(3, 0, 1_784_000_000_000)
-    assert bridge._sink_fd == 99
+    kept_stream.flush.assert_awaited_once_with()
+    kept_stream.start.assert_awaited_once_with(1_784_000_000_000)
+    assert bridge._started is True
     assert bridge._airplay_stream_ready.is_set()
 
 
-async def test_warm_generation_prime_timeout_falls_back_to_cold_restart() -> None:
-    """A prime timeout never commits and reverts the writer to the stdin sink."""
+async def test_warm_stream_flush_timeout_falls_back_to_cold() -> None:
+    """A flush that is never acknowledged never re-anchors and falls back to cold."""
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     kept_stream = MagicMock()
-    kept_stream.next_generation = MagicMock(return_value=1)
-    kept_stream.prepare_generation = AsyncMock()
-    kept_stream.wait_generation_ready = AsyncMock(return_value=True)
-    kept_stream.wait_generation_primed = AsyncMock(return_value=False)
-    kept_stream.discard_generation = AsyncMock()
-    kept_stream.start_generation = AsyncMock()
+    kept_stream.flush = AsyncMock(return_value=False)
+    kept_stream.start = AsyncMock()
     bridge._airplay_stream = kept_stream
     bridge._airplay_stream_start_task = asyncio.current_task()
 
-    with (
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.unlink"),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.mkfifo"),
-        patch(
-            "music_assistant.providers.airplay.sendspin_bridge.open_named_pipe_writer",
-            new_callable=AsyncMock,
-            return_value=55,
-        ),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.open", return_value=100),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.close") as mock_close,
-    ):
-        committed = await bridge._start_warm_generation(kept_stream, 1_784_000_000_000)
+    committed = await bridge._start_warm_stream(kept_stream, 1_784_000_000_000)
 
     assert committed is False
-    kept_stream.discard_generation.assert_awaited_once_with(1)
-    kept_stream.start_generation.assert_not_awaited()
-    assert bridge._sink_fd is None  # reverted so the cold-path writer uses stdin again
-    mock_close.assert_any_call(55)
+    kept_stream.start.assert_not_awaited()
+    assert bridge._started is False
 
 
-async def test_warm_generation_superseded_before_commit_does_not_start() -> None:
-    """If a newer stream start already owns the bridge, the stale attempt never commits."""
+async def test_warm_stream_superseded_before_start_does_not_anchor() -> None:
+    """If a newer stream start already owns the bridge, the stale flush never re-anchors."""
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     kept_stream = MagicMock()
-    kept_stream.next_generation = MagicMock(return_value=2)
-    kept_stream.prepare_generation = AsyncMock()
-    kept_stream.wait_generation_ready = AsyncMock(return_value=True)
-    kept_stream.wait_generation_primed = AsyncMock(return_value=True)
-    kept_stream.discard_generation = AsyncMock()
-    kept_stream.start_generation = AsyncMock()
+    kept_stream.flush = AsyncMock(return_value=True)
+    kept_stream.start = AsyncMock()
     bridge._airplay_stream = kept_stream
     # Simulate a newer stream start having already replaced the tracked task.
     bridge._airplay_stream_start_task = MagicMock()
 
-    with (
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.unlink"),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.mkfifo"),
-        patch(
-            "music_assistant.providers.airplay.sendspin_bridge.open_named_pipe_writer",
-            new_callable=AsyncMock,
-            return_value=77,
-        ),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.open", return_value=100),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.close") as mock_close,
-    ):
-        committed = await bridge._start_warm_generation(kept_stream, 1_784_000_000_000)
+    committed = await bridge._start_warm_stream(kept_stream, 1_784_000_000_000)
 
     assert committed is False
-    kept_stream.discard_generation.assert_awaited_once_with(2)
-    kept_stream.start_generation.assert_not_awaited()
-    # The stale attempt must NOT close the fd: it was published as self._sink_fd,
-    # so closing it here would break the writer (EBADF) or double-close a fd a
-    # newer task already replaced. Its lifecycle is owned by _set_sink_fd/teardown.
-    assert all(call.args[0] != 77 for call in mock_close.call_args_list)
-    assert bridge._sink_fd == 77
+    kept_stream.start.assert_not_awaited()
 
 
-async def test_warm_generation_ready_timeout_does_not_open_writer() -> None:
-    """A missing ready status abandons the staged FIFO before publishing a sink."""
+async def test_warm_stream_cancellation_propagates() -> None:
+    """Cancellation while flushing propagates without re-anchoring."""
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     kept_stream = MagicMock()
-    kept_stream.next_generation = MagicMock(return_value=1)
-    kept_stream.prepare_generation = AsyncMock()
-    kept_stream.wait_generation_ready = AsyncMock(return_value=False)
-    kept_stream.discard_generation = AsyncMock()
-    kept_stream.start_generation = AsyncMock()
-    bridge._airplay_stream = kept_stream
-    bridge._airplay_stream_start_task = asyncio.current_task()
+    flush_waiting = asyncio.Event()
 
-    with (
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.unlink"),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.mkfifo"),
-        patch(
-            "music_assistant.providers.airplay.sendspin_bridge.open_named_pipe_writer",
-            new_callable=AsyncMock,
-        ) as open_writer,
-        patch(
-            "music_assistant.providers.airplay.sendspin_bridge.os.open",
-            side_effect=OSError(errno.ENXIO, "no reader"),
-        ),
-    ):
-        assert await bridge._start_warm_generation(kept_stream, 1_784_000_000_000) is False
-
-    open_writer.assert_not_awaited()
-    kept_stream.discard_generation.assert_awaited_once_with(1)
-    kept_stream.start_generation.assert_not_awaited()
-    assert bridge._sink_fd is None
-
-
-async def test_warm_generation_cancellation_discards_staging() -> None:
-    """Cancellation while awaiting ready FLUSHes the bridge generation."""
-    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
-    kept_stream = MagicMock()
-    kept_stream.next_generation = MagicMock(return_value=1)
-    kept_stream.prepare_generation = AsyncMock()
-    ready_waiting = asyncio.Event()
-
-    async def wait_ready(_generation: int) -> bool:
-        ready_waiting.set()
+    async def flush(*_args: object, **_kwargs: object) -> bool:
+        bridge._airplay_stream_start_task = asyncio.current_task()
+        flush_waiting.set()
         await asyncio.Event().wait()
         return True
 
-    kept_stream.wait_generation_ready = AsyncMock(side_effect=wait_ready)
-    kept_stream.discard_generation = AsyncMock()
+    kept_stream.flush = AsyncMock(side_effect=flush)
+    kept_stream.start = AsyncMock()
     bridge._airplay_stream = kept_stream
 
-    with (
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.unlink"),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.mkfifo"),
-        patch(
-            "music_assistant.providers.airplay.sendspin_bridge.os.open",
-            side_effect=OSError(errno.ENXIO, "no reader"),
-        ),
-    ):
-        warm_task = asyncio.create_task(
-            bridge._start_warm_generation(kept_stream, 1_784_000_000_000)
-        )
-        await ready_waiting.wait()
-        warm_task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await warm_task
+    warm_task = asyncio.create_task(bridge._start_warm_stream(kept_stream, 1_784_000_000_000))
+    await flush_waiting.wait()
+    warm_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await warm_task
 
-    kept_stream.discard_generation.assert_awaited_once_with(1)
-    assert bridge._sink_fd is None
-
-
-async def test_warm_generation_cancellation_before_sink_publication_closes_fd() -> None:
-    """Cancellation before sink publication closes the locally owned writer fd."""
-    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
-    kept_stream = MagicMock()
-    kept_stream.next_generation = MagicMock(return_value=1)
-    kept_stream.prepare_generation = AsyncMock()
-    kept_stream.wait_generation_ready = AsyncMock(return_value=True)
-    kept_stream.discard_generation = AsyncMock()
-    bridge._airplay_stream_start_task = asyncio.current_task()
-
-    with (
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.unlink"),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.mkfifo"),
-        patch(
-            "music_assistant.providers.airplay.sendspin_bridge.open_named_pipe_writer",
-            new_callable=AsyncMock,
-            return_value=55,
-        ),
-        patch.object(
-            bridge,
-            "_set_sink_fd",
-            new_callable=AsyncMock,
-            side_effect=asyncio.CancelledError,
-        ),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.open", return_value=100),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.close") as close_fd,
-        pytest.raises(asyncio.CancelledError),
-    ):
-        await bridge._start_warm_generation(kept_stream, 1_784_000_000_000)
-
-    assert sum(call.args == (55,) for call in close_fd.call_args_list) == 1
-    kept_stream.discard_generation.assert_awaited_once_with(1)
-    assert bridge._sink_fd is None
-
-
-async def test_warm_generation_cancellation_after_sink_publication_releases_fd() -> None:
-    """Cancellation during sink publication releases the owner-managed fd."""
-    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
-    kept_stream = MagicMock()
-    kept_stream.next_generation = MagicMock(return_value=1)
-    kept_stream.prepare_generation = AsyncMock()
-    kept_stream.wait_generation_ready = AsyncMock(return_value=True)
-    kept_stream.discard_generation = AsyncMock()
-    bridge._airplay_stream_start_task = asyncio.current_task()
-
-    async def publish_then_cancel(fd: int | None) -> None:
-        old_fd = bridge._sink_fd
-        bridge._sink_fd = int(str(fd)) if fd is not None else None
-        if fd == 1000:
-            assert bridge._sink_fd is not fd
-            raise asyncio.CancelledError
-        if old_fd is not None:
-            os.close(old_fd)
-
-    with (
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.unlink"),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.mkfifo"),
-        patch(
-            "music_assistant.providers.airplay.sendspin_bridge.open_named_pipe_writer",
-            new_callable=AsyncMock,
-            return_value=1000,
-        ),
-        patch.object(
-            bridge,
-            "_set_sink_fd",
-            new_callable=AsyncMock,
-            side_effect=publish_then_cancel,
-        ),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.open", return_value=100),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.close") as close_fd,
-        pytest.raises(asyncio.CancelledError),
-    ):
-        await bridge._start_warm_generation(kept_stream, 1_784_000_000_000)
-
-    assert bridge._sink_fd is None
-    assert sum(call.args == (1000,) for call in close_fd.call_args_list) == 1
-    kept_stream.discard_generation.assert_awaited_once_with(1)
-
-
-async def test_warm_generation_exception_before_sink_publication_closes_fd() -> None:
-    """A failed sink publication closes its locally owned writer fd once."""
-    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
-    kept_stream = MagicMock()
-    kept_stream.next_generation = MagicMock(return_value=1)
-    kept_stream.prepare_generation = AsyncMock()
-    kept_stream.wait_generation_ready = AsyncMock(return_value=True)
-    kept_stream.discard_generation = AsyncMock()
-    bridge._airplay_stream_start_task = asyncio.current_task()
-
-    with (
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.unlink"),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.mkfifo"),
-        patch(
-            "music_assistant.providers.airplay.sendspin_bridge.open_named_pipe_writer",
-            new_callable=AsyncMock,
-            return_value=55,
-        ),
-        patch.object(
-            bridge,
-            "_set_sink_fd",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("swap failed"),
-        ),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.open", return_value=100),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.close") as close_fd,
-    ):
-        assert await bridge._start_warm_generation(kept_stream, 1_784_000_000_000) is False
-
-    assert sum(call.args == (55,) for call in close_fd.call_args_list) == 1
-    kept_stream.discard_generation.assert_awaited_once_with(1)
-    assert bridge._sink_fd is None
-
-
-async def test_warm_generation_exception_after_sink_publication_releases_fd() -> None:
-    """A failed published sink swap releases its owner-managed writer fd once."""
-    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
-    kept_stream = MagicMock()
-    kept_stream.next_generation = MagicMock(return_value=1)
-    kept_stream.prepare_generation = AsyncMock()
-    kept_stream.wait_generation_ready = AsyncMock(return_value=True)
-    kept_stream.discard_generation = AsyncMock()
-    bridge._airplay_stream_start_task = asyncio.current_task()
-
-    async def publish_then_fail(fd: int | None) -> None:
-        old_fd = bridge._sink_fd
-        bridge._sink_fd = int(str(fd)) if fd is not None else None
-        if fd == 1000:
-            assert bridge._sink_fd is not fd
-            raise RuntimeError("swap failed")
-        if old_fd is not None:
-            os.close(old_fd)
-
-    with (
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.unlink"),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.mkfifo"),
-        patch(
-            "music_assistant.providers.airplay.sendspin_bridge.open_named_pipe_writer",
-            new_callable=AsyncMock,
-            return_value=1000,
-        ),
-        patch.object(
-            bridge,
-            "_set_sink_fd",
-            new_callable=AsyncMock,
-            side_effect=publish_then_fail,
-        ),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.open", return_value=100),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.close") as close_fd,
-    ):
-        assert await bridge._start_warm_generation(kept_stream, 1_784_000_000_000) is False
-
-    assert bridge._sink_fd is None
-    assert sum(call.args == (1000,) for call in close_fd.call_args_list) == 1
-    kept_stream.discard_generation.assert_awaited_once_with(1)
-
-
-async def test_release_sink_fd_propagates_cancellation_after_clearing_owner() -> None:
-    """Sink cleanup closes its fd and propagates cancellation."""
-    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
-    bridge._sink_fd = 1000
-
-    async def clear_then_cancel(fd: int | None) -> None:
-        bridge._sink_fd = fd
-        raise asyncio.CancelledError
-
-    with (
-        patch.object(
-            bridge,
-            "_set_sink_fd",
-            new_callable=AsyncMock,
-            side_effect=clear_then_cancel,
-        ),
-        patch("music_assistant.providers.airplay.sendspin_bridge.os.close") as close_fd,
-        pytest.raises(asyncio.CancelledError),
-    ):
-        await bridge._release_sink_fd(1000)
-
-    close_fd.assert_called_once_with(1000)
-    assert bridge._sink_fd is None
+    kept_stream.start.assert_not_awaited()

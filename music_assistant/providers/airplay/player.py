@@ -315,10 +315,15 @@ class AirPlayPlayer(Player):
         if self.group_members or self.synced_to:
             # Grouped pause parks the whole session (standby); unpausing one
             # member cannot restart the group in sync. Resume via the queue
-            # instead: play_media commits a fresh generation to every parked
-            # member at one shared instant.
-            queue_id = self.synced_to or self.player_id
-            await self.mass.player_queues.resume(queue_id, fade_in=False)
+            # instead: play_media flushes and re-anchors every parked member at
+            # one shared instant. The queue can belong to a linked native parent
+            # (for example Sonos), so resolve it instead of using the AirPlay ID.
+            active_queue = self.mass.players.get_active_queue(self)
+            if active_queue is None:
+                raise PlayerCommandFailed(
+                    f"Cannot resume grouped AirPlay player {self.display_name} without an active queue"
+                )
+            await self.mass.player_queues.resume(active_queue.queue_id, fade_in=False)
             return
         async with self._lock:
             if self.stream and self.stream.running:
@@ -330,7 +335,7 @@ class AirPlayPlayer(Player):
             # A broadcast pause cannot keep independent member processes
             # sample-aligned on resume. Instead the session is parked: every
             # member stalls but keeps its connection (and remote control), and
-            # the queue's resume commits a new generation over the live
+            # the queue's resume flushes and re-anchors over the live
             # connections — the same coordinated warm restart as seek/next.
             if (
                 self.stream
@@ -361,8 +366,8 @@ class AirPlayPlayer(Player):
             sync_clients = self._get_sync_clients()
             session_pcm_format = self._get_session_pcm_format(sync_clients, media)
 
-            # Warm path: a live, compatible session absorbs the new media as
-            # its next generation (seek/next never pays the reconnect cost).
+            # Warm path: a live, compatible session absorbs the new media via a
+            # flush-refill in place (seek/next never pays the reconnect cost).
             if (
                 self.stream
                 and self.stream.running
