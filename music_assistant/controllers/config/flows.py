@@ -7,11 +7,13 @@ import importlib
 import logging
 import time
 from dataclasses import dataclass
+from functools import partial
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import EventType, FlowStepType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import ConfigEntryType, EventType, FlowStepType
 from music_assistant_models.errors import (
     ActionUnavailable,
     InsufficientPermissions,
@@ -188,6 +190,12 @@ class SetupFlowMixin:
         """
         Start the setup flow for a player (e.g. pairing).
 
+        A player that itself needs no setup but wraps protocol child player(s) that do
+        (universal players, or native players wrapping protocol children) delegates to
+        the child's setup flow: to the single child that needs setup directly, or - when
+        more than one does - via a form that lets the user pick which child to set up.
+        The child's flow persists to the child's own config.
+
         :param player_id: The player to set up.
         """
         # deliberately no raise_unavailable: a player that needs setup is serialized
@@ -197,26 +205,37 @@ class SetupFlowMixin:
             msg = f"Player {player_id} not found"
             raise KeyError(msg)
         owner = f"provider.{player.provider.domain}"
-        if type(player).run_setup_flow is Player.run_setup_flow:
-            # the player (provider) implements no setup flow
-            return self._synthesized_step(FlowStepType.ABORT, owner, reason="nothing_to_configure")
-        raw_conf = self.get(f"{CONF_PLAYERS}/{player_id}") or {}
-        context = SetupFlowContext(
-            kind="setup",
-            reason="user",
-            domain=player.provider.domain,
-            instance_id=player.provider.instance_id,
-            player_id=player_id,
-            setup_data=self._decrypt_values(raw_conf.get("setup_data") or {}),
-            values=self._decrypt_values(raw_conf.get("values") or {}),
-        )
-        return await self._start_flow(
-            flow_coro=player.run_setup_flow,
-            context=context,
-            target_key=f"player_setup:{player_id}",
-            required_scope=Scope.CONFIG_PLAYERS_WRITE,
-            finish_handler=self._finish_player_setup,
-        )
+        target_key = f"player_setup:{player_id}"
+        if type(player).run_setup_flow is not Player.run_setup_flow:
+            # the player implements its own setup flow: run it directly
+            return await self._start_flow(
+                flow_coro=player.run_setup_flow,
+                context=self._player_flow_context(player),
+                target_key=target_key,
+                required_scope=Scope.CONFIG_PLAYERS_WRITE,
+                finish_handler=self._finish_player_setup,
+            )
+        # no direct setup: delegate to protocol child player(s) that need setup
+        children = self._protocol_children_needing_setup(player)
+        if len(children) == 1:
+            child = children[0]
+            return await self._start_flow(
+                flow_coro=child.run_setup_flow,
+                context=self._player_flow_context(child),
+                target_key=target_key,
+                required_scope=Scope.CONFIG_PLAYERS_WRITE,
+                finish_handler=self._finish_player_setup,
+            )
+        if children:
+            return await self._start_flow(
+                flow_coro=partial(self._run_child_selection_flow, children),
+                context=self._player_flow_context(player),
+                target_key=target_key,
+                required_scope=Scope.CONFIG_PLAYERS_WRITE,
+                finish_handler=self._finish_player_setup,
+            )
+        # nothing on this player (or its children) to configure
+        return self._synthesized_step(FlowStepType.ABORT, owner, reason="nothing_to_configure")
 
     @api_command("config/flows/submit")
     async def submit_setup_flow(
@@ -417,6 +436,85 @@ class SetupFlowMixin:
             raise SetupFlowError(str(err) or err.__class__.__name__) from err
         self.mass.signal_event(EventType.PLAYER_CONFIG_UPDATED, object_id=player_id, data=config)
         return {"player_id": player_id}
+
+    def _player_flow_context(self, player: Player) -> SetupFlowContext:
+        """Build the setup flow context (with decrypted prefill) for the given player."""
+        raw_conf = self.get(f"{CONF_PLAYERS}/{player.player_id}") or {}
+        return SetupFlowContext(
+            kind="setup",
+            reason="user",
+            domain=player.provider.domain,
+            instance_id=player.provider.instance_id,
+            player_id=player.player_id,
+            setup_data=self._decrypt_values(raw_conf.get("setup_data") or {}),
+            values=self._decrypt_values(raw_conf.get("values") or {}),
+        )
+
+    def _protocol_children_needing_setup(self, player: Player) -> list[Player]:
+        """
+        Return the player's protocol child players that need (and implement) setup.
+
+        Covers the wrapper case: a universal player, or a native player wrapping
+        protocol children, whose own setup is a no-op but whose linked protocol
+        outputs still require pairing/credentials.
+        """
+        children: list[Player] = []
+        seen: set[str] = set()
+        for output_protocol in player.output_protocols:
+            child_id = output_protocol.output_protocol_id
+            if output_protocol.is_native or child_id in seen:
+                continue
+            seen.add(child_id)
+            child = self.mass.players.get_player(child_id)
+            if (
+                child is not None
+                and child.needs_setup
+                and type(child).run_setup_flow is not Player.run_setup_flow
+            ):
+                children.append(child)
+        return children
+
+    async def _run_child_selection_flow(
+        self, children: list[Player], session: SetupSession
+    ) -> None:
+        """
+        Run the wrapper flow that lets the user pick which protocol child to set up.
+
+        The selection form is owned by the parent; once a child is picked the session is
+        re-pointed at that child so its flow's steps localize and its ``finish()`` persists
+        under the child's own config.
+        """
+        options = [
+            ConfigValueOption(
+                value=child.player_id, title=f"{child.display_name} ({child.provider.name})"
+            )
+            for child in children
+        ]
+        values = await session.form(
+            [
+                ConfigEntry(
+                    key="child",
+                    type=ConfigEntryType.STRING,
+                    required=True,
+                    default_value=children[0].player_id,
+                    options=options,
+                )
+            ],
+            step_id="select_child",
+        )
+        child_id = str(values["child"])
+        child = next((candidate for candidate in children if candidate.player_id == child_id), None)
+        if child is None:
+            raise AbortFlow("nothing_to_configure")
+        child_raw = self.get(f"{CONF_PLAYERS}/{child_id}") or {}
+        session.retarget(
+            domain=child.provider.domain,
+            instance_id=child.provider.instance_id,
+            player_id=child_id,
+            setup_data=self._decrypt_values(child_raw.get("setup_data") or {}),
+            values=self._decrypt_values(child_raw.get("values") or {}),
+        )
+        await child.run_setup_flow(session)
 
     async def _get_setup_flow_module(self, manifest: ProviderManifest) -> Any | None:
         """

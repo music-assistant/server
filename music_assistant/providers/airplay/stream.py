@@ -543,7 +543,7 @@ class AirPlayStream:
             args += ["--txt", txt_records]
 
         # HAP credentials (triggers native AP2 flow when present)
-        if creds := self.player.config.get_value(CONF_AIRPLAY_CREDENTIALS):
+        if creds := self.player.get_setup_value(CONF_AIRPLAY_CREDENTIALS):
             creds_str = str(creds)
             if len(creds_str) == 192:
                 args += ["--auth", creds_str]
@@ -553,7 +553,7 @@ class AirPlayStream:
                 )
 
         # Legacy Apple TV RAOP pairing secret
-        if raop_creds := self.player.config.get_value(CONF_RAOP_CREDENTIALS):
+        if raop_creds := self.player.get_setup_value(CONF_RAOP_CREDENTIALS):
             # Credentials format is "client_id:auth_secret", the binary expects the secret
             creds_str = str(raop_creds)
             auth_secret = creds_str.split(":", 1)[1] if ":" in creds_str else creds_str

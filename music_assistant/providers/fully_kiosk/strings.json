@@ -22,5 +22,11 @@
   },
   "manifest": {
     "description": "Play audio on Fully Kiosk-enabled displays or Android devices."
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Connect to Fully Kiosk",
+      "description": "Enter the password configured for the Fully Kiosk REST API on this device."
+    }
   }
 }

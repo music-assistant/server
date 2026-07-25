@@ -169,7 +169,6 @@ def _make_provider(
     provider.mass = cast("MusicAssistant", _FakeMass(asyncio.get_running_loop()))
     provider.server_api = cast("SendspinServer", server_api)
     provider._pin_sessions = {}
-    provider._token_pairing = set()
     provider._pairing_config_snapshots = {}
     provider.logger = logging.getLogger("test.sendspin.pin")
     refreshed: list[str] = []
@@ -520,16 +519,6 @@ async def test_pair_with_token_success_refreshes(monkeypatch: pytest.MonkeyPatch
     await provider.pair_with_token("c", "tok")
     assert api.end_pairing_calls == 0
     assert refreshed == ["c"]
-
-
-async def test_token_pairing_submenu_state(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The token-entry submenu state toggles per client."""
-    provider, _ = _make_provider(_FakeServerApi([], await_pin=False), monkeypatch)
-    assert not provider.is_token_pairing("c")
-    provider.open_token_pairing("c")
-    assert provider.is_token_pairing("c")
-    provider.close_token_pairing("c")
-    assert not provider.is_token_pairing("c")
 
 
 async def test_idle_timeout_restores_connection(monkeypatch: pytest.MonkeyPatch) -> None:

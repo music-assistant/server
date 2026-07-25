@@ -6,6 +6,7 @@ from music_assistant.controllers.config.migrations import (
     _migrate_airplay_apple_power_control,
     _migrate_airplay_receiver_ghost_players,
     _migrate_output_limiter,
+    _migrate_player_setup_data,
 )
 
 
@@ -28,6 +29,89 @@ def test_migrate_output_limiter_noop_when_absent() -> None:
     """Migration reports no change when no player stored the setting."""
     data: dict[str, Any] = {"players": {"p1": {"player_id": "p1", "values": {"flow_mode": True}}}}
     assert _migrate_output_limiter(data) is False
+
+
+def test_migrate_player_setup_data_moves_credentials() -> None:
+    """Player-owned credential/pairing keys move from values into setup_data."""
+    data: dict[str, Any] = {
+        "players": {
+            "ap1": {
+                "player_id": "ap1",
+                "provider": "airplay",
+                "values": {
+                    "airplay_credentials": "ENC_ap2creds",
+                    "companion_credentials": "ENC_companion",
+                    "ap2password": "ENC_dead",
+                    "password": "ENC_devpw",
+                    "ignore_volume": True,
+                },
+            },
+            "fk1": {
+                "player_id": "fk1",
+                "provider": "fully_kiosk",
+                "values": {"password": "ENC_fk", "use_ssl": True},
+            },
+            "mpd1": {"player_id": "mpd1", "provider": "mpd", "values": {}},
+            "sonos1": {
+                "player_id": "sonos1",
+                "provider": "sonos",
+                "values": {"password": "keepme"},
+            },
+        }
+    }
+    assert _migrate_player_setup_data(data) is True
+    ap1 = data["players"]["ap1"]
+    # credentials moved to setup_data (already-encrypted, moved as-is)
+    assert ap1["setup_data"] == {
+        "airplay_credentials": "ENC_ap2creds",
+        "companion_credentials": "ENC_companion",
+    }
+    # the RAOP device password (a genuine user option) and other options stay in values;
+    # the vestigial ap2password is dropped entirely
+    assert ap1["values"] == {"password": "ENC_devpw", "ignore_volume": True}
+    # fully_kiosk password moves, unrelated option stays
+    assert data["players"]["fk1"]["setup_data"] == {"password": "ENC_fk"}
+    assert data["players"]["fk1"]["values"] == {"use_ssl": True}
+    # a provider not in the map is untouched
+    assert data["players"]["sonos1"]["values"] == {"password": "keepme"}
+    assert "setup_data" not in data["players"]["sonos1"]
+    # idempotent second run
+    assert _migrate_player_setup_data(data) is False
+
+
+def test_migrate_player_setup_data_preserves_existing_and_drops_null() -> None:
+    """An existing setup_data value is never clobbered and stored nulls are dropped."""
+    data: dict[str, Any] = {
+        "players": {
+            "ap1": {
+                "player_id": "ap1",
+                "provider": "airplay",
+                "setup_data": {"airplay_credentials": "ENC_existing"},
+                "values": {"airplay_credentials": "ENC_stale", "raop_credentials": None},
+            }
+        }
+    }
+    assert _migrate_player_setup_data(data) is True
+    ap1 = data["players"]["ap1"]
+    # the pre-existing setup_data value wins; the null raop value is just dropped
+    assert ap1["setup_data"] == {"airplay_credentials": "ENC_existing"}
+    assert ap1["values"] == {}
+
+
+def test_migrate_player_setup_data_multi_instance_domain() -> None:
+    """Domain matching handles multi-instance provider ids (<domain>--<id>)."""
+    data: dict[str, Any] = {
+        "players": {
+            "ap1": {
+                "player_id": "ap1",
+                "provider": "airplay--2",
+                "values": {"raop_credentials": "ENC_raop"},
+            }
+        }
+    }
+    assert _migrate_player_setup_data(data) is True
+    assert data["players"]["ap1"]["setup_data"] == {"raop_credentials": "ENC_raop"}
+    assert data["players"]["ap1"]["values"] == {}
 
 
 def _airplay_receiver_ghost_data() -> dict[str, Any]:
