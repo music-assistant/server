@@ -1312,8 +1312,8 @@ async def test_guest_ready_advances_and_prefetches_in_system_context() -> None:
             playback_contexts.append(playback_user)
             if playback_user is not None:
                 raise MediaNotFoundError("No playable items found")
-            assert track_uri == "spotify://track/1"
-            assert option == QueueOption.REPLACE
+            if option is QueueOption.REPLACE:
+                assert track_uri == "spotify://track/1"
 
         plugin._play_track = MusicQuizPlugin._play_track.__get__(  # type: ignore[method-assign]
             plugin, MusicQuizPlugin
@@ -1347,7 +1347,7 @@ async def test_guest_ready_advances_and_prefetches_in_system_context() -> None:
             impersonated_user.reset(impersonated_user_token)
             current_user.reset(current_user_token)
 
-    assert playback_contexts == [None]
+    assert playback_contexts and all(context is None for context in playback_contexts)  # noqa: PT018
     assert (2, None) in prepared_contexts
     assert game.current_round_index == 1
     assert len(game.rounds) == 2
@@ -5386,3 +5386,24 @@ async def test_prefetch_enqueues_next_track_for_preloading() -> None:
 async def _immediate(value: MusicQuizRound) -> MusicQuizRound:
     """Return the given round (helper for building an already-resolved task)."""
     return value
+
+
+@pytest.mark.asyncio
+async def test_prefetch_round_starts_warm_task() -> None:
+    """Prefetching a round also starts the task that pre-queues its track."""
+    plugin = _create_plugin()
+    warmed: list[str] = []
+
+    async def _warm(task: asyncio.Task[MusicQuizRound]) -> None:
+        game_round = await task
+        assert game_round.track_uri is not None
+        warmed.append(game_round.track_uri)
+
+    plugin._warm_next_track = _warm  # type: ignore[method-assign]
+
+    await _create_started_game(plugin)
+    await asyncio.sleep(0)
+    if plugin._warm_next_track_task is not None:
+        await plugin._warm_next_track_task
+
+    assert warmed == ["library://track/1"]

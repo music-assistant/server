@@ -1214,6 +1214,10 @@ class MusicQuizPlugin(PluginProvider):
             self._next_round_task = self.mass.create_task(
                 self._prepare_round(quiz_type, round_index, list(game.rounds))
             )
+            if quiz_type.plays_track_before_answering:
+                self._warm_next_track_task = self.mass.create_task(
+                    self._warm_next_track(self._next_round_task)
+                )
 
     async def _get_prepared_round(self, round_index: int) -> MusicQuizRound:
         """Return the (prefetched) round with the given index."""
@@ -1238,6 +1242,10 @@ class MusicQuizPlugin(PluginProvider):
 
     def _cancel_next_round_task(self) -> None:
         """Cancel a pending round prefetch task."""
+        if self._warm_next_track_task is not None:
+            self._warm_next_track_task.cancel()
+            self._warm_next_track_task.add_done_callback(_consume_task_exception)
+            self._warm_next_track_task = None
         if self._next_round_task is not None:
             self._next_round_task.cancel()
             # retrieve the result/exception once the task settles so a prefetch that
