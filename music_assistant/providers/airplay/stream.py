@@ -150,12 +150,7 @@ class AirPlayStream:
             await self._cli_proc.start()
             self._cli_proc.attach_stderr_reader(self.mass.create_task(self._stderr_reader()))
             self._stdout_reader_task = self.mass.create_task(self._stdout_reader())
-            metadata = self.player.current_media
-            if metadata is None and self.session:
-                metadata = self.session.media
-            if metadata:
-                progress = int(metadata.corrected_elapsed_time or 0)
-                await self.send_metadata(progress, metadata, send_artwork=False)
+            await self._send_current_metadata(send_artwork=False)
         except BaseException:
             try:
                 await self._cleanup_failed_start()
@@ -175,10 +170,11 @@ class AirPlayStream:
         volume = 0 if self.player.volume_muted else self.player.volume_level
         await self.send_cli_command(f"VOLUME={volume}")
         self.mass.call_later(2, self.send_cli_command(f"VOLUME={volume}"))
-        self._metadata_checksum = ""
-        self._metadata_text_checksum = ""
-        self._pending_metadata_checksum = ""
-        self._metadata_generation += 1
+        async with self._metadata_lock:
+            self._metadata_checksum = ""
+            self._metadata_text_checksum = ""
+            self._pending_metadata_checksum = ""
+            self._metadata_generation += 1
         # Push track metadata before START. Some receivers (notably Sonos) hold
         # back audio rendering until they receive track metadata; deferring it
         # can keep them silent past the commanded start.
@@ -321,12 +317,23 @@ class AirPlayStream:
         # the binary's first status arrives, interpolation would otherwise keep
         # extending the previous anchor's clock, briefly mapping a bogus position.
         self.player.set_state_from_stream(elapsed_time=self._start_position, stream=self)
-        if not await self._write_cli_command(f"START_UNIX_MS={start_unix_ms}\nACTION=START"):
-            # Surfacing the dropped delivery lets the session fall back to a
-            # cold restart instead of waiting on an anchor that never happens.
-            raise PlayerCommandFailed(
-                f"Could not deliver START to AirPlay player {self.player.player_id}"
-            )
+        async with self._metadata_lock:
+            if not await self._write_cli_command(f"START_UNIX_MS={start_unix_ms}\nACTION=START"):
+                # Surfacing the dropped delivery lets the session fall back to a
+                # cold restart instead of waiting on an anchor that never happens.
+                raise PlayerCommandFailed(
+                    f"Could not deliver START to AirPlay player {self.player.player_id}"
+                )
+            # A receiver may discard artwork sent before a new playback anchor.
+            # Start a fresh generation so an in-flight pre-transition render is
+            # superseded and the artwork is pushed again after START.
+            self._metadata_checksum = ""
+            self._metadata_generation += 1
+        self.mass.create_task(
+            self._send_current_metadata,
+            task_id=f"airplay_metadata_after_start_{self._stream_id}",
+            abort_existing=True,
+        )
 
     async def send_metadata(
         self,
@@ -375,7 +382,8 @@ class AirPlayStream:
                 if metadata_checksum != self._metadata_text_checksum:
                     cmd = f"TITLE={title}\nARTIST={artist}\nALBUM={album}\n"
                     cmd += f"DURATION={duration}\nPROGRESS=0\nACTION=SENDMETA\n"
-                    await self.send_cli_command(cmd)
+                    if not await self.send_cli_command(cmd):
+                        return
                     self._metadata_text_checksum = metadata_checksum
                     self._last_progress_sent = 0
                 if metadata_generation != self._metadata_generation:
@@ -388,11 +396,11 @@ class AirPlayStream:
                 ):
                     self._artwork_render_generations.add(metadata_generation)
                     artwork_url = metadata.image_url
-                elif not send_artwork or not metadata.image_url or not needs_artwork:
+                elif not metadata.image_url or not needs_artwork:
                     self._metadata_checksum = metadata_checksum
             if progress is not None and abs(progress - self._last_progress_sent) >= 2:
-                self._last_progress_sent = progress
-                await self.send_cli_command(f"PROGRESS={progress}")
+                if await self.send_cli_command(f"PROGRESS={progress}"):
+                    self._last_progress_sent = progress
 
         if artwork_url is not None and metadata_checksum is not None:
             await self._render_and_send_artwork(artwork_url, metadata_checksum, metadata_generation)
@@ -421,9 +429,10 @@ class AirPlayStream:
                 and not self._stopping
                 and metadata_generation == self._metadata_generation
             ):
-                await self.send_cli_command(f"ARTWORK={artwork}")
+                artwork_delivered = await self.send_cli_command(f"ARTWORK={artwork}")
                 if (
-                    not self._stopped
+                    artwork_delivered
+                    and not self._stopped
                     and not self._stopping
                     and metadata_generation == self._metadata_generation
                 ):
@@ -777,6 +786,18 @@ class AirPlayStream:
         except Exception as err:
             self.player.logger.debug("Could not prepare artwork: %s", err)
             return None
+
+    async def _send_current_metadata(self, send_artwork: bool = True) -> None:
+        """
+        Send metadata for the media owned by the active stream.
+
+        :param send_artwork: Whether artwork should be rendered and sent.
+        """
+        metadata = self.session.media if self.session else self.player.current_media
+        if not metadata:
+            return
+        progress = int(metadata.corrected_elapsed_time or 0)
+        await self.send_metadata(progress, metadata, send_artwork=send_artwork)
 
     async def _cleanup_failed_start(self) -> None:
         """Release all resources owned by a cliairplay process that failed to start."""

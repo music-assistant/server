@@ -607,6 +607,81 @@ async def test_start_sends_command_and_stamps_position() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "complete_before_start",
+    [True, False],
+    ids=["delivered", "rendering"],
+)
+async def test_start_repushes_transition_artwork(complete_before_start: bool) -> None:
+    """START re-sends artwork prepared before or during a track transition."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+    metadata = MagicMock(
+        corrected_elapsed_time=0,
+        title="New track",
+        artist="Artist",
+        album="Album",
+        duration=180,
+        image_url="new-image",
+    )
+    stream.session = MagicMock(media=metadata)
+    render_started = asyncio.Event()
+    release_render = asyncio.Event()
+    metadata_tasks: list[asyncio.Task[Any]] = []
+    render_count = 0
+
+    def create_task(target: Any, **_kwargs: Any) -> asyncio.Task[Any]:
+        task = asyncio.create_task(target())
+        metadata_tasks.append(task)
+        return task
+
+    async def prepare_artwork(_image_url: str, _generation: int) -> str:
+        nonlocal render_count
+        render_count += 1
+        if render_count == 1:
+            render_started.set()
+            if not complete_before_start:
+                await release_render.wait()
+            return "/cache/pretransition.jpg"
+        return "/cache/posttransition.jpg"
+
+    player.provider.mass.create_task.side_effect = create_task
+    with (
+        patch.object(
+            stream,
+            "_write_cli_command",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as write_command,
+        patch.object(
+            stream,
+            "_prepare_artwork",
+            new_callable=AsyncMock,
+            side_effect=prepare_artwork,
+        ),
+    ):
+        pretransition_task = asyncio.create_task(stream.send_metadata(None, metadata))
+        await render_started.wait()
+        if complete_before_start:
+            await pretransition_task
+        await stream.start(START_UNIX_MS, 0)
+        await asyncio.gather(*metadata_tasks)
+        release_render.set()
+        await pretransition_task
+
+    commands = [args.args[0] for args in write_command.await_args_list]
+    assert commands[-2:] == [
+        f"START_UNIX_MS={START_UNIX_MS}\nACTION=START",
+        "ARTWORK=/cache/posttransition.jpg",
+    ]
+    assert ("ARTWORK=/cache/pretransition.jpg" in commands) is complete_before_start
+    assert stream._metadata_generation == 2
+    assert stream._metadata_checksum == "New track|Artist|Album|180|new-image"
+
+
+@pytest.mark.asyncio
 async def test_start_requires_connected_process() -> None:
     """START is rejected without a connected cliairplay process."""
     stream = AirPlayStream(_make_player())
@@ -1224,3 +1299,42 @@ async def test_send_metadata_passes_cached_artwork_path_to_binary() -> None:
         await stream.send_metadata(None, metadata)
 
     assert send_command.await_args_list[-1] == call(f"ARTWORK={cached_path}")
+
+
+@pytest.mark.asyncio
+async def test_failed_artwork_delivery_is_retried() -> None:
+    """A dropped ARTWORK command remains pending for the next metadata update."""
+    stream = AirPlayStream(_make_player())
+    metadata = MagicMock(
+        duration=180,
+        title="Track",
+        artist="Artist",
+        album="Album",
+        image_url="image",
+    )
+    metadata_checksum = "Track|Artist|Album|180|image"
+    artwork_path = "/cache/thumbnails/artwork.jpg"
+
+    with (
+        patch.object(
+            stream,
+            "_prepare_artwork",
+            new_callable=AsyncMock,
+            return_value=artwork_path,
+        ) as prepare_artwork,
+        patch.object(
+            stream,
+            "send_cli_command",
+            new_callable=AsyncMock,
+            side_effect=[True, False, True],
+        ) as send_command,
+    ):
+        await stream.send_metadata(None, metadata)
+        assert stream._metadata_checksum == ""
+        await stream.send_metadata(None, metadata)
+
+    assert prepare_artwork.await_count == 2
+    assert [args.args[0] for args in send_command.await_args_list].count(
+        f"ARTWORK={artwork_path}"
+    ) == 2
+    assert stream._metadata_checksum == metadata_checksum
