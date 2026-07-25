@@ -121,7 +121,8 @@ class AbsBrowseMixin(AbsMixinBase):
             return BrowseFolder(
                 item_id=lib_id,
                 name=lib_name,
-                translation_key=translation_key,  # if given, <name>: <translation> in frontend
+                translation_key=translation_key,
+                translation_params=[lib_name],
                 provider=self.instance_id,
                 path=f"{self.instance_id}://{path}",
             )
@@ -135,7 +136,7 @@ class AbsBrowseMixin(AbsMixinBase):
             path = f"{AbsBrowsePaths.LIBRARIES_BOOK} {lib_id}"
             translation_key = None
             if append_mediatype_suffix:
-                translation_key = AbsBrowseItemsBookTranslationKey.AUDIOBOOKS
+                translation_key = AbsBrowseItemsBookTranslationKey.AUDIOBOOKS_LIBRARY
             items.append(
                 _get_folder(path, lib_id, lib_name=lib.name, translation_key=translation_key)
             )
@@ -143,7 +144,7 @@ class AbsBrowseMixin(AbsMixinBase):
             path = f"{AbsBrowsePaths.LIBRARIES_PODCAST} {lib_id}"
             translation_key = None
             if append_mediatype_suffix:
-                translation_key = AbsBrowseItemsPodcastTranslationKey.PODCASTS
+                translation_key = AbsBrowseItemsPodcastTranslationKey.PODCASTS_LIBRARY
             items.append(
                 _get_folder(path, lib_id, lib_name=lib.name, translation_key=translation_key)
             )
@@ -152,6 +153,8 @@ class AbsBrowseMixin(AbsMixinBase):
     def _browse_lib_podcasts(self, current_path: str) -> Sequence[BrowseFolder]:
         items = []
         for translation_key in AbsBrowseItemsPodcastTranslationKey:
+            if "library" in translation_key:
+                continue
             path = current_path + "/" + ABS_BROWSE_ITEMS_PODCAST_TO_PATH[translation_key]
             items.append(
                 BrowseFolder(
@@ -182,6 +185,8 @@ class AbsBrowseMixin(AbsMixinBase):
     def _browse_lib_audiobooks(self, current_path: str) -> Sequence[BrowseFolder]:
         items = []
         for translation_key in AbsBrowseItemsBookTranslationKey:
+            if "library" in translation_key or "entry" in translation_key:
+                continue
             path = current_path + "/" + ABS_BROWSE_ITEMS_BOOK_TO_PATH[translation_key]
             items.append(
                 BrowseFolder(
@@ -320,9 +325,9 @@ class AbsBrowseMixin(AbsMixinBase):
             items.append(
                 BrowseFolder(
                     item_id=series.id_,
-                    # frontend does <name>: <translation>
                     name=series.name,
-                    translation_key="series_singular",
+                    translation_key="series_entry",
+                    translation_params=[series.name],
                     provider=self.instance_id,
                     path=path,
                 )
