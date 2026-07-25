@@ -265,14 +265,11 @@ class SetupFlowMixin:
         if step is submitted_step:
             # rare: the coroutine is still working on the next step. The submitted
             # form's input future is already consumed, so re-serving the form would
-            # invite a doomed resubmit - hand back a transient progress step and let
-            # the SETUP_FLOW_UPDATED push deliver the real next step
-            return SetupFlowStep(
-                flow_id=flow_id,
-                step_id="working",
-                type=FlowStepType.PROGRESS,
-                translation_owner=step.translation_owner,
-            )
+            # invite a doomed resubmit - publish a progress step (so flows/get agrees)
+            # and let the coroutine's next publish deliver the real step
+            flow.session.progress("working")
+            step = flow.session.current_step
+            assert step is not None
         return step
 
     @api_command("config/flows/get")
@@ -396,6 +393,9 @@ class SetupFlowMixin:
                     flow.session.context.domain,
                     FLOW_ABORT_CLEANUP_TIMEOUT,
                 )
+                # the wedged task never reaches _run_flow's finally: close the
+                # session here so the unauthenticated callback route is dropped
+                flow.session.close()
         self._setup_flows.pop(flow.session.flow_id, None)
         current_step = flow.session.current_step
         if current_step is None or current_step.type not in (
