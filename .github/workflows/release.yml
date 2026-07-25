@@ -64,7 +64,8 @@ jobs:
     name: Resolve and validate release state
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # GitHub only includes draft releases for tokens with push access.
+      contents: write
     outputs:
       branch: ${{ steps.branch.outputs.branch }}
       source_sha: ${{ steps.source.outputs.sha }}
