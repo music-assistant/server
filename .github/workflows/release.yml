@@ -342,7 +342,8 @@ jobs:
     needs: [resolve, preflight]
     if: needs.resolve.outputs.release_state != 'published'
     permissions:
-      contents: read
+      # GitHub requires push access to download assets from draft releases.
+      contents: write
     outputs:
       reused_assets: ${{ steps.mode.outputs.reused_assets }}
       wheel_name: ${{ steps.assets.outputs.wheel_name }}
