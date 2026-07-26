@@ -260,7 +260,7 @@ class AudioTags:
     format: str
     bit_rate: int | None
     duration: float | None
-    tags: dict[str, str]
+    tags: dict[str, Any]
     has_cover_image: bool
     filename: str
 
@@ -268,7 +268,7 @@ class AudioTags:
     def title(self) -> str:
         """Return title tag (as-is)."""
         if tag := self.tags.get("title"):
-            return tag
+            return str(tag)
         # fallback to parsing from filename
         title = self.filename.rsplit(os.sep, 1)[-1].split(".")[0]
         if " - " in title:
@@ -281,7 +281,7 @@ class AudioTags:
     def version(self) -> str:
         """Return version tag (as-is)."""
         if tag := self.tags.get("version"):
-            return tag
+            return str(tag)
         album_type_tag = (
             self.tags.get("musicbrainzalbumtype")
             or self.tags.get("albumtype")
@@ -306,9 +306,9 @@ class AudioTags:
         if tag := self.tags.get("artists"):
             mb_id_count = len(self.musicbrainz_artistids)
             # Runtime check: mutagen returns list[str] for Vorbis multi-field
-            if isinstance(tag, list) and len(tag) > 1:  # type: ignore[unreachable]
+            if isinstance(tag, list) and len(tag) > 1:
                 # Multiple ARTIST fields from Vorbis - already separated, no splitting needed
-                artists = clean_tuple(tag)  # type: ignore[unreachable]
+                artists = clean_tuple(tag)
             elif mb_id_count == 1:
                 # Single MB ID confirms single artist - don't split
                 return (tag if isinstance(tag, str) else tag[0],)
@@ -357,9 +357,9 @@ class AudioTags:
         if tag := self.tags.get("albumartists"):
             mb_id_count = len(self.musicbrainz_albumartistids)
             # Runtime check: mutagen returns list[str] for Vorbis multi-field
-            if isinstance(tag, list) and len(tag) > 1:  # type: ignore[unreachable]
+            if isinstance(tag, list) and len(tag) > 1:
                 # Multiple ALBUMARTIST fields from Vorbis - already separated, no splitting needed
-                artists = clean_tuple(tag)  # type: ignore[unreachable]
+                artists = clean_tuple(tag)
             elif mb_id_count == 1:
                 # Single MB ID confirms single artist - don't split
                 return (tag if isinstance(tag, str) else tag[0],)
@@ -450,25 +450,27 @@ class AudioTags:
     def musicbrainz_recordingid(self) -> str | None:
         """Return musicbrainz_recordingid tag if present."""
         if tag := self.tags.get("UFID:http://musicbrainz.org"):
-            return tag
+            return str(tag)
         if tag := self.tags.get("musicbrainz.org"):
-            return tag
+            return str(tag)
         if tag := self.tags.get("musicbrainzrecordingid"):
-            return tag
-        return self.tags.get("musicbrainztrackid")
+            return str(tag)
+        if tag := self.tags.get("musicbrainztrackid"):
+            return str(tag)
+        return None
 
     @property
     def title_sort(self) -> str | None:
         """Return sort title tag (if exists)."""
         if tag := self.tags.get("titlesort"):
-            return tag
+            return str(tag)
         return None
 
     @property
     def album_sort(self) -> str | None:
         """Return album sort title tag (if exists)."""
         if tag := self.tags.get("albumsort"):
-            return tag
+            return str(tag)
         return None
 
     @property
@@ -554,7 +556,7 @@ class AudioTags:
         """Return lyrics tag (if exists)."""
         for key, value in self.tags.items():
             if key.startswith("lyrics"):
-                return value
+                return str(value)
         return None
 
     @property

@@ -134,9 +134,9 @@ async def test_parse_metadata_from_mp4tags() -> None:
     assert _tags.year == 2022
     # test sort tags (artistsort/albumartistsort returned as lists to match ID3 behavior)
     assert _tags.tags.get("titlesort") == "MyTitle Sort"
-    assert _tags.tags.get("artistsort") == ["MyArtist Sort"]  # type: ignore[comparison-overlap]
+    assert _tags.tags.get("artistsort") == ["MyArtist Sort"]
     assert _tags.tags.get("albumsort") == "MyAlbum Sort"
-    assert _tags.tags.get("albumartistsort") == ["MyAlbumArtist Sort"]  # type: ignore[comparison-overlap]
+    assert _tags.tags.get("albumartistsort") == ["MyAlbumArtist Sort"]
 
 
 def test_parse_metadata_from_apev2tags() -> None:
@@ -768,7 +768,7 @@ def test_id3_artist_tag_semicolon_multiple_mbids() -> None:
         # musicbrainzartistid can be list[str] from mutagen (dict type is str for ffprobe compat)
         tags={
             "artist": "Artist A;Artist B",
-            "musicbrainzartistid": ["id-a", "id-b"],  # type: ignore[dict-item]
+            "musicbrainzartistid": ["id-a", "id-b"],
         },
         has_cover_image=False,
         filename="test.mp3",

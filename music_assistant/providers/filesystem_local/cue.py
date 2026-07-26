@@ -408,11 +408,9 @@ class CueSheetHandler:
         if cue_sheet.sort_title:
             tags.tags["albumsort"] = cue_sheet.sort_title
         if cue_sheet.performers:
-            # plural form so AudioTags.album_artists sees every value; tags.tags is
-            # typed dict[str, str] but accepts list[str] at runtime for Vorbis multi.
-            # TODO: remove the type: ignore once AudioTags.tags is retyped upstream.
+            # plural form so AudioTags.album_artists sees every value
             tags.tags.pop("albumartist", None)
-            tags.tags["albumartists"] = list(cue_sheet.performers)  # type: ignore[assignment]
+            tags.tags["albumartists"] = list(cue_sheet.performers)
         if cue_sheet.album_artist_sort_names:
             tags.tags["albumartistsort"] = ";".join(cue_sheet.album_artist_sort_names)
         if cue_sheet.musicbrainz_albumartistids:
