@@ -418,6 +418,7 @@ async def test_external_step_callback_roundtrip(flow_mass: MusicAssistant) -> No
     received: dict[str, str] = {}
 
     async def run_setup(session: SetupSession) -> None:
+        assert session.callback_path == f"/setup_flow/callback/{session.flow_id}"
         assert session.callback_url.endswith(f"/setup_flow/callback/{session.flow_id}")
         received.update(await session.external("https://example.com/authorize"))
         await session.finish({"token": received["code"]})

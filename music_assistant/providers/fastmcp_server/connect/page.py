@@ -181,6 +181,8 @@ HTML: str = """<!doctype html>
     tokens: {},
     lastSnippet: "",
     lastFilename: "snippet.txt",
+    setupCallback: null,
+    setupCallbackSent: false,
   };
   try {
     const cachedTokens = JSON.parse(SS.getItem("ma_tokens") || "{}");
@@ -274,6 +276,7 @@ HTML: str = """<!doctype html>
       $("snippet-output").classList.remove("hidden");
       $("generate-area").classList.add("hidden");
       $("cursor-btn").classList.toggle("hidden", c.id !== "cursor");
+      signalSetupComplete();
     } else {
       $("snippet-output").classList.add("hidden");
       $("generate-area").classList.remove("hidden");
@@ -314,6 +317,34 @@ HTML: str = """<!doctype html>
     SS.setItem("ma_tokens", JSON.stringify(state.tokens));
     renderSelected();
     showMsg("Generated token for " + c.label + ".", "good");
+    signalSetupComplete();
+  }
+
+  function parseSetupCallback(value) {
+    if (!value || !value.startsWith("/")) return null;
+    try {
+      const callback = new URL(value, window.location.origin);
+      if (callback.origin !== window.location.origin) return null;
+      if (!/\\/setup_flow\\/callback\\/[a-f0-9]+$/.test(callback.pathname)) return null;
+      return callback.pathname;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function signalSetupComplete() {
+    if (!state.setupCallback || state.setupCallbackSent) return;
+    state.setupCallbackSent = true;
+    try {
+      const response = await fetch(state.setupCallback, {
+        method: "GET",
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      if (!response.ok) state.setupCallbackSent = false;
+    } catch (_) {
+      state.setupCallbackSent = false;
+    }
   }
 
   function copyText(text) {
@@ -443,15 +474,15 @@ HTML: str = """<!doctype html>
     // and not sent in cross-origin Referer (no leak to external links like
     // the GitHub footer link). The previous query-string form leaked both.
     const params = new URLSearchParams(window.location.hash.slice(1));
+    state.setupCallback = parseSetupCallback(params.get("setup_callback"));
     const boot = params.get("bootstrap");
+    history.replaceState({}, "", window.location.pathname);
     if (!boot) return false;
     const { res, data } = await fetchJSON("./connect/exchange", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ bootstrap: boot }),
     });
-    // Always strip the fragment so a refresh doesn't replay the bootstrap.
-    history.replaceState({}, "", window.location.pathname);
     if (!res.ok || !data || !data.session_token) return false;
     state.sessionToken = data.session_token;
     SS.setItem("ma_session_token", state.sessionToken);

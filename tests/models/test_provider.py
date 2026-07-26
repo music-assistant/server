@@ -34,6 +34,27 @@ def test_to_dict_matches_provider_instance_schema() -> None:
     ProviderInstance.from_dict(result)
 
 
+def test_default_name_uses_numeric_multi_instance_fallback() -> None:
+    """Providers without a custom postfix use their one-based instance number."""
+    provider = _make_base_provider()
+    provider.config.name = None
+    provider.config.instance_id = "test_provider--second"
+    provider.manifest.name = "Test Provider"
+    mass = cast("MagicMock", provider.mass)
+    mass.config.get.return_value = {
+        "test_provider--first": {
+            "domain": "test_provider",
+            "instance_id": "test_provider--first",
+        },
+        "test_provider--second": {
+            "domain": "test_provider",
+            "instance_id": "test_provider--second",
+        },
+    }
+
+    assert provider.default_name == "Test Provider [2]"
+
+
 def test_signal_provider_event() -> None:
     """signal_provider_event() emits a PROVIDER_EVENT with the instance_id as object_id."""
     provider = _make_base_provider()

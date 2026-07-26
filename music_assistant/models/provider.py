@@ -194,7 +194,7 @@ class Provider:
             # default implementation - simply use the instance number/index
             instance_name_postfix = str(instances.index(self.instance_id) + 1)
         # append instance name to provider name
-        return f"{self.manifest.name} [{self.instance_name_postfix}]"
+        return f"{self.manifest.name} [{instance_name_postfix}]"
 
     @property
     def instance_name_postfix(self) -> str | None:
