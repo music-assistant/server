@@ -1,0 +1,40 @@
+{
+  "config_entries": {
+    "content_type": {
+      "label": "[%key:common::config_entries::content_type::label%]",
+      "description": "[%key:common::config_entries::content_type::description%]",
+      "options": {
+        "music": "[%key:common::config_entries::content_type::options::music%]",
+        "audiobooks": "[%key:common::config_entries::content_type::options::audiobooks%]",
+        "podcasts": "[%key:common::config_entries::content_type::options::podcasts%]"
+      }
+    },
+    "auth": {
+      "label": "Authorize with Microsoft",
+      "description": "Sign in with Microsoft to grant Music Assistant read-only access to your OneDrive files."
+    },
+    "client_id": {
+      "label": "Microsoft OAuth Client ID"
+    },
+    "client_secret": {
+      "label": "Microsoft OAuth Client Secret"
+    },
+    "folder_id": {
+      "label": "OneDrive folder to scan",
+      "description": "Path of the OneDrive folder to scan, e.g. 'Music' or 'Documents/Music'. Leave as 'root' to scan the whole drive."
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Enter your Microsoft OAuth credentials",
+      "description": "Music Assistant needs its own Microsoft OAuth client. In the Azure portal, register an app and create a client secret, then paste the application (client) ID and the secret's Value below."
+    },
+    "authenticate": {
+      "title": "Authorize with Microsoft",
+      "description": "Sign in with Microsoft in the window that opens to grant Music Assistant read-only access to your OneDrive."
+    }
+  },
+  "manifest": {
+    "description": "Stream music, audiobooks and podcasts stored in OneDrive"
+  }
+}

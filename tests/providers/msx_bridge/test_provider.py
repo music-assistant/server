@@ -7,6 +7,31 @@ from unittest.mock import AsyncMock, Mock, patch
 from music_assistant.providers.msx_bridge.provider import MSXBridgeProvider
 
 
+async def test_init_without_sendspin_provider_module(
+    provider: MSXBridgeProvider,
+) -> None:
+    """
+    The provider must load even when the Sendspin provider module is absent.
+
+    In a Music Assistant install that ships no Sendspin provider, importing
+    the bridge manager fails; the MSX provider must degrade to "no bridge"
+    instead of failing to load.
+    """
+    provider.sendspin_bridge_enabled = True
+    with (
+        patch("music_assistant.providers.msx_bridge.provider.MSXHTTPServer") as mock_server_cls,
+        patch.object(
+            MSXBridgeProvider,
+            "_make_bridge_manager",
+            side_effect=ImportError("No module named 'music_assistant.providers.sendspin'"),
+        ),
+    ):
+        mock_server_cls.return_value = AsyncMock()
+        await provider.handle_async_init()
+
+    assert provider.bridge_manager is None
+
+
 async def test_handle_async_init(provider: MSXBridgeProvider) -> None:
     """handle_async_init should create an MSXHTTPServer and start it."""
     with patch("music_assistant.providers.msx_bridge.provider.MSXHTTPServer") as mock_server_cls:
@@ -44,6 +69,67 @@ async def test_handle_async_init_default_port(mass_mock: Mock, manifest_mock: Mo
         # config.get_value() returns DEFAULT_HTTP_PORT when the key has a default_value
         mock_server_cls.assert_called_once()
         mock_server.start.assert_awaited_once()
+
+
+async def test_get_ma_stream_url_uses_streamserver(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """get_ma_stream_url must resolve the URL via the MA streamserver API."""
+    media = Mock()
+    mass_mock.streams.resolve_stream_url = AsyncMock(
+        return_value="http://ma:8097/single/s1/q1/i1/msx_test.mp3"
+    )
+
+    url = await provider.get_ma_stream_url("msx_test", media)
+
+    assert url == "http://ma:8097/single/s1/q1/i1/msx_test.mp3"
+    mass_mock.streams.resolve_stream_url.assert_awaited_once_with("msx_test", media)
+
+
+async def test_get_ma_stream_url_rejects_flow_urls(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """
+    A flow-mode URL must be rejected (None -> proxy fallback).
+
+    MA forces flow mode when e.g. crossfade is enabled and the player lacks
+    gapless support. A flow URL streams the whole queue continuously, which
+    breaks the MSX per-track model (progress display, auto-advance).
+    """
+    mass_mock.streams.resolve_stream_url = AsyncMock(
+        return_value="http://ma:8097/flow/s1/q1/i1/msx_test.mp3"
+    )
+
+    url = await provider.get_ma_stream_url("msx_test", Mock())
+
+    assert url is None
+
+
+async def test_get_ma_stream_url_returns_none_on_error(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """get_ma_stream_url must degrade to None (proxy fallback) when resolution fails."""
+    mass_mock.streams.resolve_stream_url = AsyncMock(side_effect=RuntimeError("no session"))
+
+    url = await provider.get_ma_stream_url("msx_test", Mock())
+
+    assert url is None
+    mass_mock.streams.resolve_stream_url.assert_awaited_once()
+
+
+def test_on_player_activity_uses_monotonic_clock(provider: MSXBridgeProvider) -> None:
+    """
+    The idle-activity ledger must use the monotonic clock.
+
+    With wall-clock timestamps, an NTP step forward (common on RTC-less hosts
+    right after boot) instantly ages every player past the idle cutoff and
+    mass-unregisters them mid-session.
+    """
+    with patch("music_assistant.providers.msx_bridge.provider.time") as mock_time:
+        mock_time.monotonic.return_value = 1234.0
+        provider.on_player_activity("msx_x")
+
+    assert provider._player_last_activity["msx_x"] == 1234.0
 
 
 async def test_loaded_in_mass_starts_timeout_task(provider: MSXBridgeProvider) -> None:

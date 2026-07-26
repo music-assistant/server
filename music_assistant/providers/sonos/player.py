@@ -52,7 +52,7 @@ from music_assistant.providers.sonos.const import (
 if TYPE_CHECKING:
     from aiosonos.api.models import DiscoveryInfo as SonosDiscoveryInfo
     from aiosonos.group import SonosGroup
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.config_entries import ConfigEntry
 
     from .provider import SonosPlayerProvider
 
@@ -190,11 +190,7 @@ class SonosPlayer(Player):
             )
         )
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         return [
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,

@@ -80,6 +80,11 @@ def _make_environment() -> tuple[
         side_effect=lambda key, default=None: player_configs.get(key, default)
     )
 
+    async def fake_save_player_config(player_id: str, values: dict[str, Any]) -> None:
+        player_configs.setdefault(f"players/{player_id}", {}).update(values)
+
+    mass.config.save_player_config = AsyncMock(side_effect=fake_save_player_config)
+
     provider = MagicMock()
     provider.mass = mass
     provider.logger = logging.getLogger("test.bridge_manager")
@@ -126,14 +131,20 @@ class TestBridgeLifecycleReconciliation:
     @pytest.mark.asyncio
     async def test_bridge_removed_when_bridge_client_disabled(self) -> None:
         """Test the bridge is torn down when its own Sendspin client gets disabled."""
-        manager, _, player, _, player_configs = _make_environment()
+        manager, mass, player, _, player_configs = _make_environment()
         await manager.evaluate_bridge(player)
         assert manager.get_bridge("player_1") is not None
 
-        player_configs["players/spb_player_1"] = {"enabled": False}
+        # a user-made disable carries the parent link the toggle was rendered under
+        player_configs["players/player_1"] = {"enabled": True}
+        player_configs["players/spb_player_1"] = {
+            "enabled": False,
+            "values": {"protocol_parent_id": "player_1"},
+        }
         await manager.evaluate_bridge(player)
 
         assert manager.get_bridge("player_1") is None
+        mass.config.save_player_config.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_bridge_not_created_for_unregistered_player(self) -> None:
@@ -163,7 +174,11 @@ class TestBridgeLifecycleReconciliation:
     async def test_config_event_on_bridge_client_recreates_bridge(self) -> None:
         """Test a config event on the bridge client id re-evaluates the base player."""
         manager, _, player, _, player_configs = _make_environment()
-        player_configs["players/spb_player_1"] = {"enabled": False}
+        player_configs["players/player_1"] = {"enabled": True}
+        player_configs["players/spb_player_1"] = {
+            "enabled": False,
+            "values": {"protocol_parent_id": "player_1"},
+        }
         await manager.evaluate_bridge(player)
         assert manager.get_bridge("player_1") is None
 
@@ -174,6 +189,45 @@ class TestBridgeLifecycleReconciliation:
         await manager._on_player_config_updated(event)
 
         assert manager.get_bridge("player_1") is not None
+
+    @pytest.mark.asyncio
+    async def test_stale_disabled_client_reenabled_when_parent_gone(self) -> None:
+        """Test a client disabled under a no-longer-existing parent is re-enabled."""
+        manager, mass, player, _, player_configs = _make_environment()
+        # e.g. left behind by a cascade-disable from a parent player whose
+        # config was removed (device re-setup changed its player id)
+        player_configs["players/spb_player_1"] = {
+            "enabled": False,
+            "values": {"protocol_parent_id": "cc_old_uuid"},
+        }
+
+        await manager.evaluate_bridge(player)
+
+        mass.config.save_player_config.assert_awaited_once_with("spb_player_1", {"enabled": True})
+        assert manager.get_bridge("player_1") is not None
+
+    @pytest.mark.asyncio
+    async def test_stale_disabled_client_without_parent_link_reenabled(self) -> None:
+        """Test a disabled client without any parent link is re-enabled."""
+        manager, mass, player, _, player_configs = _make_environment()
+        player_configs["players/spb_player_1"] = {"enabled": False}
+
+        await manager.evaluate_bridge(player)
+
+        mass.config.save_player_config.assert_awaited_once_with("spb_player_1", {"enabled": True})
+        assert manager.get_bridge("player_1") is not None
+
+    @pytest.mark.asyncio
+    async def test_no_heal_when_base_player_disabled(self) -> None:
+        """Test a stale client disable is left alone while the base player is disabled."""
+        manager, mass, player, _, player_configs = _make_environment()
+        player_configs["players/player_1"] = {"enabled": False}
+        player_configs["players/spb_player_1"] = {"enabled": False}
+
+        await manager.evaluate_bridge(player)
+
+        mass.config.save_player_config.assert_not_awaited()
+        assert manager.get_bridge("player_1") is None
 
     @pytest.mark.asyncio
     async def test_stale_bridge_rebuilt_after_sendspin_reload(self) -> None:
@@ -303,6 +357,30 @@ class TestLocalAudioBridgeManager:
         manager._devices = {TestLocalAudioBridgeManager.DEVICE_UUID: device}
         return manager, mass, player
 
+    @staticmethod
+    def _make_discover_environment() -> tuple[MagicMock, MagicMock, dict[str, Any]]:
+        """
+        Build the mocked environment for discover_and_register tests.
+
+        :return: Tuple of (mass, provider, registered players dict).
+        """
+        registered: dict[str, Any] = {}
+        mass = MagicMock()
+        mass.subscribe = MagicMock(return_value=MagicMock())
+        sendspin_provider = MagicMock()
+        sendspin_provider.server_api = MagicMock()
+        mass.get_provider = MagicMock(
+            side_effect=lambda domain: sendspin_provider if domain == "sendspin" else None
+        )
+        mass.players.get_player = MagicMock(side_effect=registered.get)
+        mass.config.get = MagicMock(side_effect=lambda _key, default=None: default)
+
+        provider = MagicMock()
+        provider.mass = mass
+        provider.logger = logging.getLogger("test.local_audio_bridge_manager")
+        provider.config.get_value = MagicMock(return_value="auto")
+        return mass, provider, registered
+
     def test_policy_requires_enumerated_device(self) -> None:
         """Test a bridge is only wanted for devices present in the last enumeration."""
         manager, _, player = self._make_local_environment()
@@ -366,16 +444,7 @@ class TestLocalAudioBridgeManager:
     @pytest.mark.asyncio
     async def test_discover_rebinds_player_after_provider_reload(self) -> None:
         """Test discovery re-registers a player left behind by a previous provider instance."""
-        registered: dict[str, Any] = {}
-        mass = MagicMock()
-        mass.subscribe = MagicMock(return_value=MagicMock())
-        sendspin_provider = MagicMock()
-        sendspin_provider.server_api = MagicMock()
-        mass.get_provider = MagicMock(
-            side_effect=lambda domain: sendspin_provider if domain == "sendspin" else None
-        )
-        mass.players.get_player = MagicMock(side_effect=registered.get)
-        mass.config.get = MagicMock(side_effect=lambda _key, default=None: default)
+        mass, provider, registered = self._make_discover_environment()
         base_config = MagicMock()
         base_config.name = None
         base_config.default_name = "Dummy Output"
@@ -385,11 +454,6 @@ class TestLocalAudioBridgeManager:
             registered[player.player_id] = player
 
         mass.players.register_or_update = AsyncMock(side_effect=fake_register_or_update)
-
-        provider = MagicMock()
-        provider.mass = mass
-        provider.logger = logging.getLogger("test.local_audio_bridge_manager")
-        provider.config.get_value = MagicMock(return_value="auto")
 
         device = {"name": "sink1", "description": "Dummy Output", "hostapi": 0}
         device_uuid = get_device_uuid("sink1", 0)
@@ -412,3 +476,27 @@ class TestLocalAudioBridgeManager:
         assert fresh_player is not stale_player
         assert fresh_player.provider is provider
         assert manager.get_bridge(device_uuid) is not None
+
+    @pytest.mark.asyncio
+    async def test_discover_handles_enumeration_failure(self) -> None:
+        """Test a failing device enumeration registers nothing and keeps the manager idle."""
+        mass, provider, registered = self._make_discover_environment()
+        mass.loop.run_in_executor = AsyncMock(side_effect=RuntimeError("enumeration failed"))
+        manager = LocalAudioBridgeManager(provider)
+
+        await manager.discover_and_register()
+
+        assert not registered
+        assert manager._devices == {}
+
+    @pytest.mark.asyncio
+    async def test_discover_without_devices(self) -> None:
+        """Test discovery on a host without output devices registers nothing."""
+        mass, provider, registered = self._make_discover_environment()
+        mass.loop.run_in_executor = AsyncMock(return_value=("alsa", []))
+        manager = LocalAudioBridgeManager(provider)
+
+        await manager.discover_and_register()
+
+        assert not registered
+        assert manager._devices == {}

@@ -108,10 +108,30 @@ def _analysis(
     return AudioAnalysisData(
         duration=duration,
         bpm=bpm,
-        beats=beats,
-        downbeats=downbeats,
-        rms_energy=rms_energy,
+        beats=beats.tolist(),
+        downbeats=downbeats.tolist(),
+        rms_energy=rms_energy.tolist() if rms_energy is not None else None,
     )
+
+
+def _with_vocal_activity(
+    analysis: AudioAnalysisData,
+    windows: list[tuple[float, float]],
+) -> AudioAnalysisData:
+    """
+    Add a valid 1800-bin vocal probability timeline to an analysis row.
+
+    :param analysis: Analysis row to update.
+    :param windows: Vocal windows in full-track media seconds.
+    """
+    assert analysis.duration is not None
+    frame_duration = analysis.duration / 1800
+    probabilities = [0.0] * 1800
+    for start, end in windows:
+        for index in range(int(start / frame_duration), int(end / frame_duration)):
+            probabilities[index] = 0.9
+    analysis.extra_data = {"vocal_activity": probabilities}
+    return analysis
 
 
 class _FixedTimingFade(SmartFade):
@@ -641,6 +661,123 @@ class TestMixerBuild:
         assert smart_fade.trailing_silence_bytes == _seconds(5)
 
     @pytest.mark.asyncio
+    async def test_smart_fallback_retains_an_audible_outgoing_vocal(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Validated FireRed activity extends a fallback trim only within audible RMS energy."""
+
+        async def fake_strip(audio_data: bytes, **_kwargs: object) -> bytes:
+            return audio_data[: _seconds(30)]
+
+        def fail_smart_build(*_args: object, **_kwargs: object) -> None:
+            raise SmartFadeNotApplicable("forced fallback")
+
+        monkeypatch.setattr(mixer_module, "strip_silence", fake_strip)
+        monkeypatch.setattr(SmartCrossFade, "build", fail_smart_build)
+        outgoing = _with_vocal_activity(
+            _analysis(
+                120.0,
+                duration=240.0,
+                rms_energy=_rms_with_silent_tail(240.0, 5.0),
+            ),
+            [(228.0, 232.0)],
+        )
+        mixer = _make_mixer({"a": outgoing, "b": _analysis(120.0, duration=240.0)})
+
+        fade = await mixer.build(
+            fade_in_streamdetails=_streamdetails("b"),
+            fade_out_streamdetails=_streamdetails("a"),
+            pcm_format=PCM,
+            standard_crossfade_duration=10,
+            mode=CrossfadeMode.SMART_CROSSFADE,
+            fade_out_data=b"\x00" * _seconds(45),
+            fade_in_bytes_len=_seconds(45),
+        )
+
+        assert isinstance(fade, StandardCrossFade)
+        retained_seconds = (_seconds(45) - fade.trailing_silence_bytes) / SAMPLE_SIZE
+        assert retained_seconds == pytest.approx(37.75, abs=1 / PCM.sample_rate)
+
+    @pytest.mark.asyncio
+    async def test_smart_fallback_invalid_vocal_data_matches_missing_data(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Missing and stale vocal metadata keep the exact standard silence trim."""
+
+        async def fake_strip(audio_data: bytes, **_kwargs: object) -> bytes:
+            return audio_data[: _seconds(30)]
+
+        def fail_smart_build(*_args: object, **_kwargs: object) -> None:
+            raise SmartFadeNotApplicable("forced fallback")
+
+        monkeypatch.setattr(mixer_module, "strip_silence", fake_strip)
+        monkeypatch.setattr(SmartCrossFade, "build", fail_smart_build)
+        missing = _analysis(120.0, duration=240.0, rms_energy=_rms_with_silent_tail(240.0, 5.0))
+        stale = _analysis(120.0, duration=240.0, rms_energy=_rms_with_silent_tail(240.0, 5.0))
+        stale.extra_data = {
+            "vocal_activity": {
+                "model": "firered_aed",
+                "frame_duration": 0.1,
+                "probabilities": [0.9] * 2400,
+            }
+        }
+
+        trims: list[int] = []
+        for outgoing in (missing, stale):
+            mixer = _make_mixer({"a": outgoing, "b": _analysis(120.0, duration=240.0)})
+            fade = await mixer.build(
+                fade_in_streamdetails=_streamdetails("b"),
+                fade_out_streamdetails=_streamdetails("a"),
+                pcm_format=PCM,
+                standard_crossfade_duration=10,
+                mode=CrossfadeMode.SMART_CROSSFADE,
+                fade_out_data=b"\x00" * _seconds(45),
+                fade_in_bytes_len=_seconds(45),
+            )
+            assert isinstance(fade, StandardCrossFade)
+            trims.append(fade.trailing_silence_bytes)
+
+        assert trims == [_seconds(15), _seconds(15)]
+
+    @pytest.mark.asyncio
+    async def test_smart_fallback_caps_vocal_retention_at_the_rms_boundary(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """FireRed cannot restore a long low-energy tail beyond the audible RMS boundary."""
+
+        async def fake_strip(audio_data: bytes, **_kwargs: object) -> bytes:
+            return audio_data[: _seconds(20)]
+
+        def fail_smart_build(*_args: object, **_kwargs: object) -> None:
+            raise SmartFadeNotApplicable("forced fallback")
+
+        monkeypatch.setattr(mixer_module, "strip_silence", fake_strip)
+        monkeypatch.setattr(SmartCrossFade, "build", fail_smart_build)
+        outgoing = _with_vocal_activity(
+            _analysis(
+                120.0,
+                duration=240.0,
+                rms_energy=_rms_with_silent_tail(240.0, 20.0),
+            ),
+            [(225.0, 235.0)],
+        )
+        mixer = _make_mixer({"a": outgoing, "b": _analysis(120.0, duration=240.0)})
+
+        fade = await mixer.build(
+            fade_in_streamdetails=_streamdetails("b"),
+            fade_out_streamdetails=_streamdetails("a"),
+            pcm_format=PCM,
+            standard_crossfade_duration=10,
+            mode=CrossfadeMode.SMART_CROSSFADE,
+            fade_out_data=b"\x00" * _seconds(45),
+            fade_in_bytes_len=_seconds(45),
+        )
+
+        assert isinstance(fade, StandardCrossFade)
+        retained_seconds = (_seconds(45) - fade.trailing_silence_bytes) / SAMPLE_SIZE
+        assert retained_seconds == pytest.approx(20.0)
+
+    @pytest.mark.asyncio
     async def test_standard_mode_fully_silent_tail(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """A fully silent tail — timing collapses to zero; trailing_silence_bytes is the full input."""
 
@@ -938,6 +1075,7 @@ class TestStretchSavings:
         fade = self._stretched_fade()
         assert fade.plan is not None
         low_out = fade.plan.eq_plan.low_out
+        assert low_out is not None
         assert low_out.steps[-1][1] == pytest.approx(-26.0)
         assert low_out.steps[-1][0] <= fade.effective_end + 0.05
 

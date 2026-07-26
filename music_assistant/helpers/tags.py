@@ -11,18 +11,17 @@ from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass
 from json import JSONDecodeError
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import mutagen
 from music_assistant_models.enums import AlbumType
 from music_assistant_models.errors import InvalidDataError
-from mutagen._vorbis import VCommentDict
-from mutagen.apev2 import APEv2
 
-# TXXX and UFID are ID3 frame classes pulled into mutagen.id3 via a dynamic
-# frames-table import that mypy's stubs do not follow, hence the attr-defined ignore.
-from mutagen.id3 import ID3, TSRC, TXXX, UFID  # type: ignore[attr-defined]
-from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags
+# mutagen is only needed when actually reading/writing tags of local files, so it is
+# imported inside the functions below to keep it off the server startup path
+if TYPE_CHECKING:
+    from mutagen._vorbis import VCommentDict
+    from mutagen.apev2 import APEv2
+    from mutagen.mp4 import MP4Tags
 
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
 from music_assistant.helpers.json import json_loads
@@ -666,7 +665,7 @@ def parse_tags(
         "ffprobe",
         "-hide_banner",
         "-loglevel",
-        "fatal",
+        "error",
         "-threads",
         "0",
         "-show_error",
@@ -679,7 +678,7 @@ def parse_tags(
         input_file,
     )
     try:
-        res = subprocess.check_output(args)  # noqa: S603
+        res = subprocess.check_output(args, stderr=subprocess.PIPE)  # noqa: S603
         data = json.loads(res)
         if error := data.get("error"):
             raise InvalidDataError(error["string"])
@@ -712,11 +711,7 @@ def parse_tags(
                 tags.has_cover_image = True
         return tags
     except subprocess.CalledProcessError as err:
-        error_msg = f"Unable to retrieve info for {input_file}"
-        if output := getattr(err, "stdout", None):
-            err_details = json_loads(output)
-            with suppress(KeyError):
-                error_msg = f"{error_msg} ({err_details['error']['string']})"
+        error_msg = f"Unable to retrieve info for {input_file} ({_get_ffprobe_error(err)})"
         raise InvalidDataError(error_msg) from err
     except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
         try:
@@ -756,6 +751,40 @@ def get_file_duration(input_file: str) -> float:
     except Exception as err:
         error_msg = f"Unable to retrieve duration for {input_file}"
         raise InvalidDataError(error_msg) from err
+
+
+def _get_ffprobe_error(err: subprocess.CalledProcessError) -> str:
+    """
+    Return an actionable message for a failed FFprobe command.
+
+    :param err: The FFprobe process error.
+    """
+    unknown_error = "Unknown error occurred"
+    error_detail = "Invalid or unsupported media file"
+    if err.stdout:
+        with suppress(JSONDecodeError):
+            result = json_loads(err.stdout)
+            if (
+                isinstance(result, dict)
+                and isinstance(ffprobe_error := result.get("error"), dict)
+                and isinstance(message := ffprobe_error.get("string"), str)
+                and message != unknown_error
+            ):
+                error_detail = message
+
+    stderr = (
+        err.stderr.decode("utf-8", errors="replace")
+        if isinstance(err.stderr, bytes)
+        else err.stderr or ""
+    )
+    for line in stderr.splitlines():
+        stripped_line = line.strip()
+        if not stripped_line.startswith("["):
+            continue
+        _, separator, message = stripped_line.partition("] ")
+        if separator and message and unknown_error not in message:
+            return message
+    return error_detail
 
 
 def _decode_mp4_freeform_single(values: list[Any]) -> str:
@@ -948,7 +977,8 @@ def _parse_id3_tags(tags: dict[str, Any]) -> dict[str, Any]:
     if (frame := tags.get("TXXX:MusicBrainz Release Group Id")) and frame.text:
         result["musicbrainzreleasegroupid"] = frame.text[0]
     if frame := tags.get("UFID:http://musicbrainz.org"):
-        result["musicbrainzrecordingid"] = frame.data.decode()
+        # Strip NULs and whitespace from MusicBrainz UFID data (support #5906).
+        result["musicbrainzrecordingid"] = frame.data.decode().replace("\x00", "").strip()
     if (frame := tags.get("TXXX:MusicBrainz Track Id")) and frame.text:
         result["musicbrainztrackid"] = frame.text[0]
 
@@ -1276,9 +1306,14 @@ def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
 
     :param input_file: Path to the audio file.
     """
+    import mutagen  # noqa: PLC0415
+    from mutagen._vorbis import VCommentDict  # noqa: PLC0415
+    from mutagen.apev2 import APEv2  # noqa: PLC0415
+    from mutagen.mp4 import MP4Tags  # noqa: PLC0415
+
     result: dict[str, Any] = {}
     try:
-        audio = mutagen.File(input_file)  # type: ignore[attr-defined]
+        audio = mutagen.File(input_file)
         if audio is None or not audio.tags:
             return result
 
@@ -1332,7 +1367,9 @@ def get_apev2_image(input_file: str) -> bytes | None:
 
     :param input_file: Path to the local audio file.
     """
-    audio = mutagen.File(input_file)  # type: ignore[attr-defined]
+    import mutagen  # noqa: PLC0415
+
+    audio = mutagen.File(input_file)
     if audio is None or not hasattr(audio, "tags") or audio.tags is None:
         return None
 
@@ -1411,8 +1448,18 @@ async def write_replaygain_track_gain(path: str, track_gain_db: float) -> bool:
 
 
 def _write_replaygain_track_gain_sync(path: str, track_gain_db: float) -> bool:
+    import mutagen  # noqa: PLC0415
+    from mutagen._vorbis import VCommentDict  # noqa: PLC0415
+    from mutagen.apev2 import APEv2  # noqa: PLC0415
+
+    # TXXX and UFID are ID3 frame classes pulled into mutagen.id3 via a dynamic
+    # frames-table import that mypy's stubs do not follow, hence the attr-defined
+    # ignores on the mutagen.id3 imports here and below.
+    from mutagen.id3 import ID3, TXXX  # noqa: PLC0415
+    from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags  # noqa: PLC0415
+
     try:
-        audio = mutagen.File(path)  # type: ignore[attr-defined]
+        audio = mutagen.File(path)
     except Exception as err:
         LOGGER.debug("mutagen could not open %s: %s", path, err)
         return False
@@ -1492,8 +1539,10 @@ async def write_identifier_tags(
 
 def _open_mutagen_for_write(path: str) -> Any | None:
     """Open a file for tag writing, returning the mutagen object or None on failure."""
+    import mutagen  # noqa: PLC0415
+
     try:
-        audio = mutagen.File(path)  # type: ignore[attr-defined]
+        audio = mutagen.File(path)
     # Broad: mutagen.File can raise format-specific parse errors, struct errors,
     # and IOError variants whose hierarchy is not stable across mutagen versions.
     except Exception as err:
@@ -1551,6 +1600,11 @@ def _write_identifier_tags_sync(
 
 
 def _apply_mbid_tag(tags: Any, mbid: str) -> bool:
+    from mutagen._vorbis import VCommentDict  # noqa: PLC0415
+    from mutagen.apev2 import APEv2  # noqa: PLC0415
+    from mutagen.id3 import ID3, UFID  # noqa: PLC0415
+    from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags  # noqa: PLC0415
+
     try:
         if isinstance(tags, ID3):
             # MusicBrainz Recording Id lives in a UFID frame (Picard convention).
@@ -1580,6 +1634,11 @@ def _apply_mbid_tag(tags: Any, mbid: str) -> bool:
 
 
 def _apply_acoustid_tag(tags: Any, acoustid: str) -> bool:
+    from mutagen._vorbis import VCommentDict  # noqa: PLC0415
+    from mutagen.apev2 import APEv2  # noqa: PLC0415
+    from mutagen.id3 import ID3, TXXX  # noqa: PLC0415
+    from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags  # noqa: PLC0415
+
     try:
         if isinstance(tags, ID3):
             tags.delall("TXXX:Acoustid Id")  # type: ignore[no-untyped-call]
@@ -1606,6 +1665,11 @@ def _apply_acoustid_tag(tags: Any, acoustid: str) -> bool:
 
 
 def _apply_isrc_tag(tags: Any, isrcs: list[str]) -> bool:
+    from mutagen._vorbis import VCommentDict  # noqa: PLC0415
+    from mutagen.apev2 import APEv2  # noqa: PLC0415
+    from mutagen.id3 import ID3, TSRC  # noqa: PLC0415
+    from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags  # noqa: PLC0415
+
     try:
         if isinstance(tags, ID3):
             # TSRC is ID3's dedicated ISRC frame; ID3v2.4 supports multiple values.
@@ -1629,6 +1693,11 @@ def _apply_isrc_tag(tags: Any, isrcs: list[str]) -> bool:
 
 
 def _apply_artist_mbid_tag(tags: Any, artist_mbids: list[str]) -> bool:
+    from mutagen._vorbis import VCommentDict  # noqa: PLC0415
+    from mutagen.apev2 import APEv2  # noqa: PLC0415
+    from mutagen.id3 import ID3, TXXX  # noqa: PLC0415
+    from mutagen.mp4 import AtomDataType, MP4FreeForm, MP4Tags  # noqa: PLC0415
+
     try:
         if isinstance(tags, ID3):
             tags.delall("TXXX:MusicBrainz Artist Id")  # type: ignore[no-untyped-call]

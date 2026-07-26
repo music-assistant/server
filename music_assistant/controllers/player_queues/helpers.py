@@ -3,19 +3,20 @@
 from __future__ import annotations
 
 import functools
+import random
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeVar
 
-from music_assistant_models.media_items import Playlist
+from music_assistant_models.media_items import MediaItemMetadata, Playlist, Track
+from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS, PlaylistPlayableItem
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import ContentType, PlaybackState
-    from music_assistant_models.media_items import MediaItemType
+    from music_assistant_models.media_items import MediaItemType, PlayableMediaItemType
     from music_assistant_models.player_queue import PlayerQueue
-    from music_assistant_models.queue_item import QueueItem
 
     from music_assistant import MusicAssistant
     from music_assistant.controllers.player_queues.state import PlayerQueueData
@@ -41,7 +42,7 @@ class CompareState(TypedDict):
     last_playing_elapsed_time: int
     stream_title: str | None
     codec_type: ContentType | None
-    output_formats: list[str] | None
+    output_player_ids: list[str] | None
 
 
 class _PlayActionHost(Protocol):
@@ -103,6 +104,26 @@ def has_dynamic_source(source_items: list[MediaItemType]) -> bool:
     return any(isinstance(item, Playlist) and item.is_dynamic for item in source_items)
 
 
+def build_queue_item(queue_id: str, media_item: PlayableMediaItemType) -> QueueItem:
+    """
+    Build a QueueItem for enqueueing, keeping its media item slim.
+
+    The returned item only carries the media details needed for the queue listing and stream
+    resolution. For tracks the full metadata is dropped; it is restored from the library when
+    the item becomes the queue's current or next item, so large queues stay light on memory
+    and persisted-cache size.
+
+    :param queue_id: The id of the queue the item is created for.
+    :param media_item: The source media item to enqueue.
+    """
+    queue_item = QueueItem.from_media_item(queue_id, media_item)
+    if isinstance(queue_item.media_item, Track):
+        # the list-row artwork is already captured on QueueItem.image, so dropping the
+        # track's metadata here does not lose anything the queue listing still needs
+        queue_item.media_item.metadata = MediaItemMetadata()
+    return queue_item
+
+
 def sort_tracks(tracks: list[_SortableT], sort_by: str) -> list[_SortableT]:
     """Sort tracks by the given sort key."""
     key_map: dict[str, tuple[Any, bool]] = {
@@ -145,6 +166,21 @@ def get_current_playback_speed(queue: PlayerQueue) -> float:
     if queue.current_item is None:
         return 1.0
     return float(queue.current_item.extra_attributes.get("playback_speed") or 1.0)
+
+
+def interleave_groups[ItemT](groups: list[list[ItemT]]) -> list[ItemT]:
+    """
+    Randomly interleave groups while preserving the item order within each group.
+
+    :param groups: The ordered item groups to spread across the result.
+    """
+    positioned: list[tuple[float, ItemT]] = []
+    for items in groups:
+        total = len(items)
+        for offset, item in enumerate(items):
+            positioned.append(((offset + random.random()) / total, item))
+    positioned.sort(key=lambda entry: entry[0])
+    return [item for _, item in positioned]
 
 
 # how many bounded passes to make separating directly-adjacent same-artist items

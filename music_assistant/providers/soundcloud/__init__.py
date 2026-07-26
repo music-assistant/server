@@ -7,9 +7,7 @@ from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import parse_qs, quote, urlparse
 
 from aiohttp import ClientError
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -35,6 +33,7 @@ from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 CONF_CLIENT_ID = "client_id"
 CONF_AUTHORIZATION = "authorization"
@@ -59,7 +58,8 @@ SEARCH_DURATION_COMPARISON_TOLERANCE = 1000
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.media_items import BrowseFolder, ItemMapping, MediaItemType
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -70,52 +70,30 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    if not config.get_value(CONF_CLIENT_ID) or not config.get_value(CONF_AUTHORIZATION):
-        msg = "Invalid login credentials"
-        raise LoginFailed(msg)
     return SoundcloudMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    return (
-        CONF_ENTRY_UNOFFICIAL_PROVIDER,
-        ConfigEntry(
-            key=CONF_CLIENT_ID,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_AUTHORIZATION,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-        ),
-    )
-
-
-class SoundcloudMusicProvider(MusicProvider):
+class SoundcloudMusicProvider(RecommendationPayloadMixin, MusicProvider):
     """Provider for Soundcloud."""
+
+    # keep the pre-refactor 3h refresh interval for the mixed-selections payload
+    recommendation_payload_ttl = 3600 * 3
 
     _user_id: str = ""
     _soundcloud: SoundcloudAsyncAPI = None
     _me: dict[str, Any]
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
+
     async def handle_async_init(self) -> None:
         """Set up the Soundcloud provider."""
-        client_id = self.config.get_value(CONF_CLIENT_ID)
-        auth_token = self.config.get_value(CONF_AUTHORIZATION)
+        client_id = self.get_setup_value(CONF_CLIENT_ID)
+        auth_token = self.get_setup_value(CONF_AUTHORIZATION)
+        if not client_id or not auth_token:
+            msg = "Invalid login credentials"
+            raise LoginFailed(msg)
         self._soundcloud = SoundcloudAsyncAPI(auth_token, client_id, self.mass.http_session)
         await self._soundcloud.login()
         self._me = await self._soundcloud.get_account_details()
@@ -227,12 +205,36 @@ class SoundcloudMusicProvider(MusicProvider):
             round(time.time() - time_start, 2),
         )
 
-    @use_cache(3600 * 3)  # Cache for 3 hours
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get available recommendations."""
-        # Part 1, the mixed selections
-        recommendations = await self._soundcloud.get_mixed_selection(20)
-        folders = []
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        rows = await self._recommendation_rows_from_payload()
+        rows.append(
+            RecommendationFolder(
+                name="SoundCloud Feed",
+                translation_key="soundcloud_feed",
+                item_id=f"{self.instance_id}_sc_subscribed_feed",
+                provider=self.instance_id,
+                icon="mdi-rss",
+            )
+        )
+        return rows
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id == f"{self.instance_id}_sc_subscribed_feed":
+            return UniqueList(await self._get_subscribed_feed_tracks())
+        return await self._recommendation_items_from_payload(item_id)
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch and parse the mixed-selection collections as folders with items."""
+        folders: list[RecommendationFolder] = []
+        recommendations = await self._soundcloud.get_mixed_selection(40)
         for collection in recommendations.get("collection", []):
             folder = RecommendationFolder(
                 name=collection["title"],
@@ -246,30 +248,29 @@ class SoundcloudMusicProvider(MusicProvider):
                     folder.items.append(await self._parse_playlist(playlist))
                 else:
                     self.logger.debug(
-                        "Unknown item type in collection for SoundCloud: %s", playlist.get("kind")
-                    )
-                    continue
-            folders.append(folder)
-        # Part 2, the subscribed feed
-        feed = await self._soundcloud.get_subscribe_feed(20)
-        if feed and "collection" in feed:
-            folder = RecommendationFolder(
-                name="SoundCloud Feed",
-                translation_key="soundcloud_feed",
-                item_id=f"{self.instance_id}_sc_subscribed_feed",
-                provider=self.instance_id,
-                icon="mdi-rss",
-            )
-            for item in feed["collection"]:
-                if item.get("type") == "track" or item.get("type") == "track-repost":
-                    folder.items.append(await self._parse_track(item.get("track")))
-                else:
-                    self.logger.debug(
-                        "Unknown type in subscribed feed for SoundCloud: %s", item.get("type")
+                        "Unknown item type in collection for SoundCloud: %s",
+                        playlist.get("kind"),
                     )
                     continue
             folders.append(folder)
         return folders
+
+    @use_cache(3600 * 3)  # Cache for 3 hours
+    async def _get_subscribed_feed_tracks(self) -> list[Track]:
+        """Fetch and parse the tracks of the subscribed feed."""
+        tracks: list[Track] = []
+        feed = await self._soundcloud.get_subscribe_feed(40)
+        if not feed or "collection" not in feed:
+            return tracks
+        for item in feed["collection"]:
+            if item.get("type") == "track" or item.get("type") == "track-repost":
+                tracks.append(await self._parse_track(item.get("track")))
+            else:
+                self.logger.debug(
+                    "Unknown type in subscribed feed for SoundCloud: %s", item.get("type")
+                )
+                continue
+        return tracks
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_artist(self, prov_artist_id: str) -> Artist:
@@ -538,17 +539,24 @@ class SoundcloudMusicProvider(MusicProvider):
         playlist.is_editable = False
         if playlist_obj.get("description"):
             playlist.metadata.description = playlist_obj["description"]
-        if playlist_obj.get("artwork_url"):
+        artwork_url = playlist_obj.get("artwork_url") or playlist_obj.get("calculated_artwork_url")
+        if artwork_url:
             playlist.metadata.images = UniqueList(
                 [
                     MediaItemImage(
                         type=ImageType.THUMB,
-                        path=self._transform_artwork_url(playlist_obj["artwork_url"]),
+                        path=self._transform_artwork_url(artwork_url),
                         provider=self.instance_id,
                         remotely_accessible=True,
                     )
                 ]
             )
+        if not artwork_url:
+            # fall back to the artwork of the first track that has one
+            for track_obj in playlist_obj.get("tracks", []):
+                if track_obj.get("artwork_url"):
+                    artwork_url = track_obj["artwork_url"]
+                    break
         if playlist_obj.get("genre"):
             playlist.metadata.genres = {playlist_obj["genre"]}
         if playlist_obj.get("tag_list"):

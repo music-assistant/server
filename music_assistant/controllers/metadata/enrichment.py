@@ -138,7 +138,18 @@ class MetadataEnrichmentMixin:
             for provider in self.providers:
                 if ProviderFeature.ARTIST_METADATA not in provider.supported_features:
                     continue
-                if metadata := await provider.get_artist_metadata(artist):
+                try:
+                    metadata = await provider.get_artist_metadata(artist)
+                except Exception as err:
+                    self.logger.warning(
+                        "Error fetching metadata for Artist %s from provider %s: %s",
+                        artist.name,
+                        provider.name,
+                        err,
+                        exc_info=err if self.logger.isEnabledFor(10) else None,
+                    )
+                    continue
+                if metadata:
                     if prefer_local_genres:
                         metadata = replace(metadata, genres=None)
                     if metadata.description:
@@ -245,7 +256,18 @@ class MetadataEnrichmentMixin:
             for provider in self.providers:
                 if ProviderFeature.ALBUM_METADATA not in provider.supported_features:
                     continue
-                if metadata := await provider.get_album_metadata(album):
+                try:
+                    metadata = await provider.get_album_metadata(album)
+                except Exception as err:
+                    self.logger.warning(
+                        "Error fetching metadata for Album %s from provider %s: %s",
+                        album.name,
+                        provider.name,
+                        err,
+                        exc_info=err if self.logger.isEnabledFor(10) else None,
+                    )
+                    continue
+                if metadata:
                     if prefer_local_genres:
                         metadata = replace(metadata, genres=None)
                     album.metadata.update(metadata)
@@ -304,7 +326,18 @@ class MetadataEnrichmentMixin:
                 if ProviderFeature.TRACK_METADATA not in provider.supported_features:
                     continue
 
-                if metadata := await provider.get_track_metadata(track):
+                try:
+                    metadata = await provider.get_track_metadata(track)
+                except Exception as err:
+                    self.logger.warning(
+                        "Error fetching metadata for Track %s from provider %s: %s",
+                        track.name,
+                        provider.name,
+                        err,
+                        exc_info=err if self.logger.isEnabledFor(10) else None,
+                    )
+                    continue
+                if metadata:
                     if prefer_local_genres:
                         metadata = replace(metadata, genres=None)
                     track.metadata.update(metadata)

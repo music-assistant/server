@@ -794,7 +794,7 @@ class HomeAssistantOAuthProvider(LoginProvider):
             existing_user = User(
                 user_id=user_dict["user_id"],
                 username=user_dict["username"],
-                role=UserRole(user_dict["role"]),
+                role=user_dict["role"],
                 enabled=bool(user_dict["enabled"]),
                 created_at=datetime.fromisoformat(user_dict["created_at"]),
                 display_name=user_dict["display_name"],

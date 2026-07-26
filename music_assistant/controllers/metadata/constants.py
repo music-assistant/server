@@ -20,6 +20,7 @@ LOCALES = {
     "bg_BG": "Bulgarian",
     "cs_CZ": "Czech",
     "zh_CN": "Chinese",
+    "zh_TW": "Chinese (Traditional)",
     "hr_HR": "Croatian",
     "da_DK": "Danish",
     "de_DE": "German",
@@ -93,12 +94,21 @@ DEFAULT_THUMB_CACHE_MAX_SIZE_MB = 500
 # cache namespace.
 CACHE_CATEGORY_IMAGE_IDS = 102
 
+# Bounds each of the in-memory image-id maps (forward memo, reverse LRU and
+# persisted markers). The maps share their key/id string objects, so the
+# combined worst-case footprint stays in the single-digit MB range. Overflow is
+# harmless: an evicted entry merely costs one re-hash and/or one cache-db probe
+# on the next encounter.
 _IMAGE_ID_LRU_MAX = 10000
 
-_IMAGE_ID_CACHE_TTL = 86400 * 365  # 1 year, refreshed on each write
+# 1 year; a stored mapping is refreshed once the row burns through half its TTL
+_IMAGE_ID_CACHE_TTL = 86400 * 365
 
 # Sizes accepted by the imageproxy. 0 means "no resize". The set is small enough
 # to bound PIL memory + thumbnail cache cardinality; expand if a real use case appears.
 _ALLOWED_IMAGEPROXY_SIZES = frozenset({0, 80, 160, 256, 512, 1024})
+
+# Human-readable form of the allowed sizes, used in error responses.
+_ALLOWED_IMAGEPROXY_SIZES_STR = ", ".join(str(size) for size in sorted(_ALLOWED_IMAGEPROXY_SIZES))
 
 _IMAGEPROXY_PATH_PREFIX = "/imageproxy/"

@@ -23,7 +23,7 @@ from music_assistant.models.plugin import PluginProvider
 from .server import PlayerRemoteInstance
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
 
@@ -52,87 +52,6 @@ async def setup(
     return PlexConnectProvider(mass, manifest, config)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    :param mass: MusicAssistant instance.
-    :param instance_id: id of an existing provider instance (None if new instance setup).
-    :param action: [optional] action key called from config entries UI.
-    :param values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # Get available Plex music providers
-    plex_providers = [
-        provider
-        for provider in mass.get_providers()
-        if provider.domain == "plex" and provider.type.value == "music"
-    ]
-
-    # Get player name default if player is selected
-    player_name_default = None
-    if values and values.get(CONF_MASS_PLAYER_ID):
-        player_id = str(values.get(CONF_MASS_PLAYER_ID))
-        if player := mass.players.get_player(player_id):
-            player_name_default = player.display_name
-
-    return (
-        ConfigEntry(
-            key=CONF_PLEX_PROVIDER_ID,
-            type=ConfigEntryType.STRING,
-            required=True,
-            options=[
-                ConfigValueOption(provider.instance_id, title=provider.name)
-                for provider in plex_providers
-            ],
-        ),
-        ConfigEntry(
-            key=CONF_MASS_PLAYER_ID,
-            type=ConfigEntryType.STRING,
-            required=True,
-            options=[
-                ConfigValueOption(x.player_id, title=x.display_name)
-                for x in sorted(
-                    mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
-                )
-            ],
-        ),
-        ConfigEntry(
-            key=CONF_PLAYER_NAME,
-            type=ConfigEntryType.STRING,
-            required=False,
-            default_value=player_name_default,
-        ),
-        ConfigEntry(
-            key=CONF_DEVICE_CLASS,
-            type=ConfigEntryType.STRING,
-            required=False,
-            default_value="speaker",
-            options=[
-                ConfigValueOption("speaker"),
-                ConfigValueOption("phone"),
-                ConfigValueOption("tablet"),
-                ConfigValueOption("stb"),
-                ConfigValueOption("tv"),
-                ConfigValueOption("pc"),
-                ConfigValueOption("cloud"),
-            ],
-        ),
-        ConfigEntry(
-            key=CONF_PORT,
-            type=ConfigEntryType.INTEGER,
-            required=False,
-            default_value=None,
-            advanced=True,
-            requires_reload=True,
-        ),
-    )
-
-
 class PlexConnectProvider(PluginProvider):
     """Plex Connect plugin provider implementation."""
 
@@ -157,6 +76,67 @@ class PlexConnectProvider(PluginProvider):
         self._allocated_port: int | None = None
         self._stop_called: bool = False
         self._on_unload_callbacks: list[Callable[..., None]] = []
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        # Get available Plex music providers
+        plex_providers = [
+            provider
+            for provider in self.mass.get_providers()
+            if provider.domain == "plex" and provider.type.value == "music"
+        ]
+        return (
+            ConfigEntry(
+                key=CONF_PLEX_PROVIDER_ID,
+                type=ConfigEntryType.STRING,
+                required=True,
+                options=[
+                    ConfigValueOption(provider.instance_id, title=provider.name)
+                    for provider in plex_providers
+                ],
+            ),
+            ConfigEntry(
+                key=CONF_MASS_PLAYER_ID,
+                type=ConfigEntryType.STRING,
+                required=True,
+                options=[
+                    ConfigValueOption(x.player_id, title=x.display_name)
+                    for x in sorted(
+                        self.mass.players.all_players(False, False),
+                        key=lambda p: p.display_name.lower(),
+                    )
+                ],
+            ),
+            ConfigEntry(
+                key=CONF_PLAYER_NAME,
+                type=ConfigEntryType.STRING,
+                required=False,
+                default_value=None,
+            ),
+            ConfigEntry(
+                key=CONF_DEVICE_CLASS,
+                type=ConfigEntryType.STRING,
+                required=False,
+                default_value="speaker",
+                options=[
+                    ConfigValueOption("speaker"),
+                    ConfigValueOption("phone"),
+                    ConfigValueOption("tablet"),
+                    ConfigValueOption("stb"),
+                    ConfigValueOption("tv"),
+                    ConfigValueOption("pc"),
+                    ConfigValueOption("cloud"),
+                ],
+            ),
+            ConfigEntry(
+                key=CONF_PORT,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=None,
+                advanced=True,
+                requires_reload=True,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

@@ -31,10 +31,18 @@ def register_prompts(mcp: Any, config: ProviderConfig) -> None:
             f"Find the best match for the user's request: '{request}'.\n"
             "Use library_search_tracks (and library_search_albums or "
             "library_search_artists if needed) to identify the right URI.\n"
-            f"Then call playback_play_media with queue_id='{target}' and the "
-            "resolved URI.\n"
+            "If every search returns no results, the item is not available in "
+            "the user's library or enabled providers — tell the user it could "
+            "not be found and stop. Do not retry the same searches or call "
+            "unrelated tools.\n"
+            f"If '{target}' is not already a player_id, resolve it by calling "
+            "players_list_players and fuzzy-matching the name.\n"
+            "Then call playback_play_media with queue_id set to that "
+            "player_id and the resolved URI.\n"
             "Finally, call queue_get_active_queue to confirm the new state "
-            "and report it back."
+            "and report it back. For positional inserts via queue_add_to_queue "
+            "with index, read QueueBrief.next_insertable_index from "
+            "queue_get_active_queue — not array position alone."
         )
 
     @mcp.prompt(name="curate_party_playlist")  # type: ignore[untyped-decorator, unused-ignore]

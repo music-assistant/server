@@ -12,12 +12,15 @@ from datetime import datetime
 from enum import Enum
 from functools import cache
 from types import NoneType, UnionType
-from typing import Any, TypeVar, Union, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any, TypeVar, Union, get_args, get_origin, get_type_hints
 
 from mashumaro.exceptions import MissingField
 from music_assistant_models.media_items.media_item import MediaItem
 
 from music_assistant.helpers.util import try_parse_bool
+
+if TYPE_CHECKING:
+    from music_assistant_models.auth import Scope
 
 LOGGER = logging.getLogger(__name__)
 
@@ -279,7 +282,8 @@ class APICommandHandler:
     type_hints: dict[str, Any]
     target: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]]
     authenticated: bool = True
-    required_role: str | None = None  # "admin" or "user" or None
+    required_scope: Scope | None = None  # None means any authenticated user
+    allow_impersonation: bool = False  # If True, the command accepts a 'user' argument
     alias: bool = False  # If True, this is an alias for backward compatibility
 
     @classmethod
@@ -288,7 +292,8 @@ class APICommandHandler:
         command: str,
         func: Callable[..., Coroutine[Any, Any, Any] | AsyncGenerator[Any, Any]],
         authenticated: bool = True,
-        required_role: str | None = None,
+        required_scope: Scope | None = None,
+        allow_impersonation: bool = False,
         alias: bool = False,
     ) -> APICommandHandler:
         """
@@ -297,8 +302,10 @@ class APICommandHandler:
         :param command: The command name/path.
         :param func: The function to handle the command.
         :param authenticated: Whether authentication is required (default: True).
-        :param required_role: Required user role ("admin" or "user")
+        :param required_scope: Scope required to execute the command,
             None for any authenticated user.
+        :param allow_impersonation: Whether the command accepts a 'user' argument
+            to execute the command on behalf of another user (default: False).
         :param alias: Whether this is an alias for backward compatibility (default: False).
         """
         type_hints = _get_type_hints_for_api_command(func)
@@ -354,13 +361,20 @@ class APICommandHandler:
             elif isinstance(value, TypeVar):
                 if value.__bound__ is not None:
                     type_hints[key] = value.__bound__
+        signature = inspect.signature(func)
+        # the 'user' argument of impersonation-enabled commands is injected by the
+        # command dispatch, so it may not clash with the handler's own arguments
+        if allow_impersonation and not signature.parameters.keys().isdisjoint(("user", "username")):
+            msg = f"Command {command} allows impersonation but accepts a user(name) argument"
+            raise RuntimeError(msg)
         return APICommandHandler(
             command=command,
-            signature=inspect.signature(func),
+            signature=signature,
             type_hints=type_hints,
             target=func,
             authenticated=authenticated,
-            required_role=required_role,
+            required_scope=required_scope,
+            allow_impersonation=allow_impersonation,
             alias=alias,
         )
 
@@ -368,7 +382,8 @@ class APICommandHandler:
 def api_command(
     command: str,
     authenticated: bool = True,
-    required_role: str | None = None,
+    required_scope: Scope | None = None,
+    allow_impersonation: bool = False,
     alias: bool = False,
 ) -> Callable[[_F], _F]:
     """
@@ -376,7 +391,10 @@ def api_command(
 
     :param command: The command name/path.
     :param authenticated: Whether authentication is required (default: True).
-    :param required_role: Required user role ("admin" or "user"), None means any authenticated user.
+    :param required_scope: Scope required to execute the command,
+        None means any authenticated user.
+    :param allow_impersonation: Whether the command accepts a 'user' argument
+        to execute the command on behalf of another user (default: False).
     :param alias: Whether this is a backward-compatible alias (default: False).
         Aliases remain functional but are hidden from the API documentation.
     """
@@ -384,7 +402,8 @@ def api_command(
     def decorate(func: _F) -> _F:
         func.api_cmd = command  # type: ignore[attr-defined]
         func.api_authenticated = authenticated  # type: ignore[attr-defined]
-        func.api_required_role = required_role  # type: ignore[attr-defined]
+        func.api_required_scope = required_scope  # type: ignore[attr-defined]
+        func.api_allow_impersonation = allow_impersonation  # type: ignore[attr-defined]
         func.api_alias = alias  # type: ignore[attr-defined]
         return func
 
@@ -478,7 +497,7 @@ def parse_value(  # noqa: PLR0911
     if value is None and value_type is NoneType:
         return None
     origin = get_origin(value_type)
-    if origin in (tuple, list, Sequence, Iterable):
+    if origin in (tuple, list, set, frozenset, Sequence, Iterable):
         # For abstract types like Sequence and Iterable, use list as the concrete type
         concrete_type = list if origin in (Sequence, Iterable) else origin
         return concrete_type(

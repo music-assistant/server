@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.config_entries import ConfigEntry
 
 from music_assistant_models.enums import (
     IdentifierType,
@@ -131,11 +131,7 @@ class ChromecastPlayer(Player):
         """Start the chromecast socket client (must be called after __init__)."""
         await asyncio.to_thread(self.cc.start)
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         if self.type == PlayerType.GROUP:
             return [
@@ -662,6 +658,8 @@ class ChromecastPlayer(Player):
 
     def _flow_stream_underrun(self) -> bool:
         """Return whether the active queue's flow stream has been fully consumed."""
-        # a group child mirrors the group's status, so use the queue-owning player
-        queue_id = self.active_cast_group or self.player_id
+        # Resolve the queue-owning player: a Cast group child mirrors the group's
+        # status, and a Cast exposed as a protocol player is wrapped by a universal
+        # player that owns the queue. Only a native/standalone Cast owns its own queue.
+        queue_id = self.active_cast_group or self.protocol_parent_id or self.player_id
         return self.mass.player_queues.flow_stream_finished(queue_id)

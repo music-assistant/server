@@ -7,6 +7,7 @@ https://github.com/music-assistant/aiosonos
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp import web
@@ -18,16 +19,19 @@ from zeroconf import ServiceStateChange
 
 from music_assistant.constants import (
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
+    CONF_LOG_LEVEL,
     MASS_LOGO_ONLINE,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.audio import get_mime_type
+from music_assistant.helpers.json import SerializableType
 from music_assistant.models.player_provider import PlayerProvider
 
 from .helpers import get_primary_ip_address
 from .player import SonosPlayer
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.player import PlayerMedia
     from zeroconf.asyncio import AsyncServiceInfo
 
@@ -35,8 +39,13 @@ if TYPE_CHECKING:
 class SonosPlayerProvider(PlayerProvider):
     """Sonos Player provider."""
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (CONF_ENTRY_MANUAL_DISCOVERY_IPS,)
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        self._set_aiosonos_log_level()
         self.mass.streams.register_dynamic_route(
             "/sonos_queue/*", self._handle_sonos_cloud_queue_request
         )
@@ -65,6 +74,33 @@ class SonosPlayerProvider(PlayerProvider):
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
         self.mass.streams.unregister_dynamic_route("/sonos_queue/*")
+
+    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        await super().update_config(config, changed_keys)
+        # a log level(-only) change does not reload the provider,
+        # so realign aiosonos's logger here
+        if f"values/{CONF_LOG_LEVEL}" in changed_keys:
+            self._set_aiosonos_log_level()
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this provider to include in diagnostics reports."""
+        sonos_players = [player for player in self.players if isinstance(player, SonosPlayer)]
+        # active_output_protocol holds "native" or the player id of the protocol player in use
+        active_protocols = [
+            player.active_output_protocol
+            for player in sonos_players
+            if player.active_output_protocol
+        ]
+        return {
+            "speakers_total": len(sonos_players),
+            "speakers_connected": sum(player.connected for player in sonos_players),
+            "coordinators": sum(
+                player.client.player.is_coordinator for player in sonos_players if player.connected
+            ),
+            "native_playback": sum(protocol == "native" for protocol in active_protocols),
+            "protocol_playback": sum(protocol != "native" for protocol in active_protocols),
+        }
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
@@ -106,6 +142,15 @@ class SonosPlayerProvider(PlayerProvider):
         # can arrive in (duplicated) bursts
         task_id = f"setup_sonos_{player_id}"
         self.mass.call_later(5, self._setup_player, player_id, name, info, task_id=task_id)
+
+    def _set_aiosonos_log_level(self) -> None:
+        """Align aiosonos's log level with the provider's log level."""
+        # aiosonos is very chatty at debug level, so only pass through its
+        # debug logging when verbose logging is enabled
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            logging.getLogger("aiosonos").setLevel(logging.DEBUG)
+        else:
+            logging.getLogger("aiosonos").setLevel(self.logger.level + 10)
 
     async def _setup_player(self, player_id: str, name: str, info: AsyncServiceInfo) -> None:
         """Handle setup of a new player that is discovered using mdns."""

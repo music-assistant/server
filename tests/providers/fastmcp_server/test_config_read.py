@@ -43,6 +43,67 @@ async def test_get_entries_lists_editable(mounted_config: Any, mock_config_targe
     assert {"log_level", "http_port", "token"} <= keys
 
 
+def test_entry_dump_accepts_labelless_entry() -> None:
+    """
+    A ConfigEntry whose ``label`` is None must dump without choking.
+
+    Upstream ``music_assistant_models`` widened ``ConfigEntry.label`` to
+    ``str | None``; ``_entry_dump`` passes the label straight through, so the
+    dump must preserve None rather than assume a string is always present.
+    Regression for the release-gate mypy failure under the newer models.
+    """
+    from music_assistant_models.config_entries import ConfigEntry
+    from music_assistant_models.enums import ConfigEntryType
+
+    from music_assistant.providers.fastmcp_server.tools.config import _entry_dump
+
+    # Set the label out-of-band so the test type checks whether the installed
+    # models type ``label`` as ``str`` or ``str | None`` — ``object.__setattr__``
+    # also bypasses the frozen dataclass.
+    entry = ConfigEntry(key="k", type=ConfigEntryType.STRING, label="x")
+    object.__setattr__(entry, "label", None)
+    dump = _entry_dump(entry, "current")
+
+    assert dump.label is None
+    assert dump.key == "k"
+
+
+def test_entry_dump_resolves_localized_label_and_description() -> None:
+    """
+    `_entry_dump` surfaces the localized label/description, not raw None.
+
+    Server-category entries set label/description to None and rely on the
+    strings.json translations resolved at serialization, so the dump must read
+    the resolved values rather than the raw (None) attributes — otherwise
+    `config_get_entries` returns null text for every server setting (regression
+    from the strings.json migration, flagged on the #4486 review).
+    """
+    from music_assistant_models.config_entries import ConfigEntry
+    from music_assistant_models.enums import ConfigEntryType
+    from music_assistant_models.translations import TRANSLATION_RESOLVER
+
+    from music_assistant.providers.fastmcp_server.tools.config import _entry_dump
+
+    resolved = {
+        "config_entries.require_auth.label": "Require authentication",
+        "config_entries.require_auth.description": "Require a bearer token.",
+    }
+
+    def _resolver(key: str, **_kwargs: Any) -> str | None:
+        return resolved.get(key)
+
+    entry = ConfigEntry(key="require_auth", type=ConfigEntryType.BOOLEAN)
+    assert entry.label is None  # raw attribute is unset; text lives in translations
+    token = TRANSLATION_RESOLVER.set(_resolver)
+    try:
+        dump = _entry_dump(entry, True)
+    finally:
+        TRANSLATION_RESOLVER.reset(token)
+
+    assert dump.label == "Require authentication"
+    assert dump.description == "Require a bearer token."
+
+
 async def test_get_provider_unknown_raises(mounted_config: Any, mock_mass: Any) -> None:
     from unittest.mock import AsyncMock
 

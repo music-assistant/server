@@ -1,10 +1,10 @@
 {
   "config_entries": {
     "mass_player_id": {
-      "label": "[%key:common::config_entries::mass_player_id::label%]",
-      "description": "The player to use for playback.",
+      "label": "Connected Music Assistant Player",
+      "description": "The player to route AriaCast audio to.",
       "options": {
-        "__auto__": "[%key:common::config_entries::mass_player_id::options::__auto__%]"
+        "__auto__": "Auto (prefer playing player)"
       }
     }
   },

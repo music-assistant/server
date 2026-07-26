@@ -35,11 +35,11 @@ def test_manifest_valid() -> None:
     assert data["type"] == "plugin"
     assert data["domain"] == "yandex_smarthome"
     assert data["name"] == "Yandex Smart Home"
-    assert data["stage"] == "beta"
+    assert data["stage"] == "alpha"
     assert data["multi_instance"] is False
     assert data["builtin"] is False
     assert isinstance(data["requirements"], list)
-    assert "ya-passport-auth==1.3.0" in data["requirements"]
+    assert "ya-passport-auth[ma]==1.7.0" in data["requirements"]
 
 
 def test_manifest_has_codeowners() -> None:

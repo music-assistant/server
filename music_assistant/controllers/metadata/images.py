@@ -12,11 +12,13 @@ from __future__ import annotations
 import os
 import random
 import threading
+import time
 from base64 import b64encode
 from typing import TYPE_CHECKING, cast
 
 import aiofiles
 from aiohttp import web
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ImageType
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant_models.media_items import (
@@ -31,18 +33,20 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.colors import get_palette
+from music_assistant.helpers.colors import get_palette, invalidate_cached_palette
 from music_assistant.helpers.images import (
     create_collage,
     create_thumb_hash,
     detect_image_content_format,
     get_image_data,
     get_image_thumb,
+    invalidate_cached_image,
 )
 from music_assistant.helpers.security import is_safe_path
 
 from .constants import (
     _ALLOWED_IMAGEPROXY_SIZES,
+    _ALLOWED_IMAGEPROXY_SIZES_STR,
     _IMAGE_ID_CACHE_TTL,
     _IMAGE_ID_LRU_MAX,
     _IMAGEPROXY_CONTENT_TYPES,
@@ -77,7 +81,9 @@ class ImageProxyMixin:
         logger: logging.Logger
         domain: str
         _collage_images_dir: str
+        _image_id_forward: dict[tuple[str, str], str]
         _image_id_lru: OrderedDict[str, tuple[str, str]]
+        _image_id_persisted: dict[str, float]
         _image_id_lock: threading.Lock
 
     def compute_image_id(self, provider: str, path: str) -> str:
@@ -94,14 +100,33 @@ class ImageProxyMixin:
         :param provider: Provider id that owns / can resolve the image.
         :param path: Image path or URL as the provider knows it.
         """
+        # fast path: a bare dict read is atomic, so no hashing or locking is
+        # needed for an image that was serialized before. This runs for every
+        # image occurrence in every outbound message, so it must stay cheap.
+        image_key = (provider, path)
+        if (image_id := self._image_id_forward.get(image_key)) is not None:
+            return image_id
         image_id = create_thumb_hash(provider, path)
+        now = time.time()
         with self._image_id_lock:
-            if image_id in self._image_id_lru:
-                self._image_id_lru.move_to_end(image_id)
-                return image_id
-            self._image_id_lru[image_id] = (provider, path)
+            self._image_id_forward[image_key] = image_id
+            while len(self._image_id_forward) > _IMAGE_ID_LRU_MAX:
+                del self._image_id_forward[next(iter(self._image_id_forward))]
+            self._image_id_lru[image_id] = image_key
+            self._image_id_lru.move_to_end(image_id)
             while len(self._image_id_lru) > _IMAGE_ID_LRU_MAX:
                 self._image_id_lru.popitem(last=False)
+            # skip the persist when this process already stored the mapping
+            # recently; re-persist once the stored row has burned through half
+            # its TTL so long-lived ids remain resolvable across restarts
+            persisted_at = self._image_id_persisted.get(image_id)
+            if persisted_at is not None and now - persisted_at < _IMAGE_ID_CACHE_TTL / 2:
+                return image_id
+            # mark optimistically at schedule time to dedupe concurrent bursts;
+            # _persist_image_id drops the marker again if storing fails
+            self._image_id_persisted[image_id] = now
+            while len(self._image_id_persisted) > _IMAGE_ID_LRU_MAX:
+                del self._image_id_persisted[next(iter(self._image_id_persisted))]
         # the to_dict hook calls us from the executor when running under
         # _send_message; only call create_task directly when we know we are
         # on the loop thread, otherwise hop across via call_soon_threadsafe
@@ -136,6 +161,9 @@ class ImageProxyMixin:
                     self._image_id_lru[image_id] = result
                     while len(self._image_id_lru) > _IMAGE_ID_LRU_MAX:
                         self._image_id_lru.popitem(last=False)
+                    self._image_id_forward[result] = image_id
+                    while len(self._image_id_forward) > _IMAGE_ID_LRU_MAX:
+                        del self._image_id_forward[next(iter(self._image_id_forward))]
                 return result
         return None
 
@@ -232,7 +260,7 @@ class ImageProxyMixin:
             return f"{base_url}/imageproxy/{image_id}?size={size}&fmt={image_format}"
         return image.path
 
-    @api_command("metadata/get_image_palette")
+    @api_command("metadata/get_image_palette", required_scope=Scope.LIBRARY_READ)
     async def get_image_palette(self, image_id: str) -> MediaItemPalette | None:
         """
         Get the color palette extracted from a (proxied) image.
@@ -253,6 +281,21 @@ class ImageProxyMixin:
             return await get_palette(self.mass, path, provider)
         except MediaNotFoundError, OSError:
             return None
+
+    async def invalidate_image_cache(self, provider: str, path: str) -> None:
+        """
+        Drop every cached artifact for an image so the next request re-fetches it.
+
+        Removes the cached source bytes, all thumbnail size/format variants
+        (memory + disk) and the extracted color palette. Call this when the
+        image content behind an unchanged (provider, path) identity has
+        changed, e.g. a local file whose (embedded) artwork was replaced.
+
+        :param provider: Provider (instance) id that owns / can resolve the image.
+        :param path: Image path or URL exactly as referenced by media items.
+        """
+        await invalidate_cached_image(self.mass, provider, path)
+        await invalidate_cached_palette(self.mass, provider, path)
 
     async def get_thumbnail(
         self,
@@ -293,13 +336,20 @@ class ImageProxyMixin:
             return web.Response(status=400)
         image_id = request.path[len(_IMAGEPROXY_PATH_PREFIX) :].rstrip("/").lower()
         if len(image_id) != 64 or any(c not in "0123456789abcdef" for c in image_id):
-            return web.Response(status=400)
+            return web.Response(status=400, text="Invalid image id")
         try:
             size = int(request.query.get("size", "0"))
         except ValueError:
-            return web.Response(status=400)
+            return web.Response(
+                status=400,
+                text=f"Invalid size parameter: must be one of {_ALLOWED_IMAGEPROXY_SIZES_STR}.",
+            )
         if size not in _ALLOWED_IMAGEPROXY_SIZES:
-            return web.Response(status=400)
+            return web.Response(
+                status=400,
+                text=f"Unsupported size {size}: must be one of {_ALLOWED_IMAGEPROXY_SIZES_STR} "
+                "(0 = original size).",
+            )
         resolved = await self.resolve_image_id(image_id)
         if resolved is None:
             return web.Response(status=404)
@@ -433,11 +483,28 @@ class ImageProxyMixin:
 
     async def _persist_image_id(self, image_id: str, provider: str, path: str) -> None:
         """Store an image-id mapping so a later imageproxy request can resolve it."""
-        await self.cache.set(
-            key=image_id,
-            data={"provider": provider, "path": path},
-            category=CACHE_CATEGORY_IMAGE_IDS,
-            provider=self.domain,
-            expiration=_IMAGE_ID_CACHE_TTL,
-            persistent=True,
-        )
+        try:
+            # the mapping is usually already stored by a previous process run;
+            # probing the expiration first turns the write storm while browsing
+            # after a restart into (much cheaper) reads. Only rewrite when the
+            # stored row is absent or has burned through half its TTL.
+            expires = await self.cache.get_expiration(
+                key=image_id,
+                category=CACHE_CATEGORY_IMAGE_IDS,
+                provider=self.domain,
+            )
+            if expires is not None and expires - time.time() > _IMAGE_ID_CACHE_TTL / 2:
+                return
+            await self.cache.set(
+                key=image_id,
+                data={"provider": provider, "path": path},
+                category=CACHE_CATEGORY_IMAGE_IDS,
+                provider=self.domain,
+                expiration=_IMAGE_ID_CACHE_TTL,
+                persistent=True,
+            )
+        except Exception:
+            # drop the optimistic marker so a later encounter retries the persist
+            with self._image_id_lock:
+                self._image_id_persisted.pop(image_id, None)
+            raise

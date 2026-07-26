@@ -15,7 +15,7 @@ import logging
 import time
 from collections import deque
 from collections.abc import AsyncGenerator, Callable
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import (
@@ -276,16 +276,23 @@ class AudioBuffer:
             chunk_count = 0
             status = "running"
             try:
-                async for chunk in audio_source:
-                    chunk_count += 1
-                    await self._put(chunk)
-                    await asyncio.sleep(0)
+                # aclosing guarantees the source generator (and any ffmpeg chain
+                # behind it) is finalized immediately when this task is cancelled,
+                # instead of lingering until garbage collection.
+                async with aclosing(audio_source):
+                    async for chunk in audio_source:
+                        chunk_count += 1
+                        await self._put(chunk)
+                        await asyncio.sleep(0)
                 await self._set_eof()
             except asyncio.CancelledError:
                 status = "cancelled"
                 raise
-            except Exception:
+            except Exception as err:
                 status = "aborted with error"
+                # record the error before the EOF signal below, so readers that
+                # check for a producer error never observe the abort as a clean EOF
+                self._producer_error = err
                 raise
             finally:
                 # signal EOF even on error if we produced valid chunks,

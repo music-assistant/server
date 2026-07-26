@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import logging
 import secrets
+from collections.abc import Mapping
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError, OperationalError
 from typing import TYPE_CHECKING, Any
@@ -14,6 +16,7 @@ import jwt as pyjwt
 from music_assistant_models.auth import (
     AuthProviderType,
     AuthToken,
+    Scope,
     User,
     UserAuthProvider,
     UserRole,
@@ -26,8 +29,10 @@ from music_assistant_models.errors import (
 
 from music_assistant.constants import DB_TABLE_PLAYLOG, HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
+    ROLE_SCOPES,
     get_current_token,
     get_current_user,
+    has_scope,
 )
 from music_assistant.controllers.webserver.helpers.auth_providers import (
     AuthResult,
@@ -35,6 +40,7 @@ from music_assistant.controllers.webserver.helpers.auth_providers import (
     HomeAssistantOAuthProvider,
     HomeAssistantProviderConfig,
     LoginProvider,
+    LoginRateLimiter,
     normalize_username,
 )
 from music_assistant.helpers.api import api_command
@@ -53,12 +59,24 @@ DB_SCHEMA_VERSION = 5
 
 # Token expiration constants (in days)
 TOKEN_SHORT_LIVED_EXPIRATION = 30  # Short-lived tokens (auto-renewing on use)
-TOKEN_LONG_LIVED_EXPIRATION = 3650  # Long-lived tokens (10 years, no auto-renewal)
+TOKEN_LONG_LIVED_EXPIRATION = 365  # Long-lived tokens (1 year, no auto-renewal)
+# Max days a sliding short-lived session may live from creation before re-auth.
+TOKEN_ABSOLUTE_MAX_EXPIRATION = 90
+TOKEN_GUEST_EXPIRATION = 1  # Guest sessions: short fixed lifetime, no renewal
+# Days before the absolute cap at which the HA integration token is rotated
+HA_TOKEN_ROTATION_MARGIN = 7
+# Minimum age of a token's stored last_used_at before token activity is persisted again
+TOKEN_ACTIVITY_PERSIST_INTERVAL = timedelta(hours=1)
+
+HA_TOKEN_SETTING_KEY = "ha_integration_token"
+HA_TOKEN_NAME = "Home Assistant Integration"
 
 # Join code constants (short codes for QR/link-based login)
-JOIN_CODE_LENGTH = 6
+JOIN_CODE_LENGTH = 12
 JOIN_CODE_CHARSET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # No I/O/0/1 for readability
 JOIN_CODE_DEFAULT_EXPIRY_HOURS = 8
+# No source IP available here, so throttle failed exchanges globally under one key.
+JOIN_CODE_RATE_LIMIT_KEY = "join_code_exchange"
 
 
 class AuthenticationManager:
@@ -77,6 +95,9 @@ class AuthenticationManager:
         self.logger = LOGGER
         self._has_users: bool = False
         self.jwt_helper: JWTHelper = None  # type: ignore[assignment]
+        self._join_code_rate_limiter = LoginRateLimiter()
+        # Stops concurrent exchanges from passing the rate limit check before failures land
+        self._join_code_exchange_lock = asyncio.Lock()
 
     async def setup(self) -> None:
         """Initialize the authentication manager."""
@@ -96,6 +117,9 @@ class AuthenticationManager:
         await self._setup_login_providers()
 
         self._has_users = await self._has_non_system_users()
+
+        # migrate the Home Assistant system user of pre-existing installs to the service role
+        await self._migrate_system_user_role()
 
         self._schedule_join_code_cleanup()
 
@@ -140,15 +164,20 @@ class AuthenticationManager:
         try:
             payload = self.jwt_helper.decode_token(token, verify_exp=True)
             token_id = payload.get("jti")
-            user_id = payload.get("sub")
-            is_long_lived = payload.get("is_long_lived", False)
+            token_user_id = payload.get("sub")
 
-            if not token_id or not user_id:
+            if not token_id or not token_user_id:
                 return None
 
             token_row = await self.database.get_row("auth_tokens", {"token_id": token_id})
             if not token_row:
                 return None
+
+            # Database is source of truth for token metadata, not the (immutable) JWT payload.
+            # A payload/row mismatch means a tampered or stale token: reject rather than trust it.
+            if token_user_id != token_row["user_id"]:
+                return None
+            is_long_lived = bool(token_row["is_long_lived"])
 
             # Database expiration is source of truth
             if token_row["expires_at"]:
@@ -157,23 +186,17 @@ class AuthenticationManager:
                     await self.database.delete("auth_tokens", {"token_id": token_id})
                     return None
 
-            # Update last used timestamp
-            now = utc()
-            updates = {"last_used_at": now.isoformat()}
+            user = await self.get_user(token_row["user_id"])
+            if not user:
+                return None
 
-            if not is_long_lived:
-                # Short-lived token: extend expiration on each use (sliding window)
-                new_expires_at = now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
-                updates["expires_at"] = new_expires_at.isoformat()
+            updates = await self._refresh_token_expiration(token_row, user, is_long_lived)
+            if updates is None:
+                return None
+            if updates:
+                await self.database.update("auth_tokens", {"token_id": token_id}, updates)
 
-            # Update database
-            await self.database.update(
-                "auth_tokens",
-                {"token_id": token_id},
-                updates,
-            )
-
-            return await self.get_user(user_id)
+            return user
 
         except pyjwt.ExpiredSignatureError:
             if token_id := self.jwt_helper.get_token_id(token):
@@ -198,25 +221,20 @@ class AuthenticationManager:
                 await self.database.delete("auth_tokens", {"token_id": token_row["token_id"]})
                 return None
 
-        # Implement sliding expiration for short-lived tokens
+        user = await self.get_user(token_row["user_id"])
+        if not user:
+            return None
+
         is_long_lived = bool(token_row["is_long_lived"])
-        now = utc()
-        legacy_updates: dict[str, str] = {"last_used_at": now.isoformat()}
+        legacy_updates = await self._refresh_token_expiration(token_row, user, is_long_lived)
+        if legacy_updates is None:
+            return None
+        if legacy_updates:
+            await self.database.update(
+                "auth_tokens", {"token_id": token_row["token_id"]}, legacy_updates
+            )
 
-        if not is_long_lived and token_row["expires_at"]:
-            # Short-lived token: extend expiration on each use (sliding window)
-            new_expires_at = now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
-            legacy_updates["expires_at"] = new_expires_at.isoformat()
-
-        # Update last used timestamp and potentially expiration
-        await self.database.update(
-            "auth_tokens",
-            {"token_id": token_row["token_id"]},
-            legacy_updates,
-        )
-
-        # Get user
-        return await self.get_user(token_row["user_id"])
+        return user
 
     async def get_token_id_from_token(self, token: str) -> str | None:
         """
@@ -236,7 +254,7 @@ class AuthenticationManager:
             return None
         return str(token_row["token_id"])
 
-    @api_command("auth/user", required_role="admin")
+    @api_command("auth/user", required_scope=Scope.USERS_MANAGE)
     async def get_user(self, user_id: str) -> User | None:
         """
         Get user by ID (admin only).
@@ -251,7 +269,7 @@ class AuthenticationManager:
         return User(
             user_id=user_row["user_id"],
             username=user_row["username"],
-            role=UserRole(user_row["role"]),
+            role=user_row["role"],
             enabled=bool(user_row["enabled"]),
             created_at=datetime.fromisoformat(user_row["created_at"]),
             display_name=user_row["display_name"],
@@ -378,7 +396,7 @@ class AuthenticationManager:
         """
         username = HOMEASSISTANT_SYSTEM_USER
         display_name = "Home Assistant Integration"
-        role = UserRole.USER
+        role = UserRole.SERVICE
 
         normalized_username = normalize_username(username)
 
@@ -401,34 +419,42 @@ class AuthenticationManager:
 
     async def get_homeassistant_system_user_token(self) -> str:
         """
-        Get or create an auth token for the Home Assistant system user.
+        Get the auth token to announce to the Home Assistant integration.
 
-        This method ensures only one active token exists for the HA integration.
-        If an old token exists, it is deleted and a new one is created.
-        The token auto-renews on use (expires after 30 days of inactivity).
+        Returns the same (still valid) token on repeated calls so re-announcing it via
+        Supervisor discovery is idempotent for the HA integration. A replacement is only
+        minted when the current token is missing, expired or revoked, or shortly before
+        it reaches its absolute lifetime cap - allowing seamless rotation as HA reloads
+        with the newly announced token while the old one is still accepted.
 
         :return: Authentication token for the Home Assistant system user.
         """
-        token_name = "Home Assistant Integration"
-
-        # Get the system user
         system_user = await self.get_homeassistant_system_user()
 
-        # Delete any existing tokens with this name to avoid accumulation
-        # We can't retrieve the plain token from the hash, so we always create a new one
-        existing_tokens = await self.database.get_rows(
-            "auth_tokens",
-            {"user_id": system_user.user_id, "name": token_name},
-        )
-        for token_row in existing_tokens:
-            await self.database.delete("auth_tokens", {"token_id": token_row["token_id"]})
+        # Keep the plain token in settings for re-announcing; the jwt_secret next to it can mint any token anyway
+        if token_row := await self.database.get_row("settings", {"key": HA_TOKEN_SETTING_KEY}):
+            token = str(token_row["value"])
+            if await self._can_reuse_ha_integration_token(token, system_user):
+                return token
 
-        # Create a new token for the system user
-        return await self.create_token(
+        # A superseded token stays valid until expiry, so HA keeps working until it reloads
+        token = await self.create_token(
             user=system_user,
-            name=token_name,
+            name=HA_TOKEN_NAME,
             is_long_lived=False,
         )
+        await self.database.insert_or_replace(
+            "settings",
+            {"key": HA_TOKEN_SETTING_KEY, "value": token, "type": "string"},
+        )
+        now = utc()
+        for old_row in await self.database.get_rows(
+            "auth_tokens", {"user_id": system_user.user_id, "name": HA_TOKEN_NAME}
+        ):
+            if old_row["expires_at"] and datetime.fromisoformat(old_row["expires_at"]) <= now:
+                await self.database.delete("auth_tokens", {"token_id": old_row["token_id"]})
+        await self.database.commit()
+        return token
 
     async def link_user_to_provider(
         self,
@@ -585,8 +611,10 @@ class AuthenticationManager:
         :param user: The user to create the token for.
         :param name: A name/description for the token (e.g., device name).
         :param is_long_lived: Whether this is a long-lived token (default: False).
-            Short-lived tokens (False): Auto-renewing on use, expire after 30 days of inactivity.
-            Long-lived tokens (True): No auto-renewal, expire after 10 years.
+            Short-lived tokens (False): Auto-renewing on use, expire after 30 days of inactivity,
+            capped at an absolute maximum lifetime from creation (see TOKEN_ABSOLUTE_MAX_EXPIRATION).
+            Tokens for guest users get a short fixed lifetime instead and never renew.
+            Long-lived tokens (True): No auto-renewal, expire after 1 year.
         :return: JWT token string.
         """
         # Generate unique token ID
@@ -595,18 +623,24 @@ class AuthenticationManager:
         # Calculate expiration based on token type
         created_at = utc()
         if is_long_lived:
-            # Long-lived tokens expire after 10 years (no auto-renewal)
+            # Long-lived tokens expire after 1 year (no auto-renewal)
             expires_at = created_at + timedelta(days=TOKEN_LONG_LIVED_EXPIRATION)
+            jwt_expires_at = expires_at
+        elif user.role == UserRole.GUEST:
+            expires_at = created_at + timedelta(days=TOKEN_GUEST_EXPIRATION)
+            jwt_expires_at = expires_at
         else:
             # Short-lived tokens expire after 30 days (with auto-renewal on use)
             expires_at = created_at + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
+            # The exp claim must carry the absolute cap, or it would cut off sliding renewals
+            jwt_expires_at = created_at + timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION)
 
         # Generate JWT token
         token = self.jwt_helper.encode_token(
             user=user,
             token_id=token_id,
             token_name=name,
-            expires_at=expires_at,
+            expires_at=jwt_expires_at,
             is_long_lived=is_long_lived,
         )
 
@@ -640,8 +674,9 @@ class AuthenticationManager:
         if not token_row:
             raise InvalidDataError("Token not found")
 
-        # Check permissions - users can only revoke their own tokens unless admin
-        if token_row["user_id"] != user.user_id and user.role != UserRole.ADMIN:
+        # Check permissions - users can only revoke their own tokens
+        # unless they hold the users.manage scope
+        if token_row["user_id"] != user.user_id and not has_scope(user, Scope.USERS_MANAGE):
             raise InsufficientPermissions("You can only revoke your own tokens")
 
         await self.database.delete("auth_tokens", {"token_id": token_id})
@@ -678,6 +713,7 @@ class AuthenticationManager:
             "DELETE FROM auth_tokens WHERE user_id = :user_id",
             {"user_id": user.user_id},
         )
+        await self.database.commit()
 
         self.logger.info("Revoked %d token(s) for user '%s'", len(token_rows), user.username)
         return len(token_rows)
@@ -687,6 +723,9 @@ class AuthenticationManager:
         """
         Get current user's auth tokens or another user's tokens (admin only).
 
+        The last_used_at timestamp is persisted at most once per hour, so it may lag
+        actual token usage by up to an hour.
+
         :param user_id: Optional user ID to get tokens for (admin only).
         :return: List of auth tokens.
         """
@@ -694,9 +733,10 @@ class AuthenticationManager:
         if not current_user:
             return []
 
-        # If user_id is provided and different from current user, require admin
+        # If user_id is provided and different from current user,
+        # require the users.manage scope
         if user_id and user_id != current_user.user_id:
-            if current_user.role != UserRole.ADMIN:
+            if not has_scope(current_user, Scope.USERS_MANAGE):
                 return []
             target_user = await self.get_user(user_id)
             if not target_user:
@@ -709,7 +749,7 @@ class AuthenticationManager:
         )
         return [AuthToken.from_dict(dict(row)) for row in token_rows]
 
-    @api_command("auth/users", required_role="admin")
+    @api_command("auth/users", required_scope=Scope.USERS_MANAGE)
     async def list_users(self) -> list[User]:
         """
         Get all users (admin only).
@@ -728,7 +768,7 @@ class AuthenticationManager:
                 User(
                     user_id=row["user_id"],
                     username=row["username"],
-                    role=UserRole(row["role"]),
+                    role=row["role"],
                     enabled=bool(row["enabled"]),
                     created_at=datetime.fromisoformat(row["created_at"]),
                     display_name=row["display_name"],
@@ -742,13 +782,13 @@ class AuthenticationManager:
 
     async def update_user_role(self, user_id: str, new_role: UserRole, admin_user: User) -> bool:
         """
-        Update a user's role (admin only).
+        Update a user's role (requires the users.manage scope).
 
         :param user_id: The user ID to update.
         :param new_role: The new role to assign.
-        :param admin_user: The admin user performing the action.
+        :param admin_user: The user performing the action.
         """
-        if admin_user.role != UserRole.ADMIN:
+        if not has_scope(admin_user, Scope.USERS_MANAGE):
             return False
 
         user_row = await self.database.get_row("users", {"user_id": user_id})
@@ -770,7 +810,7 @@ class AuthenticationManager:
         )
         return True
 
-    @api_command("auth/user/enable", required_role="admin")
+    @api_command("auth/user/enable", required_scope=Scope.USERS_MANAGE)
     async def enable_user(self, user_id: str) -> None:
         """
         Enable user account (admin only).
@@ -784,7 +824,7 @@ class AuthenticationManager:
         )
         self.logger.info("User account enabled (user_id=%s)", user_id)
 
-    @api_command("auth/user/disable", required_role="admin")
+    @api_command("auth/user/disable", required_scope=Scope.USERS_MANAGE)
     async def disable_user(self, user_id: str) -> None:
         """
         Disable user account (admin only).
@@ -896,7 +936,7 @@ class AuthenticationManager:
                 "user_id": auth_result.user.user_id,
                 "username": auth_result.user.username,
                 "display_name": auth_result.user.display_name,
-                "role": auth_result.user.role.value,
+                "role": auth_result.user.role,
             },
         }
 
@@ -977,10 +1017,12 @@ class AuthenticationManager:
         Create a new long-lived access token for current user or another user (admin only).
 
         Long-lived tokens are intended for external integrations and API access.
-        They expire after 10 years and do NOT auto-renew on use.
+        They expire after 1 year and do NOT auto-renew on use.
 
         Short-lived tokens (for regular user sessions) are only created during login
         and auto-renew on each use (sliding 30-day expiration window).
+
+        Long-lived tokens cannot be created for guest accounts.
 
         :param name: The name/description for the token (e.g., "Home Assistant", "Mobile App").
         :param user_id: Optional user ID to create token for (admin only).
@@ -990,11 +1032,12 @@ class AuthenticationManager:
         if not current_user:
             raise AuthenticationRequired("Not authenticated")
 
-        # If user_id is provided and different from current user, require admin
+        # If user_id is provided and different from current user,
+        # require the users.manage scope
         if user_id and user_id != current_user.user_id:
-            if current_user.role != UserRole.ADMIN:
+            if not has_scope(current_user, Scope.USERS_MANAGE):
                 raise InsufficientPermissions(
-                    "Admin access required to create tokens for other users"
+                    "The users.manage scope is required to create tokens for other users"
                 )
             target_user = await self.get_user(user_id)
             if not target_user:
@@ -1002,12 +1045,16 @@ class AuthenticationManager:
         else:
             target_user = current_user
 
+        # Guest access is temporary by design, deny tokens that would outlive it
+        if target_user.role == UserRole.GUEST:
+            raise InsufficientPermissions("Long-lived tokens cannot be created for guest accounts")
+
         # Create a long-lived token (only long-lived tokens can be created via this command)
         token = await self.create_token(target_user, name, is_long_lived=True)
         self.logger.info("Created long-lived token '%s' for user '%s'", name, target_user.username)
         return token
 
-    @api_command("auth/user/create", required_role="admin")
+    @api_command("auth/user/create", required_scope=Scope.USERS_MANAGE)
     async def create_user_with_api(
         self,
         username: str,
@@ -1068,7 +1115,7 @@ class AuthenticationManager:
         self.logger.info("User created by admin: %s (role: %s)", username, role)
         return user
 
-    @api_command("auth/user/delete", required_role="admin")
+    @api_command("auth/user/delete", required_scope=Scope.USERS_MANAGE)
     async def delete_user(self, user_id: str) -> None:
         """
         Delete user account (admin only).
@@ -1108,6 +1155,14 @@ class AuthenticationManager:
         if not current_user_obj:
             raise AuthenticationRequired("Not authenticated")
         return current_user_obj
+
+    @api_command("auth/scopes")
+    async def get_role_scopes(self) -> dict[str, list[str]]:
+        """Get the scopes granted to each of the builtin user roles."""
+        return {
+            str(role): sorted(str(scope) for scope in scopes)
+            for role, scopes in ROLE_SCOPES.items()
+        }
 
     async def update_user_filters(
         self,
@@ -1165,11 +1220,13 @@ class AuthenticationManager:
             raise AuthenticationRequired("Not authenticated")
 
         # Determine target user
-        is_admin = current_user_obj.role == UserRole.ADMIN
+        may_manage_users = has_scope(current_user_obj, Scope.USERS_MANAGE)
         if user_id and user_id != current_user_obj.user_id:
-            # Updating another user - requires admin
-            if not is_admin:
-                raise InsufficientPermissions("Admin access required")
+            # Updating another user - requires the users.manage scope
+            if not may_manage_users:
+                raise InsufficientPermissions(
+                    "The users.manage scope is required to update other users"
+                )
             target_user = await self.get_user(user_id)
             if not target_user:
                 raise InvalidDataError("User not found")
@@ -1177,10 +1234,12 @@ class AuthenticationManager:
             # Updating own profile
             target_user = current_user_obj
 
-        # Update role (admin only)
+        # Update role (requires the users.manage scope)
         if role:
-            if not is_admin:
-                raise InsufficientPermissions("Only admins can update user roles")
+            if not may_manage_users:
+                raise InsufficientPermissions(
+                    "The users.manage scope is required to update user roles"
+                )
 
             try:
                 new_role = UserRole(role)
@@ -1213,17 +1272,21 @@ class AuthenticationManager:
         if preferences is not None:
             target_user = await self.update_user_preferences(target_user, preferences)
 
-        # Update player_filter and provider_filter (admin only)
+        # Update player_filter and provider_filter (requires the users.manage scope)
         if player_filter is not None or provider_filter is not None:
-            if not is_admin:
-                raise InsufficientPermissions("Only admins can update player/provider filters")
+            if not may_manage_users:
+                raise InsufficientPermissions(
+                    "The users.manage scope is required to update player/provider filters"
+                )
             target_user = await self.update_user_filters(
                 target_user, player_filter, provider_filter
             )
 
         # Update password if provided
         if password:
-            await self._update_profile_password(target_user, password, is_admin, current_user_obj)
+            await self._update_profile_password(
+                target_user, password, may_manage_users, current_user_obj
+            )
 
         return target_user
 
@@ -1266,7 +1329,7 @@ class AuthenticationManager:
         providers = [UserAuthProvider.from_dict(dict(row)) for row in rows]
         return [p.to_dict() for p in providers]
 
-    @api_command("auth/user/unlink_provider", required_role="admin")
+    @api_command("auth/user/unlink_provider", required_scope=Scope.USERS_MANAGE)
     async def unlink_provider(self, user_id: str, provider_type: str) -> bool:
         """
         Unlink authentication provider from user (admin only).
@@ -1387,6 +1450,28 @@ class AuthenticationManager:
         row = await cursor.fetchone()
         return str(row["code"]) if row else None
 
+    async def get_join_code_expiry(self, code: str, user: User | None = None) -> datetime | None:
+        """
+        Get the expiry datetime for an active join code.
+
+        :param code: The join code to look up.
+        :param user: Optional user that must own the join code.
+        :return: The expiry datetime if the code is active, None otherwise.
+        """
+        query = """
+            SELECT expires_at FROM join_codes
+            WHERE code = :code
+            AND expires_at > :now
+            AND (max_uses = 0 OR use_count < max_uses)
+            """
+        params: dict[str, Any] = {"code": code.upper(), "now": utc().isoformat()}
+        if user is not None:
+            query += "AND user_id = :user_id "
+            params["user_id"] = user.user_id
+        cursor = await self.database.execute(query + "LIMIT 1", params)
+        row = await cursor.fetchone()
+        return datetime.fromisoformat(str(row["expires_at"])) if row else None
+
     @api_command("auth/join_code/exchange", authenticated=False)
     async def exchange_join_code(self, code: str) -> dict[str, Any]:
         """
@@ -1398,13 +1483,31 @@ class AuthenticationManager:
         :param code: The short join code.
         :return: Authentication result with access token if successful.
         """
-        token = await self._exchange_join_code(code)
+        async with self._join_code_exchange_lock:
+            allowed, remaining_delay = await self._join_code_rate_limiter.check_rate_limit(
+                JOIN_CODE_RATE_LIMIT_KEY
+            )
+            if not allowed:
+                self.logger.warning(
+                    "Join code exchange rate limit exceeded. %d seconds remaining.", remaining_delay
+                )
+                return {
+                    "success": False,
+                    "error": (
+                        f"Too many failed attempts. Please try again in {remaining_delay} seconds."
+                    ),
+                }
 
-        if not token:
-            return {
-                "success": False,
-                "error": "Invalid or expired join code",
-            }
+            token = await self._exchange_join_code(code)
+
+            if not token:
+                await self._join_code_rate_limiter.record_failed_attempt(JOIN_CODE_RATE_LIMIT_KEY)
+                return {
+                    "success": False,
+                    "error": "Invalid or expired join code",
+                }
+
+        # No clear_attempts on success: any valid-code holder could reset the global counter
 
         # Decode token to get user info
         try:
@@ -1424,7 +1527,7 @@ class AuthenticationManager:
                 "error": "Failed to create access token",
             }
 
-    @api_command("auth/join_codes", required_role="admin")
+    @api_command("auth/join_codes", required_scope=Scope.USERS_MANAGE)
     async def list_join_codes(self, user_id: str | None = None) -> list[dict[str, Any]]:
         """
         List join codes, optionally filtered by user (admin only).
@@ -1436,7 +1539,7 @@ class AuthenticationManager:
         rows = await self.database.get_rows("join_codes", filter_args, limit=100)
         return [dict(row) for row in rows]
 
-    @api_command("auth/join_code/revoke", required_role="admin")
+    @api_command("auth/join_code/revoke", required_scope=Scope.USERS_MANAGE)
     async def revoke_join_code(self, code_id: str) -> None:
         """
         Revoke a specific join code (admin only).
@@ -1726,6 +1829,19 @@ class AuthenticationManager:
         user_rows = await self.database.get_rows("users", limit=10)
         return any(row["username"] != HOMEASSISTANT_SYSTEM_USER for row in user_rows)
 
+    async def _migrate_system_user_role(self) -> None:
+        """Migrate the Home Assistant system user of pre-existing installs to the service role."""
+        user_row = await self.database.get_row(
+            "users", {"username": normalize_username(HOMEASSISTANT_SYSTEM_USER)}
+        )
+        if user_row and user_row["role"] != UserRole.SERVICE.value:
+            await self.database.update(
+                "users", {"user_id": user_row["user_id"]}, {"role": UserRole.SERVICE.value}
+            )
+            self.logger.info(
+                "Updated Home Assistant system user role to %s", UserRole.SERVICE.value
+            )
+
     async def _migrate_playlog_to_first_user(self, user_id: str) -> None:
         """
         Migrate all existing playlog entries to the first user.
@@ -1844,3 +1960,57 @@ class AuthenticationManager:
         """Schedule periodic cleanup of expired join codes."""
         self.mass.create_task(self._cleanup_expired_join_codes())
         self.mass.call_later(86400, self._schedule_join_code_cleanup)
+
+    async def _refresh_token_expiration(
+        self, token_row: Mapping[str, Any], user: User, is_long_lived: bool
+    ) -> dict[str, str] | None:
+        """
+        Build the on-use column updates for a token, enforcing the absolute lifetime cap.
+
+        :param token_row: The auth_tokens row for the token being used.
+        :param user: The user owning the token.
+        :param is_long_lived: Whether the token is long-lived.
+        :return: Column updates to apply (empty when the stored activity timestamp is
+            still fresh, so callers can skip the write), or None if the token exceeded
+            its max lifetime (in which case the token row is deleted).
+        """
+        now = utc()
+
+        if not is_long_lived:
+            created_at = datetime.fromisoformat(token_row["created_at"])
+            if now > created_at + timedelta(days=TOKEN_ABSOLUTE_MAX_EXPIRATION):
+                await self.database.delete("auth_tokens", {"token_id": token_row["token_id"]})
+                return None
+
+        # The HTTP API authenticates on every request, so persisting activity per use
+        # would cost an UPDATE+commit (an fsync) per request. Skip the write while the
+        # stored timestamp is fresh; last_used_at and the sliding expiration then lag
+        # by at most this interval, which is negligible against the 30-day idle window.
+        if last_used_at := token_row["last_used_at"]:
+            if now - datetime.fromisoformat(last_used_at) < TOKEN_ACTIVITY_PERSIST_INTERVAL:
+                return {}
+
+        updates = {"last_used_at": now.isoformat()}
+        if not is_long_lived and user.role != UserRole.GUEST:
+            # Short-lived token: extend expiration on each use (sliding window)
+            new_expires_at = now + timedelta(days=TOKEN_SHORT_LIVED_EXPIRATION)
+            updates["expires_at"] = new_expires_at.isoformat()
+
+        return updates
+
+    async def _can_reuse_ha_integration_token(self, token: str, system_user: User) -> bool:
+        """Check whether the stored HA integration token is valid and not yet due for rotation."""
+        token_id = self.jwt_helper.get_token_id(token)
+        if not token_id:
+            return False
+        token_row = await self.database.get_row("auth_tokens", {"token_id": token_id})
+        if not token_row or token_row["user_id"] != system_user.user_id:
+            return False
+        now = utc()
+        if token_row["expires_at"] and datetime.fromisoformat(token_row["expires_at"]) <= now:
+            return False
+        created_at = datetime.fromisoformat(token_row["created_at"])
+        rotate_after = created_at + timedelta(
+            days=TOKEN_ABSOLUTE_MAX_EXPIRATION - HA_TOKEN_ROTATION_MARGIN
+        )
+        return now < rotate_after

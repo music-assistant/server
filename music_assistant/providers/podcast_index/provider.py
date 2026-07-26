@@ -6,7 +6,8 @@ from collections.abc import AsyncGenerator, Sequence
 from typing import Any, cast
 
 import aiohttp
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, StreamType
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -45,10 +46,23 @@ class PodcastIndexProvider(MusicProvider):
     api_key: str = ""
     api_secret: str = ""
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_STORED_PODCASTS,
+                type=ConfigEntryType.STRING,
+                multi_value=True,
+                default_value=[],
+                required=False,
+                hidden=True,
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self.api_key = str(self.config.get_value(CONF_API_KEY))
-        self.api_secret = str(self.config.get_value(CONF_API_SECRET))
+        self.api_key = str(self.get_setup_value(CONF_API_KEY))
+        self.api_secret = str(self.get_setup_value(CONF_API_SECRET))
 
         if not self.api_key or not self.api_secret:
             raise LoginFailed("API key and secret are required")
@@ -155,8 +169,6 @@ class PodcastIndexProvider(MusicProvider):
         if not isinstance(item, Podcast):
             return await super().library_add(item)
 
-        stored_podcasts = cast("list[str]", self.config.get_value(CONF_STORED_PODCASTS))
-
         # Get the RSS URL from the podcast via API
         try:
             feed_url = await self._get_feed_url_for_podcast(item.item_id)
@@ -172,12 +184,12 @@ class PodcastIndexProvider(MusicProvider):
             )
             return False
 
+        stored_podcasts = cast("list[str]", self.get_config_value(CONF_STORED_PODCASTS))
         if feed_url in stored_podcasts:
             return False
 
         self.logger.debug("Adding podcast %s to library", item.name)
-        stored_podcasts.append(feed_url)
-        self._update_config_value(CONF_STORED_PODCASTS, stored_podcasts)
+        self._update_config_value(CONF_STORED_PODCASTS, [*stored_podcasts, feed_url])
         return True
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
@@ -189,8 +201,6 @@ class PodcastIndexProvider(MusicProvider):
         logs a warning but still returns True to maintain the idempotent contract
         as required by MA convention.
         """
-        stored_podcasts = cast("list[str]", self.config.get_value(CONF_STORED_PODCASTS))
-
         # Get the RSS URL for this podcast
         try:
             feed_url = await self._get_feed_url_for_podcast(prov_item_id)
@@ -204,7 +214,11 @@ class PodcastIndexProvider(MusicProvider):
             # Still return True for idempotent operation
             return True
 
-        if not feed_url or feed_url not in stored_podcasts:
+        if not feed_url:
+            return True
+
+        stored_podcasts = cast("list[str]", self.get_config_value(CONF_STORED_PODCASTS))
+        if feed_url not in stored_podcasts:
             return True
 
         self.logger.debug("Removing podcast %s from library", prov_item_id)

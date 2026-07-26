@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import random
 import warnings
 from asyncio import Task, TaskGroup
 from collections.abc import Awaitable
@@ -12,17 +13,17 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import plexapi.exceptions
+import plexapi.utils
 import requests
 import urllib3.exceptions
 from music_assistant_models.config_entries import (
     ConfigEntry,
-    ConfigValueOption,
-    ConfigValueType,
     ProviderConfig,
 )
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
+    ImageType,
     MediaType,
     ProviderFeature,
     StreamType,
@@ -38,9 +39,11 @@ from music_assistant_models.media_items import (
     Artist,
     Audiobook,
     AudioFormat,
+    BrowseFolder,
     ItemMapping,
     MediaItem,
     MediaItemChapter,
+    MediaItemImage,
     MediaItemType,
     Playlist,
     Podcast,
@@ -56,25 +59,22 @@ from plexapi.audio import Album as PlexAlbum
 from plexapi.audio import Artist as PlexArtist
 from plexapi.audio import Track as PlexTrack
 from plexapi.base import PlexObject
-from plexapi.myplex import MyPlexAccount, MyPlexPinLogin
+from plexapi.myplex import MyPlexAccount
 from plexapi.playlist import Playlist as PlexPlaylist
 from plexapi.server import PlexServer
 
 from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS, UNKNOWN_ARTIST
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 from music_assistant.providers.plex.constants import (
     AUTH_TOKEN_UNAUTH,
     COLLECTION_ID_PREFIX,
-    CONF_ACTION_AUTH_LOCAL,
-    CONF_ACTION_AUTH_MYPLEX,
-    CONF_ACTION_CLEAR_AUTH,
-    CONF_ACTION_GDM,
     CONF_AUTH_TOKEN,
     CONF_COLLECTION_PREFIX,
+    CONF_EXTENDED_RECOMMENDATIONS,
     CONF_HUB_ITEMS_LIMIT,
     CONF_IMPORT_COLLECTIONS,
     CONF_LIBRARY_ID,
@@ -90,11 +90,12 @@ from music_assistant.providers.plex.constants import (
     ERR_AUTH_FAILED,
     ERR_INVALID_CREDENTIALS,
     ERR_ITEM_NOT_FOUND,
-    ERR_MYPLEX_AUTH_FAILED,
-    ERR_MYPLEX_TOKEN_NOT_RECEIVED,
     ERR_NO_ARTIST_FOR_TRACK,
     ERR_TRACK_NOT_FOUND,
     FAKE_ARTIST_PREFIX,
+    MIX_CACHE_EXPIRATION,
+    MIX_ITEM_PREFIX,
+    RECOMMENDATIONS_HUB_PARAMS,
 )
 from music_assistant.providers.plex.helpers import (
     AUDIOBOOK_FEATURES,
@@ -105,12 +106,10 @@ from music_assistant.providers.plex.helpers import (
     LIBRARY_TYPE_TO_MEDIA_TYPES,
     PODCAST_FEATURES,
     SUPPORTED_FEATURES,
-    discover_local_servers,
     extract_library_name,
     get_explicit,
     get_favorite_from_rating,
     get_musicbrainz_id,
-    get_section_info,
     get_thumbnail_images,
     parse_plex_lyrics_payload,
 )
@@ -121,7 +120,6 @@ from music_assistant.providers.plex.helpers import (
 __all__ = [
     "CONF_LIBRARY_ID",
     "PlexProvider",
-    "get_config_entries",
     "setup",
 ]
 
@@ -152,339 +150,11 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    if not config.get_value(CONF_AUTH_TOKEN):
+    # the token lives in setup_data for new installs, or (pre-flow) in the legacy config values
+    if not (config.setup_data.get(CONF_AUTH_TOKEN) or config.get_value(CONF_AUTH_TOKEN)):
         raise LoginFailed(ERR_INVALID_CREDENTIALS)
 
     return PlexProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(  # noqa: PLR0915
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # handle action GDM discovery
-    if action == CONF_ACTION_GDM:
-        server_details = await discover_local_servers()
-        if server_details and server_details[0] and server_details[1]:
-            assert values
-            values[CONF_LOCAL_SERVER_IP] = server_details[0]
-            values[CONF_LOCAL_SERVER_PORT] = server_details[1]
-            values[CONF_LOCAL_SERVER_SSL] = False
-            values[CONF_LOCAL_SERVER_VERIFY_CERT] = False
-        else:
-            assert values
-            values[CONF_LOCAL_SERVER_IP] = "Discovery failed, please add IP manually"
-            values[CONF_LOCAL_SERVER_PORT] = 32400
-            values[CONF_LOCAL_SERVER_SSL] = False
-            values[CONF_LOCAL_SERVER_VERIFY_CERT] = True
-
-    # handle action clear authentication
-    if action == CONF_ACTION_CLEAR_AUTH:
-        assert values
-        values[CONF_AUTH_TOKEN] = None
-        values[CONF_LOCAL_SERVER_IP] = None
-        values[CONF_LOCAL_SERVER_PORT] = 32400
-        values[CONF_LOCAL_SERVER_SSL] = False
-        values[CONF_LOCAL_SERVER_VERIFY_CERT] = True
-
-    # handle action MyPlex auth
-    if action == CONF_ACTION_AUTH_MYPLEX:
-        assert values
-        values[CONF_AUTH_TOKEN] = None
-        async with AuthenticationHelper(mass, str(values["session_id"])) as auth_helper:
-            plex_auth = MyPlexPinLogin(headers={"X-Plex-Product": "Music Assistant"}, oauth=True)
-            # Generate the PIN/code by calling the Plex API
-            await asyncio.to_thread(plex_auth._getCode)
-            auth_url = plex_auth.oauthUrl(auth_helper.callback_url)
-            await auth_helper.authenticate(auth_url)
-            # After OAuth callback completes, Plex's backend needs time to propagate the token
-            # Use exponential backoff to check if token is ready
-            for attempt in range(10):  # Max 10 attempts (~10 seconds total)
-                if await asyncio.to_thread(plex_auth.checkLogin):
-                    break
-                # Exponential backoff: 0.1s, 0.2s, 0.4s, 0.8s, 1.6s, etc
-                await asyncio.sleep(0.1 * (2**attempt))
-            else:
-                # token still not available
-                raise LoginFailed(ERR_MYPLEX_TOKEN_NOT_RECEIVED)
-            if not plex_auth.token:
-                raise LoginFailed(ERR_MYPLEX_AUTH_FAILED)
-            # set the retrieved token on the values object to pass along
-            values[CONF_AUTH_TOKEN] = plex_auth.token
-
-    # handle action Local auth (no MyPlex)
-    if action == CONF_ACTION_AUTH_LOCAL:
-        assert values
-        values[CONF_AUTH_TOKEN] = AUTH_TOKEN_UNAUTH
-
-    # collect all config entries to show
-    entries: list[ConfigEntry] = []
-
-    # show GDM discovery (if we do not yet have any server details)
-    if values is None or not values.get(CONF_LOCAL_SERVER_IP):
-        entries.append(
-            ConfigEntry(
-                key=CONF_ACTION_GDM,
-                type=ConfigEntryType.ACTION,
-                action=CONF_ACTION_GDM,
-            )
-        )
-
-    # server details config entries (IP, port etc.)
-    entries += [
-        ConfigEntry(
-            key=CONF_LOCAL_SERVER_IP,
-            type=ConfigEntryType.STRING,
-            required=True,
-            value=cast("str", values.get(CONF_LOCAL_SERVER_IP)) if values else None,
-        ),
-        ConfigEntry(
-            key=CONF_LOCAL_SERVER_PORT,
-            type=ConfigEntryType.INTEGER,
-            required=True,
-            default_value=32400,
-            value=cast("int", values.get(CONF_LOCAL_SERVER_PORT)) if values else None,
-        ),
-        ConfigEntry(
-            key=CONF_LOCAL_SERVER_SSL,
-            type=ConfigEntryType.BOOLEAN,
-            required=True,
-            default_value=False,
-        ),
-        ConfigEntry(
-            key=CONF_LOCAL_SERVER_VERIFY_CERT,
-            type=ConfigEntryType.BOOLEAN,
-            required=True,
-            default_value=True,
-            depends_on=CONF_LOCAL_SERVER_SSL,
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_AUTH_TOKEN,
-            type=ConfigEntryType.SECURE_STRING,
-            label=CONF_AUTH_TOKEN,
-            action=CONF_AUTH_TOKEN,
-            value=cast("str | None", values.get(CONF_AUTH_TOKEN)) if values else None,
-            hidden=True,
-        ),
-    ]
-
-    # config flow auth action/step to pick the library to use
-    # because this call is very slow, we only show/calculate the dropdown if we do
-    # not yet have this info or we/user invalidated it.
-    if values and values.get(CONF_AUTH_TOKEN):
-        conf_libraries = ConfigEntry(
-            key=CONF_LIBRARY_ID,
-            type=ConfigEntryType.STRING,
-            required=True,
-            depends_on=CONF_AUTH_TOKEN,
-        )
-        conf_library_type = ConfigEntry(
-            key=CONF_LIBRARY_TYPE,
-            type=ConfigEntryType.STRING,
-            required=True,
-            depends_on=CONF_AUTH_TOKEN,
-            options=[
-                ConfigValueOption(LIBRARY_TYPE_MUSIC),
-                ConfigValueOption(LIBRARY_TYPE_AUDIOBOOKS),
-                ConfigValueOption(LIBRARY_TYPE_PODCASTS),
-            ],
-            default_value=LIBRARY_TYPE_MUSIC,
-        )
-
-        token = mass.config.decrypt_string(str(values.get(CONF_AUTH_TOKEN)))
-        server_http_ip = str(values.get(CONF_LOCAL_SERVER_IP))
-        server_http_port = str(values.get(CONF_LOCAL_SERVER_PORT, 32400))
-        server_http_ssl = bool(values.get(CONF_LOCAL_SERVER_SSL))
-        server_http_verify_cert = bool(values.get(CONF_LOCAL_SERVER_VERIFY_CERT))
-        sections = await get_section_info(
-            mass,
-            token,
-            server_http_ssl,
-            server_http_ip,
-            server_http_port,
-            server_http_verify_cert,
-            instance_id,
-        )
-        if not sections:
-            msg = (
-                "Unable to retrieve Servers and/or Music Libraries. "
-                "Please verify the local server IP and port are correct and the Plex server is running."
-            )
-            _LOGGER.warning(msg)
-        library_options = [
-            ConfigValueOption(title=s.display_name, value=s.display_name) for s in sections
-        ]
-        conf_libraries.options = library_options
-
-        # Determine which libraries are already claimed by other plex provider instances.
-        # We read raw stored config values directly (without include_values=True) to avoid
-        # recursively triggering get_config_entries for every plex instance.
-        used_libraries: set[str] = set()
-        has_audiobook_provider = False
-        raw_provs = mass.config.get("providers", {})
-        for prov_id, prov_conf in raw_provs.items():
-            if prov_conf.get("domain") != "plex":
-                continue
-            # Skip the current instance when editing so its own library isn't "used"
-            if prov_id == instance_id:
-                continue
-            prov_values = prov_conf.get("values", {})
-            if lib_val := prov_values.get(CONF_LIBRARY_ID):
-                used_libraries.add(str(lib_val))
-            if prov_values.get(CONF_LIBRARY_TYPE) == LIBRARY_TYPE_AUDIOBOOKS:
-                has_audiobook_provider = True
-
-        available_sections = [s for s in sections if s.display_name not in used_libraries]
-
-        # Only auto-select defaults if the user has not yet manually picked a library.
-        if not values.get(CONF_LIBRARY_ID):
-            # Sort: non-tracking first, then A-Z
-            sorted_available = sorted(
-                available_sections,
-                key=lambda s: (s.is_tracking_progress, s.display_name),
-            )
-            default_library = (
-                sorted_available[0].display_name
-                if sorted_available
-                else (
-                    available_sections[0].display_name
-                    if available_sections
-                    else (sections[0].display_name if sections else "")
-                )
-            )
-
-            # Determine default type from the selected library's tracking setting
-            selected_section = next(
-                (s for s in sections if s.display_name == default_library), None
-            )
-            if selected_section and selected_section.is_tracking_progress:
-                default_type = (
-                    LIBRARY_TYPE_PODCASTS if has_audiobook_provider else LIBRARY_TYPE_AUDIOBOOKS
-                )
-            else:
-                default_type = LIBRARY_TYPE_MUSIC
-
-            conf_library_type.default_value = default_type
-            conf_library_type.value = default_type
-            conf_libraries.default_value = default_library
-            conf_libraries.value = default_library
-        else:
-            # Type may need updating if user changed the library
-            current_library = str(values.get(CONF_LIBRARY_ID, ""))
-            selected_section = next(
-                (s for s in sections if s.display_name == current_library), None
-            )
-            if selected_section and selected_section.is_tracking_progress:
-                suggested_type = (
-                    LIBRARY_TYPE_PODCASTS if has_audiobook_provider else LIBRARY_TYPE_AUDIOBOOKS
-                )
-            else:
-                suggested_type = LIBRARY_TYPE_MUSIC
-            current_type = values.get(CONF_LIBRARY_TYPE, suggested_type)
-            conf_library_type.default_value = suggested_type
-            conf_library_type.value = current_type
-            conf_libraries.value = current_library
-
-        entries.append(conf_libraries)
-        entries.append(conf_library_type)
-
-    # show authentication options
-    if values is None or not values.get(CONF_AUTH_TOKEN):
-        entries.append(
-            ConfigEntry(
-                key=CONF_ACTION_AUTH_MYPLEX,
-                type=ConfigEntryType.ACTION,
-                action=CONF_ACTION_AUTH_MYPLEX,
-            )
-        )
-        entries.append(
-            ConfigEntry(
-                key=CONF_ACTION_AUTH_LOCAL,
-                type=ConfigEntryType.ACTION,
-                action=CONF_ACTION_AUTH_LOCAL,
-            )
-        )
-    else:
-        entries.append(
-            ConfigEntry(
-                key=CONF_ACTION_CLEAR_AUTH,
-                type=ConfigEntryType.ACTION,
-                action=CONF_ACTION_CLEAR_AUTH,
-                required=False,
-            )
-        )
-
-    # Collection import options (advanced settings)
-    entries.append(
-        ConfigEntry(
-            key=CONF_IMPORT_COLLECTIONS,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-            advanced=True,
-        )
-    )
-    entries.append(
-        ConfigEntry(
-            key=CONF_COLLECTION_PREFIX,
-            type=ConfigEntryType.STRING,
-            default_value="Collection: ",
-            depends_on=CONF_IMPORT_COLLECTIONS,
-            advanced=True,
-        )
-    )
-
-    # rating/favorite sync configuration
-    entries.append(
-        ConfigEntry(
-            key=CONF_PLEX_LIKE_RATING,
-            type=ConfigEntryType.FLOAT,
-            default_value=10.0,
-            range=(0, 10),
-            category="sync_options",
-        )
-    )
-    entries.append(
-        ConfigEntry(
-            key=CONF_PLEX_FAVORITE_THRESHOLD,
-            type=ConfigEntryType.FLOAT,
-            default_value=10.0,
-            range=(0, 10),
-            category="sync_options",
-        )
-    )
-    entries.append(
-        ConfigEntry(
-            key=CONF_PLEX_UNLIKE_RATING,
-            type=ConfigEntryType.FLOAT,
-            default_value=0.0,
-            range=(0, 10),
-            category="sync_options",
-        )
-    )
-
-    # Recommendation settings (advanced)
-    entries.append(
-        ConfigEntry(
-            key=CONF_HUB_ITEMS_LIMIT,
-            type=ConfigEntryType.INTEGER,
-            default_value=10,
-            advanced=True,
-            range=(1, 100),
-        )
-    )
-
-    # return all config entries
-    return tuple(entries)
 
 
 Param = ParamSpec("Param")
@@ -493,8 +163,11 @@ PlexObjectT = TypeVar("PlexObjectT", bound=PlexObject)
 MediaItemT = TypeVar("MediaItemT", bound=MediaItem)
 
 
-class PlexProvider(MusicProvider):
+class PlexProvider(RecommendationPayloadMixin, MusicProvider):
     """Provider for a plex music library."""
+
+    # keep the pre-refactor 3h refresh interval for the hubs payload
+    recommendation_payload_ttl = 3600 * 3
 
     _plex_server: PlexServer = None
     _plex_library: PlexMusicSection = None
@@ -504,7 +177,7 @@ class PlexProvider(MusicProvider):
     @property
     def instance_name_postfix(self) -> str | None:
         """Return a postfix with the library name and type."""
-        library_name = extract_library_name(str(self.config.get_value(CONF_LIBRARY_ID) or ""))
+        library_name = extract_library_name(str(self.get_setup_value(CONF_LIBRARY_ID) or ""))
         library_type = self._get_library_type()
         if library_type in (LIBRARY_TYPE_AUDIOBOOKS, LIBRARY_TYPE_PODCASTS):
             type_label = library_type.title()
@@ -516,19 +189,98 @@ class PlexProvider(MusicProvider):
             return library_name
         return None
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return Config entries to configure this provider.
+
+        Server connection, authentication and library selection are handled by the setup flow
+        (see setup_flow.py); only the genuine options are configurable here.
+        """
+        entries: list[ConfigEntry] = []
+
+        # Collection import options (advanced settings)
+        entries.append(
+            ConfigEntry(
+                key=CONF_IMPORT_COLLECTIONS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                advanced=True,
+            )
+        )
+        entries.append(
+            ConfigEntry(
+                key=CONF_COLLECTION_PREFIX,
+                type=ConfigEntryType.STRING,
+                default_value="Collection: ",
+                depends_on=CONF_IMPORT_COLLECTIONS,
+                advanced=True,
+            )
+        )
+
+        # rating/favorite sync configuration
+        entries.append(
+            ConfigEntry(
+                key=CONF_PLEX_LIKE_RATING,
+                type=ConfigEntryType.FLOAT,
+                default_value=10.0,
+                range=(0, 10),
+                category="sync_options",
+            )
+        )
+        entries.append(
+            ConfigEntry(
+                key=CONF_PLEX_FAVORITE_THRESHOLD,
+                type=ConfigEntryType.FLOAT,
+                default_value=10.0,
+                range=(0, 10),
+                category="sync_options",
+            )
+        )
+        entries.append(
+            ConfigEntry(
+                key=CONF_PLEX_UNLIKE_RATING,
+                type=ConfigEntryType.FLOAT,
+                default_value=0.0,
+                range=(0, 10),
+                category="sync_options",
+            )
+        )
+
+        # Recommendation settings (advanced)
+        entries.append(
+            ConfigEntry(
+                key=CONF_HUB_ITEMS_LIMIT,
+                type=ConfigEntryType.INTEGER,
+                default_value=10,
+                advanced=True,
+                range=(1, 100),
+            )
+        )
+        entries.append(
+            ConfigEntry(
+                key=CONF_EXTENDED_RECOMMENDATIONS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                advanced=True,
+            )
+        )
+
+        # return all config entries
+        return tuple(entries)
+
     async def handle_async_init(self) -> None:
         """Set up the music provider by connecting to the server."""
         # silence loggers
         logging.getLogger("plexapi").setLevel(self.logger.level + 10)
 
-        library_name = extract_library_name(str(self.config.get_value(CONF_LIBRARY_ID)))
+        library_name = extract_library_name(str(self.get_setup_value(CONF_LIBRARY_ID)))
 
         def connect() -> PlexServer:
             try:
                 session = requests.Session()
                 session.verify = (
-                    bool(self.config.get_value(CONF_LOCAL_SERVER_VERIFY_CERT))
-                    if self.config.get_value(CONF_LOCAL_SERVER_SSL)
+                    bool(self.get_setup_value(CONF_LOCAL_SERVER_VERIFY_CERT))
+                    if self.get_setup_value(CONF_LOCAL_SERVER_SSL)
                     else False
                 )
                 # Add Music Assistant client identification headers
@@ -541,12 +293,12 @@ class PlexProvider(MusicProvider):
                     }
                 )
                 local_server_protocol = (
-                    "https" if self.config.get_value(CONF_LOCAL_SERVER_SSL) else "http"
+                    "https" if self.get_setup_value(CONF_LOCAL_SERVER_SSL) else "http"
                 )
-                token = self.config.get_value(CONF_AUTH_TOKEN)
+                token = self.get_setup_value(CONF_AUTH_TOKEN)
                 plex_url = (
-                    f"{local_server_protocol}://{self.config.get_value(CONF_LOCAL_SERVER_IP)}"
-                    f":{self.config.get_value(CONF_LOCAL_SERVER_PORT)}"
+                    f"{local_server_protocol}://{self.get_setup_value(CONF_LOCAL_SERVER_IP)}"
+                    f":{self.get_setup_value(CONF_LOCAL_SERVER_PORT)}"
                 )
                 # silence urllib3 InsecureRequestWarning from Plex connections
                 # using wildcard certificates that don't validate against LAN IPs
@@ -569,18 +321,14 @@ class PlexProvider(MusicProvider):
 
             except plexapi.exceptions.BadRequest as err:
                 if "Invalid token" in str(err):
-                    # token invalid, invalidate the config
-                    self.mass.create_task(
-                        self.mass.config.remove_provider_config_value(
-                            self.instance_id, CONF_AUTH_TOKEN
-                        ),
-                    )
+                    # the stored token is invalid; surface an auth failure so the user is
+                    # sent through the reconfigure (reauth) flow, which overwrites the token
                     raise LoginFailed(ERR_AUTH_FAILED)
                 raise LoginFailed from err
             return plex_server
 
         self._myplex_account = await self.get_myplex_account_and_refresh_token(
-            str(self.config.get_value(CONF_AUTH_TOKEN))
+            str(self.get_setup_value(CONF_AUTH_TOKEN))
         )
         try:
             self._plex_server = await self._run_async(connect)
@@ -589,67 +337,10 @@ class PlexProvider(MusicProvider):
             )
         except requests.exceptions.ConnectionError as err:
             raise SetupFailedError from err
-
-    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
-        """Handle library type changes by cleaning up old media type entries."""
-        old_library_type = self._get_library_type()
-
-        await super().update_config(config, changed_keys)
-
-        if f"values/{CONF_LIBRARY_TYPE}" not in changed_keys:
-            return
-
-        new_library_type = self._get_library_type()
-        if old_library_type == new_library_type:
-            return
-
-        old_types = LIBRARY_TYPE_TO_MEDIA_TYPES.get(old_library_type, ())
-        new_types = LIBRARY_TYPE_TO_MEDIA_TYPES.get(new_library_type, ())
-        stale_types = tuple(t for t in old_types if t not in new_types)
-
-        if not stale_types:
-            return
-
-        self.logger.info(
-            "Library type changed from %s to %s, cleaning up %s entries",
-            old_library_type,
-            new_library_type,
-            ", ".join(t.value for t in stale_types),
-        )
-
-        # Remove provider mappings for stale media types
-        for media_type in stale_types:
-            controller = self.mass.music.get_controller(media_type)
-            query = (
-                f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
-                f"WHERE media_type = '{media_type.value}' "
-                f"AND provider_instance = '{self.instance_id}'"
-            )
-            for db_row in await self.mass.music.database.get_rows_from_query(query, limit=100000):
-                try:
-                    await controller.remove_provider_mappings(db_row["item_id"], self.instance_id)
-                except Exception as err:
-                    self.logger.warning(
-                        "Failed to remove provider mapping for %s item %s: %s",
-                        media_type.value,
-                        db_row["item_id"],
-                        err,
-                    )
-
-        # Remove stale sync config values so they don't leak back on future form renders
-        sync_key_map: dict[MediaType, str] = {
-            MediaType.ARTIST: "library_sync_artists",
-            MediaType.ALBUM: "library_sync_albums",
-            MediaType.TRACK: "library_sync_tracks",
-            MediaType.PLAYLIST: "library_sync_playlists",
-            MediaType.AUDIOBOOK: "library_sync_audiobooks",
-            MediaType.PODCAST: "library_sync_podcasts",
-            MediaType.RADIO: "library_sync_radios",
-        }
-        for media_type in stale_types:
-            if sync_key := sync_key_map.get(media_type):
-                with contextlib.suppress(Exception):
-                    await self.mass.config.remove_provider_config_value(self.instance_id, sync_key)
+        # the library type is collected by the setup flow (setup_data), so a change now
+        # arrives via a full reload rather than update_config; clean up any mappings left
+        # behind by a previous type on load (idempotent - a no-op once nothing is stale)
+        await self._cleanup_stale_library_mappings()
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -1111,6 +802,25 @@ class PlexProvider(MusicProvider):
             plex_collection: PlexObject = await self._get_data(collection_key)
             return await self._parse_collection(plex_collection)
 
+        # "Mixes For You" items use a MIX_ITEM_PREFIX (see _build_mix_playlist).
+        if prov_playlist_id.startswith(MIX_ITEM_PREFIX):
+            mix_key = prov_playlist_id.removeprefix(MIX_ITEM_PREFIX)
+            fields = await self._find_mix_by_key(mix_key)
+            if fields is None:
+                msg = f"Mix {prov_playlist_id} not found"
+                raise MediaNotFoundError(msg)
+            _, title, thumb = fields
+            # Cache title/artwork on interaction so replay from recently-played
+            # still renders after Plex rotates the mix out of the hub.
+            if mix_key:
+                await self.mass.cache.set(
+                    key=mix_key,
+                    data={"title": title, "thumb": thumb},
+                    provider=self.instance_id,
+                    expiration=MIX_CACHE_EXPIRATION,
+                )
+            return self._build_mix_playlist(mix_key, title, thumb)
+
         plex_playlist = await self._get_data(prov_playlist_id, PlexPlaylist)
         return await self._parse_playlist(plex_playlist)
 
@@ -1142,6 +852,21 @@ class PlexProvider(MusicProvider):
                         result.append(album_track)
             return result
 
+        # "Mixes For You" items use a MIX_ITEM_PREFIX. Strip it to recover
+        # the Plex section-query key, append the track type filter to expand
+        # albums into tracks, then shuffle — Plexamp randomizes mix playback
+        # client-side.
+        if prov_playlist_id.startswith(MIX_ITEM_PREFIX):
+            mix_key = prov_playlist_id.removeprefix(MIX_ITEM_PREFIX)
+            tracks_key = f"{mix_key}&type={plexapi.utils.searchType('track')}"
+            plex_tracks = await self._run_async(self._plex_library.fetchItems, tracks_key)
+            random.shuffle(plex_tracks)
+            for index, plex_track in enumerate(plex_tracks, 1):
+                if track := await self._parse_track(plex_track):
+                    track.position = index
+                    result.append(track)
+            return result
+
         plex_playlist: PlexPlaylist = await self._get_data(prov_playlist_id, PlexPlaylist)
         if not (playlist_items := await self._run_async(plex_playlist.items)):
             return result
@@ -1156,7 +881,18 @@ class PlexProvider(MusicProvider):
         """Get a list of albums for the given artist."""
         if not prov_artist_id.startswith(FAKE_ARTIST_PREFIX):
             plex_artist = await self._get_data(prov_artist_id, PlexArtist)
-            plex_albums = cast("list[PlexAlbum]", await self._run_async(plex_artist.albums))
+            try:
+                plex_albums = cast("list[PlexAlbum]", await self._run_async(plex_artist.albums))
+            except plexapi.exceptions.NotFound:
+                # PlexArtist.albums() relies on Plex's advanced filters API.
+                # Some Plex servers return no filtering metadata, making plexapi
+                # raise 'Unknown libtype "artist"'. Fall back to the artist's
+                # /children endpoint, which does not depend on the filters API.
+                albums_key = f"{plex_artist.key}/children"
+                plex_albums = cast(
+                    "list[PlexAlbum]",
+                    await self._run_async(plex_artist.fetchItems, albums_key, PlexAlbum),
+                )
             if plex_albums:
                 albums = []
                 for album_obj in plex_albums:
@@ -1208,100 +944,19 @@ class PlexProvider(MusicProvider):
             self.logger.warning("Error getting similar tracks for %s: %s", prov_track_id, err)
         return []
 
-    @use_cache(3600 * 3, cache_checksum="v2")  # Cache for 3 hours
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get recommendations from Plex hubs."""
-        try:
-            # Get the configured limit for items per hub
-            limit_value = self.config.get_value(CONF_HUB_ITEMS_LIMIT)
-            limit = int(limit_value) if isinstance(limit_value, (int, float, str)) else 10
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        return await self._recommendation_rows_from_payload()
 
-            # Fetch hubs from the music library section with count parameter
-            # The section's hubs() method uses /hubs/sections/{key}?includeStations=1
-            # We need to add the count parameter manually to limit items per hub
-            key = f"/hubs/sections/{self._plex_library.key}?includeStations=1&count={limit}"
-            hubs = await self._run_async(self._plex_library.fetchItems, key)
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
 
-            if not hubs:
-                self.logger.debug("No hubs available from Plex")
-                return []
-
-            self.logger.debug(
-                "Fetching %d hubs (limit: %d items per hub)",
-                len(hubs),
-                limit,
-            )
-
-            folders = []
-            for hub in hubs:
-                # Create a recommendation folder for each hub
-                folder = RecommendationFolder(
-                    name=hub.title,
-                    item_id=f"{self.instance_id}_{hub.hubIdentifier}",
-                    provider=self.instance_id,
-                    icon="mdi-music",
-                )
-
-                # Parse each item based on its type (limit to configured max)
-                # Use _partialItems to respect the count limit from the hubs() call
-                # rather than hub.items() which fetches ALL items if more is True
-                # _partialItems is a cached property that's already loaded, so no need for async
-                hub_items = hub._partialItems
-                self.logger.debug(
-                    "Processing hub '%s' (%s) with %d partial items",
-                    hub.title,
-                    hub.hubIdentifier,
-                    len(hub_items),
-                )
-                for item in hub_items:
-                    try:
-                        # Skip items without type attribute
-                        if not hasattr(item, "type"):
-                            self.logger.debug(
-                                "Skipping item in hub '%s': no type attribute",
-                                hub.title,
-                            )
-                            continue
-
-                        if parsed_item := await self._parse(item):
-                            folder.items.append(parsed_item)  # type: ignore[arg-type]
-                        else:
-                            self.logger.debug(
-                                "Skipping unsupported item type '%s' in hub '%s'",
-                                item.type,
-                                hub.title,
-                            )
-                    except Exception as err:
-                        self.logger.debug(
-                            "Failed to parse item (type: %s) in hub '%s': %s",
-                            getattr(item, "type", "unknown"),
-                            hub.title,
-                            str(err),
-                        )
-                        continue
-
-                # Only add folder if it has items
-                if folder.items:
-                    folders.append(folder)
-                    self.logger.debug(
-                        "Added hub '%s' (%s) with %d items",
-                        hub.title,
-                        hub.hubIdentifier,
-                        len(folder.items),
-                    )
-                else:
-                    self.logger.debug(
-                        "Skipping hub '%s' (%s): no items after parsing",
-                        hub.title,
-                        hub.hubIdentifier,
-                    )
-
-            self.logger.debug("Retrieved %d recommendation folders from Plex", len(folders))
-            return folders
-
-        except Exception as err:
-            self.logger.warning("Error getting recommendations from Plex: %s", err)
-            return []
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        return await self._recommendation_items_from_payload(item_id)
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get streamdetails for a track/audiobook/podcast episode."""
@@ -1397,12 +1052,41 @@ class PlexProvider(MusicProvider):
 
     def _get_library_type(self) -> str:
         """Return the configured library type, defaulting to music."""
-        return str(self.config.get_value(CONF_LIBRARY_TYPE) or LIBRARY_TYPE_MUSIC)
+        return str(self.get_setup_value(CONF_LIBRARY_TYPE) or LIBRARY_TYPE_MUSIC)
+
+    async def _cleanup_stale_library_mappings(self) -> None:
+        """Remove provider mappings that do not belong to the current library type."""
+        if not self.mass.music.database:
+            return
+        valid_types = set(LIBRARY_TYPE_TO_MEDIA_TYPES.get(self._get_library_type(), ()))
+        all_types = {t for types in LIBRARY_TYPE_TO_MEDIA_TYPES.values() for t in types}
+        for media_type in all_types - valid_types:
+            controller = self.mass.music.get_controller(media_type)
+            query = (
+                f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+                f"WHERE media_type = '{media_type.value}' "
+                f"AND provider_instance = '{self.instance_id}'"
+            )
+            rows = await self.mass.music.database.get_rows_from_query(query, limit=100000)
+            if rows:
+                self.logger.info(
+                    "Cleaning up %d stale %s provider mapping(s)", len(rows), media_type.value
+                )
+            for db_row in rows:
+                try:
+                    await controller.remove_provider_mappings(db_row["item_id"], self.instance_id)
+                except Exception as err:
+                    self.logger.warning(
+                        "Failed to remove stale %s provider mapping for %s: %s",
+                        media_type.value,
+                        db_row["item_id"],
+                        err,
+                    )
 
     async def _run_async(
         self, call: Callable[Param, RetType], *args: Param.args, **kwargs: Param.kwargs
     ) -> RetType:
-        await self.get_myplex_account_and_refresh_token(str(self.config.get_value(CONF_AUTH_TOKEN)))
+        await self.get_myplex_account_and_refresh_token(str(self.get_setup_value(CONF_AUTH_TOKEN)))
         return await asyncio.to_thread(call, *args, **kwargs)
 
     async def _get_data(self, key: str, cls: type[PlexObjectT] | None = None) -> PlexObjectT:
@@ -1651,6 +1335,91 @@ class PlexProvider(MusicProvider):
         # Collections are not editable in Music Assistant
         playlist.is_editable = False
         return playlist
+
+    def _mix_playlist_fields(self, plex_mix: PlexPlaylist) -> tuple[str, str, str | None]:
+        """
+        Extract (smart-query key, title, centroid thumb) from a 'Mix For You' item.
+
+        :param plex_mix: A Plex Playlist parsed from the 'Mixes For You' hub.
+        """
+        # Read straight from the parsed XML element. These synthetic mix playlists
+        # carry a centroid-derived ratingKey rather than their own, so touching any
+        # attribute that triggers a reload (e.g. .thumb) re-fetches the wrong object
+        # and corrupts it. The smart-query key, title, and centroid artist thumb are
+        # all present on the partial element itself.
+        data = plex_mix._data
+        mix_key = data.get("key") or ""
+        title = data.get("title") or "[Unknown Mix]"
+        thumb = next(
+            (child.get("thumb") for child in data if child.get("centroid") and child.get("thumb")),
+            None,
+        )
+        return mix_key, title, thumb
+
+    def _build_mix_playlist(self, mix_key: str, title: str, thumb: str | None) -> Playlist:
+        """
+        Build a MA Playlist from a Plex 'Mix For You' hub item.
+
+        :param mix_key: The Plex smart-query key identifying the mix.
+        :param title: The mix title.
+        :param thumb: The centroid artist thumb path, if any.
+        """
+        item_id = f"{MIX_ITEM_PREFIX}{mix_key}"
+        playlist = Playlist(
+            item_id=item_id,
+            provider=self.instance_id,
+            name=title,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=item_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
+        if thumb:
+            playlist.metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=thumb,
+                        provider=self.instance_id,
+                        remotely_accessible=False,
+                    )
+                ]
+            )
+        playlist.is_editable = False
+        playlist.is_dynamic = True
+        return playlist
+
+    async def _get_mix_playlists(self, count: int) -> list[PlexPlaylist]:
+        """
+        Fetch the 'Mixes For You' hub items as Plex Playlist objects.
+
+        :param count: Maximum number of items per hub.
+        """
+        key = f"/hubs/sections/{self._plex_library.key}?count={count}&{RECOMMENDATIONS_HUB_PARAMS}"
+        hubs = await self._run_async(self._plex_library.fetchItems, key)
+        for hub in hubs:
+            if "music.mixes" in (hub.hubIdentifier or ""):
+                return list(hub._partialItems)
+        return []
+
+    async def _find_mix_by_key(self, mix_key: str) -> tuple[str, str, str | None] | None:
+        """Find a 'Mix For You' by its smart-query key, falling back to cache."""
+        limit_value = self.config.get_value(CONF_HUB_ITEMS_LIMIT)
+        limit = int(limit_value) if isinstance(limit_value, (int, float, str)) else 10
+        for plex_mix in await self._get_mix_playlists(limit):
+            fields = self._mix_playlist_fields(plex_mix)
+            if fields[0] == mix_key:
+                return fields
+        # Plex rotates mixes out of the hub, but the smart-query key remains a
+        # valid section query, so replay from recently-played still works — we
+        # only need the cache to restore the title and artwork.
+        cached = await self.mass.cache.get(key=mix_key, provider=self.instance_id)
+        if isinstance(cached, dict):
+            return mix_key, cached.get("title") or "[Unknown Mix]", cached.get("thumb")
+        return None
 
     async def _parse_track(self, plex_track: PlexTrack) -> Track:
         """Parse a Plex Track response to a Track model object."""
@@ -2028,6 +1797,110 @@ class PlexProvider(MusicProvider):
             can_seek=True,
             allow_seek=True,
         )
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch the full recommendations payload (folders with items) from the Plex hubs."""
+        # Let fetch errors propagate: the payload mixin serves the last cached payload
+        # on a failed refresh, and returning [] here would be cached as a valid empty
+        # result for the full TTL.
+        # Get the configured limit for items per hub
+        limit_value = self.config.get_value(CONF_HUB_ITEMS_LIMIT)
+        limit = int(limit_value) if isinstance(limit_value, (int, float, str)) else 10
+
+        # Build the hubs key manually because plexapi's hubs() method
+        # doesn't accept a count parameter to limit items per hub.
+        extended = self.config.get_value(CONF_EXTENDED_RECOMMENDATIONS)
+        hub_params = RECOMMENDATIONS_HUB_PARAMS if extended else "includeStations=1"
+        key = f"/hubs/sections/{self._plex_library.key}?count={limit}&{hub_params}"
+        hubs = await self._run_async(self._plex_library.fetchItems, key)
+
+        if not hubs:
+            self.logger.debug("No hubs available from Plex")
+            return []
+
+        self.logger.debug(
+            "Fetching %d hubs (limit: %d items per hub)",
+            len(hubs),
+            limit,
+        )
+
+        folders = []
+        for hub in hubs:
+            # Create a recommendation folder for each hub
+            folder = RecommendationFolder(
+                name=hub.title,
+                item_id=f"{self.instance_id}_{hub.hubIdentifier}",
+                provider=self.instance_id,
+                icon="mdi-music",
+            )
+
+            # Mixes For You are synthetic smart playlists; build them from
+            # their partial hub items (see _mix_playlist_fields).
+            if "music.mixes" in (hub.hubIdentifier or ""):
+                folder.items.extend(
+                    self._build_mix_playlist(*self._mix_playlist_fields(plex_mix))
+                    for plex_mix in hub._partialItems
+                )
+                if folder.items:
+                    folders.append(folder)
+                continue
+
+            # Parse each item based on its type (limit to configured max)
+            # Use _partialItems to respect the count limit from the hubs() call
+            # rather than hub.items() which fetches ALL items if more is True
+            # _partialItems is a cached property that's already loaded, so no need for async
+            hub_items = hub._partialItems
+            self.logger.debug(
+                "Processing hub '%s' (%s) with %d partial items",
+                hub.title,
+                hub.hubIdentifier,
+                len(hub_items),
+            )
+            for item in hub_items:
+                try:
+                    # Skip items without type attribute
+                    if not hasattr(item, "type"):
+                        self.logger.debug(
+                            "Skipping item in hub '%s': no type attribute",
+                            hub.title,
+                        )
+                        continue
+
+                    if parsed_item := await self._parse(item):
+                        folder.items.append(parsed_item)  # type: ignore[arg-type]
+                    else:
+                        self.logger.debug(
+                            "Skipping unsupported item type '%s' in hub '%s'",
+                            item.type,
+                            hub.title,
+                        )
+                except Exception as err:
+                    self.logger.debug(
+                        "Failed to parse item (type: %s) in hub '%s': %s",
+                        getattr(item, "type", "unknown"),
+                        hub.title,
+                        str(err),
+                    )
+                    continue
+
+            # Only add folder if it has items
+            if folder.items:
+                folders.append(folder)
+                self.logger.debug(
+                    "Added hub '%s' (%s) with %d items",
+                    hub.title,
+                    hub.hubIdentifier,
+                    len(folder.items),
+                )
+            else:
+                self.logger.debug(
+                    "Skipping hub '%s' (%s): no items after parsing",
+                    hub.title,
+                    hub.hubIdentifier,
+                )
+
+        self.logger.debug("Retrieved %d recommendation folders from Plex", len(folders))
+        return folders
 
     def _build_stream_parts(
         self, plex_tracks: list[PlexTrack], item_id: str

@@ -84,14 +84,9 @@ def _detect_external_base_url(mass: MusicAssistant, current_user: Any) -> str | 
 async def _dispatch_open_connect(
     mass: MusicAssistant,
     values: dict[str, ConfigValueType],
-) -> None:
+) -> str | None:
     """
-    Mint a wizard bootstrap and signal the wizard URL to the frontend.
-
-    The MA frontend's ``EditProvider`` view subscribes to ``AUTH_SESSION``
-    events and ignores anything whose ``object_id`` does not match the
-    ``session_id`` it injected into ``values``. We must echo that same id
-    back as the event's ``object_id`` so the browser tab actually opens.
+    Mint a wizard bootstrap and return the Connect Wizard URL, or None on failure.
 
     URL resolution order: (1) auto-detect from the active WS client's
     ingress-aware ``base_url``; (2) explicit ``connect_external_url`` config
@@ -105,7 +100,6 @@ async def _dispatch_open_connect(
     )
 
     mount_path = str(values.get(CONF_MOUNT_PATH) or DEFAULT_MOUNT_PATH)
-    session_id = str(values.get("session_id") or "")
 
     current_user: object | None = None
     try:
@@ -125,12 +119,12 @@ async def _dispatch_open_connect(
         )
 
     try:
-        await handle_open_connect_action(
+        return await handle_open_connect_action(
             mass,
             current_user=current_user,
             mount_path=mount_path,
-            session_id=session_id or None,
             external_base_url=external_base_url,
         )
     except Exception:
         LOGGER.exception("Connect Wizard: open_connect action failed")
+        return None

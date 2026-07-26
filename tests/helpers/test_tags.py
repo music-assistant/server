@@ -2,10 +2,13 @@
 
 import pathlib
 import shutil
+import subprocess
 from unittest.mock import MagicMock
 
 import mutagen
 import pytest
+from music_assistant_models.errors import InvalidDataError
+from mutagen.id3 import UFID
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers import tags
@@ -27,6 +30,39 @@ FILE_M4A = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.m4a"))
 FILE_FLAC = str(RESOURCES_DIR.joinpath("MultipleArtists.flac"))
 FILE_FLAC_SEMICOLON = str(RESOURCES_DIR.joinpath("ArtistWithSemicolon.flac"))
 FILE_WV = str(RESOURCES_DIR.joinpath("MyArtist - MyTitle.wv"))
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected_detail"),
+    [
+        (
+            b"[Vorbis parser @ 0x123] Invalid Setup header\n"
+            b"[ogg @ 0x456] Header processing failed: Unknown error occurred\n",
+            "Invalid Setup header",
+        ),
+        (b"broken.ogg: Unknown error occurred\n", "Invalid or unsupported media file"),
+    ],
+)
+def test_parse_tags_reports_actionable_ffprobe_error(
+    monkeypatch: pytest.MonkeyPatch, stderr: bytes, expected_detail: str
+) -> None:
+    """Test that tag parsing reports a useful FFprobe failure."""
+    process_error = subprocess.CalledProcessError(
+        returncode=1,
+        cmd=("ffprobe",),
+        output=b'{"error":{"code":-1,"string":"Unknown error occurred"}}',
+        stderr=stderr,
+    )
+    check_output = MagicMock(side_effect=process_error)
+    monkeypatch.setattr(subprocess, "check_output", check_output)
+
+    with pytest.raises(InvalidDataError) as err:
+        tags.parse_tags("broken.ogg")
+
+    assert str(err.value) == f"Unable to retrieve info for broken.ogg ({expected_detail})"
+    assert check_output.call_args.kwargs == {"stderr": subprocess.PIPE}
+    args = check_output.call_args.args[0]
+    assert args[args.index("-loglevel") + 1] == "error"
 
 
 async def test_parse_metadata_from_id3tags() -> None:
@@ -131,6 +167,26 @@ def test_parse_metadata_from_apev2tags() -> None:
     assert result.get("artistsort") == ["MyArtist Sort"]
     assert result.get("albumsort") == "MyAlbum Sort"
     assert result.get("albumartistsort") == ["MyAlbumArtist Sort"]
+
+
+def test_id3_musicbrainz_ufid_strips_trailing_null() -> None:
+    """
+    Strip a trailing NUL terminator from the MusicBrainz UFID frame data.
+
+    Some taggers (e.g. Picard) append a NUL to the UFID data; without stripping
+    it the recording MBID is malformed and breaks import and MusicBrainz
+    lookups.
+
+    See https://github.com/music-assistant/support/issues/5906
+    """
+    ufid = UFID(  # type: ignore[no-untyped-call]
+        owner="http://musicbrainz.org",
+        data=b"1e74cd4c-cfa7-4bdb-99da-41869f5f1171\x00",
+    )
+
+    result = _parse_id3_tags({"UFID:http://musicbrainz.org": ufid})
+
+    assert result["musicbrainzrecordingid"] == "1e74cd4c-cfa7-4bdb-99da-41869f5f1171"
 
 
 async def test_parse_metadata_from_flac_with_multiple_artist_fields() -> None:
@@ -748,7 +804,7 @@ def test_id3_albumartist_tag_semicolon_single_mbid() -> None:
 
 def _read_replaygain_track_gain(path: str) -> str | None:
     """Read REPLAYGAIN_TRACK_GAIN from a file using mutagen (format-agnostic)."""
-    audio = mutagen.File(path)  # type: ignore[attr-defined]
+    audio = mutagen.File(path)
     if audio is None or audio.tags is None:
         return None
     tag_key_mp4 = "----:com.apple.iTunes:REPLAYGAIN_TRACK_GAIN"

@@ -13,6 +13,7 @@ from music_assistant.controllers.streams.smart_fades.filters import (
     FadeInTrimFilter,
     FadeOutTrimFilter,
     GradualTimeStretchFilter,
+    PeakFilter,
     ShelfFilter,
     ShelfType,
 )
@@ -22,6 +23,7 @@ from music_assistant.controllers.streams.smart_fades.models import (
     ShelfSchedule,
     TempoPlan,
     TransitionPlan,
+    TransitionTier,
 )
 from music_assistant.controllers.streams.smart_fades.renderer import TransitionRenderer
 
@@ -45,6 +47,7 @@ def _eq_plan() -> EqPlan:
 
 def _plan(**overrides: object) -> TransitionPlan:
     defaults: dict[str, object] = {
+        "tier": TransitionTier.FULL_BLEND,
         "fade_out_window": 40.0,
         "crossfade_duration": 10.0,
         "eq_plan": _eq_plan(),
@@ -85,6 +88,28 @@ class TestTransitionRenderer:
             ShelfFilter,
             CrossfadeFilter,
         ]
+
+    def test_bypassed_low_shelves_are_skipped(self) -> None:
+        """A bypassed (None) low shelf on either side emits no ShelfFilter for it."""
+        eq_plan = _eq_plan()
+        eq_plan.low_out = None
+        eq_plan.low_in = None
+        filters, _ = TransitionRenderer(LOGGER).render(_plan(eq_plan=eq_plan), PCM, _seconds(45))
+        assert [type(f) for f in filters] == [
+            ShelfFilter,  # A high
+            ShelfFilter,  # B high
+            CrossfadeFilter,
+        ]
+
+    def test_all_shelves_bypassed_leaves_only_crossfade(self) -> None:
+        """When every shelf is bypassed the chain is a pure crossfade."""
+        eq_plan = _eq_plan()
+        eq_plan.low_out = None
+        eq_plan.low_in = None
+        eq_plan.high_out = None
+        eq_plan.high_in = None
+        filters, _ = TransitionRenderer(LOGGER).render(_plan(eq_plan=eq_plan), PCM, _seconds(45))
+        assert [type(f) for f in filters] == [CrossfadeFilter]
 
     def test_timing_accounts_for_both_tracks(self) -> None:
         """PRE+CF spans the fade-out, TRIM+CF+POST spans the fade-in."""
@@ -139,3 +164,28 @@ class TestTransitionRenderer:
         assert timing.pre_crossfade_duration + timing.crossfade_duration == pytest.approx(
             expected_fade_out
         )
+
+
+class TestMidSwapRendering:
+    """A PEAK ShelfSchedule (mid swap) renders as a PeakFilter; None is skipped."""
+
+    def test_peak_schedule_renders_as_peak_filter(self) -> None:
+        """Populated mid_out/mid_in schedules render as PeakFilter instances."""
+        eq_plan = _eq_plan()
+        eq_plan.mid_out = ShelfSchedule(ShelfType.PEAK, 1200, [(0.0, 0.0), (36.0, -8.0)])
+        eq_plan.mid_in = ShelfSchedule(ShelfType.PEAK, 1200, [(0.0, -8.0), (7.0, 0.0)])
+        filters, _ = TransitionRenderer(LOGGER).render(_plan(eq_plan=eq_plan), PCM, _seconds(45))
+        assert [type(f) for f in filters] == [
+            ShelfFilter,  # A low
+            ShelfFilter,  # A high
+            PeakFilter,  # A mid
+            ShelfFilter,  # B low
+            ShelfFilter,  # B high
+            PeakFilter,  # B mid
+            CrossfadeFilter,
+        ]
+
+    def test_mid_none_is_skipped(self) -> None:
+        """A bypassed (None) mid schedule emits no PeakFilter."""
+        filters, _ = TransitionRenderer(LOGGER).render(_plan(), PCM, _seconds(45))
+        assert not any(isinstance(f, PeakFilter) for f in filters)

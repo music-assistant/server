@@ -489,3 +489,20 @@ class TestPreferredOutputProtocolAutoValue:
             [_make_output_protocol("proto_a", "Proto A")],
         )
         assert player.power_control == PLAYER_CONTROL_NONE
+
+
+class TestActiveOutputProtocolClearCancellation:
+    """Test that setting the active output protocol cancels a pending clear."""
+
+    def test_set_cancels_pending_clear_task(self, mock_mass: MagicMock) -> None:
+        """
+        Setting a protocol cancels the scheduled clear for the same player.
+
+        This is the mechanism that stops a new session's freshly set protocol
+        from being wiped by a clear scheduled after the previous group stop.
+        """
+        player = _create_player(mock_mass)
+
+        player.set_active_output_protocol("ap_1")
+
+        mock_mass.cancel_task.assert_called_once_with("clear_active_protocol_main_player")

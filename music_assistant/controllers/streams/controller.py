@@ -8,18 +8,19 @@ purely to stream audio packets to players.
 from __future__ import annotations
 
 import asyncio
-import gc
 import logging
 import os
 import struct
 import time
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 from aiofiles.os import wrap
 from aiohttp import web
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.audio_processing import AudioQueueProcessing
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -35,6 +36,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
+from music_assistant_models.helpers import get_global_cache_value
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
@@ -65,8 +67,11 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.players.helpers import AnnounceData
-from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.controllers.streams.audio import StreamsAudio, overlay_active
 from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
+from music_assistant.controllers.streams.audio_processing import (
+    AudioProcessingManager,
+)
 from music_assistant.controllers.streams.constants import (
     CONF_ALLOW_CROSSFADE_SAME_ALBUM,
     CONF_BUFFER_SIZE,
@@ -83,8 +88,13 @@ from music_assistant.helpers.audio import (
     store_content_length_in_cache,
 )
 from music_assistant.helpers.buffered_generator import buffered
+from music_assistant.helpers.ffmpeg import (
+    CACHE_ATTR_FFMPEG_VERSION,
+    CACHE_ATTR_LIBSOXR_PRESENT,
+    check_ffmpeg_version,
+    get_ffmpeg_stream,
+)
 from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
-from music_assistant.helpers.ffmpeg import check_ffmpeg_version, get_ffmpeg_stream
 from music_assistant.helpers.util import (
     format_ip_for_url,
     get_ip_addresses,
@@ -104,6 +114,7 @@ if TYPE_CHECKING:
     from music_assistant_models.queue_item import QueueItem
     from music_assistant_models.streamdetails import StreamMetadata
 
+    from music_assistant.helpers.json import SerializableType
     from music_assistant.mass import MusicAssistant
 
 
@@ -161,6 +172,7 @@ class StreamsController(CoreController):
         self.announcements: dict[str, AnnounceData] = {}
         self._bind_ip: str = "0.0.0.0"
         self.audio = StreamsAudio(mass)
+        self.audio_processing = AudioProcessingManager(mass)
         self._audio_analysis = AudioAnalysisController(self)
         # Number of queue streams (single item or flow) actively serving a player right now.
         # Audio analysis reads this (via audio_analysis.playback_active) to yield CPU while a
@@ -175,6 +187,15 @@ class StreamsController(CoreController):
     def output_stream_active(self) -> bool:
         """Return whether a queue stream (single item or flow) is actively serving a player."""
         return self._active_output_streams > 0
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this controller to include in diagnostics reports."""
+        return {
+            "ffmpeg_version": get_global_cache_value(CACHE_ATTR_FFMPEG_VERSION),
+            "libsoxr_support": get_global_cache_value(CACHE_ATTR_LIBSOXR_PRESENT),
+            "active_output_streams": self._active_output_streams,
+            "active_announcements": len(self.announcements),
+        }
 
     @property
     def base_url(self) -> str:
@@ -230,9 +251,7 @@ class StreamsController(CoreController):
         """Return whether the queue's effective crossfade mode is smart crossfade."""
         return self.get_crossfade_mode(queue) == CrossfadeMode.SMART_CROSSFADE
 
-    async def get_config_entries(
-        self, action: str | None = None, values: dict[str, ConfigValueType] | None = None
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         ip_addresses = await get_ip_addresses(include_ipv6=True)
         return (
@@ -383,9 +402,6 @@ class StreamsController(CoreController):
                 ("*", "/announcement/{player_id}.{fmt}", self.serve_announcement_stream),
             ],
         )
-        # Start periodic garbage collection task
-        # This ensures memory from audio buffers and streams is cleaned up regularly
-        self.mass.call_later(900, self._periodic_garbage_collection)  # 15 minutes
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -426,21 +442,24 @@ class StreamsController(CoreController):
         if not session_id or not queue_item_id:
             raise InvalidDataError("Can not resolve stream URL: Invalid PlayerMedia data")
         queue_id = media.source_id
+        queue = self.mass.player_queues.get(queue_id) if queue_id else None
         crossfade_needs_flow_mode = (
             # crossfade only applies to tracks; if the queue has it enabled but the player(protocol)
             # does not support gapless playback, we need to enforce flow mode
             media.media_type == MediaType.TRACK
-            and queue_id
-            and (queue := self.mass.player_queues.get(queue_id))
+            and queue is not None
             and queue.crossfade_enabled
             and protocol_player
             and not protocol_player.supports_gapless
         )
+        # the audio overlay is mixed into the queue's continuous (flow) stream;
+        # per-item requests would restart the overlay at every track boundary
+        overlay_needs_flow_mode = queue is not None and overlay_active(queue)
         # Determine flow_mode based on the actual player's capabilities.
         # This is done here (just-in-time) because the player's protocol determines this
         flow_mode = (
             protocol_player is not None
-            and (protocol_player.flow_mode or crossfade_needs_flow_mode)
+            and (protocol_player.flow_mode or crossfade_needs_flow_mode or overlay_needs_flow_mode)
             and media.media_type not in (MediaType.RADIO, MediaType.AUDIO_SOURCE)
         )
         base_path = "flow" if flow_mode else "single"
@@ -518,7 +537,7 @@ class StreamsController(CoreController):
             raise web.HTTPNotFound(reason=f"Unknown Queue: {queue_id}")
         session_id = request.match_info["session_id"]
         pq_data = self.mass.player_queues.queue_data(queue.queue_id)
-        if pq_data.session_id and session_id != pq_data.session_id:
+        if pq_data.session_id is None or session_id != pq_data.session_id:
             raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
         if not (player := self.mass.players.get_player(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
@@ -635,9 +654,30 @@ class StreamsController(CoreController):
                         reason=f"No streamdetails for Queue item: {queue_item_id}"
                     )
 
+            standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
+                CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
+            )
+            if queue_item.media_type != MediaType.TRACK:
+                crossfade_mode = CrossfadeMode.DISABLED
+            else:
+                crossfade_mode = self.get_crossfade_mode(queue)
+            if (
+                crossfade_mode != CrossfadeMode.DISABLED
+                and PlayerFeature.GAPLESS_PLAYBACK not in player.state.supported_features
+            ):
+                self.logger.warning(
+                    "Crossfade disabled: Player %s does not support gapless playback, "
+                    "consider enabling flow mode to enable crossfade on this player.",
+                    player.state.name,
+                )
+                crossfade_mode = CrossfadeMode.DISABLED
+
             # pick output format based on the streamdetails and player capabilities
             pcm_format = await self.audio.select_pcm_format(
-                player=player, streamdetails=queue_item.streamdetails, crossfade_enabled=True
+                player=player,
+                streamdetails=queue_item.streamdetails,
+                crossfade_enabled=crossfade_mode != CrossfadeMode.DISABLED,
+                overlay_active=(queue_item.media_type == MediaType.RADIO and overlay_active(queue)),
             )
             output_format = await self.audio.get_output_format(
                 output_format_str=request.match_info["fmt"],
@@ -689,26 +729,16 @@ class StreamsController(CoreController):
             if request.method != "GET":
                 return resp
 
-            if queue_item.media_type != MediaType.TRACK:
-                # no crossfade on non-tracks
-                crossfade_mode = CrossfadeMode.DISABLED
-            else:
-                crossfade_mode = self.get_crossfade_mode(queue)
-                # crossfade duration is a global (queue controller) setting; fallback matches
-                # CONF_ENTRY_CROSSFADE_DURATION's default
-                standard_crossfade_duration = self.mass.config.get_raw_core_config_value(
-                    CONF_PLAYER_QUEUES, CONF_CROSSFADE_DURATION, 8
-                )
-            if (
-                crossfade_mode != CrossfadeMode.DISABLED
-                and PlayerFeature.GAPLESS_PLAYBACK not in player.state.supported_features
-            ):
-                self.logger.warning(
-                    "Crossfade disabled: Player %s does not support gapless playback, "
-                    "consider enabling flow mode to enable crossfade on this player.",
-                    player.state.name if player else "Unknown Player",
-                )
-                crossfade_mode = CrossfadeMode.DISABLED
+            self._update_audio_processing_context(
+                queue=queue,
+                queue_item=queue_item,
+                pcm_format=pcm_format,
+                crossfade_mode=crossfade_mode,
+                overlay_enabled=(
+                    queue_item.media_type == MediaType.RADIO and overlay_active(queue)
+                ),
+                session_id=session_id,
+            )
 
             if crossfade_mode != CrossfadeMode.DISABLED:
                 # crossfade is enabled, use special crossfaded single item stream
@@ -720,6 +750,7 @@ class StreamsController(CoreController):
                     pcm_format=pcm_format,
                     crossfade_mode=crossfade_mode,
                     standard_crossfade_duration=standard_crossfade_duration,
+                    session_id=session_id,
                 )
             else:
                 # no crossfade, just a regular single item stream
@@ -730,17 +761,27 @@ class StreamsController(CoreController):
                     playback_speed=cast(
                         "float", queue_item.extra_attributes.get("playback_speed", 1.0)
                     ),
+                    session_id=session_id,
                 )
+            if queue_item.media_type == MediaType.RADIO and overlay_active(queue):
+                # radio plays as a single long-lived stream (never in flow mode),
+                # so mix the audio overlay in here
+                audio_input = self.audio.get_overlay_mixed_stream(queue, audio_input, pcm_format)
             # stream the audio
             # this final ffmpeg process in the chain converts raw lossless PCM into
             # the desired output format for the player including any player specific
             # filter params such as channels mixing, DSP, resampling and, only if
             # needed, encoding to lossy formats
-            filter_params = self.audio.get_player_filter_params(
+            output_plan = self.audio.get_player_output_plan(
                 player_id=player.player_id,
                 input_format=pcm_format,
                 output_format=output_format,
+                shared_player_ids=player.state.group_members,
+                queue_id=queue_id,
+                session_id=session_id,
+                queue_item_id=queue_item.queue_item_id,
             )
+            filter_params = output_plan.filter_params
             # Fast path for live AudioSource: when the player accepts WAV at the
             # source's exact PCM rate/depth/channels and no filters apply, we
             # skip the encode ffmpeg entirely and just stream a WAV header
@@ -769,37 +810,42 @@ class StreamsController(CoreController):
             # for the duration of the transfer (see audio_analysis.playback_active).
             self._active_output_streams += 1
             try:
-                async for chunk in audio_bytes:
-                    try:
-                        await resp.write(chunk)
-                        bytes_sent += len(chunk)
-                        if not first_chunk_received:
-                            first_chunk_received = True
-                            # inform the queue that the track is now loaded in the buffer
-                            # so for example the next track can be enqueued
-                            self.mass.player_queues.track_loaded_in_buffer(
-                                queue_item.queue_id, queue_item.queue_item_id
-                            )
-                    except (BrokenPipeError, ConnectionResetError, ConnectionError) as err:
-                        if (
-                            first_chunk_received
-                            and not player.stop_called
-                            and queue_item.streamdetails.duration  # ignore for radio streams
-                        ):
-                            # Player disconnected (unexpected) after receiving at least some data
-                            # This could indicate buffering issues, network problems,
-                            # or player-specific issues.
-                            self.logger.warning(
-                                "Player %s disconnected prematurely from stream for %s (%s) - "
-                                "error: %s, sent %d bytes, content_length=%s",
-                                queue.display_name,
-                                queue_item.name,
-                                queue_item.uri,
-                                err.__class__.__name__,
-                                bytes_sent,
-                                resp.content_length,
-                            )
-                        break
+                # aclosing guarantees the generator (and thus the ffmpeg process chain
+                # behind it) is torn down immediately when the player disconnects
+                # mid-stream, instead of lingering until garbage collection finalizes
+                # the abandoned generator.
+                async with aclosing(audio_bytes):
+                    async for chunk in audio_bytes:
+                        try:
+                            await resp.write(chunk)
+                            bytes_sent += len(chunk)
+                            if not first_chunk_received:
+                                first_chunk_received = True
+                                # inform the queue that the track is now loaded in the buffer
+                                # so for example the next track can be enqueued
+                                self.mass.player_queues.track_loaded_in_buffer(
+                                    queue_item.queue_id, queue_item.queue_item_id
+                                )
+                        except (BrokenPipeError, ConnectionResetError, ConnectionError) as err:
+                            if (
+                                first_chunk_received
+                                and not player.stop_called
+                                and queue_item.streamdetails.duration  # ignore for radio streams
+                            ):
+                                # Player disconnected (unexpected) after receiving at least
+                                # some data. This could indicate buffering issues, network
+                                # problems, or player-specific issues.
+                                self.logger.warning(
+                                    "Player %s disconnected prematurely from stream for %s (%s) - "
+                                    "error: %s, sent %d bytes, content_length=%s",
+                                    queue.display_name,
+                                    queue_item.name,
+                                    queue_item.uri,
+                                    err.__class__.__name__,
+                                    bytes_sent,
+                                    resp.content_length,
+                                )
+                            break
             finally:
                 self._active_output_streams -= 1
             if queue_item.streamdetails.stream_error:
@@ -861,6 +907,10 @@ class StreamsController(CoreController):
         player_id = request.match_info["player_id"]
         if not (queue := self.mass.player_queues.get(queue_id)):
             raise web.HTTPNotFound(reason=f"Unknown Queue: {queue_id}")
+        session_id = request.match_info["session_id"]
+        queue_data = self.mass.player_queues.queue_data(queue_id)
+        if queue_data.session_id is None or session_id != queue_data.session_id:
+            raise web.HTTPNotFound(reason=f"Unknown (or invalid) session: {session_id}")
         if not (player := self.mass.players.get_player(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
         start_queue_item_id = request.match_info["queue_item_id"]
@@ -878,6 +928,7 @@ class StreamsController(CoreController):
             player,
             start_streamdetails=start_queue_item.streamdetails,
             crossfade_enabled=crossfade_mode != CrossfadeMode.DISABLED,
+            overlay_active=overlay_active(queue),
         )
 
         # work out output format/details
@@ -925,6 +976,23 @@ class StreamsController(CoreController):
         if request.method != "GET":
             return resp
 
+        self._update_audio_processing_context(
+            queue=queue,
+            queue_item=start_queue_item,
+            pcm_format=flow_pcm_format,
+            crossfade_mode=crossfade_mode,
+            overlay_enabled=overlay_active(queue),
+            session_id=session_id,
+        )
+        output_plan = self.audio.get_player_output_plan(
+            player.player_id,
+            flow_pcm_format,
+            output_format,
+            shared_player_ids=player.state.group_members,
+            queue_id=queue_id,
+            session_id=session_id,
+        )
+
         # all checks passed, start streaming!
         # this final ffmpeg process in the chain will convert the raw, lossless PCM audio into
         # the desired output format for the player including any player specific filter params
@@ -934,56 +1002,65 @@ class StreamsController(CoreController):
         # Mark this player as actively streaming so audio analysis yields CPU to playback
         # for the duration of the flow stream (see audio_analysis.playback_active).
         self._active_output_streams += 1
+        flow_stream = self.audio.get_queue_flow_stream(
+            queue=queue,
+            start_queue_item=start_queue_item,
+            pcm_format=flow_pcm_format,
+            session_id=session_id,
+            protocol_player=player,
+        )
+        if overlay_active(queue):
+            flow_stream = self.audio.get_overlay_mixed_stream(queue, flow_stream, flow_pcm_format)
+        audio_bytes = get_ffmpeg_stream(
+            audio_input=flow_stream,
+            input_format=flow_pcm_format,
+            output_format=output_format,
+            filter_params=output_plan.filter_params,
+            # we need to slowly feed the music to avoid the player stopping and later
+            # restarting (or completely failing) the audio stream by keeping the buffer short.
+            # this is reported to be an issue especially with Chromecast players.
+            # see for example: https://github.com/music-assistant/support/issues/3717
+            # allow buffer ahead of a few seconds and read rest in (near) realtime
+            extra_input_args=["-readrate", "1.1", "-readrate_initial_burst", "5"],
+            chunk_size=icy_meta_interval if enable_icy else calculate_content_length(output_format),
+        )
         try:
-            async for chunk in get_ffmpeg_stream(
-                audio_input=self.audio.get_queue_flow_stream(
-                    queue=queue, start_queue_item=start_queue_item, pcm_format=flow_pcm_format
-                ),
-                input_format=flow_pcm_format,
-                output_format=output_format,
-                filter_params=self.audio.get_player_filter_params(
-                    player.player_id, flow_pcm_format, output_format
-                ),
-                # we need to slowly feed the music to avoid the player stopping and later
-                # restarting (or completely failing) the audio stream by keeping the buffer short.
-                # this is reported to be an issue especially with Chromecast players.
-                # see for example: https://github.com/music-assistant/support/issues/3717
-                # allow buffer ahead of a few seconds and read rest in (near) realtime
-                extra_input_args=["-readrate", "1.1", "-readrate_initial_burst", "5"],
-                chunk_size=icy_meta_interval
-                if enable_icy
-                else calculate_content_length(output_format),
-            ):
-                try:
-                    await resp.write(chunk)
-                except BrokenPipeError, ConnectionResetError, ConnectionError:
-                    # race condition
-                    break
+            # aclosing guarantees the flow stream (and thus the ffmpeg process chain
+            # behind it) is torn down immediately when the player disconnects
+            # mid-stream, instead of lingering until garbage collection finalizes
+            # the abandoned generator.
+            async with aclosing(audio_bytes):
+                async for chunk in audio_bytes:
+                    try:
+                        await resp.write(chunk)
+                    except BrokenPipeError, ConnectionResetError, ConnectionError:
+                        # race condition
+                        break
 
-                if not enable_icy:
-                    continue
+                    if not enable_icy:
+                        continue
 
-                # if icy metadata is enabled, send the icy metadata after the chunk
-                if (
-                    # use current item here and not buffered item, otherwise
-                    # the icy metadata will be too much ahead
-                    (current_item := queue.current_item)
-                    and current_item.streamdetails
-                    and current_item.streamdetails.stream_title
-                ):
-                    title = current_item.streamdetails.stream_title
-                elif queue and current_item and current_item.name:
-                    title = current_item.name
-                else:
-                    title = "Music Assistant"
-                metadata = f"StreamTitle='{title}';".encode()
-                if icy_preference == "full" and current_item and current_item.image:
-                    metadata += f"StreamURL='{current_item.image.path}'".encode()
-                while len(metadata) % 16 != 0:
-                    metadata += b"\x00"
-                length = len(metadata)
-                length_b = chr(int(length / 16)).encode()
-                await resp.write(length_b + metadata)
+                    # if icy metadata is enabled, send the icy metadata after the chunk
+                    if (
+                        # use current item here and not buffered item, otherwise
+                        # the icy metadata will be too much ahead
+                        (current_item := queue.current_item)
+                        and current_item.streamdetails
+                        and current_item.streamdetails.stream_title
+                    ):
+                        title = current_item.streamdetails.stream_title
+                    elif queue and current_item and current_item.name:
+                        title = current_item.name
+                    else:
+                        title = "Music Assistant"
+                    metadata = f"StreamTitle='{title}';".encode()
+                    if icy_preference == "full" and current_item and current_item.image:
+                        metadata += f"StreamURL='{current_item.image.path}'".encode()
+                    while len(metadata) % 16 != 0:
+                        metadata += b"\x00"
+                    length = len(metadata)
+                    length_b = chr(int(length / 16)).encode()
+                    await resp.write(length_b + metadata)
         finally:
             self._active_output_streams -= 1
 
@@ -1012,21 +1089,23 @@ class StreamsController(CoreController):
         fmt = request.match_info["fmt"]
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
 
-        mass_player = self.mass.players.get_player(player_id)
-        http_profile = (
-            mass_player.get_config_value(CONF_HTTP_PROFILE, "default") if mass_player else "default"
-        )
+        http_profile = self._get_announcement_http_profile(player_id, announce_data)
         if http_profile == "forced_content_length":
             # given the fact that an announcement is just a short audio clip,
             # just send it over completely at once so we have a fixed content length
             data = b""
-            async for chunk in self.get_announcement_stream(
+            announcement_stream = self.get_announcement_stream(
                 announcement_url=announce_data["announcement_url"],
                 output_format=audio_format,
                 pre_announce=announce_data["pre_announce"],
                 pre_announce_url=announce_data["pre_announce_url"],
-            ):
-                data += chunk
+            )
+            # aclosing guarantees the stream (and thus the ffmpeg process chain behind
+            # it) is torn down immediately when the request is cancelled, instead of
+            # lingering until garbage collection finalizes the abandoned generator.
+            async with aclosing(announcement_stream):
+                async for chunk in announcement_stream:
+                    data += chunk
             return web.Response(
                 body=data,
                 content_type=get_mime_type(audio_format.output_format_str),
@@ -1050,16 +1129,22 @@ class StreamsController(CoreController):
             announce_data["announcement_url"],
             player.state.name,
         )
-        async for chunk in self.get_announcement_stream(
+        announcement_stream = self.get_announcement_stream(
             announcement_url=announce_data["announcement_url"],
             output_format=audio_format,
             pre_announce=announce_data["pre_announce"],
             pre_announce_url=announce_data["pre_announce_url"],
-        ):
-            try:
-                await resp.write(chunk)
-            except BrokenPipeError, ConnectionResetError:
-                break
+        )
+        # aclosing guarantees the stream (and thus the ffmpeg process chain behind
+        # it) is torn down immediately when the player disconnects mid-stream,
+        # instead of lingering until garbage collection finalizes the abandoned
+        # generator.
+        async with aclosing(announcement_stream):
+            async for chunk in announcement_stream:
+                try:
+                    await resp.write(chunk)
+                except BrokenPipeError, ConnectionResetError:
+                    break
 
         self.logger.debug(
             "Finished serving audio stream for Announcement %s to %s",
@@ -1140,48 +1225,99 @@ class StreamsController(CoreController):
             # or force it if explicitly requested (e.g., for multi-client streaming)
             protocol_player = self.mass.players.get_player(player_id) if player_id else None
             queue_id = media.source_id
+            queue = self.mass.player_queues.get(queue_id)
+            queue_session_id = cast(
+                "str | None",
+                (media.custom_data or {}).get("session_id"),
+            )
             crossfade_needs_flow_mode = (
                 # crossfade only applies to tracks; if the queue has it enabled but the
                 # player(protocol) does not support gapless playback, we need to enforce flow mode
                 media.media_type == MediaType.TRACK
-                and queue_id
-                and (queue := self.mass.player_queues.get(queue_id))
+                and queue is not None
                 and queue.crossfade_enabled
                 and protocol_player
                 and not protocol_player.supports_gapless
             )
+            # the audio overlay is mixed into the queue's continuous (flow) stream;
+            # per-item requests would restart the overlay at every track boundary
+            overlay_needs_flow_mode = queue is not None and overlay_active(queue)
             flow_mode = (
                 force_flow_mode
                 or (protocol_player is not None and protocol_player.flow_mode)
                 or crossfade_needs_flow_mode
+                or overlay_needs_flow_mode
             )
             if media.media_type in (MediaType.RADIO, MediaType.AUDIO_SOURCE):
                 # flow_mode for live/infinite streams is pointless
                 flow_mode = False
             if flow_mode:
                 # flow stream request
-                queue = self.mass.player_queues.get(media.source_id)
                 assert queue
                 start_queue_item = self.mass.player_queues.get_item(
                     media.source_id, media.queue_item_id
                 )
                 assert start_queue_item
-                flow_stream = self.audio.get_queue_flow_stream(
-                    queue=queue, start_queue_item=start_queue_item, pcm_format=pcm_format
+                crossfade_mode = (
+                    self.get_crossfade_mode(queue)
+                    if start_queue_item.media_type == MediaType.TRACK
+                    else CrossfadeMode.DISABLED
                 )
+                self._update_audio_processing_context(
+                    queue=queue,
+                    queue_item=start_queue_item,
+                    pcm_format=pcm_format,
+                    crossfade_mode=crossfade_mode,
+                    overlay_enabled=overlay_active(queue),
+                    session_id=queue_session_id,
+                )
+                flow_stream = self.audio.get_queue_flow_stream(
+                    queue=queue,
+                    start_queue_item=start_queue_item,
+                    pcm_format=pcm_format,
+                    session_id=queue_session_id,
+                    protocol_player=protocol_player,
+                )
+                if overlay_active(queue):
+                    flow_stream = self.audio.get_overlay_mixed_stream(
+                        queue, flow_stream, pcm_format
+                    )
                 if use_flow_stream_buffering:
                     return buffered(flow_stream, buffer_size=30, min_buffer_before_yield=1)
                 return flow_stream
             # single item stream (e.g. radio or non-flow mode)
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
             assert queue_item
+            if queue is not None:
+                self._update_audio_processing_context(
+                    queue=queue,
+                    queue_item=queue_item,
+                    pcm_format=pcm_format,
+                    crossfade_mode=(
+                        self.get_crossfade_mode(queue)
+                        if queue_item.media_type == MediaType.TRACK
+                        else CrossfadeMode.DISABLED
+                    ),
+                    overlay_enabled=(
+                        queue_item.media_type == MediaType.RADIO and overlay_active(queue)
+                    ),
+                    session_id=queue_session_id,
+                )
             inner_stream = self.audio.get_queue_item_stream(
                 queue_item=queue_item,
                 pcm_format=pcm_format,
                 playback_speed=cast(
                     "float", queue_item.extra_attributes.get("playback_speed", 1.0)
                 ),
+                session_id=queue_session_id,
             )
+            if (
+                queue is not None
+                and queue_item.media_type == MediaType.RADIO
+                and overlay_active(queue)
+            ):
+                # radio plays as a single long-lived stream, so mix the overlay in here
+                inner_stream = self.audio.get_overlay_mixed_stream(queue, inner_stream, pcm_format)
             # mirror the on_source_selected/unselected lifecycle the HTTP route
             # fires, so direct-PCM consumers (AirPlay, Snapcast, UGP) honour the
             # plugin contract too
@@ -1273,22 +1409,33 @@ class StreamsController(CoreController):
 
         async def fetch_announcement() -> None:
             fmt = announcement_url.rsplit(".", maxsplit=1)[-1]
+            eof_pending = True
+            stream = get_ffmpeg_stream(
+                audio_input=announcement_url,
+                input_format=AudioFormat(content_type=ContentType.try_parse(fmt)),
+                output_format=pcm_format,
+                chunk_size=calculate_content_length(pcm_format, 1),
+            )
             try:
-                async for chunk in get_ffmpeg_stream(
-                    audio_input=announcement_url,
-                    input_format=AudioFormat(content_type=ContentType.try_parse(fmt)),
-                    output_format=pcm_format,
-                    chunk_size=calculate_content_length(pcm_format, 1),
-                ):
-                    await announcement_data.put(chunk)
+                # aclosing guarantees the ffmpeg stream is torn down immediately
+                # when this task gets cancelled while blocked on the queue put.
+                async with aclosing(stream):
+                    async for chunk in stream:
+                        await announcement_data.put(chunk)
+            except asyncio.CancelledError:
+                # consumer is gone: skip the end-of-stream sentinel because the
+                # queue may be full and nobody will drain it anymore
+                eof_pending = False
+                raise
             except AudioError as err:
                 self.logger.warning(
                     "Failed to fetch announcement audio from %s: %s", announcement_url, err
                 )
             finally:
-                await announcement_data.put(None)  # always signal end of stream
+                if eof_pending:
+                    await announcement_data.put(None)  # always signal end of stream
 
-        self.mass.create_task(fetch_announcement())
+        fetch_task = self.mass.create_task(fetch_announcement())
 
         async def _announcement_stream() -> AsyncGenerator[bytes]:
             """Generate the PCM audio stream for the announcement + optional pre-announce."""
@@ -1313,17 +1460,28 @@ class StreamsController(CoreController):
                     break
                 yield announcement_chunk
 
-        if output_format == pcm_format:
-            # no need to re-encode, just yield the raw PCM stream
-            async for chunk in _announcement_stream():
-                yield chunk
-            return
+        try:
+            if output_format == pcm_format:
+                # no need to re-encode, just yield the raw PCM stream
+                raw_stream = _announcement_stream()
+                async with aclosing(raw_stream):
+                    async for chunk in raw_stream:
+                        yield chunk
+                return
 
-        # stream final announcement in requested output format
-        async for chunk in get_ffmpeg_stream(
-            audio_input=_announcement_stream(), input_format=pcm_format, output_format=output_format
-        ):
-            yield chunk
+            # stream final announcement in requested output format
+            encoded_stream = get_ffmpeg_stream(
+                audio_input=_announcement_stream(),
+                input_format=pcm_format,
+                output_format=output_format,
+            )
+            async with aclosing(encoded_stream):
+                async for chunk in encoded_stream:
+                    yield chunk
+        finally:
+            # stop fetching when the consumer goes away early (e.g. player
+            # disconnected); no-op when the fetch already completed normally
+            fetch_task.cancel()
 
     async def _wrap_with_audio_source_lifecycle(
         self,
@@ -1378,6 +1536,68 @@ class StreamsController(CoreController):
                     err,
                 )
 
+    def _update_audio_processing_context(
+        self,
+        queue: PlayerQueue,
+        queue_item: QueueItem,
+        pcm_format: AudioFormat,
+        crossfade_mode: CrossfadeMode,
+        overlay_enabled: bool,
+        session_id: str | None = None,
+    ) -> None:
+        """
+        Store the shared processing context selected for a queue item.
+
+        :param queue: Active player queue.
+        :param queue_item: Queue item being prepared.
+        :param pcm_format: Shared PCM format leaving queue processing.
+        :param crossfade_mode: Effective crossfade mode for the item.
+        :param overlay_enabled: Whether an overlay is mixed into this stream.
+        :param session_id: Queue session that owns processing-detail updates.
+        """
+        if queue_item.streamdetails is None:
+            return
+        queue_data = self.mass.player_queues.queue_data_or_none(queue.queue_id)
+        if (
+            queue_data is None
+            or (processing_session_id := session_id or queue_data.session_id) is None
+            or queue_data.session_id != processing_session_id
+        ):
+            return
+        self.audio_processing.start_session(queue.queue_id, processing_session_id)
+        self.audio_processing.update_item_context(
+            queue_id=queue.queue_id,
+            session_id=processing_session_id,
+            queue_item_id=queue_item.queue_item_id,
+            queue_processing=AudioQueueProcessing(
+                pcm_format=pcm_format,
+                playback_speed=cast(
+                    "float",
+                    queue_item.extra_attributes.get("playback_speed", 1.0),
+                ),
+                crossfade_mode=crossfade_mode,
+                overlay_active=overlay_enabled,
+            ),
+            alters_audio=queue_item.streamdetails.fade_in,
+        )
+
+    def _get_announcement_http_profile(self, player_id: str, announce_data: AnnounceData) -> str:
+        """
+        Resolve the http profile for serving an announcement stream.
+
+        Announcement urls are registered under the visible player's id, but the
+        stream may be fetched by a linked protocol player; the profile must come
+        from the player that actually performs the fetch.
+        """
+        announce_player = None
+        if announce_player_id := announce_data.get("announce_player_id"):
+            announce_player = self.mass.players.get_player(announce_player_id)
+        if announce_player is None:
+            announce_player = self.mass.players.get_player(player_id)
+        if announce_player is None:
+            return "default"
+        return announce_player.get_output_config_value(CONF_HTTP_PROFILE, "default")
+
     def _log_request(self, request: web.Request) -> None:
         """Log request."""
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
@@ -1393,18 +1613,6 @@ class StreamsController(CoreController):
             self.logger.debug(
                 "Got %s request to %s from %s", request.method, request.path, request.remote
             )
-
-    async def _periodic_garbage_collection(self) -> None:
-        """Periodic garbage collection to free up memory from audio buffers and streams."""
-        self.logger.log(VERBOSE_LOG_LEVEL, "Running periodic garbage collection...")
-        # Run gc.collect on the event loop thread to avoid thread-safety issues
-        # with StreamWriter.__del__ calling close() which requires the event loop thread
-        collected = gc.collect()
-        self.logger.log(
-            VERBOSE_LOG_LEVEL, "Garbage collection completed, collected %d objects", collected
-        )
-        # Schedule next run in 15 minutes
-        self.mass.call_later(900, self._periodic_garbage_collection)
 
     def _setup_smart_fades_logger(self, config: CoreConfig) -> None:
         """Set up smart fades logger level."""
