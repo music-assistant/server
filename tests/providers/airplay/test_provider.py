@@ -1,21 +1,16 @@
-"""Unit tests for the AirPlay provider (sync_adjust migration + PTP timing source)."""
+"""Unit tests for the AirPlay provider."""
 
 import asyncio
 import logging
 import time
 from contextlib import AbstractContextManager
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant_models.enums import PlaybackState
 
-from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.providers.airplay.constants import (
-    CONF_FORCE_RAOP,
-    CONF_LEGACY_AIRPLAY_PROTOCOL,
-    CONF_LEGACY_FORCE_RAOP,
-    CONF_PROTOCOL_MIGRATION_MARKER,
-    CONF_SYNC_ADJUST_RESET_MARKER,
     AirPlayRemoteCommand,
     StreamingProtocol,
 )
@@ -41,128 +36,19 @@ DAEMON_UP_LINE = (
 )
 
 
-def _make_provider(
-    marker_set: bool,
-    player_configs: dict[str, dict[str, object]],
-    stored_sync_adjust: dict[str, int],
-) -> AirPlayProvider:
-    """
-    Build a bare provider wired to a mocked config store.
-
-    :param marker_set: Whether the one-time migration already ran.
-    :param player_configs: Raw player config store contents.
-    :param stored_sync_adjust: Persisted sync_adjust value per player id.
-    """
+def _make_provider() -> AirPlayProvider:
+    """Build a bare provider wired to a mocked Music Assistant instance."""
     prov = AirPlayProvider.__new__(AirPlayProvider)
     prov.mass = MagicMock()
     prov.logger = logging.getLogger("test.airplay.provider")
     prov.config = MagicMock()
     prov.config.instance_id = INSTANCE_ID
-    prov.mass.config.get_raw_provider_config_value.return_value = marker_set
-    prov.mass.config.get.return_value = player_configs
-    prov.mass.config.get_raw_player_config_value.side_effect = lambda player_id, _key, default=0: (
-        stored_sync_adjust.get(player_id, default)
-    )
     return prov
-
-
-def test_sync_adjust_migration_resets_stored_values() -> None:
-    """Persisted sync_adjust values are reset once and the marker is written."""
-    player_configs: dict[str, dict[str, object]] = {
-        "apaaa": {"player_id": "apaaa", "provider": INSTANCE_ID},
-        "apbbb": {"player_id": "apbbb", "provider": INSTANCE_ID},
-        # player of another provider must be left alone
-        "sonos1": {"player_id": "sonos1", "provider": "sonos"},
-    }
-    prov = _make_provider(
-        marker_set=False,
-        player_configs=player_configs,
-        stored_sync_adjust={"apaaa": 120, "apbbb": 0, "sonos1": 250},
-    )
-
-    prov._migrate_sync_adjust()
-
-    # only the airplay player with a non-zero offset is reset
-    cast("MagicMock", prov.mass.config).set_raw_player_config_value.assert_called_once_with(
-        "apaaa", CONF_SYNC_ADJUST, 0
-    )
-    # the one-time marker is written afterwards
-    cast("MagicMock", prov.mass.config).set_raw_provider_config_value.assert_called_once_with(
-        INSTANCE_ID, CONF_SYNC_ADJUST_RESET_MARKER, True
-    )
-
-
-def test_sync_adjust_migration_runs_only_once() -> None:
-    """With the marker set, the migration must not touch player configs again."""
-    player_configs: dict[str, dict[str, object]] = {
-        "apaaa": {"player_id": "apaaa", "provider": INSTANCE_ID}
-    }
-    prov = _make_provider(
-        marker_set=True,
-        player_configs=player_configs,
-        stored_sync_adjust={"apaaa": 120},
-    )
-
-    prov._migrate_sync_adjust()
-
-    cast("MagicMock", prov.mass.config).set_raw_player_config_value.assert_not_called()
-    cast("MagicMock", prov.mass.config).set_raw_provider_config_value.assert_not_called()
-
-
-def test_protocol_migration_preserves_only_explicit_raop_preferences() -> None:
-    """Legacy forced RAOP values migrate without overriding newer toggle values."""
-    player_configs: dict[str, dict[str, object]] = {
-        "raop": {"player_id": "raop", "provider": INSTANCE_ID},
-        "airplay2": {"player_id": "airplay2", "provider": INSTANCE_ID},
-        "automatic": {"player_id": "automatic", "provider": INSTANCE_ID},
-        "new-toggle": {"player_id": "new-toggle", "provider": INSTANCE_ID},
-        "other": {"player_id": "other", "provider": "sonos"},
-    }
-    stored_values: dict[tuple[str, str], object] = {
-        ("raop", CONF_LEGACY_AIRPLAY_PROTOCOL): StreamingProtocol.RAOP,
-        ("airplay2", CONF_LEGACY_AIRPLAY_PROTOCOL): StreamingProtocol.AIRPLAY2,
-        ("automatic", CONF_LEGACY_AIRPLAY_PROTOCOL): 0,
-        ("new-toggle", CONF_LEGACY_AIRPLAY_PROTOCOL): StreamingProtocol.RAOP,
-        ("new-toggle", CONF_FORCE_RAOP): False,
-        ("other", CONF_LEGACY_AIRPLAY_PROTOCOL): StreamingProtocol.RAOP,
-    }
-    prov = _make_provider(False, player_configs, {})
-    config = cast("MagicMock", prov.mass.config)
-    config.get_raw_player_config_value.side_effect = lambda player_id, key, default=None: (
-        stored_values.get((player_id, key), default)
-    )
-
-    prov._migrate_protocol_preferences()
-
-    cast("MagicMock", prov.mass.config).set_raw_player_config_value.assert_has_calls(
-        [
-            call("raop", CONF_FORCE_RAOP, True),
-            call("raop", CONF_LEGACY_FORCE_RAOP, True),
-        ]
-    )
-    assert cast("MagicMock", prov.mass.config).set_raw_player_config_value.call_count == 2
-    cast("MagicMock", prov.mass.config).set_raw_provider_config_value.assert_called_once_with(
-        INSTANCE_ID, CONF_PROTOCOL_MIGRATION_MARKER, True
-    )
-
-
-def test_protocol_migration_runs_only_once() -> None:
-    """The protocol migration marker prevents a disabled toggle being restored later."""
-    prov = _make_provider(
-        True,
-        {"raop": {"player_id": "raop", "provider": INSTANCE_ID}},
-        {},
-    )
-
-    prov._migrate_protocol_preferences()
-
-    cast("MagicMock", prov.mass.config).set_raw_player_config_value.assert_not_called()
-    cast("MagicMock", prov.mass.config).set_raw_provider_config_value.assert_not_called()
 
 
 def test_remote_pause_routes_to_sendspin_session() -> None:
     """A bridged device pause targets the owning Sendspin session."""
-    prov = _make_provider(False, {}, {})
+    prov = _make_provider()
     players = cast("MagicMock", prov.mass.players)
     manager = SendspinBridgeManager(prov)
     prov._bridge_manager = manager
@@ -196,7 +82,7 @@ def test_remote_pause_routes_to_sendspin_session() -> None:
 
 def test_remote_pause_keeps_normal_airplay_routing() -> None:
     """An inactive bridge does not change normal AirPlay pause routing."""
-    prov = _make_provider(False, {}, {})
+    prov = _make_provider()
     players = cast("MagicMock", prov.mass.players)
     manager = SendspinBridgeManager(prov)
     prov._bridge_manager = manager

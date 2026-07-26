@@ -82,15 +82,6 @@ AIRPLAY_ARTWORK_SIZE: Final[int] = 512
 CONF_RAOP_CREDENTIALS: Final[str] = "raop_credentials"
 CONF_AIRPLAY_CREDENTIALS: Final[str] = "airplay_credentials"
 
-# Provider-level marker for the one-time reset of user-calibrated sync_adjust
-# values from before the unified cliairplay binary, whose different timing model
-# invalidates offsets calibrated against the old implementation.
-CONF_SYNC_ADJUST_RESET_MARKER: Final[str] = "unified_binary_sync_adjust_reset"
-# Legacy protocol preference used only to migrate explicit RAOP selections.
-CONF_LEGACY_AIRPLAY_PROTOCOL: Final[str] = "airplay_protocol"
-CONF_LEGACY_FORCE_RAOP: Final[str] = "legacy_force_raop"
-CONF_PROTOCOL_MIGRATION_MARKER: Final[str] = "unified_binary_protocol_migration"
-
 # AirPlay serves the shared sync-adjust control as a non-advanced (always visible)
 # setting: the binary handles lead/buffer automatically and does not apply
 # device-reported render latency, so sync_adjust is the primary way to compensate

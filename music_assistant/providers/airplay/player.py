@@ -39,7 +39,6 @@ from .constants import (
     CONF_FORCE_RAOP,
     CONF_HIRES_PLAYBACK,
     CONF_IGNORE_VOLUME,
-    CONF_LEGACY_FORCE_RAOP,
     CONF_PAIRING_PASSWORD,
     CONF_PAIRING_PIN,
     CONF_PASSWORD,
@@ -129,10 +128,9 @@ class AirPlayPlayer(Player):
 
         The only override a user can set is the "force RAOP" escape hatch (offered
         for AirPlay-2-capable non-Apple receivers whose AirPlay 2 implementation
-        misbehaves). Legacy RAOP preferences are also preserved for Apple devices.
-        Otherwise the cliairplay binary resolves the route itself from the mDNS TXT
-        records (--protocol auto) and the ``protocol`` property above only reflects
-        MA's own planning heuristic (timing, ports).
+        misbehaves). Otherwise the cliairplay binary resolves the route itself from
+        the mDNS TXT records (--protocol auto) and the ``protocol`` property above
+        only reflects MA's own planning heuristic (timing, ports).
         """
         return StreamingProtocol.RAOP if self._force_raop_active else None
 
@@ -762,9 +760,7 @@ class AirPlayPlayer(Player):
 
         Offered only for AirPlay-2-capable non-Apple receivers that also advertise
         a RAOP service to fall back to. Genuine Apple devices are always AirPlay 2,
-        so the toggle is never offered for them; only an explicitly migrated legacy
-        preference can still force RAOP there. RAOP-only and AirPlay-2-only devices
-        have nothing to force, so they are excluded as well.
+        while RAOP-only and AirPlay-2-only devices have nothing to force.
         """
         return (
             self._is_airplay2_capable
@@ -775,16 +771,7 @@ class AirPlayPlayer(Player):
     @property
     def _force_raop_active(self) -> bool:
         """Return whether RAOP is being forced through the escape-hatch toggle."""
-        if self._force_raop_available and self.config.get_value(CONF_FORCE_RAOP, False):
-            return True
-        return (
-            self.raop_discovery_info is not None
-            and is_apple_device(self.device_info.manufacturer, self.device_info.model)
-            and self.provider.mass.config.get_raw_player_config_value(
-                self.player_id, CONF_LEGACY_FORCE_RAOP, False
-            )
-            is True
-        )
+        return self._force_raop_available and bool(self.config.get_value(CONF_FORCE_RAOP, False))
 
     async def _run_streaming_pairing(
         self, session: SetupSession, collected: dict[str, ConfigValueType]
