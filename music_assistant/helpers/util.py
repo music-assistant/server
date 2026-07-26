@@ -1046,13 +1046,24 @@ async def get_primary_ip_address() -> str | None:
     """Return the primary IP address of the system."""
 
 
-async def is_port_in_use(port: int) -> bool:
-    """Check if port is in use."""
+async def is_port_in_use(port: int, host: str | None = None) -> bool:
+    """
+    Check if a port is in use.
+
+    :param port: Port number to check.
+    :param host: Optional bind address to probe. When omitted, both IPv4 and IPv6
+        wildcard addresses are checked.
+    """
 
     def _is_port_in_use() -> bool:
-        # Try both IPv4 and IPv6 to support single-stack and dual-stack systems.
-        # A port is considered free if it can be bound on at least one address family.
-        for family, addr in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
+        candidates: tuple[tuple[socket.AddressFamily, str], ...]
+        if host is not None:
+            candidates = ((socket.AF_INET6 if ":" in host else socket.AF_INET, host),)
+        else:
+            # Try both IPv4 and IPv6 to support single-stack and dual-stack systems.
+            # A port is considered free if it can be bound on at least one address family.
+            candidates = ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::"))
+        for family, addr in candidates:
             try:
                 with socket.socket(family, socket.SOCK_STREAM) as _sock:
                     # Set SO_REUSEADDR to match asyncio.start_server behavior
@@ -1079,7 +1090,7 @@ _reserved_ports: dict[int, float] = {}
 _select_free_port_lock = asyncio.Lock()
 
 
-async def select_free_port(range_start: int, range_end: int) -> int:
+async def select_free_port(range_start: int, range_end: int, host: str | None = None) -> int:
     """
     Find and reserve a free port within the given range.
 
@@ -1088,6 +1099,7 @@ async def select_free_port(range_start: int, range_end: int) -> int:
 
     :param range_start: First port (inclusive) of the range to search.
     :param range_end: Port to stop before (exclusive) when searching the range.
+    :param host: Optional bind address to probe for availability.
     """
     async with _select_free_port_lock:
         now = time.monotonic()
@@ -1098,7 +1110,7 @@ async def select_free_port(range_start: int, range_end: int) -> int:
         for port in range(range_start, range_end):
             if port in _reserved_ports:
                 continue
-            if not await is_port_in_use(port):
+            if not await is_port_in_use(port, host=host):
                 _reserved_ports[port] = now + _PORT_RESERVATION_TTL
                 return port
     msg = "No free port available"
