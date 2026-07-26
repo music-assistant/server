@@ -1003,7 +1003,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             player_media = await self.player_media_from_queue_item(queue_item)
             # Hold the play action until the player confirms playback so the UI keeps
             # showing the command as in progress instead of falling back to a play button
-            # for the time the player still needs to connect and start.
+            # for the time the player still needs to connect and start. The queue update
+            # for the new item goes out first, so the item shows while it is starting.
             async with self.mass.players.wait_for_player_update(
                 queue_id,
                 attribute_name="playback_state",
@@ -1011,9 +1012,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 timeout=PLAYBACK_START_TIMEOUT,
             ):
                 await self.mass.players.play_media(queue_id, player_media)
-            queue.current_index = index
-            queue.current_item = queue_item
-            self.signal_update(queue_id)
+                queue.current_index = index
+                queue.current_item = queue_item
+                self.signal_update(queue_id)
         finally:
             self._set_transitioning(queue_id, False)
 
