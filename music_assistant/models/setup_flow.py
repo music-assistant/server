@@ -494,7 +494,7 @@ class SetupSession:
         """Return copies of the form entries, validated and stamped for this flow."""
         prepared: list[ConfigEntry] = []
         for entry in entries:
-            if entry.action:
+            if entry.action or entry.type == ConfigEntryType.ACTION:
                 # actions are the pseudo-flow mechanism of the options surface;
                 # inside real flows they are structurally banned
                 msg = f"Config entry {entry.key} carries an action, not allowed in setup flows"
