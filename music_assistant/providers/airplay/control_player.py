@@ -135,7 +135,6 @@ class AirPlayControlPlayer(AirPlayPlayer):
         manufacturer: str,
         model: str,
         initial_volume: int,
-        advertised_audio_formats: int = 0,
     ) -> None:
         """Initialize a control-capable AirPlay player."""
         self.companion_discovery_info = companion_discovery_info
@@ -152,7 +151,6 @@ class AirPlayControlPlayer(AirPlayPlayer):
             manufacturer=manufacturer,
             model=model,
             initial_volume=initial_volume,
-            advertised_audio_formats=advertised_audio_formats,
         )
         self._companion_listener: _AirPlayStateListener | None = None
         self._mrp_state_listener: _AirPlayStateListener | None = None

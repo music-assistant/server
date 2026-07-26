@@ -408,15 +408,6 @@ class AirPlayProvider(PlayerProvider):
             model,
         )
 
-        # A receiver only publishes its audio formats (and so whether it can do
-        # 24-bit) in its /info response, never in its mDNS records, so ask it
-        # directly. Unreachable devices simply stay on the 16-bit base.
-        advertised_audio_formats = (
-            await probe_audio_formats(self.mass, address, airplay_discovery_info.port)
-            if airplay_discovery_info and airplay_discovery_info.port
-            else 0
-        )
-
         player_addresses = self._get_discovery_addresses(
             airplay_discovery_info,
             raop_discovery_info,
@@ -462,7 +453,6 @@ class AirPlayProvider(PlayerProvider):
                 manufacturer=manufacturer,
                 model=model,
                 initial_volume=volume,
-                advertised_audio_formats=advertised_audio_formats,
             )
         else:
             player = GenericAirPlayPlayer(
@@ -475,9 +465,17 @@ class AirPlayProvider(PlayerProvider):
                 manufacturer=manufacturer,
                 model=model,
                 initial_volume=volume,
-                advertised_audio_formats=advertised_audio_formats,
             )
         await self.mass.players.register(player)
+
+        # A receiver only publishes its audio formats (and so whether it can do
+        # 24-bit) in its /info response, never in its mDNS records, so ask it
+        # directly. Off the discovery path: mdns callbacks are serialized per
+        # provider, so an unreachable device must not hold up the next player.
+        if airplay_discovery_info and airplay_discovery_info.port:
+            self.mass.create_task(
+                self._learn_audio_formats(player, address, airplay_discovery_info.port)
+            )
 
         # Set up Sendspin bridge for protocol linking (if Sendspin provider is available)
         await self._bridge_manager.evaluate_bridge(player)
@@ -485,6 +483,11 @@ class AirPlayProvider(PlayerProvider):
         # Track control players (Apple TVs) for dashboard eligibility
         if isinstance(player, AirPlayControlPlayer):
             self.dashboards.setup_player(player)
+
+    async def _learn_audio_formats(self, player: AirPlayPlayer, host: str, port: int) -> None:
+        """Read the audio formats a receiver advertises, so 24-bit can be auto-enabled."""
+        if formats := await probe_audio_formats(self.mass, host, port):
+            player.advertised_audio_formats = formats
 
     async def _is_own_airplay_receiver(
         self, display_name: str, discovery_info: AsyncServiceInfo

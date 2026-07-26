@@ -87,12 +87,13 @@ class AirPlayPlayer(Player):
         manufacturer: str,
         model: str,
         initial_volume: int = FALLBACK_VOLUME,
-        advertised_audio_formats: int = 0,
     ) -> None:
         """Initialize AirPlayPlayer."""
         self.raop_discovery_info = raop_discovery_info
         self.airplay_discovery_info = airplay_discovery_info
-        self.advertised_audio_formats = advertised_audio_formats
+        # Audio formats the receiver advertises, learned from its /info response;
+        # zero until that lands (or when the device publishes no format tables).
+        self.advertised_audio_formats = 0
         super().__init__(provider, player_id)
         self.address = address
         self.stream: AirPlayStream | None = None
