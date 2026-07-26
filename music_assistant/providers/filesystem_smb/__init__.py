@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import platform
 from typing import TYPE_CHECKING
@@ -144,6 +145,66 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             **await super().get_diagnostics(),
             "mounted": await ismount(self.base_path),
         }
+
+    async def _enumerate_files_for_sync(
+        self,
+        *,
+        file_checksums: dict[str, str],
+        cue_file_checksums: dict[str, str],
+        cur_filenames: set[str],
+        items_to_process: list[tuple[FileSystemItem, str | None]],
+        unchanged_cue_items: list[FileSystemItem],
+        cue_stems: set[str],
+        root_scan_errors: list[OSError],
+    ) -> None:
+        """Override to remount and retry if the SMB mount drops during scan enumeration.
+
+        The parent class aborts the entire library sync and marks the provider
+        unavailable when ``os.scandir`` raises an OSError at the root mount point,
+        which happens whenever the SMB server is temporarily unreachable ("Host is
+        down", "Resource temporarily unavailable", etc.).
+
+        This override catches root-level enumeration failures, unmounts and remounts
+        the CIFS share with exponential backoff, and retries the scan. If all retry
+        attempts fail, the errors are passed through to the parent's abort logic.
+        """
+        from music_assistant.providers.filesystem_local import ismount
+
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            # Check if mount is alive before starting the walk
+            if not await ismount(self.base_path):
+                self.logger.warning(
+                    "SMB mount not available (attempt %d/%d), remounting...",
+                    attempt + 1, max_attempts,
+                )
+                await self.unmount(ignore_error=True)
+                await asyncio.sleep(1)
+                await self.mount()
+
+            root_scan_errors.clear()
+            await super()._enumerate_files_for_sync(
+                file_checksums=file_checksums,
+                cue_file_checksums=cue_file_checksums,
+                cur_filenames=cur_filenames,
+                items_to_process=items_to_process,
+                unchanged_cue_items=unchanged_cue_items,
+                cue_stems=cue_stems,
+                root_scan_errors=root_scan_errors,
+            )
+
+            if not root_scan_errors:
+                return  # success
+
+            self.logger.warning(
+                "SMB root scan failed with %d error(s) (attempt %d/%d), "
+                "unmounting and retrying in %ds...",
+                len(root_scan_errors), attempt + 1, max_attempts,
+                2 ** attempt,
+            )
+            root_scan_errors.clear()
+            await self.unmount(ignore_error=True)
+            await asyncio.sleep(2 ** attempt)  # 1s, 2s, 4s backoff
 
     async def mount(self) -> None:
         """Mount the SMB location to a temporary folder."""
