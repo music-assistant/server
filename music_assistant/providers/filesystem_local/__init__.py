@@ -75,6 +75,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_from_index,
     update_current_task_progress_text,
 )
+from music_assistant.helpers import lyrics
 from music_assistant.helpers.compare import compare_strings, create_safe_string
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
@@ -1494,6 +1495,8 @@ class LocalFileSystemProvider(MusicProvider):
                     lrc_path,
                     str(err),
                 )
+        elif syn_lyrics := tags.synchronized_lyrics:
+            track.metadata.lrc_lyrics = lyrics.convert_to_lrc_lyrics(syn_lyrics)
 
         return track
 

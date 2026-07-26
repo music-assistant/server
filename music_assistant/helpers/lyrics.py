@@ -65,3 +65,28 @@ def _timestamp_to_seconds(timestamp: re.Match[str]) -> float:
     minutes = int(timestamp.group(1))
     seconds = float(timestamp.group(2).replace(":", "."))
     return minutes * 60 + seconds
+
+
+def convert_to_lrc_lyrics(lyrics: list[tuple[str, int]]) -> str:
+    """
+    Convert lyrics to LRC format.
+
+    :param lyrics: A list of (text, timestamp in ms) pairs.
+    """
+
+    def format_line(text: str, ms: int) -> str | None:
+        if ms < 0:
+            return None
+
+        mins, ms = divmod(ms, 60_000)
+        secs, ms = divmod(ms, 1_000)
+
+        if mins > 99:
+            return None
+
+        # Replace newline and carriage return and strip leading/trailing whitespace
+        text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ").strip()
+
+        return f"[{mins:02d}:{secs:02d}.{ms // 10:02d}]{text}"
+
+    return "\n".join(line for text, ms in lyrics if (line := format_line(text, ms)) is not None)
