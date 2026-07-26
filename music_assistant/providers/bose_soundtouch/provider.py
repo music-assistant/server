@@ -53,9 +53,13 @@ class BoseSoundTouchProvider(PlayerProvider):
             self.mass.config.set_raw_provider_config_value(
                 self.instance_id, preset_media_key(preset_id), selected
             )
+        # only the search button runs a (slow) media search; selecting merely persists the
+        # already fetched choice, which stays selectable without searching again
         return (
             CONF_ENTRY_MANUAL_DISCOVERY_IPS,
-            *await build_preset_config_entries(self, refresh_preset_id=preset_id),
+            *await build_preset_config_entries(
+                self, refresh_preset_id=None if is_select else preset_id
+            ),
         )
 
     async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
