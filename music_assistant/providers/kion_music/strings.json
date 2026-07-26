@@ -45,6 +45,9 @@
       "description": "Music Assistant needs your personal KION Music OAuth token to reach your account and library."
     }
   },
+  "errors": {
+    "login_failed": "Could not sign in to KION Music with this token. See the documentation for how to obtain a fresh OAuth token."
+  },
   "media": {
     "folder": {
       "my_wave": { "name": "My Mix" },
