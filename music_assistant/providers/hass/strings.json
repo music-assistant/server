@@ -29,8 +29,7 @@
       "description": "Authenticate to your home assistant instance and generate the long lived token."
     },
     "token": {
-      "label": "Authentication token for HomeAssistant",
-      "description": "You can either paste a Long Lived Token here manually or use the 'authenticate' button to generate a token for you with logging in."
+      "label": "Authentication token for HomeAssistant"
     },
     "verify_ssl": {
       "label": "[%key:common::config_entries::verify_ssl::label%]",

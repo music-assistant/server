@@ -1269,7 +1269,6 @@
   "provider.hass.config_entries.mute_controls.label": "Player Mute Control entities",
   "provider.hass.config_entries.power_controls.description": "Specify which Home Assistant entities you like to import as player Power controls in Music Assistant.",
   "provider.hass.config_entries.power_controls.label": "Player Power Control entities",
-  "provider.hass.config_entries.token.description": "You can either paste a Long Lived Token here manually or use the 'authenticate' button to generate a token for you with logging in.",
   "provider.hass.config_entries.token.label": "Authentication token for HomeAssistant",
   "provider.hass.config_entries.tts_entity.description": "Select which Home Assistant TTS entity you like to use for text-to-speech capabilities inside Music Assistant.",
   "provider.hass.config_entries.tts_entity.label": "Text-to-Speech entity",
