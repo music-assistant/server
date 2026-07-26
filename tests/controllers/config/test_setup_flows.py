@@ -12,6 +12,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from aiohttp.test_utils import make_mocked_request
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -472,6 +473,159 @@ async def test_idle_flow_ttl_sweep(flow_mass: MusicAssistant, flow_events: list[
         await _wait_for(lambda: step.flow_id not in flow_mass.config._setup_flows)
     abort_step = await _wait_for(lambda: next(iter(_abort_events(flow_events)), None))
     assert abort_step.reason == "timed_out"
+
+
+async def test_idle_sweep_respects_live_step_deadline(
+    flow_mass: MusicAssistant, flow_events: list[MassEvent]
+) -> None:
+    """The sweeper must not abort a flow whose current step advertises a longer deadline."""
+
+    async def run_setup(session: SetupSession) -> None:
+        await session.form([USERNAME_ENTRY], expires_in=3600)
+        await session.finish({})
+
+    with _use_flow(flow_mass, run_setup):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        flow = flow_mass.config._setup_flows[step.flow_id]
+        flow.session.last_activity = time.monotonic() - 16 * 60
+        flow_mass.config._sweep_idle_flows()
+        await asyncio.sleep(0.05)
+        # still alive: the step's own countdown is the authoritative deadline
+        assert step.flow_id in flow_mass.config._setup_flows
+        assert not _abort_events(flow_events)
+
+
+async def test_concurrent_starts_keep_single_flow(flow_mass: MusicAssistant) -> None:
+    """Two concurrent starts for the same target never leave two live flows behind."""
+
+    async def run_setup(session: SetupSession) -> None:
+        try:
+            await session.form([USERNAME_ENTRY])
+        finally:
+            # slow author cleanup: widens the abort window the re-scan protects against
+            await asyncio.sleep(0.05)
+        await session.finish({})
+
+    with _use_flow(flow_mass, run_setup):
+        await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        await asyncio.gather(
+            flow_mass.config.setup_provider(FAKE_DOMAIN),
+            flow_mass.config.setup_provider(FAKE_DOMAIN),
+        )
+        target_flows = [
+            flow
+            for flow in flow_mass.config._setup_flows.values()
+            if flow.target_key == f"provider_setup:{FAKE_DOMAIN}"
+        ]
+        assert len(target_flows) <= 1
+
+
+async def test_finish_twice_raises(flow_mass: MusicAssistant, flow_events: list[MassEvent]) -> None:
+    """A second finish() call is a flow-author bug and must not create a second target."""
+
+    async def run_setup(session: SetupSession) -> None:
+        await session.finish({})
+        await session.finish({})
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        abort_step = await _wait_for(lambda: next(iter(_abort_events(flow_events)), None))
+    assert abort_step.reason == "internal_error"
+    # the first finish still created (exactly one) provider config
+    assert flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}")["domain"] == FAKE_DOMAIN
+
+
+async def test_bare_callback_does_not_extend_ttl(flow_mass: MusicAssistant) -> None:
+    """The unauthenticated callback route must not keep an idle flow alive (no pending external)."""
+
+    async def run_setup(session: SetupSession) -> None:
+        await session.form([USERNAME_ENTRY])
+        await session.finish({})
+
+    with _use_flow(flow_mass, run_setup):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        flow = flow_mass.config._setup_flows[step.flow_id]
+        activity_before = flow.session.last_activity
+        # the callback route is only registered while an external step is pending,
+        # but the session handler itself must also not count a bare hit as activity
+        request = make_mocked_request("GET", f"/setup_flow/callback/{step.flow_id}?foo=bar")
+        await flow.session.handle_callback(request)
+        assert flow.session.last_activity == activity_before
+
+
+async def test_submit_timeout_returns_transient_progress(flow_mass: MusicAssistant) -> None:
+    """A submit whose next step is slow returns a progress step, not the consumed form."""
+
+    async def run_setup(session: SetupSession) -> None:
+        await session.form([USERNAME_ENTRY])
+        await asyncio.sleep(0.3)
+        await session.form([PORT_ENTRY], step_id="second")
+        await session.finish({})
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch("music_assistant.controllers.config.flows.NEXT_STEP_TIMEOUT", 0.05),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        result = await flow_mass.config.submit_setup_flow(step.flow_id, {"username": "x"})
+        assert result.type == FlowStepType.PROGRESS
+        assert result.flow_id == step.flow_id
+
+        # the real next step still arrives (idempotent get picks it up)
+        def _second_form() -> SetupFlowStep | None:
+            current = flow_mass.config._setup_flows[step.flow_id].session.current_step
+            if current is not None and current.step_id == "second":
+                return current
+            return None
+
+        next_step = await _wait_for(_second_form)
+        assert next_step.type == FlowStepType.FORM
+
+
+async def test_aborted_flow_scope_still_resolvable(flow_mass: MusicAssistant) -> None:
+    """A cancel-driven ABORT publishes after the pop; its scope must still resolve."""
+
+    async def run_setup(session: SetupSession) -> None:
+        await session.form([USERNAME_ENTRY])
+        await session.finish({})
+
+    resolvable_at_publish: list[bool] = []
+
+    def on_event(event: MassEvent) -> None:
+        if event.data.type == FlowStepType.ABORT and event.object_id:
+            resolvable_at_publish.append(
+                flow_mass.config.get_setup_flow_required_scope(event.object_id) is not None
+            )
+
+    flow_mass.subscribe(on_event, EventType.SETUP_FLOW_UPDATED)
+    with _use_flow(flow_mass, run_setup):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        await flow_mass.config.abort_setup_flow(step.flow_id)
+    # event delivery is async (call_soon); wait for the callback to run
+    await _wait_for(lambda: resolvable_at_publish)
+    assert resolvable_at_publish == [True]
+    assert (
+        flow_mass.config.get_setup_flow_required_scope(step.flow_id) == Scope.CONFIG_PROVIDERS_WRITE
+    )
+
+
+async def test_setup_flow_required_scope_accessor(flow_mass: MusicAssistant) -> None:
+    """The event filter's scope accessor reports the flow's scope while it runs."""
+
+    async def run_setup(session: SetupSession) -> None:
+        await session.form([USERNAME_ENTRY])
+        await session.finish({})
+
+    with _use_flow(flow_mass, run_setup):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        assert (
+            flow_mass.config.get_setup_flow_required_scope(step.flow_id)
+            == Scope.CONFIG_PROVIDERS_WRITE
+        )
+    assert flow_mass.config.get_setup_flow_required_scope("nonexistent") is None
 
 
 async def test_one_flow_per_target_replaces(
