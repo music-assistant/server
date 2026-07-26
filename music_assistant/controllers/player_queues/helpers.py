@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.controllers.player_queues.state import PlayerQueueData
+    from music_assistant.models.player import Player
 
 _SortableT = TypeVar("_SortableT", bound=PlaylistPlayableItem)
 
@@ -58,6 +59,10 @@ class _PlayActionHost(Protocol):
 
     def signal_update(self, queue_id: str, items_changed: bool = False) -> None: ...
 
+    def on_player_update(
+        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None: ...
+
 
 def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
     func: Callable[Concatenate[PlayActionHostT, P], Awaitable[R]],
@@ -94,6 +99,11 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
                 if queue_data.play_action_refcount <= 0:
                     queue_data.play_action_refcount = 0
                     queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
+                    # the queue follows the player through a debounced update, which is also
+                    # suppressed while an action is transitioning; recalculate it here so the
+                    # update that clears the flag already carries the action's resulting state
+                    if (player := self.mass.players.get_player(queue_id)) is not None:
+                        self.on_player_update(player, {})
                     self.signal_update(queue_id)
 
     return wrapper
