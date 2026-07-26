@@ -168,7 +168,6 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         the CIFS share with exponential backoff, and retries the scan. If all retry
         attempts fail, the errors are passed through to the parent's abort logic.
         """
-        from music_assistant.providers.filesystem_local import ismount
 
         max_attempts = 3
         for attempt in range(max_attempts):
