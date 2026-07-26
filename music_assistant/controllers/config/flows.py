@@ -202,6 +202,10 @@ class SetupFlowMixin:
         more than one does - via a form that lets the user pick which child to set up.
         The child's flow persists to the child's own config.
 
+        Also serves on-demand re-runs: when nothing needs setup (anymore), delegation
+        falls back to any child that merely has a flow, so a step the user skipped
+        earlier - an optional pairing, say - remains reachable.
+
         :param player_id: The player to set up.
         """
         # deliberately no raise_unavailable: a player that needs setup is serialized
@@ -212,7 +216,7 @@ class SetupFlowMixin:
             raise KeyError(msg)
         owner = f"provider.{player.provider.domain}"
         target_key = f"player_setup:{player_id}"
-        if type(player).run_setup_flow is not Player.run_setup_flow:
+        if player.implements_setup_flow:
             # the player implements its own setup flow: run it directly
             return await self._start_flow(
                 flow_coro=player.run_setup_flow,
@@ -221,8 +225,11 @@ class SetupFlowMixin:
                 required_scope=Scope.CONFIG_PLAYERS_WRITE,
                 finish_handler=self._finish_player_setup,
             )
-        # no direct setup: delegate to protocol child player(s) that need setup
-        children = self._protocol_children_needing_setup(player)
+        # no direct setup: delegate to protocol child player(s), preferring the ones
+        # that actually need setup and falling back to any that can re-run their flow
+        children = self._protocol_children_with_setup_flow(player, needing_only=True)
+        if not children:
+            children = self._protocol_children_with_setup_flow(player, needing_only=False)
         if len(children) == 1:
             child = children[0]
             return await self._start_flow(
@@ -503,13 +510,18 @@ class SetupFlowMixin:
             values=self._decrypt_values(raw_conf.get("values") or {}),
         )
 
-    def _protocol_children_needing_setup(self, player: Player) -> list[Player]:
+    def _protocol_children_with_setup_flow(
+        self, player: Player, *, needing_only: bool
+    ) -> list[Player]:
         """
-        Return the player's protocol child players that need (and implement) setup.
+        Return the player's protocol child players that implement a setup flow.
 
         Covers the wrapper case: a universal player, or a native player wrapping
         protocol children, whose own setup is a no-op but whose linked protocol
         outputs still require pairing/credentials.
+
+        :param player: The (wrapper) player whose protocol children to inspect.
+        :param needing_only: Only return children that currently need setup.
         """
         children: list[Player] = []
         seen: set[str] = set()
@@ -519,12 +531,11 @@ class SetupFlowMixin:
                 continue
             seen.add(child_id)
             child = self.mass.players.get_player(child_id)
-            if (
-                child is not None
-                and child.needs_setup
-                and type(child).run_setup_flow is not Player.run_setup_flow
-            ):
-                children.append(child)
+            if child is None or not child.implements_setup_flow:
+                continue
+            if needing_only and not child.needs_setup:
+                continue
+            children.append(child)
         return children
 
     async def _run_child_selection_flow(

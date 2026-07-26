@@ -255,6 +255,7 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
         "active_output_protocol": state.active_output_protocol,
         "needs_setup": state.needs_setup,
         "setup_reason": state.setup_reason,
+        "has_setup_flow": state.has_setup_flow,
         "sleep_timer_expires_at": state.sleep_timer_expires_at,
         "supported_features": frozenset(state.supported_features),
         "sound_mode_list": tuple((m.id, m.name, m.passive) for m in state.sound_mode_list),
@@ -506,6 +507,33 @@ class Player(ABC):
         or "password_required"). Returns None when there is no specific reason.
         """
         return self._attr_setup_reason
+
+    @property
+    @final
+    def implements_setup_flow(self) -> bool:
+        """Return if this player implements its own interactive setup flow."""
+        return type(self).run_setup_flow is not Player.run_setup_flow
+
+    @property
+    @final
+    def has_setup_flow(self) -> bool:
+        """
+        Return if an interactive setup flow can be started for this player.
+
+        True when the player implements its own setup flow, or when it wraps a
+        (non-native) protocol child player that does. Unlike ``needs_setup`` this stays
+        True once setup completed, so the UI can offer to re-run the flow on demand
+        (e.g. to redo a pairing step that was skipped).
+        """
+        if self.implements_setup_flow:
+            return True
+        for output_protocol in self.output_protocols:
+            if output_protocol.is_native:
+                continue
+            child = self.mass.players.get_player(output_protocol.output_protocol_id)
+            if child is not None and child.implements_setup_flow:
+                return True
+        return False
 
     @property
     def powered(self) -> bool | None:
@@ -2186,6 +2214,7 @@ class Player(ABC):
             active_output_protocol=self.__attr_active_output_protocol,
             needs_setup=self.needs_setup,
             setup_reason=self.setup_reason,
+            has_setup_flow=self.has_setup_flow,
             sleep_timer_expires_at=self.sleep_timer_expires_at,
         )
         media_position_jumped = self.__reconcile_current_media_anchor(

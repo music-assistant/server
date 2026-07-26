@@ -1052,13 +1052,45 @@ async def test_player_setup_multi_child_selection(flow_mass: MusicAssistant) -> 
     assert flow_mass.config.decrypt_string(child_raw["setup_data"]["pin"]) == "9999"
 
 
-async def test_player_setup_no_children_needing_setup_aborts(flow_mass: MusicAssistant) -> None:
-    """A wrapper player whose children are all set up reports nothing to configure."""
+async def test_player_setup_reruns_child_flow_when_nothing_needs_setup(
+    flow_mass: MusicAssistant,
+) -> None:
+    """A wrapper player whose children are all set up still reaches the child's flow."""
     parent_provider = MockProvider("universal_player", instance_id="universal_player")
     child_provider = MockProvider("airplay", instance_id="airplay")
     parent = MockPlayer(parent_provider, "up_parent", "Bedroom")
     child = _ProtocolChildPlayer(child_provider, "ap_child", "Bedroom AirPlay")
-    child._attr_needs_setup = False  # already set up
+    child._attr_needs_setup = False  # already set up: this is an on-demand re-run
+    parent._cache["output_protocols"] = [_child_output_protocol(child)]
+    _set_player_conf(flow_mass, parent)
+    _set_player_conf(flow_mass, child)
+    players = {parent.player_id: parent, child.player_id: child}
+    child_config = PlayerConfig(
+        values={}, provider=child_provider.instance_id, player_id=child.player_id
+    )
+    with (
+        patch.object(
+            flow_mass.players, "get_player", side_effect=lambda pid, *_a, **_k: players.get(pid)
+        ),
+        patch.object(flow_mass.config, "get_player_config", AsyncMock(return_value=child_config)),
+    ):
+        step = await flow_mass.config.setup_player(parent.player_id)
+        assert step.type == FlowStepType.FORM
+        assert step.step_id == "user"
+        assert step.translation_owner == "provider.airplay"
+        finish_step = await flow_mass.config.submit_setup_flow(step.flow_id, {"pin": "1234"})
+    assert finish_step.type == FlowStepType.FINISH
+    assert finish_step.result == {"player_id": child.player_id}
+
+
+async def test_player_setup_without_flow_capable_children_aborts(
+    flow_mass: MusicAssistant,
+) -> None:
+    """A wrapper player whose children offer no flow at all reports nothing to configure."""
+    parent_provider = MockProvider("universal_player", instance_id="universal_player")
+    child_provider = MockProvider("dlna", instance_id="dlna")
+    parent = MockPlayer(parent_provider, "up_parent", "Study")
+    child = MockPlayer(child_provider, "dlna_child", "Study DLNA", player_type=PlayerType.PROTOCOL)
     parent._cache["output_protocols"] = [_child_output_protocol(child)]
     _set_player_conf(flow_mass, parent)
     players = {parent.player_id: parent, child.player_id: child}
@@ -1081,6 +1113,41 @@ async def test_player_setup_reason_in_state_fingerprint() -> None:
     player_state = player.state
     player_state.setup_reason = "pairing_required"
     assert _state_fingerprint(player_state)["setup_reason"] == "pairing_required"
+
+
+async def test_has_setup_flow_serialized_for_own_flow() -> None:
+    """A player implementing its own flow serializes has_setup_flow (regardless of needs_setup)."""
+    provider = MockProvider("sendspin", instance_id="sendspin")
+    plain = MockPlayer(provider, "plain_player", "Plain Player")
+    player = _FlowPlayer(provider, "flow_player", "Flow Player")
+    assert plain.has_setup_flow is False
+    assert player.has_setup_flow is True
+    # not gated on needs_setup: the flow stays re-runnable once setup completed
+    assert player.needs_setup is False
+    player.update_state(force_update=True)
+    assert player.state.has_setup_flow is True
+    assert player.to_dict()["has_setup_flow"] is True
+    # tracked leaf of the fingerprint, so a late-binding protocol child drives an event
+    assert _state_fingerprint(player.state)["has_setup_flow"] is True
+
+
+async def test_has_setup_flow_serialized_for_protocol_child() -> None:
+    """A wrapper player inherits has_setup_flow from a linked protocol child with a flow."""
+    parent_provider = MockProvider("universal_player", instance_id="universal_player")
+    child_provider = MockProvider("airplay", instance_id="airplay")
+    parent = MockPlayer(parent_provider, "up_parent", "Hallway")
+    child = _ProtocolChildPlayer(child_provider, "ap_child", "Hallway AirPlay")
+    child._attr_needs_setup = False  # already set up, but its flow can be re-run
+    players = {parent.player_id: parent, child.player_id: child}
+    # link the child: set_linked_output_protocols survives the update_state cache flush
+    parent.set_linked_output_protocols([_child_output_protocol(child)])
+    with patch.object(
+        parent.mass.players, "get_player", side_effect=lambda pid, *_a, **_k: players.get(pid)
+    ):
+        assert parent.has_setup_flow is True
+        parent.update_state(force_update=True)
+    assert parent.to_dict()["has_setup_flow"] is True
+    assert _state_fingerprint(parent.state)["has_setup_flow"] is True
 
 
 async def test_secure_values_never_echoed_on_step(flow_mass: MusicAssistant) -> None:
