@@ -13,7 +13,9 @@ from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
+    CrossfadeMode,
     IdentifierType,
+    MediaType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
@@ -21,6 +23,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.controllers.streams.audio import overlay_active
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.setup_flow import AbortFlow
@@ -28,7 +31,6 @@ from music_assistant.models.setup_flow import AbortFlow
 from .constants import (
     AIRPLAY_AP2_SETUP_LEAD_MS,
     AIRPLAY_DISCOVERY_TYPE,
-    AIRPLAY_FLOW_PCM_FORMAT,
     AIRPLAY_HIRES_SAMPLE_RATES,
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_RAOP_SETUP_LEAD_MS,
@@ -360,7 +362,7 @@ class AirPlayPlayer(Player):
             self._attr_current_media = media
 
             sync_clients = self._get_sync_clients()
-            session_pcm_format = self._get_session_pcm_format(sync_clients, media)
+            session_pcm_format = await self._get_session_pcm_format(sync_clients, media)
 
             # Warm path: a live, compatible session absorbs the new media via a
             # flush-refill in place (seek/next never pays the reconnect cost).
@@ -921,41 +923,35 @@ class AirPlayPlayer(Player):
         progress = int(metadata.corrected_elapsed_time or 0)
         self.mass.create_task(self.stream.send_metadata(progress, metadata))
 
-    def _get_session_pcm_format(
+    async def _get_session_pcm_format(
         self, sync_clients: list[AirPlayPlayer], media: PlayerMedia
     ) -> AudioFormat:
         """
-        Select the session (flow) PCM format for a new stream session.
+        Select the shared PCM format for a new stream session.
 
         :param sync_clients: All players that will take part in the session.
         :param media: The media that is about to be played.
         """
-        # The session runs at 48 kHz only when every member supports it (hi-res
-        # enabled); any 16-bit/44.1 member pins the session to the 44.1 base.
-        common_rates = set.intersection(
-            *({sample_rate for sample_rate, _ in c.supported_sample_rates} for c in sync_clients)
+        queue = self.mass.player_queues.get(media.source_id) if media.source_id else None
+        queue_item = (
+            self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+            if media.source_id and media.queue_item_id
+            else None
         )
-        if 48000 not in common_rates:
-            return AIRPLAY_FLOW_PCM_FORMAT
-        # Only lift the session to 48 kHz for 48k-family content; 44.1k(-family)
-        # content stays at 44.1 to avoid a pointless resample for the common case.
-        content_rate = 0
-        if (
-            media.source_id
-            and media.queue_item_id
-            and (
-                queue_item := self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
-            )
-            and queue_item.streamdetails
-        ):
-            content_rate = queue_item.streamdetails.audio_format.sample_rate
-        if content_rate and content_rate % 48000 == 0:
-            return AudioFormat(
-                content_type=AIRPLAY_FLOW_PCM_FORMAT.content_type,
-                sample_rate=48000,
-                bit_depth=AIRPLAY_FLOW_PCM_FORMAT.bit_depth,
-            )
-        return AIRPLAY_FLOW_PCM_FORMAT
+        streamdetails = queue_item.streamdetails if queue_item else None
+        crossfade_enabled = bool(
+            queue
+            and media.media_type == MediaType.TRACK
+            and self.mass.streams.get_crossfade_mode(queue) != CrossfadeMode.DISABLED
+        )
+        return await self.mass.streams.audio.select_flow_pcm_format(
+            self,
+            start_streamdetails=streamdetails,
+            crossfade_enabled=crossfade_enabled,
+            overlay_active=bool(queue and overlay_active(queue)),
+            fallback_sample_rate=AIRPLAY_PCM_FORMAT.sample_rate,
+            output_players=sync_clients,
+        )
 
     def _get_sync_clients(self) -> list[AirPlayPlayer]:
         """Get all sync clients for a player."""
