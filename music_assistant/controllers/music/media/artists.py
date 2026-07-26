@@ -94,6 +94,11 @@ class ArtistsController(MediaControllerBase[Artist]):
             self.similar_artists,
             required_scope=Scope.LIBRARY_READ,
         )
+        self.mass.register_api_command(
+            f"music/{api_base}/supported_artist_types",
+            self.get_supported_artist_types,
+            required_scope=Scope.LIBRARY_READ,
+        )
 
     @property
     def summary_query(self) -> tuple[str, dict[str, Any]]:
@@ -835,6 +840,15 @@ class ArtistsController(MediaControllerBase[Artist]):
                     continue
                 result.append(candidate)
         return result[:limit]
+
+    async def get_supported_artist_types(self) -> list[ArtistType]:
+        """Return all supported artist types."""
+        artist_types: list[ArtistType] = []
+        query = f"SELECT DISTINCT artist_type FROM {DB_TABLE_ARTISTS}"
+        rows = await self.mass.music.database.get_rows_from_query(query)
+        for row in rows:
+            artist_types.append(ArtistType(row["artist_type"]))
+        return artist_types
 
     async def remove_item_from_library(self, item_id: str | int, recursive: bool = True) -> None:
         """Delete record from the database."""
