@@ -54,19 +54,24 @@ def fake_providers_dir(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) 
 async def test_has_setup_flow_true_when_module_present(
     mass_minimal: MusicAssistant, fake_providers_dir: pathlib.Path
 ) -> None:
-    """A provider shipping a setup_flow.py module is flagged as having one."""
+    """A provider shipping a setup_flow.py module is flagged as having one, including over the API."""
     _write_provider(fake_providers_dir, "with_flow", setup_flow_source="")
     await _load_manifests(mass_minimal)
-    assert mass_minimal.get_provider_manifest("with_flow").has_setup_flow is True
+    manifest = mass_minimal.get_provider_manifest("with_flow")
+    assert manifest.has_setup_flow is True
+    assert manifest.to_dict()["has_setup_flow"] is True
+    assert manifest in mass_minimal.get_provider_manifests()
 
 
 async def test_has_setup_flow_false_when_module_absent(
     mass_minimal: MusicAssistant, fake_providers_dir: pathlib.Path
 ) -> None:
-    """A provider without a setup_flow.py module is flagged as not having one."""
+    """A provider without a setup_flow.py module is flagged as not having one, including over the API."""
     _write_provider(fake_providers_dir, "without_flow", setup_flow_source=None)
     await _load_manifests(mass_minimal)
-    assert mass_minimal.get_provider_manifest("without_flow").has_setup_flow is False
+    manifest = mass_minimal.get_provider_manifest("without_flow")
+    assert manifest.has_setup_flow is False
+    assert manifest.to_dict()["has_setup_flow"] is False
 
 
 async def test_has_setup_flow_ignores_internal_import_errors(
