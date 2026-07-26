@@ -39,6 +39,9 @@ LOGGER = logging.getLogger(__name__)
 # removed player config key, only referenced by its migration
 LEGACY_CONF_OUTPUT_LIMITER = "output_limiter"
 
+# shared prefix of the removed per-player Bose SoundTouch preset keys
+LEGACY_BOSE_PRESET_KEY_PREFIX = "preset_"
+
 # Config keys each provider's setup flow owns: the keys it reads back with
 # get_setup_value / get_provider_setup_value (and rotates via _update_setup_data) from
 # `setup_data` rather than `values`. The one-off migrate_provider_setup_data step below
@@ -296,6 +299,12 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     # switch to Player.get_setup_value now that pairing/credentials are owned by the setup flows.
     # TODO: remove after 2.11 release
     if _migrate_player_setup_data(data):
+        changed = True
+
+    # Drop the per-player Bose SoundTouch preset mappings; presets are now mapped once on
+    # the provider config and shared by all its speakers.
+    # TODO: remove after 2.11 release
+    if _migrate_bose_soundtouch_presets(data):
         changed = True
 
     return changed
@@ -900,6 +909,41 @@ def _migrate_output_limiter(data: dict[str, Any]) -> bool:
             changed = True
     if changed:
         LOGGER.info("Removed the obsolete output limiter setting from the player configuration(s)")
+    return changed
+
+
+def _migrate_bose_soundtouch_presets(data: dict[str, Any]) -> bool:
+    """
+    Remove the per-player Bose SoundTouch preset mappings.
+
+    The physical preset buttons are now mapped once on the provider config, so the same
+    button plays the same content on every speaker. The old per-player values are dropped
+    rather than promoted: several speakers can hold conflicting mappings and there is no
+    correct winner, so the user maps the buttons once more on the provider.
+    """
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    changed = False
+    for player_id, player_cfg in all_player_configs.items():
+        if not isinstance(player_cfg, dict):
+            continue
+        if str(player_cfg.get("provider", "")).split("--", 1)[0] != "bose_soundtouch":
+            continue
+        values = player_cfg.get("values")
+        if not isinstance(values, dict):
+            continue
+        preset_keys = [key for key in values if key.startswith(LEGACY_BOSE_PRESET_KEY_PREFIX)]
+        if not preset_keys:
+            continue
+        for key in preset_keys:
+            del values[key]
+        LOGGER.info(
+            "Removed the per-player preset mappings for Bose SoundTouch player %s; "
+            "map the preset buttons on the provider settings instead",
+            player_id,
+        )
+        changed = True
     return changed
 
 

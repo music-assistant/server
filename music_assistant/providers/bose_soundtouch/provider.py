@@ -12,11 +12,18 @@ from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf
 from music_assistant.models.player_provider import PlayerProvider
 
 from .client import SoundTouchClient
+from .config import (
+    PRESET_KEY_PREFIX,
+    build_preset_config_entries,
+    parse_preset_action,
+    preset_media_key,
+    preset_selected_media_key,
+)
 from .const import PLAYER_ID_PREFIX
 from .player import BoseSoundTouchPlayer
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from zeroconf.asyncio import AsyncServiceInfo
 
 
@@ -25,7 +32,49 @@ class BoseSoundTouchProvider(PlayerProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
-        return (CONF_ENTRY_MANUAL_DISCOVERY_IPS,)
+        return (CONF_ENTRY_MANUAL_DISCOVERY_IPS, *await build_preset_config_entries(self))
+
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+        """
+        Handle a preset search/select button press and re-render the entries.
+
+        A select button persists the currently selected search result as that preset's
+        media URI; a search button only re-runs that preset's media search. Values are
+        read from the (already persisted) stored config; no in-flight form is passed.
+
+        :param action: The action id of the pressed button.
+        """
+        preset_id, is_select = parse_preset_action(action)
+        if preset_id is None:
+            return await super().handle_config_action(action)
+        if is_select and (
+            selected := str(self.get_config_value(preset_selected_media_key(preset_id), "") or "")
+        ):
+            self.mass.config.set_raw_provider_config_value(
+                self.instance_id, preset_media_key(preset_id), selected
+            )
+        return (
+            CONF_ENTRY_MANUAL_DISCOVERY_IPS,
+            *await build_preset_config_entries(self, refresh_preset_id=preset_id),
+        )
+
+    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        # the preset mappings are read on demand when a button is pressed, so hide those
+        # keys from the base implementation: reloading the provider for a preset edit
+        # would needlessly drop and rediscover every speaker
+        await super().update_config(
+            config,
+            {key for key in changed_keys if not key.startswith(f"values/{PRESET_KEY_PREFIX}")},
+        )
+
+    def get_preset_media(self, preset_id: int) -> str:
+        """
+        Return the media URI mapped to the given physical preset button (empty if unset).
+
+        :param preset_id: The physical preset button number (1-6).
+        """
+        return str(self.get_config_value(preset_media_key(preset_id), "") or "")
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
