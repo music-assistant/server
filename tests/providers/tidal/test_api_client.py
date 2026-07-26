@@ -8,6 +8,7 @@ from aiohttp import ClientResponse
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
+    ResourceTemporarilyUnavailable,
     RetriesExhausted,
 )
 
@@ -53,6 +54,43 @@ async def test_get_success(api_client: TidalAPIClient, provider_mock: Mock) -> N
 
     result = await api_client.get("test/endpoint")
     assert result == {"data": "test"}
+
+
+async def test_get_jsonapi_raises_on_missing_data(
+    api_client: TidalAPIClient, provider_mock: Mock
+) -> None:
+    """
+    Test get_jsonapi raises when the response is not a valid JSON:API document.
+
+    An empty body is surfaced by the response handler as {"success": True}; such a
+    response (or any error body) has no top-level "data" and must raise rather than
+    become a silently empty result.
+    """
+    response = AsyncMock(spec=ClientResponse)
+    response.status = 200
+    response.content_length = 0
+    response.json.return_value = {}
+    ctx = AsyncMock()
+    ctx.__aenter__.return_value = response
+    provider_mock.mass.http_session.request = MagicMock(return_value=ctx)
+
+    with pytest.raises(ResourceTemporarilyUnavailable):
+        await api_client.get_jsonapi("searchResults/foo")
+
+
+async def test_get_jsonapi_returns_document_on_valid_response(
+    api_client: TidalAPIClient, provider_mock: Mock
+) -> None:
+    """Test get_jsonapi returns a document when the response carries a data member."""
+    response = AsyncMock(spec=ClientResponse)
+    response.status = 200
+    response.json.return_value = {"data": {"id": "1", "type": "tracks"}}
+    ctx = AsyncMock()
+    ctx.__aenter__.return_value = response
+    provider_mock.mass.http_session.request = MagicMock(return_value=ctx)
+
+    doc = await api_client.get_jsonapi("tracks/1")
+    assert doc.data == {"id": "1", "type": "tracks"}
 
 
 async def test_session_id_scoped_to_unofficial_api(

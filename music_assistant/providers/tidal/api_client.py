@@ -66,6 +66,11 @@ class TidalAPIClient:
         data = await self.get(
             endpoint, base_url=OPEN_API_URL, params=query, headers=headers, **kwargs
         )
+        # A valid JSON:API read always carries a top-level "data"; an empty body
+        # ({"success": True}) or error document lacks it, so raise instead of
+        # returning a silently empty result that would be cached as a no-match.
+        if "data" not in data:
+            raise ResourceTemporarilyUnavailable(f"Invalid JSON:API response for {endpoint}")
         return JsonApiDocument(data)
 
     async def write_jsonapi(
