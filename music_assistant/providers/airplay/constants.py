@@ -9,7 +9,7 @@ from typing import Final
 from music_assistant_models.enums import ContentType, PlayerFeature
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import CONF_ENTRY_SYNC_ADJUST, INTERNAL_PCM_FORMAT
+from music_assistant.constants import CONF_ENTRY_SYNC_ADJUST
 
 DOMAIN = "airplay"
 
@@ -103,11 +103,6 @@ BACKOFF_TIME_UPPER_LIMIT: Final[int] = 300  # Five minutes
 FALLBACK_VOLUME: Final[int] = 20
 AIRPLAY_VOLUME_MUTE: Final[float] = -144.0
 
-AIRPLAY_FLOW_PCM_FORMAT = AudioFormat(
-    content_type=INTERNAL_PCM_FORMAT.content_type,
-    sample_rate=44100,
-    bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
-)
 AIRPLAY_PCM_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16
 )

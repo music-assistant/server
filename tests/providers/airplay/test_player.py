@@ -6,11 +6,19 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
-from music_assistant_models.enums import ConfigEntryType, ContentType, PlayerFeature
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    ContentType,
+    CrossfadeMode,
+    MediaType,
+    PlayerFeature,
+    VolumeNormalizationMode,
+)
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_SYNC_ADJUST
+from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_PCM_FORMAT,
     CONF_AIRPLAY_CREDENTIALS,
@@ -470,8 +478,18 @@ def test_get_stream_pcm_format_default(airplay_player: AirPlayPlayer) -> None:
     assert airplay_player.get_stream_pcm_format(session_format) == AIRPLAY_PCM_FORMAT
 
 
-def test_session_pcm_format_selection(airplay_player: AirPlayPlayer) -> None:
+@pytest.mark.asyncio
+async def test_session_pcm_format_selection(airplay_player: AirPlayPlayer) -> None:
     """The session runs at 48 kHz only for 48k content when every member supports it."""
+    streams_audio = cast("MagicMock", airplay_player.mass.streams.audio)
+    streams_audio.select_flow_pcm_format = AsyncMock(
+        return_value=AudioFormat(
+            content_type=ContentType.PCM_S24LE,
+            sample_rate=48000,
+            bit_depth=24,
+        )
+    )
+    cast("MagicMock", airplay_player.mass.player_queues.get).return_value = None
     hires_client = MagicMock()
     hires_client.supported_sample_rates = [(44100, 24), (48000, 24)]
     cd_client = MagicMock()
@@ -484,17 +502,63 @@ def test_session_pcm_format_selection(airplay_player: AirPlayPlayer) -> None:
     airplay_player.mass.player_queues.get_item.return_value = queue_item  # type: ignore[attr-defined]
 
     # all members hi-res capable + 48k-family content: session lifts to 48 kHz
-    fmt = airplay_player._get_session_pcm_format([hires_client, hires_client], media)
+    fmt = await airplay_player._get_session_pcm_format([hires_client, hires_client], media)
     assert fmt.sample_rate == 48000
 
     # a 16-bit member pins the session at the 44.1 kHz base
-    fmt = airplay_player._get_session_pcm_format([hires_client, cd_client], media)
+    fmt = await airplay_player._get_session_pcm_format([hires_client, cd_client], media)
     assert fmt.sample_rate == 44100
 
     # 44.1-family content stays at 44.1 kHz even for an all-hi-res group
     queue_item.streamdetails.audio_format.sample_rate = 88200
-    fmt = airplay_player._get_session_pcm_format([hires_client], media)
+    fmt = await airplay_player._get_session_pcm_format([hires_client], media)
     assert fmt.sample_rate == 44100
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("normalization_mode", "expected_content_type", "expected_bit_depth"),
+    [
+        (VolumeNormalizationMode.DISABLED, ContentType.PCM_S24LE, 24),
+        (VolumeNormalizationMode.MEASUREMENT_ONLY, ContentType.PCM_F32LE, 32),
+    ],
+)
+async def test_session_pcm_format_selects_processing_depth(
+    airplay_player: AirPlayPlayer,
+    normalization_mode: VolumeNormalizationMode,
+    expected_content_type: ContentType,
+    expected_bit_depth: int,
+) -> None:
+    """An AirPlay session only uses float PCM when processing needs headroom."""
+    _set_discovery_info(airplay_player, raop=True, airplay=True)
+    _configure_player(airplay_player, {CONF_HIRES_PLAYBACK: True, CONF_FORCE_RAOP: False})
+    airplay_player.mass.streams.audio = StreamsAudio(airplay_player.mass)
+    cast("MagicMock", airplay_player.mass.config.get_player_dsp_config).return_value = MagicMock(
+        enabled=False
+    )
+    cast(
+        "MagicMock", airplay_player.mass.streams.get_crossfade_mode
+    ).return_value = CrossfadeMode.DISABLED
+
+    streamdetails = MagicMock()
+    streamdetails.audio_format = AudioFormat(
+        content_type=ContentType.FLAC,
+        sample_rate=48000,
+        bit_depth=24,
+    )
+    streamdetails.media_type = MediaType.TRACK
+    streamdetails.volume_normalization_mode = normalization_mode
+    queue_item = MagicMock(streamdetails=streamdetails)
+    queue = MagicMock(crossfade_enabled=False, overlay_enabled=False, overlay_source=None)
+    cast("MagicMock", airplay_player.mass.player_queues.get).return_value = queue
+    cast("MagicMock", airplay_player.mass.player_queues.get_item).return_value = queue_item
+    media = MagicMock(source_id="queue1", queue_item_id="item1", media_type=MediaType.TRACK)
+
+    fmt = await airplay_player._get_session_pcm_format([airplay_player], media)
+
+    assert fmt.content_type == expected_content_type
+    assert fmt.sample_rate == 48000
+    assert fmt.bit_depth == expected_bit_depth
 
 
 # --- Volume and Mute tests ---
