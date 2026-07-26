@@ -13,8 +13,7 @@
       }
     },
     "oops_url": {
-      "label": "Redirect URL from Tidal",
-      "description": "Paste the URL of the 'Page Not Found' page you were redirected to after signing in on Tidal.com."
+      "label": "Redirect URL from Tidal"
     },
     "auth_instructions": {
       "label": "Use the link icon to open Tidal and sign in. Afterwards you land on a page that says 'Page Not Found' - that is expected. Copy the full URL from your browser's address bar and paste it below."
