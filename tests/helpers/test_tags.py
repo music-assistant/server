@@ -184,7 +184,9 @@ def test_id3_musicbrainz_ufid_strips_trailing_null() -> None:
         data=b"1e74cd4c-cfa7-4bdb-99da-41869f5f1171\x00",
     )
 
-    result = _parse_id3_tags({"UFID:http://musicbrainz.org": ufid})
+    mock_tags = MagicMock()
+    mock_tags.get = lambda key: ufid if key == "UFID:http://musicbrainz.org" else None
+    result = _parse_id3_tags(mock_tags)
 
     assert result["musicbrainzrecordingid"] == "1e74cd4c-cfa7-4bdb-99da-41869f5f1171"
 
@@ -570,7 +572,9 @@ def test_parse_id3_multi_value_musicbrainz_albumtype() -> None:
     """Multi-value TXXX:MusicBrainz Album Type frame entries are joined into a single value."""
     frame = MagicMock()
     frame.text = ["album", "live"]
-    result = _parse_id3_tags({"TXXX:MusicBrainz Album Type": frame})
+    mock_tags = MagicMock()
+    mock_tags.get = lambda key: frame if key == "TXXX:MusicBrainz Album Type" else None
+    result = _parse_id3_tags(mock_tags)
     assert result.get("musicbrainzalbumtype") == "album;live"
 
 

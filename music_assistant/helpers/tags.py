@@ -21,6 +21,7 @@ from music_assistant_models.errors import InvalidDataError
 if TYPE_CHECKING:
     from mutagen._vorbis import VCommentDict
     from mutagen.apev2 import APEv2
+    from mutagen.id3 import ID3Tags
     from mutagen.mp4 import MP4Tags
 
 from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
@@ -936,80 +937,93 @@ def _parse_mp4_tags(tags: MP4Tags) -> dict[str, Any]:  # noqa: PLR0915
     return result
 
 
-def _parse_id3_tags(tags: dict[str, Any]) -> dict[str, Any]:
+def _id3_get_tag_text(tags: ID3Tags, key: str) -> Any | None:
     """
-    Parse ID3 tags (MP3 files) from mutagen tags dict.
+    Get text from ID3 tag (if exists).
+
+    :param tags: ID3Tags from mutagen.
+    :param key: Tag name.
+    """
+    if value := tags.get(key):  # type: ignore[no-untyped-call]
+        return value.text
+
+    return None
+
+
+def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:
+    """
+    Parse ID3 tags (MP3 files) from mutagen ID3Tags object.
 
     See: https://mutagen-specs.readthedocs.io/en/latest/id3/id3v2.4.0-frames.html
     See: https://picard-docs.musicbrainz.org/en/appendices/tag_mapping.html
 
-    :param tags: Dictionary of ID3 tags from mutagen.
+    :param tags: The ID3Tags object from mutagen.
     """
     result: dict[str, Any] = {}
 
     # Basic tags (single value)
-    if (frame := tags.get("TIT2")) and frame.text:
-        result["title"] = frame.text[0]
-    if (frame := tags.get("TALB")) and frame.text:
-        result["album"] = frame.text[0]
+    if title := _id3_get_tag_text(tags, "TIT2"):
+        result["title"] = title[0]
+    if album := _id3_get_tag_text(tags, "TALB"):
+        result["album"] = album[0]
 
     # Artist tags - support ID3v2.4 null-separated multi-value
-    if (frame := tags.get("TPE1")) and (artist_values := frame.text):
+    if artist_values := _id3_get_tag_text(tags, "TPE1"):
         if len(artist_values) > 1:
             result["artists"] = list(artist_values)
         else:
             result["artist"] = artist_values[0]
-    if (frame := tags.get("TPE2")) and (albumartist_values := frame.text):
+    if albumartist_values := _id3_get_tag_text(tags, "TPE2"):
         if len(albumartist_values) > 1:
             result["albumartists"] = list(albumartist_values)
         else:
             result["albumartist"] = albumartist_values[0]
 
     # Genre (multi-value)
-    if (frame := tags.get("TCON")) and frame.text:
-        result["genre"] = frame.text
+    if genre := _id3_get_tag_text(tags, "TCON"):
+        result["genre"] = genre
 
     # Explicit multi-value artist tag (takes precedence)
-    if (frame := tags.get("TXXX:ARTISTS")) and frame.text:
-        result["artists"] = frame.text
+    if artists := _id3_get_tag_text(tags, "TXXX:ARTISTS"):
+        result["artists"] = artists
 
     # MusicBrainz tags (single value)
-    if (frame := tags.get("TXXX:MusicBrainz Album Id")) and frame.text:
-        result["musicbrainzalbumid"] = frame.text[0]
-    if (frame := tags.get("TXXX:MusicBrainz Release Group Id")) and frame.text:
-        result["musicbrainzreleasegroupid"] = frame.text[0]
-    if frame := tags.get("UFID:http://musicbrainz.org"):
+    if albumid := _id3_get_tag_text(tags, "TXXX:MusicBrainz Album Id"):
+        result["musicbrainzalbumid"] = albumid[0]
+    if releasegroupid := _id3_get_tag_text(tags, "TXXX:MusicBrainz Release Group Id"):
+        result["musicbrainzreleasegroupid"] = releasegroupid[0]
+    if frame := tags.get("UFID:http://musicbrainz.org"):  # type: ignore[no-untyped-call]
         # Strip NULs and whitespace from MusicBrainz UFID data (support #5906).
         result["musicbrainzrecordingid"] = frame.data.decode().replace("\x00", "").strip()
-    if (frame := tags.get("TXXX:MusicBrainz Track Id")) and frame.text:
-        result["musicbrainztrackid"] = frame.text[0]
+    if trackid := _id3_get_tag_text(tags, "TXXX:MusicBrainz Track Id"):
+        result["musicbrainztrackid"] = trackid[0]
 
     # MusicBrainz tags (multi-value)
-    if (frame := tags.get("TXXX:MusicBrainz Album Artist Id")) and frame.text:
-        result["musicbrainzalbumartistid"] = frame.text
-    if (frame := tags.get("TXXX:MusicBrainz Artist Id")) and frame.text:
-        result["musicbrainzartistid"] = frame.text
+    if albumartistid := _id3_get_tag_text(tags, "TXXX:MusicBrainz Album Artist Id"):
+        result["musicbrainzalbumartistid"] = albumartistid
+    if artistid := _id3_get_tag_text(tags, "TXXX:MusicBrainz Artist Id"):
+        result["musicbrainzartistid"] = artistid
     # album type may be multi-value; join them
-    if (frame := tags.get("TXXX:MusicBrainz Album Type")) and frame.text:
-        result["musicbrainzalbumtype"] = ";".join(frame.text)
+    if album_type := _id3_get_tag_text(tags, "TXXX:MusicBrainz Album Type"):
+        result["musicbrainzalbumtype"] = ";".join(album_type)
 
     # Additional tags
-    if (frame := tags.get("TXXX:BARCODE")) and frame.text:
-        result["barcode"] = frame.text
-    if (frame := tags.get("TXXX:TSRC")) and frame.text:
-        result["tsrc"] = frame.text
+    if barcode := _id3_get_tag_text(tags, "TXXX:BARCODE"):
+        result["barcode"] = barcode
+    if tsrc := _id3_get_tag_text(tags, "TXXX:TSRC"):
+        result["tsrc"] = tsrc
 
     # Sort tags (multi-value to support multiple artists)
-    if (frame := tags.get("TSOP")) and frame.text:
-        result["artistsort"] = frame.text
-    if (frame := tags.get("TSO2")) and frame.text:
-        result["albumartistsort"] = frame.text
+    if artistsort := _id3_get_tag_text(tags, "TSOP"):
+        result["artistsort"] = artistsort
+    if albumartistsort := _id3_get_tag_text(tags, "TSO2"):
+        result["albumartistsort"] = albumartistsort
 
     # Sort tags (single value)
-    if (frame := tags.get("TSOT")) and frame.text:
-        result["titlesort"] = frame.text[0]
-    if (frame := tags.get("TSOA")) and frame.text:
-        result["albumsort"] = frame.text[0]
+    if titlesort := _id3_get_tag_text(tags, "TSOT"):
+        result["titlesort"] = titlesort[0]
+    if albumsort := _id3_get_tag_text(tags, "TSOA"):
+        result["albumsort"] = albumsort[0]
 
     return result
 
@@ -1311,6 +1325,7 @@ def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
     import mutagen  # noqa: PLC0415
     from mutagen._vorbis import VCommentDict  # noqa: PLC0415
     from mutagen.apev2 import APEv2  # noqa: PLC0415
+    from mutagen.id3 import ID3Tags  # noqa: PLC0415
     from mutagen.mp4 import MP4Tags  # noqa: PLC0415
 
     result: dict[str, Any] = {}
@@ -1328,10 +1343,9 @@ def parse_tags_mutagen(input_file: str) -> dict[str, Any]:
         # Check if APEv2 tags (WavPack, Musepack, Monkey's Audio, etc.)
         elif isinstance(audio.tags, APEv2):
             result = _parse_apev2_tags(audio.tags)
-        else:
-            # ID3 tags (MP3) and other formats
-            tags_dict = dict(audio.tags)
-            result = _parse_id3_tags(tags_dict)
+        # Check if ID3 tags (MP3, AIFF, WAV, etc.)
+        elif isinstance(audio.tags, ID3Tags):
+            result = _parse_id3_tags(audio.tags)
 
         return result
     except Exception as err:
