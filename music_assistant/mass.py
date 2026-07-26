@@ -9,7 +9,8 @@ import os
 import pathlib
 import threading
 from base64 import b64encode
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Self, TypeGuard, TypeVar, cast, overload
 from uuid import uuid4
 
@@ -102,6 +103,11 @@ LOGGER = logging.getLogger(MASS_LOGGER_NAME)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROVIDERS_PATH = os.path.join(BASE_DIR, "providers")
+PROVIDER_SETUP_TIMEOUT = 30
+# Generous enough for the slowest hosts to load their ML models, but bounded so a wedged
+# provider fails to load instead of holding up startup forever.
+PROVIDER_ASYNC_INIT_TIMEOUT = 300
+PROVIDER_LOAD_CONCURRENCY = 8
 
 _R = TypeVar("_R")
 _ProviderT = TypeVar("_ProviderT", bound=ProviderInstanceType)
@@ -136,6 +142,23 @@ def _provider_error_from_exc(exc: BaseException) -> ProviderError:
             translation_owner=exc.translation_owner,
         )
     return ProviderError(error_code=999, message=message)
+
+
+@asynccontextmanager
+async def _provider_load_step(domain: str, action: str, timeout: int) -> AsyncIterator[None]:
+    """
+    Bound a provider load step, surfacing a timeout as a regular setup failure.
+
+    :param domain: Domain of the provider being loaded, used in the error message.
+    :param action: Verb describing the step, used in the error message.
+    :param timeout: Seconds to allow the step before it is treated as failed.
+    """
+    try:
+        async with asyncio.timeout(timeout):
+            yield
+    except TimeoutError as err:
+        msg = f"Provider {domain} did not {action} within {timeout} seconds"
+        raise SetupFailedError(msg) from err
 
 
 class MusicAssistant:
@@ -1121,14 +1144,15 @@ class MusicAssistant:
                 or not manifest.builtin
             )
         ]
-        # load providers concurrently via tasks
-        async with TaskManager(self, 2) as tg:
+        # load providers concurrently via tasks, bounded so a host with many providers does
+        # not import every provider module at once (a torch-backed one costs hundreds of MB)
+        async with TaskManager(self, PROVIDER_LOAD_CONCURRENCY) as tg:
             for prov_conf in other_configs:
                 # Use a task so we can load multiple providers at once.
                 # If a provider fails, that will not block the loading of other providers.
                 # For providers just auto-set-up as a default, drop the config again if the
                 # host does not meet their requirements (rather than retry a broken provider).
-                tg.create_task(
+                await tg.create_task_with_limit(
                     self.load_provider(
                         prov_conf.instance_id,
                         allow_retry=True,
@@ -1174,12 +1198,8 @@ class MusicAssistant:
 
         # try to setup the module
         prov_mod = await load_provider_module(domain, prov_manifest.requirements)
-        try:
-            async with asyncio.timeout(30):
-                provider = await prov_mod.setup(self, prov_manifest, conf)
-        except TimeoutError as err:
-            msg = f"Provider {domain} did not load within 30 seconds"
-            raise SetupFailedError(msg) from err
+        async with _provider_load_step(domain, "load", PROVIDER_SETUP_TIMEOUT):
+            provider = await prov_mod.setup(self, prov_manifest, conf)
 
         # The instance now exists, so its full (options) config entries can be resolved
         # (get_config_entries is an instance method). Rehydrate the config values from
@@ -1193,7 +1213,8 @@ class MusicAssistant:
             raise SetupFailedError(msg) from err
 
         # run async setup
-        await provider.handle_async_init()
+        async with _provider_load_step(domain, "initialize", PROVIDER_ASYNC_INIT_TIMEOUT):
+            await provider.handle_async_init()
 
         # if we reach this point, the provider loaded successfully
         self._providers[provider.instance_id] = provider
