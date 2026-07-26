@@ -239,6 +239,21 @@ class PlayerConfigMixin:
             # for protocol players in the UI/api clients
             if protocol_entries := await self._create_output_protocol_config_entries(player):
                 player_entries = protocol_entries
+                if not any(protocol.is_native for protocol in player.output_protocols):
+                    # A control-only player (e.g. a device that delegates playback to a
+                    # linked DLNA protocol player) has no native output protocol, so the
+                    # block above never injects the player's own entries. Append them here
+                    # so it keeps its own config surface, skipping keys the protocol
+                    # entries already cover.
+                    protocol_keys = {entry.key for entry in protocol_entries}
+                    player_entries = [
+                        *protocol_entries,
+                        *[
+                            entry
+                            for entry in await self._get_player_config_entries(player)
+                            if entry.key not in protocol_keys
+                        ],
+                    ]
             else:
                 player_entries = await self._get_player_config_entries(player)
 
