@@ -53,33 +53,6 @@ def _make_universal_provider(mock_mass: MagicMock) -> UniversalPlayerProvider:
     return provider
 
 
-def _make_chromecast_player(
-    mass: MagicMock,
-    player_id: str,
-    *,
-    active_source: str | None,
-    features: set[PlayerFeature],
-) -> MagicMock:
-    """Return a chromecast-domain protocol player with the given active source and features."""
-    player = MagicMock(spec=Player)
-    player.player_id = player_id
-    player.available = True
-    player.active_source = active_source
-    player.playback_state = PlaybackState.PLAYING
-    player.supported_features = features
-    provider = MagicMock()
-    provider.domain = "chromecast"
-    player.provider = provider
-    player.play = AsyncMock()
-    player.pause = AsyncMock()
-    player.stop = AsyncMock()
-    player.next_track = AsyncMock()
-    player.previous_track = AsyncMock()
-    player.seek = AsyncMock()
-    mass.players.get_player = MagicMock(return_value=player)
-    return player
-
-
 def _make_protocol_player(
     player_id: str,
     domain: str,
@@ -104,6 +77,28 @@ def _register_players(mass: MagicMock, *players: MagicMock) -> None:
     """Make the given players resolvable by id on the mass mock."""
     registry = {player.player_id: player for player in players}
     mass.players.get_player = MagicMock(side_effect=lambda pid, *_a, **_kw: registry.get(pid))
+
+
+def _make_chromecast_player(
+    mass: MagicMock,
+    player_id: str,
+    *,
+    active_source: str | None,
+    features: set[PlayerFeature],
+) -> MagicMock:
+    """Return a chromecast-domain protocol player with the given active source and features."""
+    player = _make_protocol_player(player_id, "chromecast")
+    player.active_source = active_source
+    player.playback_state = PlaybackState.PLAYING
+    player.supported_features = features
+    player.play = AsyncMock()
+    player.pause = AsyncMock()
+    player.stop = AsyncMock()
+    player.next_track = AsyncMock()
+    player.previous_track = AsyncMock()
+    player.seek = AsyncMock()
+    _register_players(mass, player)
+    return player
 
 
 def _make_universal_player(mass: MagicMock, protocol_player_ids: list[str]) -> UniversalPlayer:
