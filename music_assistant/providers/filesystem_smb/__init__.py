@@ -22,7 +22,6 @@ from music_assistant.providers.filesystem_local import (
     ismount,
     makedirs,
 )
-from music_assistant.providers.filesystem_local.helpers import FileSystemItem
 from music_assistant.providers.filesystem_local.constants import (
     CONF_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
@@ -33,6 +32,7 @@ from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     CONF_ENTRY_PROPAGATE_GENRES,
 )
+from music_assistant.providers.filesystem_local.helpers import FileSystemItem
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -305,7 +305,8 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         cue_stems: set[str],
         root_scan_errors: list[OSError],
     ) -> None:
-        """Override to remount and retry if the SMB mount drops during scan enumeration.
+        """
+        Override to remount and retry if the SMB mount drops during scan enumeration.
 
         The parent class aborts the entire library sync and marks the provider
         unavailable when ``os.scandir`` raises an OSError at the root mount point,
@@ -322,7 +323,8 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             if not await ismount(self.base_path):
                 self.logger.warning(
                     "SMB mount not available (attempt %d/%d), remounting...",
-                    attempt + 1, max_attempts,
+                    attempt + 1,
+                    max_attempts,
                 )
                 await self.unmount(ignore_error=True)
                 await asyncio.sleep(1)
@@ -345,10 +347,11 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             self.logger.warning(
                 "SMB root scan failed with %d error(s) (attempt %d/%d), "
                 "unmounting and retrying in %ds...",
-                len(root_scan_errors), attempt + 1, max_attempts,
-                2 ** attempt,
+                len(root_scan_errors),
+                attempt + 1,
+                max_attempts,
+                2**attempt,
             )
             root_scan_errors.clear()
             await self.unmount(ignore_error=True)
-            await asyncio.sleep(2 ** attempt)  # 1s, 2s, 4s backoff
-
+            await asyncio.sleep(2**attempt)  # 1s, 2s, 4s backoff
