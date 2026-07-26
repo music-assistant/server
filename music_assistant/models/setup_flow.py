@@ -497,7 +497,7 @@ class SetupSession:
             if entry.action or entry.type == ConfigEntryType.ACTION:
                 # actions are the pseudo-flow mechanism of the options surface;
                 # inside real flows they are structurally banned
-                msg = f"Config entry {entry.key} carries an action, not allowed in setup flows"
+                msg = f"Config entry {entry.key} is an action entry, not allowed in setup flows"
                 raise ValueError(msg)
             # replace() returns a copy so the (often module-level) entry definitions
             # are never mutated by submit-side value/owner stamping
