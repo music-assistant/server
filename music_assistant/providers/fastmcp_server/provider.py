@@ -42,19 +42,31 @@ class MCPServerProvider(PluginProvider):
     async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
         """Handle a one-shot config action button press and re-render the entries."""
         if action == "open_connect":
+            from music_assistant_models.config_entries import ConfigEntry  # noqa: PLC0415
+            from music_assistant_models.enums import ConfigEntryType  # noqa: PLC0415
+
             from ._init_helpers import _dispatch_open_connect  # noqa: PLC0415
             from .constants import CONF_CONNECT_EXTERNAL_URL, CONF_MOUNT_PATH  # noqa: PLC0415
 
-            # the no-values contract reads current values from stored config; session_id
-            # (a per-open frontend correlation id) is not available here.
-            await _dispatch_open_connect(
+            url = await _dispatch_open_connect(
                 self.mass,
                 {
                     CONF_MOUNT_PATH: self.get_config_value(CONF_MOUNT_PATH),
                     CONF_CONNECT_EXTERNAL_URL: self.get_config_value(CONF_CONNECT_EXTERNAL_URL),
                 },
             )
-            return await self.get_config_entries()
+            entries = await self.get_config_entries()
+            if url is None:
+                return entries
+            # a URL entry in an invoke_action response is opened one-shot by the frontend
+            return (
+                *entries,
+                ConfigEntry(
+                    key="connect_wizard_url",
+                    type=ConfigEntryType.URL,
+                    value=url,
+                ),
+            )
         return await super().handle_config_action(action)
 
     async def handle_async_init(self) -> None:

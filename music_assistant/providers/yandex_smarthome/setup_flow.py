@@ -312,13 +312,7 @@ async def _provision_skill(
         collected[CONF_AUTO_CREATE_ARTIFACTS] = dump_artifacts(updated)
 
     async def _attempt(x_token: str) -> str:
-        authenticator = make_authenticator(
-            mass=session.mass,
-            session_id=session.flow_id,
-            cached_x_token=x_token,
-            on_token_obtained=None,
-            allow_device_flow=False,
-        )
+        authenticator = make_authenticator(cached_x_token=x_token)
         artifacts_raw = collected.get(CONF_AUTO_CREATE_ARTIFACTS)
         artifacts = await session.progress_until(
             auto_create_skill(

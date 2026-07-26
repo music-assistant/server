@@ -108,16 +108,9 @@ class TestAuthenticatorNoDeviceFlow:
 
     async def test_no_device_flow_when_disallowed(self) -> None:
         """Fail with guidance when the borrowed token is rejected."""
-        mass = mock.MagicMock()
-        authenticator = make_authenticator(
-            mass=mass,
-            session_id="s1",
-            cached_x_token="test-x-borrowed",
-            allow_device_flow=False,
-        )
+        authenticator = make_authenticator(cached_x_token="test-x-borrowed")
         fake_client = mock.MagicMock()
         fake_client.refresh_passport_cookies = mock.AsyncMock(side_effect=RuntimeError("rejected"))
-        fake_client.start_device_login = mock.AsyncMock()
         cm = mock.MagicMock()
         cm.__aenter__ = mock.AsyncMock(return_value=fake_client)
         cm.__aexit__ = mock.AsyncMock(return_value=False)
@@ -127,19 +120,11 @@ class TestAuthenticatorNoDeviceFlow:
         ):
             async with authenticator():
                 pass
-        fake_client.start_device_login.assert_not_awaited()
 
     async def test_missing_borrowed_token_fails_fast(self) -> None:
         """Fail with guidance when the linked account has no session token."""
-        mass = mock.MagicMock()
-        authenticator = make_authenticator(
-            mass=mass,
-            session_id="s1",
-            cached_x_token=None,
-            allow_device_flow=False,
-        )
+        authenticator = make_authenticator(cached_x_token=None)
         fake_client = mock.MagicMock()
-        fake_client.start_device_login = mock.AsyncMock()
         cm = mock.MagicMock()
         cm.__aenter__ = mock.AsyncMock(return_value=fake_client)
         cm.__aexit__ = mock.AsyncMock(return_value=False)
@@ -149,7 +134,6 @@ class TestAuthenticatorNoDeviceFlow:
         ):
             async with authenticator():
                 pass
-        fake_client.start_device_login.assert_not_awaited()
 
 
 class TestProvisionSkillBorrow:
@@ -176,8 +160,6 @@ class TestProvisionSkillBorrow:
         assert skill_id == "skill-xyz"
         kwargs = make_auth.call_args.kwargs
         assert kwargs["cached_x_token"] == "test-x-ym"
-        assert kwargs["allow_device_flow"] is False
-        assert kwargs["on_token_obtained"] is None
         # borrow mode never persists the borrowed account's token into this provider
         assert not collected.get(CONF_AUTH_X_TOKEN)
 
