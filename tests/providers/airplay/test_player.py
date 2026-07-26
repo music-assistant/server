@@ -506,25 +506,6 @@ def test_force_raop_ignored_on_apple_airplay2() -> None:
     assert player.protocol_override is None
 
 
-def test_migrated_force_raop_is_preserved_on_apple_airplay2() -> None:
-    """A migrated legacy RAOP preference remains effective without exposing the toggle."""
-    player = _make_apple_player()
-    _set_discovery_info(player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
-    _configure_player(
-        player,
-        {
-            CONF_FORCE_RAOP: True,
-        },
-    )
-    with patch.object(
-        player.provider.mass.config,
-        "get_raw_player_config_value",
-        return_value=True,
-    ):
-        assert player.protocol == StreamingProtocol.RAOP
-        assert player.protocol_override == StreamingProtocol.RAOP
-
-
 @pytest.mark.parametrize(
     ("stored_config", "expected"),
     [

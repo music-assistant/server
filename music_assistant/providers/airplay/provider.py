@@ -18,9 +18,7 @@ from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.constants import (
     CONF_LOG_LEVEL,
-    CONF_PLAYERS,
     CONF_PROVIDERS,
-    CONF_SYNC_ADJUST,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.datetime import utc
@@ -38,13 +36,8 @@ from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_VOLUME_MUTE,
     COMPANION_DISCOVERY_TYPE,
-    CONF_FORCE_RAOP,
     CONF_IGNORE_VOLUME,
-    CONF_LEGACY_AIRPLAY_PROTOCOL,
-    CONF_LEGACY_FORCE_RAOP,
-    CONF_PROTOCOL_MIGRATION_MARKER,
     CONF_STORED_VOLUME,
-    CONF_SYNC_ADJUST_RESET_MARKER,
     DACP_DISCOVERY_TYPE,
     FALLBACK_VOLUME,
     MRP_DISCOVERY_TYPE,
@@ -214,9 +207,6 @@ class AirPlayProvider(PlayerProvider):
             server=f"{socket.gethostname()}.local",
         )
         await self._register_dacp_service()
-
-        self._migrate_protocol_preferences()
-        self._migrate_sync_adjust()
 
         # Run one shared PTP clock daemon for the provider lifetime: all native
         # AirPlay 2 streams attach to it (--ptp-shared) so multi-room sync groups
@@ -683,62 +673,6 @@ class AirPlayProvider(PlayerProvider):
             if discovery_info is not None
             for address in discovery_info.parsed_addresses()
         }
-
-    def _migrate_sync_adjust(self) -> None:
-        """One-time reset of persisted sync_adjust values on this provider's players."""
-        # The unified cliairplay binary uses a different timing model than the old
-        # implementation, so offsets calibrated against it would now break sync
-        # instead of fixing it. Reset them once; a provider-level marker prevents
-        # wiping adjustments the user makes after the migration.
-        if self.mass.config.get_raw_provider_config_value(
-            self.instance_id, CONF_SYNC_ADJUST_RESET_MARKER, False
-        ):
-            return
-        for raw_conf in list(self.mass.config.get(CONF_PLAYERS, {}).values()):
-            if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
-                continue
-            if not (player_id := raw_conf.get("player_id")):
-                continue
-            stored = self.mass.config.get_raw_player_config_value(player_id, CONF_SYNC_ADJUST, 0)
-            if not stored:
-                continue
-            self.logger.warning(
-                "Resetting sync_adjust of %sms for player %s: the unified AirPlay engine "
-                "uses a different timing model, so corrections calibrated against the old "
-                "implementation no longer apply",
-                stored,
-                player_id,
-            )
-            self.mass.config.set_raw_player_config_value(player_id, CONF_SYNC_ADJUST, 0)
-        self.mass.config.set_raw_provider_config_value(
-            self.instance_id, CONF_SYNC_ADJUST_RESET_MARKER, True
-        )
-
-    def _migrate_protocol_preferences(self) -> None:
-        """Preserve explicit RAOP selections from the legacy protocol setting."""
-        if self.mass.config.get_raw_provider_config_value(
-            self.instance_id, CONF_PROTOCOL_MIGRATION_MARKER, False
-        ):
-            return
-        for raw_conf in list(self.mass.config.get(CONF_PLAYERS, {}).values()):
-            if not isinstance(raw_conf, dict) or raw_conf.get("provider") != self.instance_id:
-                continue
-            if not (player_id := raw_conf.get("player_id")):
-                continue
-            legacy_protocol = self.mass.config.get_raw_player_config_value(
-                player_id, CONF_LEGACY_AIRPLAY_PROTOCOL, 0
-            )
-            force_raop = self.mass.config.get_raw_player_config_value(
-                player_id, CONF_FORCE_RAOP, None
-            )
-            if legacy_protocol == StreamingProtocol.RAOP and force_raop is None:
-                self.mass.config.set_raw_player_config_value(player_id, CONF_FORCE_RAOP, True)
-                self.mass.config.set_raw_player_config_value(
-                    player_id, CONF_LEGACY_FORCE_RAOP, True
-                )
-        self.mass.config.set_raw_provider_config_value(
-            self.instance_id, CONF_PROTOCOL_MIGRATION_MARKER, True
-        )
 
     async def _register_dacp_service(self) -> None:
         """
