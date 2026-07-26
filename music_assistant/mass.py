@@ -1270,6 +1270,11 @@ class MusicAssistant:
                     if icons:
                         self._provider_icons[provider_manifest.domain] = icons
                         provider_manifest.icon_images = list(icons)
+                    # detect a setup_flow.py module by its mere presence: importing it
+                    # here would trigger installing the provider's requirements
+                    provider_manifest.has_setup_flow = await isfile(
+                        os.path.join(provider_path, "setup_flow.py")
+                    )
                     # override Home Assistant provider if we're running as add-on
                     if provider_manifest.domain == "hass" and self.running_as_hass_addon:
                         provider_manifest.builtin = True
