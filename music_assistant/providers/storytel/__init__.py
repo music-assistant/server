@@ -51,7 +51,7 @@ from .constants import (
 from .storytel_helper import StorytelHelper
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.media_items import MediaItemType
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
@@ -80,47 +80,6 @@ async def setup(
     return Storytel(mass=mass, manifest=manifest, config=config)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Get the config entries for the Storytel provider.
-
-    :param mass: the MusicAssistant instance.
-    :param instance_id: the instance id.
-    :param action: the action string.
-    :param values: the predefined configuration values.
-    """
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key="label",
-            type=ConfigEntryType.LABEL,
-        ),
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_LANGUAGES,
-            type=ConfigEntryType.STRING,
-            multi_value=True,
-            default_value=["English"],
-            options=[ConfigValueOption(name, name) for name in sorted(ALL_LANGUAGES.keys())],
-            required=True,
-        ),
-    )
-
-
 # -------------------------------
 # Provider implementation
 # -------------------------------
@@ -128,6 +87,29 @@ async def get_config_entries(
 
 class Storytel(MusicProvider):
     """Storytel provider."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the config entries for the Storytel provider.
+
+        Credentials are collected in the setup flow and persisted in setup_data.
+        The options page only exposes persisted discovery settings.
+        """
+        setup_languages = self.get_setup_value(CONF_LANGUAGES)
+        if isinstance(setup_languages, list) and setup_languages:
+            default_languages = [name for name in setup_languages if isinstance(name, str)]
+        else:
+            default_languages = list(DEFAULT_LANGUAGES)
+        return (
+            ConfigEntry(
+                key=CONF_LANGUAGES,
+                type=ConfigEntryType.STRING,
+                multi_value=True,
+                required=False,
+                default_value=default_languages,
+                options=[ConfigValueOption(name, name) for name in sorted(ALL_LANGUAGES.keys())],
+            ),
+        )
 
     @staticmethod
     def handle_login_failed(
@@ -212,12 +194,12 @@ class Storytel(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        username = str(self.config.get_value(CONF_USERNAME) or "")
-        password = str(self.config.get_value(CONF_PASSWORD) or "")
+        username = str(self.get_setup_value(CONF_USERNAME) or "")
+        password = str(self.get_setup_value(CONF_PASSWORD) or "")
         if not username or not password:
             raise LoginFailed("Username/password required")
 
-        languages_list = self.config.get_value(CONF_LANGUAGES)
+        languages_list = self.get_setup_value(CONF_LANGUAGES)
         if isinstance(languages_list, list) and languages_list:
             self._languages = {
                 name: ALL_LANGUAGES[name]

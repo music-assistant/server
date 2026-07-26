@@ -2137,7 +2137,6 @@
   "provider.squeezelite.config_entries.visualization.description": "The type of visualization to show on the display during playback if the device supports this.",
   "provider.squeezelite.config_entries.visualization.label": "Visualization type",
   "provider.squeezelite.manifest.description": "Stream music to Squeezelite and some legacy Squeezebox players on your local network using the slimproto protocol.",
-  "provider.storytel.config_entries.label.label": "Sign in with your Storytel username and password.",
   "provider.storytel.config_entries.languages.description": "Select which languages to include in recommendations and search results.",
   "provider.storytel.config_entries.languages.label": "Content Languages",
   "provider.storytel.config_entries.password.description": "Storytel account password.",
