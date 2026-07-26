@@ -79,6 +79,11 @@ async def test_parse_metadata_from_id3tags() -> None:
     assert _tags.musicbrainz_artistids == ("abcdefg",)
     assert _tags.musicbrainz_releasegroupid == "abcdefg"
     assert _tags.musicbrainz_recordingid == "abcdefg"
+    assert _tags.synchronized_lyrics == [
+        ("My synchronized lyrics start here", 0),
+        ("continue on this line", 671110),
+        ("and end here.", 5999999),
+    ]
     # test parsing disc/track number
     _tags.tags["disc"] = ""
     assert _tags.disc is None

@@ -561,6 +561,15 @@ class AudioTags:
         return None
 
     @property
+    def synchronized_lyrics(self) -> list[tuple[str, int]] | None:
+        """
+        Return synchronized lyrics tag (if exists).
+
+        The tag consists of (text, timestamp in ms) pairs.
+        """
+        return self.tags.get("synchronizedlyrics")
+
+    @property
     def track_loudness(self) -> float | None:
         """Try to read/calculate the integrated loudness from the tags (track level)."""
         if tag := self.tags.get("r128trackgain"):
@@ -1024,6 +1033,13 @@ def _parse_id3_tags(tags: ID3Tags) -> dict[str, Any]:
         result["titlesort"] = titlesort[0]
     if albumsort := _id3_get_tag_text(tags, "TSOA"):
         result["albumsort"] = albumsort[0]
+
+    # Synchronized lyrics
+    for frame in tags.getall("SYLT"):  # type: ignore[no-untyped-call]
+        # Only consider lyrics type and millisecond timestamp format
+        if frame.type == 1 and frame.format == 2 and frame.text:
+            result["synchronizedlyrics"] = frame.text
+            break
 
     return result
 
