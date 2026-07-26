@@ -711,7 +711,7 @@ class SendspinAirPlayBridge:
         drift_us = round(drift_frames * 1_000_000 / BRIDGE_SAMPLE_RATE)
         if abs(drift_us) > 1_000:
             self.logger.warning(
-                "Realigned a %d µs Sendspin timeline gap for %s",
+                "Realigned %d µs of Sendspin timeline drift for %s",
                 drift_us,
                 self.airplay_player.display_name,
             )
