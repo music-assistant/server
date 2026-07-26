@@ -13,9 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from aiohttp import ClientTimeout, web
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -37,7 +35,7 @@ from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -94,9 +92,8 @@ class AriaCastReceiver(PluginProvider):
     ) -> None:
         """Initialize the AriaCast Receiver provider."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
-        # default here: str(None) would become the literal "None" and fail the
-        # == PLAYER_ID_AUTO check; at construction an unset option reads as None
-        self._default_player_id = str(config.get_value(CONF_MASS_PLAYER_ID) or PLAYER_ID_AUTO)
+        # Avoid str(None), which would bypass automatic player selection.
+        self._default_player_id = str(self.get_setup_value(CONF_MASS_PLAYER_ID) or PLAYER_ID_AUTO)
 
         # Audio pipeline: one asyncio.Queue, drained per stream (VBAN pattern)
         self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=100)
@@ -155,26 +152,8 @@ class AriaCastReceiver(PluginProvider):
         )
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
-        """Return configuration entries."""
-        return (
-            CONF_ENTRY_WARN_PREVIEW,
-            ConfigEntry(
-                key=CONF_MASS_PLAYER_ID,
-                type=ConfigEntryType.STRING,
-                default_value=PLAYER_ID_AUTO,
-                options=[
-                    ConfigValueOption(PLAYER_ID_AUTO),
-                    *(
-                        ConfigValueOption(title=p.display_name, value=p.player_id)
-                        for p in sorted(
-                            self.mass.players.all_players(False, False),
-                            key=lambda p: p.display_name.lower(),
-                        )
-                    ),
-                ],
-                required=True,
-            ),
-        )
+        """Return runtime options for this provider."""
+        return (CONF_ENTRY_WARN_PREVIEW,)
 
     # -----------------------------------------------------------------------
     # Lifecycle

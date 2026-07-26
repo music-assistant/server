@@ -147,6 +147,31 @@ def test_migrate_airplay_receiver_ghosts_uses_default_name() -> None:
     assert data["players"] == {}
 
 
+def test_migrate_airplay_receiver_ghosts_ignores_setup_flow_instances() -> None:
+    """Setup-flow receivers are skipped because they cannot have produced legacy ghosts."""
+    data: dict[str, Any] = {
+        "providers": {
+            "airplay_receiver--abc1": {
+                "domain": "airplay_receiver",
+                "instance_id": "airplay_receiver--abc1",
+                "values": {},
+                "setup_data": {"airplay_name": ENCRYPT_SUFFIX + "Garage [AirPlay]"},
+            },
+        },
+        "players": {
+            "apdb1ff0aae80e": {
+                "player_id": "apdb1ff0aae80e",
+                "provider": "airplay",
+                "default_name": "Music Assistant",
+                "values": {},
+            },
+        },
+    }
+
+    assert _migrate_airplay_receiver_ghost_players(data) is False
+    assert "apdb1ff0aae80e" in data["players"]
+
+
 def test_migrate_airplay_receiver_ghosts_keeps_same_name_wrapper_without_ghost_links() -> None:
     """A wrapper sharing the receiver name is kept unless it links only ghost endpoints."""
     data: dict[str, Any] = {
@@ -283,6 +308,116 @@ def test_migrate_provider_setup_data_moves_and_encrypts(monkeypatch: pytest.Monk
     assert cfg["setup_data"]["username"] == ENCRYPT_SUFFIX + "bob"
     assert cfg["setup_data"]["password"] == ENCRYPT_SUFFIX + "sekret"
     assert cfg["setup_data"]["port"] == 8096
+
+
+def test_migrate_receiver_and_connect_setup_values() -> None:
+    """New setup-flow fields move to setup_data without losing typed values."""
+    data: dict[str, Any] = {
+        "providers": {
+            "airplay_receiver--1": {
+                "domain": "airplay_receiver",
+                "values": {
+                    "mass_player_id": "kitchen",
+                    "airplay_name": "Kitchen AirPlay",
+                    "log_level": "INFO",
+                },
+            },
+            "ariacast_receiver": {
+                "domain": "ariacast_receiver",
+                "values": {"mass_player_id": "office"},
+            },
+            "spotify_connect--1": {
+                "domain": "spotify_connect",
+                "values": {
+                    "mass_player_id": "living-room",
+                    "publish_name": "Living Room Spotify",
+                },
+            },
+            "vban_receiver--1": {
+                "domain": "vban_receiver",
+                "values": {
+                    "bind_ip": "192.0.2.2",
+                    "bind_port": 6981,
+                    "sender_host": "192.0.2.10",
+                    "vban_stream_name": "Studio",
+                    "audio_format": "S16LE",
+                    "sample_rate": 48000,
+                    "audio_channels": 2,
+                    "vban_queue_size": 100,
+                },
+            },
+            "yandex_ynison--1": {
+                "domain": "yandex_ynison",
+                "values": {
+                    "mass_player_id": "office",
+                    "publish_name": "Office Yandex",
+                    "allow_player_switch": False,
+                },
+            },
+        }
+    }
+
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+
+    providers = data["providers"]
+    assert providers["airplay_receiver--1"]["values"] == {"log_level": "INFO"}
+    assert providers["airplay_receiver--1"]["setup_data"] == {
+        "mass_player_id": ENCRYPT_SUFFIX + "kitchen",
+        "airplay_name": ENCRYPT_SUFFIX + "Kitchen AirPlay",
+    }
+    assert providers["ariacast_receiver"]["values"] == {}
+    assert providers["ariacast_receiver"]["setup_data"] == {
+        "mass_player_id": ENCRYPT_SUFFIX + "office"
+    }
+    assert providers["spotify_connect--1"]["values"] == {}
+    assert providers["spotify_connect--1"]["setup_data"] == {
+        "mass_player_id": ENCRYPT_SUFFIX + "living-room",
+        "publish_name": ENCRYPT_SUFFIX + "Living Room Spotify",
+    }
+    assert providers["vban_receiver--1"]["values"] == {"vban_queue_size": 100}
+    assert providers["vban_receiver--1"]["setup_data"] == {
+        "bind_ip": ENCRYPT_SUFFIX + "192.0.2.2",
+        "bind_port": 6981,
+        "sender_host": ENCRYPT_SUFFIX + "192.0.2.10",
+        "vban_stream_name": ENCRYPT_SUFFIX + "Studio",
+        "audio_format": ENCRYPT_SUFFIX + "S16LE",
+        "sample_rate": 48000,
+        "audio_channels": 2,
+    }
+    assert providers["yandex_ynison--1"]["values"] == {"allow_player_switch": False}
+    assert providers["yandex_ynison--1"]["setup_data"] == {
+        "mass_player_id": ENCRYPT_SUFFIX + "office",
+        "publish_name": ENCRYPT_SUFFIX + "Office Yandex",
+    }
+
+
+def test_migrate_default_airplay_receiver_name_once() -> None:
+    """The implicit receiver name is persisted so ghost cleanup cannot rerun later."""
+    data: dict[str, Any] = {
+        "providers": {
+            "airplay_receiver--1": {
+                "domain": "airplay_receiver",
+                "values": {"mass_player_id": "__auto__"},
+            }
+        },
+        "players": {
+            "aplegitimate": {
+                "player_id": "aplegitimate",
+                "provider": "airplay",
+                "default_name": "Music Assistant",
+                "values": {},
+            }
+        },
+    }
+
+    assert migrate_provider_setup_data(data, _fake_encrypt) is True
+    assert data["providers"]["airplay_receiver--1"]["setup_data"] == {
+        "mass_player_id": ENCRYPT_SUFFIX + "__auto__",
+        "airplay_name": ENCRYPT_SUFFIX + "Music Assistant",
+    }
+    assert _migrate_airplay_receiver_ghost_players(data) is False
+    assert "aplegitimate" in data["players"]
+    assert migrate_provider_setup_data(data, _fake_encrypt) is False
 
 
 def test_migrate_provider_setup_data_idempotent_and_preserves_existing(
