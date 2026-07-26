@@ -9,6 +9,7 @@ from music_assistant.controllers.config.migrations import (
     PROVIDER_SETUP_FLOW_KEYS,
     _migrate_airplay_apple_power_control,
     _migrate_airplay_receiver_ghost_players,
+    _migrate_bose_soundtouch_presets,
     _migrate_output_limiter,
     _migrate_player_setup_data,
     migrate_provider_setup_data,
@@ -445,3 +446,59 @@ def test_migrate_player_setup_data_multi_instance_domain() -> None:
     assert _migrate_player_setup_data(data) is True
     assert data["players"]["ap1"]["setup_data"] == {"raop_credentials": "ENC_raop"}
     assert data["players"]["ap1"]["values"] == {}
+
+
+def test_migrate_bose_soundtouch_presets_drops_player_values() -> None:
+    """The per-player preset mappings are removed, other player values are kept."""
+    data: dict[str, Any] = {
+        "players": {
+            "bose_soundtouch_a": {
+                "player_id": "bose_soundtouch_a",
+                "provider": "bose_soundtouch",
+                "values": {
+                    "preset_1_media": "library://playlist/12",
+                    "preset_1_media_type": "playlist",
+                    "preset_1_search": "morning",
+                    "preset_1_selected_media": "library://playlist/12",
+                    "volume_normalization": True,
+                },
+            },
+            "bose_soundtouch_b": {
+                "player_id": "bose_soundtouch_b",
+                "provider": "bose_soundtouch--2",
+                "values": {"preset_6_media": "library://radio/3"},
+            },
+        }
+    }
+    assert _migrate_bose_soundtouch_presets(data) is True
+    assert data["players"]["bose_soundtouch_a"]["values"] == {"volume_normalization": True}
+    assert data["players"]["bose_soundtouch_b"]["values"] == {}
+
+
+def test_migrate_bose_soundtouch_presets_scoped_to_provider() -> None:
+    """Players of other providers keep any similarly named values."""
+    data: dict[str, Any] = {
+        "players": {
+            "other": {
+                "player_id": "other",
+                "provider": "sonos",
+                "values": {"preset_1_media": "library://playlist/12"},
+            }
+        }
+    }
+    assert _migrate_bose_soundtouch_presets(data) is False
+    assert data["players"]["other"]["values"] == {"preset_1_media": "library://playlist/12"}
+
+
+def test_migrate_bose_soundtouch_presets_noop_when_absent() -> None:
+    """Migration reports no change when no SoundTouch player stored presets."""
+    data: dict[str, Any] = {
+        "players": {
+            "bose_soundtouch_a": {
+                "player_id": "bose_soundtouch_a",
+                "provider": "bose_soundtouch",
+                "values": {"volume_normalization": True},
+            }
+        }
+    }
+    assert _migrate_bose_soundtouch_presets(data) is False

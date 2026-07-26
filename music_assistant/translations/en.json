@@ -977,7 +977,7 @@
   "provider.bose_soundtouch.config_entries.app_key.description": "Optional. A Bose SoundTouch developer app key enables sending announcements to the speaker as an overlay that ducks the current music and resumes it afterwards. Leave empty to disable native announcements (they then play through the linked playback protocol instead).",
   "provider.bose_soundtouch.config_entries.app_key.label": "Bose SoundTouch app key",
   "provider.bose_soundtouch.config_entries.preset_header.label": "Preset {0}",
-  "provider.bose_soundtouch.config_entries.preset_media.description": "URI copied from the selected result or manually entered.",
+  "provider.bose_soundtouch.config_entries.preset_media.description": "URI copied from the selected result or manually entered. Pressing this preset button on any of your SoundTouch speakers plays it on that speaker.",
   "provider.bose_soundtouch.config_entries.preset_media.label": "Preset {0} to play",
   "provider.bose_soundtouch.config_entries.preset_media_type.description": "Type of media used for this preset's search and playback.",
   "provider.bose_soundtouch.config_entries.preset_media_type.label": "Preset {0} media type",
