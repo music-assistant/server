@@ -18,8 +18,7 @@
       }
     },
     "cookies": {
-      "label": "Browser Cookies",
-      "description": "Open passport.yandex.ru/profile in your browser, use \"Copy Cookies\" extension to copy cookies, paste here. Supports JSON array or raw cookie string."
+      "label": "Browser Cookies"
     },
     "voice_control": {
       "label": "Experimental: Voice control integration",
@@ -52,7 +51,7 @@
     },
     "cookies": {
       "title": "Paste browser cookies",
-      "description": "Open passport.yandex.ru/profile, copy the cookies with a \"Copy Cookies\" extension and paste them here."
+      "description": "Open passport.yandex.ru/profile, copy the cookies with a \"Copy Cookies\" extension and paste them here. JSON arrays and raw cookie strings are supported."
     },
     "scan_qr": {
       "title": "Scan to sign in",

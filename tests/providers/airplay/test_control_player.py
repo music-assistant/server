@@ -349,6 +349,25 @@ def test_native_volume_update_ignored_while_streaming() -> None:
     update_state.assert_not_called()
 
 
+def test_transient_mrp_volume_report_never_latches_mute() -> None:
+    """A transient MRP tunnel never mutes the player or rewrites its volume."""
+    # A muted player skips the stream volume command, so a phantom mute learned while
+    # idle would silently stop every later volume change from reaching the device.
+    player = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    assert player._uses_transient_mrp is True
+    player.stream = MagicMock(running=False)
+    player._attr_volume_level = 62
+    player._attr_volume_muted = False
+
+    with patch.object(player, "update_state") as update_state:
+        player._handle_volume_update("mrp", 0)
+
+    assert player.volume_muted is False
+    assert player.volume_level == 62
+    cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_not_called()
+    update_state.assert_not_called()
+
+
 def test_native_volume_update_applies_when_idle() -> None:
     """Native volume reports still drive player state while no stream is running."""
     player = _make_control_player()
