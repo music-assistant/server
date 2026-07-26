@@ -703,6 +703,22 @@ async def test_form_entries_with_action_rejected(flow_mass: MusicAssistant) -> N
     assert step.reason == "internal_error"
 
 
+@pytest.mark.usefixtures("flow_events")
+async def test_form_entries_with_action_type_rejected(flow_mass: MusicAssistant) -> None:
+    """The engine rejects FORM entries of type ACTION (they render dead in the dialog)."""
+    action_entry = ConfigEntry(key="authenticate", type=ConfigEntryType.ACTION, required=False)
+
+    async def run_setup(session: SetupSession) -> None:
+        await session.form([action_entry])
+        await session.finish({})
+
+    with _use_flow(flow_mass, run_setup):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+    # the ValueError ends the flow as an internal error
+    assert step.type == FlowStepType.ABORT
+    assert step.reason == "internal_error"
+
+
 async def test_reconfigure_prefill_and_success(flow_mass: MusicAssistant) -> None:
     """Reconfigure decrypts setup_data for prefill and merges the new values on finish."""
     instance_id = FAKE_DOMAIN
