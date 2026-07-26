@@ -34,7 +34,7 @@ from music_assistant.controllers.streams.audio_buffer import AudioBufferDiscarde
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.datetime import local_clock_time_to_utc, utc_timestamp
 from music_assistant.helpers.json import json_dumps, json_loads
-from music_assistant.helpers.util import is_arm
+from music_assistant.helpers.util import inference_thread_budget, is_arm
 from music_assistant.models.audio_analysis import AudioAnalysisData
 from music_assistant.models.audio_analysis_provider import (
     AudioAnalysisProvider,
@@ -223,9 +223,6 @@ class AudioAnalysisController:
         # per queue (concurrent queues don't evict each other's still-playing analysis).
         self._session_queues: dict[str, str] = {}
         self._inference_runtime_configured = False
-        # Kept alive to persist the process-wide native BLAS thread cap (set in
-        # ensure_inference_runtime_configured); never used as a context manager.
-        self._blas_limiter: object | None = None
         # Bounds how many analysis offloads run concurrently to half the cores; created in
         # ensure_inference_runtime_configured once the core count is known (None until then),
         # and honored by AudioAnalysisProvider._run_offloaded.
@@ -280,10 +277,9 @@ class AudioAnalysisController:
         """
         if self._inference_runtime_configured:
             return
-        # Lazy imports: only torch-backed providers call this, so a host running no such
-        # provider never imports torch/threadpoolctl. Running before the first model load
-        # also lets set_num_interop_threads take effect (only settable before the first op).
-        import threadpoolctl  # noqa: PLC0415
+        # Lazy import: only torch-backed providers call this, so a host running no such
+        # provider never imports torch. Running before the first model load also lets
+        # set_num_interop_threads take effect (only settable before the first op).
         import torch  # noqa: PLC0415
 
         budget = self._aa_thread_budget()
@@ -292,11 +288,9 @@ class AudioAnalysisController:
             # set_num_interop_threads can only be called before the first torch op
             torch.set_num_interop_threads(1)
         # torch.set_num_threads only governs torch's own ops. The per-block librosa/numpy
-        # feature extraction runs through the native BLAS pool (OpenBLAS), which otherwise
-        # spawns a thread per core per worker and, across concurrent sessions, saturates
-        # every core and starves playback. Cap it to the same budget; the limiter is kept
-        # alive on the controller so the cap persists for the process.
-        self._blas_limiter = threadpoolctl.threadpool_limits(limits=budget, user_api="blas")
+        # feature extraction runs through the native BLAS pool (OpenBLAS), which is capped to
+        # the same budget from the environment at process start (cap_native_thread_pools);
+        # it cannot be capped from here without deadlocking against a concurrent import.
         arm = is_arm()
         if arm:
             # NNPACK frequently fails to initialize on ARM SBCs (e.g. Raspberry Pi); torch
@@ -319,11 +313,11 @@ class AudioAnalysisController:
             initializer=_nice_analysis_worker,
         )
         self.logger.info(
-            "AudioAnalysis runtime: torch intra=%d interop=%d, blas<=%d, "
+            "AudioAnalysis runtime: torch intra=%d interop=%d, blas<=%s, "
             "analysis concurrency<=%d (1 while a player streams), nnpack=%s",
             torch.get_num_threads(),
             torch.get_num_interop_threads(),
-            budget,
+            os.environ.get("OPENBLAS_NUM_THREADS", "uncapped"),
             concurrency_cap,
             "off" if arm else "on",
         )
@@ -1523,7 +1517,8 @@ class AudioAnalysisController:
 
     def _aa_thread_budget(self) -> int:
         """Return the per-op PyTorch intra-op thread budget for inference (~25% of cpu_count)."""
-        return max(1, self._cpu_count() // 4)
+        # Shared with the native BLAS cap applied at process start, so torch and BLAS agree.
+        return inference_thread_budget()
 
     def _get_scan_concurrency(self) -> int:
         """Read background scan concurrency from config, clamped to [1, 16]."""

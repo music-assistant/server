@@ -264,6 +264,38 @@ def is_arm() -> bool:
     return platform.machine().lower() in ("arm64", "aarch64", "armv8l", "armv7l")
 
 
+def inference_thread_budget() -> int:
+    """Return the native thread budget for on-device inference (~25% of the available cores)."""
+    return max(1, (os.process_cpu_count() or os.cpu_count() or 4) // 4)
+
+
+def cap_native_thread_pools() -> int:
+    """
+    Cap the native BLAS/OpenMP thread pools process-wide and return the applied budget.
+
+    Left uncapped, every one of these pools sizes itself to the full core count per worker
+    and, across concurrent analysis sessions, saturates the box and starves playback.
+
+    Must be called before any native math library is loaded, because these pools read their
+    size from the environment once, at library load time. Capping them after the fact means
+    walking the dynamic linker's loaded-library list (what threadpoolctl does), which
+    deadlocks against a concurrent import: the walk holds the loader lock while it needs the
+    GIL back for each callback, and an importing thread holds the GIL while it waits in
+    dlopen() for that same loader lock.
+    """
+    budget = inference_thread_budget()
+    for env_var in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ):
+        # setdefault so an operator-supplied value always wins
+        os.environ.setdefault(env_var, str(budget))
+    return budget
+
+
 async def verify_system_meets_requirements(
     *,
     feature_name: str,
