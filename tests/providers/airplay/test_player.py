@@ -480,39 +480,34 @@ def test_get_stream_pcm_format_default(airplay_player: AirPlayPlayer) -> None:
 
 @pytest.mark.asyncio
 async def test_session_pcm_format_selection(airplay_player: AirPlayPlayer) -> None:
-    """The session runs at 48 kHz only for 48k content when every member supports it."""
-    streams_audio = cast("MagicMock", airplay_player.mass.streams.audio)
-    streams_audio.select_flow_pcm_format = AsyncMock(
-        return_value=AudioFormat(
-            content_type=ContentType.PCM_S24LE,
-            sample_rate=48000,
-            bit_depth=24,
-        )
+    """AirPlay delegates the complete session format decision to the shared selector."""
+    selected_format = AudioFormat(
+        content_type=ContentType.PCM_S24LE,
+        sample_rate=48000,
+        bit_depth=24,
     )
+    streams_audio = cast("MagicMock", airplay_player.mass.streams.audio)
+    streams_audio.select_flow_pcm_format = AsyncMock(return_value=selected_format)
     cast("MagicMock", airplay_player.mass.player_queues.get).return_value = None
-    hires_client = MagicMock()
-    hires_client.supported_sample_rates = [(44100, 24), (48000, 24)]
-    cd_client = MagicMock()
-    cd_client.supported_sample_rates = [(44100, 16)]
     media = MagicMock()
     media.source_id = "queue1"
     media.queue_item_id = "item1"
     queue_item = MagicMock()
     queue_item.streamdetails.audio_format.sample_rate = 48000
     airplay_player.mass.player_queues.get_item.return_value = queue_item  # type: ignore[attr-defined]
+    sync_clients = [airplay_player, airplay_player]
 
-    # all members hi-res capable + 48k-family content: session lifts to 48 kHz
-    fmt = await airplay_player._get_session_pcm_format([hires_client, hires_client], media)
-    assert fmt.sample_rate == 48000
+    fmt = await airplay_player._get_session_pcm_format(sync_clients, media)
 
-    # a 16-bit member pins the session at the 44.1 kHz base
-    fmt = await airplay_player._get_session_pcm_format([hires_client, cd_client], media)
-    assert fmt.sample_rate == 44100
-
-    # 44.1-family content stays at 44.1 kHz even for an all-hi-res group
-    queue_item.streamdetails.audio_format.sample_rate = 88200
-    fmt = await airplay_player._get_session_pcm_format([hires_client], media)
-    assert fmt.sample_rate == 44100
+    assert fmt is selected_format
+    streams_audio.select_flow_pcm_format.assert_awaited_once_with(
+        airplay_player,
+        start_streamdetails=queue_item.streamdetails,
+        crossfade_enabled=False,
+        overlay_active=False,
+        fallback_sample_rate=AIRPLAY_PCM_FORMAT.sample_rate,
+        output_players=sync_clients,
+    )
 
 
 @pytest.mark.asyncio

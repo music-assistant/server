@@ -176,11 +176,14 @@ class CrossfadeData:
 
 
 def _snap_supported_rate_up(target: int, supported_sample_rates: list[int]) -> int:
-    """Snap target up to the lowest supported rate >= target, falling back to max."""
+    """Snap target up, falling back to its highest supported divisor or the maximum."""
     if target in supported_sample_rates:
         return target
     higher = [r for r in supported_sample_rates if r > target]
-    return min(higher) if higher else max(supported_sample_rates)
+    if higher:
+        return min(higher)
+    same_family = [r for r in supported_sample_rates if target % r == 0]
+    return max(same_family) if same_family else max(supported_sample_rates)
 
 
 def _snap_supported_rate_down(target: int, supported_sample_rates: list[int]) -> int:
@@ -1309,7 +1312,7 @@ class StreamsAudio:
             default=min(supported_sample_rates),
         )
         content_type, bit_depth = self._pick_pcm_bit_depth(
-            player,
+            (player,),
             streamdetails,
             crossfade_enabled,
             overlay_active,
@@ -1330,6 +1333,8 @@ class StreamsAudio:
         start_streamdetails: StreamDetails | None = None,
         crossfade_enabled: bool = False,
         overlay_active: bool = False,
+        fallback_sample_rate: int | None = None,
+        output_players: Iterable[Player] | None = None,
     ) -> AudioFormat:
         """
         Select the internal PCM format for a Queue Flow Mode stream.
@@ -1352,12 +1357,31 @@ class StreamsAudio:
             omitted the bit depth defaults to F32.
         :param crossfade_enabled: Whether the queue will use crossfade transitions.
         :param overlay_active: Whether an audio overlay will be mixed into the stream.
+        :param fallback_sample_rate: Preferred rate when the first item format is unknown.
+        :param output_players: All players consuming the shared PCM stream. Their common
+            sample rates and processing requirements determine the session format.
         """
+        players = tuple(output_players) if output_players is not None else (player,)
+        if not players:
+            raise AudioError("At least one output player is required")
+        supported_sample_rates = sorted(
+            set.intersection(
+                *(
+                    {sample_rate for sample_rate, _ in item.get_supported_sample_rates()}
+                    for item in players
+                )
+            )
+        )
+        if not supported_sample_rates:
+            raise AudioError("Output players do not share a supported sample rate")
         if start_streamdetails is not None and (
             start_streamdetails.media_type == MediaType.AUDIO_SOURCE
         ):
-            return self._select_audio_source_pcm_format(player, start_streamdetails)
-        supported_sample_rates = sorted({sr for sr, _ in player.get_supported_sample_rates()})
+            return self._select_audio_source_pcm_format(
+                player,
+                start_streamdetails,
+                supported_sample_rates=supported_sample_rates,
+            )
         flow_mode_conf = cast(
             "str",
             player.config.get_value(CONF_FLOW_MODE_SAMPLE_RATE, FLOW_MODE_SAMPLE_RATE_SMART),
@@ -1378,12 +1402,16 @@ class StreamsAudio:
             target_rate = (
                 start_streamdetails.audio_format.sample_rate
                 if start_streamdetails
-                else max(supported_sample_rates)
+                else (
+                    fallback_sample_rate
+                    if fallback_sample_rate is not None
+                    else max(supported_sample_rates)
+                )
             )
             output_sample_rate = _snap_supported_rate_up(target_rate, supported_sample_rates)
 
         content_type, bit_depth = self._pick_pcm_bit_depth(
-            player, start_streamdetails, crossfade_enabled, overlay_active
+            players, start_streamdetails, crossfade_enabled, overlay_active
         )
         return AudioFormat(
             content_type=content_type,
@@ -3056,7 +3084,7 @@ class StreamsAudio:
 
     def _pick_pcm_bit_depth(
         self,
-        player: Player,
+        players: Iterable[Player],
         streamdetails: StreamDetails | None,
         crossfade_enabled: bool,
         overlay_active: bool = False,
@@ -3077,7 +3105,7 @@ class StreamsAudio:
             crossfade_enabled
             or overlay_active
             or streamdetails.volume_normalization_mode != VolumeNormalizationMode.DISABLED
-            or self._resolve_player_dsp_config(player).enabled
+            or any(self._resolve_player_dsp_config(player).enabled for player in players)
         )
         if needs_headroom:
             return INTERNAL_PCM_FORMAT.content_type, INTERNAL_PCM_FORMAT.bit_depth
@@ -3085,7 +3113,10 @@ class StreamsAudio:
         return ContentType.from_bit_depth(bit_depth), bit_depth
 
     def _select_audio_source_pcm_format(
-        self, player: Player, streamdetails: StreamDetails
+        self,
+        player: Player,
+        streamdetails: StreamDetails,
+        supported_sample_rates: Iterable[int] | None = None,
     ) -> AudioFormat:
         """
         Return a passthrough PCM format for a realtime AudioSource item.
@@ -3098,15 +3129,20 @@ class StreamsAudio:
 
         :param player: The player requesting the stream.
         :param streamdetails: Stream details for the AudioSource item.
+        :param supported_sample_rates: Rates shared by every output player, if applicable.
         """
-        supported_sample_rates = [sr for sr, _ in player.get_supported_sample_rates()]
+        resolved_sample_rates = (
+            list(supported_sample_rates)
+            if supported_sample_rates is not None
+            else [sample_rate for sample_rate, _ in player.get_supported_sample_rates()]
+        )
         source_rate = streamdetails.audio_format.sample_rate
-        if source_rate in supported_sample_rates:
+        if source_rate in resolved_sample_rates:
             output_sample_rate = source_rate
         else:
             output_sample_rate = max(
-                (r for r in supported_sample_rates if r <= source_rate),
-                default=min(supported_sample_rates),
+                (rate for rate in resolved_sample_rates if rate <= source_rate),
+                default=min(resolved_sample_rates),
             )
         bit_depth = streamdetails.audio_format.bit_depth
         return AudioFormat(

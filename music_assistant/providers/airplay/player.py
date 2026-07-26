@@ -6,7 +6,6 @@ import asyncio
 import contextlib
 import ipaddress
 import time
-from dataclasses import replace
 from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
@@ -945,40 +944,14 @@ class AirPlayPlayer(Player):
             and media.media_type == MediaType.TRACK
             and self.mass.streams.get_crossfade_mode(queue) != CrossfadeMode.DISABLED
         )
-        pcm_formats = await asyncio.gather(
-            *(
-                self.mass.streams.audio.select_flow_pcm_format(
-                    client,
-                    start_streamdetails=streamdetails,
-                    crossfade_enabled=crossfade_enabled,
-                    overlay_active=bool(queue and overlay_active(queue)),
-                )
-                for client in sync_clients
-            )
+        return await self.mass.streams.audio.select_flow_pcm_format(
+            self,
+            start_streamdetails=streamdetails,
+            crossfade_enabled=crossfade_enabled,
+            overlay_active=bool(queue and overlay_active(queue)),
+            fallback_sample_rate=AIRPLAY_PCM_FORMAT.sample_rate,
+            output_players=sync_clients,
         )
-        pcm_format = next(
-            (
-                candidate
-                for candidate in pcm_formats
-                if candidate.content_type == ContentType.PCM_F32LE
-            ),
-            pcm_formats[0],
-        )
-
-        # The session runs at 48 kHz only when every member supports it (hi-res
-        # enabled); any 16-bit/44.1 member pins the session to the 44.1 base.
-        common_rates = set.intersection(
-            *({sample_rate for sample_rate, _ in c.supported_sample_rates} for c in sync_clients)
-        )
-        # Only lift the session to 48 kHz for 48k-family content; 44.1k(-family)
-        # content stays at 44.1 to avoid a pointless resample for the common case.
-        content_rate = streamdetails.audio_format.sample_rate if streamdetails else 0
-        sample_rate = (
-            48000
-            if 48000 in common_rates and content_rate and content_rate % 48000 == 0
-            else AIRPLAY_PCM_FORMAT.sample_rate
-        )
-        return replace(pcm_format, sample_rate=sample_rate)
 
     def _get_sync_clients(self) -> list[AirPlayPlayer]:
         """Get all sync clients for a player."""
