@@ -52,6 +52,7 @@ from .helpers import (
     get_cli_binary,
     get_model_info,
     is_apple_device,
+    probe_audio_formats,
 )
 from .player import AirPlayPlayer, GenericAirPlayPlayer
 from .sendspin_bridge import SendspinBridgeManager
@@ -407,6 +408,15 @@ class AirPlayProvider(PlayerProvider):
             model,
         )
 
+        # A receiver only publishes its audio formats (and so whether it can do
+        # 24-bit) in its /info response, never in its mDNS records, so ask it
+        # directly. Unreachable devices simply stay on the 16-bit base.
+        advertised_audio_formats = (
+            await probe_audio_formats(self.mass, address, airplay_discovery_info.port)
+            if airplay_discovery_info and airplay_discovery_info.port
+            else 0
+        )
+
         player_addresses = self._get_discovery_addresses(
             airplay_discovery_info,
             raop_discovery_info,
@@ -452,6 +462,7 @@ class AirPlayProvider(PlayerProvider):
                 manufacturer=manufacturer,
                 model=model,
                 initial_volume=volume,
+                advertised_audio_formats=advertised_audio_formats,
             )
         else:
             player = GenericAirPlayPlayer(
@@ -464,6 +475,7 @@ class AirPlayProvider(PlayerProvider):
                 manufacturer=manufacturer,
                 model=model,
                 initial_volume=volume,
+                advertised_audio_formats=advertised_audio_formats,
             )
         await self.mass.players.register(player)
 

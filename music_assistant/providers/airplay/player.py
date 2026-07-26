@@ -31,6 +31,7 @@ from music_assistant.models.setup_flow import AbortFlow
 from .constants import (
     AIRPLAY_AP2_SETUP_LEAD_MS,
     AIRPLAY_DISCOVERY_TYPE,
+    AIRPLAY_HIRES_AUDIO_FORMATS,
     AIRPLAY_HIRES_SAMPLE_RATES,
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_RAOP_SETUP_LEAD_MS,
@@ -39,7 +40,6 @@ from .constants import (
     CONF_ENCRYPTION,
     CONF_ENTRY_SYNC_ADJUST_AIRPLAY,
     CONF_FORCE_RAOP,
-    CONF_HIRES_PLAYBACK,
     CONF_IGNORE_VOLUME,
     CONF_PAIRING_PASSWORD,
     CONF_PAIRING_PIN,
@@ -87,10 +87,12 @@ class AirPlayPlayer(Player):
         manufacturer: str,
         model: str,
         initial_volume: int = FALLBACK_VOLUME,
+        advertised_audio_formats: int = 0,
     ) -> None:
         """Initialize AirPlayPlayer."""
         self.raop_discovery_info = raop_discovery_info
         self.airplay_discovery_info = airplay_discovery_info
+        self.advertised_audio_formats = advertised_audio_formats
         super().__init__(provider, player_id)
         self.address = address
         self.stream: AirPlayStream | None = None
@@ -138,12 +140,11 @@ class AirPlayPlayer(Player):
 
     @property
     def hires_playback_enabled(self) -> bool:
-        """Return if 24-bit hi-res playback is enabled (and possible) for this player."""
-        # 24-bit only works over the native AirPlay 2 flow, so the opt-in is
-        # only effective for AirPlay 2 capable devices that are not forced to RAOP.
+        """Return if 24-bit hi-res playback is possible for this player."""
+        # 24-bit only works over the AirPlay 2 flow, so a device that is forced
+        # to RAOP stays on the 16-bit base whatever it advertises.
         return (
-            bool(self.config.get_value(CONF_HIRES_PLAYBACK, False))
-            and self.airplay_discovery_info is not None
+            bool(self.advertised_audio_formats & AIRPLAY_HIRES_AUDIO_FORMATS)
             and self.protocol_override != StreamingProtocol.RAOP
         )
 
@@ -218,10 +219,9 @@ class AirPlayPlayer(Player):
         # interactive setup flow (run_setup_flow) and stored in the player's setup_data.
         base_entries: list[ConfigEntry] = []
 
-        # Effective RAOP state from the current (stored) force-RAOP setting, so the RAOP
-        # device password and the hi-res option show/hide consistently with it.
-        force_raop = self._force_raop_active
-        is_raop = force_raop or not self._is_airplay2_capable
+        # Effective RAOP state from the current (stored) force-RAOP setting, so the
+        # RAOP-only entries show/hide consistently with it.
+        is_raop = self._force_raop_active or not self._is_airplay2_capable
 
         # "Force RAOP" escape hatch: only for AirPlay-2-capable non-Apple receivers
         # (see _force_raop_available). Framed as a per-device workaround for a
@@ -262,16 +262,6 @@ class AirPlayPlayer(Player):
                 key=CONF_IGNORE_VOLUME,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
-                category="protocol_generic",
-                advanced=True,
-            ),
-            ConfigEntry(
-                key=CONF_HIRES_PLAYBACK,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=False,
-                # 24-bit requires the native AirPlay 2 flow, so the option is only
-                # offered for AirPlay 2 capable devices that are not forced to RAOP
-                hidden=not self.airplay_discovery_info or is_raop,
                 category="protocol_generic",
                 advanced=True,
             ),

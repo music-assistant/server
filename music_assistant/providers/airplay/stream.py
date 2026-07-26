@@ -595,10 +595,13 @@ class AirPlayStream:
         Monitor stdout for the running cliairplay process.
 
         The binary reports its resolved route at startup, the effective lead
-        plus receiver-reported buffering window after connect, and the result
-        of MediaRemote now-playing pushes (Apple devices):
+        plus receiver-reported buffering window after connect, the audio formats
+        the receiver advertises, and the result of MediaRemote now-playing
+        pushes (Apple devices):
           [STATUS] route protocol=<raop|airplay2> flow=<...> timing=<ntp|ptp> buffered=<0|1>
           [STATUS] latency lead_ms=<int> device_min_frames=<int> device_max_frames=<int>
+          [STATUS] capabilities requested=<hex> realtime_formats=<hex> realtime_known=<0|1>
+            buffered_formats=<hex> buffered_known=<0|1>
           [STATUS] mrp path=<command> status=<http status>
           [EVENT] remote command=<play|pause|play_pause|next|previous>
         """
@@ -618,6 +621,8 @@ class AirPlayStream:
                     self._parse_mrp_status(line)
                 elif "[STATUS] latency" in line:
                     self._parse_latency_status(line)
+                elif "[STATUS] capabilities" in line:
+                    self._parse_capabilities_status(line)
                 elif line.startswith("[EVENT] remote command="):
                     self._parse_remote_event(line)
                 self.player.logger.log(VERBOSE_LOG_LEVEL, line)
@@ -644,6 +649,32 @@ class AirPlayStream:
             self.player.display_name,
             fields.get("status", "?"),
         )
+
+    def _parse_capabilities_status(self, line: str) -> None:
+        """Parse the [STATUS] capabilities line and refresh the player's audio formats."""
+        # The binary reports the format tables it read from the receiver's /info,
+        # which corrects a device that was unreachable when it was discovered.
+        # Only the native AirPlay 2 flow reads them; the other routes report
+        # zeroes with the known flags unset. A change applies to the next stream.
+        fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+        formats = 0
+        for mask_field, known_field in (
+            ("realtime_formats", "realtime_known"),
+            ("buffered_formats", "buffered_known"),
+        ):
+            if fields.get(known_field) != "1":
+                continue
+            try:
+                formats |= int(fields[mask_field], 16)
+            except KeyError, ValueError:
+                continue
+        if formats and formats != self.player.advertised_audio_formats:
+            self.player.logger.debug(
+                "Audio formats advertised by %s changed to 0x%x",
+                self.player.display_name,
+                formats,
+            )
+            self.player.advertised_audio_formats = formats
 
     def _parse_route_status(self, line: str) -> None:
         """Parse the [STATUS] route line and log which route this stream took."""

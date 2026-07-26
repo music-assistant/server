@@ -807,8 +807,6 @@
   "provider.airplay.config_entries.encryption.label": "Enable encryption",
   "provider.airplay.config_entries.force_raop.description": "Escape hatch for devices whose AirPlay 2 implementation misbehaves (e.g. dropouts, silence or failed playback). \nWhen enabled, this device is streamed to using the older AirPlay 1 (RAOP) protocol instead of AirPlay 2. \nLeave this off unless this device genuinely works better on RAOP.",
   "provider.airplay.config_entries.force_raop.label": "Force RAOP protocol",
-  "provider.airplay.config_entries.hires_playback.description": "Stream 24-bit audio (44.1/48 kHz) to this device using the native AirPlay 2 flow. \nOnly enable if the device actually renders 24-bit — some devices accept the stream and then play silence. \nKnown to work on Apple TV and HomePod.",
-  "provider.airplay.config_entries.hires_playback.label": "Enable hi-res (24-bit) playback",
   "provider.airplay.config_entries.ignore_volume.description": "The AirPlay protocol allows devices to report their own volume level. \nFor some devices this is not reliable and can cause unexpected volume changes. \nEnable this option to ignore these reports.",
   "provider.airplay.config_entries.ignore_volume.label": "Ignore volume reports sent by the device itself",
   "provider.airplay.config_entries.mrp_pairing_pin.label": "Enter the 4-digit PIN shown on the device",
