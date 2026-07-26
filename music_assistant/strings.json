@@ -390,6 +390,10 @@
     "verify_ssl": {
       "label": "Verify SSL",
       "description": "Whether or not to verify the certificate of SSL/TLS connections."
+    },
+    "child": {
+      "label": "Device to set up",
+      "description": "Choose which connected device to set up."
     }
   },
   "config_categories": {
@@ -1149,6 +1153,12 @@
     "host_unresolvable": "Unable to resolve {0}, make sure the address is resolvable.",
     "connection_timeout": "Connection timed out: {0}.",
     "connect_failed": "Failed to connect to {0}."
+  },
+  "setup_flow": {
+    "select_child": {
+      "title": "Choose a device to set up",
+      "description": "This player wraps multiple devices that still need setup. Pick the one to set up now."
+    }
   },
   "page": {
     "device_code": {

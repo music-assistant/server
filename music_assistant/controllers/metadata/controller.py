@@ -59,7 +59,7 @@ from .images import ImageProxyMixin
 from .radio import RadioArtworkMixin
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, CoreConfig
+    from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.media_items import (
         Album,
         Artist,
@@ -114,11 +114,7 @@ class MetaDataController(
         # corrupt metadata rows found by the last scan pass, per table, for diagnostics
         self._corrupt_metadata_rows: dict[str, list[dict[str, str | int]]] = {}
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         return (
             ConfigEntry(

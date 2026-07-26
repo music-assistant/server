@@ -47,6 +47,7 @@ from music_assistant_models.media_items import (
     SoundEffect,
     Track,
 )
+from music_assistant_models.media_items.media_item import MediaCollection
 
 from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_BACK,
@@ -85,6 +86,7 @@ from music_assistant.controllers.music.recommendations.controller import (
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.api import api_command
+from music_assistant.helpers.collections import get_collection_item_media_type_from_item_id
 from music_assistant.helpers.compare import compare_strings, compare_version
 from music_assistant.helpers.database import UNSET, DatabaseConnection
 from music_assistant.helpers.datetime import (
@@ -155,13 +157,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             raise RuntimeError("Database not initialized")
         return self._database
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        entries: tuple[ConfigEntry, ...] = (
+        return (
             ConfigEntry(
                 key=CONF_RESET_DB,
                 type=ConfigEntryType.ACTION,
@@ -169,20 +167,24 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 advanced=True,
             ),
         )
+
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+        """Handle a one-shot action button press and re-render the config entries."""
         if action == CONF_RESET_DB:
             await self._reset_database()
             await self.mass.cache.clear()
             await self.start_sync()
-            entries = (
-                *entries,
+            return (
+                *await self.get_config_entries(),
+                # distinct key so the result label doesn't collide with the action's label
                 ConfigEntry(
-                    key=CONF_RESET_DB,
+                    key="reset_db_result",
                     type=ConfigEntryType.LABEL,
-                    # distinct key so the result label doesn't collide with the action's label
-                    translation_key="reset_db_result",
+                    category="generic",
+                    advanced=True,
                 ),
             )
-        return entries
+        return await super().handle_config_action(action)
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
@@ -971,6 +973,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             raise MediaNotFoundError(
                 f"SoundEffect {provider_instance_id_or_domain}/{item_id} not found"
             )
+        if media_type == MediaType.COLLECTION:
+            ctrl = self.get_controller_for_collection(item_id)
+            return await ctrl.get_collection(item_id)
         ctrl = self.get_controller(media_type)
         return await ctrl.get(
             item_id=item_id,
@@ -1406,7 +1411,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             seconds_played = 0
             if (
                 fully_played
-                and not isinstance(media_item, Album | Artist | Genre | Playlist | Podcast)
+                and not isinstance(
+                    media_item, Album | Artist | Genre | Playlist | Podcast | MediaCollection
+                )
                 and isinstance(media_item.duration, int)  # for Radio duration can be None
             ):
                 seconds_played = media_item.duration
@@ -1779,6 +1786,28 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         raise NotImplementedError(
             f"No media controller available for media type: {media_type.value}"
         )
+
+    def get_controller_for_collection(
+        self, item_id: str
+    ) -> (
+        ArtistsController
+        | AlbumsController
+        | TracksController
+        | RadioController
+        | PlaylistController
+        | AudiobooksController
+        | PodcastsController
+        | GenreController
+    ):
+        """Return controller for MediaType."""
+        media_type = get_collection_item_media_type_from_item_id(item_id)
+        controller = self.get_controller(media_type)
+        if not isinstance(controller, AudiobooksController):
+            # currently only supported for audiobooks
+            raise NotImplementedError(
+                f"No media controller available for media type: {media_type.value}"
+            )
+        return controller
 
     def get_provider_instances(
         self, domain: str, return_unavailable: bool = False

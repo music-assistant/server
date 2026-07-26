@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import (
     LoginFailed,
 )
@@ -19,6 +21,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import (
+    CONF_ENTRY_UNOFFICIAL_PROVIDER,
     CONF_PASSWORD,
     CONF_USERNAME,
 )
@@ -27,6 +30,7 @@ from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 from music_assistant.providers.yousee.api_client import YouSeeAPIClient
 from music_assistant.providers.yousee.auth_manager import YouSeeAuthManager
+from music_assistant.providers.yousee.constants import CONF_QUALITY
 from music_assistant.providers.yousee.library import YouSeeLibraryManager
 from music_assistant.providers.yousee.media import YouSeeMediaManager
 from music_assistant.providers.yousee.playlist import YouSeePlaylistManager
@@ -60,9 +64,24 @@ class YouSeeMusikProvider(RecommendationPayloadMixin, MusicProvider):
 
     auth: YouSeeAuthManager
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.INTEGER,
+                default_value=320,
+                options=[
+                    ConfigValueOption(320),
+                    ConfigValueOption(192),
+                ],
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_PASSWORD):
+        if not self.get_setup_value(CONF_USERNAME) or not self.get_setup_value(CONF_PASSWORD):
             msg = "Invalid login credentials"
             raise LoginFailed(msg)
         # try to get a token, raise if that fails
@@ -76,7 +95,7 @@ class YouSeeMusikProvider(RecommendationPayloadMixin, MusicProvider):
 
         token = await self.auth.auth_token()
         if not token:
-            msg = f"Login failed for user {self.config.get_value(CONF_USERNAME)}"
+            msg = f"Login failed for user {self.get_setup_value(CONF_USERNAME)}"
             raise LoginFailed(msg)
 
     async def search(

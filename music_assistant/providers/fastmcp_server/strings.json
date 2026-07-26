@@ -159,6 +159,9 @@
     "config_write_secret": {
       "label": "Config: allow writing secret values",
       "description": "Required IN ADDITION to a category write flag before any SECURE_STRING (password/token) value can be written. With this off, secret writes are rejected while non-secret edits still work. Keep off unless deliberately rotating credentials."
+    },
+    "connect_wizard_url": {
+      "label": "Connect Wizard"
     }
   },
   "config_categories": {

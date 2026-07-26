@@ -2,20 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, ProviderFeature
+from music_assistant_models.enums import ProviderFeature
 from music_assistant_models.errors import SetupFailedError
 
-from music_assistant.constants import (
-    CONF_ENTRY_UNOFFICIAL_PROVIDER,
-    CONF_PASSWORD,
-    CONF_SOCKS_URL,
-    CONF_USERNAME,
-)
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 
-from .constants import CONF_QUALITY, CONF_TAKEOVER_ACTION, QUALITY_HIGH, QUALITY_STANDARD
 from .provider import PandoraProvider
 
 if TYPE_CHECKING:
@@ -36,8 +29,12 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider instance with given configuration."""
-    username = config.get_value(CONF_USERNAME)
-    password = config.get_value(CONF_PASSWORD)
+    # read the stored values directly: the config's option entries are only resolved
+    # (and its values populated) once the instance exists, which is after this call.
+    # A non-empty (still-encrypted) password satisfies the presence check below; the
+    # provider decrypts it via get_config_value once loaded.
+    username = mass.config.get_raw_provider_config_value(config.instance_id, CONF_USERNAME)
+    password = mass.config.get_raw_provider_config_value(config.instance_id, CONF_PASSWORD)
 
     # Type-safe validation
     if (
@@ -51,54 +48,3 @@ async def setup(
         raise SetupFailedError("Username and password are required")
 
     return PandoraProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return configuration entries for this provider."""
-    # ruff: noqa: ARG001
-    if action == CONF_TAKEOVER_ACTION and instance_id:
-        provider = cast("PandoraProvider|None", mass.get_provider(instance_id))
-        if provider is not None:
-            await provider.takeover_stream()
-
-    return (
-        CONF_ENTRY_UNOFFICIAL_PROVIDER,
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_QUALITY,
-            type=ConfigEntryType.STRING,
-            required=True,
-            default_value=QUALITY_STANDARD,
-            options=[
-                ConfigValueOption(QUALITY_STANDARD),
-                ConfigValueOption(QUALITY_HIGH),
-            ],
-        ),
-        ConfigEntry(
-            key=CONF_SOCKS_URL,
-            type=ConfigEntryType.STRING,
-            required=False,
-            default_value="",
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_TAKEOVER_ACTION,
-            type=ConfigEntryType.ACTION,
-            action=CONF_TAKEOVER_ACTION,
-            required=False,
-        ),
-    )

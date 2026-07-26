@@ -16,6 +16,10 @@ on:
           - beta
           - rc
           - nightly
+      source_sha:
+        description: "Exact full commit SHA for draft/published recovery; leave empty to resolve the current channel branch head"
+        required: false
+        type: string
       important_notes:
         description: "Important notes (breaking changes, critical info, etc.)"
         required: false
@@ -29,552 +33,1580 @@ on:
         description: "Release channel"
         required: true
         type: string
+      source_sha:
+        description: "Exact source commit to release"
+        required: true
+        type: string
       important_notes:
         description: "Important notes (breaking changes, critical info, etc.)"
         required: false
         type: string
     secrets:
-      PRIVILEGED_GITHUB_TOKEN:
+      MUSIC_ASSISTANT_BOT_PRIVATE_KEY:
         required: true
 
 env:
   BASE_IMAGE_VERSION_STABLE: "1.5.4"
   BASE_IMAGE_VERSION_BETA: "1.6.0"
   BASE_IMAGE_VERSION_NIGHTLY: "1.6.0"
+  EXPECTED_APP_SLUG: musicassistant-bot
+  EXPECTED_APP_INSTALLATION_ID: "146062122"
 
 permissions:
   contents: read
 
+concurrency:
+  group: immutable-release
+  cancel-in-progress: false
+
 jobs:
-  determine-branch:
-    name: Determine release branch
+  resolve:
+    name: Resolve and validate release state
     runs-on: ubuntu-latest
+    permissions:
+      # GitHub only includes draft releases for tokens with push access.
+      contents: write
     outputs:
       branch: ${{ steps.branch.outputs.branch }}
+      source_sha: ${{ steps.source.outputs.sha }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
+      base_image_version: ${{ steps.version.outputs.base_image_version }}
+      release_state: ${{ steps.state.outputs.release_state }}
+      is_current: ${{ steps.state.outputs.is_current }}
+      release_id: ${{ steps.state.outputs.release_id }}
+      assets_ready: ${{ steps.state.outputs.assets_ready }}
+      wheel_name: ${{ steps.state.outputs.wheel_name }}
+      wheel_size: ${{ steps.state.outputs.wheel_size }}
+      wheel_sha256: ${{ steps.state.outputs.wheel_sha256 }}
+      sdist_name: ${{ steps.state.outputs.sdist_name }}
+      sdist_size: ${{ steps.state.outputs.sdist_size }}
+      sdist_sha256: ${{ steps.state.outputs.sdist_sha256 }}
     steps:
-      - name: Determine branch to use
-        id: branch
-        run: |
-          CHANNEL="${{ inputs.channel }}"
+      - name: Check out release workflow
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-workflow
+          persist-credentials: false
 
-          if [ "$CHANNEL" = "stable" ] || [ "$CHANNEL" = "rc" ]; then
-            echo "branch=stable" >> $GITHUB_OUTPUT
-            echo "Using stable branch for $CHANNEL release"
+      - name: Resolve source branch
+        id: branch
+        run: >-
+          python3 .release-workflow/scripts/release_workflow.py branch
+          --channel "${{ inputs.channel }}"
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Check out source branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ steps.branch.outputs.branch }}
+          fetch-depth: 0
+          path: source
+          persist-credentials: false
+
+      - name: Resolve exact source commit
+        id: source
+        env:
+          REQUESTED_SHA: ${{ inputs.source_sha }}
+        run: |
+          branch_sha=$(git -C source rev-parse HEAD)
+          if [ -n "$REQUESTED_SHA" ]; then
+            requested_sha=$(printf '%s' "$REQUESTED_SHA" |
+              tr '[:upper:]' '[:lower:]')
+            if ! [[ "$requested_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "source_sha must be a full commit SHA" >&2
+              exit 1
+            fi
+            source_sha=$(git -C source rev-parse "$requested_sha^{commit}")
+            if ! git -C source merge-base --is-ancestor "$source_sha" "$branch_sha"; then
+              echo "$source_sha is not part of ${{ steps.branch.outputs.branch }}" >&2
+              exit 1
+            fi
           else
-            echo "branch=dev" >> $GITHUB_OUTPUT
-            echo "Using dev branch for $CHANNEL release"
+            source_sha="$branch_sha"
+          fi
+          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "Release source: ${{ steps.branch.outputs.branch }}@$source_sha"
+
+      - name: Validate version
+        id: version
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          python3 .release-workflow/scripts/release_workflow.py validate-version \
+            --channel "$CHANNEL" \
+            --version "$VERSION"
+          case "$CHANNEL" in
+            stable)
+              echo "is_prerelease=false" >> "$GITHUB_OUTPUT"
+              echo "base_image_version=${{ env.BASE_IMAGE_VERSION_STABLE }}" >> "$GITHUB_OUTPUT"
+              ;;
+            beta)
+              echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+              echo "base_image_version=${{ env.BASE_IMAGE_VERSION_BETA }}" >> "$GITHUB_OUTPUT"
+              ;;
+            rc)
+              echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+              echo "base_image_version=${{ env.BASE_IMAGE_VERSION_STABLE }}" >> "$GITHUB_OUTPUT"
+              ;;
+            nightly)
+              echo "is_prerelease=true" >> "$GITHUB_OUTPUT"
+              echo "base_image_version=${{ env.BASE_IMAGE_VERSION_NIGHTLY }}" >> "$GITHUB_OUTPUT"
+              ;;
+          esac
+
+      - name: Create immutable-settings token
+        id: immutable_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.repository }}
+          permission-administration: read
+
+      - name: Verify GitHub App identity
+        env:
+          APP_SLUG: ${{ steps.immutable_token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.immutable_token.outputs.installation-id }}
+        run: |
+          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
+             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
+            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
+            exit 1
           fi
 
-  preflight-checks:
-    name: Run tests and linting before release
-    needs: determine-branch
+      - name: Require immutable releases
+        env:
+          GH_TOKEN: ${{ steps.immutable_token.outputs.token }}
+        run: |
+          enabled=$(gh api \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "repos/$GITHUB_REPOSITORY/immutable-releases" \
+            --jq '.enabled')
+          if [ "$enabled" != "true" ]; then
+            echo "Immutable releases must be enabled before a release can run" >&2
+            exit 1
+          fi
+
+      - name: Inspect existing tag and release
+        id: state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IS_PRERELEASE: ${{ steps.version.outputs.is_prerelease }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          release_json="$RUNNER_TEMP/release.json"
+          release_lookup="$RUNNER_TEMP/release-lookup.txt"
+          gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            > "$RUNNER_TEMP/releases.json"
+          python3 .release-workflow/scripts/release_workflow.py select-release \
+            --version "$VERSION" \
+            --releases-json "$RUNNER_TEMP/releases.json" \
+            --release-json "$release_json" \
+            --github-output "$release_lookup"
+          release_exists=$(sed -n 's/^release_exists=//p' "$release_lookup")
+          release_id=$(sed -n 's/^release_id=//p' "$release_lookup")
+
+          tag_sha=""
+          tag_is_resumable=false
+          if git -C source show-ref --verify --quiet "refs/tags/$VERSION"; then
+            tag_sha=$(git -C source rev-parse "refs/tags/$VERSION^{commit}")
+            gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" \
+              > "$RUNNER_TEMP/tag-ref.json"
+            if [ "$(jq -r '.object.type' "$RUNNER_TEMP/tag-ref.json")" = "tag" ]; then
+              tag_object_sha=$(jq -r '.object.sha' "$RUNNER_TEMP/tag-ref.json")
+              gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object_sha" \
+                > "$RUNNER_TEMP/tag-object.json"
+              tag_message="Music Assistant release $VERSION from $SOURCE_SHA"
+              if jq -e \
+                --arg version "$VERSION" \
+                --arg source "$SOURCE_SHA" \
+                --arg message "$tag_message" \
+                '.tag == $version and
+                 .message == $message and
+                 .object.type == "commit" and
+                 .object.sha == $source and
+                 .tagger.name == "github-actions[bot]"' \
+                "$RUNNER_TEMP/tag-object.json" > /dev/null; then
+                tag_is_resumable=true
+              fi
+            fi
+          fi
+          current_outputs="$RUNNER_TEMP/current-version.txt"
+          python3 .release-workflow/scripts/release_workflow.py current-version \
+            --channel "${{ inputs.channel }}" \
+            --version "$VERSION" \
+            --repository source \
+            --github-output "$current_outputs"
+          cat "$current_outputs" >> "$GITHUB_OUTPUT"
+          is_current=$(sed -n 's/^is_current=//p' "$current_outputs")
+
+          if [ "$release_exists" = "false" ]; then
+            if [ -n "$tag_sha" ] && [ "$tag_is_resumable" != "true" ]; then
+              echo "Tag $VERSION already exists without a resumable workflow marker" >&2
+              exit 1
+            fi
+            if [ "$is_current" != "true" ]; then
+              echo "Version $VERSION is older than an existing channel tag" >&2
+              exit 1
+            fi
+            {
+              echo "release_state=new"
+              echo "release_id="
+              echo "assets_ready=false"
+            } >> "$GITHUB_OUTPUT"
+            if [ "$tag_is_resumable" = "true" ]; then
+              echo "Resuming the matching release tag $VERSION"
+            fi
+            exit 0
+          fi
+
+          draft=$(jq -r '.draft' "$release_json")
+          immutable=$(jq -r '.immutable' "$release_json")
+          target=$(jq -r '.target_commitish' "$release_json")
+          prerelease=$(jq -r '.prerelease' "$release_json")
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+
+          if [ "$draft" = "true" ]; then
+            if [ "$immutable" != "false" ] || [ "$target" != "$SOURCE_SHA" ]; then
+              echo "Existing draft does not match source commit $SOURCE_SHA" >&2
+              exit 1
+            fi
+            if [ "$tag_is_resumable" != "true" ] || [ "$tag_sha" != "$SOURCE_SHA" ]; then
+              echo "Existing draft does not have its matching workflow-created tag" >&2
+              exit 1
+            fi
+            if [ "$is_current" != "true" ]; then
+              echo "Draft $VERSION was superseded by a newer channel tag" >&2
+              exit 1
+            fi
+            echo "release_state=draft" >> "$GITHUB_OUTPUT"
+            asset_outputs="$RUNNER_TEMP/draft-assets.txt"
+            if python3 .release-workflow/scripts/release_workflow.py assets \
+              --version "$VERSION" \
+              --release-json "$release_json" \
+              --github-output "$asset_outputs"; then
+              cat "$asset_outputs" >> "$GITHUB_OUTPUT"
+              echo "assets_ready=true" >> "$GITHUB_OUTPUT"
+              echo "Reusing the verified assets from draft $VERSION"
+            else
+              echo "assets_ready=false" >> "$GITHUB_OUTPUT"
+              echo "Draft assets are incomplete or inconsistent and will be replaced"
+            fi
+            exit 0
+          fi
+
+          if [ "$immutable" != "true" ]; then
+            echo "Published release $VERSION is mutable and cannot be resumed" >&2
+            exit 1
+          fi
+          if [ -z "$tag_sha" ] || [ "$tag_sha" != "$SOURCE_SHA" ]; then
+            echo "Immutable release tag $VERSION does not match $SOURCE_SHA" >&2
+            exit 1
+          fi
+          if [ "$prerelease" != "$IS_PRERELEASE" ]; then
+            echo "Immutable release $VERSION has the wrong prerelease state" >&2
+            exit 1
+          fi
+          python3 .release-workflow/scripts/release_workflow.py assets \
+            --version "$VERSION" \
+            --release-json "$release_json" \
+            --github-output "$GITHUB_OUTPUT"
+          {
+            echo "release_state=published"
+            echo "assets_ready=true"
+          } >> "$GITHUB_OUTPUT"
+          echo "Immutable release $VERSION is already published; resuming downstream work"
+          if [ "$is_current" != "true" ]; then
+            echo "A newer channel release exists; rolling downstream state will not be changed"
+          fi
+
+  preflight:
+    name: Test exact release source
+    needs: resolve
+    if: needs.resolve.outputs.release_state != 'published'
     permissions:
       contents: read
       pull-requests: read
     uses: ./.github/workflows/test.yml
     with:
-      ref: ${{ needs.determine-branch.outputs.branch }}
+      ref: ${{ needs.resolve.outputs.source_sha }}
 
-  validate-and-build:
-    name: Validate version and build Python artifact
+  build_artifacts:
+    name: Build or recover release assets
     runs-on: ubuntu-latest
-    needs: [determine-branch, preflight-checks]
+    needs: [resolve, preflight]
+    if: needs.resolve.outputs.release_state != 'published'
+    permissions:
+      # GitHub requires push access to download assets from draft releases.
+      contents: write
     outputs:
-      version: ${{ inputs.version }}
-      is_prerelease: ${{ steps.validate.outputs.is_prerelease }}
-      base_image_version: ${{ steps.validate.outputs.base_image_version }}
-      branch: ${{ needs.determine-branch.outputs.branch }}
+      reused_assets: ${{ steps.mode.outputs.reused_assets }}
+      wheel_name: ${{ steps.assets.outputs.wheel_name }}
+      wheel_size: ${{ steps.assets.outputs.wheel_size }}
+      wheel_sha256: ${{ steps.assets.outputs.wheel_sha256 }}
+      sdist_name: ${{ steps.assets.outputs.sdist_name }}
+      sdist_size: ${{ steps.assets.outputs.sdist_size }}
+      sdist_sha256: ${{ steps.assets.outputs.sdist_sha256 }}
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out release workflow
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.determine-branch.outputs.branch }}
-          fetch-depth: 0
+          ref: ${{ github.workflow_sha }}
+          path: .release-workflow
+          persist-credentials: false
 
-      - name: Validate version number format
-        id: validate
+      - name: Check out release source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          path: source
+          persist-credentials: false
+
+      - name: Select asset source
+        id: mode
+        env:
+          ASSETS_READY: ${{ needs.resolve.outputs.assets_ready }}
         run: |
-          VERSION="${{ inputs.version }}"
-          CHANNEL="${{ inputs.channel }}"
+          echo "reused_assets=$ASSETS_READY" >> "$GITHUB_OUTPUT"
+          mkdir -p source/dist
 
-          # Regex patterns for each channel
-          STABLE_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+$'
-          BETA_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+b[0-9]+$'
-          RC_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+rc[0-9]+$'
-          NIGHTLY_PATTERN='^[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$'
-
-          # Validate version format matches channel
-          case "$CHANNEL" in
-            stable)
-              if ! [[ "$VERSION" =~ $STABLE_PATTERN ]]; then
-                echo "Error: Stable channel requires version format: X.Y.Z (e.g., 1.2.3)"
-                exit 1
-              fi
-              echo "is_prerelease=false" >> $GITHUB_OUTPUT
-              echo "base_image_version=${{ env.BASE_IMAGE_VERSION_STABLE }}" >> $GITHUB_OUTPUT
-              ;;
-            beta)
-              if ! [[ "$VERSION" =~ $BETA_PATTERN ]]; then
-                echo "Error: Beta channel requires version format: X.Y.ZbN (e.g., 1.2.3b1)"
-                exit 1
-              fi
-              echo "is_prerelease=true" >> $GITHUB_OUTPUT
-              echo "base_image_version=${{ env.BASE_IMAGE_VERSION_BETA }}" >> $GITHUB_OUTPUT
-              ;;
-            rc)
-              if ! [[ "$VERSION" =~ $RC_PATTERN ]]; then
-                echo "Error: RC channel requires version format: X.Y.ZrcN (e.g., 1.2.3rc1)"
-                exit 1
-              fi
-              echo "is_prerelease=true" >> $GITHUB_OUTPUT
-              echo "base_image_version=${{ env.BASE_IMAGE_VERSION_STABLE }}" >> $GITHUB_OUTPUT
-              ;;
-            nightly)
-              if ! [[ "$VERSION" =~ $NIGHTLY_PATTERN ]]; then
-                echo "Error: Nightly channel requires version format: X.Y.Z.devN (e.g., 1.2.3.dev1)"
-                exit 1
-              fi
-              echo "is_prerelease=true" >> $GITHUB_OUTPUT
-              echo "base_image_version=${{ env.BASE_IMAGE_VERSION_NIGHTLY }}" >> $GITHUB_OUTPUT
-              ;;
-            *)
-              echo "Error: Invalid channel: $CHANNEL"
+      - name: Recover matching draft assets
+        if: needs.resolve.outputs.assets_ready == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.resolve.outputs.release_id }}
+          SDIST_NAME: ${{ needs.resolve.outputs.sdist_name }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+          WHEEL_NAME: ${{ needs.resolve.outputs.wheel_name }}
+        run: |
+          if [ -z "$RELEASE_ID" ]; then
+            echo "Missing release id for reusable draft assets" >&2
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            > "$RUNNER_TEMP/release.json"
+          if [ "$(jq -r '.id // empty' "$RUNNER_TEMP/release.json")" != "$RELEASE_ID" ] || \
+             [ "$(jq -r '.tag_name // empty' "$RUNNER_TEMP/release.json")" != "$VERSION" ] || \
+             [ "$(jq -r '.draft' "$RUNNER_TEMP/release.json")" != "true" ] || \
+             [ "$(jq -r '.immutable' "$RUNNER_TEMP/release.json")" != "false" ] || \
+             [ "$(jq -r '.target_commitish' "$RUNNER_TEMP/release.json")" != "$SOURCE_SHA" ]; then
+            echo "Resolved release $RELEASE_ID is no longer the matching mutable draft" >&2
+            exit 1
+          fi
+          for asset_name in "$WHEEL_NAME" "$SDIST_NAME"; do
+            asset_count=$(jq \
+              --arg name "$asset_name" \
+              '[.assets[] | select(.name == $name)] | length' \
+              "$RUNNER_TEMP/release.json")
+            if [ "$asset_count" -ne 1 ]; then
+              echo "Draft must contain exactly one $asset_name asset" >&2
               exit 1
-              ;;
-          esac
+            fi
+            asset_id=$(jq -r \
+              --arg name "$asset_name" \
+              '.assets[] | select(.name == $name) | .id' \
+              "$RUNNER_TEMP/release.json")
+            gh api \
+              -H "Accept: application/octet-stream" \
+              "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" \
+              > "source/dist/$asset_name"
+          done
 
-          echo "✅ Version $VERSION is valid for $CHANNEL channel"
+      - name: Create appvars token
+        if: needs.resolve.outputs.assets_ready != 'true'
+        id: appvars_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: appvars
+          permission-contents: read
+
+      - name: Verify GitHub App identity
+        if: needs.resolve.outputs.assets_ready != 'true'
+        env:
+          APP_SLUG: ${{ steps.appvars_token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.appvars_token.outputs.installation-id }}
+        run: |
+          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
+             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
+            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
+            exit 1
+          fi
 
       - name: Set up Python
-        uses: actions/setup-python@v7.0.0
+        if: needs.resolve.outputs.assets_ready != 'true'
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version-file: ".python-version"
+          python-version-file: "source/.python-version"
           check-latest: true
 
       - name: Install build dependencies
-        run: >-
-          pip install build tomli tomli-w
+        if: needs.resolve.outputs.assets_ready != 'true'
+        run: python3 -m pip install build tomli tomli-w
 
-      - name: Update version in pyproject.toml
+      - name: Provision app secrets
+        if: needs.resolve.outputs.assets_ready != 'true'
+        env:
+          GH_TOKEN: ${{ steps.appvars_token.outputs.token }}
+        run: |
+          gh api \
+            -H "Accept: application/vnd.github.raw+json" \
+            "repos/music-assistant/appvars/contents/app_secrets.json" \
+            > source/music_assistant/helpers/app_secrets.json
+
+      - name: Set package version
+        if: needs.resolve.outputs.assets_ready != 'true'
+        working-directory: source
         shell: python
-        run: |-
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          import os
           import tomli
           import tomli_w
 
-          with open("pyproject.toml", "rb") as f:
-            pyproject = tomli.load(f)
+          with open("pyproject.toml", "rb") as file_handle:
+              pyproject = tomli.load(file_handle)
+          pyproject["project"]["version"] = os.environ["VERSION"]
+          with open("pyproject.toml", "wb") as file_handle:
+              tomli_w.dump(pyproject, file_handle)
 
-          pyproject["project"]["version"] = "${{ inputs.version }}"
+      - name: Build wheel and source distribution
+        if: needs.resolve.outputs.assets_ready != 'true'
+        working-directory: source
+        run: python3 -m build
 
-          with open("pyproject.toml", "wb") as f:
-            tomli_w.dump(pyproject, f)
-
-          print(f"✅ Updated pyproject.toml version to ${{ inputs.version }}")
-
-      - name: Provision app secrets
+      - name: Verify exact assets
+        id: assets
         env:
-          TOKEN: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
+          REUSED_ASSETS: ${{ steps.mode.outputs.reused_assets }}
+          VERSION: ${{ inputs.version }}
         run: |
-          curl -fsSL -H "Authorization: token ${TOKEN}" \
-            https://raw.githubusercontent.com/music-assistant/appvars/main/app_secrets.json \
-            -o music_assistant/helpers/app_secrets.json
+          extra_args=()
+          if [ "$REUSED_ASSETS" = "true" ]; then
+            extra_args=(--release-json "$RUNNER_TEMP/release.json")
+          fi
+          python3 .release-workflow/scripts/release_workflow.py assets \
+            --version "$VERSION" \
+            --directory source/dist \
+            "${extra_args[@]}" \
+            --github-output "$GITHUB_OUTPUT"
 
-      - name: Build python package
-        run: >-
-          python3 -m build
-
-      - name: Upload distributions
-        uses: actions/upload-artifact@v7
+      - name: Preserve release assets
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: release-dists
-          path: dist/
+          name: release-dists-${{ github.run_id }}
+          path: source/dist/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+          overwrite: true
 
-  create-release:
-    name: Create GitHub Release with Release Drafter
+  prepare_draft:
+    name: Prepare and verify draft release
     runs-on: ubuntu-latest
-    needs: validate-and-build
+    needs: [resolve, build_artifacts]
+    if: needs.resolve.outputs.release_state != 'published'
     permissions:
       contents: write
       pull-requests: read
     outputs:
-      release_id: ${{ steps.create_release.outputs.id }}
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      release_id: ${{ steps.draft.outputs.release_id }}
+      wheel_name: ${{ steps.assets.outputs.wheel_name }}
+      wheel_size: ${{ steps.assets.outputs.wheel_size }}
+      wheel_sha256: ${{ steps.assets.outputs.wheel_sha256 }}
+      sdist_name: ${{ steps.assets.outputs.sdist_name }}
+      sdist_size: ${{ steps.assets.outputs.sdist_size }}
+      sdist_sha256: ${{ steps.assets.outputs.sdist_sha256 }}
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out release workflow
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.validate-and-build.outputs.branch }}
+          ref: ${{ github.workflow_sha }}
+          path: .release-workflow
+          persist-credentials: false
+
+      - name: Check out release source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
           fetch-depth: 0
+          path: source
+          persist-credentials: false
 
-      - name: Download distributions
-        uses: actions/download-artifact@v8
+      - name: Restore release assets
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
         with:
-          name: release-dists
-          path: dist/
+          name: release-dists-${{ github.run_id }}
+          path: source/dist/
 
-      - name: Determine previous version tag
-        id: prev_version
-        run: |
-          CHANNEL="${{ inputs.channel }}"
+      - name: Determine previous release tag
+        id: previous
+        working-directory: source
+        run: >-
+          python3 ../.release-workflow/scripts/release_workflow.py previous-tag
+          --channel "${{ inputs.channel }}"
+          --version "${{ inputs.version }}"
+          --github-output "$GITHUB_OUTPUT"
 
-          # Find the previous tag of this channel
-          case "$CHANNEL" in
-            stable)
-              PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
-              ;;
-            beta)
-              # Include both beta (bN) and RC (rcN) tags since both go to the beta channel
-              PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(b|rc)[0-9]+$' | head -n 1)
-              ;;
-            rc)
-              # RC1 diffs against latest beta, RC2+ diffs against previous RC
-              VERSION="${{ inputs.version }}"
-              if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)rc([0-9]+)$ ]]; then
-                BASE_VER="${BASH_REMATCH[1]}"
-                RC_NUM="${BASH_REMATCH[2]}"
-                if [ "$RC_NUM" -gt 1 ]; then
-                  # RC2+: diff against previous RC
-                  PREV_RC_NUM=$((RC_NUM - 1))
-                  PREV_TAG="${BASE_VER}rc${PREV_RC_NUM}"
-                  # Verify tag exists, fall back to latest beta if not
-                  if ! git tag -l "$PREV_TAG" | grep -q .; then
-                    PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+b[0-9]+$' | head -n 1)
-                  fi
-                else
-                  # RC1: diff against latest beta
-                  PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+b[0-9]+$' | head -n 1)
-                fi
-              fi
-              ;;
-            nightly)
-              PREV_TAG=$(git tag --sort=-version:refname | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.dev[0-9]+$' | head -n 1)
-              ;;
-          esac
-
-          if [ -z "$PREV_TAG" ]; then
-            echo "⚠️  No previous $CHANNEL release found"
-            echo "prev_tag=" >> $GITHUB_OUTPUT
-            echo "has_prev_tag=false" >> $GITHUB_OUTPUT
-          else
-            echo "✅ Previous $CHANNEL release: $PREV_TAG"
-            echo "prev_tag=$PREV_TAG" >> $GITHUB_OUTPUT
-            echo "has_prev_tag=true" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Generate complete release notes
-        id: generate_notes
-        uses: ./.github/actions/generate-release-notes
+      - name: Generate release notes
+        id: notes
+        uses: ./.release-workflow/.github/actions/generate-release-notes
         with:
           version: ${{ inputs.version }}
-          previous-tag: ${{ steps.prev_version.outputs.prev_tag }}
-          branch: ${{ needs.validate-and-build.outputs.branch }}
+          previous-tag: ${{ steps.previous.outputs.previous_tag }}
+          head-sha: ${{ needs.resolve.outputs.source_sha }}
+          repository-path: source
           channel: ${{ inputs.channel }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ github.token }}
           important-notes: ${{ inputs.important_notes }}
 
       - name: Format release title
-        id: format_title
+        id: title
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          VERSION: ${{ inputs.version }}
         run: |
-          VERSION="${{ inputs.version }}"
-          CHANNEL="${{ inputs.channel }}"
+          case "$CHANNEL" in
+            nightly)
+              if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.dev([0-9]+)$ ]]; then
+                title="${BASH_REMATCH[1]} NIGHTLY ${BASH_REMATCH[2]}"
+              else
+                title="$VERSION NIGHTLY"
+              fi
+              ;;
+            beta)
+              if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)b([0-9]+)$ ]]; then
+                title="${BASH_REMATCH[1]} BETA ${BASH_REMATCH[2]}"
+              else
+                title="$VERSION BETA"
+              fi
+              ;;
+            rc)
+              if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)rc([0-9]+)$ ]]; then
+                title="${BASH_REMATCH[1]} RC ${BASH_REMATCH[2]}"
+              else
+                title="$VERSION RC"
+              fi
+              ;;
+            stable)
+              title="$VERSION"
+              ;;
+          esac
+          echo "title=$title" >> "$GITHUB_OUTPUT"
 
-          if [[ "$CHANNEL" == "nightly" ]]; then
-            # Extract base version and date from X.Y.Z.devYYYYMMDD
-            if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)\.dev([0-9]+)$ ]]; then
-              BASE="${BASH_REMATCH[1]}"
-              DATE="${BASH_REMATCH[2]}"
-              TITLE="$BASE NIGHTLY $DATE"
-            else
-              TITLE="$VERSION NIGHTLY"
+      - name: Create or update matching draft
+        id: draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IS_PRERELEASE: ${{ needs.resolve.outputs.is_prerelease }}
+          RELEASE_ID: ${{ needs.resolve.outputs.release_id }}
+          RELEASE_NOTES: ${{ steps.notes.outputs.release-notes }}
+          RELEASE_TITLE: ${{ steps.title.outputs.title }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          release_json="$RUNNER_TEMP/release.json"
+          if [ -n "$RELEASE_ID" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+              > "$release_json"
+            if [ "$(jq -r '.id // empty' "$release_json")" != "$RELEASE_ID" ] || \
+               [ "$(jq -r '.tag_name // empty' "$release_json")" != "$VERSION" ] || \
+               [ "$(jq -r '.draft' "$release_json")" != "true" ] || \
+               [ "$(jq -r '.immutable' "$release_json")" != "false" ] || \
+               [ "$(jq -r '.target_commitish' "$release_json")" != "$SOURCE_SHA" ]; then
+              echo "Resolved release $RELEASE_ID is no longer the matching mutable draft" >&2
+              exit 1
             fi
-          elif [[ "$CHANNEL" == "beta" ]]; then
-            # Extract base version and beta number from X.Y.ZbN
-            if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)b([0-9]+)$ ]]; then
-              BASE="${BASH_REMATCH[1]}"
-              BETA_NUM="${BASH_REMATCH[2]}"
-              TITLE="$BASE BETA $BETA_NUM"
-            else
-              TITLE="$VERSION BETA"
-            fi
-          elif [[ "$CHANNEL" == "rc" ]]; then
-            # Extract base version and RC number from X.Y.ZrcN
-            if [[ "$VERSION" =~ ^([0-9]+\.[0-9]+\.[0-9]+)rc([0-9]+)$ ]]; then
-              BASE="${BASH_REMATCH[1]}"
-              RC_NUM="${BASH_REMATCH[2]}"
-              TITLE="$BASE RC $RC_NUM"
-            else
-              TITLE="$VERSION RC"
-            fi
+            release_exists=true
           else
-            # Stable release - just use the version
-            TITLE="$VERSION"
+            release_exists=false
           fi
 
-          echo "title=$TITLE" >> $GITHUB_OUTPUT
-          echo "Release title: $TITLE"
+          jq -n \
+            --arg tag "$VERSION" \
+            --arg target "$SOURCE_SHA" \
+            --arg name "$RELEASE_TITLE" \
+            --arg body "$RELEASE_NOTES" \
+            --argjson prerelease "$IS_PRERELEASE" \
+            '{
+              tag_name: $tag,
+              target_commitish: $target,
+              name: $name,
+              body: $body,
+              draft: true,
+              prerelease: $prerelease
+            }' > "$RUNNER_TEMP/release-payload.json"
 
-      - name: Create GitHub Release
-        id: create_release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ inputs.version }}
-          name: ${{ steps.format_title.outputs.title }}
-          body: ${{ steps.generate_notes.outputs.release-notes }}
-          prerelease: ${{ needs.validate-and-build.outputs.is_prerelease }}
-          target_commitish: ${{ needs.validate-and-build.outputs.branch }}
-          files: dist/*
+          tag_ref="$RUNNER_TEMP/tag-ref.json"
+          tag_error="$RUNNER_TEMP/tag-error.txt"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$VERSION" \
+            > "$tag_ref" 2> "$tag_error"; then
+            tag_exists=true
+          elif grep -q "HTTP 404" "$tag_error"; then
+            tag_exists=false
+          else
+            cat "$tag_error" >&2
+            exit 1
+          fi
+
+          tag_message="Music Assistant release $VERSION from $SOURCE_SHA"
+          if [ "$tag_exists" = "true" ]; then
+            if [ "$(jq -r '.object.type' "$tag_ref")" != "tag" ]; then
+              echo "Existing tag $VERSION was not created by this workflow" >&2
+              exit 1
+            fi
+            tag_object_sha=$(jq -r '.object.sha' "$tag_ref")
+            gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object_sha" \
+              > "$RUNNER_TEMP/tag-object.json"
+            jq -e \
+              --arg version "$VERSION" \
+              --arg source "$SOURCE_SHA" \
+              --arg message "$tag_message" \
+              '.tag == $version and
+               .message == $message and
+               .object.type == "commit" and
+               .object.sha == $source and
+               .tagger.name == "github-actions[bot]"' \
+              "$RUNNER_TEMP/tag-object.json" > /dev/null
+          elif [ "$release_exists" = "true" ]; then
+            echo "Existing draft $VERSION has no matching release tag" >&2
+            exit 1
+          else
+            tag_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+            jq -n \
+              --arg tag "$VERSION" \
+              --arg message "$tag_message" \
+              --arg object "$SOURCE_SHA" \
+              --arg date "$tag_date" \
+              '{
+                tag: $tag,
+                message: $message,
+                object: $object,
+                type: "commit",
+                tagger: {
+                  name: "github-actions[bot]",
+                  email: "41898282+github-actions[bot]@users.noreply.github.com",
+                  date: $date
+                }
+              }' > "$RUNNER_TEMP/tag-payload.json"
+            gh api --method POST \
+              "repos/$GITHUB_REPOSITORY/git/tags" \
+              --input "$RUNNER_TEMP/tag-payload.json" \
+              > "$RUNNER_TEMP/tag-object.json"
+            tag_object_sha=$(jq -r '.sha' "$RUNNER_TEMP/tag-object.json")
+            jq -n \
+              --arg ref "refs/tags/$VERSION" \
+              --arg sha "$tag_object_sha" \
+              '{ref: $ref, sha: $sha}' > "$RUNNER_TEMP/tag-ref-payload.json"
+            gh api --method POST \
+              "repos/$GITHUB_REPOSITORY/git/refs" \
+              --input "$RUNNER_TEMP/tag-ref-payload.json" \
+              > "$tag_ref"
+          fi
+
+          git -C source fetch origin \
+            "refs/tags/$VERSION:refs/tags/$VERSION" \
+            --quiet
+          tag_sha=$(git -C source rev-parse "refs/tags/$VERSION^{commit}")
+          if [ "$tag_sha" != "$SOURCE_SHA" ]; then
+            echo "Release tag $VERSION does not point to $SOURCE_SHA" >&2
+            exit 1
+          fi
+
+          if [ "$release_exists" = "true" ]; then
+            gh api --method PATCH \
+              "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+              --input "$RUNNER_TEMP/release-payload.json" \
+              > "$release_json"
+          else
+            gh api --method POST \
+              "repos/$GITHUB_REPOSITORY/releases" \
+              --input "$RUNNER_TEMP/release-payload.json" \
+              > "$release_json"
+          fi
+          release_id=$(jq -r '.id // empty' "$release_json")
+          if [ -z "$release_id" ] || \
+             { [ -n "$RELEASE_ID" ] && [ "$release_id" != "$RELEASE_ID" ]; } || \
+             [ "$(jq -r '.tag_name // empty' "$release_json")" != "$VERSION" ] || \
+             [ "$(jq -r '.draft' "$release_json")" != "true" ] || \
+             [ "$(jq -r '.immutable' "$release_json")" != "false" ] || \
+             [ "$(jq -r '.target_commitish' "$release_json")" != "$SOURCE_SHA" ]; then
+            echo "GitHub did not return the matching mutable draft for $VERSION" >&2
+            exit 1
+          fi
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+
+      - name: Replace draft assets
+        if: needs.build_artifacts.outputs.reused_assets != 'true'
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Output release info
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.draft.outputs.release_id }}
+          SDIST_NAME: ${{ needs.build_artifacts.outputs.sdist_name }}
+          VERSION: ${{ inputs.version }}
+          WHEEL_NAME: ${{ needs.build_artifacts.outputs.wheel_name }}
         run: |
-          echo "✅ Created release ${{ inputs.version }}"
-          echo "Release URL: ${{ steps.create_release.outputs.url }}"
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            --jq '.assets[].id' |
+            while read -r asset_id; do
+              gh api --method DELETE \
+                "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+            done
+          for asset_path in \
+            "source/dist/$WHEEL_NAME" \
+            "source/dist/$SDIST_NAME"; do
+            asset_name=$(basename "$asset_path")
+            curl --fail-with-body --silent --show-error \
+              --request POST \
+              --header "Accept: application/vnd.github+json" \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "Content-Type: application/octet-stream" \
+              --header "X-GitHub-Api-Version: 2026-03-10" \
+              --data-binary "@$asset_path" \
+              "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$asset_name" \
+              > "$RUNNER_TEMP/upload-$asset_name.json"
+          done
 
-  build-and-push-container-image:
-    name: Build and push Music Assistant Server container to ghcr.io
+      - name: Verify draft assets
+        id: assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ steps.draft.outputs.release_id }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            > "$RUNNER_TEMP/release.json"
+          if [ "$(jq -r '.draft' "$RUNNER_TEMP/release.json")" != "true" ] || \
+             [ "$(jq -r '.target_commitish' "$RUNNER_TEMP/release.json")" != "$SOURCE_SHA" ]; then
+            echo "Draft release changed while its assets were prepared" >&2
+            exit 1
+          fi
+          python3 .release-workflow/scripts/release_workflow.py assets \
+            --version "$VERSION" \
+            --directory source/dist \
+            --release-json "$RUNNER_TEMP/release.json" \
+            --github-output "$GITHUB_OUTPUT"
+
+  exact_image:
+    name: Build or verify exact container image
     runs-on: ubuntu-latest
+    needs: [resolve, prepare_draft]
+    if: >-
+      ${{
+        always() &&
+        !cancelled() &&
+        needs.resolve.result == 'success' &&
+        (
+          needs.prepare_draft.result == 'success' ||
+          (
+            needs.resolve.outputs.release_state == 'published' &&
+            needs.prepare_draft.result == 'skipped'
+          )
+        )
+      }}
     permissions:
+      contents: read
       packages: write
-    needs:
-      - validate-and-build
-      - create-release
+    outputs:
+      digest: ${{ steps.verify.outputs.digest }}
     steps:
-      - uses: actions/checkout@v7
+      - name: Check out release workflow
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ needs.validate-and-build.outputs.branch }}
+          ref: ${{ github.workflow_sha }}
+          path: .release-workflow
+          persist-credentials: false
 
-      - name: Download distributions
-        uses: actions/download-artifact@v8
+      - name: Check out release source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          name: release-dists
-          path: dist/
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          path: source
+          persist-credentials: false
 
-      - name: Log in to the GitHub container registry
-        uses: docker/login-action@v4.5.1
+      - name: Restore release assets
+        if: needs.resolve.outputs.release_state != 'published'
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: release-dists-${{ github.run_id }}
+          path: source/dist/
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          password: ${{ github.token }}
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4.2.0
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
-      - name: Generate Docker tags
-        id: tags
+      - name: Inspect exact image
+        id: existing
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/server:${{ inputs.version }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          WHEEL_SHA256: ${{ needs.resolve.outputs.release_state == 'published' && needs.resolve.outputs.wheel_sha256 || needs.prepare_draft.outputs.wheel_sha256 }}
         run: |
-          VERSION="${{ inputs.version }}"
-          CHANNEL="${{ inputs.channel }}"
+          error_file="$RUNNER_TEMP/image-inspect-error.txt"
+          for attempt in 1 2 3; do
+            if docker buildx imagetools inspect "$IMAGE" \
+              --format '{{json .Manifest}}' \
+              > "$RUNNER_TEMP/exact-manifest.json" 2> "$error_file"; then
+              echo "exists=true" >> "$GITHUB_OUTPUT"
+              python3 .release-workflow/scripts/release_workflow.py verify-manifest \
+                --manifest-json "$RUNNER_TEMP/exact-manifest.json" \
+                --source-sha "$SOURCE_SHA" \
+                --wheel-sha256 "$WHEEL_SHA256"
+              exit 0
+            fi
+            if grep -Eqi 'not found|manifest unknown|status.*404' "$error_file"; then
+              echo "exists=false" >> "$GITHUB_OUTPUT"
+              if [ "${{ needs.resolve.outputs.release_state }}" = "published" ]; then
+                echo "Immutable release ${{ inputs.version }} has no exact image" >&2
+                exit 1
+              fi
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              sleep 5
+            fi
+          done
+          cat "$error_file" >&2
+          exit 1
 
-          # Extract version components
-          if [[ "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
-            MAJOR="${BASH_REMATCH[1]}"
-            MINOR="${BASH_REMATCH[2]}"
-            PATCH="${BASH_REMATCH[3]}"
-          fi
-
-          TAGS="ghcr.io/${{ github.repository_owner }}/server:$VERSION"
-
-          case "$CHANNEL" in
-            stable)
-              # For stable: add major, minor, major.minor, stable, and latest tags
-              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:$MAJOR.$MINOR.$PATCH"
-              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:$MAJOR.$MINOR"
-              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:$MAJOR"
-              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:stable"
-              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:latest"
-              ;;
-            beta)
-              # For beta: add beta tag
-              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:beta"
-              ;;
-            rc)
-              # For RC: add beta rolling tag (RC updates the beta addon)
-              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:beta"
-              ;;
-            nightly)
-              # For nightly: add nightly tag
-              TAGS="$TAGS,ghcr.io/${{ github.repository_owner }}/server:nightly"
-              ;;
-          esac
-
-          echo "tags=$TAGS" >> $GITHUB_OUTPUT
-          echo "Docker tags: $TAGS"
-
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v7.3.0
+      - name: Build and push exact image
+        if: steps.existing.outputs.exists != 'true'
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
-          context: .
+          context: source
           platforms: linux/amd64,linux/arm64
-          file: Dockerfile
-          tags: ${{ steps.tags.outputs.tags }}
+          file: source/Dockerfile
+          tags: ghcr.io/${{ github.repository_owner }}/server:${{ inputs.version }}
           push: true
+          provenance: true
           build-args: |
             MASS_VERSION=${{ inputs.version }}
-            BASE_IMAGE_VERSION=${{ needs.validate-and-build.outputs.base_image_version }}
+            BASE_IMAGE_VERSION=${{ needs.resolve.outputs.base_image_version }}
+          labels: |
+            org.opencontainers.image.version=${{ inputs.version }}
+            org.opencontainers.image.revision=${{ needs.resolve.outputs.source_sha }}
+            io.music-assistant.wheel.sha256=${{ needs.prepare_draft.outputs.wheel_sha256 }}
+          annotations: |
+            index:org.opencontainers.image.version=${{ inputs.version }}
+            index:org.opencontainers.image.revision=${{ needs.resolve.outputs.source_sha }}
+            index:io.music-assistant.wheel.sha256=${{ needs.prepare_draft.outputs.wheel_sha256 }}
 
-  update-addon-repository:
-    name: Update Home Assistant Add-on Repository
-    runs-on: ubuntu-latest
-    needs:
-      - validate-and-build
-      - create-release
-      - build-and-push-container-image
-    steps:
-      - name: Determine addon folder
-        id: addon_folder
+      - name: Verify exact image
+        id: verify
+        env:
+          BUILT_DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/server:${{ inputs.version }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          WHEEL_SHA256: ${{ needs.resolve.outputs.release_state == 'published' && needs.resolve.outputs.wheel_sha256 || needs.prepare_draft.outputs.wheel_sha256 }}
         run: |
-          CHANNEL="${{ inputs.channel }}"
+          manifest_outputs=""
+          runtime_digests=""
+          for attempt in {1..12}; do
+            if docker buildx imagetools inspect "$IMAGE" \
+              --format '{{json .Manifest}}' \
+              > "$RUNNER_TEMP/exact-manifest.json"; then
+              if manifest_outputs=$(python3 \
+                .release-workflow/scripts/release_workflow.py verify-manifest \
+                --manifest-json "$RUNNER_TEMP/exact-manifest.json" \
+                --source-sha "$SOURCE_SHA" \
+                --wheel-sha256 "$WHEEL_SHA256"); then
+                printf '%s\n' "$manifest_outputs" >> "$GITHUB_OUTPUT"
+                runtime_digests=$(printf '%s\n' "$manifest_outputs" |
+                  sed -n 's/^runtime_digests=//p')
+                break
+              fi
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              echo "Exact image did not become verifiable" >&2
+              exit 1
+            fi
+            sleep 5
+          done
 
+          digest=$(jq -r '.digest' "$RUNNER_TEMP/exact-manifest.json")
+          if [ -n "$BUILT_DIGEST" ] && [ "$BUILT_DIGEST" != "$digest" ]; then
+            echo "Build output digest $BUILT_DIGEST does not match registry digest $digest" >&2
+            exit 1
+          fi
+
+          for runtime_digest in $runtime_digests; do
+            docker buildx imagetools inspect \
+              "ghcr.io/${{ github.repository_owner }}/server@$runtime_digest" \
+              --format '{{json .Image}}' > "$RUNNER_TEMP/image-config.json"
+            jq -e \
+              --arg source "$SOURCE_SHA" \
+              --arg wheel "$WHEEL_SHA256" \
+              '.config.Labels["org.opencontainers.image.revision"] == $source and
+               .config.Labels["io.music-assistant.wheel.sha256"] == $wheel' \
+              "$RUNNER_TEMP/image-config.json" > /dev/null
+          done
+
+  publish_release:
+    name: Publish and verify immutable release
+    runs-on: ubuntu-latest
+    needs: [resolve, prepare_draft, exact_image]
+    if: >-
+      ${{
+        always() &&
+        !cancelled() &&
+        needs.resolve.result == 'success' &&
+        needs.exact_image.result == 'success' &&
+        (
+          needs.prepare_draft.result == 'success' ||
+          (
+            needs.resolve.outputs.release_state == 'published' &&
+            needs.prepare_draft.result == 'skipped'
+          )
+        )
+      }}
+    permissions:
+      contents: write
+      packages: read
+    outputs:
+      wheel_sha256: ${{ steps.verify_assets.outputs.wheel_sha256 }}
+    steps:
+      - name: Check out release workflow
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-workflow
+          persist-credentials: false
+
+      - name: Check out release source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          fetch-depth: 0
+          path: source
+          persist-credentials: false
+
+      - name: Detect live publication state
+        id: publication_state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRAFT_RELEASE_ID: ${{ needs.prepare_draft.outputs.release_id }}
+          PUBLISHED_RELEASE_ID: ${{ needs.resolve.outputs.release_id }}
+          RELEASE_STATE: ${{ needs.resolve.outputs.release_state }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          case "$RELEASE_STATE" in
+            new|draft)
+              RELEASE_ID="$DRAFT_RELEASE_ID"
+              ;;
+            published)
+              RELEASE_ID="$PUBLISHED_RELEASE_ID"
+              ;;
+            *)
+              echo "Unsupported release state: $RELEASE_STATE" >&2
+              exit 1
+              ;;
+          esac
+          if [ -z "$RELEASE_ID" ]; then
+            echo "Missing release id for $RELEASE_STATE release $VERSION" >&2
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            > "$RUNNER_TEMP/live-release.json"
+          live_tag_name=$(jq -r '.tag_name' "$RUNNER_TEMP/live-release.json")
+          if [ "$live_tag_name" != "$VERSION" ]; then
+            echo "Release $VERSION resolves to tag $live_tag_name" >&2
+            exit 1
+          fi
+          draft=$(jq -r '.draft' "$RUNNER_TEMP/live-release.json")
+          immutable=$(jq -r '.immutable' "$RUNNER_TEMP/live-release.json")
+          if [ "$draft" = "true" ] && [ "$immutable" = "false" ]; then
+            echo "already_published=false" >> "$GITHUB_OUTPUT"
+          elif [ "$draft" = "false" ] && [ "$immutable" = "true" ]; then
+            echo "already_published=true" >> "$GITHUB_OUTPUT"
+            echo "Release $VERSION is already immutable; skipping publication"
+          else
+            echo "Release $VERSION is neither a mutable draft nor immutable" >&2
+            exit 1
+          fi
+
+      - name: Restore draft assets
+        if: steps.publication_state.outputs.already_published != 'true'
+        uses: actions/download-artifact@70fc10c6e5e1ce46ad2ea6f2b72d43f7d47b13c3 # v8.0.0
+        with:
+          name: release-dists-${{ github.run_id }}
+          path: source/dist/
+
+      - name: Revalidate draft
+        if: steps.publication_state.outputs.already_published != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.prepare_draft.outputs.release_id }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            > "$RUNNER_TEMP/release.json"
+          if [ "$(jq -r '.draft' "$RUNNER_TEMP/release.json")" != "true" ] || \
+             [ "$(jq -r '.immutable' "$RUNNER_TEMP/release.json")" != "false" ] || \
+             [ "$(jq -r '.target_commitish' "$RUNNER_TEMP/release.json")" != "$SOURCE_SHA" ]; then
+            echo "Release $VERSION is no longer the prepared draft" >&2
+            exit 1
+          fi
+          python3 .release-workflow/scripts/release_workflow.py assets \
+            --version "$VERSION" \
+            --directory source/dist \
+            --release-json "$RUNNER_TEMP/release.json"
+
+      - name: Create publication settings token
+        if: steps.publication_state.outputs.already_published != 'true'
+        id: immutable_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.repository }}
+          permission-administration: read
+
+      - name: Verify GitHub App identity
+        if: steps.publication_state.outputs.already_published != 'true'
+        env:
+          APP_SLUG: ${{ steps.immutable_token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.immutable_token.outputs.installation-id }}
+        run: |
+          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
+             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
+            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
+            exit 1
+          fi
+
+      - name: Recheck immutable releases
+        if: steps.publication_state.outputs.already_published != 'true'
+        env:
+          GH_TOKEN: ${{ steps.immutable_token.outputs.token }}
+        run: |
+          enabled=$(gh api \
+            -H "X-GitHub-Api-Version: 2026-03-10" \
+            "repos/$GITHUB_REPOSITORY/immutable-releases" \
+            --jq '.enabled')
+          if [ "$enabled" != "true" ]; then
+            echo "Immutable releases were disabled before publication" >&2
+            exit 1
+          fi
+
+      - name: Publish release once
+        if: steps.publication_state.outputs.already_published != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.prepare_draft.outputs.release_id }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh api --method PATCH \
+            "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            -F draft=false > "$RUNNER_TEMP/published-release.json"
+          if [ "$(jq -r '.immutable' "$RUNNER_TEMP/published-release.json")" != "true" ]; then
+            echo "GitHub published $VERSION without making it immutable" >&2
+            exit 1
+          fi
+
+      - name: Verify immutable release and assets
+        id: verify_assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IS_PRERELEASE: ${{ needs.resolve.outputs.is_prerelease }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          for attempt in {1..12}; do
+            if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION" \
+              > "$RUNNER_TEMP/release.json" &&
+              [ "$(jq -r '.immutable' "$RUNNER_TEMP/release.json")" = "true" ]; then
+              break
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              echo "Release $VERSION did not become immutable" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+
+          if [ "$(jq -r '.draft' "$RUNNER_TEMP/release.json")" != "false" ] || \
+             [ "$(jq -r '.prerelease' "$RUNNER_TEMP/release.json")" != "$IS_PRERELEASE" ]; then
+            echo "Published release metadata does not match the requested channel" >&2
+            exit 1
+          fi
+          if [ "$(gh release view "$VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --json isImmutable \
+            --jq '.isImmutable')" != "true" ]; then
+            echo "GitHub CLI does not report $VERSION as immutable" >&2
+            exit 1
+          fi
+
+          git -C source fetch origin \
+            "refs/tags/$VERSION:refs/tags/$VERSION" \
+            --quiet
+          tag_sha=$(git -C source rev-parse "refs/tags/$VERSION^{commit}")
+          if [ "$tag_sha" != "$SOURCE_SHA" ]; then
+            echo "Published tag $VERSION points to $tag_sha, not $SOURCE_SHA" >&2
+            exit 1
+          fi
+
+          rm -rf "$RUNNER_TEMP/verified-assets"
+          mkdir -p "$RUNNER_TEMP/verified-assets"
+          python3 .release-workflow/scripts/release_workflow.py assets \
+            --version "$VERSION" \
+            --release-json "$RUNNER_TEMP/release.json"
+          gh release download "$VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --dir "$RUNNER_TEMP/verified-assets" \
+            --pattern "music_assistant-$VERSION*"
+          python3 .release-workflow/scripts/release_workflow.py assets \
+            --version "$VERSION" \
+            --directory "$RUNNER_TEMP/verified-assets" \
+            --release-json "$RUNNER_TEMP/release.json" \
+            --github-output "$GITHUB_OUTPUT"
+
+          for attempt in {1..12}; do
+            if gh release verify "$VERSION" --repo "$GITHUB_REPOSITORY"; then
+              break
+            fi
+            if [ "$attempt" -eq 12 ]; then
+              echo "Release attestation verification failed" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+          for asset in "$RUNNER_TEMP/verified-assets"/*; do
+            gh release verify-asset "$VERSION" "$asset" --repo "$GITHUB_REPOSITORY"
+          done
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Verify published exact image
+        env:
+          EXPECTED_DIGEST: ${{ needs.exact_image.outputs.digest }}
+          IMAGE: ghcr.io/${{ github.repository_owner }}/server:${{ inputs.version }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          WHEEL_SHA256: ${{ steps.verify_assets.outputs.wheel_sha256 }}
+        run: |
+          docker buildx imagetools inspect "$IMAGE" \
+            --format '{{json .Manifest}}' \
+            > "$RUNNER_TEMP/exact-manifest.json"
+          python3 .release-workflow/scripts/release_workflow.py verify-manifest \
+            --manifest-json "$RUNNER_TEMP/exact-manifest.json" \
+            --source-sha "$SOURCE_SHA" \
+            --wheel-sha256 "$WHEEL_SHA256"
+          digest=$(jq -r '.digest' "$RUNNER_TEMP/exact-manifest.json")
+          if [ "$digest" != "$EXPECTED_DIGEST" ]; then
+            echo "Exact image digest changed before release verification" >&2
+            exit 1
+          fi
+
+  promote_image:
+    name: Promote verified image digest
+    runs-on: ubuntu-latest
+    needs: [resolve, exact_image, publish_release]
+    if: needs.resolve.outputs.is_current == 'true'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out release workflow
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-workflow
+          persist-credentials: false
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@abd2ef45e78c5afb21d64d4ca52ee8550d9572c7 # v4.5.1
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Promote exact digest to rolling aliases
+        env:
+          CHANNEL: ${{ inputs.channel }}
+          DIGEST: ${{ needs.exact_image.outputs.digest }}
+          IMAGE_REPOSITORY: ghcr.io/${{ github.repository_owner }}/server
+          VERSION: ${{ inputs.version }}
+        run: |
+          aliases=()
           case "$CHANNEL" in
             stable)
-              echo "folder=music_assistant" >> $GITHUB_OUTPUT
-              echo "Updating stable add-on"
+              if ! [[ "$VERSION" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+                echo "Unable to parse stable version $VERSION" >&2
+                exit 1
+              fi
+              aliases=(
+                "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+                "${BASH_REMATCH[1]}"
+                "stable"
+                "latest"
+              )
               ;;
-            beta)
-              echo "folder=music_assistant_beta" >> $GITHUB_OUTPUT
-              echo "Updating beta add-on"
-              ;;
-            rc)
-              echo "folder=music_assistant_beta" >> $GITHUB_OUTPUT
-              echo "Updating beta add-on (RC release)"
+            beta|rc)
+              aliases=("beta")
               ;;
             nightly)
-              echo "folder=music_assistant_nightly" >> $GITHUB_OUTPUT
-              echo "Updating nightly add-on"
+              aliases=("nightly")
               ;;
           esac
 
-      - name: Checkout add-on repository
-        uses: actions/checkout@v7
+          promotion_aliases=()
+          for alias in "${aliases[@]}"; do
+            target="$IMAGE_REPOSITORY:$alias"
+            error_file="$RUNNER_TEMP/alias-$alias-error.txt"
+            manifest_file="$RUNNER_TEMP/alias-$alias-manifest.json"
+            if docker buildx imagetools inspect "$target" \
+              --format '{{json .Manifest}}' \
+              > "$manifest_file" 2> "$error_file"; then
+              platforms=$(jq -r \
+                '.manifests[]
+                 | select(.platform.os != "unknown")
+                 | "\(.platform.os)/\(.platform.architecture)"' \
+                "$manifest_file" | sort)
+              if [ "$platforms" != $'linux/amd64\nlinux/arm64' ]; then
+                echo "$target has an unexpected platform set: $platforms" >&2
+                exit 1
+              fi
+
+              versions_file="$RUNNER_TEMP/alias-$alias-versions.txt"
+              : > "$versions_file"
+              while read -r runtime_digest; do
+                docker buildx imagetools inspect \
+                  "$IMAGE_REPOSITORY@$runtime_digest" \
+                  --format '{{json .Image}}' > "$RUNNER_TEMP/alias-image.json"
+                current_version=$(jq -r \
+                  '.config.Labels["org.opencontainers.image.version"]
+                   // .config.Labels["io.hass.version"]
+                   // empty' \
+                  "$RUNNER_TEMP/alias-image.json")
+                if [ -z "$current_version" ]; then
+                  echo "$target has no release version label" >&2
+                  exit 1
+                fi
+                echo "$current_version" >> "$versions_file"
+              done < <(jq -r \
+                '.manifests[]
+                 | select(.platform.os == "linux")
+                 | .digest' \
+                "$manifest_file")
+
+              mapfile -t current_versions < <(sort -u "$versions_file")
+              if [ "${#current_versions[@]}" -ne 1 ]; then
+                echo "$target has inconsistent release version labels" >&2
+                exit 1
+              fi
+              relation=$(python3 \
+                .release-workflow/scripts/release_workflow.py \
+                compare-release-versions \
+                --current "${current_versions[0]}" \
+                --requested "$VERSION" |
+                sed -n 's/^current_relation=//p')
+              if [ "$relation" = "newer" ]; then
+                echo "$target already points to newer version ${current_versions[0]}" >&2
+                exit 1
+              fi
+              current_digest=$(jq -r '.digest' "$manifest_file")
+              if [ "$relation" = "equal" ] && [ "$current_digest" = "$DIGEST" ]; then
+                echo "$target already points to $VERSION@$DIGEST"
+                continue
+              fi
+            elif ! grep -Eqi 'not found|manifest unknown|status.*404' "$error_file"; then
+              cat "$error_file" >&2
+              echo "Unable to inspect $target" >&2
+              exit 1
+            fi
+            promotion_aliases+=("$alias")
+          done
+
+          for alias in "${promotion_aliases[@]}"; do
+            target="$IMAGE_REPOSITORY:$alias"
+            docker buildx imagetools create \
+              --tag "$target" \
+              "$IMAGE_REPOSITORY@$DIGEST"
+            for attempt in {1..6}; do
+              alias_digest=$(docker buildx imagetools inspect "$target" \
+                --format '{{json .Manifest}}' | jq -r '.digest')
+              if [ "$alias_digest" = "$DIGEST" ]; then
+                break
+              fi
+              if [ "$attempt" -eq 6 ]; then
+                echo "$target does not point to $DIGEST" >&2
+                exit 1
+              fi
+              sleep 5
+            done
+          done
+
+  update_addon:
+    name: Update Home Assistant add-on
+    runs-on: ubuntu-latest
+    needs: [resolve, publish_release, promote_image]
+    permissions:
+      contents: read
+    steps:
+      - name: Check out release workflow
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-workflow
+          persist-credentials: false
+
+      - name: Create add-on repository token
+        id: addon_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: home-assistant-addon
+          permission-contents: write
+
+      - name: Verify GitHub App identity
+        id: app
+        env:
+          APP_SLUG: ${{ steps.addon_token.outputs.app-slug }}
+          GH_TOKEN: ${{ steps.addon_token.outputs.token }}
+          INSTALLATION_ID: ${{ steps.addon_token.outputs.installation-id }}
+        run: |
+          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
+             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
+            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
+            exit 1
+          fi
+          user_id=$(gh api "/users/$APP_SLUG%5Bbot%5D" --jq '.id')
+          echo "slug=$APP_SLUG" >> "$GITHUB_OUTPUT"
+          echo "user_id=$user_id" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve add-on default branch
+        id: addon_repository
+        env:
+          GH_TOKEN: ${{ steps.addon_token.outputs.token }}
+        run: |
+          default_branch=$(gh api \
+            repos/music-assistant/home-assistant-addon \
+            --jq '.default_branch')
+          if [ -z "$default_branch" ]; then
+            echo "Unable to resolve the add-on default branch" >&2
+            exit 1
+          fi
+          echo "default_branch=$default_branch" >> "$GITHUB_OUTPUT"
+
+      - name: Check out add-on repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: music-assistant/home-assistant-addon
-          token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
+          ref: ${{ steps.addon_repository.outputs.default_branch }}
+          token: ${{ steps.addon_token.outputs.token }}
           path: addon-repo
+          fetch-depth: 0
 
-      - name: Get release notes
-        id: get_notes
+      - name: Resolve add-on channel
+        id: channel
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          case "$CHANNEL" in
+            stable)
+              folder="music_assistant"
+              ;;
+            beta|rc)
+              folder="music_assistant_beta"
+              ;;
+            nightly)
+              folder="music_assistant_nightly"
+              ;;
+          esac
+          echo "folder=$folder" >> "$GITHUB_OUTPUT"
+
+      - name: Update add-on release
+        env:
+          ADDON_FOLDER: ${{ steps.channel.outputs.folder }}
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION" \
+            > "$RUNNER_TEMP/release.json"
+          jq -r '.body' "$RUNNER_TEMP/release.json" > "$RUNNER_TEMP/release-notes.md"
+          release_date=$(jq -r \
+            '.published_at | fromdateiso8601 | strftime("%d.%m.%Y")' \
+            "$RUNNER_TEMP/release.json")
+          python3 .release-workflow/scripts/release_workflow.py update-addon \
+            --config "addon-repo/$ADDON_FOLDER/config.yaml" \
+            --changelog "addon-repo/$ADDON_FOLDER/CHANGELOG.md" \
+            --version "$VERSION" \
+            --release-date "$release_date" \
+            --notes "$RUNNER_TEMP/release-notes.md" \
+            --retain 3
+
+      - name: Commit add-on update
+        env:
+          ADDON_FOLDER: ${{ steps.channel.outputs.folder }}
+          APP_SLUG: ${{ steps.app.outputs.slug }}
+          APP_USER_ID: ${{ steps.app.outputs.user_id }}
+          ADDON_BRANCH: ${{ steps.addon_repository.outputs.default_branch }}
+          CHANNEL: ${{ inputs.channel }}
+          VERSION: ${{ inputs.version }}
         run: |
           cd addon-repo
-
-          # Get the release body from the server repository
-          RELEASE_NOTES=$(gh release view "${{ inputs.version }}" --repo music-assistant/server --json body --jq .body)
-
-          # Save to file for processing
-          echo "$RELEASE_NOTES" > /tmp/release_notes.md
-
-      - name: Update config.yaml version
-        run: |
-          ADDON_FOLDER="${{ steps.addon_folder.outputs.folder }}"
-          VERSION="${{ inputs.version }}"
-
-          cd addon-repo/$ADDON_FOLDER
-
-          # Update version in config.yaml using sed
-          sed -i "s/^version: .*/version: $VERSION/" config.yaml
-
-          echo "✅ Updated config.yaml to version $VERSION"
-
-      - name: Update CHANGELOG.md
-        run: |
-          ADDON_FOLDER="${{ steps.addon_folder.outputs.folder }}"
-          VERSION="${{ inputs.version }}"
-
-          cd addon-repo/$ADDON_FOLDER
-
-          # Get current date
-          RELEASE_DATE=$(date +"%d.%m.%Y")
-
-          # Read the new release notes
-          NEW_NOTES=$(cat /tmp/release_notes.md)
-
-          # Create new changelog entry
-          {
-            echo "# [$VERSION] - $RELEASE_DATE"
-            echo ""
-            echo "$NEW_NOTES"
-            echo ""
-            echo ""
-          } > /tmp/new_changelog.md
-
-          # If CHANGELOG.md exists, keep only the last 2 versions
-          if [ -f CHANGELOG.md ]; then
-            # Extract headers to count versions
-            VERSION_COUNT=$(grep -c "^# \[" CHANGELOG.md || echo "0")
-
-            if [ "$VERSION_COUNT" -ge 2 ]; then
-              # Keep only first 2 versions (extract everything before the 3rd version header)
-              awk '/^# \[/{i++}i==3{exit}1' CHANGELOG.md > /tmp/old_changelog.md
-
-              # Combine new entry with trimmed old changelog
-              cat /tmp/new_changelog.md /tmp/old_changelog.md > CHANGELOG.md
-            else
-              # Less than 2 versions, just prepend
-              cat /tmp/new_changelog.md CHANGELOG.md > /tmp/combined_changelog.md
-              mv /tmp/combined_changelog.md CHANGELOG.md
+          git add "$ADDON_FOLDER/config.yaml" "$ADDON_FOLDER/CHANGELOG.md"
+          if git diff --cached --quiet; then
+            echo "Add-on $ADDON_FOLDER already references $VERSION"
+            exit 0
+          fi
+          git config user.name "${APP_SLUG}[bot]"
+          git config user.email \
+            "${APP_USER_ID}+${APP_SLUG}[bot]@users.noreply.github.com"
+          git commit -m "🤖 Bump $CHANNEL add-on to version $VERSION"
+          for attempt in {1..3}; do
+            if git pull --rebase origin "$ADDON_BRANCH" &&
+               git push origin "HEAD:$ADDON_BRANCH"; then
+              exit 0
             fi
-          else
-            # No existing changelog, create new
-            mv /tmp/new_changelog.md CHANGELOG.md
+            git rebase --abort 2>/dev/null || true
+            if [ "$attempt" -eq 3 ]; then
+              echo "Unable to push the add-on update after three attempts" >&2
+              exit 1
+            fi
+            sleep 5
+          done
+
+  update_remote_app:
+    name: Update app.music-assistant.io
+    runs-on: ubuntu-latest
+    needs: [resolve, exact_image, publish_release, promote_image]
+    permissions:
+      contents: read
+    steps:
+      - name: Check out release workflow
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: .release-workflow
+          persist-credentials: false
+
+      - name: Check out exact release source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.resolve.outputs.source_sha }}
+          path: source
+          persist-credentials: false
+
+      - name: Extract frontend version
+        id: frontend
+        working-directory: source
+        shell: python
+        run: |
+          import os
+          import tomllib
+
+          with open("pyproject.toml", "rb") as file_handle:
+              dependencies = tomllib.load(file_handle)["project"]["dependencies"]
+          matches = [
+              dependency.removeprefix("music-assistant-frontend==")
+              for dependency in dependencies
+              if dependency.startswith("music-assistant-frontend==")
+          ]
+          if len(matches) != 1:
+              raise RuntimeError("Expected one pinned music-assistant-frontend dependency")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"version={matches[0]}\n")
+
+      - name: Create app repository token
+        id: app_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: app.music-assistant.io
+          permission-contents: write
+
+      - name: Verify GitHub App identity
+        env:
+          APP_SLUG: ${{ steps.app_token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.app_token.outputs.installation-id }}
+        run: |
+          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
+             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
+            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
+            exit 1
           fi
 
-          echo "✅ Updated CHANGELOG.md with new release"
-
-      - name: Commit and push changes
+      - name: Dispatch frontend update
+        env:
+          CHANNEL: ${{ inputs.channel == 'rc' && 'beta' || inputs.channel }}
+          FRONTEND_VERSION: ${{ steps.frontend.outputs.version }}
+          GH_TOKEN: ${{ steps.app_token.outputs.token }}
+          IMAGE_DIGEST: ${{ needs.exact_image.outputs.digest }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
+          VERSION: ${{ inputs.version }}
         run: |
-          ADDON_FOLDER="${{ steps.addon_folder.outputs.folder }}"
-          VERSION="${{ inputs.version }}"
-          CHANNEL="${{ inputs.channel }}"
+          gh api \
+            -H "Accept: application/vnd.github.raw+json" \
+            repos/music-assistant/app.music-assistant.io/contents/channels.json \
+            > "$RUNNER_TEMP/channels.json"
+          current_version=$(jq -r \
+            --arg channel "$CHANNEL" \
+            '.[$channel] // empty' \
+            "$RUNNER_TEMP/channels.json")
+          if [ -n "$current_version" ]; then
+            relation=$(python3 \
+              .release-workflow/scripts/release_workflow.py \
+              compare-frontend-versions \
+              --current "$current_version" \
+              --requested "$FRONTEND_VERSION" |
+              sed -n 's/^current_relation=//p')
+            if [ "$relation" != "older" ]; then
+              echo "Skipping frontend dispatch: $CHANNEL already uses $current_version"
+              exit 0
+            fi
+          fi
 
-          cd addon-repo
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          git add "$ADDON_FOLDER/config.yaml" "$ADDON_FOLDER/CHANGELOG.md"
-
-          git commit -m "🤖 Bump $CHANNEL add-on to version $VERSION" || {
-            echo "No changes to commit"
-            exit 0
-          }
-
-          git push
-
-          echo "✅ Successfully updated add-on repository"
-
-  update-remote-app:
-    name: Update app.music-assistant.io frontend
-    runs-on: ubuntu-latest
-    needs:
-      - validate-and-build
-      - create-release
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.validate-and-build.outputs.branch }}
-
-      - name: Extract frontend version from pyproject.toml
-        id: frontend
-        run: |
-          # Extract frontend version from pyproject.toml
-          FRONTEND_VERSION=$(grep 'music-assistant-frontend==' pyproject.toml | sed 's/.*==\([^"]*\).*/\1/')
-          echo "version=${FRONTEND_VERSION}" >> $GITHUB_OUTPUT
-          echo "Frontend version: ${FRONTEND_VERSION}"
-
-      - name: Trigger app.music-assistant.io update
-        uses: peter-evans/repository-dispatch@v4
-        with:
-          token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
-          repository: music-assistant/app.music-assistant.io
-          event-type: frontend-update
-          client-payload: |
-            {
-              "channel": "${{ inputs.channel == 'rc' && 'beta' || inputs.channel }}",
-              "frontend_version": "${{ steps.frontend.outputs.version }}"
-            }
-
-      - name: Output update info
-        run: |
-          echo "✅ Triggered app.music-assistant.io update"
-          echo "Channel: ${{ inputs.channel }}"
-          echo "Frontend version: ${{ steps.frontend.outputs.version }}"
+          jq -n \
+            --arg channel "$CHANNEL" \
+            --arg frontend_version "$FRONTEND_VERSION" \
+            --arg server_version "$VERSION" \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg image_digest "$IMAGE_DIGEST" \
+            --arg idempotency_key "$GITHUB_REPOSITORY@$VERSION" \
+            '{
+              event_type: "frontend-update",
+              client_payload: {
+                channel: $channel,
+                frontend_version: $frontend_version,
+                server_version: $server_version,
+                source_sha: $source_sha,
+                image_digest: $image_digest,
+                idempotency_key: $idempotency_key
+              }
+            }' > "$RUNNER_TEMP/dispatch.json"
+          gh api --method POST \
+            "repos/music-assistant/app.music-assistant.io/dispatches" \
+            --input "$RUNNER_TEMP/dispatch.json"

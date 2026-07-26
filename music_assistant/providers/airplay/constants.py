@@ -33,7 +33,6 @@ class AirPlayRemoteCommand(StrEnum):
 
 CONF_VOLUME_START: Final[str] = "volume_start"
 CONF_PASSWORD: Final[str] = "password"
-CONF_AP2PASSWORD: Final[str] = "ap2password"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_ENCRYPTION: Final[str] = "encryption"
 # Advanced per-device escape hatch: force the legacy RAOP protocol on an
@@ -83,15 +82,6 @@ AIRPLAY_ARTWORK_SIZE: Final[int] = 512
 CONF_RAOP_CREDENTIALS: Final[str] = "raop_credentials"
 CONF_AIRPLAY_CREDENTIALS: Final[str] = "airplay_credentials"
 
-# Provider-level marker for the one-time reset of user-calibrated sync_adjust
-# values from before the unified cliairplay binary, whose different timing model
-# invalidates offsets calibrated against the old implementation.
-CONF_SYNC_ADJUST_RESET_MARKER: Final[str] = "unified_binary_sync_adjust_reset"
-# Legacy protocol preference used only to migrate explicit RAOP selections.
-CONF_LEGACY_AIRPLAY_PROTOCOL: Final[str] = "airplay_protocol"
-CONF_LEGACY_FORCE_RAOP: Final[str] = "legacy_force_raop"
-CONF_PROTOCOL_MIGRATION_MARKER: Final[str] = "unified_binary_protocol_migration"
-
 # AirPlay serves the shared sync-adjust control as a non-advanced (always visible)
 # setting: the binary handles lead/buffer automatically and does not apply
 # device-reported render latency, so sync_adjust is the primary way to compensate
@@ -100,20 +90,13 @@ CONF_PROTOCOL_MIGRATION_MARKER: Final[str] = "unified_binary_protocol_migration"
 # for other providers.
 CONF_ENTRY_SYNC_ADJUST_AIRPLAY = replace(CONF_ENTRY_SYNC_ADJUST, advanced=False)
 
-# Pairing action keys
-CONF_ACTION_START_PAIRING: Final[str] = "start_pairing"
-CONF_ACTION_FINISH_PAIRING: Final[str] = "finish_pairing"
-CONF_ACTION_RESET_PAIRING: Final[str] = "reset_pairing"
+# Interactive setup-flow input keys (transient PIN/password form fields and the
+# optional "set up now?" choice for the control pairing steps).
 CONF_PAIRING_PIN: Final[str] = "pairing_pin"
 CONF_PAIRING_PASSWORD: Final[str] = "pairing_password"
-CONF_ACTION_START_COMPANION_PAIRING: Final[str] = "start_companion_pairing"
-CONF_ACTION_FINISH_COMPANION_PAIRING: Final[str] = "finish_companion_pairing"
-CONF_ACTION_RESET_COMPANION_PAIRING: Final[str] = "reset_companion_pairing"
 CONF_COMPANION_PAIRING_PIN: Final[str] = "companion_pairing_pin"
-CONF_ACTION_START_MRP_PAIRING: Final[str] = "start_mrp_pairing"
-CONF_ACTION_FINISH_MRP_PAIRING: Final[str] = "finish_mrp_pairing"
-CONF_ACTION_RESET_MRP_PAIRING: Final[str] = "reset_mrp_pairing"
 CONF_MRP_PAIRING_PIN: Final[str] = "mrp_pairing_pin"
+CONF_PAIR_NOW: Final[str] = "pair_now"
 BACKOFF_TIME_LOWER_LIMIT: Final[int] = 15  # seconds
 BACKOFF_TIME_UPPER_LIMIT: Final[int] = 300  # Five minutes
 

@@ -15,10 +15,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from aiohttp import ClientError
 from duration_parser import parse as parse_str_duration
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     AlbumType,
-    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -90,7 +88,7 @@ from .helpers import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant import MusicAssistant
@@ -160,36 +158,6 @@ async def setup(
     return YoutubeMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    return (
-        CONF_ENTRY_UNOFFICIAL_PROVIDER,
-        ConfigEntry(key=CONF_USERNAME, type=ConfigEntryType.STRING, required=True),
-        ConfigEntry(
-            key=CONF_COOKIE,
-            type=ConfigEntryType.SECURE_STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PO_TOKEN_SERVER_URL,
-            type=ConfigEntryType.STRING,
-            default_value=DEFAULT_PO_TOKEN_SERVER_URL,
-            required=True,
-        ),
-    )
-
-
 class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     """Provider for Youtube Music."""
 
@@ -201,13 +169,17 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
     _cookie: str
     _yt_dlp_module = None
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
+
     async def handle_async_init(self) -> None:
         """Set up the YTMusic provider."""
         logging.getLogger("yt_dlp").setLevel(self.logger.level + 10)
         await self._install_packages()
-        self._cookie = str(self.config.get_value(CONF_COOKIE))
+        self._cookie = str(self.get_setup_value(CONF_COOKIE))
         self._po_token_server_url = (
-            self.config.get_value(CONF_PO_TOKEN_SERVER_URL) or DEFAULT_PO_TOKEN_SERVER_URL
+            self.get_setup_value(CONF_PO_TOKEN_SERVER_URL) or DEFAULT_PO_TOKEN_SERVER_URL
         )
         if not await self._verify_po_token_url():
             raise LoginFailed(
@@ -215,7 +187,7 @@ class YoutubeMusicProvider(RecommendationPayloadMixin, MusicProvider):
                 "Make sure you have installed the YT Music PO Token Generator "
                 "and that it is running."
             )
-        yt_username = str(self.config.get_value(CONF_USERNAME))
+        yt_username = str(self.get_setup_value(CONF_USERNAME))
         self._yt_user = yt_username if is_brand_account(yt_username) else None
         # yt-dlp needs a netscape formatted cookie
         self._netscape_cookie = convert_to_netscape(self._cookie, YTM_COOKIE_DOMAIN)

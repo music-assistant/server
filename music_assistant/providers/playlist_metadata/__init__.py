@@ -35,7 +35,7 @@ from time import time
 from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant_models.background_task import TaskSchedule
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ImageType, MediaType, ProviderFeature
 from music_assistant_models.errors import ProviderUnavailableError
 from music_assistant_models.media_items import (
@@ -88,67 +88,56 @@ async def setup(
     return PlaylistMetadataProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return config entries for the provider."""
-    return (
-        ConfigEntry(
-            key=CONF_TEMPLATE,
-            type=ConfigEntryType.STRING,
-            required=True,
-            default_value=TEMPLATE_ALBUM_GRID,
-            options=[
-                ConfigValueOption(value=TEMPLATE_ALBUM_GRID),
-                ConfigValueOption(value=TEMPLATE_ALBUM_FAN),
-                ConfigValueOption(value=TEMPLATE_ALBUM_GRID_TILTED),
-                ConfigValueOption(value=TEMPLATE_ARTIST_MOSAIC),
-                ConfigValueOption(value=TEMPLATE_ARTIST_GRID),
-                ConfigValueOption(value=TEMPLATE_ARTIST_RADIO),
-                ConfigValueOption(value=TEMPLATE_ARTIST_BANNER),
-            ],
-            value=values.get(CONF_TEMPLATE, TEMPLATE_ALBUM_GRID) if values else TEMPLATE_ALBUM_GRID,
-        ),
-        ConfigEntry(
-            key=CONF_SKIP_PROVIDER_PLAYLISTS,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            default_value=True,
-            value=values.get(CONF_SKIP_PROVIDER_PLAYLISTS, True) if values else True,
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_GENRE_DETECTION,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            default_value=False,
-            value=values.get(CONF_ENABLE_GENRE_DETECTION, False) if values else False,
-        ),
-        ConfigEntry(
-            key=CONF_GENRE_MIN_THRESHOLD,
-            type=ConfigEntryType.INTEGER,
-            required=False,
-            default_value=10,
-            range=(5, 50),
-            advanced=True,
-            value=values.get(CONF_GENRE_MIN_THRESHOLD, 10) if values else 10,
-        ),
-        ConfigEntry(
-            key=CONF_GENRE_MAX_COUNT,
-            type=ConfigEntryType.INTEGER,
-            required=False,
-            default_value=3,
-            range=(1, 10),
-            advanced=True,
-            value=values.get(CONF_GENRE_MAX_COUNT, 3) if values else 3,
-        ),
-    )
-
-
 class PlaylistMetadataProvider(MetadataProvider):
     """Metadata provider that generates artwork and metadata for library playlists."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return config entries for the provider."""
+        return (
+            ConfigEntry(
+                key=CONF_TEMPLATE,
+                type=ConfigEntryType.STRING,
+                required=True,
+                default_value=TEMPLATE_ALBUM_GRID,
+                options=[
+                    ConfigValueOption(value=TEMPLATE_ALBUM_GRID),
+                    ConfigValueOption(value=TEMPLATE_ALBUM_FAN),
+                    ConfigValueOption(value=TEMPLATE_ALBUM_GRID_TILTED),
+                    ConfigValueOption(value=TEMPLATE_ARTIST_MOSAIC),
+                    ConfigValueOption(value=TEMPLATE_ARTIST_GRID),
+                    ConfigValueOption(value=TEMPLATE_ARTIST_RADIO),
+                    ConfigValueOption(value=TEMPLATE_ARTIST_BANNER),
+                ],
+            ),
+            ConfigEntry(
+                key=CONF_SKIP_PROVIDER_PLAYLISTS,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_GENRE_DETECTION,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=False,
+            ),
+            ConfigEntry(
+                key=CONF_GENRE_MIN_THRESHOLD,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=10,
+                range=(5, 50),
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_GENRE_MAX_COUNT,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=3,
+                range=(1, 10),
+                advanced=True,
+            ),
+        )
 
     @property
     def priority(self) -> int:

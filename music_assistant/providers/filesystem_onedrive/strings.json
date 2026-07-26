@@ -24,6 +24,16 @@
       "description": "Path of the OneDrive folder to scan, e.g. 'Music' or 'Documents/Music'. Leave as 'root' to scan the whole drive."
     }
   },
+  "setup_flow": {
+    "user": {
+      "title": "Enter your Microsoft OAuth credentials",
+      "description": "Music Assistant needs its own Microsoft OAuth client. In the Azure portal, register an app and create a client secret, then paste the application (client) ID and the secret's Value below."
+    },
+    "authenticate": {
+      "title": "Authorize with Microsoft",
+      "description": "Sign in with Microsoft in the window that opens to grant Music Assistant read-only access to your OneDrive."
+    }
+  },
   "manifest": {
     "description": "Stream music, audiobooks and podcasts stored in OneDrive"
   }

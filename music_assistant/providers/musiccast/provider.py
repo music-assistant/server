@@ -25,7 +25,7 @@ from .musiccast import MusicCastController, MusicCastPhysicalDevice, MusicCastZo
 from .player import MusicCastPlayer, UpnpUpdateHelper
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.provider import ProviderManifest
     from zeroconf.asyncio import AsyncServiceInfo
@@ -98,6 +98,10 @@ class MusicCastProvider(PlayerProvider):
         super().__init__(mass, manifest, config, supported_features)
         # str is device_id here:
         self.musiccast_player_helpers: dict[str, MusicCastPlayerHelper] = {}
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return ()
 
     async def unload(self, is_removed: bool = False) -> None:
         """Call on unload."""

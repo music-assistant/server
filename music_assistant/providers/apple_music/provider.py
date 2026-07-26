@@ -18,6 +18,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
@@ -26,6 +27,7 @@ from .constants import (
     CONF_MUSIC_APP_TOKEN,
     CONF_MUSIC_USER_MANUAL_TOKEN,
     CONF_MUSIC_USER_TOKEN,
+    MUSIC_APP_TOKEN,
     SUPPORTED_FEATURES,
 )
 from .helpers import browse_playlists
@@ -37,7 +39,7 @@ from .streaming import AppleMusicStreamingManager
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.enums import MediaType
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.streamdetails import StreamDetails
@@ -66,14 +68,27 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         self.recommendation_manager = AppleMusicRecommendationManager(self)
         self.streaming_manager = AppleMusicStreamingManager(self)
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return Config entries to configure this provider.
+
+        Authentication is handled by the setup flow (see setup_flow.py); only the
+        informational note is surfaced here.
+        """
+        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._music_user_token = cast(
             "str | None",
-            self.config.get_value(CONF_MUSIC_USER_MANUAL_TOKEN)
-            or self.config.get_value(CONF_MUSIC_USER_TOKEN),
+            self.get_setup_value(CONF_MUSIC_USER_MANUAL_TOKEN)
+            or self.get_setup_value(CONF_MUSIC_USER_TOKEN),
         )
-        self._music_app_token = cast("str | None", self.config.get_value(CONF_MUSIC_APP_TOKEN))
+        # a stored/manual app token only exists because the setup flow found the
+        # bundled one empty or invalid, so it takes precedence over the bundled token
+        self._music_app_token = (
+            cast("str | None", self.get_setup_value(CONF_MUSIC_APP_TOKEN)) or MUSIC_APP_TOKEN
+        )
         self._storefront = await self.api_client.get_user_storefront()
         await self.streaming_manager.initialize()
 

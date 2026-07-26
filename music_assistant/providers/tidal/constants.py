@@ -25,13 +25,7 @@ REDIRECT_URI = "https://tidal.com/android/login/auth"
 PLAYLISTS = "playlists"
 PAGES_MIX = "pages/mix"
 
-# Actions
-CONF_ACTION_START_PKCE_LOGIN = "start_pkce_login"
-CONF_ACTION_COMPLETE_PKCE_LOGIN = "auth"
-CONF_ACTION_CLEAR_AUTH = "clear_auth"
-
-# Intermediate steps
-CONF_TEMP_SESSION = "temp_session"
+# Setup flow: key of the pasted post-login ("Page Not Found") redirect URL
 CONF_OOPS_URL = "oops_url"
 
 # Config keys
@@ -42,11 +36,6 @@ CONF_EXPIRY_TIME = "expiry_time"
 CONF_COUNTRY_CODE = "country_code"
 CONF_SESSION_ID = "session_id"
 CONF_QUALITY = "quality"
-
-# Labels
-LABEL_START_PKCE_LOGIN = "start_pkce_login_label"
-LABEL_OOPS_URL = "oops_url_label"
-LABEL_COMPLETE_PKCE_LOGIN = "complete_pkce_login_label"
 
 # API defaults
 DEFAULT_LIMIT: Final[int] = 50

@@ -36,7 +36,7 @@
     },
     "preset_media": {
       "label": "Preset {0} to play",
-      "description": "URI copied from the selected result or manually entered."
+      "description": "URI copied from the selected result or manually entered. Pressing this preset button on any of your SoundTouch speakers plays it on that speaker."
     }
   },
   "manifest": {

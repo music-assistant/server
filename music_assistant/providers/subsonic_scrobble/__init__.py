@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, ClassVar, Final
 
 import aiohttp
 from libopensonic.errors import SonicError
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
 from music_assistant_models.enums import EventType, MediaType
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.media_items import Audiobook, PodcastEpisode, Track
@@ -21,7 +21,7 @@ from music_assistant.providers.opensubsonic.parsers import EP_CHAN_SEP
 from music_assistant.providers.opensubsonic.sonic_provider import OpenSonicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.playback_progress_report import MediaItemPlaybackProgressReport
     from music_assistant_models.provider import ProviderManifest
 
@@ -54,6 +54,10 @@ class SubsonicScrobbleProvider(PluginProvider):
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config)
         self._on_unload: list[Callable[[], None]] = []
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (*await ScrobblerConfig.get_shared_config_entries(self.mass, None),)
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -160,14 +164,3 @@ class SubsonicScrobbleEventHandler(ScrobblerHelper):
             return
 
         await prov.conn.scrobble(item_id, submission=True, listen_time=int(time.time()))
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    # ruff: noqa: ARG001
-    return (*await ScrobblerConfig.get_shared_config_entries(mass, values),)

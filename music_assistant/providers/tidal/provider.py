@@ -7,7 +7,8 @@ from datetime import datetime
 from sqlite3 import OperationalError
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ExternalID, MediaType, ProviderFeature
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import ConfigEntryType, ExternalID, MediaType, ProviderFeature
 from music_assistant_models.errors import LoginFailed, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
@@ -22,6 +23,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
@@ -32,6 +34,7 @@ from .constants import (
     CACHE_CATEGORY_ISRC_MAP,
     CONF_AUTH_TOKEN,
     CONF_EXPIRY_TIME,
+    CONF_QUALITY,
     CONF_REFRESH_TOKEN,
     CONF_USER_ID,
     OPEN_API_URL,
@@ -92,12 +95,33 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         self.recommendations_manager = TidalRecommendationManager(self)
         self.streaming = TidalStreamingManager(self)
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the configuration (options) entries for the Tidal provider.
+
+        Authentication runs in the interactive setup flow (see ``setup_flow.py``); the only
+        genuine option configured here is the preferred streaming quality.
+        """
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                required=True,
+                options=[
+                    ConfigValueOption("LOSSLESS"),
+                    ConfigValueOption("HI_RES_LOSSLESS"),
+                ],
+                default_value="HI_RES_LOSSLESS",
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        access_token = self.config.get_value(CONF_AUTH_TOKEN)
-        refresh_token = self.config.get_value(CONF_REFRESH_TOKEN)
-        expires_at = self.config.get_value(CONF_EXPIRY_TIME)
-        user_id = self.config.get_value(CONF_USER_ID)
+        access_token = self.get_setup_value(CONF_AUTH_TOKEN)
+        refresh_token = self.get_setup_value(CONF_REFRESH_TOKEN)
+        expires_at = self.get_setup_value(CONF_EXPIRY_TIME)
+        user_id = self.get_setup_value(CONF_USER_ID)
 
         if not access_token or not refresh_token:
             raise LoginFailed("Missing authentication data")
@@ -106,7 +130,7 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
             try:
                 dt = datetime.fromisoformat(expires_at)
                 expires_at = dt.timestamp()
-                self._update_config_value(CONF_EXPIRY_TIME, expires_at)
+                self._update_setup_data(CONF_EXPIRY_TIME, expires_at)
             except ValueError:
                 expires_at = 0
 
@@ -337,11 +361,11 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         return await self.recommendations_manager.get_recommendations()
 
     def _update_auth_config(self, auth_info: dict[str, Any]) -> None:
-        """Update auth config with new auth info."""
-        self._update_config_value(CONF_AUTH_TOKEN, auth_info["access_token"], encrypted=True)
-        self._update_config_value(CONF_REFRESH_TOKEN, auth_info["refresh_token"], encrypted=True)
-        self._update_config_value(CONF_EXPIRY_TIME, auth_info["expires_at"])
-        self._update_config_value(CONF_USER_ID, auth_info["userId"])
+        """Update the persisted auth setup data with new (rotated) auth info."""
+        self._update_setup_data(CONF_AUTH_TOKEN, auth_info["access_token"])
+        self._update_setup_data(CONF_REFRESH_TOKEN, auth_info["refresh_token"])
+        self._update_setup_data(CONF_EXPIRY_TIME, auth_info["expires_at"])
+        self._update_setup_data(CONF_USER_ID, auth_info["userId"])
 
     async def _heal_track_mapping(self, db_item_id: str | int, stale_id: str, live_id: str) -> None:
         """Best-effort heal of a stale Tidal provider mapping on a library track."""

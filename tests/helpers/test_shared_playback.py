@@ -282,7 +282,7 @@ async def test_remote_session_restores_listener_before_next_track(
     """Restore real Sendspin membership after stop before the next queue track."""
     sendspin = cast("SendspinProvider | None", mass.get_provider("sendspin"))
     assert sendspin is not None
-    await mass.config.save_provider_config("test", {})
+    await mass.config._create_provider_instance("test", {})
     assert mass.get_provider("test") is not None
     session = await SharedPlaybackSession.create_remote(
         mass,

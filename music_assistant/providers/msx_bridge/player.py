@@ -14,7 +14,7 @@ from music_assistant.constants import CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3
 from music_assistant.models.player import Player, PlayerMedia
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.config_entries import ConfigEntry
 
     from .provider import MSXBridgeProvider
 
@@ -86,11 +86,7 @@ class MSXPlayer(Player):
         """Return poll interval in seconds."""
         return 5 if self.playback_state == PlaybackState.PLAYING else 30
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return per-player config entries — codec is configurable per TV."""
         return [CONF_ENTRY_OUTPUT_CODEC_DEFAULT_MP3]
 

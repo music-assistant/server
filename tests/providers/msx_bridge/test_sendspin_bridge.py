@@ -14,7 +14,6 @@ pytest.importorskip("music_assistant.providers.sendspin")
 
 from music_assistant_models.enums import ConfigEntryType
 
-from music_assistant.providers.msx_bridge import get_config_entries
 from music_assistant.providers.msx_bridge.constants import (
     CONF_ENABLE_SENDSPIN_BRIDGE,
 )
@@ -242,14 +241,14 @@ async def test_broadcast_sendspin_sends_ws_message(
 # --- Provider wiring ---
 
 
-async def test_config_entry_default_on(mass_mock: Mock) -> None:
+async def test_config_entry_default_on(provider: MSXBridgeProvider) -> None:
     """
     The enable_sendspin_bridge config entry exists and defaults to True.
 
     Supersedes the original spec's AC5 (default off while experimental):
     the default was deliberately flipped on once the bridge stabilized.
     """
-    entries = await get_config_entries(mass_mock)
+    entries = await provider.get_config_entries()
     entry = next(e for e in entries if e.key == CONF_ENABLE_SENDSPIN_BRIDGE)
     assert entry.type == ConfigEntryType.BOOLEAN
     assert entry.default_value is True
