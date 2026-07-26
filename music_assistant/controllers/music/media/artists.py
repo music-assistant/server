@@ -95,7 +95,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             required_scope=Scope.LIBRARY_READ,
         )
         self.mass.register_api_command(
-            f"music/{api_base}/supported_artist_types",
+            f"music/{api_base}/supported_library_artist_types",
             self.get_supported_library_artist_types,
             required_scope=Scope.LIBRARY_READ,
         )
