@@ -7,7 +7,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import MusicAssistantError, UnsupportedFeaturedException
+from music_assistant_models.errors import (
+    MediaNotFoundError,
+    MusicAssistantError,
+    UnsupportedFeaturedException,
+)
 from music_assistant_models.media_items import SoundEffect
 
 from music_assistant.constants import VACUUM_MIN_RECLAIM_RATIO
@@ -93,6 +97,9 @@ async def test_cleanup_database_runs_on_empty_library(music: MusicController) ->
 async def test_missing_library_artist_lookup_on_empty_library(music: MusicController) -> None:
     """A background lookup for a stale library artist completes without an exception."""
     await music._setup_database()
+
+    with pytest.raises(MediaNotFoundError):
+        await music.artists.get_library_item("27")
 
     task = music.mass.create_task(
         music.get_library_item_by_prov_id(MediaType.ARTIST, "27", "library")

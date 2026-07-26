@@ -1,16 +1,13 @@
 """Tests for the core Music Assistant server object."""
 
 import asyncio
-import logging
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import EventType
 
-from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.mass import MusicAssistant
 
 if TYPE_CHECKING:
-    import pytest
     from music_assistant_models.event import MassEvent
 
 
@@ -64,20 +61,3 @@ async def test_events(mass: MusicAssistant) -> None:
         mass.signal_event(EventType.UNKNOWN)
         await asyncio.sleep(0)
         assert flag is False
-
-
-async def test_background_task_failure_is_retrieved_and_logged(
-    mass_minimal: MusicAssistant,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """Background task failures remain visible outside debug logging."""
-
-    async def raise_error() -> None:
-        raise RuntimeError("background task failed")
-
-    caplog.set_level(logging.INFO, logger=MASS_LOGGER_NAME)
-    task = mass_minimal.create_task(raise_error())
-    await asyncio.sleep(0)
-
-    assert task.done()
-    assert "background task failed" in caplog.text

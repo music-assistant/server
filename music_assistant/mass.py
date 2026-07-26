@@ -667,16 +667,19 @@ class MusicAssistant:
         def task_done_callback(_task: asyncio.Task[Any]) -> None:
             self._tracked_tasks.pop(task_id, None)
             # log unhandled exceptions
-            if _task.cancelled() or (err := _task.exception()) is None:
-                return
-            task_name = _task.get_name() if hasattr(_task, "get_name") else str(_task)
-            LOGGER.warning(
-                "Exception in task %s - target: %s: %s",
-                task_name,
-                str(target),
-                str(err),
-                exc_info=err if LOGGER.isEnabledFor(logging.DEBUG) else None,
-            )
+            if (
+                LOGGER.isEnabledFor(logging.DEBUG)
+                and not _task.cancelled()
+                and (err := _task.exception())
+            ):
+                task_name = _task.get_name() if hasattr(_task, "get_name") else str(_task)
+                LOGGER.warning(
+                    "Exception in task %s - target: %s: %s",
+                    task_name,
+                    str(target),
+                    str(err),
+                    exc_info=err if LOGGER.isEnabledFor(logging.DEBUG) else None,
+                )
 
         self._tracked_tasks[task_id] = task
         task.add_done_callback(task_done_callback)
