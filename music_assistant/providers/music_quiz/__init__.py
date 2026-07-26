@@ -1377,29 +1377,34 @@ class MusicQuizPlugin(PluginProvider):
 
     # ---------- playback ----------
 
+    async def _prepare_session_for_playback(self) -> SharedPlaybackSession:
+        """Return the game's playback session with its guest listeners restored."""
+        session = await self._get_playback_session()
+        if session is None:
+            raise MusicQuizNoPlaybackTargetError(
+                "No playback target is available for the Music Quiz game"
+            )
+        player = self.mass.players.get_player(session.player_id)
+        if player is None or not player.state.available:
+            raise MusicQuizNoPlaybackTargetError(
+                "No playback target is available for the Music Quiz game"
+            )
+        if player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+            raise MusicQuizNoPlaybackTargetError(
+                "The Music Quiz playback target is handling an announcement"
+            )
+        async with self._playback_lock:
+            if self._playback_session is not session:
+                raise MusicQuizNoPlaybackTargetError(
+                    "No playback target is available for the Music Quiz game"
+                )
+            await session.restore_guest_listeners()
+        return session
+
     async def _play_track(self, track_uri: str) -> None:
         """Play the given track on the game's playback session."""
         with _system_auth_context():
-            session = await self._get_playback_session()
-            if session is None:
-                raise MusicQuizNoPlaybackTargetError(
-                    "No playback target is available for the Music Quiz game"
-                )
-            player = self.mass.players.get_player(session.player_id)
-            if player is None or not player.state.available:
-                raise MusicQuizNoPlaybackTargetError(
-                    "No playback target is available for the Music Quiz game"
-                )
-            if player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
-                raise MusicQuizNoPlaybackTargetError(
-                    "The Music Quiz playback target is handling an announcement"
-                )
-            async with self._playback_lock:
-                if self._playback_session is not session:
-                    raise MusicQuizNoPlaybackTargetError(
-                        "No playback target is available for the Music Quiz game"
-                    )
-                await session.restore_guest_listeners()
+            session = await self._prepare_session_for_playback()
             await self.mass.player_queues.play_media(
                 session.queue_id, track_uri, option=QueueOption.REPLACE
             )
@@ -1467,6 +1472,9 @@ class MusicQuizPlugin(PluginProvider):
                 None,
             )
             if queued_item is None:
+                return False
+            # re-prepare per round like _play_track, or listen-in guests drop after round one
+            if await self._prepare_session_for_playback() is not session:
                 return False
             try:
                 await self.mass.player_queues.play_index(

@@ -5422,10 +5422,14 @@ async def test_prefetch_round_starts_warm_task() -> None:
 
 @pytest.mark.asyncio
 async def test_advance_uses_queued_item_when_available() -> None:
-    """An already-queued track is started via play_index, not a fresh play_media."""
+    """An already-queued track is started via play_index with its guest listeners restored."""
     plugin = _create_plugin()
     session = _mock_playback_session("venue_player", "venue_player")
     plugin._playback_session = session
+    plugin._get_playback_session = AsyncMock(return_value=session)  # type: ignore[method-assign]
+    get_player = cast("MagicMock", plugin.mass.players.get_player)
+    get_player.side_effect = None
+    get_player.return_value = SimpleNamespace(state=SimpleNamespace(available=True), extra_data={})
 
     queued_item = MagicMock()
     queued_item.queue_item_id = "item-warm"
@@ -5441,6 +5445,7 @@ async def test_advance_uses_queued_item_when_available() -> None:
 
     assert await plugin._advance_to_queued_track("library://track/warm") is True
     play_index.assert_awaited_once_with("venue_player", "item-warm")
+    cast("AsyncMock", session.restore_guest_listeners).assert_awaited_once()
 
 
 @pytest.mark.asyncio
