@@ -173,9 +173,11 @@ class SendspinAirPlayBridge:
         self._bridge_role: BridgePlayerRole | None = None
         self._airplay_stream: AirPlayStream | None = None
         self._is_streaming = False
-        self._next_expected_timestamp_us: int | None = None
+        # Frames handed to the CLI since the start anchor. Byte 0 of that stream is
+        # audible at _drop_until_us and the device plays on at a fixed rate, so this
+        # counter is also the write cursor's position on the Sendspin timeline.
+        self._queued_frames: int = 0
         self._drop_until_us: int = 0
-        self._start_aligned = False
         # Unix-epoch ms at which byte 0 written to the CLI is audible (0 = unset).
         # Used to pace writes so the device buffer stays bounded (see _cli_writer).
         self._start_unix_ms: int = 0
@@ -377,9 +379,8 @@ class SendspinAirPlayBridge:
             )
 
         self._is_streaming = True
-        self._next_expected_timestamp_us = None
+        self._queued_frames = 0
         self._drop_until_us = 0
-        self._start_aligned = False
         self._start_unix_ms = 0
         self._started = keep_stream
 
@@ -414,9 +415,8 @@ class SendspinAirPlayBridge:
 
         self._is_streaming = True
         self._airplay_stream_ready.clear()
-        self._next_expected_timestamp_us = None
+        self._queued_frames = 0
         self._drop_until_us = 0
-        self._start_aligned = False
         self._start_unix_ms = 0
         self._started = keep_stream
         # Drain stale audio data from the previous stream
@@ -590,7 +590,7 @@ class SendspinAirPlayBridge:
         kills the CLI so AirPlay stops instead of draining its buffer.
         """
         self._is_streaming = False
-        self._next_expected_timestamp_us = None
+        self._queued_frames = 0
         self.mass.call_later(
             BRIDGE_WARM_GRACE_SECONDS, self._schedule_cleanup, task_id=self._teardown_timer_id
         )
@@ -679,7 +679,6 @@ class SendspinAirPlayBridge:
             #   * late join     -> the first chunk is the catch-up target, i.e. the
             #     group's current playback position, so the joiner lands in sync.
             self._drop_until_us = chunk.timestamp_us
-            self._start_aligned = False
             self._airplay_stream_start_task = self.mass.create_task(
                 self._start_protocol_from_chunk()
             )
@@ -689,66 +688,47 @@ class SendspinAirPlayBridge:
         if self._drop_until_us and chunk_end_us <= self._drop_until_us:
             return
 
-        # Align the first written chunk so byte 0 of stdin matches the start time.
-        if not self._start_aligned:
-            if self._align_first_chunk(chunk):
-                self._start_aligned = True
-                self._next_expected_timestamp_us = chunk.timestamp_us + chunk.duration_us
-            return
+        self._align_chunk(chunk)
 
-        if self._next_expected_timestamp_us is not None:
-            gap_us = chunk.timestamp_us - self._next_expected_timestamp_us
-            if abs(gap_us) > 1_000:
-                self.logger.warning(
-                    "Unexpected timestamp gap of %d µs for %s",
-                    gap_us,
-                    self.airplay_player.display_name,
-                )
-
-        self._next_expected_timestamp_us = chunk.timestamp_us + chunk.duration_us
-        self._write_queue.put_nowait(chunk.data)
-
-    def _align_first_chunk(self, chunk: AudioChunk) -> bool:
+    def _align_chunk(self, chunk: AudioChunk) -> None:
         """
-        Align the first audio chunk so byte 0 of CLI stdin matches the start time.
+        Queue a chunk at the byte offset its timestamp claims on the CLI stream.
 
-        Inserts silence if the chunk starts after the target time, or trims
-        the beginning if the chunk straddles it.
+        The device plays the stream at a fixed rate from a start anchor that is
+        never revised, so a chunk only stays on the group's clock when it is
+        written at the offset matching its timestamp. A hole in the Sendspin
+        timeline is filled with silence and an overlapping head is trimmed;
+        without that, the device would run permanently ahead of (or behind) the
+        rest of the group by the size of the discontinuity.
 
-        :param chunk: The first audio chunk that overlaps with the start time.
-        :return: True if aligned audio was queued successfully.
+        :param chunk: The audio chunk to queue.
         """
         bytes_per_frame = BRIDGE_CHANNELS * BRIDGE_BYTES_PER_SAMPLE
+        target_frames = round(
+            (chunk.timestamp_us - self._drop_until_us) * BRIDGE_SAMPLE_RATE / 1_000_000
+        )
+        drift_frames = target_frames - self._queued_frames
+        drift_us = round(drift_frames * 1_000_000 / BRIDGE_SAMPLE_RATE)
+        if abs(drift_us) > 1_000:
+            self.logger.warning(
+                "Realigned %d µs of Sendspin timeline drift for %s",
+                drift_us,
+                self.airplay_player.display_name,
+            )
 
-        if chunk.timestamp_us > self._drop_until_us:
-            # Chunk starts after the start time — pad with silence
-            gap_us = chunk.timestamp_us - self._drop_until_us
-            silence_frames = int(gap_us * BRIDGE_SAMPLE_RATE / 1_000_000)
-            if silence_frames > 0:
-                self.logger.debug(
-                    "Inserting %d frames of silence to align start for %s",
-                    silence_frames,
-                    self.airplay_player.display_name,
-                )
-                self._write_queue.put_nowait(b"\x00" * (silence_frames * bytes_per_frame))
-            self._write_queue.put_nowait(chunk.data)
-            return True
-        if chunk.timestamp_us < self._drop_until_us:
-            # Chunk straddles the start time — trim the beginning
-            trim_us = self._drop_until_us - chunk.timestamp_us
-            trim_frames = int(trim_us * BRIDGE_SAMPLE_RATE / 1_000_000)
-            trim_bytes = trim_frames * bytes_per_frame
-            if trim_bytes < len(chunk.data):
-                self.logger.debug(
-                    "Trimming %d frames from first chunk for %s",
-                    trim_frames,
-                    self.airplay_player.display_name,
-                )
-                self._write_queue.put_nowait(chunk.data[trim_bytes:])
-                return True
-            return False
-        self._write_queue.put_nowait(chunk.data)
-        return True
+        data = chunk.data
+        if drift_frames < 0:
+            trim_bytes = -drift_frames * bytes_per_frame
+            if trim_bytes >= len(data):
+                # Fully covered by what was already written.
+                return
+            data = data[trim_bytes:]
+        elif drift_frames > 0:
+            self._write_queue.put_nowait(b"\x00" * (drift_frames * bytes_per_frame))
+            self._queued_frames += drift_frames
+
+        self._write_queue.put_nowait(data)
+        self._queued_frames += len(data) // bytes_per_frame
 
     async def _cli_writer(self) -> None:
         """
@@ -816,7 +796,7 @@ class SendspinAirPlayBridge:
     async def _stop_streaming(self) -> None:
         """Stop streaming (internal, called with lock held)."""
         self._is_streaming = False
-        self._next_expected_timestamp_us = None
+        self._queued_frames = 0
         self._airplay_stream_ready.clear()
         self._started = False
         if self._airplay_stream_start_task:
