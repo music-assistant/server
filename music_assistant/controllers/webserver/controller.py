@@ -73,7 +73,7 @@ from .sendspin_proxy import SendspinProxyHandler
 from .websocket_client import WebsocketClientHandler
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, CoreConfig
+    from music_assistant_models.config_entries import CoreConfig
 
     from music_assistant import MusicAssistant
     from music_assistant.helpers.api import APICommandHandler
@@ -163,96 +163,21 @@ class WebserverController(CoreController):
             return self._auto_base_url
         return base_url.removesuffix("/")
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        ip_addresses = await get_ip_addresses(include_ipv6=True)
+        return await self._build_config_entries()
 
-        # Handle verify SSL action
-        ssl_verify_result = ""
-        if action == CONF_ACTION_VERIFY_SSL and values:
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+        """Handle a one-shot action button press and re-render the config entries."""
+        if action == CONF_ACTION_VERIFY_SSL:
+            # the certificate/key are read from the stored config, so they must be saved
+            # before verifying - the action no longer receives the (unsaved) form values
             cert_info = await verify_ssl_certificate(
-                str(values.get(CONF_SSL_CERTIFICATE, "")),
-                str(values.get(CONF_SSL_PRIVATE_KEY, "")),
+                str(self.get_config_value(CONF_SSL_CERTIFICATE, "")),
+                str(self.get_config_value(CONF_SSL_PRIVATE_KEY, "")),
             )
-            ssl_verify_result = format_certificate_info(cert_info)
-
-        return (
-            ConfigEntry(
-                key=CONF_AUTH_ALLOW_SELF_REGISTRATION,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=True,
-                hidden=not any(provider.domain == "hass" for provider in self.mass.providers),
-                requires_reload=False,
-            ),
-            ConfigEntry(
-                key=CONF_BASE_URL,
-                type=ConfigEntryType.STRING,
-                default_value=CONF_VALUE_AUTO,
-                requires_reload=False,
-            ),
-            ConfigEntry(
-                key=CONF_BIND_PORT,
-                type=ConfigEntryType.INTEGER,
-                default_value=DEFAULT_SERVER_PORT,
-                requires_reload=True,
-            ),
-            ConfigEntry(
-                key="webserver_warn",
-                type=ConfigEntryType.ALERT,
-                required=False,
-                depends_on=CONF_ENABLE_SSL,
-                depends_on_value=False,
-                hidden=bool(values.get(CONF_ENABLE_SSL, False)) if values else False,
-            ),
-            ConfigEntry(
-                key=CONF_ENABLE_SSL,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=False,
-                requires_reload=True,
-            ),
-            ConfigEntry(
-                key=CONF_SSL_CERTIFICATE,
-                type=ConfigEntryType.STRING,
-                required=False,
-                depends_on=CONF_ENABLE_SSL,
-                requires_reload=True,
-            ),
-            ConfigEntry(
-                key=CONF_SSL_PRIVATE_KEY,
-                type=ConfigEntryType.SECURE_STRING,
-                required=False,
-                depends_on=CONF_ENABLE_SSL,
-                requires_reload=True,
-            ),
-            ConfigEntry(
-                key=CONF_ACTION_VERIFY_SSL,
-                type=ConfigEntryType.ACTION,
-                action=CONF_ACTION_VERIFY_SSL,
-                depends_on=CONF_ENABLE_SSL,
-                required=False,
-            ),
-            ConfigEntry(
-                key="ssl_verify_result",
-                type=ConfigEntryType.LABEL,
-                label=ssl_verify_result,
-                hidden=not ssl_verify_result,
-                depends_on=CONF_ENABLE_SSL,
-                required=False,
-            ),
-            ConfigEntry(
-                key=CONF_BIND_IP,
-                type=ConfigEntryType.STRING,
-                default_value="0.0.0.0",
-                options=[ConfigValueOption(x, title=x) for x in {"0.0.0.0", *ip_addresses}],
-                category="generic",
-                advanced=True,
-                requires_reload=True,
-            ),
-        )
+            return await self._build_config_entries(format_certificate_info(cert_info))
+        return await super().handle_config_action(action)
 
     async def setup(self, config: CoreConfig) -> None:  # noqa: PLR0915
         """Async initialize of module."""
@@ -506,6 +431,82 @@ class WebserverController(CoreController):
             async for chunk in preview_stream:
                 await resp.write(chunk)
         return resp
+
+    async def _build_config_entries(self, ssl_verify_result: str = "") -> tuple[ConfigEntry, ...]:
+        """Build this module's config entries, optionally carrying an SSL verify result."""
+        ip_addresses = await get_ip_addresses(include_ipv6=True)
+        return (
+            ConfigEntry(
+                key=CONF_AUTH_ALLOW_SELF_REGISTRATION,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                hidden=not any(provider.domain == "hass" for provider in self.mass.providers),
+                requires_reload=False,
+            ),
+            ConfigEntry(
+                key=CONF_BASE_URL,
+                type=ConfigEntryType.STRING,
+                default_value=CONF_VALUE_AUTO,
+                requires_reload=False,
+            ),
+            ConfigEntry(
+                key=CONF_BIND_PORT,
+                type=ConfigEntryType.INTEGER,
+                default_value=DEFAULT_SERVER_PORT,
+                requires_reload=True,
+            ),
+            ConfigEntry(
+                key="webserver_warn",
+                type=ConfigEntryType.ALERT,
+                required=False,
+                depends_on=CONF_ENABLE_SSL,
+                depends_on_value=False,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_SSL,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                requires_reload=True,
+            ),
+            ConfigEntry(
+                key=CONF_SSL_CERTIFICATE,
+                type=ConfigEntryType.STRING,
+                required=False,
+                depends_on=CONF_ENABLE_SSL,
+                requires_reload=True,
+            ),
+            ConfigEntry(
+                key=CONF_SSL_PRIVATE_KEY,
+                type=ConfigEntryType.SECURE_STRING,
+                required=False,
+                depends_on=CONF_ENABLE_SSL,
+                requires_reload=True,
+            ),
+            ConfigEntry(
+                key=CONF_ACTION_VERIFY_SSL,
+                type=ConfigEntryType.ACTION,
+                action=CONF_ACTION_VERIFY_SSL,
+                depends_on=CONF_ENABLE_SSL,
+                required=False,
+            ),
+            ConfigEntry(
+                key="ssl_verify_result",
+                type=ConfigEntryType.LABEL,
+                label=ssl_verify_result,
+                hidden=not ssl_verify_result,
+                depends_on=CONF_ENABLE_SSL,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_BIND_IP,
+                type=ConfigEntryType.STRING,
+                default_value="0.0.0.0",
+                options=[ConfigValueOption(x, title=x) for x in {"0.0.0.0", *ip_addresses}],
+                category="generic",
+                advanced=True,
+                requires_reload=True,
+            ),
+        )
 
     async def _handle_cors_preflight(self, request: web.Request) -> web.Response:
         """Handle CORS preflight OPTIONS request."""

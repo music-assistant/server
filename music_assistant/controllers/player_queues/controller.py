@@ -86,7 +86,6 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import (
         ConfigEntry,
         ConfigValueOption,
-        ConfigValueType,
         CoreConfig,
     )
     from music_assistant_models.queue_item import QueueItem
@@ -163,11 +162,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             "total_items": sum(queue.items for queue in queues),
         }
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return the core-module (global) config entries: the queue-controller defaults."""
         # kept cheap (no library lookup): the config controller populates the global autoplay
         # playlist dropdown for the UI, so this stays fast on the config value/parse path

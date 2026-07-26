@@ -20,7 +20,7 @@ from uuid import uuid4
 from aiofiles.os import wrap
 from aiohttp import web
 from music_assistant_models.audio_processing import AudioQueueProcessing
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -251,9 +251,7 @@ class StreamsController(CoreController):
         """Return whether the queue's effective crossfade mode is smart crossfade."""
         return self.get_crossfade_mode(queue) == CrossfadeMode.SMART_CROSSFADE
 
-    async def get_config_entries(
-        self, action: str | None = None, values: dict[str, ConfigValueType] | None = None
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         ip_addresses = await get_ip_addresses(include_ipv6=True)
         return (
