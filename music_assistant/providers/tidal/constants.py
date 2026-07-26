@@ -18,15 +18,12 @@ JSONAPI_CONTENT_TYPE = "application/vnd.api+json"
 # Authentication
 TOKEN_TYPE = "Bearer"
 AUTH_URL = "https://auth.tidal.com/v1/oauth2"
-LOGIN_URL = "https://login.tidal.com/authorize"
-REDIRECT_URI = "https://tidal.com/android/login/auth"
+# OAuth scopes requested for the device flow (read, write, subscription).
+AUTH_SCOPE = "r_usr w_usr w_sub"
 
 # API paths (relative to BASE_URL unless used with an explicit base_url)
 PLAYLISTS = "playlists"
 PAGES_MIX = "pages/mix"
-
-# Setup flow: key of the pasted post-login ("Page Not Found") redirect URL
-CONF_OOPS_URL = "oops_url"
 
 # Config keys
 CONF_AUTH_TOKEN = "auth_token"

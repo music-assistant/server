@@ -1365,52 +1365,67 @@ async def test_gdrive_flow_form_then_hosted_bounce(
     assert flow_mass.config.decrypt_string(setup_data[CONF_FOLDER_ID]) == "root"
 
 
-async def test_tidal_flow_pkce_url_paste(
+async def test_tidal_flow_device_login(
     flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The real Tidal flow: paste the redirect URL, exchange it, store the tokens."""
+    """The real Tidal flow: show the device code, poll until approved, store the tokens."""
     from music_assistant.providers.tidal.auth_manager import TidalAuthManager  # noqa: PLC0415
     from music_assistant.providers.tidal.constants import (  # noqa: PLC0415
         CONF_AUTH_TOKEN,
-        CONF_OOPS_URL,
         CONF_REFRESH_TOKEN,
         CONF_USER_ID,
     )
     from music_assistant.providers.tidal.setup_flow import run_setup  # noqa: PLC0415
 
     monkeypatch.setattr(flow_mass, "_http_session", MagicMock())
+    device = {
+        "deviceCode": "dev",
+        "userCode": "ABCDE",
+        "verificationUri": "link.tidal.com",
+        "interval": 0,
+        "expiresIn": 300,
+    }
     auth_data = {
         "access_token": "at-123",
         "refresh_token": "rt-456",
         "expires_at": 4102444800.0,
         "userId": 42,
     }
+    device["verificationUriComplete"] = "link.tidal.com/ABCDE"
+    # hold the poll open so the progress step is observable before it finishes
+    release = asyncio.Event()
+
+    async def _poll(_http_session: Any, _device: dict[str, Any]) -> dict[str, Any]:
+        await release.wait()
+        return auth_data
+
     with (
         _use_flow(flow_mass, run_setup),
-        patch.object(
-            TidalAuthManager,
-            "build_pkce_login",
-            return_value=("https://login.tidal.com/authorize?x=1", {"code_verifier": "v"}),
-        ),
-        patch.object(
-            TidalAuthManager, "process_pkce_login", AsyncMock(return_value=auth_data)
-        ) as mock_exchange,
+        patch.object(TidalAuthManager, "start_device_login", AsyncMock(return_value=device)),
+        patch.object(TidalAuthManager, "poll_device_login", _poll),
         patch.object(flow_mass, "load_provider_config", AsyncMock()),
     ):
         step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        # step 1: a form with the clickable "open Tidal" link (code pre-filled)
         assert step.type == FlowStepType.FORM
         assert step.step_id == "user"
-        # the authorize link rides along on the instructions label
         instructions = next(x for x in step.entries if x.key == "auth_instructions")
-        assert instructions.help_link == "https://login.tidal.com/authorize?x=1"
-        finish_step = await flow_mass.config.submit_setup_flow(
-            step.flow_id,
-            {CONF_OOPS_URL: "https://tidal.com/android/login/auth?code=abc"},
+        assert instructions.help_link == "https://link.tidal.com/ABCDE"
+        # step 2: submitting advances to the polling progress step showing the code
+        session = flow_mass.config._setup_flows[step.flow_id].session
+        await flow_mass.config.submit_setup_flow(step.flow_id, {})
+        progress = await _wait_for(
+            lambda: (
+                session.current_step
+                if session.current_step and session.current_step.type == FlowStepType.PROGRESS
+                else None
+            )
         )
-    assert finish_step.type == FlowStepType.FINISH
-    # the pasted redirect URL was handed to the token exchange
-    assert mock_exchange.await_args is not None
-    assert mock_exchange.await_args.args[2] == "https://tidal.com/android/login/auth?code=abc"
+        assert progress.step_id == "device_login"
+        assert progress.image is not None
+        assert progress.image.startswith("data:image/svg+xml;base64,")
+        release.set()
+        await _wait_for(lambda: session.finished)
     raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}")
     setup_data = raw_conf["setup_data"]
     assert flow_mass.config.decrypt_string(setup_data[CONF_AUTH_TOKEN]) == "at-123"
@@ -1419,47 +1434,46 @@ async def test_tidal_flow_pkce_url_paste(
     assert flow_mass.config.decrypt_string(setup_data[CONF_USER_ID]) == "42"
 
 
-async def test_tidal_flow_exchange_error_retries(
+async def test_tidal_flow_device_login_denied_aborts(
     flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A failed token exchange re-renders the form with an error, then succeeds on retry."""
+    """A denied/failed device authorization aborts the flow with the login_failed reason."""
     from music_assistant_models.errors import LoginFailed  # noqa: PLC0415
 
     from music_assistant.providers.tidal.auth_manager import TidalAuthManager  # noqa: PLC0415
-    from music_assistant.providers.tidal.constants import CONF_OOPS_URL  # noqa: PLC0415
     from music_assistant.providers.tidal.setup_flow import run_setup  # noqa: PLC0415
 
     monkeypatch.setattr(flow_mass, "_http_session", MagicMock())
-    exchange = AsyncMock(
-        side_effect=[
-            LoginFailed("No authorization code found in redirect URL"),
-            {
-                "access_token": "at",
-                "refresh_token": "rt",
-                "expires_at": 1.0,
-                "userId": "u",
-            },
-        ]
-    )
+    device = {
+        "deviceCode": "dev",
+        "userCode": "ABCDE",
+        "verificationUri": "link.tidal.com",
+        "interval": 0,
+        "expiresIn": 300,
+    }
     with (
         _use_flow(flow_mass, run_setup),
+        patch.object(TidalAuthManager, "start_device_login", AsyncMock(return_value=device)),
         patch.object(
-            TidalAuthManager, "build_pkce_login", return_value=("https://login.tidal.com/x", {})
+            TidalAuthManager,
+            "poll_device_login",
+            AsyncMock(side_effect=LoginFailed("access_denied")),
         ),
-        patch.object(TidalAuthManager, "process_pkce_login", exchange),
         patch.object(flow_mass, "load_provider_config", AsyncMock()),
     ):
         step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
-        retry_step = await flow_mass.config.submit_setup_flow(
-            step.flow_id, {CONF_OOPS_URL: "https://tidal.com/android/login/auth"}
+        # the flow blocks on the link form; submitting advances to the denied poll
+        assert step.type == FlowStepType.FORM
+        session = flow_mass.config._setup_flows[step.flow_id].session
+        await flow_mass.config.submit_setup_flow(step.flow_id, {})
+        abort = await _wait_for(
+            lambda: (
+                session.current_step
+                if session.current_step and session.current_step.type == FlowStepType.ABORT
+                else None
+            )
         )
-        assert retry_step.type == FlowStepType.FORM
-        # the canonical retry pattern surfaces the error's translation key
-        assert retry_step.errors == {"base": "login_failed"}
-        finish_step = await flow_mass.config.submit_setup_flow(
-            step.flow_id, {CONF_OOPS_URL: "https://tidal.com/android/login/auth?code=abc"}
-        )
-    assert finish_step.type == FlowStepType.FINISH
+        assert abort.reason == "login_failed"
 
 
 async def test_hue_pairing_flow_retry_then_success(

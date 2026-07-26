@@ -56,6 +56,8 @@ APP_VAR_NAMES = (
     "apple_music_token",
     "tidal_client_id",
     "tidal_client_secret",
+    "tidal_client_id_v2",
+    "tidal_client_secret_v2",
     "lastfm_api_key",
     "lastfm_api_secret",
     "acoustid_api_key",

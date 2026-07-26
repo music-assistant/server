@@ -1,20 +1,18 @@
 """Authentication manager for Tidal integration."""
 
 import asyncio
+import base64
 import json
-import random
 import time
-import urllib
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-import pkce
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.helpers.app_vars import app_var
 
-from .constants import AUTH_URL, LOGIN_URL, REDIRECT_URI, SESSIONS_URL
+from .constants import AUTH_SCOPE, AUTH_URL, SESSIONS_URL
 
 if TYPE_CHECKING:
     from aiohttp import ClientSession
@@ -23,6 +21,20 @@ TOKEN_REFRESH_BUFFER = 60 * 7  # 7 minutes
 # Minimum time between two token refreshes, so that (concurrent) requests
 # hitting 401s cannot hammer the token endpoint with refresh calls.
 TOKEN_REFRESH_COOLDOWN = 30
+
+
+def _v2_client_credentials() -> tuple[str, str]:
+    """Return the (client_id, client_secret) of the Tidal v2 (device) client."""
+    return app_var("tidal_client_id_v2"), app_var("tidal_client_secret_v2")
+
+
+def _basic_auth_headers(client_id: str, client_secret: str) -> dict[str, str]:
+    """Build the HTTP Basic auth + form headers for a token endpoint request."""
+    token = base64.b64encode(f"{client_id}:{client_secret}".encode()).decode()
+    return {
+        "Authorization": f"Basic {token}",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
 
 
 @dataclass
@@ -128,114 +140,62 @@ class TidalAuthManager:
         )
 
     @staticmethod
-    def build_pkce_login(quality: str) -> tuple[str, dict[str, Any]]:
+    async def start_device_login(http_session: ClientSession) -> dict[str, Any]:
         """
-        Build a fresh PKCE login: the Tidal authorize URL and its matching auth params.
+        Begin the Tidal device authorization flow.
 
-        The returned auth_params dict carries the (single-use) PKCE code_verifier and must
-        be handed back to :meth:`process_pkce_login` to exchange the pasted redirect URL.
+        Returns the device authorization response (device/user code, verification
+        URLs, poll interval and expiry) to show to the user and hand to
+        :meth:`poll_device_login`.
 
-        :param quality: The audio quality carried through to the token exchange.
+        :param http_session: The shared aiohttp session to use for the request.
         """
-        code_verifier, code_challenge = pkce.generate_pkce_pair()
-        client_unique_key = format(random.getrandbits(64), "02x")
-        auth_params = {
-            "code_verifier": code_verifier,
-            "client_unique_key": client_unique_key,
-            "client_id": app_var("tidal_client_id"),
-            "client_secret": app_var("tidal_client_secret"),
-            "quality": quality,
-        }
-        params = {
-            "response_type": "code",
-            "redirect_uri": REDIRECT_URI,
-            "client_id": auth_params["client_id"],
-            "lang": "EN",
-            "appMode": "android",
-            "client_unique_key": client_unique_key,
-            "code_challenge": code_challenge,
-            "code_challenge_method": "S256",
-            "restrict_signup": "true",
-        }
-        authorize_url = f"{LOGIN_URL}?{urllib.parse.urlencode(params)}"
-        return authorize_url, auth_params
+        client_id, _ = _v2_client_credentials()
+        async with http_session.post(
+            f"{AUTH_URL}/device_authorization",
+            data={"client_id": client_id, "scope": AUTH_SCOPE},
+        ) as response:
+            device: dict[str, Any] = await response.json()
+            if response.status != 200:
+                raise LoginFailed(f"Device authorization failed: {device}")
+        return device
 
     @staticmethod
-    async def process_pkce_login(
-        http_session: ClientSession, base64_auth_params: str, redirect_url: str
+    async def poll_device_login(
+        http_session: ClientSession, device: dict[str, Any]
     ) -> dict[str, Any]:
-        """Process TIDAL authentication with PKCE flow."""
-        # Parse the stored auth parameters
-        try:
-            auth_params = json.loads(base64_auth_params)
-        except json.JSONDecodeError as err:
-            raise LoginFailed("Invalid authentication data") from err
+        """
+        Poll Tidal until the user approves the device code, returning the auth data.
 
-        # Extract required parameters
-        code_verifier = auth_params.get("code_verifier")
-        client_unique_key = auth_params.get("client_unique_key")
-        client_secret = auth_params.get("client_secret")
-        client_id = auth_params.get("client_id")
-        quality = auth_params.get("quality")
+        Polls indefinitely at the server-advised interval; the caller bounds the wait
+        via the setup flow's step deadline (a fresh code is minted on expiry).
 
-        if not code_verifier or not client_unique_key:
-            raise LoginFailed("Missing required authentication parameters")
-
-        # Extract the authorization code from the redirect URL
-        parsed_url = urllib.parse.urlparse(redirect_url)
-        query_params = urllib.parse.parse_qs(parsed_url.query)
-        code = query_params.get("code", [""])[0]
-
-        if not code:
-            raise LoginFailed("No authorization code found in redirect URL")
-
-        # Prepare the token exchange request
-        token_url = f"{AUTH_URL}/token"
-        data = {
-            "code": code,
-            "client_id": client_id,
-            "grant_type": "authorization_code",
-            "redirect_uri": REDIRECT_URI,
-            "scope": "r_usr w_usr w_sub",
-            "code_verifier": code_verifier,
-            "client_unique_key": client_unique_key,
-        }
-
-        headers = {"Content-Type": "application/x-www-form-urlencoded"}
-
-        # Make the token exchange request
-        async with http_session.post(token_url, data=data, headers=headers) as response:
-            if response.status != 200:
-                error_text = await response.text()
-                raise LoginFailed(f"Token exchange failed: {error_text}")
-
-            token_data = await response.json()
-
-        # Validate we have authentication data
-        if not token_data.get("access_token") or not token_data.get("refresh_token"):
-            raise LoginFailed("Failed to obtain authentication tokens from Tidal")
-
-        # Get user information using the new token
-        headers = {"Authorization": f"Bearer {token_data['access_token']}"}
-
-        # Again use mass.http_session
-        async with http_session.get(SESSIONS_URL, headers=headers) as response:
-            if response.status != 200:
-                error_text = await response.text()
-                raise LoginFailed(f"Failed to get user info: {error_text}")
-
-            user_info = await response.json()
-
-        # Combine token and user info, add expiration time
-        auth_data = {**token_data, **user_info}
-
-        # Add standard fields used by TidalProvider
-        auth_data["expires_at"] = time.time() + token_data.get("expires_in", 3600)
-        auth_data["quality"] = quality
-        auth_data["client_id"] = client_id
-        auth_data["client_secret"] = client_secret
-
-        return auth_data
+        :param http_session: The shared aiohttp session to use for the requests.
+        :param device: The device authorization response from :meth:`start_device_login`.
+        """
+        client_id, client_secret = _v2_client_credentials()
+        headers = _basic_auth_headers(client_id, client_secret)
+        interval = int(device.get("interval", 2))
+        while True:
+            await asyncio.sleep(interval)
+            data = {
+                "client_id": client_id,
+                "device_code": device["deviceCode"],
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "scope": AUTH_SCOPE,
+            }
+            async with http_session.post(
+                f"{AUTH_URL}/token", data=data, headers=headers
+            ) as response:
+                token_data = await response.json()
+                if response.status == 200:
+                    return await TidalAuthManager._finalize_login(http_session, token_data)
+            # Anything other than the two "keep waiting" signals is terminal.
+            error = token_data.get("error")
+            if error == "slow_down":
+                interval += 2
+            elif error != "authorization_pending":
+                raise LoginFailed(f"Device login failed: {token_data}")
 
     async def _perform_refresh(self) -> bool:
         """Perform the actual token refresh request."""
@@ -246,16 +206,16 @@ class TidalAuthManager:
         if not refresh_token:
             return False
 
-        client_id = self._auth_info.get("client_id", app_var("tidal_client_id"))
+        client_id, client_secret = _v2_client_credentials()
+        client_id = self._auth_info.get("client_id") or client_id
 
         data = {
             "refresh_token": refresh_token,
             "client_id": client_id,
             "grant_type": "refresh_token",
-            "scope": "r_usr w_usr w_sub",
+            "scope": AUTH_SCOPE,
         }
-
-        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+        headers = _basic_auth_headers(client_id, client_secret)
 
         async with self.http_session.post(
             f"{AUTH_URL}/token", data=data, headers=headers
@@ -279,3 +239,21 @@ class TidalAuthManager:
             self.update_config(self._auth_info)
 
             return True
+
+    @staticmethod
+    async def _finalize_login(
+        http_session: ClientSession, token_data: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Validate device tokens, attach user/session info and an absolute expiry."""
+        if not token_data.get("access_token") or not token_data.get("refresh_token"):
+            raise LoginFailed("Failed to obtain authentication tokens from Tidal")
+
+        headers = {"Authorization": f"Bearer {token_data['access_token']}"}
+        async with http_session.get(SESSIONS_URL, headers=headers) as response:
+            if response.status != 200:
+                raise LoginFailed(f"Failed to get user info: {await response.text()}")
+            user_info = await response.json()
+
+        auth_data = {**token_data, **user_info}
+        auth_data["expires_at"] = time.time() + token_data.get("expires_in", 3600)
+        return auth_data
