@@ -990,7 +990,12 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     def _handle_volume_update(self, source: str, volume: float) -> None:
         """Apply a pushed pyatv volume level."""
-        if source == "mrp" and self._companion_device is not None:
+        # MRP volume is ignored when Companion owns volume, and always on a transient
+        # tunnel: that only exposes the speaker's own volume, which Music Assistant
+        # never drives. Worse, a 0 from there latches a mute, and a muted player
+        # skips the stream volume command entirely - so every later volume change
+        # silently stops reaching the device.
+        if source == "mrp" and (self._companion_device is not None or self._uses_transient_mrp):
             return
         # While Music Assistant streams, volume_set drives the stream volume and
         # deliberately leaves the native device volume alone. The two are separate
