@@ -22,7 +22,6 @@ from music_assistant.providers.filesystem_local import (
     ismount,
     makedirs,
 )
-from music_assistant.providers.filesystem_local.helpers import FileSystemItem
 from music_assistant.providers.filesystem_local.constants import (
     CONF_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
@@ -147,109 +146,6 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             "mounted": await ismount(self.base_path),
         }
 
-    async def mount(self) -> None:
-        """Mount the SMB location to a temporary folder."""
-        server = str(self.get_setup_value(CONF_HOST))
-        username = str(self.get_setup_value(CONF_USERNAME) or "guest")
-        password = self.get_setup_value(CONF_PASSWORD)
-        # Type narrowing: password can be str or None
-        password_str: str | None = str(password) if password is not None else None
-        share = str(self.get_setup_value(CONF_SHARE))
-
-        # handle optional subfolder
-        subfolder = str(self.get_setup_value(CONF_SUBFOLDER) or "")
-        if subfolder:
-            subfolder = subfolder.replace("\\", "/")
-            if not subfolder.startswith("/"):
-                subfolder = "/" + subfolder
-            subfolder = subfolder.removesuffix("/")
-
-        env_vars = os.environ.copy()
-
-        if platform.system() == "Darwin":
-            mount_cmd = self._build_macos_mount_cmd(
-                server, username, password_str, share, subfolder
-            )
-        elif platform.system() == "Linux":
-            mount_cmd, env_vars = self._build_linux_mount_cmd(
-                server, username, password_str, share, subfolder, env_vars
-            )
-        else:
-            msg = f"SMB provider is not supported on {platform.system()}"
-            raise LoginFailed(msg)
-
-        self.logger.debug("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
-        self.logger.log(VERBOSE_LOG_LEVEL, "Using mount command: %s", " ".join(mount_cmd))
-        returncode, output = await check_output(*mount_cmd, env=env_vars)
-        if returncode != 0:
-            msg = f"SMB mount failed with error: {output.decode()}"
-            raise LoginFailed(msg)
-
-    async def unmount(self, ignore_error: bool = False) -> None:
-        """Unmount the remote share."""
-        returncode, output = await check_output("umount", self.base_path)
-        if returncode != 0 and not ignore_error:
-            self.logger.warning("SMB unmount failed with error: %s", output.decode())
-
-
-    async def _enumerate_files_for_sync(
-        self,
-        *,
-        file_checksums: dict[str, str],
-        cue_file_checksums: dict[str, str],
-        cur_filenames: set[str],
-        items_to_process: list[tuple[FileSystemItem, str | None]],
-        unchanged_cue_items: list[FileSystemItem],
-        cue_stems: set[str],
-        root_scan_errors: list[OSError],
-    ) -> None:
-        """Override to remount and retry if the SMB mount drops during scan enumeration.
-
-        The parent class aborts the entire library sync and marks the provider
-        unavailable when ``os.scandir`` raises an OSError at the root mount point,
-        which happens whenever the SMB server is temporarily unreachable ("Host is
-        down", "Resource temporarily unavailable", etc.).
-
-        This override catches root-level enumeration failures, unmounts and remounts
-        the CIFS share with exponential backoff, and retries the scan. If all retry
-        attempts fail, the errors are passed through to the parent's abort logic.
-        """
-        max_attempts = 3
-        for attempt in range(max_attempts):
-            # Check if mount is alive before starting the walk
-            if not await ismount(self.base_path):
-                self.logger.warning(
-                    "SMB mount not available (attempt %d/%d), remounting...",
-                    attempt + 1, max_attempts,
-                )
-                await self.unmount(ignore_error=True)
-                await asyncio.sleep(1)
-                await self.mount()
-
-            root_scan_errors.clear()
-            await super()._enumerate_files_for_sync(
-                file_checksums=file_checksums,
-                cue_file_checksums=cue_file_checksums,
-                cur_filenames=cur_filenames,
-                items_to_process=items_to_process,
-                unchanged_cue_items=unchanged_cue_items,
-                cue_stems=cue_stems,
-                root_scan_errors=root_scan_errors,
-            )
-
-            if not root_scan_errors:
-                return  # success
-
-            self.logger.warning(
-                "SMB root scan failed with %d error(s) (attempt %d/%d), "
-                "unmounting and retrying in %ds...",
-                len(root_scan_errors), attempt + 1, max_attempts,
-                2 ** attempt,
-            )
-            root_scan_errors.clear()
-            await self.unmount(ignore_error=True)
-            await asyncio.sleep(2 ** attempt)  # 1s, 2s, 4s backoff
-
     def _build_macos_mount_cmd(
         self, server: str, username: str, password: str | None, share: str, subfolder: str
     ) -> list[str]:
@@ -352,3 +248,106 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             self.base_path,
         ]
         return mount_cmd, env_vars
+
+    async def _enumerate_files_for_sync(
+        self,
+        *,
+        file_checksums: dict[str, str],
+        cue_file_checksums: dict[str, str],
+        cur_filenames: set[str],
+        items_to_process: list[tuple[FileSystemItem, str | None]],
+        unchanged_cue_items: list[FileSystemItem],
+        cue_stems: set[str],
+        root_scan_errors: list[OSError],
+    ) -> None:
+        """Override to remount and retry if the SMB mount drops during scan enumeration.
+
+        The parent class aborts the entire library sync and marks the provider
+        unavailable when ``os.scandir`` raises an OSError at the root mount point,
+        which happens whenever the SMB server is temporarily unreachable ("Host is
+        down", "Resource temporarily unavailable", etc.).
+
+        This override catches root-level enumeration failures, unmounts and remounts
+        the CIFS share with exponential backoff, and retries the scan. If all retry
+        attempts fail, the errors are passed through to the parent's abort logic.
+        """
+
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            # Check if mount is alive before starting the walk
+            if not await ismount(self.base_path):
+                self.logger.warning(
+                    "SMB mount not available (attempt %d/%d), remounting...",
+                    attempt + 1, max_attempts,
+                )
+                await self.unmount(ignore_error=True)
+                await asyncio.sleep(1)
+                await self.mount()
+
+            root_scan_errors.clear()
+            await super()._enumerate_files_for_sync(
+                file_checksums=file_checksums,
+                cue_file_checksums=cue_file_checksums,
+                cur_filenames=cur_filenames,
+                items_to_process=items_to_process,
+                unchanged_cue_items=unchanged_cue_items,
+                cue_stems=cue_stems,
+                root_scan_errors=root_scan_errors,
+            )
+
+            if not root_scan_errors:
+                return  # success
+
+            self.logger.warning(
+                "SMB root scan failed with %d error(s) (attempt %d/%d), "
+                "unmounting and retrying in %ds...",
+                len(root_scan_errors), attempt + 1, max_attempts,
+                2 ** attempt,
+            )
+            root_scan_errors.clear()
+            await self.unmount(ignore_error=True)
+            await asyncio.sleep(2 ** attempt)  # 1s, 2s, 4s backoff
+
+    async def mount(self) -> None:
+        """Mount the SMB location to a temporary folder."""
+        server = str(self.get_setup_value(CONF_HOST))
+        username = str(self.get_setup_value(CONF_USERNAME) or "guest")
+        password = self.get_setup_value(CONF_PASSWORD)
+        # Type narrowing: password can be str or None
+        password_str: str | None = str(password) if password is not None else None
+        share = str(self.get_setup_value(CONF_SHARE))
+
+        # handle optional subfolder
+        subfolder = str(self.get_setup_value(CONF_SUBFOLDER) or "")
+        if subfolder:
+            subfolder = subfolder.replace("\\", "/")
+            if not subfolder.startswith("/"):
+                subfolder = "/" + subfolder
+            subfolder = subfolder.removesuffix("/")
+
+        env_vars = os.environ.copy()
+
+        if platform.system() == "Darwin":
+            mount_cmd = self._build_macos_mount_cmd(
+                server, username, password_str, share, subfolder
+            )
+        elif platform.system() == "Linux":
+            mount_cmd, env_vars = self._build_linux_mount_cmd(
+                server, username, password_str, share, subfolder, env_vars
+            )
+        else:
+            msg = f"SMB provider is not supported on {platform.system()}"
+            raise LoginFailed(msg)
+
+        self.logger.debug("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
+        self.logger.log(VERBOSE_LOG_LEVEL, "Using mount command: %s", " ".join(mount_cmd))
+        returncode, output = await check_output(*mount_cmd, env=env_vars)
+        if returncode != 0:
+            msg = f"SMB mount failed with error: {output.decode()}"
+            raise LoginFailed(msg)
+
+    async def unmount(self, ignore_error: bool = False) -> None:
+        """Unmount the remote share."""
+        returncode, output = await check_output("umount", self.base_path)
+        if returncode != 0 and not ignore_error:
+            self.logger.warning("SMB unmount failed with error: %s", output.decode())
