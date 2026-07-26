@@ -19,6 +19,9 @@
       "description": "Music Assistant needs your personal Zvuk X-Auth-Token to reach your account and library."
     }
   },
+  "errors": {
+    "login_failed": "Could not sign in to Zvuk Music with this token. See the documentation for how to obtain a fresh X-Auth-Token."
+  },
   "media": {
     "recommendations": {
       "editorial": {
