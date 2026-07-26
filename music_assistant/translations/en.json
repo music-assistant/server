@@ -1376,6 +1376,8 @@
   "provider.kion_music.media.recommendations.new_releases.name": "New Releases",
   "provider.kion_music.media.recommendations.seasonal_mix.name": "Seasonal: {0}",
   "provider.kion_music.media.recommendations.top_picks.name": "Top Picks",
+  "provider.kion_music.setup_flow.user.description": "Music Assistant needs your personal KION Music OAuth token to reach your account and library.",
+  "provider.kion_music.setup_flow.user.title": "Connect to KION Music",
   "provider.lastfm_recommendations.background_task.refresh_lastfm_recommendations": "Refresh Last.fm recommendations",
   "provider.lastfm_recommendations.config_entries.api_key.description": "Optional. Override the built-in API key.",
   "provider.lastfm_recommendations.config_entries.api_key.label": "Last.fm API Key",
@@ -1636,6 +1638,8 @@
   "provider.pandora.config_entries.username.description": "Your Pandora username or email address",
   "provider.pandora.manifest.description": "Pandora is a music and podcast streaming service that creates personalized radio stations based on your favorite songs and artists.",
   "provider.pandora.media.radio.pandora_station.name": "Pandora Station {0}",
+  "provider.pandora.setup_flow.user.description": "Enter the username (or email address) and password of your Pandora account.",
+  "provider.pandora.setup_flow.user.title": "Sign in to Pandora",
   "provider.party.config_categories.guest_features": "Guest Features",
   "provider.party.config_categories.karaoke": "Karaoke",
   "provider.party.config_entries.action_disable_guest_access.action_label": "Disable Guest Access",
@@ -1810,6 +1814,10 @@
   "provider.plex_connect.config_entries.port.description": "TCP port this player is advertised and reachable on in Plex apps. Leave empty to auto-assign a free port and remember it for this instance.",
   "provider.plex_connect.config_entries.port.label": "Network Port",
   "provider.plex_connect.manifest.description": "Makes a Music Assistant player appear as a device in the official Plex apps.",
+  "provider.plex_connect.setup_flow.abort.no_players": "No players are available yet. Add a player to Music Assistant first, then try again.",
+  "provider.plex_connect.setup_flow.abort.no_plex_provider": "No Plex music provider is loaded. Make sure your Plex provider is set up and working, then try again.",
+  "provider.plex_connect.setup_flow.user.description": "Pick the Plex server this player should show up on, and the Music Assistant player to expose.",
+  "provider.plex_connect.setup_flow.user.title": "Choose what to expose to Plex",
   "provider.pocketcasts.config_entries.password.description": "Your Pocket Casts password",
   "provider.pocketcasts.config_entries.password.label": "Password",
   "provider.pocketcasts.config_entries.username.description": "Your Pocket Casts email address",
@@ -2443,5 +2451,7 @@
   "provider.zvuk_music.media.folder.editorial.name": "Collections",
   "provider.zvuk_music.media.folder.made_for_you.name": "Made for you",
   "provider.zvuk_music.media.recommendations.editorial.name": "Collections",
-  "provider.zvuk_music.media.recommendations.editorial.subtitle": "Editorial playlists from Zvuk by genre"
+  "provider.zvuk_music.media.recommendations.editorial.subtitle": "Editorial playlists from Zvuk by genre",
+  "provider.zvuk_music.setup_flow.user.description": "Music Assistant needs your personal Zvuk X-Auth-Token to reach your account and library.",
+  "provider.zvuk_music.setup_flow.user.title": "Connect to Zvuk"
 }

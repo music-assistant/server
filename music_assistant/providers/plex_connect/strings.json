@@ -30,6 +30,16 @@
       "description": "TCP port this player is advertised and reachable on in Plex apps. Leave empty to auto-assign a free port and remember it for this instance."
     }
   },
+  "setup_flow": {
+    "user": {
+      "title": "Choose what to expose to Plex",
+      "description": "Pick the Plex server this player should show up on, and the Music Assistant player to expose."
+    },
+    "abort": {
+      "no_plex_provider": "No Plex music provider is loaded. Make sure your Plex provider is set up and working, then try again.",
+      "no_players": "No players are available yet. Add a player to Music Assistant first, then try again."
+    }
+  },
   "manifest": {
     "description": "Makes a Music Assistant player appear as a device in the official Plex apps."
   }

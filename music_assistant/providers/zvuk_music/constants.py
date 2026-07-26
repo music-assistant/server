@@ -8,9 +8,6 @@ from typing import Final
 CONF_TOKEN: Final[str] = "token"
 CONF_QUALITY: Final[str] = "quality"
 
-# Actions
-CONF_ACTION_CLEAR_AUTH: Final[str] = "clear_auth"
-
 # API defaults
 DEFAULT_LIMIT: Final[int] = 50
 PLAYLIST_TRACKS_PAGE_SIZE: Final[int] = 50

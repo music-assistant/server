@@ -1209,7 +1209,9 @@ class MusicAssistant:
         try:
             provider.config.validate()
         except (KeyError, ValueError, AttributeError, TypeError) as err:
-            msg = "Configuration is invalid"
+            # name the offending entry: the generic message alone gives no clue which
+            # value is missing or malformed when a provider refuses to load
+            msg = f"Configuration is invalid: {err}"
             raise SetupFailedError(msg) from err
 
         # run async setup

@@ -59,6 +59,9 @@ LEGACY_BOSE_PRESET_KEY_PREFIX = "preset_"
 # - hass "url"/"token"/"verify_ssl": on a Home Assistant add-on these come from fixed
 #   (hidden) config entries whose values equal what a stored copy would hold, so moving a
 #   stored copy is a harmless no-op there while restoring normal installs.
+# - plex_connect's "plex_provider_id"/"mass_player_id" are not secrets, but its setup flow
+#   collects them (the options are only known from live server state), so they live in
+#   setup_data like any other flow-collected value.
 # - spotify is deliberately absent: its own _migrate_legacy_token still reads the legacy
 #   "refresh_token" and "client_id" from `values`, so this migration must not move them.
 # TODO: remove after 2.13 release
@@ -105,6 +108,7 @@ PROVIDER_SETUP_FLOW_KEYS: dict[str, tuple[str, ...]] = {
     "hue_entertainment": ("bridge_host", "hue_username", "hue_clientkey", "bridge_id"),
     "ibroadcast": ("username", "password"),
     "jellyfin": ("url", "username", "password", "verify_ssl"),
+    "kion_music": ("token",),
     "lastfm_scrobble": ("_provider", "_api_session_key", "_username", "_api_key", "_api_secret"),
     "listenbrainz_scrobble": ("_user_token", "api_base_url"),
     "musicme": ("username", "password"),
@@ -112,6 +116,7 @@ PROVIDER_SETUP_FLOW_KEYS: dict[str, tuple[str, ...]] = {
     "nicovideo": ("mail", "password", "user_session"),
     "nugs": ("username", "password"),
     "opensubsonic": ("username", "password", "baseURL", "port", "path"),
+    "pandora": ("username", "password"),
     "plex": (
         "token",
         "local_server_ip",
@@ -121,6 +126,7 @@ PROVIDER_SETUP_FLOW_KEYS: dict[str, tuple[str, ...]] = {
         "library_id",
         "library_type",
     ),
+    "plex_connect": ("plex_provider_id", "mass_player_id"),
     "pocketcasts": ("username", "password"),
     "podcast_index": ("api_key", "api_secret"),
     "podcastfeed": ("feed_url",),
@@ -153,6 +159,7 @@ PROVIDER_SETUP_FLOW_KEYS: dict[str, tuple[str, ...]] = {
     "yandex_ynison": ("ym_instance", "token", "x_token"),
     "yousee": ("username", "password"),
     "ytmusic": ("username", "cookie", "po_token_server_url"),
+    "zvuk_music": ("token",),
 }
 
 

@@ -1,8 +1,14 @@
 """
-Guard against hardcoded config strings and invalid category keys in ConfigEntry/ConfigValueOption.
+Guard against invalid ConfigEntry/ConfigValueOption definitions.
 
 Fails when a ConfigEntry or ConfigValueOption hardcodes user-facing text instead of strings.json,
-or when a ConfigEntry.category value is not defined in any strings.json config_categories section.
+when a ConfigEntry.category value is not defined in any strings.json config_categories section,
+or when an entry returned by ``get_config_entries`` is required but has no default value.
+
+A provider instance is created with empty values (setup input is collected by the setup flow into
+``setup_data``), and its config is validated at load right after the instance is constructed. An
+options entry that is ``required`` without a ``default_value`` therefore has nothing to resolve to
+and fails that validation, so the provider can never be added at all.
 
 A ConfigEntry's ``label``/``description``/``action_label`` and a ConfigValueOption's ``title`` are
 localized at serialization from the owning provider's (or the common) ``strings.json`` — keyed by
@@ -47,9 +53,12 @@ _CHECKS: dict[str, tuple[tuple[str, ...], bool, str]] = {
     "ConfigValueOption": (("title",), False, "config_entries.<key>.options.<value>"),
 }
 
+# ConfigEntryType members that never hold a value (models: config_entries.UI_ONLY)
+_UI_ONLY_TYPES = frozenset({"LABEL", "DIVIDER", "ACTION", "ALERT", "IMAGE", "URL"})
+
 
 def find_violations() -> list[str]:
-    """Return a sorted list of ``path:line: message`` for every hardcoded config text field."""
+    """Return a sorted list of ``path:line: message`` for every invalid config entry field."""
     violations: list[str] = []
     valid_categories = _load_valid_categories()
     for path in _iter_python_files():
@@ -58,6 +67,7 @@ def find_violations() -> list[str]:
         except SyntaxError:
             continue
         rel = os.path.relpath(path, _REPO_ROOT)
+        options_entries = _options_entry_calls(tree)
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
                 continue
@@ -86,19 +96,21 @@ def find_violations() -> list[str]:
                             f"{rel}:{keyword.value.lineno}: ConfigEntry category={cat!r} is not "
                             f"defined in any strings.json config_categories section"
                         )
+                if id(node) in options_entries and _is_required_without_value(node):
+                    violations.append(
+                        f"{rel}:{node.lineno}: ConfigEntry {_entry_key(node)} is required but has "
+                        f"no default_value; an options entry must resolve without user input "
+                        f"(collect setup input in the provider's setup_flow instead)"
+                    )
     return sorted(violations)
 
 
 def main() -> int:
-    """Print every hardcoded config text field; return 1 when any were found."""
+    """Print every invalid ConfigEntry/ConfigValueOption definition; return 1 when any were found."""
     violations = find_violations()
     if not violations:
         return 0
-    print(
-        "Hardcoded config strings found. Move them into the owner's strings.json "
-        "instead of passing them in code:",
-        file=sys.stderr,
-    )
+    print("Invalid ConfigEntry/ConfigValueOption definitions found:", file=sys.stderr)
     for violation in violations:
         print(f"  {violation}", file=sys.stderr)
     return 1
@@ -153,6 +165,65 @@ def _call_name(node: ast.Call) -> str:
     if isinstance(func, ast.Name):
         return func.id
     return func.attr if isinstance(func, ast.Attribute) else ""
+
+
+def _options_entry_calls(tree: ast.Module) -> set[int]:
+    """
+    Return the node ids of the ConfigEntry calls built inside a ``get_config_entries``.
+
+    Only those entries end up in a config's values and are validated at load; the entries a
+    setup flow builds for its forms are input fields and are required without a default by
+    design, so they must not be flagged.
+    """
+    result: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        if node.name != "get_config_entries":
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Call) and _call_name(inner) == "ConfigEntry":
+                result.add(id(inner))
+    return result
+
+
+def _is_required_without_value(node: ast.Call) -> bool:
+    """Return True when a required ConfigEntry has neither a default nor a preset value."""
+    keywords = {keyword.arg: keyword.value for keyword in node.keywords}
+    if (required := keywords.get("required")) is not None:
+        if not isinstance(required, ast.Constant):
+            # a computed flag can't be judged statically
+            return False
+        if required.value is not True:
+            return False
+    elif _entry_type(node) in _UI_ONLY_TYPES:
+        # ConfigEntry.required defaults to True, but __post_init__ clears it for UI-only types
+        return False
+    for arg in ("default_value", "value"):
+        if (given := keywords.get(arg)) is None:
+            continue
+        # a computed default can't be judged statically, so only a literal None counts as absent
+        if not (isinstance(given, ast.Constant) and given.value is None):
+            return False
+    return True
+
+
+def _entry_type(node: ast.Call) -> str:
+    """Return the name of a ConfigEntry's ConfigEntryType member, or ``""`` when not literal."""
+    entry_type = {keyword.arg: keyword.value for keyword in node.keywords}.get("type")
+    if entry_type is None and len(node.args) > 1:
+        entry_type = node.args[1]
+    return entry_type.attr if isinstance(entry_type, ast.Attribute) else ""
+
+
+def _entry_key(node: ast.Call) -> str:
+    """Return a readable rendering of a ConfigEntry's key argument for a violation message."""
+    key = {keyword.arg: keyword.value for keyword in node.keywords}.get("key")
+    if isinstance(key, ast.Constant):
+        return repr(key.value)
+    if isinstance(key, ast.Name):
+        return key.id
+    return key.attr if isinstance(key, ast.Attribute) else "<unknown>"
 
 
 def _is_hardcoded_text(node: ast.AST, flag_fstrings: bool) -> bool:

@@ -4,10 +4,6 @@
       "label": "KION Music Token",
       "description": "Enter your KION Music OAuth token. See the documentation for how to obtain it."
     },
-    "clear_auth": {
-      "label": "[%key:common::config_entries::clear_auth::label%]",
-      "description": "[%key:common::config_entries::clear_auth::description%]"
-    },
     "quality": {
       "label": "Audio quality",
       "description": "Select preferred audio quality.",
@@ -41,6 +37,12 @@
     "base_url": {
       "label": "API Base URL",
       "description": "API endpoint base URL. Only change if KION Music changes their API endpoint. Default: {0}"
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Connect to KION Music",
+      "description": "Music Assistant needs your personal KION Music OAuth token to reach your account and library."
     }
   },
   "media": {
