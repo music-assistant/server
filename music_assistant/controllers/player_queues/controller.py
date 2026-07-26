@@ -1000,6 +1000,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
             # Reset flow_mode - the streams controller will set it if flow mode is used.
             queue.flow_mode = False
+            player_media = await self.player_media_from_queue_item(queue_item)
             # Hold the play action until the player confirms playback so the UI keeps
             # showing the command as in progress instead of falling back to a play button
             # for the time the player still needs to connect and start.
@@ -1009,10 +1010,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 attribute_value=PlaybackState.PLAYING,
                 timeout=PLAYBACK_START_TIMEOUT,
             ):
-                await self.mass.players.play_media(
-                    queue_id,
-                    await self.player_media_from_queue_item(queue_item),
-                )
+                await self.mass.players.play_media(queue_id, player_media)
             queue.current_index = index
             queue.current_item = queue_item
             self.signal_update(queue_id)
