@@ -4,10 +4,6 @@
       "label": "Zvuk Music Token",
       "description": "Enter your Zvuk Music X-Auth-Token. See the documentation for how to obtain it."
     },
-    "clear_auth": {
-      "label": "[%key:common::config_entries::clear_auth::label%]",
-      "description": "[%key:common::config_entries::clear_auth::description%]"
-    },
     "quality": {
       "label": "Audio quality",
       "description": "Select preferred audio quality.",
@@ -15,6 +11,12 @@
         "high": "High (320 kbps)",
         "lossless": "Lossless (FLAC)"
       }
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Connect to Zvuk",
+      "description": "Music Assistant needs your personal Zvuk X-Auth-Token to reach your account and library."
     }
   },
   "media": {

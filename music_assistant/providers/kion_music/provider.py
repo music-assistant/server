@@ -43,7 +43,6 @@ from .api_client import KionMusicClient
 from .constants import (
     BROWSE_INITIAL_TRACKS,
     COLLECTION_FOLDER_ID,
-    CONF_ACTION_CLEAR_AUTH,
     CONF_BASE_URL,
     CONF_CODECS,
     CONF_LIKED_TRACKS_MAX_TRACKS,
@@ -296,23 +295,14 @@ class KionMusicProvider(MusicProvider):
         return folder.items
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
-        """Return Config entries to configure this provider."""
-        is_authenticated = bool(self.get_config_value(CONF_TOKEN))
+        """
+        Return Config entries to configure this provider.
+
+        The token is collected by the interactive setup flow (see setup_flow.py); this
+        surface only exposes the genuine playback options.
+        """
         return (
             CONF_ENTRY_UNOFFICIAL_PROVIDER,
-            # Authentication
-            ConfigEntry(
-                key=CONF_TOKEN,
-                type=ConfigEntryType.SECURE_STRING,
-                required=True,
-                hidden=is_authenticated,
-            ),
-            ConfigEntry(
-                key=CONF_ACTION_CLEAR_AUTH,
-                type=ConfigEntryType.ACTION,
-                action=CONF_ACTION_CLEAR_AUTH,
-                hidden=not is_authenticated,
-            ),
             # Quality
             ConfigEntry(
                 key=CONF_QUALITY,
@@ -374,16 +364,9 @@ class KionMusicProvider(MusicProvider):
             ),
         )
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
-        """Handle a one-shot config action button press and re-render the entries."""
-        if action == CONF_ACTION_CLEAR_AUTH:
-            self._update_config_value(CONF_TOKEN, None, immediate=True)
-            return await self.get_config_entries()
-        return await super().handle_config_action(action)
-
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        token = self.config.get_value(CONF_TOKEN)
+        token = self.get_setup_value(CONF_TOKEN)
         if not token:
             raise LoginFailed("No KION Music token provided")
 
