@@ -123,7 +123,6 @@ if TYPE_CHECKING:
 
     from music_assistant_models.config_entries import (
         ConfigEntry,
-        ConfigValueType,
         CoreConfig,
         PlayerConfig,
     )
@@ -243,11 +242,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                         del self._task_held_locks[task]
                 lock.release()
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the Player Controller."""
         return ()
 

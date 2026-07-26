@@ -13,7 +13,7 @@ from ipaddress import IPv4Address
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientTimeout
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 from zeroconf import (
     NonUniqueNameException,
@@ -100,13 +100,8 @@ class DiscoveryController(CoreController):
             self._schedule_periodic_ha_announce()
         self._schedule_periodic_upnp_discovery()
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return config entries for the discovery controller."""
-        del action, values
         return (
             CONF_ENTRY_ZEROCONF_INTERFACES,
             ConfigEntry(
