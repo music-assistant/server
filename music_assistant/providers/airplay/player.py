@@ -142,11 +142,12 @@ class AirPlayPlayer(Player):
     @property
     def hires_playback_enabled(self) -> bool:
         """Return if 24-bit hi-res playback is possible for this player."""
-        # 24-bit only works over the AirPlay 2 flow, so a device that is forced
-        # to RAOP stays on the 16-bit base whatever it advertises.
+        # 24-bit only works over the AirPlay 2 flow, so a device that streams RAOP
+        # (a legacy receiver, or the force-RAOP escape hatch) stays on the 16-bit
+        # base whatever it advertises.
         return (
             bool(self.advertised_audio_formats & AIRPLAY_HIRES_AUDIO_FORMATS)
-            and self.protocol_override != StreamingProtocol.RAOP
+            and self.protocol == StreamingProtocol.AIRPLAY2
         )
 
     @property
