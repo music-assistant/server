@@ -22,6 +22,7 @@ from music_assistant.providers.filesystem_local import (
     ismount,
     makedirs,
 )
+from music_assistant.providers.filesystem_local.helpers import FileSystemItem
 from music_assistant.providers.filesystem_local.constants import (
     CONF_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
@@ -145,6 +146,50 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             **await super().get_diagnostics(),
             "mounted": await ismount(self.base_path),
         }
+
+    async def mount(self) -> None:
+        """Mount the SMB location to a temporary folder."""
+        server = str(self.get_setup_value(CONF_HOST))
+        username = str(self.get_setup_value(CONF_USERNAME) or "guest")
+        password = self.get_setup_value(CONF_PASSWORD)
+        # Type narrowing: password can be str or None
+        password_str: str | None = str(password) if password is not None else None
+        share = str(self.get_setup_value(CONF_SHARE))
+
+        # handle optional subfolder
+        subfolder = str(self.get_setup_value(CONF_SUBFOLDER) or "")
+        if subfolder:
+            subfolder = subfolder.replace("\\", "/")
+            if not subfolder.startswith("/"):
+                subfolder = "/" + subfolder
+            subfolder = subfolder.removesuffix("/")
+
+        env_vars = os.environ.copy()
+
+        if platform.system() == "Darwin":
+            mount_cmd = self._build_macos_mount_cmd(
+                server, username, password_str, share, subfolder
+            )
+        elif platform.system() == "Linux":
+            mount_cmd, env_vars = self._build_linux_mount_cmd(
+                server, username, password_str, share, subfolder, env_vars
+            )
+        else:
+            msg = f"SMB provider is not supported on {platform.system()}"
+            raise LoginFailed(msg)
+
+        self.logger.debug("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
+        self.logger.log(VERBOSE_LOG_LEVEL, "Using mount command: %s", " ".join(mount_cmd))
+        returncode, output = await check_output(*mount_cmd, env=env_vars)
+        if returncode != 0:
+            msg = f"SMB mount failed with error: {output.decode()}"
+            raise LoginFailed(msg)
+
+    async def unmount(self, ignore_error: bool = False) -> None:
+        """Unmount the remote share."""
+        returncode, output = await check_output("umount", self.base_path)
+        if returncode != 0 and not ignore_error:
+            self.logger.warning("SMB unmount failed with error: %s", output.decode())
 
     def _build_macos_mount_cmd(
         self, server: str, username: str, password: str | None, share: str, subfolder: str
@@ -271,7 +316,6 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         the CIFS share with exponential backoff, and retries the scan. If all retry
         attempts fail, the errors are passed through to the parent's abort logic.
         """
-
         max_attempts = 3
         for attempt in range(max_attempts):
             # Check if mount is alive before starting the walk
@@ -308,46 +352,3 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             await self.unmount(ignore_error=True)
             await asyncio.sleep(2 ** attempt)  # 1s, 2s, 4s backoff
 
-    async def mount(self) -> None:
-        """Mount the SMB location to a temporary folder."""
-        server = str(self.get_setup_value(CONF_HOST))
-        username = str(self.get_setup_value(CONF_USERNAME) or "guest")
-        password = self.get_setup_value(CONF_PASSWORD)
-        # Type narrowing: password can be str or None
-        password_str: str | None = str(password) if password is not None else None
-        share = str(self.get_setup_value(CONF_SHARE))
-
-        # handle optional subfolder
-        subfolder = str(self.get_setup_value(CONF_SUBFOLDER) or "")
-        if subfolder:
-            subfolder = subfolder.replace("\\", "/")
-            if not subfolder.startswith("/"):
-                subfolder = "/" + subfolder
-            subfolder = subfolder.removesuffix("/")
-
-        env_vars = os.environ.copy()
-
-        if platform.system() == "Darwin":
-            mount_cmd = self._build_macos_mount_cmd(
-                server, username, password_str, share, subfolder
-            )
-        elif platform.system() == "Linux":
-            mount_cmd, env_vars = self._build_linux_mount_cmd(
-                server, username, password_str, share, subfolder, env_vars
-            )
-        else:
-            msg = f"SMB provider is not supported on {platform.system()}"
-            raise LoginFailed(msg)
-
-        self.logger.debug("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
-        self.logger.log(VERBOSE_LOG_LEVEL, "Using mount command: %s", " ".join(mount_cmd))
-        returncode, output = await check_output(*mount_cmd, env=env_vars)
-        if returncode != 0:
-            msg = f"SMB mount failed with error: {output.decode()}"
-            raise LoginFailed(msg)
-
-    async def unmount(self, ignore_error: bool = False) -> None:
-        """Unmount the remote share."""
-        returncode, output = await check_output("umount", self.base_path)
-        if returncode != 0 and not ignore_error:
-            self.logger.warning("SMB unmount failed with error: %s", output.decode())
