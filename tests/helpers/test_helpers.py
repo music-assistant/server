@@ -722,8 +722,21 @@ def test_is_arm(machine: str, expected: bool) -> None:
 )
 def test_inference_thread_budget(cpu_count: int, expected: int) -> None:
     """The inference thread budget is a quarter of the cores, never below one."""
-    with patch("music_assistant.helpers.util.os.process_cpu_count", return_value=cpu_count):
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=cpu_count),
+        patch.dict(os.environ, {}, clear=False),
+    ):
+        os.environ.pop("OMP_NUM_THREADS", None)
         assert util.inference_thread_budget() == expected
+
+
+def test_inference_thread_budget_follows_operator_override() -> None:
+    """An operator-supplied OMP_NUM_THREADS becomes the torch budget too, so the two agree."""
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=32),
+        patch.dict(os.environ, {"OMP_NUM_THREADS": "2"}, clear=False),
+    ):
+        assert util.inference_thread_budget() == 2
 
 
 def test_cap_native_thread_pools_sets_env() -> None:
@@ -747,13 +760,15 @@ def test_cap_native_thread_pools_sets_env() -> None:
 
 
 def test_cap_native_thread_pools_respects_operator_value() -> None:
-    """An operator-supplied thread cap is never overwritten."""
+    """An operator-supplied cap is kept, reported back, and applied to the other pools."""
     with (
         patch("music_assistant.helpers.util.os.process_cpu_count", return_value=8),
         patch.dict(os.environ, {"OMP_NUM_THREADS": "1"}, clear=False),
     ):
-        util.cap_native_thread_pools()
+        os.environ.pop("OPENBLAS_NUM_THREADS", None)
+        assert util.cap_native_thread_pools() == 1
         assert os.environ["OMP_NUM_THREADS"] == "1"
+        assert os.environ["OPENBLAS_NUM_THREADS"] == "1"
 
 
 # 4/8/2 GiB expressed in bytes, for cgroup fixture files.

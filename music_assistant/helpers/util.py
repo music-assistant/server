@@ -265,7 +265,15 @@ def is_arm() -> bool:
 
 
 def inference_thread_budget() -> int:
-    """Return the native thread budget for on-device inference (~25% of the available cores)."""
+    """
+    Return the native thread budget for on-device inference.
+
+    Defaults to ~25% of the available cores, or to an operator-supplied OMP_NUM_THREADS
+    when that is set, so the torch and native pool budgets stay in agreement.
+    """
+    override = os.environ.get("OMP_NUM_THREADS", "")
+    if override.isdigit() and (threads := int(override)) > 0:
+        return threads
     return max(1, (os.process_cpu_count() or os.cpu_count() or 4) // 4)
 
 
