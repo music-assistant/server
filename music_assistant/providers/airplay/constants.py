@@ -39,7 +39,6 @@ CONF_ENCRYPTION: Final[str] = "encryption"
 # AirPlay-2-capable receiver whose AirPlay 2 implementation misbehaves.
 CONF_FORCE_RAOP: Final[str] = "force_raop"
 CONF_STORED_VOLUME: Final[str] = "stored_volume"
-CONF_HIRES_PLAYBACK: Final[str] = "hires_playback"
 CONF_COMPANION_CREDENTIALS: Final[str] = "companion_credentials"
 CONF_MRP_CREDENTIALS: Final[str] = "mrp_credentials"
 CONF_NATIVE_MRP_CREDENTIALS: Final[str] = "native_mrp_credentials"
@@ -106,10 +105,17 @@ AIRPLAY_VOLUME_MUTE: Final[float] = -144.0
 AIRPLAY_PCM_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16
 )
-# Sample rates advertised when the per-player hi-res option is enabled (AirPlay 2
-# native flow only). At 24-bit the cliairplay binary expects raw s32le on stdin
-# and truncates to 24-bit ALAC internally.
+# Sample rates advertised for a receiver that supports 24-bit (AirPlay 2 flow
+# only). At 24-bit the cliairplay binary expects raw s32le on stdin and truncates
+# to 24-bit ALAC internally.
 AIRPLAY_HIRES_SAMPLE_RATES: Final[list[tuple[int, int]]] = [(44100, 24), (48000, 24)]
+
+# Bits in the audioFormat bit space (shared with the receiver's /info format
+# tables) that mark 24-bit ALAC: 44.1 kHz and 48 kHz respectively. Receivers
+# understate these - the Apple TV lists them for its buffered stream only, yet
+# renders them fine on the realtime stream - so a device advertising either bit
+# on either stream is treated as 24-bit capable.
+AIRPLAY_HIRES_AUDIO_FORMATS: Final[int] = (1 << 19) | (1 << 21)
 
 BASE_PLAYER_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.PLAY_MEDIA,

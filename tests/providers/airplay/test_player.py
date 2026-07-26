@@ -24,7 +24,6 @@ from music_assistant.providers.airplay.constants import (
     CONF_AIRPLAY_CREDENTIALS,
     CONF_ENCRYPTION,
     CONF_FORCE_RAOP,
-    CONF_HIRES_PLAYBACK,
     CONF_IGNORE_VOLUME,
     CONF_RAOP_CREDENTIALS,
     CONF_STORED_VOLUME,
@@ -34,6 +33,10 @@ from music_assistant.providers.airplay.player import AirPlayPlayer
 
 # _airplay._tcp features bitmask with the AirPlay 2 feature bits set (bit 38/48).
 AP2_FEATURES = "0x4A7FDFD5,0x3C177FDE"
+# audioFormat bits as advertised in a receiver's /info format tables.
+ALAC_44100_16 = 1 << 18
+ALAC_44100_24 = 1 << 19
+ALAC_48000_24 = 1 << 21
 
 
 @pytest.fixture
@@ -415,40 +418,46 @@ def _configure_player(player: AirPlayPlayer, values: dict[str, object]) -> None:
 
 
 @pytest.mark.parametrize(
-    ("hires_enabled", "force_raop", "has_airplay_info", "expected"),
+    ("advertised_audio_formats", "force_raop", "airplay2_capable", "expected"),
     [
-        # hi-res on an AirPlay 2 capable device advertises the 24-bit rates
-        (True, False, True, [(44100, 24), (48000, 24)]),
+        # 24-bit advertised on the realtime stream
+        (ALAC_44100_24, False, True, [(44100, 24), (48000, 24)]),
+        # the Apple TV advertises 24-bit for its buffered stream only
+        (ALAC_48000_24, False, True, [(44100, 24), (48000, 24)]),
         # forced RAOP cannot do 24-bit: falls back to the 16-bit base
-        (True, True, True, [(44100, 16)]),
-        # no _airplay._tcp service: hi-res not possible
-        (True, False, False, [(44100, 16)]),
-        # option disabled: the 16-bit default
-        (False, False, True, [(44100, 16)]),
+        (ALAC_44100_24, True, True, [(44100, 16)]),
+        # a receiver that streams RAOP never gets 24-bit, whatever it advertises
+        (ALAC_44100_24, False, False, [(44100, 16)]),
+        # only 16-bit advertised: the 16-bit default
+        (ALAC_44100_16, False, True, [(44100, 16)]),
+        # nothing advertised (unreachable device or no format tables)
+        (0, False, True, [(44100, 16)]),
     ],
 )
 def test_hires_supported_sample_rates(
     airplay_player: AirPlayPlayer,
-    hires_enabled: bool,
+    advertised_audio_formats: int,
     force_raop: bool,
-    has_airplay_info: bool,
+    airplay2_capable: bool,
     expected: list[tuple[int, int]],
 ) -> None:
-    """The hi-res toggle drives the advertised sample rates (AirPlay 2, not forced to RAOP)."""
+    """The formats the device advertises drive the advertised sample rates."""
     _set_discovery_info(
-        airplay_player, raop=True, airplay=has_airplay_info, airplay_features=AP2_FEATURES
-    )
-    _configure_player(
         airplay_player,
-        {CONF_HIRES_PLAYBACK: hires_enabled, CONF_FORCE_RAOP: force_raop},
+        raop=True,
+        airplay=True,
+        airplay_features=AP2_FEATURES if airplay2_capable else None,
     )
+    airplay_player.advertised_audio_formats = advertised_audio_formats
+    _configure_player(airplay_player, {CONF_FORCE_RAOP: force_raop})
     assert airplay_player.supported_sample_rates == expected
 
 
 def test_get_stream_pcm_format_hires(airplay_player: AirPlayPlayer) -> None:
-    """With hi-res enabled the stream format is 24-bit in a s32le container."""
-    _set_discovery_info(airplay_player, raop=True, airplay=True)
-    _configure_player(airplay_player, {CONF_HIRES_PLAYBACK: True, CONF_FORCE_RAOP: False})
+    """For a 24-bit capable device the stream format is 24-bit in a s32le container."""
+    _set_discovery_info(airplay_player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
+    airplay_player.advertised_audio_formats = ALAC_44100_24
+    _configure_player(airplay_player, {CONF_FORCE_RAOP: False})
 
     session_format = AudioFormat(
         content_type=ContentType.PCM_F32LE, sample_rate=48000, bit_depth=32
@@ -469,9 +478,9 @@ def test_get_stream_pcm_format_hires(airplay_player: AirPlayPlayer) -> None:
 
 
 def test_get_stream_pcm_format_default(airplay_player: AirPlayPlayer) -> None:
-    """Without hi-res the stream format is the 44.1/16 default."""
+    """Without a 24-bit capable device the stream format is the 44.1/16 default."""
     _set_discovery_info(airplay_player, raop=True, airplay=True)
-    _configure_player(airplay_player, {CONF_HIRES_PLAYBACK: False, CONF_FORCE_RAOP: False})
+    _configure_player(airplay_player, {CONF_FORCE_RAOP: False})
     session_format = AudioFormat(
         content_type=ContentType.PCM_F32LE, sample_rate=48000, bit_depth=32
     )
@@ -525,8 +534,9 @@ async def test_session_pcm_format_selects_processing_depth(
     expected_bit_depth: int,
 ) -> None:
     """An AirPlay session only uses float PCM when processing needs headroom."""
-    _set_discovery_info(airplay_player, raop=True, airplay=True)
-    _configure_player(airplay_player, {CONF_HIRES_PLAYBACK: True, CONF_FORCE_RAOP: False})
+    _set_discovery_info(airplay_player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
+    airplay_player.advertised_audio_formats = ALAC_48000_24
+    _configure_player(airplay_player, {CONF_FORCE_RAOP: False})
     airplay_player.mass.streams.audio = StreamsAudio(airplay_player.mass)
     cast("MagicMock", airplay_player.mass.config.get_player_dsp_config).return_value = MagicMock(
         enabled=False

@@ -271,6 +271,51 @@ def test_parse_latency_status() -> None:
 
 
 @pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        # both tables published: the union is kept
+        (
+            "[STATUS] capabilities requested=0x80000 realtime_formats=0x40000 "
+            "realtime_known=1 buffered_formats=0x80000 buffered_known=1",
+            0xC0000,
+        ),
+        # the Apple TV publishes 24-bit for its buffered stream only
+        (
+            "[STATUS] capabilities requested=0x80000 realtime_formats=0x1440800 "
+            "realtime_known=1 buffered_formats=0xe80000 buffered_known=1",
+            0x1EC0800,
+        ),
+        # a table the device did not publish is ignored, even when non-zero
+        (
+            "[STATUS] capabilities requested=0x40000 realtime_formats=0x40000 "
+            "realtime_known=1 buffered_formats=0x80000 buffered_known=0",
+            0x40000,
+        ),
+        # RAOP-compat routes report nothing: the probed value survives
+        (
+            "[STATUS] capabilities requested=0x40000 realtime_formats=0x0 "
+            "realtime_known=0 buffered_formats=0x0 buffered_known=0",
+            0x1234,
+        ),
+        # a malformed mask is ignored rather than raising
+        (
+            "[STATUS] capabilities realtime_formats=nonsense realtime_known=1",
+            0x1234,
+        ),
+    ],
+)
+def test_parse_capabilities_status(line: str, expected: int) -> None:
+    """The [STATUS] capabilities line refreshes the formats the player advertises."""
+    player = _make_player()
+    player.advertised_audio_formats = 0x1234
+    stream = AirPlayStream(player)
+
+    stream._parse_capabilities_status(line)
+
+    assert player.advertised_audio_formats == expected
+
+
+@pytest.mark.parametrize(
     ("value", "command"),
     [
         ("play", AirPlayRemoteCommand.PLAY),
