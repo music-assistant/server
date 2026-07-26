@@ -510,6 +510,18 @@ class Player(ABC):
 
     @property
     @final
+    def available_for_playback(self) -> bool:
+        """
+        Return if the player can currently be used to play (or control) audio.
+
+        A device that is reachable but still needs setup - an unpaired AirPlay
+        receiver, for example - can not accept a stream, so it must never be
+        picked as an output protocol or command target.
+        """
+        return self.available and not self.needs_setup
+
+    @property
+    @final
     def implements_setup_flow(self) -> bool:
         """Return if this player implements its own interactive setup flow."""
         return type(self).run_setup_flow is not Player.run_setup_flow
@@ -1534,7 +1546,7 @@ class Player(ABC):
                     name=self.provider.name,
                     protocol_domain=self.provider.domain,
                     priority=0,  # Native is always highest priority
-                    available=self.available,
+                    available=self.available_for_playback,
                     is_native=True,
                 )
             )
@@ -1549,7 +1561,7 @@ class Player(ABC):
                     name=self.provider.name,
                     protocol_domain=self.provider.domain,
                     priority=PROTOCOL_PRIORITY[self.provider.domain],
-                    available=self.available,
+                    available=self.available_for_playback,
                     is_native=True,
                 )
             )
@@ -1560,7 +1572,7 @@ class Player(ABC):
             active_ids.add(linked.output_protocol_id)
             # Check if the protocol player is actually available
             protocol_player = self.mass.players.get_player(linked.output_protocol_id)
-            is_available = protocol_player.available if protocol_player else False
+            is_available = protocol_player.available_for_playback if protocol_player else False
             # Use provider name if available, else domain title
             if protocol_player:
                 name = protocol_player.provider.name
@@ -1700,7 +1712,9 @@ class Player(ABC):
         for linked in self.__attr_linked_protocols:
             if linked.protocol_domain == protocol_domain:
                 protocol_player = self.mass.players.get_player(linked.output_protocol_id)
-                current_available = protocol_player.available if protocol_player else False
+                current_available = (
+                    protocol_player.available_for_playback if protocol_player else False
+                )
                 return OutputProtocol(
                     output_protocol_id=linked.output_protocol_id,
                     name=protocol_player.provider.name
@@ -1741,7 +1755,7 @@ class Player(ABC):
         """Get the best available protocol player by priority."""
         for linked in sorted(self.__attr_linked_protocols, key=lambda x: x.priority):
             if protocol_player := self.mass.players.get_player(linked.output_protocol_id):
-                if protocol_player.available:
+                if protocol_player.available_for_playback:
                     return protocol_player
         return None
 
@@ -2004,7 +2018,7 @@ class Player(ABC):
             protocol_player = self.mass.players.get_player(active_protocol)
             if (
                 protocol_player
-                and protocol_player.available
+                and protocol_player.available_for_playback
                 and feature in protocol_player.supported_features
             ):
                 return protocol_player
@@ -2021,7 +2035,7 @@ class Player(ABC):
             preferred_protocol = str(preferred_conf)
             if (
                 (_player := self.mass.players.get_player(preferred_protocol))
-                and _player.available
+                and _player.available_for_playback
                 and feature in _player.supported_features
             ):
                 return _player
@@ -2036,7 +2050,7 @@ class Player(ABC):
         ):
             if (
                 (protocol_player := self.mass.players.get_player(linked.output_protocol_id))
-                and protocol_player.available
+                and protocol_player.available_for_playback
                 and feature in protocol_player.supported_features
             ):
                 return protocol_player

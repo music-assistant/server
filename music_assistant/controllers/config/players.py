@@ -720,7 +720,7 @@ class PlayerConfigMixin:
             if has_native_volume_control:
                 break
             protocol_player = self.mass.players.get_player(linked_protocol.output_protocol_id)
-            if not protocol_player or not protocol_player.available:
+            if not protocol_player or not protocol_player.available_for_playback:
                 continue
             if protocol_player.supports_feature(PlayerFeature.VOLUME_SET):
                 if auto_option not in volume_options:
