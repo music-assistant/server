@@ -96,7 +96,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         self.mass.register_api_command(
             f"music/{api_base}/supported_artist_types",
-            self.get_supported_artist_types,
+            self.get_supported_library_artist_types,
             required_scope=Scope.LIBRARY_READ,
         )
 
@@ -841,8 +841,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 result.append(candidate)
         return result[:limit]
 
-    async def get_supported_artist_types(self) -> list[ArtistType]:
-        """Return all supported artist types."""
+    async def get_supported_library_artist_types(self) -> list[ArtistType]:
+        """Get all supported in-library artist types."""
         artist_types: list[ArtistType] = []
         query = f"SELECT DISTINCT artist_type FROM {DB_TABLE_ARTISTS}"
         rows = await self.mass.music.database.get_rows_from_query(query)
