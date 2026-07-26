@@ -52,7 +52,7 @@ from music_assistant.providers.airplay_receiver.helpers import get_shairport_syn
 from music_assistant.providers.airplay_receiver.metadata import MetadataReader
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -90,45 +90,6 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return AirPlayReceiverProvider(mass, manifest, config)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    return (
-        CONF_ENTRY_WARN_PREVIEW,
-        ConfigEntry(
-            key=CONF_MASS_PLAYER_ID,
-            type=ConfigEntryType.STRING,
-            multi_value=False,
-            default_value=PLAYER_ID_AUTO,
-            options=[
-                ConfigValueOption(PLAYER_ID_AUTO),
-                *(
-                    ConfigValueOption(x.player_id, title=x.display_name)
-                    for x in sorted(
-                        mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
-                    )
-                ),
-            ],
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_AIRPLAY_NAME,
-            type=ConfigEntryType.STRING,
-            default_value=DEFAULT_AIRPLAY_NAME,
-        ),
-    )
 
 
 class AirPlayReceiverProvider(PluginProvider):
@@ -217,6 +178,34 @@ class AirPlayReceiverProvider(PluginProvider):
         self._runner_error_count = 0
         self._metadata_reader: MetadataReader | None = None
         self._first_volume_event_received = False  # Track if we've received the first volume event
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            CONF_ENTRY_WARN_PREVIEW,
+            ConfigEntry(
+                key=CONF_MASS_PLAYER_ID,
+                type=ConfigEntryType.STRING,
+                multi_value=False,
+                default_value=PLAYER_ID_AUTO,
+                options=[
+                    ConfigValueOption(PLAYER_ID_AUTO),
+                    *(
+                        ConfigValueOption(x.player_id, title=x.display_name)
+                        for x in sorted(
+                            self.mass.players.all_players(False, False),
+                            key=lambda p: p.display_name.lower(),
+                        )
+                    ),
+                ],
+                required=True,
+            ),
+            ConfigEntry(
+                key=CONF_AIRPLAY_NAME,
+                type=ConfigEntryType.STRING,
+                default_value=DEFAULT_AIRPLAY_NAME,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

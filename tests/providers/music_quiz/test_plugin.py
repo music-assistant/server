@@ -40,7 +40,6 @@ from music_assistant.providers.music_quiz import (
     PLAYER_RECONNECT_GRACE_SECONDS,
     REPLAY_AUTO_START_SECONDS,
     MusicQuizPlugin,
-    get_config_entries,
 )
 from music_assistant.providers.music_quiz.answer_types import get_answer_type
 from music_assistant.providers.music_quiz.answer_types.base import QuizAnswerSubmissionPayload
@@ -5324,8 +5323,10 @@ async def test_get_config_entries_reports_unavailable_ai(providers: list[object]
     """Disable AI enhancements and explain when no AI provider is available."""
     mass = MagicMock()
     mass.get_providers_supporting_feature.return_value = providers
+    plugin = MusicQuizPlugin.__new__(MusicQuizPlugin)
+    plugin.mass = mass
 
-    entries = await get_config_entries(mass)
+    entries = await plugin.get_config_entries()
 
     assert [entry.key for entry in entries] == ["use_ai_distractors", "ai_unavailable"]
     ai_entry = entries[0]
@@ -5342,8 +5343,10 @@ async def test_get_config_entries_reports_available_ai() -> None:
     """Allow AI enhancements and confirm when an AI provider is available."""
     mass = MagicMock()
     mass.get_providers_supporting_feature.return_value = [MagicMock(spec=PluginProvider)]
+    plugin = MusicQuizPlugin.__new__(MusicQuizPlugin)
+    plugin.mass = mass
 
-    entries = await get_config_entries(mass)
+    entries = await plugin.get_config_entries()
 
     assert [entry.key for entry in entries] == ["use_ai_distractors"]
     assert entries[0].read_only is False

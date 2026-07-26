@@ -518,6 +518,7 @@ def mock_config_targets(mock_mass: Any) -> Any:
 
     mock_mass.config.get_provider_config = AsyncMock(return_value=cfg)
     mock_mass.config.get_provider_config_entries = AsyncMock(return_value=list(entries.values()))
+    mock_mass.config.invoke_provider_config_action = AsyncMock(return_value=list(entries.values()))
     mock_mass.config.get_core_config = AsyncMock(return_value=cfg)
     mock_mass.config.get_core_config_entries = AsyncMock(return_value=list(entries.values()))
     mock_mass.config.get_player_config = AsyncMock(return_value=cfg)

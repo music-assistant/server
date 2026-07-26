@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from music_assistant_models.enums import MediaType, StreamType
@@ -23,9 +23,16 @@ from music_assistant.models.music_provider import MusicProvider
 from . import parsers
 from .constants import MER_BIT_DEPTH, MER_CHANNELS, MER_SAMPLE_RATE, NOWPLAYING_API_URL
 
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
+
 
 class MotherEarthRadioProvider(MusicProvider):
     """Mother Earth Radio Music Provider for Music Assistant."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return ()
 
     @property
     def is_streaming_provider(self) -> bool:

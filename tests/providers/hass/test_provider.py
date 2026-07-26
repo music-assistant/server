@@ -35,7 +35,7 @@ def _state(entity_id: str, friendly_name: str) -> dict[str, Any]:
 
 
 def _config(**values: str) -> MagicMock:
-    """Return a provider config with the given persisted values."""
+    """Return a provider config exposing the given values via get_value (entry defaults)."""
     persisted_values = {
         CONF_URL: "http://homeassistant.local:8123",
         CONF_AUTH_TOKEN: "token",
@@ -47,6 +47,8 @@ def _config(**values: str) -> MagicMock:
     config.instance_id = "hass--test"
     config.name = "Home Assistant"
     config.get_value.side_effect = persisted_values.get
+    # get_setup_value falls through to config.values/get_value when setup_data is empty
+    config.values = {}
     return config
 
 
@@ -75,6 +77,10 @@ def _mass() -> MagicMock:
     mass.http_session = MagicMock()
     mass.http_session_no_ssl = MagicMock()
     mass.create_task.side_effect = asyncio.create_task
+    # get_setup_value reads the (empty, here) live setup_data blob from the store, then
+    # falls through to the provider config mock's get_value for the persisted test values
+    mass.config.get = MagicMock(return_value={})
+    mass.config.get_raw_provider_config_value = MagicMock(return_value=None)
     return mass
 
 

@@ -30,7 +30,7 @@ from .player import ChromecastPlayer
 from .sendspin_bridge import SendspinBridgeManager
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.provider import ProviderManifest
     from pychromecast.models import CastInfo
@@ -57,8 +57,12 @@ class ChromecastProvider(PlayerProvider):
         self._discover_lock = threading.Lock()
         self._pending_discoveries: set[str] = set()
         self.mz_mgr = MultizoneManager()
-        # Handle config option for manual IP's
-        manual_ip_config = cast("list[str]", config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key))
+        # Handle config option for manual IP's. Read a default: at construction the config
+        # carries only the server defaults + stored raw values (typed option entries are
+        # applied right after by the config controller).
+        manual_ip_config = cast(
+            "list[str]", config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key) or []
+        )
         self.browser = CastBrowser(
             SimpleCastListener(
                 add_callback=self._on_chromecast_discovered,
@@ -72,6 +76,10 @@ class ChromecastProvider(PlayerProvider):
         self.bridge_manager = SendspinBridgeManager(self)
         self.dashboards = ChromecastDashboards(self)
         self._set_pychromecast_log_level()
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (CONF_ENTRY_MANUAL_DISCOVERY_IPS,)
 
     async def discover_players(self) -> None:
         """Discover Cast players on the network."""

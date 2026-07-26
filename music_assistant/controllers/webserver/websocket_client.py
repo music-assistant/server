@@ -19,7 +19,7 @@ from music_assistant_models.api import (
     MessageType,
     SuccessResultMessage,
 )
-from music_assistant_models.auth import AuthProviderType, User
+from music_assistant_models.auth import AuthProviderType, Scope, User
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import (
     AuthenticationRequired,
@@ -544,6 +544,28 @@ class WebsocketClientHandler:
                 and event.object_id != self._sendspin_player_id
             ):
                 return
+
+            if event.event == EventType.SETUP_FLOW_UPDATED:
+                # setup flow steps carry prefilled values, OAuth urls and the
+                # flow_id guarding the unauthenticated callback route - only
+                # users who could interact with the flow may receive them
+                user = self._authenticated_user
+                if user is None:
+                    return
+                required = (
+                    self.mass.config.get_setup_flow_required_scope(event.object_id)
+                    if event.object_id
+                    else None
+                )
+                if required is None:
+                    # flow already popped (terminal step race): the flow kind is no
+                    # longer known, so require both config scopes to be safe
+                    if not has_scope(user, Scope.CONFIG_PROVIDERS_WRITE) or not has_scope(
+                        user, Scope.CONFIG_PLAYERS_WRITE
+                    ):
+                        return
+                elif not has_scope(user, required):
+                    return
 
             if event.event == EventType.TASKS_UPDATED:
                 if self._authenticated_user is None:

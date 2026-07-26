@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import aiohttp
 from music_assistant_models.enums import (
@@ -28,7 +28,6 @@ from .client import (
     play_status_is_paused,
     play_status_is_playing,
 )
-from .config import build_preset_config_entries, preset_media_key
 from .const import (
     CONF_APP_KEY,
     KEY_MUTE,
@@ -47,8 +46,6 @@ from .const import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-
     from .provider import BoseSoundTouchProvider
 
 IDLE_POLL_INTERVAL = 30
@@ -85,7 +82,7 @@ class BoseSoundTouchPlayer(Player):
         }
         # Native announcements require a Bose developer app key; when configured the
         # speaker plays them as an overlay (ducking and resuming the current playback).
-        app_key = provider.config.get_value(CONF_APP_KEY)
+        app_key = provider.get_setup_value(CONF_APP_KEY)
         self._app_key = str(app_key) if app_key else None
         if self._app_key:
             self._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
@@ -144,14 +141,6 @@ class BoseSoundTouchPlayer(Player):
                 await self._listener_task
             self._listener_task = None
         await super().on_unload()
-
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
-        """Return player-specific config entries (preset button mappings)."""
-        return await build_preset_config_entries(self.mass, action, values)
 
     # --- Player commands ---
 
@@ -317,7 +306,8 @@ class BoseSoundTouchPlayer(Player):
         """Play the Music Assistant media configured for the given preset button."""
         if preset_id not in PRESET_IDS:
             return
-        media_id = str(self.config.get_value(preset_media_key(preset_id)) or "")
+        # preset buttons are mapped once on the provider, shared by all its speakers
+        media_id = cast("BoseSoundTouchProvider", self.provider).get_preset_media(preset_id)
         if not media_id:
             self.logger.warning(
                 "Preset %s pressed on %s but no media is configured", preset_id, self.name

@@ -24,6 +24,9 @@ from music_assistant_models.media_items import (
     Album,
     Artist,
     Audiobook,
+    MediaCollection,
+    MediaItemCollection,
+    MediaItemMetadata,
     ProviderMapping,
     Track,
 )
@@ -295,6 +298,7 @@ async def _compare(
         }
         new_mappings = {(m.provider_instance, m.item_id) for m in item.provider_mappings}
         assert legacy_mappings == new_mappings
+    assert isinstance(new_items, list)
     return new_items
 
 
@@ -505,6 +509,80 @@ async def test_audiobook_listing_resume_info(seeded_mass: MusicAssistant) -> Non
     assert len(books) == 1
     # the most recent playlog entry wins
     assert books[0].resume_position_ms == 120 * 1000
+
+
+async def test_audiobook_collections_collapse_and_preserve_order(
+    mass: MusicAssistant,
+) -> None:
+    """Collapsed audiobook collections remain ordered and reuse the cached row shape."""
+    controller = mass.music.audiobooks
+    assert (
+        await controller.get_library_items_by_query(
+            in_library_only=True,
+            collapse_collections=True,
+        )
+        == []
+    )
+
+    collection_books = (
+        ("Alpha 2", "Alpha Series", 2.0),
+        ("Alpha 1.5", "Alpha Series", "1.5"),
+        ("Alpha 1", "Alpha Series", 1.0),
+        ("Beta 1", "Beta Series", 1.0),
+    )
+    for name, collection_name, sequence in collection_books:
+        await controller.add_item_to_library(
+            Audiobook(
+                item_id="0",
+                provider="library",
+                name=name,
+                provider_mappings={_mapping()},
+                metadata=MediaItemMetadata(
+                    collections=UniqueList(
+                        [MediaItemCollection(title=collection_name, sequence=sequence)]
+                    )
+                ),
+            )
+        )
+    await controller.add_item_to_library(
+        Audiobook(
+            item_id="0",
+            provider="library",
+            name="Standalone",
+            provider_mappings={_mapping()},
+        )
+    )
+
+    items = await controller.get_library_items_by_query(
+        in_library_only=True,
+        order_by="name_desc",
+        collapse_collections=True,
+    )
+    collections = {item.name: item for item in items if isinstance(item, MediaCollection)}
+    assert list(collections) == ["Beta Series", "Alpha Series"]
+    assert [item.name for item in collections["Alpha Series"].items] == [
+        "Alpha 1",
+        "Alpha 1.5",
+        "Alpha 2",
+    ]
+
+    with patch.object(
+        mass.music.database,
+        "get_rows_from_query",
+        wraps=mass.music.database.get_rows_from_query,
+    ) as get_rows:
+        search_results = await controller.get_library_items_by_query(
+            search="Series",
+            in_library_only=True,
+            order_by="name_desc",
+            collapse_collections=True,
+        )
+    assert [item.name for item in search_results] == ["Beta Series", "Alpha Series"]
+    assert get_rows.await_count == 1
+
+    collection = await controller.get_collection(collections["Alpha Series"].item_id)
+    assert [item.name for item in collection.items] == ["Alpha 1", "Alpha 1.5", "Alpha 2"]
+    assert all(isinstance(item, Audiobook) for item in collection.items)
 
 
 async def test_listing_queries_stream_from_sort_index(seeded_mass: MusicAssistant) -> None:

@@ -16,6 +16,10 @@ on:
           - beta
           - rc
           - nightly
+      source_sha:
+        description: "Exact full commit SHA for draft/published recovery; leave empty to resolve the current channel branch head"
+        required: false
+        type: string
       important_notes:
         description: "Important notes (breaking changes, critical info, etc.)"
         required: false
@@ -60,7 +64,8 @@ jobs:
     name: Resolve and validate release state
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      # GitHub only includes draft releases for tokens with push access.
+      contents: write
     outputs:
       branch: ${{ steps.branch.outputs.branch }}
       source_sha: ${{ steps.source.outputs.sha }}
@@ -194,16 +199,17 @@ jobs:
           VERSION: ${{ inputs.version }}
         run: |
           release_json="$RUNNER_TEMP/release.json"
-          release_error="$RUNNER_TEMP/release-error.txt"
-          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION" \
-            > "$release_json" 2> "$release_error"; then
-            release_exists=true
-          elif grep -q "HTTP 404" "$release_error"; then
-            release_exists=false
-          else
-            cat "$release_error" >&2
-            exit 1
-          fi
+          release_lookup="$RUNNER_TEMP/release-lookup.txt"
+          gh api --paginate --slurp \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            > "$RUNNER_TEMP/releases.json"
+          python3 .release-workflow/scripts/release_workflow.py select-release \
+            --version "$VERSION" \
+            --releases-json "$RUNNER_TEMP/releases.json" \
+            --release-json "$release_json" \
+            --github-output "$release_lookup"
+          release_exists=$(sed -n 's/^release_exists=//p' "$release_lookup")
+          release_id=$(sed -n 's/^release_id=//p' "$release_lookup")
 
           tag_sha=""
           tag_is_resumable=false
@@ -259,7 +265,6 @@ jobs:
             exit 0
           fi
 
-          release_id=$(jq -r '.id' "$release_json")
           draft=$(jq -r '.draft' "$release_json")
           immutable=$(jq -r '.immutable' "$release_json")
           target=$(jq -r '.target_commitish' "$release_json")
@@ -326,6 +331,7 @@ jobs:
     if: needs.resolve.outputs.release_state != 'published'
     permissions:
       contents: read
+      pull-requests: read
     uses: ./.github/workflows/test.yml
     with:
       ref: ${{ needs.resolve.outputs.source_sha }}
@@ -336,7 +342,8 @@ jobs:
     needs: [resolve, preflight]
     if: needs.resolve.outputs.release_state != 'published'
     permissions:
-      contents: read
+      # GitHub requires push access to download assets from draft releases.
+      contents: write
     outputs:
       reused_assets: ${{ steps.mode.outputs.reused_assets }}
       wheel_name: ${{ steps.assets.outputs.wheel_name }}
@@ -372,15 +379,44 @@ jobs:
         if: needs.resolve.outputs.assets_ready == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.resolve.outputs.release_id }}
           SDIST_NAME: ${{ needs.resolve.outputs.sdist_name }}
+          SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           VERSION: ${{ inputs.version }}
           WHEEL_NAME: ${{ needs.resolve.outputs.wheel_name }}
         run: |
-          gh release download "$VERSION" \
-            --repo "$GITHUB_REPOSITORY" \
-            --dir source/dist \
-            --pattern "$WHEEL_NAME" \
-            --pattern "$SDIST_NAME"
+          if [ -z "$RELEASE_ID" ]; then
+            echo "Missing release id for reusable draft assets" >&2
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+            > "$RUNNER_TEMP/release.json"
+          if [ "$(jq -r '.id // empty' "$RUNNER_TEMP/release.json")" != "$RELEASE_ID" ] || \
+             [ "$(jq -r '.tag_name // empty' "$RUNNER_TEMP/release.json")" != "$VERSION" ] || \
+             [ "$(jq -r '.draft' "$RUNNER_TEMP/release.json")" != "true" ] || \
+             [ "$(jq -r '.immutable' "$RUNNER_TEMP/release.json")" != "false" ] || \
+             [ "$(jq -r '.target_commitish' "$RUNNER_TEMP/release.json")" != "$SOURCE_SHA" ]; then
+            echo "Resolved release $RELEASE_ID is no longer the matching mutable draft" >&2
+            exit 1
+          fi
+          for asset_name in "$WHEEL_NAME" "$SDIST_NAME"; do
+            asset_count=$(jq \
+              --arg name "$asset_name" \
+              '[.assets[] | select(.name == $name)] | length' \
+              "$RUNNER_TEMP/release.json")
+            if [ "$asset_count" -ne 1 ]; then
+              echo "Draft must contain exactly one $asset_name asset" >&2
+              exit 1
+            fi
+            asset_id=$(jq -r \
+              --arg name "$asset_name" \
+              '.assets[] | select(.name == $name) | .id' \
+              "$RUNNER_TEMP/release.json")
+            gh api \
+              -H "Accept: application/octet-stream" \
+              "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id" \
+              > "source/dist/$asset_name"
+          done
 
       - name: Create appvars token
         if: needs.resolve.outputs.assets_ready != 'true'
@@ -451,14 +487,11 @@ jobs:
       - name: Verify exact assets
         id: assets
         env:
-          GH_TOKEN: ${{ github.token }}
           REUSED_ASSETS: ${{ steps.mode.outputs.reused_assets }}
           VERSION: ${{ inputs.version }}
         run: |
           extra_args=()
           if [ "$REUSED_ASSETS" = "true" ]; then
-            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION" \
-              > "$RUNNER_TEMP/release.json"
             extra_args=(--release-json "$RUNNER_TEMP/release.json")
           fi
           python3 .release-workflow/scripts/release_workflow.py assets \
@@ -575,21 +608,27 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           IS_PRERELEASE: ${{ needs.resolve.outputs.is_prerelease }}
+          RELEASE_ID: ${{ needs.resolve.outputs.release_id }}
           RELEASE_NOTES: ${{ steps.notes.outputs.release-notes }}
           RELEASE_TITLE: ${{ steps.title.outputs.title }}
           SOURCE_SHA: ${{ needs.resolve.outputs.source_sha }}
           VERSION: ${{ inputs.version }}
         run: |
           release_json="$RUNNER_TEMP/release.json"
-          release_error="$RUNNER_TEMP/release-error.txt"
-          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION" \
-            > "$release_json" 2> "$release_error"; then
+          if [ -n "$RELEASE_ID" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
+              > "$release_json"
+            if [ "$(jq -r '.id // empty' "$release_json")" != "$RELEASE_ID" ] || \
+               [ "$(jq -r '.tag_name // empty' "$release_json")" != "$VERSION" ] || \
+               [ "$(jq -r '.draft' "$release_json")" != "true" ] || \
+               [ "$(jq -r '.immutable' "$release_json")" != "false" ] || \
+               [ "$(jq -r '.target_commitish' "$release_json")" != "$SOURCE_SHA" ]; then
+              echo "Resolved release $RELEASE_ID is no longer the matching mutable draft" >&2
+              exit 1
+            fi
             release_exists=true
-          elif grep -q "HTTP 404" "$release_error"; then
-            release_exists=false
           else
-            cat "$release_error" >&2
-            exit 1
+            release_exists=false
           fi
 
           jq -n \
@@ -684,15 +723,8 @@ jobs:
           fi
 
           if [ "$release_exists" = "true" ]; then
-            if [ "$(jq -r '.draft' "$release_json")" != "true" ] || \
-               [ "$(jq -r '.immutable' "$release_json")" != "false" ] || \
-               [ "$(jq -r '.target_commitish' "$release_json")" != "$SOURCE_SHA" ]; then
-              echo "Release $VERSION is no longer a matching mutable draft" >&2
-              exit 1
-            fi
-            release_id=$(jq -r '.id' "$release_json")
             gh api --method PATCH \
-              "repos/$GITHUB_REPOSITORY/releases/$release_id" \
+              "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
               --input "$RUNNER_TEMP/release-payload.json" \
               > "$release_json"
           else
@@ -700,7 +732,16 @@ jobs:
               "repos/$GITHUB_REPOSITORY/releases" \
               --input "$RUNNER_TEMP/release-payload.json" \
               > "$release_json"
-            release_id=$(jq -r '.id' "$release_json")
+          fi
+          release_id=$(jq -r '.id // empty' "$release_json")
+          if [ -z "$release_id" ] || \
+             { [ -n "$RELEASE_ID" ] && [ "$release_id" != "$RELEASE_ID" ]; } || \
+             [ "$(jq -r '.tag_name // empty' "$release_json")" != "$VERSION" ] || \
+             [ "$(jq -r '.draft' "$release_json")" != "true" ] || \
+             [ "$(jq -r '.immutable' "$release_json")" != "false" ] || \
+             [ "$(jq -r '.target_commitish' "$release_json")" != "$SOURCE_SHA" ]; then
+            echo "GitHub did not return the matching mutable draft for $VERSION" >&2
+            exit 1
           fi
           echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
 
@@ -719,10 +760,20 @@ jobs:
               gh api --method DELETE \
                 "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
             done
-          gh release upload "$VERSION" \
+          for asset_path in \
             "source/dist/$WHEEL_NAME" \
-            "source/dist/$SDIST_NAME" \
-            --repo "$GITHUB_REPOSITORY"
+            "source/dist/$SDIST_NAME"; do
+            asset_name=$(basename "$asset_path")
+            curl --fail-with-body --silent --show-error \
+              --request POST \
+              --header "Accept: application/vnd.github+json" \
+              --header "Authorization: Bearer $GH_TOKEN" \
+              --header "Content-Type: application/octet-stream" \
+              --header "X-GitHub-Api-Version: 2026-03-10" \
+              --data-binary "@$asset_path" \
+              "https://uploads.github.com/repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?name=$asset_name" \
+              > "$RUNNER_TEMP/upload-$asset_name.json"
+          done
 
       - name: Verify draft assets
         id: assets
@@ -949,10 +1000,34 @@ jobs:
         id: publication_state
         env:
           GH_TOKEN: ${{ github.token }}
+          DRAFT_RELEASE_ID: ${{ needs.prepare_draft.outputs.release_id }}
+          PUBLISHED_RELEASE_ID: ${{ needs.resolve.outputs.release_id }}
+          RELEASE_STATE: ${{ needs.resolve.outputs.release_state }}
           VERSION: ${{ inputs.version }}
         run: |
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$VERSION" \
+          case "$RELEASE_STATE" in
+            new|draft)
+              RELEASE_ID="$DRAFT_RELEASE_ID"
+              ;;
+            published)
+              RELEASE_ID="$PUBLISHED_RELEASE_ID"
+              ;;
+            *)
+              echo "Unsupported release state: $RELEASE_STATE" >&2
+              exit 1
+              ;;
+          esac
+          if [ -z "$RELEASE_ID" ]; then
+            echo "Missing release id for $RELEASE_STATE release $VERSION" >&2
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" \
             > "$RUNNER_TEMP/live-release.json"
+          live_tag_name=$(jq -r '.tag_name' "$RUNNER_TEMP/live-release.json")
+          if [ "$live_tag_name" != "$VERSION" ]; then
+            echo "Release $VERSION resolves to tag $live_tag_name" >&2
+            exit 1
+          fi
           draft=$(jq -r '.draft' "$RUNNER_TEMP/live-release.json")
           immutable=$(jq -r '.immutable' "$RUNNER_TEMP/live-release.json")
           if [ "$draft" = "true" ] && [ "$immutable" = "false" ]; then

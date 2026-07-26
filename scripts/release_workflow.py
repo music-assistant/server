@@ -311,6 +311,39 @@ def compare_frontend_versions(current: str, requested: str) -> str:
     return _version_relation(current_key, requested_key)
 
 
+def select_release(release_pages: object, version: str) -> dict[str, Any] | None:
+    """
+    Return the only release whose tag exactly matches a version.
+
+    :param release_pages: Paginated responses from the GitHub releases API.
+    :param version: Exact release tag to select.
+    """
+    if not isinstance(release_pages, list):
+        raise ReleaseWorkflowError("GitHub releases response does not contain pages")
+
+    matches: list[dict[str, Any]] = []
+    for page in release_pages:
+        if not isinstance(page, list):
+            raise ReleaseWorkflowError("GitHub releases response contains an invalid page")
+        for release in page:
+            if not isinstance(release, dict):
+                raise ReleaseWorkflowError("GitHub releases response contains invalid metadata")
+            if release.get("tag_name") == version:
+                matches.append(release)
+
+    if len(matches) > 1:
+        release_ids = ", ".join(str(release.get("id", "unknown")) for release in matches)
+        raise ReleaseWorkflowError(f"Multiple releases match exact tag {version}: {release_ids}")
+    if not matches:
+        return None
+
+    release = matches[0]
+    release_id = release.get("id")
+    if not isinstance(release_id, int) or isinstance(release_id, bool) or release_id <= 0:
+        raise ReleaseWorkflowError(f"Release {version} does not contain a valid id")
+    return release
+
+
 def inspect_assets(
     version: str,
     *,
@@ -648,6 +681,13 @@ def _asset_outputs(assets: tuple[Asset, Asset]) -> dict[str, str | int]:
     }
 
 
+def _configure_release_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--version", required=True)
+    parser.add_argument("--releases-json", type=Path, required=True)
+    parser.add_argument("--release-json", type=Path, required=True)
+    parser.add_argument("--github-output", type=Path)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -688,6 +728,8 @@ def _build_parser() -> argparse.ArgumentParser:
     frontend_order_parser.add_argument("--current", required=True)
     frontend_order_parser.add_argument("--requested", required=True)
     frontend_order_parser.add_argument("--github-output", type=Path)
+
+    _configure_release_parser(subparsers.add_parser("select-release"))
 
     assets_parser = subparsers.add_parser("assets")
     assets_parser.add_argument("--version", required=True)
@@ -776,6 +818,24 @@ def main() -> int:
                 },
                 args.github_output,
             )
+        elif args.command == "select-release":
+            release_pages = json.loads(args.releases_json.read_text(encoding="utf-8"))
+            release = select_release(release_pages, args.version)
+            if release is None:
+                args.release_json.unlink(missing_ok=True)
+                _write_outputs(
+                    {"release_exists": False, "release_id": None},
+                    args.github_output,
+                )
+            else:
+                args.release_json.write_text(
+                    json.dumps(release, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                _write_outputs(
+                    {"release_exists": True, "release_id": release["id"]},
+                    args.github_output,
+                )
         elif args.command == "assets":
             assets = inspect_assets(
                 args.version,

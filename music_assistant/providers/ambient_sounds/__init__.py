@@ -29,7 +29,7 @@ from music_assistant.models.music_provider import MusicProvider
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -101,21 +101,15 @@ async def setup(
     return AmbientSoundsProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider (none needed)."""
-    return ()
-
-
 class AmbientSoundsProvider(MusicProvider):
     """Music provider serving locally generated ambient sound loops."""
 
     _render_dir: str
     _render_lock: asyncio.Lock
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider (none needed)."""
+        return ()
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

@@ -26,7 +26,7 @@ from bandcamp_async_api.models import (
     FollowingItem,
 )
 from mashumaro.exceptions import UnserializableDataError
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
     ImageType,
@@ -90,33 +90,6 @@ async def setup(
     return BandcampProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-# noinspection PyTypeHints,PyUnusedLocal
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    return (
-        CONF_ENTRY_UNOFFICIAL_PROVIDER,
-        ConfigEntry(
-            key=CONF_IDENTITY,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-            value=values.get(CONF_IDENTITY) if values else None,
-        ),
-        ConfigEntry(
-            key=CONF_TOP_TRACKS_LIMIT,
-            type=ConfigEntryType.INTEGER,
-            required=False,
-            value=values.get(CONF_TOP_TRACKS_LIMIT) if values else DEFAULT_TOP_TRACKS_LIMIT,
-            default_value=DEFAULT_TOP_TRACKS_LIMIT,
-            advanced=True,
-        ),
-    )
-
-
 def split_id(id_: str) -> tuple[int, int, int]:
     """
     Return (artist_id, album_id, track_id). Missing parts are returned as 0.
@@ -148,9 +121,22 @@ class BandcampProvider(MusicProvider):
     )
     top_tracks_limit: int
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_TOP_TRACKS_LIMIT,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=DEFAULT_TOP_TRACKS_LIMIT,
+                advanced=True,
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Handle async init of the Bandcamp provider."""
-        identity = self.config.get_value(CONF_IDENTITY)
+        identity = self.get_setup_value(CONF_IDENTITY)
         self.top_tracks_limit = cast(
             "int", self.config.get_value(CONF_TOP_TRACKS_LIMIT, DEFAULT_TOP_TRACKS_LIMIT)
         )

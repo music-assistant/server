@@ -114,6 +114,11 @@ def _make_mock_mass() -> MagicMock:
     mass.subscribe = MagicMock(return_value=MagicMock())
     mass.get_providers = MagicMock(return_value=[])
     mass.config.set_raw_provider_config_value = MagicMock()
+    # Auth values now live in setup_data; the provider reads them via
+    # get_setup_value. Empty setup_data routes those reads through to
+    # config.get_value (via get_config_value; the seeded stub above).
+    mass.config.get = MagicMock(return_value={})
+    mass.config.get_raw_provider_config_value = MagicMock(return_value=None)
 
     # Cache — return None (miss) by default
     mass.cache.get = AsyncMock(return_value=None)
@@ -1549,7 +1554,7 @@ class TestRefreshYnisonToken:
         provider._ym_instance_id = None
         provider.config = MagicMock()
         provider.config.get_value = MagicMock(
-            side_effect=lambda key: "own-x-token" if key == CONF_X_TOKEN else None
+            side_effect=lambda key, default=None: "own-x-token" if key == CONF_X_TOKEN else default
         )
 
         with patch(

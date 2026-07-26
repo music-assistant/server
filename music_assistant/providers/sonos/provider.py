@@ -31,13 +31,17 @@ from .helpers import get_primary_ip_address
 from .player import SonosPlayer
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.player import PlayerMedia
     from zeroconf.asyncio import AsyncServiceInfo
 
 
 class SonosPlayerProvider(PlayerProvider):
     """Sonos Player provider."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (CONF_ENTRY_MANUAL_DISCOVERY_IPS,)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

@@ -67,6 +67,10 @@ def mass_mock() -> Mock:
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
     mass.cache.delete = AsyncMock()
+    # setup_data is unset in these unit tests, so get_setup_value falls through to
+    # the provider config's get_value (which the config mock stubs)
+    mass.config.get = Mock(return_value=None)
+    mass.config.get_raw_provider_config_value = Mock(return_value=None)
     return mass
 
 
@@ -85,6 +89,7 @@ def config_mock() -> Mock:
     config.name = "Bandcamp Test"
     config.instance_id = "bandcamp_test"
     config.enabled = True
+    config.values = {}
     config.get_value.side_effect = lambda key, default=None: {
         "identity": "mock_identity_token",
         "search_limit": 10,
@@ -158,6 +163,7 @@ async def test_handle_async_init_with_identity(provider: BandcampProvider) -> No
 async def test_handle_async_init_without_identity(mass_mock: Mock, manifest_mock: Mock) -> None:
     """Test async initialization without identity token."""
     config = Mock()
+    config.values = {}
     config.get_value.side_effect = lambda key, default=None: (
         default if default is not None else ("INFO" if key == "log_level" else None)
     )

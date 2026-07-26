@@ -6,7 +6,14 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import aiohttp
-from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    ContentType,
+    MediaType,
+    ProviderFeature,
+    StreamType,
+)
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -30,16 +37,19 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
 from .api_client import ZvukMusicClient
 from .constants import (
+    CONF_ACTION_CLEAR_AUTH,
     CONF_QUALITY,
     CONF_TOKEN,
     DEFAULT_LIMIT,
     PLAYLIST_TRACK_FETCH_LIMIT,
     PLAYLIST_TRACKS_PAGE_SIZE,
+    QUALITY_HIGH,
     QUALITY_LOSSLESS,
     SYNTHESIS_PLAYLIST_IDS,
 )
@@ -60,6 +70,41 @@ class ZvukMusicProvider(MusicProvider):
         if self._client is None:
             raise ProviderUnavailableError("Provider not initialized")
         return self._client
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        is_authenticated = bool(self.get_config_value(CONF_TOKEN))
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_TOKEN,
+                type=ConfigEntryType.SECURE_STRING,
+                required=True,
+                hidden=is_authenticated,
+            ),
+            ConfigEntry(
+                key=CONF_ACTION_CLEAR_AUTH,
+                type=ConfigEntryType.ACTION,
+                action=CONF_ACTION_CLEAR_AUTH,
+                hidden=not is_authenticated,
+            ),
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(QUALITY_HIGH),
+                    ConfigValueOption(QUALITY_LOSSLESS),
+                ],
+                default_value=QUALITY_HIGH,
+            ),
+        )
+
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+        """Handle a one-shot config action button press and re-render the entries."""
+        if action == CONF_ACTION_CLEAR_AUTH:
+            self._update_config_value(CONF_TOKEN, None, immediate=True)
+            return await self.get_config_entries()
+        return await super().handle_config_action(action)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

@@ -29,7 +29,7 @@ from .constants import (
 
 if TYPE_CHECKING:
     from async_upnp_client.client import UpnpService, UpnpStateVariable
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.config_entries import ConfigEntry
 
     from .provider import WiimProvider
 
@@ -121,11 +121,7 @@ class WiimPlayer(Player):
             self.logger.exception("Error tearing down WiiM device %s", self.name)
         self.logger.debug("Player %s unloaded, SDK resources released", self.name)
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return player-specific config entries."""
         return [
             create_sample_rates_config_entry(

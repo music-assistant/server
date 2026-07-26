@@ -52,7 +52,7 @@ from music_assistant.providers.itunes_podcasts.schema import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -92,54 +92,41 @@ async def setup(
     return ITunesPodcastsProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    json_path = Path(__file__).parent / "itunes_country_codes.json"
-    async with aiofiles.open(json_path) as f:
-        country_codes = orjson.loads(await f.read())
-
-    language_options = [
-        ConfigValueOption(key.lower(), title=val) for key, val in country_codes.items()
-    ]
-    return (
-        CONF_ENTRY_LIBRARY_SYNC_PODCASTS_HIDDEN,
-        ConfigEntry(
-            key=CONF_LOCALE,
-            type=ConfigEntryType.STRING,
-            required=True,
-            options=language_options,
-        ),
-        ConfigEntry(
-            key=CONF_NUM_EPISODES,
-            type=ConfigEntryType.INTEGER,
-            required=False,
-            default_value=0,
-        ),
-        ConfigEntry(
-            key=CONF_EXPLICIT,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            default_value=True,
-        ),
-    )
-
-
 class ITunesPodcastsProvider(MusicProvider):
     """ITunesPodcastsProvider."""
 
     throttler: ThrottlerManager
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        json_path = Path(__file__).parent / "itunes_country_codes.json"
+        async with aiofiles.open(json_path) as f:
+            country_codes = orjson.loads(await f.read())
+
+        language_options = [
+            ConfigValueOption(key.lower(), title=val) for key, val in country_codes.items()
+        ]
+        return (
+            CONF_ENTRY_LIBRARY_SYNC_PODCASTS_HIDDEN,
+            ConfigEntry(
+                key=CONF_LOCALE,
+                type=ConfigEntryType.STRING,
+                required=True,
+                options=language_options,
+            ),
+            ConfigEntry(
+                key=CONF_NUM_EPISODES,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=0,
+            ),
+            ConfigEntry(
+                key=CONF_EXPLICIT,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=True,
+            ),
+        )
 
     @property
     def is_streaming_provider(self) -> bool:

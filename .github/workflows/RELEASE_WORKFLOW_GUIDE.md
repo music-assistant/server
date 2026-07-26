@@ -69,7 +69,8 @@ The scheduled workflow checks nightly releases automatically. For a manual versi
 
 Auto-release calculates the next version and invokes **Create Release** with its captured
 source SHA. **Create Release** can also be dispatched directly with an explicit version;
-for direct runs it resolves and freezes the current channel branch head itself.
+for direct runs it resolves and freezes the current channel branch head itself unless you
+pass `source_sha` to recover an exact draft or published release source.
 
 Do not create or publish a GitHub release manually. A draft created outside the workflow
 is accepted only when its exact tag name and target SHA match; conflicting tags,
@@ -105,6 +106,16 @@ token's App slug is `musicassistant-bot` and its installation ID is `146062122`.
 ## Recovery
 
 Rerun the failed workflow with the same version and `source_sha`.
+
+If you need to resume an exact draft or published release after the branch has advanced,
+reuse the workflow-created source SHA from the matching tag or draft target commit:
+
+```bash
+gh workflow run release.yml --ref dev -f version=2.10.0.dev2026072510 -f channel=nightly -f source_sha=a087405a28d2c0991803dbd9c037dc76fd05a631
+```
+
+Use the exact commit recorded by the workflow-created tag or draft. There is no moving
+branch recovery path.
 
 - **Before publication:** The matching draft remains mutable. Complete assets are
   downloaded and reused byte-for-byte; incomplete assets are replaced. If the exact

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, cast
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -26,21 +26,14 @@ from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_DISCOVERY_TYPE,
     COMPANION_DISCOVERY_TYPE,
-    CONF_ACTION_START_COMPANION_PAIRING,
-    CONF_ACTION_START_MRP_PAIRING,
     CONF_COMPANION_CREDENTIALS,
-    CONF_COMPANION_PAIRING_PIN,
     CONF_MRP_CREDENTIALS,
-    CONF_MRP_PAIRING_PIN,
     CONF_NATIVE_MRP_CREDENTIALS,
     MRP_DISCOVERY_TYPE,
 )
 from music_assistant.providers.airplay.control_player import AirPlayControlPlayer
 from music_assistant.providers.airplay.player import AirPlayPlayer, GenericAirPlayPlayer
 from music_assistant.providers.airplay.provider import AirPlayProvider
-
-if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType
 
 PLAYER_ID = "apaabbccddeeff"
 DEVICE_ID = "AA:BB:CC:DD:EE:FF"
@@ -73,6 +66,7 @@ def _make_control_player(
     model: str = "Apple TV 4K",
     companion_flags: str | None = "0x367A2",
     config_values: dict[str, object] | None = None,
+    setup_data: dict[str, object] | None = None,
 ) -> AirPlayControlPlayer:
     """Create a control-capable AirPlay player with mocked provider state."""
     provider = MagicMock()
@@ -85,6 +79,27 @@ def _make_control_player(
     config.update.side_effect = values.update
     provider.mass.config.get_base_player_config.return_value = config
     provider.mass.config.save_player_config = AsyncMock()
+    # Credentials live in the player's (encrypted) setup_data; serve them through the
+    # mass.config get/set surface that Player.get_setup_value / _update_setup_data use.
+    # The same dict object is returned so tests can observe cleared/updated values.
+    stored_setup_data = setup_data if setup_data is not None else {}
+
+    def _config_get(key: str, default: object = None) -> object:
+        if key == f"players/{PLAYER_ID}/setup_data":
+            return stored_setup_data
+        if key == f"players/{PLAYER_ID}":
+            return {"player_id": PLAYER_ID}
+        return default
+
+    def _config_set(key: str, value: object, **_kwargs: object) -> None:
+        prefix = f"players/{PLAYER_ID}/setup_data/"
+        if key.startswith(prefix):
+            stored_setup_data[key[len(prefix) :]] = value
+
+    provider.mass.config.get.side_effect = _config_get
+    provider.mass.config.set.side_effect = _config_set
+    provider.mass.config.decrypt_string.side_effect = lambda value: value
+    provider.mass.config.encrypt_string.side_effect = lambda value: value
     # Real Companion services advertise the flags under the mixed-case key
     # "rpFl"; zeroconf preserves TXT key casing as sent on the wire.
     companion_info = (
@@ -193,7 +208,7 @@ def test_playback_state_churn_does_not_force_control_reconnect() -> None:
 
 def test_power_feature_requires_credentials_or_connection() -> None:
     """POWER is advertised for stored Companion credentials or a live channel."""
-    paired = _make_control_player(config_values={CONF_COMPANION_CREDENTIALS: "companion-creds"})
+    paired = _make_control_player(setup_data={CONF_COMPANION_CREDENTIALS: "companion-creds"})
     assert PlayerFeature.POWER in paired.supported_features
 
     connected = _make_control_player()
@@ -201,6 +216,34 @@ def test_power_feature_requires_credentials_or_connection() -> None:
     device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.TurnOn
     connected._companion_device = device
     assert PlayerFeature.POWER in connected.supported_features
+
+
+def test_power_feature_skips_transient_mrp_tunnels() -> None:
+    """A transient MRP tunnel does not count as real power control."""
+    # pyatv reports TurnOn/TurnOff as available on every MRP connection, but a HomePod
+    # reached over the transient tunnel cannot act on them and derives its power state
+    # from logicalDeviceCount, which does not count AirPlay audio sessions.
+    homepod = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    assert homepod._uses_transient_mrp is True
+
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.TurnOn
+    homepod._mrp_device = device
+
+    assert PlayerFeature.POWER not in homepod.supported_features
+
+
+async def test_power_command_refuses_transient_mrp_tunnels() -> None:
+    """A power command never reaches a tunnel that cannot serve it."""
+    homepod = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.TurnOn
+    homepod._mrp_device = device
+
+    with pytest.raises(PlayerCommandFailed):
+        await homepod.power(True)
+
+    device.power.turn_on.assert_not_called()
 
 
 def test_native_transport_features_follow_live_capabilities() -> None:
@@ -214,24 +257,12 @@ def test_native_transport_features_follow_live_capabilities() -> None:
     assert PlayerFeature.NEXT_PREVIOUS in player.supported_features
 
 
-async def test_config_entries_keep_pairing_sections_separate() -> None:
-    """Companion and MRP pairing entries are composed independently."""
-    player = _make_control_player()
-
-    entries = await player.get_config_entries()
-    keys = {entry.key for entry in entries}
-
-    assert CONF_ACTION_START_COMPANION_PAIRING in keys
-    assert CONF_ACTION_START_MRP_PAIRING in keys
-    assert CONF_COMPANION_CREDENTIALS in keys
-    assert CONF_MRP_CREDENTIALS in keys
-    assert CONF_NATIVE_MRP_CREDENTIALS in keys
-
-
-async def test_stored_credentials_never_exposed_in_config_entries() -> None:
-    """Stored pairing secrets are not included in the config-entry payload."""
+async def test_pairing_moved_out_of_config_entries() -> None:
+    """Pairing and credentials are handled by the setup flow, not by config entries."""
+    # even with stored credentials, no pairing action/credential entry is emitted:
+    # the interactive setup flow owns pairing and stores creds in setup_data.
     player = _make_control_player(
-        config_values={
+        setup_data={
             CONF_COMPANION_CREDENTIALS: "companion-creds",
             CONF_MRP_CREDENTIALS: "mrp-creds",
             CONF_NATIVE_MRP_CREDENTIALS: "native-creds",
@@ -239,13 +270,14 @@ async def test_stored_credentials_never_exposed_in_config_entries() -> None:
     )
 
     entries = await player.get_config_entries()
+    keys = {entry.key for entry in entries}
 
-    credential_keys = (
-        CONF_COMPANION_CREDENTIALS,
-        CONF_MRP_CREDENTIALS,
-        CONF_NATIVE_MRP_CREDENTIALS,
-    )
-    assert all(entry.value is None for entry in entries if entry.key in credential_keys)
+    assert CONF_COMPANION_CREDENTIALS not in keys
+    assert CONF_MRP_CREDENTIALS not in keys
+    assert CONF_NATIVE_MRP_CREDENTIALS not in keys
+    assert not any("pairing" in key for key in keys)
+    # the run_setup_flow override is what drives the pairing now
+    assert type(player).run_setup_flow is not AirPlayPlayer.run_setup_flow
 
 
 def test_mute_feature_follows_available_control_path() -> None:
@@ -296,6 +328,39 @@ def test_duplicate_native_volume_update_is_ignored() -> None:
 
     cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_not_called()
     update_state.assert_not_called()
+
+
+def test_native_volume_update_ignored_while_streaming() -> None:
+    """Native volume reports never overwrite the volume of a running stream."""
+    # volume_set routes to the stream while streaming and leaves the native device
+    # volume alone, so a report about that separate knob must not clobber (or persist)
+    # the level the user just set.
+    player = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    player.stream = MagicMock(running=True)
+    player._attr_volume_level = 62
+    player._attr_volume_muted = False
+
+    with patch.object(player, "update_state") as update_state:
+        player._handle_volume_update("mrp", 10)
+
+    assert player.volume_level == 62
+    assert player.volume_muted is False
+    cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_not_called()
+    update_state.assert_not_called()
+
+
+def test_native_volume_update_applies_when_idle() -> None:
+    """Native volume reports still drive player state while no stream is running."""
+    player = _make_control_player()
+    player.stream = MagicMock(running=False)
+    player._attr_volume_level = 62
+    player._attr_volume_muted = False
+
+    with patch.object(player, "update_state") as update_state:
+        player._handle_volume_update("companion", 10)
+
+    assert player.volume_level == 10
+    update_state.assert_called_once()
 
 
 def test_control_pairing_is_optional_and_never_requires_setup() -> None:
@@ -399,6 +464,28 @@ def test_power_off_update_tracks_sleep_state() -> None:
         update_state.assert_called_once()
 
 
+def test_power_off_update_ignored_while_streaming() -> None:
+    """A device streaming from Music Assistant is never marked powered off."""
+    # MRP derives power from logicalDeviceCount, which does not count AirPlay audio
+    # sessions, so a playing HomePod reports PowerState.Off. Acting on that would
+    # strand the player as "off" and trip the auto-ungroup in the players controller.
+    player = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    player.stream = MagicMock(running=True)
+    player._attr_powered = True
+    player._power_on_event.set()
+    player._attr_playback_state = PlaybackState.PLAYING
+    player._attr_active_source = "airplay"
+
+    with patch.object(player, "update_state") as update_state:
+        player._handle_power_update("mrp", PowerState.Off)
+
+    assert player.powered is True
+    assert player._power_on_event.is_set()
+    assert player.playback_state == PlaybackState.PLAYING
+    assert player.active_source == "airplay"
+    update_state.assert_not_called()
+
+
 def test_power_on_update_tracks_awake_state() -> None:
     """A Companion power-on update confirms that the device is awake."""
     player = _make_control_player()
@@ -489,7 +576,7 @@ async def test_mrp_retry_does_not_recycle_connected_companion() -> None:
 
 async def test_connection_retains_listener_references() -> None:
     """Pyatv listeners remain strongly referenced for the connection lifetime."""
-    player = _make_control_player(config_values={CONF_COMPANION_CREDENTIALS: "companion-creds"})
+    player = _make_control_player(setup_data={CONF_COMPANION_CREDENTIALS: "companion-creds"})
     device = MagicMock(spec=AppleTV)
     device.features.in_state.return_value = False
 
@@ -509,7 +596,7 @@ async def test_connection_retains_listener_references() -> None:
 async def test_mrp_connection_uses_dedicated_pairing_credentials() -> None:
     """Playback monitoring connects with pyatv's complete AirPlay credentials."""
     credentials = "ltpk:ltsk:accessory-id:client-id"
-    player = _make_control_player(config_values={CONF_MRP_CREDENTIALS: credentials})
+    player = _make_control_player(setup_data={CONF_MRP_CREDENTIALS: credentials})
     device = MagicMock(spec=AppleTV)
     device.features.in_state.side_effect = lambda _state, feature: (
         feature == FeatureName.PushUpdates
@@ -536,8 +623,8 @@ async def test_mrp_connection_uses_dedicated_pairing_credentials() -> None:
 
 async def test_rejected_mrp_credentials_are_cleared() -> None:
     """Rejected MRP credentials return playback monitoring to setup state."""
-    values: dict[str, object] = {CONF_MRP_CREDENTIALS: "invalid-creds"}
-    player = _make_control_player(config_values=values)
+    setup_data: dict[str, object] = {CONF_MRP_CREDENTIALS: "invalid-creds"}
+    player = _make_control_player(setup_data=setup_data)
 
     with patch(
         "music_assistant.providers.airplay.control_player.pyatv.connect",
@@ -545,12 +632,8 @@ async def test_rejected_mrp_credentials_are_cleared() -> None:
     ):
         assert await player._connect_mrp() is False
 
-    assert values[CONF_MRP_CREDENTIALS] is None
-    cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_called_once_with(
-        player.player_id,
-        CONF_MRP_CREDENTIALS,
-        None,
-    )
+    # the rejected credential is cleared from the player's setup_data
+    assert setup_data[CONF_MRP_CREDENTIALS] is None
 
 
 async def test_homepod_mrp_connection_uses_transient_credentials() -> None:
@@ -638,7 +721,7 @@ async def test_native_mrp_connection_uses_advertised_service() -> None:
 def test_mrp_credentials_are_scoped_to_transport() -> None:
     """Native and tunneled MRP keep independent pairing credentials."""
     player = _make_control_player(
-        config_values={
+        setup_data={
             CONF_MRP_CREDENTIALS: "tunnel-creds",
             CONF_NATIVE_MRP_CREDENTIALS: "native-creds",
         }
@@ -973,69 +1056,6 @@ async def test_related_discovery_finds_differently_named_cached_service() -> Non
     service_info.assert_called_once_with(
         COMPANION_DISCOVERY_TYPE,
         "uuid._companion-link._tcp.local.",
-    )
-
-
-async def test_companion_pairing_stores_separate_credentials() -> None:
-    """Companion pairing retains credentials independently from AirPlay pairing."""
-    player = _make_control_player()
-    pairing = MagicMock()
-    pairing.begin = AsyncMock()
-    pairing.finish = AsyncMock()
-    pairing.close = AsyncMock()
-    pairing.has_paired = True
-    pairing.service.credentials = "companion-creds"
-    values: dict[str, ConfigValueType] = {CONF_COMPANION_PAIRING_PIN: "1234"}
-
-    with patch("music_assistant.providers.airplay.control_player.pyatv.pair", return_value=pairing):
-        await player._start_companion_pairing()
-        await player._finish_companion_pairing(values)
-
-    pairing.pin.assert_called_once_with(1234)
-    assert values[CONF_COMPANION_CREDENTIALS] == "companion-creds"
-    cast("MagicMock", player.mass.config).save_player_config.assert_awaited_once_with(
-        PLAYER_ID, {CONF_COMPANION_CREDENTIALS: "companion-creds"}
-    )
-
-
-async def test_mrp_pairing_stores_complete_airplay_credentials() -> None:
-    """Playback monitoring stores the complete credentials returned by pyatv."""
-    player = _make_control_player()
-    pairing = MagicMock()
-    pairing.begin = AsyncMock()
-    pairing.finish = AsyncMock()
-    pairing.close = AsyncMock()
-    pairing.has_paired = True
-    pairing.service.credentials = "ltpk:ltsk:accessory-id:client-id"
-    values: dict[str, ConfigValueType] = {CONF_MRP_PAIRING_PIN: "1234"}
-
-    with patch("music_assistant.providers.airplay.control_player.pyatv.pair", return_value=pairing):
-        await player._start_mrp_pairing()
-        await player._finish_mrp_pairing(values)
-
-    pairing.pin.assert_called_once_with(1234)
-    assert values[CONF_MRP_CREDENTIALS] == "ltpk:ltsk:accessory-id:client-id"
-    cast("MagicMock", player.mass.config).save_player_config.assert_awaited_once_with(
-        PLAYER_ID, {CONF_MRP_CREDENTIALS: "ltpk:ltsk:accessory-id:client-id"}
-    )
-
-
-async def test_reset_companion_pairing_reconnects_mrp() -> None:
-    """Resetting Companion pairing immediately restores independent MRP monitoring."""
-    player = _make_control_player(config_values={CONF_COMPANION_CREDENTIALS: "companion-creds"})
-    values: dict[str, ConfigValueType] = {}
-
-    with (
-        patch.object(player, "_disconnect_control_services", new=AsyncMock()) as disconnect,
-        patch.object(player, "_schedule_connection") as schedule,
-    ):
-        await player._reset_companion_pairing(values)
-
-    disconnect.assert_awaited_once()
-    schedule.assert_called_once_with(force=True)
-    assert values[CONF_COMPANION_CREDENTIALS] is None
-    cast("MagicMock", player.mass.config).save_player_config.assert_awaited_once_with(
-        PLAYER_ID, {CONF_COMPANION_CREDENTIALS: None}
     )
 
 

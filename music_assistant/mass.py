@@ -1145,12 +1145,9 @@ class MusicAssistant:
             msg = "Provider is disabled"
             raise SetupFailedError(msg)
 
-        # validate config
-        try:
-            conf.validate()
-        except (KeyError, ValueError, AttributeError, TypeError) as err:
-            msg = "Configuration is invalid"
-            raise SetupFailedError(msg) from err
+        # The config is validated after the instance is created and its config rehydrated
+        # (see below): the full options entries - and thus which values are required - are
+        # only known once the instance exists.
 
         domain = conf.domain
         prov_manifest = self._provider_manifests.get(domain)
@@ -1170,6 +1167,11 @@ class MusicAssistant:
             # automatically when the dependency is loaded
             return
 
+        # seed the config with its stored raw values so any construction-time option reads
+        # in setup()/__init__ see them (the fully-typed entries are only resolvable once the
+        # instance exists, and are applied by rehydrate_provider_config just below)
+        self.config.seed_stored_config_values(conf)
+
         # try to setup the module
         prov_mod = await load_provider_module(domain, prov_manifest.requirements)
         try:
@@ -1177,6 +1179,17 @@ class MusicAssistant:
                 provider = await prov_mod.setup(self, prov_manifest, conf)
         except TimeoutError as err:
             msg = f"Provider {domain} did not load within 30 seconds"
+            raise SetupFailedError(msg) from err
+
+        # The instance now exists, so its full (options) config entries can be resolved
+        # (get_config_entries is an instance method). Rehydrate the config values from
+        # storage against those entries and validate the complete config, before async
+        # init so get_config_value reads there see the stored values.
+        await self.config.rehydrate_provider_config(provider)
+        try:
+            provider.config.validate()
+        except (KeyError, ValueError, AttributeError, TypeError) as err:
+            msg = "Configuration is invalid"
             raise SetupFailedError(msg) from err
 
         # run async setup
