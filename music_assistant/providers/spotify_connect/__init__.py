@@ -200,7 +200,9 @@ class SpotifyConnectProvider(PluginProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._binary = get_go_librespot_binary()
-        self._api_port = await select_free_port(API_PORT_RANGE_START, API_PORT_RANGE_END)
+        self._api_port = await select_free_port(
+            API_PORT_RANGE_START, API_PORT_RANGE_END, host="127.0.0.1"
+        )
         self._client = GoLibrespotClient(
             self.mass, f"http://127.0.0.1:{self._api_port}", self.logger
         )

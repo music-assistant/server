@@ -34,21 +34,20 @@ def test_to_dict_matches_provider_instance_schema() -> None:
     ProviderInstance.from_dict(result)
 
 
-def test_default_name_uses_numeric_multi_instance_fallback() -> None:
-    """Providers without a custom postfix use their one-based instance number."""
+def test_default_name_uses_instance_number_fallback() -> None:
+    """A multi-instance provider without a custom postfix uses its instance number."""
     provider = _make_base_provider()
     provider.config.name = None
-    provider.config.instance_id = "test_provider--second"
+    provider.config.instance_id = "test_instance_2"
     provider.manifest.name = "Test Provider"
-    mass = cast("MagicMock", provider.mass)
-    mass.config.get.return_value = {
-        "test_provider--first": {
+    cast("MagicMock", provider.mass.config.get).return_value = {
+        "test_instance_1": {
             "domain": "test_provider",
-            "instance_id": "test_provider--first",
+            "instance_id": "test_instance_1",
         },
-        "test_provider--second": {
+        "test_instance_2": {
             "domain": "test_provider",
-            "instance_id": "test_provider--second",
+            "instance_id": "test_instance_2",
         },
     }
 

@@ -337,6 +337,11 @@
       "description": "Select the preferred protocol for audio playback to this device.",
       "options": {
         "auto": "Auto-select"
+      },
+      "disabled_reasons": {
+        "needs_setup": "This output must be set up before it can be used.",
+        "unavailable": "This output is currently not available.",
+        "turned_off": "This output is turned off."
       }
     },
     "bind_port": {
