@@ -32,13 +32,11 @@ AUTHORIZE_URL = "https://accounts.spotify.com/authorize"
 TOKEN_URL = "https://accounts.spotify.com/api/token"
 
 # the developer client id is a public OAuth identifier (not a secret), so it is a plain
-# STRING that can be prefilled on reconfigure; the user must register HOSTED_CALLBACK_URL
-# as a redirect URI on their own Spotify developer application
+# STRING that can be prefilled on reconfigure
 CONF_ENTRY_DEV_CLIENT_ID = ConfigEntry(
     key=CONF_CLIENT_ID,
     type=ConfigEntryType.STRING,
     required=False,
-    translation_params=[HOSTED_CALLBACK_URL],
 )
 
 
@@ -67,6 +65,7 @@ async def run_setup(session: SetupSession) -> None:
             step_id="developer",
             errors=errors,
             last_step=True,
+            translation_params=[HOSTED_CALLBACK_URL],
         )
         client_id = str(dev_values.get(CONF_CLIENT_ID) or "").strip()
         try:

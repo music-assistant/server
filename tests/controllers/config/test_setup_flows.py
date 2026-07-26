@@ -202,6 +202,22 @@ async def test_form_flow_finish_success(
     assert all(event.object_id == step.flow_id for event in flow_events)
 
 
+async def test_form_flow_translation_params(flow_mass: MusicAssistant) -> None:
+    """A form step exposes translation parameters for its title and description."""
+
+    async def run_setup(session: SetupSession) -> None:
+        await session.form(
+            [USERNAME_ENTRY],
+            step_id="credentials",
+            translation_params=["https://example.com/callback"],
+        )
+
+    with _use_flow(flow_mass, run_setup):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        assert step.translation_params == ["https://example.com/callback"]
+        await flow_mass.config.abort_setup_flow(step.flow_id)
+
+
 async def test_form_validation_errors(flow_mass: MusicAssistant) -> None:
     """Invalid submitted values return the FORM step with errors, without advancing the flow."""
     advanced = asyncio.Event()
