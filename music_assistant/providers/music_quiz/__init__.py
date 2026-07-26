@@ -1033,6 +1033,7 @@ class MusicQuizPlugin(PluginProvider):
         game, quiz_type, _ = self._require_game_strategies()
         get_current_round(game).auto_advance_at = None
         self.mass.cancel_timer(self._advance_timer_id)
+        self.mass.cancel_timer(self._track_end_timer_id)
         if quiz_type.plays_track_on_reveal:
             await self._cancel_reveal_playback_task()
             await self._stop_playback()

@@ -5494,6 +5494,27 @@ async def test_reveal_stops_playback_when_it_outlives_the_track() -> None:
 
 
 @pytest.mark.asyncio
+async def test_advancing_from_reveal_cancels_the_track_end_stop() -> None:
+    """Advancing before the track ends cancels the stop so it cannot halt the next round."""
+    plugin = _create_plugin()
+
+    await _create_started_game(plugin)
+    game = plugin._game
+    assert game is not None
+    current = get_current_round(game)
+    current.duration = 2
+    current.started_at = time.time()
+
+    plugin._do_reveal()
+    cancel_timer = cast("MagicMock", plugin.mass.cancel_timer)
+    cancel_timer.reset_mock()
+
+    await plugin.next_round()
+
+    assert call(plugin._track_end_timer_id) in cancel_timer.call_args_list
+
+
+@pytest.mark.asyncio
 async def test_warm_next_track_triggers_stream_resolution() -> None:
     """Warming the next track resolves its stream details instead of waiting on the player event."""
     plugin = _create_plugin()
