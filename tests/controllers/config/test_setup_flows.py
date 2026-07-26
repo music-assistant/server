@@ -78,6 +78,7 @@ async def flow_mass(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicAssista
     )
     mass_minimal.music = MagicMock()
     mass_minimal.players = MagicMock()
+    mass_minimal.players.on_player_config_change = AsyncMock()
     try:
         yield mass_minimal
     finally:
@@ -936,7 +937,7 @@ async def test_player_setup_reaches_unavailable_player(flow_mass: MusicAssistant
 
 
 async def test_player_setup_flow_finish(flow_mass: MusicAssistant) -> None:
-    """A player flow persists (encrypted) setup_data on the player config."""
+    """A player flow persists and applies encrypted setup_data to the active player."""
     events: list[MassEvent] = []
     flow_mass.subscribe(events.append, EventType.PLAYER_CONFIG_UPDATED)
     player_id = "test_player_1"
@@ -958,8 +959,44 @@ async def test_player_setup_flow_finish(flow_mass: MusicAssistant) -> None:
     assert finish_step.result == {"player_id": player_id}
     raw_conf = flow_mass.config.get(f"{CONF_PLAYERS}/{player_id}")
     assert flow_mass.config.decrypt_string(raw_conf["setup_data"]["pin"]) == "1234"
+    cast("AsyncMock", flow_mass.players.on_player_config_change).assert_awaited_once_with(
+        player_config, {"setup_data/pin"}
+    )
     config_event = await _wait_for(lambda: next(iter(events), None))
     assert config_event.object_id == player_id
+
+
+async def test_player_setup_apply_failure_restores_setup_data(
+    flow_mass: MusicAssistant,
+) -> None:
+    """A player setup failure restores the previous setup_data."""
+    player_id = "test_player_1"
+    provider = MockProvider("test_players", instance_id="test_players--1")
+    player = _FlowPlayer(provider, player_id, "Player One")
+    original_setup_data = {"pin": flow_mass.config.encrypt_string("0000")}
+    flow_mass.config.set(
+        f"{CONF_PLAYERS}/{player_id}",
+        {
+            "player_id": player_id,
+            "provider": provider.instance_id,
+            "enabled": True,
+            "setup_data": dict(original_setup_data),
+        },
+    )
+    player_config = PlayerConfig(values={}, provider=provider.instance_id, player_id=player_id)
+    cast("AsyncMock", flow_mass.players.on_player_config_change).side_effect = RuntimeError(
+        "apply failed"
+    )
+    with (
+        patch.object(flow_mass.players, "get_player", return_value=player),
+        patch.object(flow_mass.config, "get_player_config", AsyncMock(return_value=player_config)),
+    ):
+        step = await flow_mass.config.setup_player(player_id)
+        abort_step = await flow_mass.config.submit_setup_flow(step.flow_id, {"pin": "1234"})
+    assert abort_step.type == FlowStepType.ABORT
+    assert abort_step.reason == "apply failed"
+    raw_conf = flow_mass.config.get(f"{CONF_PLAYERS}/{player_id}")
+    assert raw_conf["setup_data"] == original_setup_data
 
 
 class _ProtocolChildPlayer(MockPlayer):

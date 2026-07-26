@@ -10,7 +10,7 @@ The AirPlay provider enables Music Assistant to stream audio to AirPlay-enabled 
 - **Pairing**: Supports pairing with Apple devices (Apple TV, HomePod, Mac) using HAP/HomeKit pair-setup (via the cliairplay binary) or legacy RAOP pairing (native)
 - **Multi-Room Audio**: Synchronizes playback across multiple AirPlay devices from a single wall-clock start instant, with a shared PTP clock daemon for native AirPlay 2 timing
 - **Now-Playing Metadata**: Sends title/artist/album/artwork/progress — as DMAP over the stream for speakers, and additionally as MediaRemote over the native AirPlay 2 flow so an Apple TV renders the now-playing screen
-- **Hi-Res Audio**: Optional 24-bit playback (44.1/48 kHz) over the native AirPlay 2 flow (per-player opt-in)
+- **Hi-Res Audio**: 24-bit playback (44.1/48 kHz) over the AirPlay 2 flow, enabled automatically for receivers that advertise 24-bit ALAC
 - **DACP Remote Control**: Receives remote control commands (play/pause/volume/next/previous) from devices while streaming
 - **Late Join Support**: Allows adding players to an existing playback session without interrupting other players
 - **Flow Mode Streaming**: Provides gapless playback and crossfade support by streaming the queue as one continuous audio stream
@@ -92,7 +92,11 @@ airplay/
   - Better compatibility with newer devices
   - More robust protocol
   - Required for some devices that don't support RAOP
-  - 24-bit audio support (native AirPlay 2 flow)
+  - 24-bit audio support (native AirPlay 2 flow), enabled automatically from the
+    formats the receiver advertises in its `/info` response (`supportedAudioFormatsExtended`,
+    else the legacy `supportedFormats`). Both the realtime and buffered stream tables
+    count: receivers understate them, and an Apple TV lists 24-bit for its buffered
+    stream only while rendering it fine on the realtime stream.
 - **Binary**: `cliairplay --protocol airplay2` (native implementation, no OwnTone dependency)
 
 ### Automatic Selection
@@ -234,7 +238,7 @@ The `AirPlayStreamSession` class in [stream_session.py](stream_session.py) manag
 
 2. **Client Setup** (per player, `_start_client()` method)
    - Creates an `AirPlayStream` instance with the player's PCM format
-     (16-bit default, 24-bit s32le when hi-res is enabled)
+     (16-bit default, 24-bit s32le for a 24-bit capable receiver)
    - Starts the CLI process and connects to the receiver without anchoring playback
    - Configures FFmpeg for audio format conversion and optional DSP filters,
      feeding its output into the CLI's persistent stdin
@@ -530,7 +534,6 @@ keeps their exposed player id stable and their Universal Player merging intact.
 ### General
 - **`password`**: Device password if required (RAOP)
 - **`ignore_volume`**: Ignore device volume reports (default: false)
-- **`hires_playback`**: Advanced per-player opt-in for 24-bit playback over native AirPlay 2 (default: off; only shown for AirPlay 2-capable devices - some devices accept 24-bit and play silence, hence opt-in)
 - **`sync_adjust`**: Per-player audio synchronization delay correction in milliseconds (default: 0; negative = play earlier, e.g. to compensate for a TV/AV receiver that adds latency). The playback lead/buffer is handled automatically by the binary.
 
 ### Pairing

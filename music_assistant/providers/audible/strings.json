@@ -17,8 +17,7 @@
       }
     },
     "post_login_url": {
-      "label": "Redirect URL",
-      "description": "The URL of the 'page not found' page you reached after signing in on Audible."
+      "label": "Redirect URL"
     },
     "intro": {
       "label": "Pick your Audible marketplace and continue. You will be sent to Amazon to sign in; after signing in you land on a 'page not found' page (that is expected) whose URL you paste back here on the next step."

@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, VolumeNormalizationMode
+from music_assistant_models.errors import AudioError
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import (
@@ -31,11 +32,12 @@ from music_assistant.controllers.streams.audio import (
         (48000, [44100, 48000, 96000], 48000),  # exact match
         (50000, [44100, 48000, 96000], 96000),  # snap up to next higher
         (200000, [44100, 48000, 96000], 96000),  # no higher; fall back to max
+        (88200, [44100, 48000], 44100),  # preserve the source sample-rate family
         (40000, [44100, 48000], 44100),  # snap up to lowest higher
     ],
 )
 def test_snap_supported_rate_up(target: int, supported: list[int], expected: int) -> None:
-    """_snap_supported_rate_up picks the lowest supported >= target, else max."""
+    """_snap_supported_rate_up prefers a higher rate, then a source-family divisor."""
     assert _snap_supported_rate_up(target, supported) == expected
 
 
@@ -152,6 +154,90 @@ async def test_select_flow_pcm_format_smart_without_start_format_uses_max() -> N
     )
     fmt = await audio.select_flow_pcm_format(player)
     assert fmt.sample_rate == 96000
+
+
+@pytest.mark.asyncio
+async def test_select_flow_pcm_format_uses_fallback_rate_without_start_format() -> None:
+    """A caller-provided fallback rate is used when stream details are unavailable."""
+    audio = _make_streams_audio()
+    player = _make_player(
+        supported=[(44100, 16), (48000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    fmt = await audio.select_flow_pcm_format(player, fallback_sample_rate=44100)
+    assert fmt.sample_rate == 44100
+
+
+@pytest.mark.asyncio
+async def test_select_flow_pcm_format_uses_common_output_rates() -> None:
+    """A shared flow only selects sample rates supported by every output player."""
+    audio = _make_streams_audio()
+    leader = _make_player(
+        supported=[(44100, 24), (48000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    member = _make_player(
+        supported=[(44100, 16)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    streamdetails = _make_streamdetails(sample_rate=48000, bit_depth=24)
+
+    fmt = await audio.select_flow_pcm_format(
+        leader,
+        start_streamdetails=streamdetails,
+        output_players=(leader, member),
+    )
+
+    assert fmt.sample_rate == 44100
+
+
+@pytest.mark.asyncio
+async def test_select_flow_pcm_format_rejects_outputs_without_common_rate() -> None:
+    """A shared flow requires at least one sample rate supported by every output."""
+    audio = _make_streams_audio()
+    leader = _make_player(
+        supported=[(48000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    member = _make_player(
+        supported=[(44100, 16)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+
+    with pytest.raises(AudioError, match="do not share"):
+        await audio.select_flow_pcm_format(
+            leader,
+            output_players=(leader, member),
+        )
+
+
+@pytest.mark.asyncio
+async def test_select_flow_pcm_format_uses_headroom_for_any_output_dsp() -> None:
+    """DSP on any shared output requires float headroom for the complete flow."""
+    audio = _make_streams_audio()
+    leader = _make_player(
+        supported=[(44100, 24), (48000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    member = _make_player(
+        supported=[(44100, 24), (48000, 24)],
+        flow_mode=FLOW_MODE_SAMPLE_RATE_SMART,
+    )
+    streamdetails = _make_streamdetails(sample_rate=48000, bit_depth=24)
+
+    with patch.object(
+        audio,
+        "_resolve_player_dsp_config",
+        side_effect=(MagicMock(enabled=False), MagicMock(enabled=True)),
+    ):
+        fmt = await audio.select_flow_pcm_format(
+            leader,
+            start_streamdetails=streamdetails,
+            output_players=(leader, member),
+        )
+
+    assert fmt.content_type == ContentType.PCM_F32LE
+    assert fmt.bit_depth == 32
 
 
 @pytest.mark.asyncio
