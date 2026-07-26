@@ -305,10 +305,10 @@ class SetupFlowMixin:
         """
         Return the scope required to receive/interact with the given setup flow.
 
-        Also resolves recently finished flows: their terminal step can publish
-        just after the registry pop.
+        Also resolves recently finished flows (their terminal step can publish
+        just after the registry pop). Returns None when the flow is unknown.
 
-        :param flow_id: The id of the flow; None when the flow is unknown.
+        :param flow_id: The id of the flow.
         """
         if flow := self._setup_flows.get(flow_id):
             return flow.required_scope
