@@ -1,6 +1,7 @@
 """Tests for music_assistant.helpers.util helpers."""
 
 import asyncio
+import socket
 import time
 from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
@@ -10,6 +11,7 @@ import pytest
 from music_assistant.helpers import util
 from music_assistant.helpers.util import (
     get_source_ip_for_target,
+    is_port_in_use,
     load_provider_module,
     sanitize_http_header_value,
     select_free_port,
@@ -86,6 +88,39 @@ class TestSelectFreePort:
             util._reserved_ports[first] = 0.0
             second = await select_free_port(38800, 38900)
         assert first == second
+
+    @pytest.mark.asyncio
+    async def test_host_is_passed_to_port_probe(self) -> None:
+        """A bind address is forwarded to the availability probe."""
+        with patch("music_assistant.helpers.util.is_port_in_use", return_value=False) as probe:
+            port = await select_free_port(38800, 38900, host="127.0.0.1")
+        probe.assert_awaited_once_with(port, host="127.0.0.1")
+
+
+class TestIsPortInUse:
+    """is_port_in_use can probe the exact address a server will bind."""
+
+    @pytest.mark.asyncio
+    async def test_bound_loopback_port_is_in_use(self) -> None:
+        """An active IPv4 loopback listener is detected on that same address."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            sock.listen(1)
+            assert await is_port_in_use(sock.getsockname()[1], host="127.0.0.1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("host", "family"),
+        [("127.0.0.1", socket.AF_INET), ("::1", socket.AF_INET6)],
+    )
+    async def test_host_selects_matching_address_family(
+        self, host: str, family: socket.AddressFamily
+    ) -> None:
+        """A specific bind address is probed with its matching socket family."""
+        with patch("music_assistant.helpers.util.socket.socket") as socket_mock:
+            await is_port_in_use(38800, host=host)
+        socket_mock.assert_called_once_with(family, socket.SOCK_STREAM)
+        socket_mock.return_value.__enter__.return_value.bind.assert_called_once_with((host, 38800))
 
 
 class TestLoadProviderModule:
