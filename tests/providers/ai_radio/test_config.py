@@ -21,15 +21,31 @@ def _make_mass(base_url: str, locale: str = "en_US") -> Any:
     )
 
 
-def test_web_ui_url_entry_carries_runtime_url_via_translation_params() -> None:
-    """Web UI URL config entry must render via translation_params, not description."""
+def test_optional_entries_use_the_advanced_flag_not_the_advanced_category() -> None:
+    """
+    Advanced options must set ``advanced``, not ``category="advanced"``.
+
+    The frontend drops the deprecated "advanced" category from its panel list, so entries
+    filed under it never render on the settings page.
+    """
     mass = _make_mass("http://localhost:8095")
 
     entries = asyncio.run(get_config_entries(mass))
 
-    entry = next(entry for entry in entries if entry.key == "web_ui_url")
-    assert entry.translation_params == ["http://localhost:8095/#/ai-radio"]
-    assert entry.description is None
+    assert entries, "provider must expose config entries"
+    for entry in entries:
+        assert entry.category != "advanced", f"{entry.key} uses the deprecated advanced category"
+    assert all(entry.advanced for entry in entries)
+
+
+def test_weather_country_is_a_dropdown_defaulting_to_the_server_region() -> None:
+    """The weather country is picked from a list and seeded from the server locale."""
+    entries = asyncio.run(get_config_entries(_make_mass("http://localhost:8095", "nl_NL")))
+
+    entry = next(entry for entry in entries if entry.key == "weather_country")
+    assert entry.default_value == "NL"
+    assert entry.options
+    assert any(option.value == "NL" for option in entry.options)
 
 
 def test_provider_instance_exposes_the_same_config_entries() -> None:

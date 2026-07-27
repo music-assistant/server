@@ -29,8 +29,6 @@ async def get_config_entries(
     values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
-    base_url = mass.webserver.base_url.rstrip("/")
-    web_ui_url = f"{base_url}/#/ai-radio"
     country_codes = await asyncio.to_thread(get_country_codes)
     country_options = [
         ConfigValueOption(title=name, value=code) for code, name in country_codes.items()
@@ -40,34 +38,29 @@ async def get_config_entries(
     region = mass.metadata.locale.split("_")[-1].upper()
     return (
         ConfigEntry(
-            key="web_ui_url",
-            type=ConfigEntryType.LABEL,
-            translation_params=[web_ui_url],
-        ),
-        ConfigEntry(
             key=CONF_UI_AUTO_REFRESH_SECONDS,
             type=ConfigEntryType.INTEGER,
             default_value=2,
             range=(1, 30),
-            category="advanced",
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_TIMEZONE,
             type=ConfigEntryType.STRING,
             default_value=host_timezone_name(),
-            category="advanced",
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_WEATHER_CITY,
             type=ConfigEntryType.STRING,
             default_value="",
-            category="advanced",
+            advanced=True,
         ),
         ConfigEntry(
             key=CONF_WEATHER_COUNTRY,
             type=ConfigEntryType.STRING,
             options=country_options,
             default_value=region if region in country_codes else "",
-            category="advanced",
+            advanced=True,
         ),
     )
