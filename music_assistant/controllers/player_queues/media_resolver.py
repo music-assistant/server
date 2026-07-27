@@ -189,7 +189,7 @@ class MediaResolver:
         if start_item is not None:
             for idx, track in enumerate(result):
                 if start_item in (track.item_id, track.uri):
-                    return result[idx:] + result[:idx] if keep_preceding_items else result[idx:]
+                    return result[idx:] + (result[:idx] if keep_preceding_items else [])
             return []
         return result
 
@@ -290,7 +290,7 @@ class MediaResolver:
         if start_item is not None:
             for idx, track in enumerate(result):
                 if _start_item_matches(start_item, track):
-                    return result[idx:] + result[:idx] if keep_preceding_items else result[idx:]
+                    return result[idx:] + (result[:idx] if keep_preceding_items else [])
             return []
         return result
 
