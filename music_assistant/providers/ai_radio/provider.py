@@ -52,6 +52,7 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
         """Initialize the AI Radio provider."""
         super().__init__(mass, manifest, config, supported_features)
         self._station_lock = asyncio.Lock()
+        self._session_lock = asyncio.Lock()
         self._unregister_handles: list[Callable[[], None]] = []
         self._sessions: dict[str, SessionState] = {}
         self._stations: dict[str, dict[str, Any]] = {}
@@ -247,18 +248,6 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
         if station_id not in self._stations:
             raise KeyError(f"Unknown station id: {station_id}")
 
-        max_runs = DEFAULT_MAX_CONCURRENT_RUNS
-        running = [session for session in self._sessions.values() if session.status == "running"]
-        if len(running) >= max_runs:
-            raise InvalidDataError(
-                f"Max concurrent runs reached ({max_runs}). Stop an active run first."
-            )
-        if any(
-            session.status == "running" and session.station_id == station_id
-            for session in self._sessions.values()
-        ):
-            raise InvalidDataError(f"Station {station_id} already has an active run")
-
         station = deepcopy(self._stations[station_id])
         overrides = {
             "source_playlist_id": source_playlist_id_override,
@@ -288,18 +277,35 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
             if player.enabled is False:
                 raise InvalidDataError(f"Target player is disabled: {player_id}")
 
-        session_id = uuid4().hex
-        session = SessionState(
-            session_id=session_id,
-            station_id=station_id,
-            mode=selected_mode,
-        )
-        self._sessions[session_id] = session
-        self._prune_finished_sessions()
-        session.task = self.mass.create_task(
-            self._run_session(session_id, station),
-            task_id=f"ai_radio_session_{session_id}",
-        )
+        # the run guards and the session insert must stay one critical section, or a future
+        # await between them would let concurrent callers slip past the concurrency limits
+        async with self._session_lock:
+            max_runs = DEFAULT_MAX_CONCURRENT_RUNS
+            running = [
+                session for session in self._sessions.values() if session.status == "running"
+            ]
+            if len(running) >= max_runs:
+                raise InvalidDataError(
+                    f"Max concurrent runs reached ({max_runs}). Stop an active run first."
+                )
+            if any(
+                session.status == "running" and session.station_id == station_id
+                for session in self._sessions.values()
+            ):
+                raise InvalidDataError(f"Station {station_id} already has an active run")
+
+            session_id = uuid4().hex
+            session = SessionState(
+                session_id=session_id,
+                station_id=station_id,
+                mode=selected_mode,
+            )
+            self._sessions[session_id] = session
+            self._prune_finished_sessions()
+            session.task = self.mass.create_task(
+                self._run_session(session_id, station),
+                task_id=f"ai_radio_session_{session_id}",
+            )
         self.logger.debug(
             "AI Radio session started: session=%s station=%s mode=%s",
             session_id,

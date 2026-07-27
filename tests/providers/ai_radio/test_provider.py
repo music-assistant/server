@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -14,10 +15,16 @@ from music_assistant.providers.ai_radio.models import SessionState
 from music_assistant.providers.ai_radio.provider import AIRadioProvider
 
 
+def _close(coro: Any) -> None:
+    """Close an un-awaited coroutine so the test does not warn."""
+    coro.close()
+
+
 def _make_provider() -> AIRadioProvider:
     """Create a minimal AIRadioProvider object without full init."""
     provider = AIRadioProvider.__new__(AIRadioProvider)
     provider._sessions = {}
+    provider._session_lock = asyncio.Lock()
     return provider
 
 
@@ -294,3 +301,32 @@ async def test_start_run_dynamic_rejects_zero_batch_size_override() -> None:
             mode="dynamic",
             dynamic_batch_size_override=0,
         )
+
+
+@pytest.mark.asyncio
+async def test_concurrent_start_run_calls_respect_the_run_limit() -> None:
+    """
+    Concurrent start_run calls must not both get past the concurrency guards.
+
+    The guards and the session insert are one critical section; without it an await
+    introduced between them would let both callers observe zero running sessions.
+    """
+    provider = _make_provider()
+    provider.logger = logging.getLogger("tests.ai_radio.provider")
+    provider._stations = {
+        "station_a": {"id": "station_a", "name": "Station A"},
+        "station_b": {"id": "station_b", "name": "Station B"},
+    }
+    provider.mass = cast("Any", SimpleNamespace(create_task=lambda coro, **_kw: _close(coro)))
+
+    results = await asyncio.gather(
+        provider.start_run(station_id="station_a"),
+        provider.start_run(station_id="station_b"),
+        return_exceptions=True,
+    )
+
+    started = [item for item in results if isinstance(item, dict)]
+    rejected = [item for item in results if isinstance(item, InvalidDataError)]
+    assert len(started) == 1
+    assert len(rejected) == 1
+    assert "Max concurrent runs reached" in str(rejected[0])
