@@ -560,9 +560,10 @@ Some devices have known broken AirPlay implementations (see `BROKEN_AIRPLAY_MODE
 2. **Pause while synced**: Not supported; uses stop instead
 3. **HomePod power control**: Current HomePod firmware does not advertise
    Companion PIN pairing, so explicit power/wake control is unavailable
-4. **External artwork**: MRP exposes external playback metadata but its artwork
-   is not currently published through the Music Assistant image proxy
-5. **Apple TV artwork for non-public images**: Cover art only reachable through the imageproxy (e.g. filesystem-provider images with no public URL) does not currently render on the Apple TV's now-playing screen, while externally-hosted art does
+4. **Apple TV artwork for non-public images**: Cover art only reachable through
+   the imageproxy (e.g. filesystem-provider images with no public URL) does not
+   currently render on the Apple TV's now-playing screen, while externally-hosted
+   art does
 
 ## Development Notes
 
