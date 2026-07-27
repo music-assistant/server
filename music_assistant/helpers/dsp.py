@@ -14,6 +14,7 @@ from music_assistant_models.dsp import (
     ParametricEQBandType,
     ParametricEQFilter,
     ToneControlFilter,
+    TransposeFilter,
 )
 
 if TYPE_CHECKING:
@@ -174,6 +175,14 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
                 filter_params.append(f"pan=stereo|FL={attenuation}*FL|FR=FR")
             else:
                 filter_params.append(f"pan=stereo|FL=FL|FR={attenuation}*FR")
+    if isinstance(dsp_filter, TransposeFilter) and dsp_filter.semitones != 0:
+        # rubberband expects a frequency ratio rather than a number of semitones
+        pitch = 2 ** (dsp_filter.semitones / 12)
+        # preserving formants keeps voices natural instead of chipmunk-like; revisit
+        # these quality options if they prove too costly on low powered hardware
+        filter_params.append(
+            f"rubberband=pitch={pitch}:formant=preserved:pitchq=quality:window=long"
+        )
 
     if isinstance(dsp_filter, HighLowPassFilter):
         # A high/low-pass of a given slope is a cascade of second-order Butterworth
