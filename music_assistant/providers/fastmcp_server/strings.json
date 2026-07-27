@@ -172,6 +172,12 @@
     "mcp_resources": "MCP Resources",
     "mcp_config": "Config"
   },
+  "setup_flow": {
+    "connect": {
+      "title": "Connect an MCP client",
+      "description": "Open the Connect Wizard, choose your AI client and generate its Music Assistant configuration. Setup completes automatically when the configuration is ready."
+    }
+  },
   "manifest": {
     "description": "Exposes Music Assistant as a Model Context Protocol (MCP) server for Claude, Codex, and other MCP-aware LLM clients."
   }

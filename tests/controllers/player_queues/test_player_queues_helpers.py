@@ -146,14 +146,25 @@ class _FakeLock:
         return False
 
 
+class _FakePlayer:
+    def __init__(self, player_id: str) -> None:
+        self.player_id = player_id
+
+
 class _FakePlayers:
+    def __init__(self, player_ids: set[str]) -> None:
+        self._players = {player_id: _FakePlayer(player_id) for player_id in player_ids}
+
     def get_player_lock(self, queue_id: str, purpose: object) -> _FakeLock:
         return _FakeLock()
 
+    def get_player(self, player_id: str) -> _FakePlayer | None:
+        return self._players.get(player_id)
+
 
 class _FakeMass:
-    def __init__(self) -> None:
-        self.players = _FakePlayers()
+    def __init__(self, player_ids: set[str]) -> None:
+        self.players = _FakePlayers(player_ids)
 
 
 class _FakeQueue:
@@ -164,16 +175,21 @@ class _FakeQueue:
 class _FakeController:
     """Minimal stand-in exposing only what handle_play_action touches."""
 
-    def __init__(self, queues: dict[str, _FakeQueue]) -> None:
-        self.mass = _FakeMass()
+    def __init__(self, queues: dict[str, _FakeQueue], with_players: bool = True) -> None:
+        self.mass = _FakeMass(set(queues) if with_players else set())
         self._queue_data = {
             queue_id: PlayerQueueData(queue=cast("PlayerQueue", queue))
             for queue_id, queue in queues.items()
         }
-        self.signal_calls: list[str] = []
+        self.calls: list[str] = []
 
     def signal_update(self, queue_id: str, items_changed: bool = False) -> None:
-        self.signal_calls.append(queue_id)
+        self.calls.append(f"signal:{queue_id}")
+
+    def on_player_update(
+        self, player: _FakePlayer, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        self.calls.append(f"refresh:{player.player_id}")
 
 
 def _flag_value(ctrl: PlayerQueuesController, queue_id: str) -> bool:
@@ -214,7 +230,7 @@ class TestHandlePlayAction:
         sink: list[bool] = []
         assert await _flag_during(cast("PlayerQueuesController", ctrl), "missing", sink) == "done"
         assert sink == [False]
-        assert ctrl.signal_calls == []
+        assert ctrl.calls == []
 
     async def test_sets_and_clears_flag(self) -> None:
         """The in-progress flag is set during the action and cleared afterwards."""
@@ -224,9 +240,19 @@ class TestHandlePlayAction:
         assert await _flag_during(cast("PlayerQueuesController", ctrl), "q1", sink) == "done"
         assert sink == [True]
         assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
-        # signalled once on entry and once on exit
-        assert ctrl.signal_calls == ["q1", "q1"]
+        # signalled once on entry and once on exit, with the queue recalculated
+        # from the player in between so the exit signal carries the result
+        assert ctrl.calls == ["signal:q1", "refresh:q1", "signal:q1"]
         assert ctrl._queue_data["q1"].play_action_refcount == 0
+
+    async def test_clears_flag_without_player(self) -> None:
+        """A queue without a registered player still clears and signals."""
+        queue = _FakeQueue()
+        ctrl = _FakeController({"q1": queue}, with_players=False)
+        sink: list[bool] = []
+        assert await _flag_during(cast("PlayerQueuesController", ctrl), "q1", sink) == "done"
+        assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
+        assert ctrl.calls == ["signal:q1", "signal:q1"]
 
     async def test_nested_actions_refcount(self) -> None:
         """Nested actions keep the flag set until the outermost one finishes."""
@@ -238,7 +264,7 @@ class TestHandlePlayAction:
         assert sink == [True, True]
         assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
         # only the outermost entry/exit signal an update (inner sees it already in progress)
-        assert ctrl.signal_calls == ["q1", "q1"]
+        assert ctrl.calls == ["signal:q1", "refresh:q1", "signal:q1"]
         assert ctrl._queue_data["q1"].play_action_refcount == 0
 
     async def test_flag_cleared_on_exception(self) -> None:

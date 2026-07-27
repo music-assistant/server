@@ -39,12 +39,15 @@ if TYPE_CHECKING:
 class SonosPlayerProvider(PlayerProvider):
     """Sonos Player provider."""
 
+    _ignored_disabled_players: set[str]
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
         return (CONF_ENTRY_MANUAL_DISCOVERY_IPS,)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        self._ignored_disabled_players = set()
         self._set_aiosonos_log_level()
         self.mass.streams.register_dynamic_route(
             "/sonos_queue/*", self._handle_sonos_cloud_queue_request
@@ -138,6 +141,8 @@ class SonosPlayerProvider(PlayerProvider):
                 sonos_player.reconnect()
             self.mass.players.trigger_player_update(player_id)
             return
+        if self._ignore_disabled_discovery(player_id, name):
+            return
         # handle new player setup in a delayed task because mdns announcements
         # can arrive in (duplicated) bursts
         task_id = f"setup_sonos_{player_id}"
@@ -157,11 +162,10 @@ class SonosPlayerProvider(PlayerProvider):
         if self.mass.players.get_player(player_id):
             msg = f"Player {player_id} already exists"
             raise ValueError(msg)
+        if self._ignore_disabled_discovery(player_id, name):
+            return
         address = get_primary_ip_address(info)
         if address is None:
-            return
-        if not self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
-            self.logger.debug("Ignoring %s in discovery as it is disabled.", name)
             return
         try:
             discovery_info = await get_discovery_info(self.mass.http_session_no_ssl, address)
@@ -179,6 +183,21 @@ class SonosPlayerProvider(PlayerProvider):
         sonos_player = SonosPlayer(self, player_id, discovery_info=discovery_info)
         sonos_player.device_info.add_identifier(IdentifierType.IP_ADDRESS, address)
         await sonos_player.setup()
+
+    def _ignore_disabled_discovery(self, player_id: str, name: str) -> bool:
+        """
+        Return whether discovery should ignore a disabled player.
+
+        :param player_id: The discovered Sonos player ID.
+        :param name: The discovered Sonos service name.
+        """
+        if self.mass.config.get_raw_player_config_value(player_id, "enabled", True):
+            self._ignored_disabled_players.discard(player_id)
+            return False
+        if player_id not in self._ignored_disabled_players:
+            self.logger.debug("Ignoring %s in discovery as it is disabled.", name)
+            self._ignored_disabled_players.add(player_id)
+        return True
 
     async def _handle_sonos_cloud_queue_request(self, request: web.Request) -> web.Response:
         """

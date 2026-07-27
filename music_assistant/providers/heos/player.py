@@ -220,8 +220,12 @@ class HeosPlayer(Player):
         # HEOS does not make a distinction on source ID when playing from a DLNA server, USB stick,
         # generic URL (like MA), or other local source.
         # We can only know we're playing from MA if we started this session.
+        # When MA controls playback it serves a generic URL stream whose metadata HEOS
+        # cannot parse (it reports "Url Stream"). Ignore that unreliable now-playing even
+        # when active_source is momentarily stale (e.g. the play_url race before play_media
+        # sets it) so MA's own, correct current_media is preserved. See support #5614.
         if (now_playing.source_id != const.MUSIC_SOURCE_LOCAL_MUSIC) or (
-            self._attr_active_source != self.player_id
+            self._attr_active_source != self.player_id and not self._ma_controls_playback
         ):
             self._ma_controls_playback = False
             self._queue_cleanup_pending = False

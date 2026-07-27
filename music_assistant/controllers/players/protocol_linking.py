@@ -1723,7 +1723,9 @@ class ProtocolLinkingMixin:
         # 1. Check if any output protocol is currently grouped
         for linked in player.linked_output_protocols:
             if protocol_player := self.get_player(linked.output_protocol_id):
-                if protocol_player.available and self._is_protocol_grouped(protocol_player):
+                if protocol_player.available_for_playback and self._is_protocol_grouped(
+                    protocol_player
+                ):
                     self.logger.log(
                         VERBOSE_LOG_LEVEL,
                         "Selected protocol for %s: %s (grouped)",
@@ -1749,7 +1751,7 @@ class ProtocolLinkingMixin:
                 for linked in player.linked_output_protocols:
                     if linked.output_protocol_id == preferred:
                         if protocol_player := self.get_player(linked.output_protocol_id):
-                            if protocol_player.available:
+                            if protocol_player.available_for_playback:
                                 self.logger.log(
                                     VERBOSE_LOG_LEVEL,
                                     "Selected protocol for %s: %s (user preference)",
@@ -1769,7 +1771,7 @@ class ProtocolLinkingMixin:
         # 4. Fall back to best protocol by priority
         for linked in sorted(player.linked_output_protocols, key=lambda x: x.priority):
             if protocol_player := self.get_player(linked.output_protocol_id):
-                if protocol_player.available:
+                if protocol_player.available_for_playback:
                     self.logger.log(
                         VERBOSE_LOG_LEVEL,
                         "Selected protocol for %s: %s (priority-based)",
@@ -1819,7 +1821,7 @@ class ProtocolLinkingMixin:
         for linked in player.linked_output_protocols:
             if (
                 (protocol_player := self.mass.players.get_player(linked.output_protocol_id))
-                and protocol_player.available
+                and protocol_player.available_for_playback
                 and required_feature in protocol_player.supported_features
             ):
                 return protocol_player
@@ -1953,11 +1955,11 @@ class ProtocolLinkingMixin:
         if not child_preferred or child_preferred in {"auto", "native"}:
             return None, None
 
-        # Find child's preferred protocol in linked protocols
+        # Find child's preferred protocol, with its current availability
         child_protocol = None
-        for linked in child_player.linked_output_protocols:
-            if linked.output_protocol_id == child_preferred:
-                child_protocol = linked
+        for output_protocol in child_player.output_protocols:
+            if output_protocol.output_protocol_id == child_preferred:
+                child_protocol = output_protocol
                 break
 
         if not child_protocol or not child_protocol.available:

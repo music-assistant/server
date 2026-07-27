@@ -63,6 +63,9 @@ CONF_LOCALE = "locale"
 CONF_EXPLICIT = "explicit"
 CONF_NUM_EPISODES = "num_episodes"
 
+# store to search when the server's language has no matching iTunes storefront
+DEFAULT_LOCALE = "us"
+
 CACHE_CATEGORY_PODCASTS = 0
 CACHE_CATEGORY_RECOMMENDATIONS = 1
 CACHE_KEY_TOP_PODCASTS = "top-podcasts"
@@ -106,6 +109,9 @@ class ITunesPodcastsProvider(MusicProvider):
         language_options = [
             ConfigValueOption(key.lower(), title=val) for key, val in country_codes.items()
         ]
+        # the store country decides which catalog is searched; default to the region of the
+        # server's language so the provider can be added without picking one first
+        region = self.mass.metadata.locale.split("_")[-1].upper()
         return (
             CONF_ENTRY_LIBRARY_SYNC_PODCASTS_HIDDEN,
             ConfigEntry(
@@ -113,6 +119,7 @@ class ITunesPodcastsProvider(MusicProvider):
                 type=ConfigEntryType.STRING,
                 required=True,
                 options=language_options,
+                default_value=region.lower() if region in country_codes else DEFAULT_LOCALE,
             ),
             ConfigEntry(
                 key=CONF_NUM_EPISODES,

@@ -157,10 +157,15 @@ class SetupSession:
         self._unregister_callback_route: Callable[[], None] | None = None
 
     @property
+    def callback_path(self) -> str:
+        """Return the local callback path that resumes this flow's external step."""
+        self._ensure_callback_route()
+        return self._callback_path
+
+    @property
     def callback_url(self) -> str:
         """Return the public callback URL that resumes this flow's external step."""
-        self._ensure_callback_route()
-        return f"{self.mass.webserver.base_url}{self._callback_path}"
+        return f"{self.mass.webserver.base_url}{self.callback_path}"
 
     async def form(
         self,
