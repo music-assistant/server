@@ -29,6 +29,7 @@ from music_assistant.helpers.images import (
     load_provider_icon,
 )
 from music_assistant.models.metadata_provider import MetadataProvider
+from music_assistant.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -209,6 +210,21 @@ async def test_provider_bytes_use_disk_cache_across_restart(
     data = await get_image_data(mass_minimal, "some/prov/path.jpg", "fake--1")
     assert data == b"expensive-image-bytes"
     assert len(fetch_calls) == 1
+
+
+async def test_player_provider_can_resolve_image_bytes(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Player-provider images use the shared image retrieval pipeline."""
+    fake_provider = MagicMock(spec=PlayerProvider)
+    fake_provider.resolve_image = AsyncMock(return_value=b"player-image-bytes")
+    monkeypatch.setattr(mass_minimal, "get_provider", lambda _prov: fake_provider)
+
+    data = await get_image_data(mass_minimal, "player/artwork", "player--1")
+
+    assert data == b"player-image-bytes"
+    fake_provider.resolve_image.assert_awaited_once_with("player/artwork")
 
 
 async def test_local_file_read_cached_on_disk(
