@@ -1518,6 +1518,11 @@ class AIRadioRuntimeMixin:
         query_parts: list[str] = []
         if instructions:
             query_parts.append(f"Program instructions:\n{instructions}")
+        # stated as a default so a station can still ask for another language in its instructions
+        query_parts.append(
+            "Unless the program instructions ask for another language, write the output "
+            f"in the language matching the locale '{self.mass.metadata.locale}'."
+        )
         if web_mode == "force":
             query_parts.append(
                 "Web mode: force. Use current up-to-date information where relevant."

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import suppress
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock
 
@@ -347,6 +348,8 @@ async def test_generate_text_wraps_not_connected_error() -> None:
             raise NotConnected
 
     class DummyMass:
+        metadata = SimpleNamespace(locale="en_US")
+
         def get_providers_supporting_feature(
             self,
             feature: ProviderFeature,
@@ -367,6 +370,41 @@ async def test_generate_text_wraps_not_connected_error() -> None:
         )
     assert "not connected" in str(error.value).lower()
     assert "hass_1" in str(error.value)
+
+
+async def test_generate_text_asks_for_the_system_locale_language() -> None:
+    """The AI query states the server locale so sections are written in that language."""
+    captured: list[str] = []
+
+    class DummyAIPlugin:
+        instance_id = "hass_1"
+
+        async def ai_query(self, query: str) -> str:
+            captured.append(query)
+            return "section text"
+
+    class DummyMass:
+        metadata = SimpleNamespace(locale="nl_NL")
+
+        def get_providers_supporting_feature(
+            self,
+            feature: ProviderFeature,
+            priority: tuple[ProviderType, ...] = (),
+        ) -> list[Any]:
+            if feature == ProviderFeature.AI_QUERY:
+                return [DummyAIPlugin()]
+            return []
+
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, DummyMass())
+
+    await runtime._generate_text(
+        station={"general": {"instructions": "test"}},
+        prompt="test prompt",
+        web_mode="disabled",
+    )
+
+    assert "nl_NL" in captured[0]
 
 
 def test_compose_builtin_playlist_items_preserves_section_metadata() -> None:
