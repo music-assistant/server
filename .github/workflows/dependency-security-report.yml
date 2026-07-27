@@ -220,7 +220,7 @@ jobs:
       # status step reports as an error instead.
       - name: Download security reports
         if: steps.resolve.outputs.found == 'true' && github.event.workflow_run.conclusion == 'success'
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v8.0.1
         with:
           name: security-reports
           run-id: ${{ github.event.workflow_run.id }}
