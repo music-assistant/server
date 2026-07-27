@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, SetupFailedError, UnsupportedSystemError
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.json import SerializableType
@@ -110,7 +110,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         server = str(self.get_setup_value(CONF_HOST))
         if not await get_ip_from_host(server):
             msg = f"Unable to resolve {server}, make sure the address is resolvable."
-            raise LoginFailed(
+            raise SetupFailedError(
                 msg,
                 translation_key="host_unresolvable",
                 translation_args=[server],
@@ -118,7 +118,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         share = str(self.get_setup_value(CONF_SHARE))
         if not share or "/" in share or "\\" in share:
             msg = "Invalid share name"
-            raise LoginFailed(msg)
+            raise SetupFailedError(msg)
         if not await exists(self.base_path):
             await makedirs(self.base_path)
         try:
@@ -126,8 +126,8 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             await self.unmount(ignore_error=True)
             await self.mount()
         except OSError as err:
-            msg = f"Connection failed for the given details: {err}"
-            raise LoginFailed(msg) from err
+            msg = f"Unable to run the mount command: {err}"
+            raise SetupFailedError(msg) from err
         await self.check_write_access()
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -174,14 +174,19 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             )
         else:
             msg = f"SMB provider is not supported on {platform.system()}"
-            raise LoginFailed(msg)
+            raise UnsupportedSystemError(msg)
 
         self.logger.debug("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
         self.logger.log(VERBOSE_LOG_LEVEL, "Using mount command: %s", " ".join(mount_cmd))
         returncode, output = await check_output(*mount_cmd, env=env_vars)
         if returncode != 0:
-            msg = f"SMB mount failed with error: {output.decode()}"
-            raise LoginFailed(msg)
+            mount_output = output.decode()
+            msg = f"SMB mount failed with error: {mount_output}"
+            # only report a credentials problem when the server actually rejected them,
+            # so an unreachable NAS does not send the user hunting for a wrong password
+            if _is_permission_denied(mount_output):
+                raise LoginFailed(msg)
+            raise SetupFailedError(msg)
 
     async def unmount(self, ignore_error: bool = False) -> None:
         """Unmount the remote share."""
@@ -291,3 +296,13 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             self.base_path,
         ]
         return mount_cmd, env_vars
+
+
+def _is_permission_denied(mount_output: str) -> bool:
+    """
+    Check whether a failed mount command was rejected by the server's access control.
+
+    :param mount_output: Combined output of the mount command that failed.
+    """
+    lowered = mount_output.lower()
+    return "error(13)" in lowered or "permission denied" in lowered or "access denied" in lowered
