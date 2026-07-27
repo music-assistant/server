@@ -476,7 +476,7 @@ class SetupFlowMixin:
     async def _finish_player_setup(
         self, session: SetupSession, values: dict[str, ConfigValueType]
     ) -> dict[str, str]:
-        """Finish handler for player setup flows: persist setup_data on the player config."""
+        """Finish handler for player setup flows: persist and apply the collected setup data."""
         player_id = session.context.player_id
         assert player_id is not None  # always set for player flows
         conf_key = f"{CONF_PLAYERS}/{player_id}"
@@ -487,13 +487,18 @@ class SetupFlowMixin:
         self.set(f"{conf_key}/setup_data", {**snapshot, **self._encrypt_values(values)})
         try:
             config = await self.get_player_config(player_id)
+            changed_keys = {f"setup_data/{key}" for key in values}
+            await self.mass.players.on_player_config_change(config, changed_keys)
         except asyncio.CancelledError:
             self.set(f"{conf_key}/setup_data", snapshot)
             raise
         except Exception as err:
-            # reading back the just-updated config failed: restore the previous setup_data
+            # reading back or applying the updated config failed: restore the previous setup_data
             self.set(f"{conf_key}/setup_data", snapshot)
-            raise SetupFlowError(str(err) or err.__class__.__name__) from err
+            raise SetupFlowError(
+                str(err) or err.__class__.__name__,
+                translation_key=getattr(err, "translation_key", None),
+            ) from err
         self.mass.signal_event(EventType.PLAYER_CONFIG_UPDATED, object_id=player_id, data=config)
         return {"player_id": player_id}
 

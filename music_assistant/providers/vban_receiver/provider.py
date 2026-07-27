@@ -8,7 +8,6 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
-from aiovban.enums import VBANSampleRate
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, StreamType
 from music_assistant_models.errors import AudioError, MediaNotFoundError, SetupFailedError
@@ -21,7 +20,6 @@ from music_assistant.constants import (
     CONF_ENTRY_WARN_PREVIEW,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.helpers.util import get_ip_addresses
 from music_assistant.models.plugin import PluginProvider
 
 from .constants import (
@@ -58,11 +56,6 @@ if TYPE_CHECKING:
 AUDIO_SOURCE_ID = "main"
 
 
-def _get_vban_sample_rates() -> list[int]:
-    """Return supported VBAN sample rates."""
-    return [int(member.split("_")[1]) for member in VBANSampleRate.__members__]
-
-
 class VBANReceiverProvider(PluginProvider):
     """Implementation of a VBAN protocol receiver plugin."""
 
@@ -71,25 +64,21 @@ class VBANReceiverProvider(PluginProvider):
     ) -> None:
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
-        # Read defaults here: at construction the config carries only the server defaults +
-        # stored raw values, so an unset option reads as None (the typed option entries are
-        # applied by the config controller right after). Defaults match each entry's default_value.
-        self._bind_port: int = cast(
-            "int", self.config.get_value(CONF_BIND_PORT) or DEFAULT_UDP_PORT
-        )
-        self._bind_ip: str = cast("str", self.config.get_value(CONF_BIND_IP) or "0.0.0.0")
-        self._sender_host: str = cast("str", self.config.get_value(CONF_SENDER_HOST) or "127.0.0.1")
+        # Setup values fall back to legacy option values for existing instances.
+        self._bind_port: int = cast("int", self.get_setup_value(CONF_BIND_PORT) or DEFAULT_UDP_PORT)
+        self._bind_ip: str = cast("str", self.get_setup_value(CONF_BIND_IP) or "0.0.0.0")
+        self._sender_host: str = cast("str", self.get_setup_value(CONF_SENDER_HOST) or "127.0.0.1")
         self._vban_stream_name: str = cast(
-            "str", self.config.get_value(CONF_VBAN_STREAM_NAME) or "Network AUX"
+            "str", self.get_setup_value(CONF_VBAN_STREAM_NAME) or "Network AUX"
         )
         self._pcm_audio_format: str = cast(
-            "str", self.config.get_value(CONF_PCM_AUDIO_FORMAT) or DEFAULT_PCM_AUDIO_FORMAT
+            "str", self.get_setup_value(CONF_PCM_AUDIO_FORMAT) or DEFAULT_PCM_AUDIO_FORMAT
         )
         self._pcm_sample_rate: int = cast(
-            "int", self.config.get_value(CONF_PCM_SAMPLE_RATE) or DEFAULT_PCM_SAMPLE_RATE
+            "int", self.get_setup_value(CONF_PCM_SAMPLE_RATE) or DEFAULT_PCM_SAMPLE_RATE
         )
         self._audio_channels: int = cast(
-            "int", self.config.get_value(CONF_AUDIO_CHANNELS) or DEFAULT_AUDIO_CHANNELS
+            "int", self.get_setup_value(CONF_AUDIO_CHANNELS) or DEFAULT_AUDIO_CHANNELS
         )
         self._vban_queue_strategy: BackPressureStrategy = VBAN_QUEUE_STRATEGIES[
             cast(
@@ -145,66 +134,9 @@ class VBANReceiverProvider(PluginProvider):
         )
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
-        """Return Config entries to setup this provider."""
-        ip_addresses = await get_ip_addresses(include_ipv6=True)
-
-        def _validate_stream_name(config_value: str) -> bool:
-            """Validate stream name."""
-            try:
-                config_value.encode("ascii")
-            except UnicodeEncodeError:
-                return False
-            return len(config_value) < 17
-
+        """Return runtime options for this provider."""
         return (
             CONF_ENTRY_WARN_PREVIEW,
-            ConfigEntry(
-                key=CONF_BIND_PORT,
-                type=ConfigEntryType.INTEGER,
-                default_value=DEFAULT_UDP_PORT,
-            ),
-            ConfigEntry(
-                key=CONF_VBAN_STREAM_NAME,
-                type=ConfigEntryType.STRING,
-                default_value="Network AUX",
-                required=True,
-                validate=_validate_stream_name,  # type: ignore[arg-type]
-            ),
-            ConfigEntry(
-                key=CONF_SENDER_HOST,
-                type=ConfigEntryType.STRING,
-                default_value="127.0.0.1",
-                required=True,
-            ),
-            ConfigEntry(
-                key=CONF_PCM_AUDIO_FORMAT,
-                type=ConfigEntryType.STRING,
-                default_value=DEFAULT_PCM_AUDIO_FORMAT,
-                options=[ConfigValueOption(x, title=x) for x in get_supported_pcm_formats()],
-                required=True,
-            ),
-            ConfigEntry(
-                key=CONF_PCM_SAMPLE_RATE,
-                type=ConfigEntryType.INTEGER,
-                default_value=DEFAULT_PCM_SAMPLE_RATE,
-                options=[ConfigValueOption(x, title=str(x)) for x in _get_vban_sample_rates()],
-                required=True,
-            ),
-            ConfigEntry(
-                key=CONF_AUDIO_CHANNELS,
-                type=ConfigEntryType.INTEGER,
-                default_value=DEFAULT_AUDIO_CHANNELS,
-                options=[ConfigValueOption(x, title=str(x)) for x in list(range(1, 9))],
-                required=True,
-            ),
-            ConfigEntry(
-                key=CONF_BIND_IP,
-                type=ConfigEntryType.STRING,
-                default_value="0.0.0.0",
-                options=[ConfigValueOption(x, title=x) for x in {"0.0.0.0", *ip_addresses}],
-                advanced=True,
-                required=True,
-            ),
             ConfigEntry(
                 key=CONF_VBAN_QUEUE_STRATEGY,
                 type=ConfigEntryType.STRING,

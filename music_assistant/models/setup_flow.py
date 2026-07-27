@@ -157,10 +157,15 @@ class SetupSession:
         self._unregister_callback_route: Callable[[], None] | None = None
 
     @property
+    def callback_path(self) -> str:
+        """Return the local callback path that resumes this flow's external step."""
+        self._ensure_callback_route()
+        return self._callback_path
+
+    @property
     def callback_url(self) -> str:
         """Return the public callback URL that resumes this flow's external step."""
-        self._ensure_callback_route()
-        return f"{self.mass.webserver.base_url}{self._callback_path}"
+        return f"{self.mass.webserver.base_url}{self.callback_path}"
 
     async def form(
         self,
@@ -169,6 +174,7 @@ class SetupSession:
         errors: dict[str, str] | None = None,
         last_step: bool | None = None,
         expires_in: float | None = None,
+        translation_params: list[str] | None = None,
     ) -> dict[str, ConfigValueType]:
         """
         Show a form to the user and wait for the submitted (validated) values.
@@ -179,6 +185,7 @@ class SetupSession:
         :param last_step: Optional hint that this is the flow's final form.
         :param expires_in: Optional deadline in seconds; when it passes,
             StepExpiredError is raised here (and the client countdown runs out).
+        :param translation_params: Optional values for placeholders in the step translations.
         """
         step = self._build_step(
             FlowStepType.FORM,
@@ -186,6 +193,7 @@ class SetupSession:
             entries=self._prepare_entries(entries),
             errors=dict(errors) if errors else {},
             last_step=last_step,
+            translation_params=translation_params,
             expires_in=expires_in,
         )
         self._input_future = asyncio.get_running_loop().create_future()
@@ -469,6 +477,7 @@ class SetupSession:
         image: str | None = None,
         result: dict[str, str] | None = None,
         reason: str | None = None,
+        translation_params: list[str] | None = None,
         expires_in: float | None = None,
     ) -> SetupFlowStep:
         """Build a SetupFlowStep for this flow, stamping owner and absolute deadline."""
@@ -488,6 +497,7 @@ class SetupSession:
             result=result,
             reason=reason,
             translation_owner=self._translation_owner,
+            translation_params=translation_params,
         )
 
     def _prepare_entries(self, entries: list[ConfigEntry]) -> list[ConfigEntry]:

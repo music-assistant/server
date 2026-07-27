@@ -654,25 +654,39 @@ def _receiver_filter_provider(
     receiver_instances: tuple[MagicMock, ...] = (),
 ) -> AirPlayProvider:
     """Build a bare provider wired to raw provider configs and running receiver instances."""
+
+    def get_setup_value(instance_id: str, key: str) -> object | None:
+        setup_data = provider_configs.get(instance_id, {}).get("setup_data")
+        return setup_data.get(key) if isinstance(setup_data, dict) else None
+
     prov = AirPlayProvider.__new__(AirPlayProvider)
     prov.mass = MagicMock()
     prov.logger = logging.getLogger("test.airplay.provider")
     prov.mass.config.get.return_value = provider_configs
+    prov.mass.config.get_provider_setup_value.side_effect = get_setup_value
     prov.mass.get_provider_instances.return_value = list(receiver_instances)
     return prov
 
 
 def _receiver_config(
-    airplay_name: str | None = "Garage [AirPlay]", enabled: bool = True
+    airplay_name: str | None = "Garage [AirPlay]",
+    enabled: bool = True,
+    use_setup_data: bool = False,
 ) -> dict[str, dict[str, object]]:
     """Build the raw provider config store with a single AirPlay Receiver instance."""
-    values: dict[str, object] = {"airplay_name": airplay_name} if airplay_name else {}
+    values: dict[str, object] = (
+        {"airplay_name": airplay_name} if airplay_name and not use_setup_data else {}
+    )
+    setup_data: dict[str, object] = (
+        {"airplay_name": airplay_name} if airplay_name and use_setup_data else {}
+    )
     return {
         RECEIVER_INSTANCE_ID: {
             "domain": "airplay_receiver",
             "instance_id": RECEIVER_INSTANCE_ID,
             "enabled": enabled,
             "values": values,
+            "setup_data": setup_data,
         },
         "spotify": {"domain": "spotify", "instance_id": "spotify", "values": {}},
     }
@@ -717,6 +731,15 @@ async def test_own_receiver_filtered_with_default_name() -> None:
 
     with _patch_host_ips():
         assert await prov._is_own_airplay_receiver("Music Assistant", info) is True
+
+
+async def test_own_receiver_filtered_with_setup_flow_name() -> None:
+    """A receiver name stored by its setup flow is used before the instance loads."""
+    prov = _receiver_filter_provider(_receiver_config(use_setup_data=True))
+    info = _discovery_info(["192.168.1.10"], port=9999)
+
+    with _patch_host_ips():
+        assert await prov._is_own_airplay_receiver("Garage [AirPlay]", info) is True
 
 
 async def test_own_receiver_filtered_on_loopback() -> None:

@@ -26,6 +26,7 @@ async def flow_mass(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicAssista
     tests/controllers/config/test_setup_flows.py.
     """
     mass_minimal.players = MagicMock()
+    mass_minimal.players.on_player_config_change = AsyncMock()
     try:
         yield mass_minimal
     finally:

@@ -171,9 +171,9 @@ class YandexYnisonProvider(PluginProvider):
         """Initialize the Ynison plugin provider."""
         super().__init__(mass, manifest, config, supported_features)
 
-        # Config values
+        # Setup identity and playback options
         self._default_player_id: str = (
-            cast("str", self.config.get_value(CONF_MASS_PLAYER_ID)) or PLAYER_ID_AUTO
+            cast("str", self.get_setup_value(CONF_MASS_PLAYER_ID)) or PLAYER_ID_AUTO
         )
         allow_switch_value = self.config.get_value(CONF_ALLOW_PLAYER_SWITCH)
         self._allow_player_switch: bool = (
@@ -186,7 +186,7 @@ class YandexYnisonProvider(PluginProvider):
             cast("str", self.config.get_value(CONF_OUTPUT_BIT_DEPTH)) or OUTPUT_AUTO
         )
         self._display_name: str = (
-            cast("str", self.config.get_value(CONF_PUBLISH_NAME)) or DEFAULT_DISPLAY_NAME
+            cast("str", self.get_setup_value(CONF_PUBLISH_NAME)) or DEFAULT_DISPLAY_NAME
         )
 
         # Token source — None = own (manually entered CONF_TOKEN);
@@ -299,26 +299,10 @@ class YandexYnisonProvider(PluginProvider):
         """
         Return Config entries to configure this provider.
 
-        Authentication and the Yandex account source are collected by the interactive
-        setup flow (see setup_flow.py); only the genuine playback options live here.
+        Account, player and device identity are collected by the interactive setup flow;
+        only runtime playback options live here.
         """
         return (
-            ConfigEntry(
-                key=CONF_MASS_PLAYER_ID,
-                type=ConfigEntryType.STRING,
-                default_value=PLAYER_ID_AUTO,
-                options=[
-                    ConfigValueOption(PLAYER_ID_AUTO),
-                    *(
-                        ConfigValueOption(x.player_id, title=x.display_name)
-                        for x in sorted(
-                            self.mass.players.all_players(False, False),
-                            key=lambda p: p.display_name.lower(),
-                        )
-                    ),
-                ],
-                required=True,
-            ),
             ConfigEntry(
                 key=CONF_ALLOW_PLAYER_SWITCH,
                 type=ConfigEntryType.BOOLEAN,
@@ -346,11 +330,6 @@ class YandexYnisonProvider(PluginProvider):
                     ConfigValueOption("24"),
                 ],
                 advanced=True,
-            ),
-            ConfigEntry(
-                key=CONF_PUBLISH_NAME,
-                type=ConfigEntryType.STRING,
-                default_value=DEFAULT_DISPLAY_NAME,
             ),
             ConfigEntry(
                 key=CONF_DEVICE_ID,

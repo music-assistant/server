@@ -990,7 +990,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         item_id: str,
         provider_instance_id_or_domain: str,
     ) -> MediaItemType | None:
-        """Get single library music item by id and media type."""
+        """Get the library item for the given provider item, if present."""
         ctrl = self.get_controller(media_type)
         return await ctrl.get_library_item_by_prov_id(
             item_id=item_id,

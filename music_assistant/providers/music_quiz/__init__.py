@@ -68,6 +68,7 @@ from music_assistant_models.errors import (
     AudioError,
     InvalidDataError,
     MediaNotFoundError,
+    MusicAssistantError,
     SetupFailedError,
 )
 from music_assistant_models.media_items import Track
@@ -223,6 +224,7 @@ class MusicQuizPlugin(PluginProvider):
         self._playback_session: SharedPlaybackSession | None = None
         self._playback_lock = asyncio.Lock()
         self._next_round_task: asyncio.Task[MusicQuizRound] | None = None
+        self._warm_next_track_task: asyncio.Task[None] | None = None
         self._reveal_playback_task: asyncio.Task[None] | None = None
         self._unregister_handles: list[Callable[[], None]] = []
 
@@ -938,6 +940,8 @@ class MusicQuizPlugin(PluginProvider):
             if track_uri in rejected_uris:
                 quiz_type.reject_track(track_uri)
                 continue
+            if await self._advance_to_queued_track(track_uri):
+                return next_round
             try:
                 # This public queue operation is both the production resolution boundary and
                 # the intended start of playback. A temporary QueueItem would bypass URI,
@@ -984,6 +988,20 @@ class MusicQuizPlugin(PluginProvider):
                 task_id=self._advance_timer_id,
             )
             current_round.auto_advance_at = auto_advance_at
+        # a reveal held past the track's end would glide into the next round's queued track
+        if (
+            quiz_type.plays_track_before_answering
+            and not quiz_type.plays_track_on_reveal
+            and current_round.duration
+            and current_round.started_at
+        ):
+            remaining = current_round.started_at + current_round.duration - now
+            if advance_delay is not None and advance_delay > remaining:
+                self.mass.call_later(
+                    max(remaining, 0),
+                    self._stop_playback,
+                    task_id=self._track_end_timer_id,
+                )
         self._signal_game_updated()
         if quiz_type.plays_track_on_reveal:
             if current_round.track_uri is None:
@@ -1001,6 +1019,7 @@ class MusicQuizPlugin(PluginProvider):
         game, quiz_type, _ = self._require_game_strategies()
         get_current_round(game).auto_advance_at = None
         self.mass.cancel_timer(self._advance_timer_id)
+        self.mass.cancel_timer(self._track_end_timer_id)
         if quiz_type.plays_track_on_reveal:
             await self._cancel_reveal_playback_task()
             await self._stop_playback()
@@ -1198,6 +1217,10 @@ class MusicQuizPlugin(PluginProvider):
             self._next_round_task = self.mass.create_task(
                 self._prepare_round(quiz_type, round_index, list(game.rounds))
             )
+            if quiz_type.plays_track_before_answering:
+                self._warm_next_track_task = self.mass.create_task(
+                    self._warm_next_track(self._next_round_task)
+                )
 
     async def _get_prepared_round(self, round_index: int) -> MusicQuizRound:
         """Return the (prefetched) round with the given index."""
@@ -1222,6 +1245,10 @@ class MusicQuizPlugin(PluginProvider):
 
     def _cancel_next_round_task(self) -> None:
         """Cancel a pending round prefetch task."""
+        if self._warm_next_track_task is not None:
+            self._warm_next_track_task.cancel()
+            self._warm_next_track_task.add_done_callback(_consume_task_exception)
+            self._warm_next_track_task = None
         if self._next_round_task is not None:
             self._next_round_task.cancel()
             # retrieve the result/exception once the task settles so a prefetch that
@@ -1336,32 +1363,117 @@ class MusicQuizPlugin(PluginProvider):
 
     # ---------- playback ----------
 
+    async def _prepare_session_for_playback(self) -> SharedPlaybackSession:
+        """Return the game's playback session with its guest listeners restored."""
+        session = await self._get_playback_session()
+        if session is None:
+            raise MusicQuizNoPlaybackTargetError(
+                "No playback target is available for the Music Quiz game"
+            )
+        player = self.mass.players.get_player(session.player_id)
+        if player is None or not player.state.available:
+            raise MusicQuizNoPlaybackTargetError(
+                "No playback target is available for the Music Quiz game"
+            )
+        if player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+            raise MusicQuizNoPlaybackTargetError(
+                "The Music Quiz playback target is handling an announcement"
+            )
+        async with self._playback_lock:
+            if self._playback_session is not session:
+                raise MusicQuizNoPlaybackTargetError(
+                    "No playback target is available for the Music Quiz game"
+                )
+            await session.restore_guest_listeners()
+        return session
+
     async def _play_track(self, track_uri: str) -> None:
         """Play the given track on the game's playback session."""
         with _system_auth_context():
-            session = await self._get_playback_session()
-            if session is None:
-                raise MusicQuizNoPlaybackTargetError(
-                    "No playback target is available for the Music Quiz game"
-                )
-            player = self.mass.players.get_player(session.player_id)
-            if player is None or not player.state.available:
-                raise MusicQuizNoPlaybackTargetError(
-                    "No playback target is available for the Music Quiz game"
-                )
-            if player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
-                raise MusicQuizNoPlaybackTargetError(
-                    "The Music Quiz playback target is handling an announcement"
-                )
-            async with self._playback_lock:
-                if self._playback_session is not session:
-                    raise MusicQuizNoPlaybackTargetError(
-                        "No playback target is available for the Music Quiz game"
-                    )
-                await session.restore_guest_listeners()
+            session = await self._prepare_session_for_playback()
             await self.mass.player_queues.play_media(
                 session.queue_id, track_uri, option=QueueOption.REPLACE
             )
+
+    async def _enqueue_track(self, track_uri: str) -> None:
+        """Append a track to the game's playback session queue without starting it."""
+        with _system_auth_context():
+            # don't create a session for a round that may never be reached
+            session = self._playback_session
+            if session is None:
+                return
+            player = self.mass.players.get_player(session.player_id)
+            if player is None or not player.state.available:
+                return
+            if player.extra_data.get(ATTR_ANNOUNCEMENT_IN_PROGRESS):
+                return
+            await self.mass.player_queues.play_media(
+                session.queue_id, track_uri, option=QueueOption.ADD
+            )
+
+    async def _warm_next_track(self, task: asyncio.Task[MusicQuizRound]) -> None:
+        """Queue the prefetched round's track so its stream details resolve before it plays."""
+        try:
+            game_round = await task
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # a failed prefetch is reported when the round is actually requested
+            return
+        if game_round.track_uri is None:
+            return
+        try:
+            await self._enqueue_track(game_round.track_uri)
+        except MusicAssistantError as err:
+            self.logger.debug("Could not pre-queue next Music Quiz track: %s", err)
+            return
+        with _system_auth_context():
+            session = self._playback_session
+            if session is None:
+                return
+            queue = self.mass.player_queues.get(session.queue_id)
+            if queue is None or queue.current_item is None:
+                return
+            try:
+                await self.mass.player_queues.load_next_queue_item(
+                    session.queue_id, queue.current_item.queue_item_id
+                )
+            except MusicAssistantError as err:
+                # the round is resolved on demand instead if this best-effort warm-up misses
+                self.logger.debug("Could not resolve next Music Quiz track: %s", err)
+
+    async def _advance_to_queued_track(self, track_uri: str) -> bool:
+        """Start an already-queued track; False when the caller must fall back."""
+        with _system_auth_context():
+            session = self._playback_session
+            if session is None:
+                return False
+            # match by uri: the queue's next-item helpers silently skip unplayable items
+            queued_item = next(
+                (
+                    item
+                    for item in self.mass.player_queues.items(session.queue_id)
+                    if item.uri == track_uri and item.available
+                ),
+                None,
+            )
+            if queued_item is None:
+                return False
+            # re-prepare per round like _play_track, or listen-in guests drop after round one
+            if await self._prepare_session_for_playback() is not session:
+                return False
+            try:
+                await self.mass.player_queues.play_index(
+                    session.queue_id, queued_item.queue_item_id
+                )
+            except (AudioError, MediaNotFoundError) as err:
+                self.logger.warning(
+                    "Queued Music Quiz track %s could not start; falling back: %s",
+                    track_uri,
+                    err,
+                )
+                return False
+            return True
 
     async def _stop_playback(self) -> None:
         """Stop playback on the game's playback session, if any."""
@@ -1802,6 +1914,11 @@ class MusicQuizPlugin(PluginProvider):
         return f"music_quiz_advance_{self.instance_id}"
 
     @property
+    def _track_end_timer_id(self) -> str:
+        """Return the task_id of the reveal-outlives-track stop timer."""
+        return f"music_quiz_track_end_{self.instance_id}"
+
+    @property
     def _presence_timer_id(self) -> str:
         """Return the task_id of the player presence timer."""
         return f"music_quiz_presence_{self.instance_id}"
@@ -1815,6 +1932,7 @@ class MusicQuizPlugin(PluginProvider):
         """Cancel all scheduled game timers."""
         self.mass.cancel_timer(self._reveal_timer_id)
         self.mass.cancel_timer(self._advance_timer_id)
+        self.mass.cancel_timer(self._track_end_timer_id)
         self._cancel_replay_auto_start(cancel_task=True)
         self._cancel_presence_expiry(cancel_task=True)
 

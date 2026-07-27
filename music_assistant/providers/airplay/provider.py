@@ -52,6 +52,7 @@ from .helpers import (
     get_cli_binary,
     get_model_info,
     is_apple_device,
+    probe_audio_formats,
 )
 from .player import AirPlayPlayer, GenericAirPlayPlayer
 from .sendspin_bridge import SendspinBridgeManager
@@ -467,12 +468,26 @@ class AirPlayProvider(PlayerProvider):
             )
         await self.mass.players.register(player)
 
+        # A receiver only publishes its audio formats (and so whether it can do
+        # 24-bit) in its /info response, never in its mDNS records, so ask it
+        # directly. Off the discovery path: mdns callbacks are serialized per
+        # provider, so an unreachable device must not hold up the next player.
+        if airplay_discovery_info and airplay_discovery_info.port:
+            self.mass.create_task(
+                self._learn_audio_formats(player, address, airplay_discovery_info.port)
+            )
+
         # Set up Sendspin bridge for protocol linking (if Sendspin provider is available)
         await self._bridge_manager.evaluate_bridge(player)
 
         # Track control players (Apple TVs) for dashboard eligibility
         if isinstance(player, AirPlayControlPlayer):
             self.dashboards.setup_player(player)
+
+    async def _learn_audio_formats(self, player: AirPlayPlayer, host: str, port: int) -> None:
+        """Read the audio formats a receiver advertises, so 24-bit can be auto-enabled."""
+        if formats := await probe_audio_formats(self.mass, host, port):
+            player.advertised_audio_formats = formats
 
     async def _is_own_airplay_receiver(
         self, display_name: str, discovery_info: AsyncServiceInfo
@@ -499,8 +514,12 @@ class AirPlayProvider(PlayerProvider):
                 continue
             if not raw_conf.get("enabled", True):
                 continue
+            setup_name = self.mass.config.get_provider_setup_value(
+                str(instance_id), CONF_AIRPLAY_NAME
+            )
             values = raw_conf.get("values")
-            airplay_name = values.get(CONF_AIRPLAY_NAME) if isinstance(values, dict) else None
+            legacy_name = values.get(CONF_AIRPLAY_NAME) if isinstance(values, dict) else None
+            airplay_name = setup_name or legacy_name
             receiver_names.add(str(airplay_name) if airplay_name else DEFAULT_AIRPLAY_NAME)
             receiver_ports.add(airplay_receiver_port(str(instance_id)))
         # running instances are authoritative for the actual daemon ports

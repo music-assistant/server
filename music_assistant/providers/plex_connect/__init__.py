@@ -66,8 +66,8 @@ class PlexConnectProvider(PluginProvider):
         :param config: Provider configuration.
         """
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
-        self.mass_player_id = cast("str", self.config.get_value(CONF_MASS_PLAYER_ID))
-        self.plex_provider_id = cast("str", self.config.get_value(CONF_PLEX_PROVIDER_ID))
+        self.mass_player_id = cast("str", self.get_setup_value(CONF_MASS_PLAYER_ID))
+        self.plex_provider_id = cast("str", self.get_setup_value(CONF_PLEX_PROVIDER_ID))
         self.custom_player_name = cast("str | None", self.config.get_value(CONF_PLAYER_NAME))
         self.device_class = cast("str", self.config.get_value(CONF_DEVICE_CLASS)) or "speaker"
 
@@ -79,34 +79,7 @@ class PlexConnectProvider(PluginProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
-        # Get available Plex music providers
-        plex_providers = [
-            provider
-            for provider in self.mass.get_providers()
-            if provider.domain == "plex" and provider.type.value == "music"
-        ]
         return (
-            ConfigEntry(
-                key=CONF_PLEX_PROVIDER_ID,
-                type=ConfigEntryType.STRING,
-                required=True,
-                options=[
-                    ConfigValueOption(provider.instance_id, title=provider.name)
-                    for provider in plex_providers
-                ],
-            ),
-            ConfigEntry(
-                key=CONF_MASS_PLAYER_ID,
-                type=ConfigEntryType.STRING,
-                required=True,
-                options=[
-                    ConfigValueOption(x.player_id, title=x.display_name)
-                    for x in sorted(
-                        self.mass.players.all_players(False, False),
-                        key=lambda p: p.display_name.lower(),
-                    )
-                ],
-            ),
             ConfigEntry(
                 key=CONF_PLAYER_NAME,
                 type=ConfigEntryType.STRING,

@@ -5,15 +5,17 @@ from __future__ import annotations
 import logging
 import os
 import platform
+import plistlib
 import re
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from aiohttp import ClientError, ClientTimeout
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_ZEROCONF_INTERFACES
 from music_assistant.helpers.process import check_output
-from music_assistant.helpers.util import get_source_ip_for_target
+from music_assistant.helpers.util import format_ip_for_url, get_source_ip_for_target
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
@@ -29,6 +31,9 @@ _COMPANION_PAIRING_WITH_PIN = 0x4000
 # of an unsigned download), and a wedged binary would otherwise block provider load or
 # a stream start indefinitely.
 _CLI_BINARY_CHECK_TIMEOUT = 15.0
+# Bound the /info capability probe: it runs in the discovery path, and a receiver
+# that is slow to answer must not hold up player registration.
+_INFO_PROBE_TIMEOUT = 5.0
 
 
 async def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
@@ -252,6 +257,31 @@ def supports_mrp_service(discovery_info: AsyncServiceInfo | None) -> bool:
     return match is None or int(match.group(1)) < 19
 
 
+async def probe_audio_formats(mass: MusicAssistant, host: str, port: int) -> int:
+    """
+    Return the audio formats an AirPlay 2 receiver advertises, as a bitmask.
+
+    Zero when the device is unreachable or publishes no format tables.
+
+    :param mass: The MusicAssistant instance.
+    :param host: Address of the receiver.
+    :param port: Port of the receiver's _airplay._tcp service.
+    """
+    # The tables live in the receiver's /info response, which is served
+    # unauthenticated, so this needs no pairing or credentials.
+    url = f"http://{format_ip_for_url(host)}:{port}/info"
+    try:
+        async with mass.http_session.get(
+            url, timeout=ClientTimeout(total=_INFO_PROBE_TIMEOUT)
+        ) as resp:
+            if resp.status != 200:
+                return 0
+            info = plistlib.loads(await resp.read())
+    except ClientError, TimeoutError, plistlib.InvalidFileException, ValueError:
+        return 0
+    return _parse_format_tables(info) if isinstance(info, dict) else 0
+
+
 async def get_cli_binary() -> str:
     """
     Find the cliairplay binary for the current platform.
@@ -350,6 +380,24 @@ def get_final_output_format(
         bit_depth=audio_format.bit_depth,
         channels=audio_format.channels,
     )
+
+
+def _parse_format_tables(info: dict[str, Any]) -> int:
+    """Return the union of the format tables in a receiver's /info response."""
+    # Each stream advertises its formats either as a list of bit indices in
+    # supportedAudioFormatsExtended, or as a plain mask in the older
+    # supportedFormats. A device can use a different shape per stream.
+    extended = info.get("supportedAudioFormatsExtended")
+    legacy = info.get("supportedFormats")
+    formats = 0
+    for stream in ("audioStream", "bufferStream"):
+        if isinstance(extended, dict) and isinstance(bits := extended.get(stream), list):
+            for bit in bits:
+                if isinstance(bit, int) and 0 <= bit < 64:
+                    formats |= 1 << bit
+        elif isinstance(legacy, dict) and isinstance(mask := legacy.get(stream), int):
+            formats |= mask
+    return formats
 
 
 def _get_cli_binary_name(system: str, machine: str) -> str | None:

@@ -18,6 +18,7 @@ import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import yaml
@@ -31,6 +32,7 @@ from music_assistant.providers.fastmcp_server._init_helpers import (
 from music_assistant.providers.fastmcp_server.connect.actions import handle_open_connect_action
 from music_assistant.providers.fastmcp_server.connect.clients import CLIENTS, lookup_client
 from music_assistant.providers.fastmcp_server.connect.mount import mount_connect_wizard
+from music_assistant.providers.fastmcp_server.connect.page import HTML
 from music_assistant.providers.fastmcp_server.constants import CONF_CONNECT_EXTERNAL_URL
 
 from .conftest import FakeWebserver, build_aiohttp_app
@@ -889,6 +891,29 @@ async def test_action_handler_external_base_url_strips_trailing_slash(
     assert url == "https://ha.example.com/addon/mcp/v1/connect"
 
 
+async def test_action_handler_includes_ingress_aware_setup_callback(
+    wizard_mass: MagicMock,
+) -> None:
+    """A setup callback uses the same ingress prefix as the opened wizard."""
+    url = await handle_open_connect_action(
+        wizard_mass,
+        current_user=None,
+        mount_path="/mcp/v1",
+        external_base_url="https://ha.example.com/addon",
+        setup_callback_path="/setup_flow/callback/a1b2",
+    )
+
+    fragment = parse_qs(urlsplit(url).fragment)
+    assert fragment["setup_callback"] == ["/addon/setup_flow/callback/a1b2"]
+
+
+def test_wizard_signals_setup_after_client_config_is_available() -> None:
+    """The browser wizard retains and signals the setup callback after token generation."""
+    assert 'params.get("setup_callback")' in HTML
+    assert "signalSetupComplete();" in HTML
+    assert "fetch(state.setupCallback" in HTML
+
+
 async def test_action_handler_empty_external_base_url_falls_back_to_path(
     wizard_mass: MagicMock,
 ) -> None:
@@ -1180,6 +1205,24 @@ async def test_dispatch_falls_back_to_path_only_when_nothing_known(
     assert url is not None
     assert url.startswith("/mcp/v1/connect")
     assert "://" not in url.split("?", 1)[0]
+
+
+async def test_dispatch_uses_server_base_url_for_direct_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Direct clients receive an absolute URL that the frontend will open."""
+    user = _matching_user()
+    _install_fake_ma_auth_middleware(monkeypatch, user)
+
+    mass = MagicMock()
+    mass.webserver.clients = []
+    mass.webserver.base_url = "http://192.0.2.20:8095"
+    mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
+
+    url = await _dispatch_open_connect(mass, {"mount_path": "/mcp/v1"})
+
+    assert url is not None
+    assert url.startswith("http://192.0.2.20:8095/mcp/v1/connect")
 
 
 # ── Client template integrity ────────────────────────────────────────────────

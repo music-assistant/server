@@ -18,7 +18,7 @@ aioslimproto==3.1.9
 aiosonos==0.1.12
 aiosqlite==0.22.1
 aiovban==1.1.0
-alexapy==1.29.17
+alexapy==1.30.0
 async-upnp-client==0.46.2
 audible==0.10.0
 auntie-sounds==2.0.2
@@ -50,8 +50,8 @@ lyricsgenius==3.12.2
 markdownify==1.2.3
 mashumaro==3.20
 modern_colorthief==0.2.1
-music-assistant-frontend==2.17.244
-music-assistant-models==1.1.171
+music-assistant-frontend==2.17.246
+music-assistant-models==1.1.173
 mutagen==1.48.1
 niconico.py-ma==2.1.0.post2
 nnAudio==0.3.3
@@ -65,7 +65,7 @@ plexapi==4.18.2
 podcastparser==0.6.11
 propcache>=0.2.1
 psutil==7.2.2
-py-opensonic==10.1.0
+py-opensonic==10.2.1
 pyacoustid==1.3.1
 pyamplipi==0.4.12
 pyatv==0.18.0
@@ -93,13 +93,12 @@ soco==0.31.1
 soundcloudpy==0.1.4
 sounddevice==0.5.5
 sxm==0.2.8
-threadpoolctl==3.6.0
 torch==2.13.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
 torch==2.13.0; sys_platform != 'linux' or platform_machine != 'x86_64'
 torchaudio==2.11.0+cpu; sys_platform == 'linux' and platform_machine == 'x86_64'
 torchaudio==2.11.0; sys_platform != 'linux' or platform_machine != 'x86_64'
 torchlibrosa==0.1.0
-transformers==5.6.2
+transformers==5.14.1
 unidecode==1.4.0
 usearch==2.25.3
 uv>=0.8.0
