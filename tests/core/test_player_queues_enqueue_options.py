@@ -10,10 +10,12 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, Mock
 
+import pytest
 from music_assistant_models.enums import PlaybackState, QueueOption
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
 
+from music_assistant.controllers import player_queues
 from music_assistant.controllers.player_queues import PlayerQueuesController
 
 
@@ -75,3 +77,83 @@ async def test_play_on_active_queue_inserts_after_current() -> None:
     # inserted right after the current/buffered index (2) and playback jumps there
     assert ctrl._queue_items["q1"][3] is new_items[0]
     play_index.assert_awaited_once_with("q1", 3)
+
+
+def _reversing_shuffle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the smart shuffle deterministic: reverse the batch instead of randomising it."""
+
+    async def _reverse(items: list[QueueItem]) -> list[QueueItem]:
+        return list(items)[::-1]
+
+    monkeypatch.setattr(player_queues, "_smart_shuffle", _reverse)
+
+
+def _shuffled_queue(ctrl: PlayerQueuesController) -> None:
+    """Point the controller at an idle, empty queue with shuffle enabled."""
+    queue = PlayerQueue(
+        queue_id="q1",
+        active=True,
+        display_name="Q1",
+        available=True,
+        items=0,
+        shuffle_enabled=True,
+    )
+    ctrl._queues = {"q1": queue}
+    ctrl._queue_items = {"q1": []}
+
+
+async def test_play_with_start_item_pins_chosen_track_under_shuffle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PLAY from a chosen track keeps that track first when shuffle is on."""
+    ctrl = _controller()
+    play_index = AsyncMock()
+    ctrl.play_index = play_index  # type: ignore[method-assign]
+    _reversing_shuffle(monkeypatch)
+    _shuffled_queue(ctrl)
+    items = _items("q1", ["chosen", "b", "c", "d"])
+
+    await ctrl._enqueue_with_option("q1", items, QueueOption.PLAY, radio_mode=False, pin_first=True)
+
+    # the track the user picked starts playing; the rest is shuffled behind it
+    assert ctrl._queue_items["q1"][0] is items[0]
+    assert {item.queue_item_id for item in ctrl._queue_items["q1"][1:]} == {"b", "c", "d"}
+    play_index.assert_awaited_once_with("q1", 0)
+
+
+async def test_replace_with_start_item_pins_chosen_track_under_shuffle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """REPLACE from a chosen track keeps that track first when shuffle is on."""
+    ctrl = _controller()
+    play_index = AsyncMock()
+    ctrl.play_index = play_index  # type: ignore[method-assign]
+    _reversing_shuffle(monkeypatch)
+    _shuffled_queue(ctrl)
+    items = _items("q1", ["chosen", "b", "c", "d"])
+
+    await ctrl._enqueue_with_option(
+        "q1", items, QueueOption.REPLACE, radio_mode=False, pin_first=True
+    )
+
+    assert ctrl._queue_items["q1"][0] is items[0]
+    assert {item.queue_item_id for item in ctrl._queue_items["q1"][1:]} == {"b", "c", "d"}
+    play_index.assert_awaited_once_with("q1", 0)
+
+
+async def test_play_without_start_item_shuffles_the_whole_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """PLAY of a whole playlist under shuffle still randomises which track starts."""
+    ctrl = _controller()
+    play_index = AsyncMock()
+    ctrl.play_index = play_index  # type: ignore[method-assign]
+    _reversing_shuffle(monkeypatch)
+    _shuffled_queue(ctrl)
+    items = _items("q1", ["a", "b", "c", "d"])
+
+    await ctrl._enqueue_with_option("q1", items, QueueOption.PLAY, radio_mode=False)
+
+    # nothing is pinned: the deterministic reversal moves the last item to the front
+    assert ctrl._queue_items["q1"][0] is items[-1]
+    play_index.assert_awaited_once_with("q1", 0)
