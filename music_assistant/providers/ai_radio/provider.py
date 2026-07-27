@@ -26,7 +26,7 @@ from .runtime import AIRadioRuntimeMixin
 from .storage import AIRadioStorageMixin
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -60,6 +60,12 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
         self._storage_dir = Path(self.mass.storage_path) / "ai_radio" / self.instance_id
         self._stations_file = self._storage_dir / "stations.json"
         self._sections_file = self._storage_dir / "sections.json"
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        from .config import get_config_entries as build_config_entries  # noqa: PLC0415
+
+        return await build_config_entries(self.mass, self.instance_id)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
