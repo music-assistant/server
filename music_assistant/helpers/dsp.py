@@ -188,8 +188,8 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
             f"rubberband=pitch={pitch}:formant=preserved:pitchq=quality:window=long"
         )
     if isinstance(dsp_filter, SafetyLimiterFilter):
-        # in-chain user safety limiter, upstream of the global output safety limiter;
-        # level=false keeps it a transparent ceiling (no auto make-up)
+        # user placed safety limiter; level=false keeps it a transparent
+        # ceiling (no auto make-up)
         filter_params.append(f"alimiter=limit={dsp_filter.ceiling}dB:level=false:asc=true")
     if isinstance(dsp_filter, CompressorFilter):
         # acompressor knee is threshold/sqrt(knee)..threshold*sqrt(knee), so a knee
