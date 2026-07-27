@@ -604,16 +604,10 @@ def enumerate_alsa_devices(*, logger: logging.Logger) -> list[dict[str, Any]]:
 
         description = _re.sub(r"\s*\(hw:\d+,\d+\)$", "", name).strip()
 
-        # Extract "hw:C,D" for a direct chmap query (query_alsa_chmap) and
-        # keep the card index for later matching.
-        alsa_card_index: int | None = None
+        # Extract "hw:C,D" to open the device for a direct chmap query.
         alsa_hw_string: str | None = None
         if hw_match := _re.search(r"\(hw:(\d+,\d+)\)$", name):
             alsa_hw_string = f"hw:{hw_match.group(1)}"
-            try:
-                alsa_card_index = int(hw_match.group(1).split(",")[0])
-            except ValueError:
-                alsa_card_index = None
 
         devices.append(
             {
@@ -627,7 +621,6 @@ def enumerate_alsa_devices(*, logger: logging.Logger) -> list[dict[str, Any]]:
                 "master_device": None,
                 "index": idx,
                 "hostapi": dev.get("hostapi", 0),
-                "alsa_card_index": alsa_card_index,
                 "alsa_hw_string": alsa_hw_string,
             }
         )
@@ -649,9 +642,9 @@ def enumerate_alsa_devices(*, logger: logging.Logger) -> list[dict[str, Any]]:
                     device_dict["physical_channel_map"] = resolved
             if device_dict.get("max_output_channels", 0) > 2:
                 logger.debug(
-                    "ALSA device %s (card=%s, channels=%d): physical_channel_map=%s",
+                    "ALSA device %s (%s, channels=%d): physical_channel_map=%s",
                     device_dict["name"],
-                    device_dict.get("alsa_card_index"),
+                    device_dict.get("alsa_hw_string"),
                     device_dict.get("max_output_channels"),
                     device_dict.get("physical_channel_map"),
                 )
@@ -712,16 +705,6 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
         master_device: str | None = properties.get("device.master_device")
         is_remap = master_device is not None or driver == "module-remap-sink.c"
         alsa_card_name: str | None = properties.get("alsa.card_name")
-        active_port: str | None = sink.get("active_port")
-        _alsa_card_idx_str: str | None = properties.get("api.alsa.pcm.card") or properties.get(
-            "alsa.card"
-        )
-        try:
-            alsa_card_index: int | None = (
-                int(_alsa_card_idx_str) if _alsa_card_idx_str is not None else None
-            )
-        except ValueError:
-            alsa_card_index = None
         # pactl --format=json represents channel_map as a comma-separated
         # string (e.g. "front-left,front-right,rear-left,rear-right,...").
         channel_map_str: str = sink.get("channel_map", "")
@@ -764,8 +747,6 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
                 "driver": driver,
                 "channel_map": channel_map,
                 "alsa_card_name": alsa_card_name,
-                "active_port": active_port,
-                "alsa_card_index": alsa_card_index,
             }
         )
 
