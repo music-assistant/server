@@ -79,6 +79,11 @@ async def test_parse_metadata_from_id3tags() -> None:
     assert _tags.musicbrainz_artistids == ("abcdefg",)
     assert _tags.musicbrainz_releasegroupid == "abcdefg"
     assert _tags.musicbrainz_recordingid == "abcdefg"
+    assert _tags.synchronized_lyrics == [
+        ("My synchronized lyrics start here", 0),
+        ("continue on this line", 671110),
+        ("and end here.", 5999999),
+    ]
     # test parsing disc/track number
     _tags.tags["disc"] = ""
     assert _tags.disc is None
@@ -134,9 +139,9 @@ async def test_parse_metadata_from_mp4tags() -> None:
     assert _tags.year == 2022
     # test sort tags (artistsort/albumartistsort returned as lists to match ID3 behavior)
     assert _tags.tags.get("titlesort") == "MyTitle Sort"
-    assert _tags.tags.get("artistsort") == ["MyArtist Sort"]  # type: ignore[comparison-overlap]
+    assert _tags.tags.get("artistsort") == ["MyArtist Sort"]
     assert _tags.tags.get("albumsort") == "MyAlbum Sort"
-    assert _tags.tags.get("albumartistsort") == ["MyAlbumArtist Sort"]  # type: ignore[comparison-overlap]
+    assert _tags.tags.get("albumartistsort") == ["MyAlbumArtist Sort"]
 
 
 def test_parse_metadata_from_apev2tags() -> None:
@@ -184,7 +189,9 @@ def test_id3_musicbrainz_ufid_strips_trailing_null() -> None:
         data=b"1e74cd4c-cfa7-4bdb-99da-41869f5f1171\x00",
     )
 
-    result = _parse_id3_tags({"UFID:http://musicbrainz.org": ufid})
+    mock_tags = MagicMock()
+    mock_tags.get = lambda key: ufid if key == "UFID:http://musicbrainz.org" else None
+    result = _parse_id3_tags(mock_tags)
 
     assert result["musicbrainzrecordingid"] == "1e74cd4c-cfa7-4bdb-99da-41869f5f1171"
 
@@ -570,7 +577,9 @@ def test_parse_id3_multi_value_musicbrainz_albumtype() -> None:
     """Multi-value TXXX:MusicBrainz Album Type frame entries are joined into a single value."""
     frame = MagicMock()
     frame.text = ["album", "live"]
-    result = _parse_id3_tags({"TXXX:MusicBrainz Album Type": frame})
+    mock_tags = MagicMock()
+    mock_tags.get = lambda key: frame if key == "TXXX:MusicBrainz Album Type" else None
+    result = _parse_id3_tags(mock_tags)
     assert result.get("musicbrainzalbumtype") == "album;live"
 
 
@@ -768,7 +777,7 @@ def test_id3_artist_tag_semicolon_multiple_mbids() -> None:
         # musicbrainzartistid can be list[str] from mutagen (dict type is str for ffprobe compat)
         tags={
             "artist": "Artist A;Artist B",
-            "musicbrainzartistid": ["id-a", "id-b"],  # type: ignore[dict-item]
+            "musicbrainzartistid": ["id-a", "id-b"],
         },
         has_cover_image=False,
         filename="test.mp3",

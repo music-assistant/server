@@ -106,6 +106,7 @@ async def test_fake_mute_offered_when_volume_provided_by_protocol_player(
     """
     protocol_player = MagicMock()
     protocol_player.available = True
+    protocol_player.available_for_playback = True
     protocol_player.supports_feature.side_effect = lambda feature: (
         feature == PlayerFeature.VOLUME_SET
     )

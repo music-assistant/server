@@ -111,16 +111,6 @@ class PandoraProvider(MusicProvider):
         return (
             CONF_ENTRY_UNOFFICIAL_PROVIDER,
             ConfigEntry(
-                key=CONF_USERNAME,
-                type=ConfigEntryType.STRING,
-                required=True,
-            ),
-            ConfigEntry(
-                key=CONF_PASSWORD,
-                type=ConfigEntryType.SECURE_STRING,
-                required=True,
-            ),
-            ConfigEntry(
                 key=CONF_QUALITY,
                 type=ConfigEntryType.STRING,
                 required=True,
@@ -158,8 +148,10 @@ class PandoraProvider(MusicProvider):
         self._sessions = {}
 
         # Authenticate with Pandora
-        username = str(self.config.get_value(CONF_USERNAME))
-        password = str(self.config.get_value(CONF_PASSWORD))
+        username = str(self.get_setup_value(CONF_USERNAME) or "")
+        password = str(self.get_setup_value(CONF_PASSWORD) or "")
+        if not username.strip() or not password.strip():
+            raise LoginFailed("Username and password are required")
         socks_url = get_socks5_url(str(self.config.get_value(CONF_SOCKS_URL)))
 
         if socks_url:
@@ -269,8 +261,8 @@ class PandoraProvider(MusicProvider):
                 if response.status == 401:
                     if RETRY_REASON_AUTH not in exhausted_retry_reasons:
                         # Auth token expired, re-authenticate and retry once
-                        username = str(self.config.get_value(CONF_USERNAME))
-                        password = str(self.config.get_value(CONF_PASSWORD))
+                        username = str(self.get_setup_value(CONF_USERNAME) or "")
+                        password = str(self.get_setup_value(CONF_PASSWORD) or "")
                         await self._authenticate(username, password)
                         return await self._api_request(
                             method,

@@ -1,13 +1,16 @@
 """
 Unit tests for the Sendspin -> AirPlay bridge timing.
 
-Cover four things, with the Sendspin clock mocked via ``ManualClock`` so the
+Cover five things, with the Sendspin clock mocked via ``ManualClock`` so the
 tests are deterministic and independent of the host wall-clock:
 
 * the clock-domain conversion turning a Sendspin audible instant (Sendspin's own
   monotonic clock) into the unix epoch ms used by the START command;
 * the start anchor: byte 0 is anchored to the first chunk Sendspin delivers, so a
   fresh track keeps position 0 and a late joiner lands at the group's live position;
+* the timeline alignment that keeps every chunk at the byte offset its timestamp
+  claims, so a discontinuity in the Sendspin timeline does not shift the device
+  off the group's clock for the rest of the stream;
 * the write pacing that keeps the device buffered a bounded amount ahead of real
   time so a late-join catch-up backlog is not dumped into the CLI;
 * the warm handover: a running, connected stream is kept (not torn down) across
@@ -17,6 +20,7 @@ tests are deterministic and independent of the host wall-clock:
 """
 
 import asyncio
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -203,7 +207,6 @@ def test_fresh_start_anchors_to_first_chunk_and_keeps_intro() -> None:
         bridge._on_audio_chunk(_pcm_chunk(first_chunk_ts))
 
     assert bridge._drop_until_us == first_chunk_ts
-    assert bridge._start_aligned is True
     assert not bridge._write_queue.empty()  # opening audio queued, not discarded
 
 
@@ -225,6 +228,126 @@ def test_late_join_anchors_to_catchup_target_live_position() -> None:
     assert bridge._drop_until_us == catchup_target_ts
     # The anchor tracks the advanced playhead, not a fresh now+wait_start-from-zero.
     assert bridge._drop_until_us > SENDSPIN_EPOCH_US + AP2_LEAD_MS * 1_000
+
+
+# --- Timeline alignment: a discontinuity must not shift the device off the group clock ---
+
+
+def _drain_queued_bytes(bridge: SendspinAirPlayBridge) -> int:
+    """Return the number of audio bytes handed to the CLI writer, emptying the queue."""
+    total = 0
+    while not bridge._write_queue.empty():
+        data = bridge._write_queue.get_nowait()
+        if data is not None:
+            total += len(data)
+    return total
+
+
+def _start_stream_at(bridge: SendspinAirPlayBridge, first_chunk_ts: int) -> None:
+    """Feed the anchoring first chunk so the bridge is aligned and streaming."""
+    with patch.object(bridge, "_start_protocol_from_chunk", MagicMock()):
+        bridge._on_audio_chunk(_pcm_chunk(first_chunk_ts))
+    # The mocked task reports done() truthy by default, which the chunk handler
+    # reads as a failed protocol start; model a start still in flight instead.
+    cast("MagicMock", bridge._airplay_stream_start_task).done.return_value = False
+
+
+def _expected_frames(bridge: SendspinAirPlayBridge, timeline_end_us: int) -> int:
+    """Frames the CLI stream must hold for its cursor to sit at a timeline instant."""
+    return round((timeline_end_us - bridge._drop_until_us) * BRIDGE_SAMPLE_RATE / 1_000_000)
+
+
+def test_timeline_gap_is_padded_with_silence() -> None:
+    """
+    A hole in the Sendspin timeline is filled so the device stays on the group clock.
+
+    Sendspin rebases the shared timeline forward when audio production stalls,
+    delivering no audio for the skipped span. The CLI plays its byte stream at a
+    fixed rate from an anchor that is never revised, so writing the next chunk
+    straight after the previous one would leave this device permanently ahead of
+    the group by the size of the hole.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    first_ts = SENDSPIN_EPOCH_US + 250_000
+    _start_stream_at(bridge, first_ts)
+    _drain_queued_bytes(bridge)
+
+    gap_us = 415_711
+    next_ts = first_ts + 100_000 + gap_us
+    bridge._on_audio_chunk(_pcm_chunk(next_ts))
+
+    expected = _expected_frames(bridge, next_ts + 100_000)
+    assert bridge._queued_frames == expected
+    assert (
+        _drain_queued_bytes(bridge)
+        == (expected - _expected_frames(bridge, first_ts + 100_000))
+        * BRIDGE_CHANNELS
+        * BRIDGE_BYTES_PER_SAMPLE
+    )
+
+
+def test_overlapping_chunk_head_is_trimmed() -> None:
+    """A chunk reaching back behind the write cursor keeps only its unwritten tail."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    first_ts = SENDSPIN_EPOCH_US + 250_000
+    _start_stream_at(bridge, first_ts)
+    _drain_queued_bytes(bridge)
+
+    overlap_us = 40_000
+    next_ts = first_ts + 100_000 - overlap_us
+    bridge._on_audio_chunk(_pcm_chunk(next_ts))
+
+    assert bridge._queued_frames == _expected_frames(bridge, next_ts + 100_000)
+
+
+def test_chunk_entirely_behind_the_cursor_is_dropped() -> None:
+    """Audio already written is not queued a second time."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    first_ts = SENDSPIN_EPOCH_US + 250_000
+    _start_stream_at(bridge, first_ts)
+    _drain_queued_bytes(bridge)
+    cursor_frames = bridge._queued_frames
+
+    bridge._on_audio_chunk(_pcm_chunk(first_ts + 10_000, duration_us=50_000))
+
+    assert bridge._queued_frames == cursor_frames
+    assert _drain_queued_bytes(bridge) == 0
+
+
+@pytest.mark.parametrize("server_side", [False, True])
+def test_stream_start_resets_the_write_cursor(server_side: bool) -> None:
+    """
+    Both stream-start entry points rewind the cursor so the next chunk re-anchors byte 0.
+
+    A cursor carried over from the previous stream would place the first chunk of
+    the new one far behind the write position and get it trimmed away as already
+    written.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    _start_stream_at(bridge, SENDSPIN_EPOCH_US + 250_000)
+    assert bridge._queued_frames > 0
+
+    if server_side:
+        bridge._on_stream_start(MagicMock())
+    else:
+        bridge._on_bridge_stream_start()
+
+    assert bridge._queued_frames == 0
+    assert bridge._drop_until_us == 0
+
+
+def test_contiguous_chunks_are_written_untouched() -> None:
+    """Normal playback queues exactly its own audio -- no padding, no trimming."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    first_ts = SENDSPIN_EPOCH_US + 250_000
+    _start_stream_at(bridge, first_ts)
+    _drain_queued_bytes(bridge)
+
+    for index in range(1, 20):
+        bridge._on_audio_chunk(_pcm_chunk(first_ts + index * 100_000))
+
+    assert bridge._queued_frames == _expected_frames(bridge, first_ts + 20 * 100_000)
+    assert _drain_queued_bytes(bridge) == 19 * 100_000 * BRIDGE_BYTES_PER_SECOND // 1_000_000
 
 
 # --- Write pacing: bound the device buffer so a catch-up backlog is not dumped ---

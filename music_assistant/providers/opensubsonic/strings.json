@@ -65,8 +65,6 @@
   },
   "errors": {
     "connect_failed": "Failed to connect to {0}, check your settings.",
-    "create_playlist_failed": "Failed to create playlist with name '{0}'.",
-    "extension_failure": "Failed to query server for OpenSubsonic extensions",
-    "formpost_missing": "Server does not support the 'formpost' OpenSubsonic extension, which is required."
+    "create_playlist_failed": "Failed to create playlist with name '{0}'."
   }
 }

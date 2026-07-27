@@ -92,6 +92,9 @@ class HomeAssistantPlayerProvider(PlayerProvider):
                 type=ConfigEntryType.STRING,
                 multi_value=True,
                 required=True,
+                # the provider is added before any entity can be picked, so it starts out
+                # with an empty selection and the players are chosen in its options
+                default_value=[],
                 options=player_entities,
             ),
         )

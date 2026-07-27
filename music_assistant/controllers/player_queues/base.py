@@ -10,7 +10,7 @@ type-checks on its own while the real implementations live on PlayerQueuesContro
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant.models.core_controller import CoreController
 
@@ -24,7 +24,7 @@ if TYPE_CHECKING:
     from music_assistant.controllers.player_queues.media_resolver import MediaResolver
     from music_assistant.controllers.player_queues.smart_shuffle import SmartShuffle
     from music_assistant.controllers.player_queues.state import PlayerQueueData
-    from music_assistant.models.player import PlayerMedia
+    from music_assistant.models.player import Player, PlayerMedia
 
 
 class _PlayerQueuesBase(CoreController):
@@ -54,6 +54,9 @@ class _PlayerQueuesBase(CoreController):
         def get_next_item(self, queue_id: str, cur_index: int | str) -> QueueItem | None: ...
         def clear(self, queue_id: str, skip_stop: bool = False) -> None: ...
         def signal_update(self, queue_id: str, items_changed: bool = False) -> None: ...
+        def on_player_update(
+            self, player: Player, changed_values: dict[str, tuple[Any, Any]]
+        ) -> None: ...
         def is_smart_shuffle_active(self, queue: PlayerQueue) -> bool: ...
         def store_sources(self, queue: PlayerQueue, items: list[MediaItemType]) -> None: ...
         async def load(
