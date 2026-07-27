@@ -11,7 +11,6 @@ from copy import deepcopy
 from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, cast
-from zoneinfo import ZoneInfo
 
 from aiohttp import ClientTimeout
 from music_assistant_models.enums import (
@@ -31,7 +30,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.datetime import now
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.playlists import (
     ArtistInfo,
@@ -191,12 +190,7 @@ class AIRadioRuntimeMixin:
         target_provider = str(station.get("target_playlist_provider") or "builtin")
         run_id = session.session_id[:8]
         station_name = str(station.get("name") or "AI Radio").strip()
-        timezone_name = str(station.get("general", {}).get("timezone") or "UTC")
-        now_utc = utc()
-        try:
-            now_local = now_utc.astimezone(ZoneInfo(timezone_name))
-        except Exception:
-            now_local = now_utc
+        now_local = now()
         date_suffix = f"{now_local.strftime('%a')}. {now_local.strftime('%d.%m.')}"
         target_playlist_name = f"AI Radio: {station_name} ({date_suffix}) [{run_id}]"
 
@@ -1465,12 +1459,7 @@ class AIRadioRuntimeMixin:
     ) -> dict[str, str]:
         """Resolve placeholders for one slot."""
         general = cast("dict[str, Any]", station.get("general", {}))
-        timezone_name = str(general.get("timezone", "UTC"))
-        now_utc = utc()
-        try:
-            now = now_utc.astimezone(ZoneInfo(timezone_name))
-        except Exception:
-            now = now_utc
+        now_local = now()
 
         values: dict[str, str] = {str(key): str(value) for key, value in runtime_tokens.items()}
         prev_track = tracks[slot.prev_index] if slot.prev_index is not None else None
@@ -1479,7 +1468,7 @@ class AIRadioRuntimeMixin:
         values["<prev_songinfo>"] = track_songinfo(prev_track)
         values["<next_songinfo>"] = track_songinfo(next_track)
         values["<very_next_songinfo>"] = track_songinfo(very_next_track)
-        values["<timestamp>"] = now.strftime("%Y-%m-%d %H:%M %Z")
+        values["<timestamp>"] = now_local.strftime("%Y-%m-%d %H:%M %Z")
         values.setdefault("<weather_hourly>", "")
         values.setdefault("<weather_daily>", "")
         return values
