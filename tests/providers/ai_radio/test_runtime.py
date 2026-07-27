@@ -743,6 +743,87 @@ async def test_run_dynamic_mode_has_watchdog_for_stalled_playback(
         await asyncio.wait_for(runtime._run_dynamic_mode(session, station), timeout=3.0)
 
 
+@pytest.mark.parametrize(
+    ("batch_size", "prefetch_config", "expected_prefetch"),
+    [
+        (3, 2, 2),
+        (3, 5, 2),
+        (1, 2, 1),
+        (5, 1, 1),
+    ],
+)
+async def test_run_dynamic_mode_clamps_prefetch_to_batch_size(
+    batch_size: int, prefetch_config: int, expected_prefetch: int
+) -> None:
+    """Clamp dynamic_prefetch_remaining_tracks so the trigger falls inside the batch.
+
+    Only exercises the setup segment of _run_dynamic_mode: the clamped value is
+    captured via the "initializing_queue" progress update, short-circuiting before
+    the batch-queueing loop runs. This does NOT cover trigger_position math further
+    down in the loop, nor the storage-layer normalization clamp in storage.py.
+    """
+
+    class ProbeStop(Exception):
+        """Raised to short-circuit _run_dynamic_mode once the clamp is captured."""
+
+        def __init__(self, prefetch_remaining_tracks: int) -> None:
+            self.prefetch_remaining_tracks = prefetch_remaining_tracks
+
+    class ProbeRuntime(AIRadioRuntimeMixin):
+        def __init__(self) -> None:
+            self.logger = logging.getLogger("tests.ai_radio.runtime.clamp_probe")
+            self._sessions: dict[str, SessionState] = {}
+
+        async def _fetch_source_tracks(
+            self, station: dict[str, Any]
+        ) -> tuple[list[dict[str, Any]], str]:
+            return [{"uri": "library://track/1", "duration": 180}], "Source"
+
+        def _apply_track_duration_limit(
+            self, tracks: list[dict[str, Any]], station: dict[str, Any]
+        ) -> list[dict[str, Any]]:
+            return tracks
+
+        async def _prepare_runtime_tokens(self, station: dict[str, Any]) -> dict[str, str]:
+            return {}
+
+        def _set_session_progress(
+            self, session: SessionState, phase: str, **details: Any
+        ) -> None:
+            if phase == "initializing_queue":
+                raise ProbeStop(cast("int", details["prefetch_remaining_tracks"]))
+
+    class DummyPlayers:
+        def get_player(self, player_id: str) -> Any:
+            return object()
+
+    class DummyPlayerQueues:
+        def get_active_queue(self, player_id: str) -> Any:
+            return None
+
+    class DummyMass:
+        players = DummyPlayers()
+        player_queues = DummyPlayerQueues()
+
+    runtime = ProbeRuntime()
+    _set_runtime_mass(runtime, DummyMass())
+    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
+    runtime._sessions[session.session_id] = session
+    station = {
+        "id": "st",
+        "name": "Probe Station",
+        "default_player_id": "living_room",
+        "dynamic_batch_size": batch_size,
+        "dynamic_prefetch_remaining_tracks": prefetch_config,
+        "general": {"timezone": "UTC"},
+    }
+
+    with pytest.raises(ProbeStop) as excinfo:
+        await runtime._run_dynamic_mode(session, station)
+
+    assert excinfo.value.prefetch_remaining_tracks == expected_prefetch
+
+
 def _make_watchdog_runtime_classes() -> tuple[type, type]:
     """Build the reusable dynamic-mode runtime and player-queues test harness."""
 

@@ -281,10 +281,13 @@ class AIRadioRuntimeMixin:
         if not tracks:
             raise MusicAssistantError("No source tracks available after applying station limits")
 
-        batch_size = max(1, int(station.get("dynamic_batch_size", 1) or 1))
+        batch_size = max(1, int(station.get("dynamic_batch_size", 3) or 3))
         poll_seconds = max(1, int(station.get("dynamic_poll_seconds", 5) or 5))
-        prefetch_remaining_tracks = max(
-            1, int(station.get("dynamic_prefetch_remaining_tracks", 2) or 2)
+        # the trigger must fall inside the current batch, or the next batch starts
+        # generating the instant this one starts playing, leaving no buffer at all
+        prefetch_remaining_tracks = min(
+            max(1, batch_size - 1),
+            max(1, int(station.get("dynamic_prefetch_remaining_tracks", 2) or 2)),
         )
         self.logger.debug(
             "Dynamic runtime settings: batch_size=%d poll_seconds=%d prefetch_remaining_tracks=%d",

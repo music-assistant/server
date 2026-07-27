@@ -333,7 +333,7 @@ class AIRadioStorageMixin:
             ),
             "dynamic_batch_size": max(
                 1,
-                _require_number("dynamic_batch_size", station.get("dynamic_batch_size"), 1, int),
+                _require_number("dynamic_batch_size", station.get("dynamic_batch_size"), 3, int),
             ),
             "dynamic_poll_seconds": max(
                 1,
@@ -534,7 +534,7 @@ class AIRadioStorageMixin:
             "target_playlist_provider": "builtin",
             "default_player_id": "",
             "max_duration_minutes": 0,
-            "dynamic_batch_size": 1,
+            "dynamic_batch_size": 3,
             "dynamic_poll_seconds": 5,
             "dynamic_prefetch_remaining_tracks": 2,
             "clear_queue_on_start": True,
