@@ -149,3 +149,59 @@ async def test_add_to_library_rejects_stale_sound_effect_uri() -> None:
     controller.mass = MagicMock()
     with pytest.raises(UnsupportedFeaturedException, match="can not be library items"):
         await controller.add_item_to_library("stale_provider://sound_effect/rain.mp3")
+
+
+async def test_get_item_passes_sound_effect_type_to_builtin_provider() -> None:
+    """Builtin instance URIs keep the parsed SOUND_EFFECT media type."""
+    controller = MusicController.__new__(MusicController)
+    sound_effect = _sound_effect()
+    builtin_provider = MagicMock()
+    builtin_provider.domain = "builtin"
+    builtin_provider.parse_item = AsyncMock(return_value=sound_effect)
+    controller.mass = MagicMock()
+    controller.mass.get_provider.side_effect = lambda provider_id: (
+        builtin_provider if provider_id in {"builtin", "builtin_1"} else None
+    )
+
+    result = await controller.get_item(
+        MediaType.SOUND_EFFECT,
+        "http://example.com/intro.mp3",
+        "builtin_1",
+    )
+
+    assert result is sound_effect
+    builtin_provider.parse_item.assert_awaited_once_with(
+        "http://example.com/intro.mp3",
+        requested_media_type=MediaType.SOUND_EFFECT,
+    )
+
+
+async def test_get_item_builtin_playlist_instance_uses_playlist_controller() -> None:
+    """Builtin instance playlists should still resolve through the playlist controller."""
+    controller = MusicController.__new__(MusicController)
+    builtin_provider = MagicMock()
+    builtin_provider.domain = "builtin"
+    builtin_provider.parse_item = AsyncMock()
+    playlist_controller = MagicMock()
+    playlist_item = MagicMock()
+    playlist_controller.get = AsyncMock(return_value=playlist_item)
+    controller.mass = MagicMock()
+    controller.mass.get_provider.side_effect = lambda provider_id: (
+        builtin_provider if provider_id in {"builtin", "builtin_1"} else None
+    )
+    controller.get_controller = MagicMock(return_value=playlist_controller)  # type: ignore[method-assign]
+
+    result = await controller.get_item(
+        MediaType.PLAYLIST,
+        "playlist_123",
+        "builtin_1",
+    )
+
+    assert result is playlist_item
+    builtin_provider.parse_item.assert_not_awaited()
+    controller.get_controller.assert_called_once_with(MediaType.PLAYLIST)
+    playlist_controller.get.assert_awaited_once_with(
+        item_id="playlist_123",
+        provider_instance_id_or_domain="builtin_1",
+        allow_update_metadata=True,
+    )
