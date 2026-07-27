@@ -9,7 +9,7 @@ import socket
 import time
 from collections.abc import AsyncGenerator
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp
 from aiohttp import ClientTimeout, web
@@ -46,6 +46,8 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 
 CONF_MASS_PLAYER_ID = "mass_player_id"
+CONF_ARIACAST_NAME = "ariacast_name"
+DEFAULT_ARIACAST_NAME = "Music Assistant"
 PLAYER_ID_AUTO = "__auto__"
 SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 AUDIO_SOURCE_ID = "main"
@@ -94,6 +96,9 @@ class AriaCastReceiver(PluginProvider):
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
         # Avoid str(None), which would bypass automatic player selection.
         self._default_player_id = str(self.get_setup_value(CONF_MASS_PLAYER_ID) or PLAYER_ID_AUTO)
+        self._ariacast_name = (
+            cast("str", self.get_setup_value(CONF_ARIACAST_NAME)) or DEFAULT_ARIACAST_NAME
+        )
 
         # Audio pipeline: one asyncio.Queue, drained per stream (VBAN pattern)
         self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=100)
@@ -181,7 +186,9 @@ class AriaCastReceiver(PluginProvider):
                 f"Cannot bind AriaCast server on port {ARIACAST_PORT}: {err}"
             ) from err
 
-        self.logger.info("AriaCast server listening on port %d", ARIACAST_PORT)
+        self.logger.info(
+            "AriaCast server '%s' listening on port %d", self._ariacast_name, ARIACAST_PORT
+        )
         self.mass.create_task(self._run_udp_discovery())
         self._stats_task = self.mass.create_task(self._run_stats_broadcast())
 
@@ -832,7 +839,7 @@ class AriaCastReceiver(PluginProvider):
 
         response_payload = json.dumps(
             {
-                "server_name": "MusicAssistant AriaCast Receiver",
+                "server_name": self._ariacast_name,
                 "ip": local_ip,
                 "port": ARIACAST_PORT,
                 "samplerate": 48000,

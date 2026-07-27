@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
+
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.helpers.config_entries import create_player_selector
 from music_assistant.models.setup_flow import SetupFlowError
 
-from . import CONF_MASS_PLAYER_ID, PLAYER_ID_AUTO
+from . import (
+    CONF_ARIACAST_NAME,
+    CONF_MASS_PLAYER_ID,
+    DEFAULT_ARIACAST_NAME,
+    PLAYER_ID_AUTO,
+)
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
@@ -23,7 +31,9 @@ async def run_setup(session: SetupSession) -> None:
     setup_data = dict(session.context.setup_data)
     errors: dict[str, str] | None = None
     while True:
-        prefill = {**session.context.values, **setup_data}
+        prefill: dict[str, Any] = {**session.context.values, **setup_data}
+        ariacast_name = str(prefill.get(CONF_ARIACAST_NAME) or DEFAULT_ARIACAST_NAME)
+
         values = await session.form(
             [
                 CONF_ENTRY_WARN_PREVIEW,
@@ -32,6 +42,13 @@ async def run_setup(session: SetupSession) -> None:
                     CONF_MASS_PLAYER_ID,
                     prefill.get(CONF_MASS_PLAYER_ID),
                     PLAYER_ID_AUTO,
+                ),
+                ConfigEntry(
+                    key=CONF_ARIACAST_NAME,
+                    type=ConfigEntryType.STRING,
+                    required=True,
+                    default_value=ariacast_name,
+                    value=ariacast_name,
                 ),
             ],
             step_id="user",
