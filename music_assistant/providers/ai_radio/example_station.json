@@ -6,7 +6,7 @@
   "target_playlist_provider": "builtin",
   "default_player_id": "",
   "max_duration_minutes": 60,
-  "dynamic_batch_size": 1,
+  "dynamic_batch_size": 3,
   "dynamic_prefetch_remaining_tracks": 2,
   "dynamic_poll_seconds": 5,
   "clear_queue_on_start": true,

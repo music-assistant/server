@@ -292,7 +292,7 @@ def test_write_sections_keeps_existing_file_when_write_fails(
     storage._sections_file = sections_file
     storage._sections = {"s1": {"id": "s1", "name": "S1", "type": "ai_text", "prompt": "P"}}
 
-    def failing_fsync(fd: int) -> None:
+    def failing_fsync(_fd: int) -> None:
         """Raise to simulate a failed disk write."""
         raise OSError("disk full")
 

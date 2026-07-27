@@ -19,7 +19,7 @@ from .constants import (
     MAX_FINISHED_SESSIONS,
     SUPPORTED_FEATURES,
 )
-from .helpers import coerce_int, utc_now_iso
+from .helpers import utc_now_iso
 from .models import SessionState
 from .runtime import AIRadioRuntimeMixin
 from .storage import AIRadioStorageMixin

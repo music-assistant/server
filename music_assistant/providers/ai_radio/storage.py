@@ -218,7 +218,7 @@ class AIRadioStorageMixin:
             value = source_general.get(key, defaults[key])
             try:
                 return int(value)
-            except (TypeError, ValueError):
+            except TypeError, ValueError:
                 return int(defaults[key])
 
         return {
@@ -584,4 +584,4 @@ class AIRadioStorageMixin:
             file_handle.write(content)
             file_handle.flush()
             os.fsync(file_handle.fileno())
-        os.replace(tmp_file, target)
+        tmp_file.replace(target)

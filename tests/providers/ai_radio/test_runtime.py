@@ -48,7 +48,7 @@ class DummyRuntime(AIRadioRuntimeMixin):
         """Initialize minimal state for runtime tests."""
         self.logger = logging.getLogger("tests.ai_radio.runtime")
         self._sessions: dict[str, SessionState] = {}
-        self.config = StubConfig()
+        self.config = cast("Any", StubConfig())
 
     async def _run_playlist_mode(
         self,
@@ -172,7 +172,7 @@ async def test_prepare_runtime_tokens_logs_unsupported_weather_provider(caplog: 
         "section_order": [],
         "general": {"weather_provider": "unsupported_provider"},
     }
-    runtime.config = StubConfig({"weather_city": "Berlin", "weather_country": "DE"})
+    runtime.config = cast("Any", StubConfig({"weather_city": "Berlin", "weather_country": "DE"}))
 
     with caplog.at_level(logging.WARNING):
         tokens = await runtime._prepare_runtime_tokens(station)
@@ -195,7 +195,7 @@ async def test_prepare_runtime_tokens_ignores_missing_location(caplog: Any) -> N
         "section_order": [],
         "general": {"weather_provider": "open_meteo"},
     }
-    runtime.config = StubConfig({"weather_city": "", "weather_country": "DE"})
+    runtime.config = cast("Any", StubConfig({"weather_city": "", "weather_country": "DE"}))
 
     with caplog.at_level(logging.DEBUG):
         tokens = await runtime._prepare_runtime_tokens(station)
@@ -207,7 +207,7 @@ async def test_prepare_runtime_tokens_ignores_missing_location(caplog: Any) -> N
 def test_extract_location_reads_provider_config() -> None:
     """Weather location comes from the provider config, not the station."""
     runtime = DummyRuntime()
-    runtime.config = StubConfig({"weather_city": "Berlin", "weather_country": "DE"})
+    runtime.config = cast("Any", StubConfig({"weather_city": "Berlin", "weather_country": "DE"}))
 
     assert runtime._extract_location() == ("Berlin", "DE")
 
@@ -219,10 +219,11 @@ def test_extract_location_defaults_to_empty_when_unset() -> None:
     assert runtime._extract_location() == ("", "")
 
 
-def test_configured_now_uses_valid_configured_timezone() -> None:
-    """A valid configured IANA timezone name is honored for the current time."""
+@pytest.mark.parametrize("timezone_value", ["Asia/Tokyo", "  Asia/Tokyo  "])
+def test_configured_now_uses_valid_configured_timezone(timezone_value: str) -> None:
+    """A valid configured IANA timezone name is honored, surrounding whitespace included."""
     runtime = DummyRuntime()
-    runtime.config = StubConfig({"timezone": "Asia/Tokyo"})
+    runtime.config = cast("Any", StubConfig({"timezone": timezone_value}))
 
     result = runtime._configured_now()
 
@@ -231,12 +232,12 @@ def test_configured_now_uses_valid_configured_timezone() -> None:
 
 @pytest.mark.parametrize(
     "timezone_value",
-    ["", "not-a-real-zone", "CEST", "../../etc/passwd", "Europe/Amsterdam "],
+    ["", "not-a-real-zone", "CEST", "../../etc/passwd"],
 )
 def test_configured_now_falls_back_when_timezone_blank_or_invalid(timezone_value: str) -> None:
     """A blank or invalid configured timezone falls back to the host local time."""
     runtime = DummyRuntime()
-    runtime.config = StubConfig({"timezone": timezone_value})
+    runtime.config = cast("Any", StubConfig({"timezone": timezone_value}))
 
     result = runtime._configured_now()
 
@@ -842,7 +843,8 @@ async def test_run_dynamic_mode_has_watchdog_for_stalled_playback(
 async def test_run_dynamic_mode_clamps_prefetch_to_batch_size(
     batch_size: int, prefetch_config: int, expected_prefetch: int
 ) -> None:
-    """Clamp dynamic_prefetch_remaining_tracks so the trigger falls inside the batch.
+    """
+    Clamp dynamic_prefetch_remaining_tracks so the trigger falls inside the batch.
 
     Only exercises the setup segment of _run_dynamic_mode: the clamped value is
     captured via the "initializing_queue" progress update, short-circuiting before
@@ -874,9 +876,7 @@ async def test_run_dynamic_mode_clamps_prefetch_to_batch_size(
         async def _prepare_runtime_tokens(self, station: dict[str, Any]) -> dict[str, str]:
             return {}
 
-        def _set_session_progress(
-            self, session: SessionState, phase: str, **details: Any
-        ) -> None:
+        def _set_session_progress(self, session: SessionState, phase: str, **details: Any) -> None:
             if phase == "initializing_queue":
                 raise ProbeStop(cast("int", details["prefetch_remaining_tracks"]))
 

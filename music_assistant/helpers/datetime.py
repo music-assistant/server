@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import os
+from pathlib import Path
 from zoneinfo import available_timezones
 
 LOCAL_TIMEZONE = datetime.datetime.now(datetime.UTC).astimezone().tzinfo
@@ -62,7 +63,7 @@ def host_timezone_name() -> str:
     if tz_env in available:
         return tz_env
     try:
-        link_target = os.readlink("/etc/localtime")
+        link_target = str(Path("/etc/localtime").readlink())
     except OSError:
         link_target = ""
     _, _, candidate = link_target.partition("zoneinfo/")
