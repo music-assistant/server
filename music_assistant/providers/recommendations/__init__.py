@@ -272,4 +272,5 @@ def _folder(
         translation_key=translation_key,
         icon=icon,
         enabled_by_default=enabled_by_default,
+        uri=f"library://folder/{item_id.value}",
     )

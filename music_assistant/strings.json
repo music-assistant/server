@@ -1028,6 +1028,26 @@
       },
       "favorite_radio_stations": {
         "name": "Favorite Radio stations"
+      },
+      "forgotten_tracks": {
+        "name": "Forgotten Tracks",
+        "subtitle": "Rediscover tracks you haven't heard in a while"
+      },
+      "forgotten_albums": {
+        "name": "Forgotten Albums",
+        "subtitle": "Rediscover albums you haven't heard in a while"
+      },
+      "forgotten_artists": {
+        "name": "Forgotten Artists",
+        "subtitle": "Rediscover artists you haven't heard in a while"
+      },
+      "most_played_tracks": {
+        "name": "Most Played Tracks",
+        "subtitle": "Your all-time favorites"
+      },
+      "never_played_tracks": {
+        "name": "Never / Rarely Played",
+        "subtitle": "Discover what you haven't explored yet"
       }
     }
   },
