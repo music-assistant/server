@@ -54,13 +54,11 @@ async def get_config_entries(
             key=CONF_WEATHER_CITY,
             type=ConfigEntryType.STRING,
             default_value="",
-            advanced=True,
         ),
         ConfigEntry(
             key=CONF_WEATHER_COUNTRY,
             type=ConfigEntryType.STRING,
             options=country_options,
             default_value=region if region in country_codes else "",
-            advanced=True,
         ),
     )
