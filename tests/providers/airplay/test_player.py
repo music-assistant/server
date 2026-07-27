@@ -55,6 +55,40 @@ def airplay_player() -> AirPlayPlayer:
 
 
 @pytest.mark.parametrize(
+    ("manufacturer", "model", "expected"),
+    [
+        ("Apple", "MacBookPro18,3", False),
+        ("Apple Inc.", "MacBook Air (MacBookAir10,1)", False),
+        ("Apple", "iMac (iMac21,1)", False),
+        ("Apple", "Mac mini (Mac16,11)", False),
+        ("Apple", "Mac Pro (MacPro7,1)", False),
+        ("Apple", "Mac Studio (Mac14,13)", False),
+        ("Apple", "HomePod Mini", True),
+        ("Apple", "Apple TV 4K", True),
+        ("Acme", "Mac-compatible receiver", True),
+    ],
+)
+def test_macos_devices_are_disabled_by_default(
+    manufacturer: str, model: str, expected: bool
+) -> None:
+    """Macs are disabled by default without affecting other AirPlay receivers."""
+    provider = MagicMock()
+    player = AirPlayPlayer(
+        provider=provider,
+        player_id="test_player",
+        display_name="Test Player",
+        address="127.0.0.1",
+        manufacturer=manufacturer,
+        model=model,
+        raop_discovery_info=None,
+        airplay_discovery_info=None,
+    )
+
+    assert player.enabled_by_default is expected
+    assert provider.mass.config.create_default_player_config.call_args.args[-1] is expected
+
+
+@pytest.mark.parametrize(
     ("aiplay_properties", "raop_properties", "expected"),
     [
         ({b"flags": b"0x200"}, None, True),

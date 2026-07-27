@@ -55,6 +55,7 @@ from .constants import (
 )
 from .helpers import (
     is_apple_device,
+    is_macos_device,
     player_id_to_mac_address,
     supports_airplay2,
 )
@@ -94,6 +95,7 @@ class AirPlayPlayer(Player):
         # Audio formats the receiver advertises, learned from its /info response;
         # zero until that lands (or when the device publishes no format tables).
         self.advertised_audio_formats = 0
+        self._attr_enabled_by_default = not is_macos_device(manufacturer, model)
         super().__init__(provider, player_id)
         self.address = address
         self.stream: AirPlayStream | None = None
@@ -115,7 +117,6 @@ class AirPlayPlayer(Player):
         self._attr_device_info.add_identifier(IdentifierType.AIRPLAY_ID, player_id)
         self._attr_volume_level = initial_volume
         self._attr_can_group_with = {provider.instance_id}
-        self._attr_enabled_by_default = True
 
     @property
     def protocol(self) -> StreamingProtocol:

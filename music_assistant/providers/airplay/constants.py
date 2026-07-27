@@ -76,6 +76,7 @@ AIRPLAY_GROUP_START_LEAD_MS: Final[int] = 500
 # does not fetch URLs). 512px keeps the SET_PARAMETER payload small while still
 # looking sharp on speaker apps and the Apple TV now-playing screen.
 AIRPLAY_ARTWORK_SIZE: Final[int] = 512
+EXTERNAL_ARTWORK_PATH_PREFIX: Final[str] = "external_artwork"
 
 # Per-protocol credential storage keys
 CONF_RAOP_CREDENTIALS: Final[str] = "raop_credentials"
