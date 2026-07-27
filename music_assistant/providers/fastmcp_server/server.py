@@ -12,6 +12,7 @@ from .constants import (
     CONF_DEBUG_EVENTS,
     CONF_ENFORCE_AUDIENCE,
     CONF_EXTRA_ALLOWED_ORIGINS,
+    CONF_LEAN_ADMIN_SCHEMA,
     CONF_MOUNT_PATH,
     CONF_REQUIRE_AUTH,
     CONF_REQUIRE_CONFIRMATION,
@@ -96,6 +97,73 @@ class MCPServerRuntime:
                 await self.stop()
             raise
 
+    async def stop(self) -> None:
+        """Unregister the HTTP route and drop references."""
+        if self._event_buffer is not None:
+            try:
+                self._event_buffer.stop()
+            finally:
+                self._event_buffer = None
+        if self._unmount is not None:
+            try:
+                await self._unmount()
+            except Exception:
+                self._logger.exception("Failed to unregister MCP route")
+            self._unmount = None
+        if getattr(self, "_unmount_well_known", None) is not None:
+            try:
+                self._unmount_well_known()  # type: ignore[misc, unused-ignore]
+            except Exception:
+                self._logger.exception("Failed to unregister well-known route")
+            self._unmount_well_known = None
+        if getattr(self, "_unmount_connect", None) is not None:
+            try:
+                self._unmount_connect()  # type: ignore[misc, unused-ignore]
+            except Exception:
+                self._logger.exception("Failed to unregister Connect Wizard route")
+            self._unmount_connect = None
+        self._mcp = None
+
+    async def apply_permission_change(
+        self, new_config: ProviderConfig, changed_keys: set[str]
+    ) -> None:
+        """
+        Hot-swap the allowed-tag set, or restart when resources are involved.
+
+        Resource toggles (``CONF_RES_*``) require a rebuild because resource
+        registration is decided at :meth:`start` time; permission flags flip the
+        tag set in the closure read by :class:`TagFilterMiddleware` and take
+        effect on the next request without a restart.
+
+        :param new_config: the new provider config; assigned to ``self._config``
+            before any restart so ``start`` reads the updated values.
+        :param changed_keys: keys that changed (already stripped of any
+            ``values/`` prefix by the caller). MA mutates ``ProviderConfig``
+            in place during ``config.update(values)``, so re-diffing ``old`` vs
+            ``new`` here would always be empty — the caller's set is the only
+            reliable signal.
+        """
+        from .constants import CONF_META_TOOL_DISCOVERY, PERMISSION_KEYS  # noqa: PLC0415
+
+        # ``set().issubset(...)`` is True, so an empty ``changed_keys`` (no-op
+        # call) classifies as permission-only and skips a pointless restart.
+        # The meta-discovery flag rides the same path: the transform reads it
+        # through a closure over ``_config``, so assigning the new config below
+        # is the entire swap.
+        permission_only = changed_keys.issubset(PERMISSION_KEYS | {CONF_META_TOOL_DISCOVERY})
+
+        self._config = new_config
+        if permission_only and hasattr(self, "_allowed_tags"):
+            self._allowed_tags = {str(t) for t in enabled_tags(new_config)}
+            self._logger.debug(
+                "MCP runtime: hot-swapped tag filter to %d tags",
+                len(self._allowed_tags),
+            )
+            return
+
+        await self.stop()
+        await self.start()
+
     async def _start_impl(self) -> None:
         """Mount the runtime; see :meth:`start` for the public-facing wrapper."""
         from fastmcp import FastMCP  # noqa: PLC0415
@@ -144,9 +212,16 @@ class MCPServerRuntime:
         )
 
         require_confirmation = bool(self._config.get_value(CONF_REQUIRE_CONFIRMATION) or False)
+        lean_admin_schema = bool(self._config.get_value(CONF_LEAN_ADMIN_SCHEMA) or False)
+        from .tags import Tag  # noqa: PLC0415
+
         mcp.mount(build_library_server(self._mass), namespace="library")
         mcp.mount(
-            build_queue_server(self._mass, require_confirmation=require_confirmation),
+            build_queue_server(
+                self._mass,
+                require_confirmation=require_confirmation,
+                delete_queue_enabled=Tag.DELETE_QUEUE in enabled_tags(self._config),
+            ),
             namespace="queue",
         )
         mcp.mount(build_playback_server(self._mass), namespace="playback")
@@ -162,15 +237,9 @@ class MCPServerRuntime:
         )
         mcp.mount(build_metadata_server(self._mass), namespace="metadata")
 
-        from .debug.event_buffer import EventBuffer  # noqa: PLC0415
-        from .tags import Tag  # noqa: PLC0415
         from .tools import build_debug_server  # noqa: PLC0415
 
-        if bool(self._config.get_value(CONF_DEBUG_EVENTS)):
-            cap_value = self._config.get_value(CONF_DEBUG_EVENT_BUFFER_CAPACITY)
-            capacity = int(cap_value) if isinstance(cap_value, int | float | str) else 500
-            self._event_buffer = EventBuffer(self._mass, capacity=capacity)
-            self._event_buffer.start()
+        self._maybe_start_event_buffer()
 
         mcp.mount(
             build_debug_server(
@@ -179,6 +248,7 @@ class MCPServerRuntime:
                 event_buffer=self._event_buffer,
                 logs_enabled=Tag.DEBUG_LOGS in enabled_tags(self._config),
                 reload_lock=self._reload_lock,
+                lean_schema=lean_admin_schema,
             ),
             namespace="debug",
         )
@@ -193,6 +263,7 @@ class MCPServerRuntime:
                 secret_writes_enabled=lambda: bool(
                     self._config.get_value(CONF_CONFIG_WRITE_SECRET)
                 ),
+                lean_schema=lean_admin_schema,
             ),
             namespace="config",
         )
@@ -201,6 +272,7 @@ class MCPServerRuntime:
         register_prompts(mcp, self._config)
 
         self._apply_tag_filter(mcp, enabled_tags(self._config))
+        self._register_meta_discovery(mcp)
 
         self._mcp = mcp
         extra_origins = str(self._config.get_value(CONF_EXTRA_ALLOWED_ORIGINS) or "")
@@ -248,69 +320,28 @@ class MCPServerRuntime:
             len(enabled_tags(self._config)),
         )
 
-    async def stop(self) -> None:
-        """Unregister the HTTP route and drop references."""
-        if self._event_buffer is not None:
-            try:
-                self._event_buffer.stop()
-            finally:
-                self._event_buffer = None
-        if self._unmount is not None:
-            try:
-                await self._unmount()
-            except Exception:
-                self._logger.exception("Failed to unregister MCP route")
-            self._unmount = None
-        if getattr(self, "_unmount_well_known", None) is not None:
-            try:
-                self._unmount_well_known()  # type: ignore[misc, unused-ignore]
-            except Exception:
-                self._logger.exception("Failed to unregister well-known route")
-            self._unmount_well_known = None
-        if getattr(self, "_unmount_connect", None) is not None:
-            try:
-                self._unmount_connect()  # type: ignore[misc, unused-ignore]
-            except Exception:
-                self._logger.exception("Failed to unregister Connect Wizard route")
-            self._unmount_connect = None
-        self._mcp = None
+    def _maybe_start_event_buffer(self) -> None:
+        """Start the debug event buffer when the ``debug_events`` flag is on."""
+        from .debug.event_buffer import EventBuffer  # noqa: PLC0415
 
-    async def apply_permission_change(
-        self, new_config: ProviderConfig, changed_keys: set[str]
-    ) -> None:
-        """
-        Hot-swap the allowed-tag set, or restart when resources are involved.
-
-        Resource toggles (``CONF_RES_*``) require a rebuild because resource
-        registration is decided at :meth:`start` time; permission flags flip the
-        tag set in the closure read by :class:`TagFilterMiddleware` and take
-        effect on the next request without a restart.
-
-        :param new_config: the new provider config; assigned to ``self._config``
-            before any restart so ``start`` reads the updated values.
-        :param changed_keys: keys that changed (already stripped of any
-            ``values/`` prefix by the caller). MA mutates ``ProviderConfig``
-            in place during ``config.update(values)``, so re-diffing ``old`` vs
-            ``new`` here would always be empty — the caller's set is the only
-            reliable signal.
-        """
-        from .constants import PERMISSION_KEYS  # noqa: PLC0415
-
-        # ``set().issubset(...)`` is True, so an empty ``changed_keys`` (no-op
-        # call) classifies as permission-only and skips a pointless restart.
-        permission_only = changed_keys.issubset(PERMISSION_KEYS)
-
-        self._config = new_config
-        if permission_only and hasattr(self, "_allowed_tags"):
-            self._allowed_tags = {str(t) for t in enabled_tags(new_config)}
-            self._logger.debug(
-                "MCP runtime: hot-swapped tag filter to %d tags",
-                len(self._allowed_tags),
-            )
+        if not bool(self._config.get_value(CONF_DEBUG_EVENTS)):
             return
+        cap_value = self._config.get_value(CONF_DEBUG_EVENT_BUFFER_CAPACITY)
+        capacity = int(cap_value) if isinstance(cap_value, int | float | str) else 500
+        self._event_buffer = EventBuffer(self._mass, capacity=capacity)
+        self._event_buffer.start()
 
-        await self.stop()
-        await self.start()
+    def _register_meta_discovery(self, mcp: Any) -> None:
+        """Install the opt-in simplified tool discovery (meta-tool) layer."""
+        from .constants import CONF_META_TOOL_DISCOVERY  # noqa: PLC0415
+        from .meta_discovery import register_meta_discovery  # noqa: PLC0415
+
+        register_meta_discovery(
+            mcp,
+            enabled=lambda: bool(self._config.get_value(CONF_META_TOOL_DISCOVERY)),
+            allowed_tags_provider=lambda: self._allowed_tags,
+            lookup_component_tags=build_tag_lookup(mcp),
+        )
 
     def _apply_tag_filter(self, mcp: Any, allowed: set[Any]) -> None:
         """Install the tag-filter middleware on the given FastMCP server."""

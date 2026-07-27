@@ -11,7 +11,8 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 import chromaprint
 import numpy as np
-from music_assistant_models.enums import ExternalID, MediaType, StreamType
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, ExternalID, MediaType, StreamType
 from music_assistant_models.errors import (
     MusicAssistantError,
     RateLimited,
@@ -94,6 +95,38 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         """Initialize the provider with an empty per-session state container."""
         super().__init__(mass, manifest, config, supported_features)
         self._data: dict[str, _AcoustidSessionData] = {}
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return config entries for this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_API_KEY,
+                type=ConfigEntryType.SECURE_STRING,
+                required=False,
+                default_value=None,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_MIN_SCORE,
+                type=ConfigEntryType.FLOAT,
+                default_value=DEFAULT_MIN_SCORE,
+                range=(0, 1),
+                required=False,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_ANALYSE_STREAMING,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_WRITE_TAGS_BACK,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+            ),
+        )
 
     async def process_pcm_chunk(self, session_id: str, pcm_chunk: bytes) -> None:
         """
@@ -515,7 +548,8 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
             media_type=streamdetails.media_type,
         )
 
-    @use_cache(ACOUSTID_LOOKUP_CACHE_TTL)
+    # None can signal an auth/bad-request failure as well as "no match", so don't cache it
+    @use_cache(ACOUSTID_LOOKUP_CACHE_TTL, cache_none=False)
     @throttle_with_retries
     async def _lookup(self, api_key: str, fingerprint: str, duration: int) -> dict[str, Any] | None:
         """

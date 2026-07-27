@@ -12,6 +12,12 @@
       "description": "How should this AirPlay receiver be named in the AirPlay device list?"
     }
   },
+  "setup_flow": {
+    "user": {
+      "title": "Configure AirPlay Receiver",
+      "description": "Choose the player that receives AirPlay audio and the name advertised to AirPlay devices."
+    }
+  },
   "manifest": {
     "description": "Receive AirPlay audio streams and use them as a source in Music Assistant."
   }

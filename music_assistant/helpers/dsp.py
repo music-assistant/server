@@ -1,14 +1,20 @@
 """Helper functions for DSP filters."""
 
 import math
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from music_assistant_models.dsp import (
     AudioChannel,
+    BalanceFilter,
     DSPFilter,
+    GainFilter,
+    HighLowPassFilter,
+    HighLowPassMode,
     ParametricEQBandType,
     ParametricEQFilter,
     ToneControlFilter,
+    TransposeFilter,
 )
 
 if TYPE_CHECKING:
@@ -17,12 +23,31 @@ if TYPE_CHECKING:
 # ruff: noqa: PLR0915
 
 
+@dataclass(slots=True)
+class ComplexFilter:
+    """
+    A DSP filter fragment that pulls in one or more extra source inputs.
+
+    Represents a chain entry that cannot be expressed as a plain single-input
+    filter string, such as an FFmpeg ``afir`` convolution that needs an
+    impulse-response input.
+
+    :param body: The filter consuming the main input followed by each source in
+        order (e.g. "afir=gtype=gn").
+    :param sources: Sub-chains that each produce one extra input for ``body``
+        (e.g. "amovie='/x/ir.wav',aresample=48000").
+    """
+
+    body: str
+    sources: list[str] = field(default_factory=list)
+
+
 def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) -> list[str]:
     """
     Convert a DSP filter model to FFmpeg filter parameters.
 
     Args:
-        dsp_filter: DSP filter configuration (ParametricEQ or ToneControl)
+        dsp_filter: DSP filter configuration
         input_format: Audio format containing sample rate
 
     Returns:
@@ -105,26 +130,12 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
                     f"biquad=b0={b0}:b1={b1}:b2={b2}:a0={a0}:a1={a1}:a2={a2}{channels}"
                 )
             elif b.type == ParametricEQBandType.HIGH_PASS:
-                b0 = (1 + math.cos(w_0)) / 2
-                b1 = -(1 + math.cos(w_0))
-                b2 = (1 + math.cos(w_0)) / 2
-                a0 = 1 + alpha
-                a1 = -2 * math.cos(w_0)
-                a2 = 1 - alpha
-
                 filter_params.append(
-                    f"biquad=b0={b0}:b1={b1}:b2={b2}:a0={a0}:a1={a1}:a2={a2}{channels}"
+                    _pass_biquad_params(high_pass=True, w_0=w_0, alpha=alpha, channels=channels)
                 )
             elif b.type == ParametricEQBandType.LOW_PASS:
-                b0 = (1 - math.cos(w_0)) / 2
-                b1 = 1 - math.cos(w_0)
-                b2 = (1 - math.cos(w_0)) / 2
-                a0 = 1 + alpha
-                a1 = -2 * math.cos(w_0)
-                a2 = 1 - alpha
-
                 filter_params.append(
-                    f"biquad=b0={b0}:b1={b1}:b2={b2}:a0={a0}:a1={a1}:a2={a2}{channels}"
+                    _pass_biquad_params(high_pass=False, w_0=w_0, alpha=alpha, channels=channels)
                 )
             elif b.type == ParametricEQBandType.NOTCH:
                 b0 = 1
@@ -151,5 +162,64 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
             filter_params.append(
                 f"equalizer=frequency=9000:width=18000:width_type=h:gain={dsp_filter.treble_level}"
             )
+    if isinstance(dsp_filter, GainFilter) and dsp_filter.gain != 0:
+        filter_params.append(f"volume={dsp_filter.gain}dB")
+    if isinstance(dsp_filter, BalanceFilter) and dsp_filter.balance != 0:
+        # balance is a stereo operation; on a non-stereo source the FL/FR pan
+        # expression would output silence, so only apply it to stereo streams
+        if input_format.channels == 2:
+            # attenuate only the channel opposite the slider direction, so there is
+            # no positive gain and thus no clipping risk
+            attenuation = (100 - abs(dsp_filter.balance)) / 100
+            if dsp_filter.balance > 0:
+                filter_params.append(f"pan=stereo|FL={attenuation}*FL|FR=FR")
+            else:
+                filter_params.append(f"pan=stereo|FL=FL|FR={attenuation}*FR")
+    if isinstance(dsp_filter, TransposeFilter) and dsp_filter.semitones != 0:
+        # rubberband expects a frequency ratio rather than a number of semitones
+        pitch = 2 ** (dsp_filter.semitones / 12)
+        # preserving formants keeps voices natural instead of chipmunk-like; revisit
+        # these quality options if they prove too costly on low powered hardware
+        filter_params.append(
+            f"rubberband=pitch={pitch}:formant=preserved:pitchq=quality:window=long"
+        )
+
+    if isinstance(dsp_filter, HighLowPassFilter):
+        # A high/low-pass of a given slope is a cascade of second-order Butterworth
+        # sections, each adding 12 dB/octave, at the same cutoff but different Q.
+        # slope is validated to 12, 24 or 48 dB/octave, so order is 2, 4 or 8.
+        high_pass = dsp_filter.mode == HighLowPassMode.HIGH_PASS
+        order = dsp_filter.slope // 6
+        w_0 = 2 * math.pi * dsp_filter.frequency / input_format.sample_rate
+        sin_w0 = math.sin(w_0)
+        for section in range(order // 2):
+            # Butterworth pole Q for this section
+            q = 1 / (2 * math.cos(math.pi * (2 * section + 1) / (2 * order)))
+            alpha = sin_w0 / (2 * q)
+            filter_params.append(_pass_biquad_params(high_pass=high_pass, w_0=w_0, alpha=alpha))
 
     return filter_params
+
+
+def _pass_biquad_params(*, high_pass: bool, w_0: float, alpha: float, channels: str = "") -> str:
+    """
+    Build the FFmpeg biquad parameters for one high-pass or low-pass section.
+
+    :param high_pass: True for a high-pass section, False for a low-pass section.
+    :param w_0: Normalised angular cutoff frequency, 2*pi*frequency/sample_rate.
+    :param alpha: Cookbook alpha term, sin(w_0)/(2*Q).
+    :param channels: Optional FFmpeg channel selector suffix, e.g. ":c=FL".
+    """
+    cos_w0 = math.cos(w_0)
+    if high_pass:
+        b0 = (1 + cos_w0) / 2
+        b1 = -(1 + cos_w0)
+        b2 = (1 + cos_w0) / 2
+    else:
+        b0 = (1 - cos_w0) / 2
+        b1 = 1 - cos_w0
+        b2 = (1 - cos_w0) / 2
+    a0 = 1 + alpha
+    a1 = -2 * cos_w0
+    a2 = 1 - alpha
+    return f"biquad=b0={b0}:b1={b1}:b2={b2}:a0={a0}:a1={a1}:a2={a2}{channels}"

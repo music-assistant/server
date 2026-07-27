@@ -29,11 +29,10 @@ jobs:
   apply_label:
     name: Apply
     runs-on: ubuntu-latest
-    # GitHub-typed bots (Dependabot, etc.) don't follow the PR
-    # template and apply their own labels — skip them outright.
-    # PAT-driven service accounts (e.g. music-assistant-machine)
-    # report user.type == 'User', so we additionally skip below
-    # whenever the PR already carries a known-set label.
+    # GitHub-typed bots (Dependabot, musicassistant-bot[bot], etc.)
+    # don't follow the PR template and apply their own labels, so
+    # skip them outright. Trusted automation can also pre-apply a
+    # known-set label; those PRs are handled below.
     if: github.event.pull_request.user.type != 'Bot'
     steps:
       - name: 🏷 Apply label from PR description checkbox

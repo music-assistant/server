@@ -39,7 +39,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 34
+API_SCHEMA_VERSION: Final[int] = 41
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -87,6 +87,8 @@ MASS_LOGO: Final[str] = str(RESOURCES_DIR.joinpath("logo.png"))
 # config keys
 CONF_ONBOARD_DONE: Final[str] = "onboard_done"
 CONF_SERVER_ID: Final[str] = "server_id"
+CONF_ENCRYPTION_KEY: Final[str] = "encryption_key"
+CONF_ENCRYPTION_KEY_MIGRATED: Final[str] = "encryption_key_migrated"
 CONF_IP_ADDRESS: Final[str] = "ip_address"
 CONF_PORT: Final[str] = "port"
 CONF_PROVIDERS: Final[str] = "providers"
@@ -99,7 +101,6 @@ CONF_USERNAME: Final[str] = "username"
 CONF_PASSWORD: Final[str] = "password"
 CONF_VOLUME_NORMALIZATION: Final[str] = "volume_normalization"
 CONF_VOLUME_NORMALIZATION_TARGET: Final[str] = "volume_normalization_target"
-CONF_OUTPUT_LIMITER: Final[str] = "output_limiter"
 CONF_PLAYER_DSP: Final[str] = "player_dsp"
 CONF_PLAYER_DSP_PRESETS: Final[str] = "player_dsp_presets"
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
@@ -111,6 +112,7 @@ CONF_CROSSFADE_DURATION: Final[str] = "crossfade_duration"
 CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
+WILDCARD_BIND_IPS: Final[tuple[str, ...]] = ("0.0.0.0", "::")
 CONF_AUTO_PLAY: Final[str] = "auto_play"
 CONF_PLAY_MEDIA_OVERRIDES_GROUP: Final[str] = "play_media_overrides_group"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
@@ -206,6 +208,7 @@ DB_TABLE_CACHE: Final[str] = "cache"
 DB_TABLE_SETTINGS: Final[str] = "settings"
 DB_TABLE_THUMBS: Final[str] = "thumbnails"
 DB_TABLE_PROVIDER_MAPPINGS: Final[str] = "provider_mappings"
+DB_TABLE_EXTERNAL_ID_LOOKUP: Final[str] = "external_id_lookup"
 DB_TABLE_ALBUM_TRACKS: Final[str] = "album_tracks"
 DB_TABLE_TRACK_ARTISTS: Final[str] = "track_artists"
 DB_TABLE_ALBUM_ARTISTS: Final[str] = "album_artists"
@@ -216,6 +219,19 @@ DB_TABLE_AUDIO_ANALYSIS_FAILURES: Final[str] = "audio_analysis_failures"
 DB_TABLE_GENRES: Final[str] = "genres"
 DB_TABLE_GENRE_MEDIA_ITEM_MAPPING: Final[str] = "genre_media_item_mapping"
 DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION: Final[str] = "genre_media_item_exclusion"
+
+# all media item tables, each of which has a search_name column
+# backed by a {table}_fts FTS5 index table
+MEDIA_ITEM_DB_TABLES: Final[tuple[str, ...]] = (
+    DB_TABLE_ARTISTS,
+    DB_TABLE_ALBUMS,
+    DB_TABLE_TRACKS,
+    DB_TABLE_PLAYLISTS,
+    DB_TABLE_RADIOS,
+    DB_TABLE_AUDIOBOOKS,
+    DB_TABLE_PODCASTS,
+    DB_TABLE_GENRES,
+)
 
 # Min fraction of a database file reclaimable before a startup VACUUM is worth running.
 VACUUM_MIN_RECLAIM_RATIO: Final[float] = 0.2
@@ -287,6 +303,7 @@ CONFIGURABLE_CORE_CONTROLLERS = (
     "cache",
     "music",
     "player_queues",
+    "tasks",
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
 PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music", "deezer")
@@ -310,8 +327,21 @@ CONF_ENTRY_LOG_LEVEL = ConfigEntry(
     requires_reload=False,  # applied dynamically via _set_logger()
 )
 
+CONF_MAX_CONCURRENT_TASKS = "max_concurrent_tasks"
+CONF_ENTRY_MAX_CONCURRENT_TASKS = ConfigEntry(
+    key=CONF_MAX_CONCURRENT_TASKS,
+    type=ConfigEntryType.INTEGER,
+    range=(1, 10),
+    default_value=2,
+    advanced=True,
+    requires_reload=False,
+)
+
 DEFAULT_PROVIDER_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
-DEFAULT_CORE_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
+DEFAULT_CORE_CONFIG_ENTRIES = (
+    CONF_ENTRY_LOG_LEVEL,
+    CONF_ENTRY_MAX_CONCURRENT_TASKS,
+)
 
 # some reusable player config entries
 
@@ -342,6 +372,7 @@ CONF_ENTRY_FLOW_MODE_SAMPLE_RATE = ConfigEntry(
         ConfigValueOption(FLOW_MODE_SAMPLE_RATE_HIGHEST),
     ],
     default_value=FLOW_MODE_SAMPLE_RATE_SMART,
+    depends_on=CONF_FLOW_MODE,
     category="protocol_generic",
     advanced=True,
     requires_reload=True,
@@ -411,16 +442,6 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     advanced=True,
     requires_reload=True,
 )
-
-CONF_ENTRY_OUTPUT_LIMITER = ConfigEntry(
-    key=CONF_OUTPUT_LIMITER,
-    type=ConfigEntryType.BOOLEAN,
-    default_value=True,
-    category="playback",
-    advanced=True,
-    requires_reload=True,
-)
-
 
 # Note: the crossfade_mode select entry (standard/smart) is built dynamically in the config
 # controller because its options and default depend on smart fades availability.
@@ -969,6 +990,9 @@ DEFAULT_PROVIDERS: Final[set[tuple[str, bool]]] = {
     ("smart_fades", False),
     ("lastfm_recommendations", False),
     ("playlist_metadata", False),
+    # ambient_sounds provides out-of-the-box sound effects (e.g. for the queue
+    # audio overlay feature) at zero resource cost until actually used
+    ("ambient_sounds", False),
 }
 
 EXTERNAL_SOURCES: Final[set[str]] = {
@@ -1021,3 +1045,5 @@ EXTERNAL_SOURCES: Final[set[str]] = {
     # external (hass_players)
     "external",
 }
+
+COLLECTION_ITEM_ID_SEPARATOR = "___"

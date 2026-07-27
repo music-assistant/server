@@ -101,6 +101,25 @@ def test_duplicates_spread_not_bursted() -> None:
         assert all(positions[i + 1] - positions[i] >= 2 for i in range(len(positions) - 1))
 
 
+def test_duplicate_rounds_have_independent_order() -> None:
+    """Equally frequent songs do not repeat the same sequence on every pass."""
+    song_ids = ("a", "b", "c", "d", "e")
+    items = [
+        _item(song_id, artist=song_id, qiid=f"{song_id}-{copy}")
+        for song_id in song_ids
+        for copy in range(4)
+    ]
+    random.seed(0)
+    result = _arrange(items, _snapshot(), RecencyWindows())
+    sequence = [_song_id(item) for item in result]
+    rounds = [
+        tuple(sequence[offset : offset + len(song_ids)])
+        for offset in range(0, len(sequence), len(song_ids))
+    ]
+    assert all(set(round_) == set(song_ids) for round_ in rounds)
+    assert len(set(rounds)) > 1
+
+
 def test_recent_singletons_pushed_to_back() -> None:
     """Recently-played singletons sort behind fresh ones."""
     recent = [_item(f"r{i}", artist=f"R{i}") for i in range(6)]

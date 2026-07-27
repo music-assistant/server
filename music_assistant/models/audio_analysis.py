@@ -1,10 +1,14 @@
 """
 Data model for audio analysis results stored by Audio Analysis providers.
 
-Stays server-local: the numpy.ndarray fields below would force numpy as an
-upstream dep on every consumer of music_assistant_models if this module moved.
-The lightweight AudioAnalysisCoverage shape lives upstream at
-music_assistant_models.audio_analysis instead.
+Stays server-local: the lightweight AudioAnalysisCoverage shape lives upstream
+at music_assistant_models.audio_analysis; this fuller model is only needed by the
+server-side providers and stream controllers that produce and consume it.
+
+The rhythm/spectral fields are plain float lists, not numpy arrays, so importing
+this model never pulls in numpy. The compute code that needs array math (smart
+fades, sonic analysis) converts to numpy at the point of use — keeping numpy off
+every install that only does e.g. loudness normalization.
 """
 
 from __future__ import annotations
@@ -13,10 +17,7 @@ from dataclasses import dataclass, fields
 from datetime import datetime
 from typing import Any
 
-import numpy as np
-import numpy.typing as npt
 from mashumaro import DataClassDictMixin
-from mashumaro.config import BaseConfig
 
 
 class AudioAnalysisError(Exception):
@@ -61,10 +62,10 @@ class AudioAnalysisData(DataClassDictMixin):
 
     # Beats per minute.
     bpm: float | None = None
-    # Array of beat positions in seconds.
-    beats: npt.NDArray[np.float32] | None = None
-    # Array of downbeat (bar start) positions in seconds.
-    downbeats: npt.NDArray[np.float32] | None = None
+    # Beat positions in seconds. Convert to a numpy array for array math.
+    beats: list[float] | None = None
+    # Downbeat (bar start) positions in seconds. Convert to a numpy array for array math.
+    downbeats: list[float] | None = None
     # Number of beats in each bar indicating time signature, e.g. 3 for 3/4 waltz, 4 for 4/4 common time.
     beats_per_bar: int | None = None
 
@@ -77,10 +78,10 @@ class AudioAnalysisData(DataClassDictMixin):
 
     # Spectral & Energy (fixed 1800 bins covering track duration)
 
-    # RMS energy, normalized 0.0-1.0. Fixed 1800 bins.
-    rms_energy: npt.NDArray[np.float32] | None = None
-    # Spectral centroid in Hz. Fixed 1800 bins.
-    spectral_centroid: npt.NDArray[np.float32] | None = None
+    # RMS energy, normalized 0.0-1.0. Fixed 1800 bins. Convert to a numpy array for array math.
+    rms_energy: list[float] | None = None
+    # Spectral centroid in Hz. Fixed 1800 bins. Convert to a numpy array for array math.
+    spectral_centroid: list[float] | None = None
 
     # High-Level Descriptors (all normalized 0.0-1.0)
 
@@ -113,14 +114,6 @@ class AudioAnalysisData(DataClassDictMixin):
 
     # Catch-all dict for provider-specific data
     extra_data: dict[str, Any] | None = None
-
-    class Config(BaseConfig):  # noqa: D106
-        serialization_strategy = {  # noqa: RUF012  # mashumaro Config attr; ClassVar conflicts with BaseConfig
-            np.ndarray: {
-                "serialize": lambda x: x.tolist(),
-                "deserialize": lambda x: np.asarray(x, dtype=np.float32),
-            }
-        }
 
     def update(self, new_values: AudioAnalysisData) -> AudioAnalysisData:
         """Merge new analysis data (in-place). Latest-write-wins for non-None fields."""

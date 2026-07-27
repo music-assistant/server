@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any, cast, overload
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueType,
@@ -40,7 +41,7 @@ class CoreConfigMixin:
 
         def save(self, immediate: bool = False) -> None: ...  # noqa: D102
 
-    @api_command("config/core")
+    @api_command("config/core", required_scope=Scope.CONFIG_CORE_READ)
     async def get_core_configs(self, include_values: bool = False) -> list[CoreConfig]:
         """Return all core controllers config options."""
         return [
@@ -56,7 +57,7 @@ class CoreConfigMixin:
             for core_controller in CONFIGURABLE_CORE_CONTROLLERS
         ]
 
-    @api_command("config/core/get")
+    @api_command("config/core/get", required_scope=Scope.CONFIG_CORE_READ)
     async def get_core_config(self, domain: str) -> CoreConfig:
         """Return configuration for a single core controller."""
         raw_conf = self.get(f"{CONF_CORE}/{domain}", {})
@@ -100,7 +101,7 @@ class CoreConfigMixin:
         return_type: None = ...,
     ) -> ConfigValueType: ...
 
-    @api_command("config/core/get_value")
+    @api_command("config/core/get_value", required_scope=Scope.CONFIG_CORE_READ)
     async def get_core_config_value(
         self,
         domain: str,
@@ -135,35 +136,32 @@ class CoreConfigMixin:
             else conf.values[key].default_value
         )
 
-    @api_command("config/core/get_entries")
-    async def get_core_config_entries(
-        self,
-        domain: str,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    @api_command("config/core/get_entries", required_scope=Scope.CONFIG_CORE_READ)
+    async def get_core_config_entries(self, domain: str) -> list[ConfigEntry]:
         """
         Return Config entries to configure a core controller.
 
-        core_controller: name of the core controller
-        action: [optional] action key called from config entries UI.
-        values: the (intermediate) raw values for config entries sent with the action.
+        :param domain: The core controller domain.
         """
         controller: CoreController = getattr(self.mass, domain)
-        all_entries = list(
-            await controller.get_config_entries(action=action, values=values)
-            + DEFAULT_CORE_CONFIG_ENTRIES
+        return await self._resolve_core_config_entries(
+            domain, await controller.get_config_entries()
         )
-        if domain == CONF_PLAYER_QUEUES:
-            # populate the global autoplay playlist dropdown for the UI here (not in get_core_config),
-            # so the config value/parse path stays free of a library lookup
-            playlist_options = await self.mass.config._library_playlist_options()
-            for entry in all_entries:
-                if entry.key == CONF_AUTOPLAY_PLAYLIST:
-                    entry.options = playlist_options
-        return _with_translation_owner(all_entries, f"core.{domain}", action, values)
 
-    @api_command("config/core/save", required_role="admin")
+    @api_command("config/core/invoke_action", required_scope=Scope.CONFIG_CORE_WRITE)
+    async def invoke_core_config_action(self, domain: str, action: str) -> list[ConfigEntry]:
+        """
+        Run a one-shot action button from a core module's config and return the entries.
+
+        :param domain: The core controller domain.
+        :param action: The action id of the pressed button.
+        """
+        controller: CoreController = getattr(self.mass, domain)
+        return await self._resolve_core_config_entries(
+            domain, await controller.handle_config_action(action)
+        )
+
+    @api_command("config/core/save", required_scope=Scope.CONFIG_CORE_WRITE)
     async def save_core_config(
         self,
         domain: str,
@@ -242,3 +240,17 @@ class CoreConfigMixin:
         controller = getattr(self.mass, core_module, None)
         if (config := getattr(controller, "config", None)) and (entry := config.values.get(key)):
             entry.value = value
+
+    async def _resolve_core_config_entries(
+        self, domain: str, entries: tuple[ConfigEntry, ...]
+    ) -> list[ConfigEntry]:
+        """Append the server default entries, resolve dynamic options and stamp the owner."""
+        all_entries = list(entries + DEFAULT_CORE_CONFIG_ENTRIES)
+        if domain == CONF_PLAYER_QUEUES:
+            # populate the global autoplay playlist dropdown for the UI here (not in get_core_config),
+            # so the config value/parse path stays free of a library lookup
+            playlist_options = await self.mass.config._library_playlist_options()
+            for entry in all_entries:
+                if entry.key == CONF_AUTOPLAY_PLAYLIST:
+                    entry.options = playlist_options
+        return _with_translation_owner(all_entries, f"core.{domain}")

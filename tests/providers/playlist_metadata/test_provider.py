@@ -91,6 +91,23 @@ def _make_track_with_image(track_id: str, image_url: str) -> Track:
     )
 
 
+def _make_track_with_genres(track_id: str, genres: set[str]) -> Track:
+    """Create a test track with genres."""
+    return Track(
+        item_id=track_id,
+        provider="test_provider",
+        name=f"Track {track_id}",
+        provider_mappings={
+            ProviderMapping(
+                item_id=track_id,
+                provider_domain="test_provider",
+                provider_instance="test",
+            )
+        },
+        metadata=MediaItemMetadata(genres=genres),
+    )
+
+
 @pytest.mark.asyncio
 async def test_get_playlist_metadata_returns_none_when_insufficient_images(
     tmp_path: Any,
@@ -324,3 +341,319 @@ async def test_is_our_image_recognizes_own_images(
         remotely_accessible=False,
     )
     assert provider._is_our_image(builtin_asset) is False
+
+
+@pytest.mark.asyncio
+async def test_analyze_playlist_genres_returns_most_common_genres(
+    tmp_path: Any,
+) -> None:
+    """Provider should return the most common genres from playlist tracks."""
+    provider = _make_provider(tmp_path)
+    await provider.handle_async_init()
+
+    # Override config to enable genre detection
+    provider.config.get_value = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda key: {
+            CONF_LOG_LEVEL: "GLOBAL",
+            "template": "album_grid",
+            "skip_provider_playlists": False,
+            "enable_genre_detection": True,
+            "genre_min_threshold": 10,
+            "genre_max_count": 3,
+        }.get(key)
+    )
+
+    playlist = _make_playlist()
+
+    # Create tracks with genres:
+    # Rock: 15/26 = 57.7%
+    # Pop: 5/26 = 19.2%
+    # Jazz: 3/26 = 11.5% (above threshold)
+    # Electronic: 2/26 = 7.7% (below 10% threshold)
+    # Classical: 1/26 = 3.8% (below threshold)
+    tracks = (
+        [_make_track_with_genres(f"track{i}", {"Rock"}) for i in range(15)]
+        + [_make_track_with_genres(f"track{i}", {"Pop"}) for i in range(15, 20)]
+        + [_make_track_with_genres(f"track{i}", {"Jazz"}) for i in range(20, 23)]
+        + [_make_track_with_genres(f"track{i}", {"Electronic"}) for i in range(23, 25)]
+        + [_make_track_with_genres(f"track{i}", {"Classical"}) for i in range(25, 26)]
+    )
+
+    async def mock_tracks_iter(
+        _item_id: str,
+        _provider: str,
+        _force_refresh: bool = False,
+        _allow_dynamic_tracks: bool = False,
+    ) -> AsyncGenerator[Track]:
+        for track in tracks:
+            yield track
+
+    with patch.object(provider.mass.music.playlists, "tracks", side_effect=mock_tracks_iter):
+        result = await provider._analyze_playlist_genres(playlist)
+
+    assert result is not None
+    # Should return top 3 genres above 10% threshold
+    assert result == {"Rock", "Pop", "Jazz"}
+
+
+@pytest.mark.asyncio
+async def test_analyze_playlist_genres_respects_threshold(
+    tmp_path: Any,
+) -> None:
+    """Provider should filter out genres below the minimum threshold."""
+    provider = _make_provider(tmp_path)
+    await provider.handle_async_init()
+
+    # Override config with higher threshold
+    provider.config.get_value = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda key: {
+            CONF_LOG_LEVEL: "GLOBAL",
+            "enable_genre_detection": True,
+            "genre_min_threshold": 30,  # 30% threshold
+            "genre_max_count": 5,
+        }.get(key)
+    )
+
+    playlist = _make_playlist()
+
+    # Rock: 10/20 = 50% (above threshold)
+    # Pop: 5/20 = 25% (below threshold)
+    tracks = (
+        [_make_track_with_genres(f"track{i}", {"Rock"}) for i in range(10)]
+        + [_make_track_with_genres(f"track{i}", {"Pop"}) for i in range(10, 15)]
+        + [_make_track_with_genres(f"track{i}", set()) for i in range(15, 20)]
+    )
+
+    async def mock_tracks_iter(
+        _item_id: str,
+        _provider: str,
+        _force_refresh: bool = False,
+        _allow_dynamic_tracks: bool = False,
+    ) -> AsyncGenerator[Track]:
+        for track in tracks:
+            yield track
+
+    with patch.object(provider.mass.music.playlists, "tracks", side_effect=mock_tracks_iter):
+        result = await provider._analyze_playlist_genres(playlist)
+
+    assert result is not None
+    assert result == {"Rock"}  # Only Rock meets the 30% threshold
+
+
+@pytest.mark.asyncio
+async def test_analyze_playlist_genres_returns_none_for_empty_playlist(
+    tmp_path: Any,
+) -> None:
+    """Provider should return None when playlist has no tracks."""
+    provider = _make_provider(tmp_path)
+    await provider.handle_async_init()
+
+    provider.config.get_value = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda key: {
+            "enable_genre_detection": True,
+            "genre_min_threshold": 10,
+            "genre_max_count": 3,
+        }.get(key)
+    )
+
+    playlist = _make_playlist()
+
+    async def mock_tracks_iter(
+        _item_id: str,
+        _provider: str,
+        _force_refresh: bool = False,
+        _allow_dynamic_tracks: bool = False,
+    ) -> AsyncGenerator[Track]:
+        if False:  # pragma: no cover
+            yield  # type: ignore[unreachable]
+
+    with patch.object(provider.mass.music.playlists, "tracks", side_effect=mock_tracks_iter):
+        result = await provider._analyze_playlist_genres(playlist)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_analyze_playlist_genres_returns_none_when_no_genres_meet_threshold(
+    tmp_path: Any,
+) -> None:
+    """Provider should return None when no genres meet the minimum threshold."""
+    provider = _make_provider(tmp_path)
+    await provider.handle_async_init()
+
+    provider.config.get_value = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda key: {
+            "enable_genre_detection": True,
+            "genre_min_threshold": 50,  # 50% threshold
+            "genre_max_count": 3,
+        }.get(key)
+    )
+
+    playlist = _make_playlist()
+
+    # All genres below 50%
+    tracks = (
+        [_make_track_with_genres(f"track{i}", {"Rock"}) for i in range(4)]
+        + [_make_track_with_genres(f"track{i}", {"Pop"}) for i in range(4, 7)]
+        + [_make_track_with_genres(f"track{i}", set()) for i in range(7, 10)]
+    )
+
+    async def mock_tracks_iter(
+        _item_id: str,
+        _provider: str,
+        _force_refresh: bool = False,
+        _allow_dynamic_tracks: bool = False,
+    ) -> AsyncGenerator[Track]:
+        for track in tracks:
+            yield track
+
+    with patch.object(provider.mass.music.playlists, "tracks", side_effect=mock_tracks_iter):
+        result = await provider._analyze_playlist_genres(playlist)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_analyze_playlist_genres_handles_exception(
+    tmp_path: Any,
+) -> None:
+    """Provider should handle exceptions gracefully and return None."""
+    provider = _make_provider(tmp_path)
+    await provider.handle_async_init()
+
+    provider.config.get_value = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda key: {
+            "enable_genre_detection": True,
+            "genre_min_threshold": 10,
+            "genre_max_count": 3,
+        }.get(key)
+    )
+
+    playlist = _make_playlist()
+
+    # Mock tracks to raise exception
+    async def mock_tracks_iter(
+        _item_id: str,
+        _provider: str,
+        _force_refresh: bool = False,
+        _allow_dynamic_tracks: bool = False,
+    ) -> AsyncGenerator[Track]:
+        if False:  # pragma: no cover
+            yield  # type: ignore[unreachable]
+        raise AttributeError("Failed to get tracks")
+
+    with patch.object(provider.mass.music.playlists, "tracks", side_effect=mock_tracks_iter):
+        result = await provider._analyze_playlist_genres(playlist)
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_metadata_includes_genres_when_enabled(
+    tmp_path: Any,
+) -> None:
+    """Provider should include genres in metadata when genre detection is enabled."""
+    provider = _make_provider(tmp_path)
+    await provider.handle_async_init()
+
+    provider.config.get_value = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda key: {
+            CONF_LOG_LEVEL: "GLOBAL",
+            "template": "album_grid",
+            "skip_provider_playlists": False,
+            "enable_genre_detection": True,
+            "genre_min_threshold": 10,
+            "genre_max_count": 3,
+        }.get(key)
+    )
+
+    playlist = _make_playlist()
+
+    tracks_with_images = [
+        _make_track_with_image(f"track{i}", f"http://example.com/img{i}.jpg") for i in range(10)
+    ]
+
+    # Also add genres to these tracks
+    for i, track in enumerate(tracks_with_images):
+        if i < 5:
+            track.metadata.genres = {"Rock"}
+        else:
+            track.metadata.genres = {"Pop"}
+
+    async def mock_tracks_iter(
+        _item_id: str,
+        _provider: str,
+        _force_refresh: bool = False,
+        _allow_dynamic_tracks: bool = False,
+    ) -> AsyncGenerator[Track]:
+        for track in tracks_with_images:
+            yield track
+
+    with (
+        patch.object(provider.mass.music.playlists, "tracks", side_effect=mock_tracks_iter),
+        patch.object(provider, "_render", new_callable=AsyncMock) as mock_render,
+    ):
+        mock_render.return_value = b"fake_image_data"
+
+        result = await provider.get_playlist_metadata(playlist)
+
+        assert result is not None
+        assert result.images is not None
+        assert len(result.images) == 2  # THUMB and FANART
+
+        # Check genres are included
+        assert result.genres is not None
+        assert result.genres == {"Rock", "Pop"}
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_metadata_excludes_genres_when_disabled(
+    tmp_path: Any,
+) -> None:
+    """Provider should not include genres when genre detection is disabled (default)."""
+    provider = _make_provider(tmp_path)
+    await provider.handle_async_init()
+
+    # Default config has genre detection disabled
+    provider.config.get_value = MagicMock(  # type: ignore[method-assign]
+        side_effect=lambda key: {
+            CONF_LOG_LEVEL: "GLOBAL",
+            "template": "album_grid",
+            "skip_provider_playlists": False,
+            "enable_genre_detection": False,  # Disabled
+            "genre_min_threshold": 10,
+            "genre_max_count": 3,
+        }.get(key)
+    )
+
+    playlist = _make_playlist()
+
+    tracks = [
+        _make_track_with_image(f"track{i}", f"http://example.com/img{i}.jpg") for i in range(10)
+    ]
+
+    # Add genres to tracks (should be ignored)
+    for track in tracks:
+        track.metadata.genres = {"Rock", "Pop"}
+
+    async def mock_tracks_iter(
+        _item_id: str,
+        _provider: str,
+        _force_refresh: bool = False,
+        _allow_dynamic_tracks: bool = False,
+    ) -> AsyncGenerator[Track]:
+        for track in tracks:
+            yield track
+
+    with (
+        patch.object(provider.mass.music.playlists, "tracks", side_effect=mock_tracks_iter),
+        patch.object(provider, "_render", new_callable=AsyncMock) as mock_render,
+    ):
+        mock_render.return_value = b"fake_image_data"
+
+        result = await provider.get_playlist_metadata(playlist)
+
+        assert result is not None
+        assert result.images is not None
+        # Genres should not be included
+        assert result.genres is None

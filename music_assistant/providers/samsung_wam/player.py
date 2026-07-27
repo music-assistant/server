@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import IdentifierType, PlaybackState
 from music_assistant_models.player import DeviceInfo, PlayerMedia
@@ -120,14 +120,10 @@ class WamPlayer(Player):
 
     # --- Configuration ---
 
-    async def get_config_entries(
-        self, action: str | None = None, values: dict[str, Any] | None = None
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """
         Return player-specific configuration entries.
 
-        :param action: Action trigger from config UI.
-        :param values: The current configuration values.
         :return: A list of ConfigEntry objects.
         """
         return [CONF_ENTRY_HTTP_PROFILE_WAM, CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN]

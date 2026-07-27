@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 import logging
 from typing import TYPE_CHECKING, Any, cast, overload
 
 import shortuuid
+from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueType,
@@ -14,10 +16,12 @@ from music_assistant_models.config_entries import (
     ProviderError,
 )
 from music_assistant_models.enums import (
+    ConfigEntryType,
     EventType,
     ProviderFeature,
     ProviderType,
 )
+from music_assistant_models.errors import ActionUnavailable
 
 from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_ALBUM_TRACKS,
@@ -41,12 +45,11 @@ from music_assistant.controllers.config.helpers import (
     _with_translation_owner,
 )
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.util import load_provider_module
-from music_assistant.models import ProviderModuleType
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
+    from music_assistant.models.provider import Provider
 
 
 LOGGER = logging.getLogger(__name__)
@@ -64,7 +67,7 @@ class ProviderConfigMixin:
 
         def get(self, key: str, default: Any = None) -> Any: ...  # noqa: D102
 
-        def set(self, key: str, value: Any) -> None: ...  # noqa: D102
+        def set(self, key: str, value: Any, immediate: bool = False) -> None: ...  # noqa: D102
 
         def set_default(self, key: str, default_value: Any) -> None: ...  # noqa: D102
 
@@ -72,9 +75,11 @@ class ProviderConfigMixin:
 
         def encrypt_string(self, str_value: str) -> str: ...  # noqa: D102
 
+        def decrypt_string(self, encrypted_str: str) -> str: ...  # noqa: D102
+
         async def set_onboard_complete(self) -> None: ...  # noqa: D102
 
-    @api_command("config/providers")
+    @api_command("config/providers", required_scope=Scope.CONFIG_PROVIDERS_READ)
     async def get_provider_configs(
         self,
         provider_type: ProviderType | None = None,
@@ -105,21 +110,17 @@ class ProviderConfigMixin:
             configs.append(conf)
         return configs
 
-    @api_command("config/providers/get")
+    @api_command("config/providers/get", required_scope=Scope.CONFIG_PROVIDERS_READ)
     async def get_provider_config(self, instance_id: str) -> ProviderConfig:
         """Return configuration for a single provider."""
         if raw_conf := self.get(f"{CONF_PROVIDERS}/{instance_id}", {}):
-            config_entries = await self.get_provider_config_entries(
-                raw_conf["domain"],
-                instance_id=instance_id,
-                values=raw_conf.get("values"),
-            )
             for prov in self.mass.get_provider_manifests():
                 if prov.domain == raw_conf["domain"]:
                     break
             else:
                 msg = f"Unknown provider domain: {raw_conf['domain']}"
                 raise KeyError(msg)
+            config_entries = await self.get_provider_config_entries(instance_id)
             conf = cast("ProviderConfig", ProviderConfig.parse(config_entries, raw_conf))
             is_loaded = self.mass.get_provider(instance_id, return_unavailable=True) is not None
             conf.status = _provider_status(conf, is_loaded)
@@ -157,7 +158,7 @@ class ProviderConfigMixin:
         return_type: None = ...,
     ) -> ConfigValueType: ...
 
-    @api_command("config/providers/get_value")
+    @api_command("config/providers/get_value", required_scope=Scope.CONFIG_PROVIDERS_READ)
     async def get_provider_config_value(
         self,
         instance_id: str,
@@ -192,56 +193,82 @@ class ProviderConfigMixin:
             else conf.values[key].default_value
         )
 
-    @api_command("config/providers/get_entries")
-    async def get_provider_config_entries(
-        self,
-        provider_domain: str,
-        instance_id: str | None = None,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
+    @api_command("config/providers/get_entries", required_scope=Scope.CONFIG_PROVIDERS_READ)
+    async def get_provider_config_entries(self, instance_id: str) -> list[ConfigEntry]:
+        """
+        Return the config (options) entries for an existing provider instance.
+
+        Options are resolved from the loaded provider instance (from its current config
+        and capabilities). When the instance is not loaded, only the server-injected
+        default entries are returned - the frontend surfaces the load error and a
+        Reconfigure action for a failed provider instead of an editable options form.
+
+        :param instance_id: The provider instance id.
+        """
+        if provider := self.mass.get_provider(instance_id, return_unavailable=True):
+            return await self._resolve_provider_config_entries(provider)
+        # not loaded: feature-derived and provider-specific entries can't be computed
+        # without the instance, so only the server defaults are returned
+        raw_conf = self.get(f"{CONF_PROVIDERS}/{instance_id}")
+        owner = f"provider.{raw_conf['domain']}" if raw_conf else "common"
+        return _with_translation_owner(list(DEFAULT_PROVIDER_CONFIG_ENTRIES), owner)
+
+    @api_command("config/providers/invoke_action", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
+    async def invoke_provider_config_action(
+        self, instance_id: str, action: str
     ) -> list[ConfigEntry]:
         """
-        Return Config entries to setup/configure a provider.
+        Run a one-shot action button from a provider's options and return the entries.
 
-        provider_domain: (mandatory) domain of the provider.
-        instance_id: id of an existing provider instance (None for new instance setup).
-        action: [optional] action key called from config entries UI.
-        values: the (intermediate) raw values for config entries sent with the action.
+        :param instance_id: The provider instance id (must be loaded).
+        :param action: The action id of the pressed button.
         """
-        # lookup provider manifest and module
-        prov_mod: ProviderModuleType | None
-        for manifest in self.mass.get_provider_manifests():
-            if manifest.domain == provider_domain:
-                try:
-                    prov_mod = await load_provider_module(provider_domain, manifest.requirements)
-                except Exception as e:
-                    msg = f"Failed to load provider module for {provider_domain}: {e}"
-                    LOGGER.exception(msg)
-                    return []
-                break
-        else:
-            msg = f"Unknown provider domain: {provider_domain}"
-            LOGGER.exception(msg)
-            return []
+        provider = self.mass.get_provider(instance_id, return_unavailable=True)
+        if provider is None:
+            msg = f"Provider {instance_id} is not loaded"
+            raise ActionUnavailable(msg)
+        return self._wrap_provider_config_entries(
+            provider, await provider.handle_config_action(action)
+        )
 
-        # add dynamic optional config entries that depend on features
-        if instance_id and (provider := self.mass.get_provider(instance_id)):
-            supported_features = provider.supported_features
-        else:
-            provider = None
-            supported_features = getattr(prov_mod, "SUPPORTED_FEATURES", set())
-        extra_entries = self._build_sync_entries(manifest, supported_features, provider)
+    def seed_stored_config_values(self, config: ProviderConfig) -> None:
+        """
+        Seed a load-time config with its stored raw values so construction-time reads work.
 
-        all_entries = [
-            *DEFAULT_PROVIDER_CONFIG_ENTRIES,
-            *extra_entries,
-            *await prov_mod.get_config_entries(
-                self.mass, instance_id=instance_id, action=action, values=values
-            ),
-        ]
-        return _with_translation_owner(all_entries, f"provider.{provider_domain}", action, values)
+        The provider's real (typed) options entries are only resolvable once the instance
+        exists (get_config_entries is an instance method), so the config built for load only
+        carries the server defaults. A provider may however read its stored option values
+        already in ``setup``/``__init__``; this adds those stored values as passthrough
+        entries so those reads see them. ``rehydrate_provider_config`` then replaces the
+        config with the fully-typed entries before async init.
 
-    @api_command("config/providers/save", required_role="admin")
+        :param config: The (load-time) provider config to seed in place.
+        """
+        raw_conf = self.get(f"{CONF_PROVIDERS}/{config.instance_id}") or {}
+        for key, value in (raw_conf.get("values") or {}).items():
+            if key in config.values:
+                continue
+            config.values[key] = ConfigEntry(key=key, type=ConfigEntryType.STRING, value=value)
+
+    async def rehydrate_provider_config(self, provider: Provider) -> None:
+        """
+        Repopulate a freshly-instantiated provider's config with its full declared entries.
+
+        Called during load right after the instance is created: the provider's options
+        entries can only be resolved once the instance exists, so the config the instance
+        was constructed with (built from the server defaults only, since the instance was
+        not yet loaded) is re-parsed against the full entry set here - before validation
+        and async init, so get_config_value reads see the stored values.
+
+        :param provider: The freshly instantiated provider whose config to rehydrate.
+        """
+        raw_conf = self.get(f"{CONF_PROVIDERS}/{provider.instance_id}")
+        if not raw_conf:
+            return
+        entries = await self._resolve_provider_config_entries(provider)
+        provider.config = cast("ProviderConfig", ProviderConfig.parse(entries, raw_conf))
+
+    @api_command("config/providers/save", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
     async def save_provider_config(
         self,
         provider_domain: str,
@@ -249,20 +276,23 @@ class ProviderConfigMixin:
         instance_id: str | None = None,
     ) -> ProviderConfig:
         """
-        Save Provider(instance) Config.
+        Save changes to an existing Provider(instance) config.
 
-        provider_domain: (mandatory) domain of the provider.
-        values: the raw values for config entries that need to be stored/updated.
-        instance_id: id of an existing provider instance (None for new instance setup).
+        Adding a new instance goes exclusively through the setup flow
+        (``config/providers/setup``); this endpoint only updates an existing instance.
+
+        :param provider_domain: Domain of the provider (retained for API compatibility).
+        :param values: The raw values for config entries to store/update.
+        :param instance_id: The existing provider instance to update (required).
         """
-        if instance_id is not None:
-            config = await self._update_provider_config(instance_id, values)
-        else:
-            config = await self._add_provider_config(provider_domain, values)
+        if instance_id is None:
+            msg = "Adding a provider is only possible through the setup flow"
+            raise ValueError(msg)
+        config = await self._update_provider_config(instance_id, values)
         # return full config, just in case
         return await self.get_provider_config(config.instance_id)
 
-    @api_command("config/providers/remove", required_role="admin")
+    @api_command("config/providers/remove", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
     async def remove_provider_config(self, instance_id: str) -> None:
         """Remove ProviderConfig."""
         conf_key = f"{CONF_PROVIDERS}/{instance_id}"
@@ -324,6 +354,9 @@ class ProviderConfigMixin:
 
         This is meant as helper to create default configs for builtin/default providers.
         Called by the server initialization code which load all providers at startup.
+
+        The config is created with empty values (the options entries can only be resolved
+        once the instance is loaded); validation happens at load time.
         """
         for _ in await self.get_provider_configs(provider_domain=provider_domain):
             # return if there is already any config
@@ -335,7 +368,6 @@ class ProviderConfigMixin:
         else:
             msg = f"Unknown provider domain: {provider_domain}"
             raise KeyError(msg)
-        config_entries = await self.get_provider_config_entries(provider_domain)
         if manifest.multi_instance:
             instance_id = f"{manifest.domain}--{shortuuid.random(8)}"
         else:
@@ -343,19 +375,16 @@ class ProviderConfigMixin:
         default_config = cast(
             "ProviderConfig",
             ProviderConfig.parse(
-                config_entries,
+                DEFAULT_PROVIDER_CONFIG_ENTRIES,
                 {
                     "type": manifest.type.value,
                     "domain": manifest.domain,
                     "instance_id": instance_id,
                     "name": manifest.name,
-                    # note: this will only work for providers that do
-                    # not have any required config entries or provide defaults
                     "values": {},
                 },
             ),
         )
-        default_config.validate()
         conf_key = f"{CONF_PROVIDERS}/{default_config.instance_id}"
         self.set_default(conf_key, default_config.to_raw())
 
@@ -388,17 +417,42 @@ class ProviderConfigMixin:
             ),
         )
 
+    def get_provider_setup_value(
+        self, instance_id: str, key: str, default: ConfigValueType = None
+    ) -> ConfigValueType:
+        """
+        Return a single (decrypted) setup_data value for a provider from storage.
+
+        Returns the given default when the key is not present in setup_data.
+        Works without a loaded provider instance.
+
+        :param instance_id: The provider instance ID.
+        :param key: The setup data key to retrieve.
+        :param default: Value to return when the key is not present in setup_data.
+        """
+        setup_data = self.get(f"{CONF_PROVIDERS}/{instance_id}/setup_data") or {}
+        if key not in setup_data:
+            return default
+        value = cast("ConfigValueType", setup_data[key])
+        if isinstance(value, str):
+            return self.decrypt_string(value)
+        return value
+
     def set_raw_provider_config_value(
         self,
         provider_instance: str,
         key: str,
         value: ConfigValueType,
         encrypted: bool = False,
+        immediate: bool = False,
     ) -> None:
         """
         Set (raw) single config(entry) value for a provider.
 
         Note that this only stores the (raw) value without any validation or default.
+        When immediate is set the value is flushed to disk right away instead of on the
+        debounced save timer, so a critical value (e.g. a rotated auth token) is not lost
+        if the process is killed within the debounce window.
         """
         if not self.get(f"{CONF_PROVIDERS}/{provider_instance}"):
             # only allow setting raw values if main entry exists
@@ -410,17 +464,19 @@ class ProviderConfigMixin:
                 raise ValueError(msg)
             value = self.encrypt_string(value)
         if key in BASE_KEYS:
-            self.set(f"{CONF_PROVIDERS}/{provider_instance}/{key}", value)
+            self.set(f"{CONF_PROVIDERS}/{provider_instance}/{key}", value, immediate=immediate)
             return
-        self.set(f"{CONF_PROVIDERS}/{provider_instance}/values/{key}", value)
-        # also update the provider's in-place config copy (if loaded) so
-        # object-local value reads stay in sync with raw writes
-        if (provider := self.mass.get_provider(provider_instance)) and (
+        self.set(f"{CONF_PROVIDERS}/{provider_instance}/values/{key}", value, immediate=immediate)
+        # also update the loaded provider's in-place config copy so object-local value
+        # reads stay in sync with raw writes; include unavailable instances, since values
+        # like a rotated auth token can be written while the provider is temporarily
+        # unavailable and its copy must not lag behind the stored value
+        if (provider := self.mass.get_provider(provider_instance, return_unavailable=True)) and (
             entry := provider.config.values.get(key)
         ):
             entry.value = value
 
-    @api_command("config/providers/reload", required_role="admin")
+    @api_command("config/providers/reload", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
     async def _reload_provider(self, instance_id: str) -> None:
         """Reload provider."""
         try:
@@ -447,9 +503,17 @@ class ProviderConfigMixin:
         # provider wants to manipulate the config during load
         conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
         raw_conf = config.to_raw()
+        # Preserve stored values that don't have config entries in the current context
+        # (e.g. values written by a provider at runtime while its declared entries
+        # changed) - to_raw() only rebuilds the values from the declared entries.
+        existing_values = (self.get(conf_key) or {}).get("values", {})
+        new_values = raw_conf.get("values", {})
+        config_entry_keys = set(config.values.keys())
+        for key, value in existing_values.items():
+            if key not in new_values and key not in config_entry_keys:
+                new_values[key] = value
+        raw_conf["values"] = new_values
         self.set(conf_key, raw_conf)
-        if config.enabled and prov_instance is None:
-            await self.mass.load_provider_config(config)
         if config.enabled and prov_instance and available:
             # update config for existing/loaded provider instance
             await prov_instance.update_config(config, changed_keys)
@@ -478,21 +542,23 @@ class ProviderConfigMixin:
             # For player providers, unload_provider should have removed all its players by now
         return config
 
-    async def _add_provider_config(
+    async def _create_provider_instance(
         self,
         provider_domain: str,
         values: dict[str, ConfigValueType],
+        setup_data: dict[str, Any] | None = None,
     ) -> ProviderConfig:
         """
-        Add new Provider (instance).
+        Create, persist and load a new provider instance.
 
-        params:
-        - provider_domain: domain of the provider for which to add an instance of.
-        - values: the raw values for config entries.
+        Shared creation tail used by both the provider config save path and the
+        setup flow finish path. The created config is removed again when loading
+        the provider with it fails.
 
-        Returns: newly created ProviderConfig.
+        :param provider_domain: Domain of the provider to create an instance of.
+        :param values: The raw values for the (options) config entries.
+        :param setup_data: Optional setup flow data (pre-encrypted) to store on the config.
         """
-        # lookup provider manifest and module
         for prov in self.mass.get_provider_manifests():
             if prov.domain == provider_domain:
                 manifest = prov
@@ -500,11 +566,6 @@ class ProviderConfigMixin:
         else:
             msg = f"Unknown provider domain: {provider_domain}"
             raise KeyError(msg)
-        if prov.depends_on:
-            dep_configs = await self.get_provider_configs(provider_domain=prov.depends_on)
-            if not any(dep_conf.enabled for dep_conf in dep_configs):
-                msg = f"Provider {manifest.name} depends on {prov.depends_on}"
-                raise ValueError(msg)
         # create new provider config with given values
         existing = {
             x.instance_id for x in await self.get_provider_configs(provider_domain=provider_domain)
@@ -517,32 +578,42 @@ class ProviderConfigMixin:
             instance_id = f"{manifest.domain}--{shortuuid.random(8)}"
         else:
             instance_id = manifest.domain
-        # all checks passed, create config object
-        config_entries = await self.get_provider_config_entries(
-            provider_domain=provider_domain, instance_id=instance_id, values=values
-        )
+        # Create the config with only the server-default entries (no provider options: those
+        # can only be resolved once the instance is loaded, since get_config_entries is an
+        # instance method). The defaults carry the log-level entry the provider reads in
+        # __init__; the passed values are persisted raw and full validation is deferred to
+        # load time (see _load_provider -> rehydrate_provider_config). Setup flows collect
+        # their input into setup_data.
         config = cast(
             "ProviderConfig",
             ProviderConfig.parse(
-                config_entries,
+                DEFAULT_PROVIDER_CONFIG_ENTRIES,
                 {
                     "type": manifest.type.value,
                     "domain": manifest.domain,
                     "instance_id": instance_id,
                     "default_name": manifest.name,
                     "values": values,
+                    "setup_data": setup_data or {},
                 },
             ),
         )
-        # validate the new config
-        config.validate()
         # save the config first to prevent issues when the
         # provider wants to manipulate the config during load
         conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
-        self.set(conf_key, config.to_raw())
+        raw_conf = config.to_raw()
+        # to_raw rebuilds values from the (currently empty) declared entries, so persist
+        # the raw values explicitly to keep any values passed by the caller
+        raw_conf["values"] = values
+        self.set(conf_key, raw_conf)
         # try to load the provider
         try:
             await self.mass.load_provider_config(config)
+        except asyncio.CancelledError:
+            # a cancelled load (e.g. an aborted setup flow) must not leave a
+            # half-created config behind either
+            self.remove(conf_key)
+            raise
         except Exception:
             # loading failed, remove config
             self.remove(conf_key)
@@ -554,6 +625,24 @@ class ProviderConfigMixin:
             # correct any multi-instance provider mappings
             self.mass.music.queue_provider_mapping_correction_task()
         return config
+
+    async def _resolve_provider_config_entries(self, provider: Provider) -> list[ConfigEntry]:
+        """Return the full config-entry set for a (loaded) provider instance."""
+        return self._wrap_provider_config_entries(provider, await provider.get_config_entries())
+
+    def _wrap_provider_config_entries(
+        self, provider: Provider, provider_entries: tuple[ConfigEntry, ...]
+    ) -> list[ConfigEntry]:
+        """Wrap a provider's own entries with the server defaults + feature-derived entries."""
+        extra_entries = self._build_sync_entries(
+            provider.manifest, provider.supported_features, provider
+        )
+        all_entries = [
+            *DEFAULT_PROVIDER_CONFIG_ENTRIES,
+            *extra_entries,
+            *provider_entries,
+        ]
+        return _with_translation_owner(all_entries, f"provider.{provider.domain}")
 
     def _build_sync_entries(
         self,

@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Concatenate
 from urllib.parse import urlparse
+from xml.etree.ElementTree import ParseError
 
 import defusedxml.ElementTree as DefusedET
 from async_upnp_client.exceptions import UpnpError, UpnpResponseError
@@ -22,7 +23,7 @@ from .constants import PLAYER_CONFIG_ENTRIES
 
 if TYPE_CHECKING:
     from async_upnp_client.client import UpnpDevice, UpnpService, UpnpStateVariable
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.config_entries import ConfigEntry
     from music_assistant_models.player import PlayerMedia
 
     from .provider import DLNAPlayerProvider
@@ -145,16 +146,28 @@ class DLNAPlayer(Player):
         self._attr_playback_state = _playback_state
 
         _device_uri = self.device.current_track_uri or ""
+        try:
+            media_title = self.device.media_title
+            media_artist = self.device.media_artist
+            media_album = self.device.media_album_name
+            media_image_url = self.device.media_image_url
+            media_duration = self.device.media_duration
+        except ParseError as err:
+            # some devices (e.g. Bose SoundTouch) return malformed DIDL-Lite
+            # metadata XML - drop the metadata but keep the player updated
+            self.logger.debug(
+                "Ignoring malformed media metadata from device %s: %s", self.display_name, err
+            )
+            media_title = media_artist = media_album = media_image_url = None
+            media_duration = None
         self.set_current_media(
             uri=_device_uri,
             clear_all=True,
-            title=self.device.media_title,
-            artist=self.device.media_artist,
-            album=self.device.media_album_name,
-            image_url=self.device.media_image_url,
-            duration=int(self.device.media_duration)
-            if self.device.media_duration is not None
-            else None,
+            title=media_title,
+            artist=media_artist,
+            album=media_album,
+            image_url=media_image_url,
+            duration=int(media_duration) if media_duration is not None else None,
         )
 
         # Let player controller determine active source, only override for known external sources
@@ -179,11 +192,7 @@ class DLNAPlayer(Player):
                     self.device.media_position_updated_at.timestamp()
                 )
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return [*PLAYER_CONFIG_ENTRIES]
 
@@ -255,7 +264,7 @@ class DLNAPlayer(Player):
         """Send PAUSE command to given player."""
         assert self.device is not None  # for type checking
 
-        replace_pause_with_stop = bool(self.config.get_value("replace_pause_with_stop"))
+        replace_pause_with_stop = self.get_config_value("replace_pause_with_stop", return_type=bool)
 
         if replace_pause_with_stop and self.device.can_stop:
             await self.stop()
@@ -309,7 +318,7 @@ class DLNAPlayer(Player):
         try:
             now = time.time()
             do_ping = self.force_poll or (now - self.last_seen) > 60
-            with suppress(ValueError):
+            with suppress(ValueError, ParseError):
                 await self.device.async_update(do_ping=do_ping)
             self.last_seen = now if do_ping else self.last_seen
         except UpnpError as err:

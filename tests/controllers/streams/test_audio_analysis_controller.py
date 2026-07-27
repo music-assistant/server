@@ -108,6 +108,8 @@ def mock_stream_details() -> MagicMock:
     sd.media_type = "track"
     sd.item_id = "test_123"
     sd.uri = "test_prov://track/test_123"
+    # unknown duration: the completeness guard only applies when a duration is known
+    sd.duration = None
     return sd
 
 

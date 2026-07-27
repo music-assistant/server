@@ -13,6 +13,7 @@
         'item_id': '68461151',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -25,6 +26,7 @@
           'label': None,
           'languages': None,
           'last_refresh': None,
+          'life_span': None,
           'links': None,
           'lrc_lyrics': None,
           'lyrics': None,
@@ -73,6 +75,7 @@
     'item_id': '527007',
     'media_type': 'album',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -85,6 +88,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -146,6 +150,7 @@
           'item_id': '68461151',
           'media_type': 'artist',
           'metadata': dict({
+            'artist_entity_type': None,
             'chapters': None,
             'collections': None,
             'copyright': None,
@@ -158,6 +163,7 @@
             'label': None,
             'languages': None,
             'last_refresh': None,
+            'life_span': None,
             'links': None,
             'lrc_lyrics': None,
             'lyrics': None,
@@ -206,6 +212,7 @@
       'item_id': '527007',
       'media_type': 'album',
       'metadata': dict({
+        'artist_entity_type': None,
         'chapters': None,
         'collections': None,
         'copyright': None,
@@ -218,6 +225,7 @@
         'label': None,
         'languages': None,
         'last_refresh': None,
+        'life_span': None,
         'links': list([
           dict({
             'type': 'website',
@@ -277,6 +285,7 @@
             'item_id': '68461151',
             'media_type': 'artist',
             'metadata': dict({
+              'artist_entity_type': None,
               'chapters': None,
               'collections': None,
               'copyright': None,
@@ -297,6 +306,7 @@
               'label': None,
               'languages': None,
               'last_refresh': None,
+              'life_span': None,
               'links': list([
                 dict({
                   'type': 'website',
@@ -342,6 +352,7 @@
             'version': '',
           }),
         ]),
+        'audio_metadata': None,
         'date_added': None,
         'disc_number': 0,
         'duration': 2,
@@ -353,6 +364,7 @@
         'last_played': 0,
         'media_type': 'track',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -380,6 +392,7 @@
           'label': None,
           'languages': None,
           'last_refresh': None,
+          'life_span': None,
           'links': list([
             dict({
               'type': 'website',
@@ -442,6 +455,7 @@
         'item_id': '68461151',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -454,6 +468,7 @@
           'label': None,
           'languages': None,
           'last_refresh': None,
+          'life_span': None,
           'links': None,
           'lrc_lyrics': None,
           'lyrics': None,
@@ -502,6 +517,7 @@
     'item_id': '527007',
     'media_type': 'album',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -514,6 +530,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -571,6 +588,7 @@
     'item_id': '4',
     'media_type': 'artist',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -591,6 +609,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -647,6 +666,7 @@
     'item_id': '68461151',
     'media_type': 'artist',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -667,6 +687,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -726,6 +747,7 @@
         'item_id': '68461151',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -746,6 +768,7 @@
           'label': None,
           'languages': None,
           'last_refresh': None,
+          'life_span': None,
           'links': list([
             dict({
               'type': 'website',
@@ -791,6 +814,7 @@
         'version': '',
       }),
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 0,
     'duration': 2,
@@ -802,6 +826,7 @@
     'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -829,6 +854,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -889,6 +915,7 @@
         'item_id': '68461151',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -909,6 +936,7 @@
           'label': None,
           'languages': None,
           'last_refresh': None,
+          'life_span': None,
           'links': list([
             dict({
               'type': 'website',
@@ -954,6 +982,7 @@
         'version': '',
       }),
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 0,
     'duration': 2,
@@ -965,6 +994,7 @@
     'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -992,6 +1022,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -1050,6 +1081,7 @@
     'item_id': '78597499',
     'media_type': 'playlist',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -1070,6 +1102,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -1133,6 +1166,7 @@
     'item_id': '78597499',
     'media_type': 'playlist',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -1153,6 +1187,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -1217,6 +1252,7 @@
       'item_id': '78597499',
       'media_type': 'playlist',
       'metadata': dict({
+        'artist_entity_type': None,
         'chapters': None,
         'collections': None,
         'copyright': None,
@@ -1237,6 +1273,7 @@
         'label': None,
         'languages': None,
         'last_refresh': None,
+        'life_span': None,
         'links': list([
           dict({
             'type': 'website',
@@ -1301,6 +1338,7 @@
             'item_id': '68461151',
             'media_type': 'artist',
             'metadata': dict({
+              'artist_entity_type': None,
               'chapters': None,
               'collections': None,
               'copyright': None,
@@ -1321,6 +1359,7 @@
               'label': None,
               'languages': None,
               'last_refresh': None,
+              'life_span': None,
               'links': list([
                 dict({
                   'type': 'website',
@@ -1366,6 +1405,7 @@
             'version': '',
           }),
         ]),
+        'audio_metadata': None,
         'date_added': None,
         'disc_number': 0,
         'duration': 2,
@@ -1377,6 +1417,7 @@
         'last_played': 0,
         'media_type': 'track',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -1404,6 +1445,7 @@
           'label': None,
           'languages': None,
           'last_refresh': None,
+          'life_span': None,
           'links': list([
             dict({
               'type': 'website',
@@ -1464,6 +1506,7 @@
     'item_id': '78597499',
     'media_type': 'playlist',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -1484,6 +1527,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -1549,6 +1593,7 @@
         'item_id': '68461151',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -1561,6 +1606,7 @@
           'label': None,
           'languages': None,
           'last_refresh': None,
+          'life_span': None,
           'links': None,
           'lrc_lyrics': None,
           'lyrics': None,
@@ -1609,6 +1655,7 @@
     'item_id': '527007',
     'media_type': 'album',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -1621,6 +1668,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -1681,6 +1729,7 @@
         'item_id': '68461151',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -1701,6 +1750,7 @@
           'label': None,
           'languages': None,
           'last_refresh': None,
+          'life_span': None,
           'links': list([
             dict({
               'type': 'website',
@@ -1746,6 +1796,7 @@
         'version': '',
       }),
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 0,
     'duration': 2,
@@ -1757,6 +1808,7 @@
     'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -1784,6 +1836,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -1844,6 +1897,7 @@
         'item_id': '68461151',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -1864,6 +1918,7 @@
           'label': None,
           'languages': None,
           'last_refresh': None,
+          'life_span': None,
           'links': list([
             dict({
               'type': 'website',
@@ -1909,6 +1964,7 @@
         'version': '',
       }),
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 0,
     'duration': 2,
@@ -1920,6 +1976,7 @@
     'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -1947,6 +2004,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -2004,7 +2062,7 @@
       'output_format_str': 'mp4',
       'sample_rate': 48000,
     }),
-    'dsp': None,
+    'audio_processing': None,
     'duration': 2,
     'item_id': 'sm45285955',
     'loudness': -7000.0,
@@ -2045,6 +2103,7 @@
         'item_id': '68461151',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -2065,6 +2124,7 @@
           'label': None,
           'languages': None,
           'last_refresh': None,
+          'life_span': None,
           'links': list([
             dict({
               'type': 'website',
@@ -2110,6 +2170,7 @@
         'version': '',
       }),
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 0,
     'duration': 2,
@@ -2121,6 +2182,7 @@
     'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -2148,6 +2210,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -2208,6 +2271,7 @@
         'item_id': '68461151',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -2228,6 +2292,7 @@
           'label': None,
           'languages': None,
           'last_refresh': None,
+          'life_span': None,
           'links': list([
             dict({
               'type': 'website',
@@ -2273,6 +2338,7 @@
         'version': '',
       }),
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 0,
     'duration': 2,
@@ -2284,6 +2350,7 @@
     'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -2311,6 +2378,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',
@@ -2372,6 +2440,7 @@
           'item_id': '68461151',
           'media_type': 'artist',
           'metadata': dict({
+            'artist_entity_type': None,
             'chapters': None,
             'collections': None,
             'copyright': None,
@@ -2392,6 +2461,7 @@
             'label': None,
             'languages': None,
             'last_refresh': None,
+            'life_span': None,
             'links': list([
               dict({
                 'type': 'website',
@@ -2445,6 +2515,7 @@
       'item_id': '527007',
       'media_type': 'album',
       'metadata': dict({
+        'artist_entity_type': None,
         'chapters': None,
         'collections': None,
         'copyright': None,
@@ -2457,6 +2528,7 @@
         'label': None,
         'languages': None,
         'last_refresh': None,
+        'life_span': None,
         'links': list([
           dict({
             'type': 'website',
@@ -2513,6 +2585,7 @@
         'item_id': '68461151',
         'media_type': 'artist',
         'metadata': dict({
+          'artist_entity_type': None,
           'chapters': None,
           'collections': None,
           'copyright': None,
@@ -2533,6 +2606,7 @@
           'label': None,
           'languages': None,
           'last_refresh': None,
+          'life_span': None,
           'links': list([
             dict({
               'type': 'website',
@@ -2578,6 +2652,7 @@
         'version': '',
       }),
     ]),
+    'audio_metadata': None,
     'date_added': None,
     'disc_number': 0,
     'duration': 2,
@@ -2589,6 +2664,7 @@
     'last_played': 0,
     'media_type': 'track',
     'metadata': dict({
+      'artist_entity_type': None,
       'chapters': None,
       'collections': None,
       'copyright': None,
@@ -2627,6 +2703,7 @@
       'label': None,
       'languages': None,
       'last_refresh': None,
+      'life_span': None,
       'links': list([
         dict({
           'type': 'website',

@@ -15,7 +15,7 @@ from music_assistant.models.player import Player, PlayerMedia
 from .constants import CONF_ROKU_APP_ID
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.config_entries import ConfigEntry
     from rokuecp import Roku
 
     from .provider import MediaAssistantprovider
@@ -65,13 +65,9 @@ class MediaAssistantPlayer(Player):
         """Return the interval in seconds to poll the player for state updates."""
         return 5 if self.powered else 30
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
-        default_entries = await super().get_config_entries(action=action, values=values)
+        default_entries = await super().get_config_entries()
         return [
             *default_entries,
             CONF_ENTRY_HTTP_PROFILE,

@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import time
+from collections import OrderedDict
 from collections.abc import AsyncGenerator, Sequence
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
 
 import aiohttp
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
+    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -46,9 +51,10 @@ from music_assistant_models.media_items.metadata import MediaItemChapter
 from music_assistant_models.streamdetails import StreamDetails
 from orjson import JSONDecodeError
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
-from music_assistant.helpers.json import json_loads
+from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.helpers.util import lock
@@ -74,9 +80,19 @@ from .parsers import (
 )
 from .streaming import LibrespotStreamer
 
+_PLAYLIST_PAGINATION_STATE_LIMIT = 32
+
 
 class NotModifiedError(Exception):
     """Exception raised when a resource has not been modified."""
+
+
+@dataclass(slots=True)
+class _PlaylistPaginationState:
+    """Hold the synchronization and metadata snapshot for one playlist endpoint."""
+
+    lock: asyncio.Lock
+    snapshot: dict[str, Any] | None = None
 
 
 class SpotifyProvider(MusicProvider):
@@ -89,13 +105,41 @@ class SpotifyProvider(MusicProvider):
     _sp_user: dict[str, Any] | None = None
     _librespot_bin: str | None = None
     _audiobooks_supported = False
+    _playlist_pagination_states: OrderedDict[tuple[str, bool], _PlaylistPaginationState]
     # True if user has configured a custom client ID with valid authentication
     dev_session_active: bool = False
     throttler: ThrottlerManager
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return Config entries to setup this provider.
+
+        Authentication is handled by the setup flow (see setup_flow.py); only the genuine
+        options are configurable here.
+        """
+        # audiobook progress sync is only offered where the account's region supports audiobooks
+        audiobooks_supported = bool(getattr(self, "audiobooks_supported", False))
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_SYNC_PODCAST_PROGRESS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                category="sync_options",
+            ),
+            ConfigEntry(
+                key=CONF_SYNC_AUDIOBOOK_PROGRESS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                category="sync_options",
+                hidden=not audiobooks_supported,
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.cache_dir = os.path.join(self.mass.cache_path, self.instance_id)
+        self._playlist_pagination_states = OrderedDict()
         # Default throttler for global session (heavy rate limited)
         self.throttler = ThrottlerManager(rate_limit=1, period=2)
         self.streamer = LibrespotStreamer(self)
@@ -106,8 +150,8 @@ class SpotifyProvider(MusicProvider):
         await self.login()
 
         # Check if user has a custom client ID with valid dev token
-        client_id = self.config.get_value(CONF_CLIENT_ID)
-        dev_token = self.config.get_value(CONF_REFRESH_TOKEN_DEV)
+        client_id = self.get_setup_value(CONF_CLIENT_ID)
+        dev_token = self.get_setup_value(CONF_REFRESH_TOKEN_DEV)
 
         if client_id and dev_token and self._sp_user:
             await self.login_dev()
@@ -162,6 +206,20 @@ class SpotifyProvider(MusicProvider):
         if self._sp_user:
             return str(self._sp_user["display_name"])
         return None
+
+    async def get_diagnostics(self) -> dict[str, SerializableType]:
+        """Return diagnostics info for this provider to include in diagnostics reports."""
+        return {
+            "logged_in": self._sp_user is not None,
+            "token_expires_in_sec": (
+                round(self._auth_info_global["expires_at"] - time.time())
+                if self._auth_info_global
+                else None
+            ),
+            "dev_session_active": self.dev_session_active,
+            "librespot_available": self._librespot_bin is not None,
+            "audiobooks_supported": self._audiobooks_supported,
+        }
 
     ## Library retrieval methods (generators)
     async def get_library_artists(self) -> AsyncGenerator[Artist]:
@@ -568,7 +626,7 @@ class SpotifyProvider(MusicProvider):
         page_size = 50
         offset = page * page_size
 
-        meta = await self._get_paginated_meta(uri, limit=1, offset=0, use_global_session=use_global)
+        meta = await self._get_playlist_pagination_meta(uri, page, use_global)
         cache_checksum = meta["etag"]
         total = meta["total"]
 
@@ -814,46 +872,54 @@ class SpotifyProvider(MusicProvider):
 
         This uses MA's global client ID which has full API access but heavy rate limits.
         """
-        # return existing token if we have one in memory
+        # return the cached access token while it is still valid (refreshed before expiry)
         if (
             not force_refresh
             and self._auth_info_global
-            and (self._auth_info_global["expires_at"] > (time.time() - 600))
+            and (self._auth_info_global["expires_at"] > (time.time() + 600))
         ):
             return self._auth_info_global
-        # request new access token using the refresh token
-        if not (refresh_token := self.config.get_value(CONF_REFRESH_TOKEN_GLOBAL)):
+        # read the refresh token from the persisted store rather than the in-memory config copy,
+        # which can lag a rotation and would make us refresh with a stale (revoked) token
+        if not (refresh_token := self._stored_refresh_token(CONF_REFRESH_TOKEN_GLOBAL)):
             raise LoginFailed("Authentication required")
 
         try:
             auth_info = await get_spotify_token(
                 self.mass.http_session,
                 app_var("spotify_client_id"),  # Always use MA's global client ID
-                cast("str", refresh_token),
+                refresh_token,
                 "global",
             )
             self.logger.debug("Successfully refreshed global access token")
         except LoginFailed as err:
             if "revoked" in str(err) or "invalid_grant" in str(err):
-                # clear refresh token if it's revoked or expired
-                self._update_config_value(CONF_REFRESH_TOKEN_GLOBAL, None)
-                if self.available:
-                    self.unload_with_error(str(err))
+                # Spotify rotates the refresh token on refresh and revokes the previous one.
+                # If the stored token was rotated while this refresh was in flight, the token
+                # we tried is merely stale, so keep the newer one instead of forcing re-auth.
+                if not self._refresh_token_superseded(CONF_REFRESH_TOKEN_GLOBAL, refresh_token):
+                    self._update_setup_data(CONF_REFRESH_TOKEN_GLOBAL, None)
+                    if self.available:
+                        self.unload_with_error(err)
             elif self.available:
-                self.mass.create_task(
-                    self.mass.unload_provider_with_error(self.instance_id, str(err))
-                )
+                self.mass.create_task(self.mass.unload_provider_with_error(self.instance_id, err))
             raise
 
         # make sure that our updated creds get stored in memory + config
         self._auth_info_global = auth_info
-        self._update_config_value(
-            CONF_REFRESH_TOKEN_GLOBAL, auth_info["refresh_token"], encrypted=True
+        # Spotify revokes the previous refresh token only when it rotates one, so on rotation
+        # persist immediately to ensure the new token survives a crash within the debounced-save
+        # window and avoids a forced re-auth; an unchanged token uses the normal debounced save.
+        token_rotated = auth_info["refresh_token"] != refresh_token
+        self._update_setup_data(
+            CONF_REFRESH_TOKEN_GLOBAL,
+            auth_info["refresh_token"],
+            immediate=token_rotated,
         )
 
         # Setup librespot with global token only if dev token is not configured
         # (if dev token exists, librespot will be set up in login_dev instead)
-        if not self.config.get_value(CONF_REFRESH_TOKEN_DEV):
+        if not self.get_setup_value(CONF_REFRESH_TOKEN_DEV):
             await self._setup_librespot_auth(auth_info["access_token"])
 
         # get logged-in user info
@@ -873,16 +939,17 @@ class SpotifyProvider(MusicProvider):
 
         This uses the user's custom client ID which has less rate limits but limited API access.
         """
-        # return existing token if we have one in memory
+        # return the cached access token while it is still valid (refreshed before expiry)
         if (
             not force_refresh
             and self._auth_info_dev
-            and (self._auth_info_dev["expires_at"] > (time.time() - 600))
+            and (self._auth_info_dev["expires_at"] > (time.time() + 600))
         ):
             return self._auth_info_dev
-        # request new access token using the refresh token
-        refresh_token = self.config.get_value(CONF_REFRESH_TOKEN_DEV)
-        client_id = self.config.get_value(CONF_CLIENT_ID)
+        # read the refresh token from the persisted store rather than the in-memory config copy,
+        # which can lag a rotation and would make us refresh with a stale (revoked) token
+        refresh_token = self._stored_refresh_token(CONF_REFRESH_TOKEN_DEV)
+        client_id = self.get_setup_value(CONF_CLIENT_ID)
         if not refresh_token or not client_id:
             raise LoginFailed("Developer authentication not configured")
 
@@ -890,15 +957,18 @@ class SpotifyProvider(MusicProvider):
             auth_info = await get_spotify_token(
                 self.mass.http_session,
                 cast("str", client_id),
-                cast("str", refresh_token),
+                refresh_token,
                 "developer",
             )
             self.logger.debug("Successfully refreshed developer access token")
         except LoginFailed as err:
             if "revoked" in str(err) or "invalid_grant" in str(err):
-                # clear refresh token if it's revoked or expired
-                self._update_config_value(CONF_REFRESH_TOKEN_DEV, None)
-                self._update_config_value(CONF_CLIENT_ID, None)
+                # Spotify rotates the refresh token on refresh and revokes the previous one.
+                # If the stored token was rotated while this refresh was in flight, the token
+                # we tried is merely stale, so keep the newer one instead of forcing re-auth.
+                if not self._refresh_token_superseded(CONF_REFRESH_TOKEN_DEV, refresh_token):
+                    self._update_setup_data(CONF_REFRESH_TOKEN_DEV, None)
+                    self._update_setup_data(CONF_CLIENT_ID, None)
             # Don't unload - we can still use the global session
             self.dev_session_active = False
             self.logger.warning(str(err))
@@ -906,8 +976,14 @@ class SpotifyProvider(MusicProvider):
 
         # make sure that our updated creds get stored in memory + config
         self._auth_info_dev = auth_info
-        self._update_config_value(
-            CONF_REFRESH_TOKEN_DEV, auth_info["refresh_token"], encrypted=True
+        # Spotify revokes the previous refresh token only when it rotates one, so on rotation
+        # persist immediately to ensure the new token survives a crash within the debounced-save
+        # window and avoids a forced re-auth; an unchanged token uses the normal debounced save.
+        token_rotated = auth_info["refresh_token"] != refresh_token
+        self._update_setup_data(
+            CONF_REFRESH_TOKEN_DEV,
+            auth_info["refresh_token"],
+            immediate=token_rotated,
         )
 
         # Setup librespot with dev token (preferred over global token)
@@ -1141,6 +1217,43 @@ class SpotifyProvider(MusicProvider):
 
         return liked_songs
 
+    async def _get_playlist_pagination_meta(
+        self, endpoint: str, page: int, use_global_session: bool
+    ) -> dict[str, Any]:
+        """
+        Return pagination metadata for a Spotify playlist traversal.
+
+        :param endpoint: Spotify API endpoint for the playlist items.
+        :param page: Requested playlist page.
+        :param use_global_session: Whether the global Spotify session is required.
+        """
+        state_key = (endpoint, use_global_session)
+        if state := self._playlist_pagination_states.get(state_key):
+            self._playlist_pagination_states.move_to_end(state_key)
+        else:
+            state = _PlaylistPaginationState(lock=asyncio.Lock())
+            self._playlist_pagination_states[state_key] = state
+            while len(self._playlist_pagination_states) > _PLAYLIST_PAGINATION_STATE_LIMIT:
+                self._playlist_pagination_states.popitem(last=False)
+
+        observed_snapshot = state.snapshot
+        async with state.lock:
+            snapshot = state.snapshot
+            # A concurrent page may have populated this snapshot while this call waited.
+            if snapshot and (page > 0 or snapshot is not observed_snapshot):
+                return snapshot
+
+            if page == 0:
+                state.snapshot = None
+            meta = await self._get_paginated_meta(
+                endpoint,
+                limit=1,
+                offset=0,
+                use_global_session=use_global_session,
+            )
+            state.snapshot = meta
+            return meta
+
     async def _playlist_requires_global_token(self, prov_playlist_id: str) -> bool:
         """
         Check if a playlist requires global token (cached).
@@ -1246,7 +1359,7 @@ class SpotifyProvider(MusicProvider):
         """Get all items from a paged list."""
         offset = 0
         # single request to fetch the etag (used as cache checksum) and total
-        meta = await self._get_paginated_meta(endpoint, limit=1, offset=0, **kwargs)
+        meta = await self._get_cached_paginated_meta(endpoint, limit=1, offset=0, **kwargs)
         cache_checksum = meta["etag"]
         total = meta["total"]
         while True:
@@ -1283,7 +1396,11 @@ class SpotifyProvider(MusicProvider):
         )
         return result
 
-    @use_cache(120, allow_bypass=False)  # short cache: subsequent calls reuse cached data
+    @use_cache(120, allow_bypass=False)  # short cache: repeated traversals reuse metadata
+    async def _get_cached_paginated_meta(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        """Get cached pagination metadata for a paginated API endpoint."""
+        return await self._get_paginated_meta(endpoint, **kwargs)
+
     async def _get_paginated_meta(self, endpoint: str, **kwargs: Any) -> dict[str, Any]:
         """Get etag and total item count for a paginated api endpoint."""
         _res = await self._get_data(endpoint, **kwargs)
@@ -1471,3 +1588,27 @@ class SpotifyProvider(MusicProvider):
             raise  # Re-raise other HTTP errors
         except MediaNotFoundError, ProviderUnavailableError:
             return False
+
+    def _stored_refresh_token(self, key: str) -> str | None:
+        """
+        Return the currently persisted refresh token, or None if not set.
+
+        Reads through the live setup_data (kept in sync with a just-rotated token) so a
+        refresh never uses a stale, revoked token from a lagging in-memory config copy.
+
+        :param key: Setup data key of the refresh token to read.
+        """
+        token = self.get_setup_value(key)
+        return cast("str", token) if token else None
+
+    def _refresh_token_superseded(self, key: str, used_token: str) -> bool:
+        """
+        Return whether the stored refresh token differs from the one just used.
+
+        :param key: Config key of the refresh token to check.
+        :param used_token: The refresh token value that was just used to refresh.
+        """
+        stored_token = self._stored_refresh_token(key)
+        if not stored_token:
+            return False
+        return stored_token != used_token

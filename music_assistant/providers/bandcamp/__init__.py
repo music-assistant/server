@@ -26,7 +26,7 @@ from bandcamp_async_api.models import (
     FollowingItem,
 )
 from mashumaro.exceptions import UnserializableDataError
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
     ImageType,
@@ -90,33 +90,6 @@ async def setup(
     return BandcampProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-# noinspection PyTypeHints,PyUnusedLocal
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    return (
-        CONF_ENTRY_UNOFFICIAL_PROVIDER,
-        ConfigEntry(
-            key=CONF_IDENTITY,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-            value=values.get(CONF_IDENTITY) if values else None,
-        ),
-        ConfigEntry(
-            key=CONF_TOP_TRACKS_LIMIT,
-            type=ConfigEntryType.INTEGER,
-            required=False,
-            value=values.get(CONF_TOP_TRACKS_LIMIT) if values else DEFAULT_TOP_TRACKS_LIMIT,
-            default_value=DEFAULT_TOP_TRACKS_LIMIT,
-            advanced=True,
-        ),
-    )
-
-
 def split_id(id_: str) -> tuple[int, int, int]:
     """
     Return (artist_id, album_id, track_id). Missing parts are returned as 0.
@@ -148,9 +121,22 @@ class BandcampProvider(MusicProvider):
     )
     top_tracks_limit: int
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_TOP_TRACKS_LIMIT,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=DEFAULT_TOP_TRACKS_LIMIT,
+                advanced=True,
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Handle async init of the Bandcamp provider."""
-        identity = self.config.get_value(CONF_IDENTITY)
+        identity = self.get_setup_value(CONF_IDENTITY)
         self.top_tracks_limit = cast(
             "int", self.config.get_value(CONF_TOP_TRACKS_LIMIT, DEFAULT_TOP_TRACKS_LIMIT)
         )
@@ -213,6 +199,45 @@ class BandcampProvider(MusicProvider):
                 continue
 
         return results
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        if not self._client.identity:
+            return []
+        return [
+            RecommendationFolder(
+                item_id="feed",
+                provider=self.instance_id,
+                name="Bandcamp Feed",
+                translation_key="feed",
+                icon="mdi-rss",
+                is_playable=True,
+            ),
+            RecommendationFolder(
+                item_id="wishlist",
+                provider=self.instance_id,
+                name="Wishlist",
+                translation_key="wishlist",
+                icon="mdi-heart",
+                is_playable=True,
+            ),
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if not self._client.identity:
+            return UniqueList()
+        if item_id == "feed":
+            return UniqueList(await self._get_feed_tracks())
+        if item_id == "wishlist":
+            return UniqueList(await self._browse_person_content(None, CollectionType.WISHLIST))
+        return UniqueList()
 
     @throttle_with_retries
     async def _fetch_collection_page(
@@ -493,37 +518,6 @@ class BandcampProvider(MusicProvider):
                 break
 
         return tracks[: self.top_tracks_limit]
-
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Surface Bandcamp's personalised feed and wishlist as recommendations."""
-        if not self._client.identity:
-            return []
-        folders: list[RecommendationFolder] = []
-        if feed_tracks := await self._get_feed_tracks():
-            folders.append(
-                RecommendationFolder(
-                    item_id="feed",
-                    provider=self.instance_id,
-                    name="Bandcamp Feed",
-                    translation_key="feed",
-                    icon="mdi-rss",
-                    is_playable=True,
-                    items=UniqueList(feed_tracks),
-                )
-            )
-        if wishlist := await self._browse_person_content(None, CollectionType.WISHLIST):
-            folders.append(
-                RecommendationFolder(
-                    item_id="wishlist",
-                    provider=self.instance_id,
-                    name="Wishlist",
-                    translation_key="wishlist",
-                    icon="mdi-heart",
-                    is_playable=True,
-                    items=UniqueList(wishlist),
-                )
-            )
-        return folders
 
     @throttle_with_retries
     async def _fetch_feed(self) -> FeedResponse:

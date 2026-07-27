@@ -18,7 +18,7 @@ import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
-from music_assistant_models.enums import PlayerFeature, PlayerType
+from music_assistant_models.enums import PlayerFeature, PlayerType, ProviderType
 from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import (
@@ -50,6 +50,14 @@ class _TestProvider:
         self.manifest = MagicMock()
         self.manifest.domain = domain
         self.manifest.name = self.name
+        self.manifest.type = ProviderType.PLAYER
+        # registered in mass._providers, so the stand-in must survive the provider
+        # bookkeeping that mass.stop()/unload_provider applies to every provider
+        self.type = ProviderType.PLAYER
+        self.players: list[Player] = []
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Unload the provider (nothing to clean up)."""
 
 
 class _TestPlayer(Player):
@@ -132,7 +140,7 @@ async def test_protocol_prefixed_reset_to_default_sticks(mass: MusicAssistant) -
     # set the prefixed value to a non-default, alongside an unrelated parent change
     await mass.config.save_player_config(
         PARENT_ID,
-        {PREFIXED_KEY: FLOW_MODE_SAMPLE_RATE_BIT_PERFECT, "output_limiter": False},
+        {PREFIXED_KEY: FLOW_MODE_SAMPLE_RATE_BIT_PERFECT, "tts_pre_announce": False},
     )
     config = await mass.config.get_player_config(PARENT_ID)
     assert config.values[PREFIXED_KEY].value == FLOW_MODE_SAMPLE_RATE_BIT_PERFECT
@@ -182,12 +190,12 @@ async def test_full_form_save_does_not_persist_prefixed_copy_on_parent(
 
     await mass.config.save_player_config(
         PARENT_ID,
-        {PREFIXED_KEY: FLOW_MODE_SAMPLE_RATE_BIT_PERFECT, "output_limiter": False},
+        {PREFIXED_KEY: FLOW_MODE_SAMPLE_RATE_BIT_PERFECT, "tts_pre_announce": False},
     )
 
     stored = _parent_stored_values(mass)
     # parent-level (non-protocol) change is fine to persist
-    assert stored.get("output_limiter") is False
+    assert stored.get("tts_pre_announce") is False
     # protocol-prefixed entries are virtual mirrors of the child and must never live on the parent
     assert not any(CONF_PROTOCOL_KEY_SPLITTER in key for key in stored)
 

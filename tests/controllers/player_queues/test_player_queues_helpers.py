@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any, Self, cast
 
 import pytest
-from music_assistant_models.media_items import Playlist, Track
+from music_assistant_models.enums import ImageType, MediaType
+from music_assistant_models.media_items import (
+    Album,
+    Artist,
+    ItemMapping,
+    MediaItemImage,
+    MediaItemMetadata,
+    Playlist,
+    Radio,
+    Track,
+)
 from music_assistant_models.media_items.provider_mapping import ProviderMapping
 from music_assistant_models.player_queue import PlayerQueue
 from music_assistant_models.queue_item import QueueItem
@@ -13,6 +24,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS
 from music_assistant.controllers.player_queues.helpers import (
+    build_queue_item,
     get_current_playback_speed,
     handle_play_action,
     has_dynamic_source,
@@ -134,14 +146,25 @@ class _FakeLock:
         return False
 
 
+class _FakePlayer:
+    def __init__(self, player_id: str) -> None:
+        self.player_id = player_id
+
+
 class _FakePlayers:
+    def __init__(self, player_ids: set[str]) -> None:
+        self._players = {player_id: _FakePlayer(player_id) for player_id in player_ids}
+
     def get_player_lock(self, queue_id: str, purpose: object) -> _FakeLock:
         return _FakeLock()
 
+    def get_player(self, player_id: str) -> _FakePlayer | None:
+        return self._players.get(player_id)
+
 
 class _FakeMass:
-    def __init__(self) -> None:
-        self.players = _FakePlayers()
+    def __init__(self, player_ids: set[str]) -> None:
+        self.players = _FakePlayers(player_ids)
 
 
 class _FakeQueue:
@@ -152,16 +175,21 @@ class _FakeQueue:
 class _FakeController:
     """Minimal stand-in exposing only what handle_play_action touches."""
 
-    def __init__(self, queues: dict[str, _FakeQueue]) -> None:
-        self.mass = _FakeMass()
+    def __init__(self, queues: dict[str, _FakeQueue], with_players: bool = True) -> None:
+        self.mass = _FakeMass(set(queues) if with_players else set())
         self._queue_data = {
             queue_id: PlayerQueueData(queue=cast("PlayerQueue", queue))
             for queue_id, queue in queues.items()
         }
-        self.signal_calls: list[str] = []
+        self.calls: list[str] = []
 
     def signal_update(self, queue_id: str, items_changed: bool = False) -> None:
-        self.signal_calls.append(queue_id)
+        self.calls.append(f"signal:{queue_id}")
+
+    def on_player_update(
+        self, player: _FakePlayer, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
+        self.calls.append(f"refresh:{player.player_id}")
 
 
 def _flag_value(ctrl: PlayerQueuesController, queue_id: str) -> bool:
@@ -202,7 +230,7 @@ class TestHandlePlayAction:
         sink: list[bool] = []
         assert await _flag_during(cast("PlayerQueuesController", ctrl), "missing", sink) == "done"
         assert sink == [False]
-        assert ctrl.signal_calls == []
+        assert ctrl.calls == []
 
     async def test_sets_and_clears_flag(self) -> None:
         """The in-progress flag is set during the action and cleared afterwards."""
@@ -212,9 +240,19 @@ class TestHandlePlayAction:
         assert await _flag_during(cast("PlayerQueuesController", ctrl), "q1", sink) == "done"
         assert sink == [True]
         assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
-        # signalled once on entry and once on exit
-        assert ctrl.signal_calls == ["q1", "q1"]
+        # signalled once on entry and once on exit, with the queue recalculated
+        # from the player in between so the exit signal carries the result
+        assert ctrl.calls == ["signal:q1", "refresh:q1", "signal:q1"]
         assert ctrl._queue_data["q1"].play_action_refcount == 0
+
+    async def test_clears_flag_without_player(self) -> None:
+        """A queue without a registered player still clears and signals."""
+        queue = _FakeQueue()
+        ctrl = _FakeController({"q1": queue}, with_players=False)
+        sink: list[bool] = []
+        assert await _flag_during(cast("PlayerQueuesController", ctrl), "q1", sink) == "done"
+        assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
+        assert ctrl.calls == ["signal:q1", "signal:q1"]
 
     async def test_nested_actions_refcount(self) -> None:
         """Nested actions keep the flag set until the outermost one finishes."""
@@ -226,7 +264,7 @@ class TestHandlePlayAction:
         assert sink == [True, True]
         assert queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] is False
         # only the outermost entry/exit signal an update (inner sees it already in progress)
-        assert ctrl.signal_calls == ["q1", "q1"]
+        assert ctrl.calls == ["signal:q1", "refresh:q1", "signal:q1"]
         assert ctrl._queue_data["q1"].play_action_refcount == 0
 
     async def test_flag_cleared_on_exception(self) -> None:
@@ -262,3 +300,108 @@ class TestSpaceByArtist:
     def test_empty_input(self) -> None:
         """An empty input yields an empty order."""
         assert space_by_artist([]) == []
+
+
+def _thumb(path: str = "http://img/t.jpg") -> MediaItemImage:
+    return MediaItemImage(
+        type=ImageType.THUMB, path=path, provider="test", remotely_accessible=True
+    )
+
+
+def _heavy_metadata() -> MediaItemMetadata:
+    """Build metadata resembling a fully enriched item (the bulk of a queue item's size)."""
+    return MediaItemMetadata(
+        description="A long track description. " * 20,
+        review="An even longer critical review. " * 20,
+        lyrics="\n".join(f"Lyrics line {index}" for index in range(60)),
+        lrc_lyrics="\n".join(f"[00:{index:02d}.00] line {index}" for index in range(60)),
+        images=UniqueList([_thumb()]),
+        genres={"rock", "indie"},
+    )
+
+
+def _heavy_track() -> Track:
+    return Track(
+        item_id="t1",
+        provider="test",
+        name="Song",
+        duration=210,
+        artists=UniqueList(
+            [
+                Artist(
+                    item_id="a1",
+                    provider="test",
+                    name="Artist",
+                    metadata=_heavy_metadata(),
+                    provider_mappings=_PROVIDER_MAPPINGS,
+                )
+            ]
+        ),
+        album=Album(
+            item_id="al1",
+            provider="test",
+            name="Album",
+            metadata=_heavy_metadata(),
+            provider_mappings=_PROVIDER_MAPPINGS,
+        ),
+        metadata=_heavy_metadata(),
+        provider_mappings=_PROVIDER_MAPPINGS,
+    )
+
+
+def _heavy_radio() -> Radio:
+    return Radio(
+        item_id="r1",
+        provider="test",
+        name="Radio One",
+        metadata=_heavy_metadata(),
+        provider_mappings=_PROVIDER_MAPPINGS,
+    )
+
+
+class TestBuildQueueItem:
+    """Tests for build_queue_item."""
+
+    def test_slims_track_metadata(self) -> None:
+        """A track's heavy metadata is dropped while playback-relevant fields are kept."""
+        item = build_queue_item("q1", _heavy_track())
+        assert isinstance(item.media_item, Track)
+        # heavy metadata is dropped
+        assert item.media_item.metadata == MediaItemMetadata()
+        # provider mappings are kept (needed for stream resolution / failover)
+        assert item.media_item.provider_mappings == _PROVIDER_MAPPINGS
+        # the identifiers used to re-hydrate on promotion are kept
+        assert item.media_item.item_id == "t1"
+        assert item.media_item.provider == "test"
+        assert item.media_item.media_type is MediaType.TRACK
+        # artwork survives on the top-level image and artists/album stay slimmed to mappings
+        assert item.image is not None
+        assert item.image.type is ImageType.THUMB
+        assert all(isinstance(artist, ItemMapping) for artist in item.media_item.artists)
+        assert isinstance(item.media_item.album, ItemMapping)
+        # name/duration for compact list rows are kept
+        assert item.name == "Artist - Song"
+        assert item.duration == 210
+
+    def test_reduces_serialized_size(self) -> None:
+        """Slimming a track queue item substantially reduces its serialized size."""
+        fat = len(json.dumps(QueueItem.from_media_item("q1", _heavy_track()).to_dict()))
+        slim = len(json.dumps(build_queue_item("q1", _heavy_track()).to_dict()))
+        assert slim < fat * 0.6
+
+    def test_leaves_non_track_untouched(self) -> None:
+        """Non-track items (e.g. radio) keep their metadata as they are not re-hydrated."""
+        item = build_queue_item("q1", _heavy_radio())
+        assert isinstance(item.media_item, Radio)
+        assert item.media_item.metadata.description
+        assert item.media_item.metadata.images
+
+    def test_cache_roundtrip_preserves_slim_shape(self) -> None:
+        """A slim track queue item round-trips through the persisted cache unchanged."""
+        restored = QueueItem.from_cache(build_queue_item("q1", _heavy_track()).to_cache())
+        assert isinstance(restored.media_item, Track)
+        assert restored.media_item.metadata == MediaItemMetadata()
+        assert restored.media_item.provider_mappings == _PROVIDER_MAPPINGS
+        assert restored.media_item.item_id == "t1"
+        assert restored.image is not None
+        assert restored.image.type is ImageType.THUMB

@@ -18,6 +18,13 @@ import urllib.parse
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
+from music_assistant_models.enums import ContentType
+from music_assistant_models.media_items import AudioFormat
+
+from music_assistant.controllers.streams.audio_processing import (
+    AudioOutputPlan,
+    get_media_session_id,
+)
 from music_assistant.helpers.ffmpeg import FFMpeg
 from music_assistant.providers.snapcast.socket_server import SnapcastSocketServer
 
@@ -88,6 +95,7 @@ class SnapcastMAStream:
         self._restart_requested: bool = False
         self._stop_requested: bool = False
         self._streaming_started_at: float | None = None
+        self._output_plan: AudioOutputPlan | None = None
 
         self._socket_server: SnapcastSocketServer | None = None
         self._socket_path: str | None = None
@@ -182,7 +190,11 @@ class SnapcastMAStream:
             if self._streamer_task and not self._streamer_task.done():
                 if not allow_restart:
                     raise RuntimeError("streamer already running")
-                self._restart_if_running()
+                if self._stop_requested or self._stop_streamer_evt.is_set():
+                    # stop in flight; _on_streamer_done will start the fresh run
+                    self._restart_requested = True
+                else:
+                    self._restart_if_running()
                 return
 
             self._stop_requested = False
@@ -218,11 +230,15 @@ class SnapcastMAStream:
         take_from = from_player or self._filter_settings_owner
         if not take_from:
             raise RuntimeError("No player provided to read filter settings from.")
-        new_settings = self._mass.streams.audio.get_player_filter_params(
+        output_format = self._get_transport_format()
+        self._output_plan = self._mass.streams.audio.get_player_output_plan(
             take_from,
             DEFAULT_SNAPCAST_FORMAT,
-            DEFAULT_SNAPCAST_FORMAT,
+            output_format,
+            handoff_format=DEFAULT_SNAPCAST_FORMAT,
         )
+        self._register_output_plan()
+        new_settings = self._output_plan.filter_params
         if from_player:
             self._filter_settings_owner = from_player
         if new_settings != self._filter_settings:
@@ -298,11 +314,15 @@ class SnapcastMAStream:
         self._stop_streamer_evt.clear()
         self._streamer_started_evt.clear()
         if self._filter_settings_owner:
-            self._filter_settings = self._mass.streams.audio.get_player_filter_params(
+            output_format = self._get_transport_format()
+            self._output_plan = self._mass.streams.audio.get_player_output_plan(
                 self._filter_settings_owner,
                 DEFAULT_SNAPCAST_FORMAT,
-                DEFAULT_SNAPCAST_FORMAT,
+                output_format,
+                handoff_format=DEFAULT_SNAPCAST_FORMAT,
             )
+            self._register_output_plan()
+            self._filter_settings = self._output_plan.filter_params
         audio_source = self._mass.streams.get_stream(
             self.media,
             DEFAULT_SNAPCAST_FORMAT,
@@ -432,6 +452,52 @@ class SnapcastMAStream:
 
             self._streamer_task = self._mass.create_task(self._streamer_task_impl())
             self._streamer_task.add_done_callback(self._on_streamer_done)
+
+    def _get_transport_format(self) -> AudioFormat:
+        """Return the format Snapserver sends to its clients."""
+        if self._provider._use_builtin_server:
+            codec_name = str(self._provider._snapcast_server_transport_codec)
+        else:
+            stream_data = self.snap_stream._stream if self.snap_stream else {}
+            uri_data = stream_data.get("uri", {})
+            query_data = uri_data.get("query", {}) if isinstance(uri_data, dict) else {}
+            codec_name = str(query_data.get("codec", "") if isinstance(query_data, dict) else "")
+        codec_name = codec_name.partition(":")[0].lower()
+        content_type, codec_type = {
+            "flac": (ContentType.FLAC, ContentType.FLAC),
+            "ogg": (ContentType.OGG, ContentType.VORBIS),
+            "opus": (ContentType.OPUS, ContentType.OPUS),
+            "pcm": (ContentType.PCM_S16LE, ContentType.PCM_S16LE),
+        }.get(codec_name, (ContentType.UNKNOWN, ContentType.UNKNOWN))
+        return AudioFormat(
+            content_type=content_type,
+            codec_type=codec_type,
+            sample_rate=DEFAULT_SNAPCAST_FORMAT.sample_rate,
+            bit_depth=DEFAULT_SNAPCAST_FORMAT.bit_depth,
+            channels=DEFAULT_SNAPCAST_FORMAT.channels,
+        )
+
+    def _register_output_plan(self) -> None:
+        """Register the shared Snapcast path for every connected group member."""
+        queue_id = self.media.source_id
+        session_id = get_media_session_id(self.media)
+        if self._output_plan is None or queue_id is None or session_id is None:
+            return
+        player_ids = set(self._output_plan.output_details.player_ids)
+        if self.snap_stream:
+            for group in self._provider._snapserver.groups:
+                if group.stream != self.snap_stream.identifier:
+                    continue
+                for client_id in group.clients:
+                    if player_id := self._provider._get_ma_id(client_id):
+                        player_ids.add(player_id)
+        for player_id in player_ids:
+            self._mass.streams.audio_processing.update_output(
+                player_id,
+                self._output_plan,
+                queue_id=queue_id,
+                session_id=session_id,
+            )
 
     def _find_local_stream_by_name(self, name: str) -> SnapstreamProto | None:
         """
@@ -606,6 +672,7 @@ class SnapcastMAStream:
             if snap_group.stream != self.snap_stream.identifier:
                 continue
             self._provider.poke_group_members(snap_group)
+        self._register_output_plan()
 
     async def _start_socket_server(self) -> str:
         """

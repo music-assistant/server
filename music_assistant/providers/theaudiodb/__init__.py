@@ -33,7 +33,7 @@ from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -110,44 +110,6 @@ async def setup(
     return AudioDbMetadataProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_ENABLE_ARTIST_METADATA,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_ALBUM_METADATA,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_TRACK_METADATA,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-        ),
-        ConfigEntry(
-            key=CONF_ENABLE_IMAGES,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=True,
-        ),
-    )
-
-
 class AudioDbMetadataProvider(MetadataProvider):
     """The AudioDB Metadata provider."""
 
@@ -157,6 +119,31 @@ class AudioDbMetadataProvider(MetadataProvider):
     def priority(self) -> int:
         """Priority for this provider (lower = more preferred)."""
         return 20
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_ENABLE_ARTIST_METADATA,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_ALBUM_METADATA,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_TRACK_METADATA,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_IMAGES,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -428,7 +415,8 @@ class AudioDbMetadataProvider(MetadataProvider):
             return value, "en"
         return None, None
 
-    @use_cache(86400 * 90, persistent=True)  # Cache for 90 days
+    # None here only signals a failed request (a miss still returns a body), so don't cache it
+    @use_cache(86400 * 90, persistent=True, cache_none=False)  # Cache for 90 days
     async def _get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any] | None:
         """Get data from api."""
         url = f"https://theaudiodb.com/api/v1/json/{app_var('theaudiodb_api_key')}/{endpoint}"

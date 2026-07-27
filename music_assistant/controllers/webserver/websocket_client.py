@@ -10,6 +10,7 @@ from concurrent import futures
 from contextlib import suppress
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final
+from uuid import uuid4
 
 from aiohttp import WSMsgType, web
 from music_assistant_models.api import (
@@ -18,7 +19,7 @@ from music_assistant_models.api import (
     MessageType,
     SuccessResultMessage,
 )
-from music_assistant_models.auth import AuthProviderType, User, UserRole
+from music_assistant_models.auth import AuthProviderType, Scope, User
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import (
     AuthenticationRequired,
@@ -35,9 +36,13 @@ from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, VERBOSE_LOG_LEV
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
 
 from .helpers.auth_middleware import (
+    has_scope,
     is_request_from_ingress,
+    resolve_command_impersonation,
+    set_current_client_id,
     set_current_token,
     set_current_user,
+    set_impersonated_user,
     set_sendspin_player_id,
 )
 from .helpers.auth_providers import get_ha_user_details, get_ha_user_role
@@ -57,6 +62,7 @@ class WebsocketClientHandler:
         self.webserver = webserver
         self.mass = webserver.mass
         self.request = request
+        self.client_id = uuid4().hex
         self.wsock = web.WebSocketResponse(heartbeat=25)
         self._to_write: asyncio.Queue[str | None] = asyncio.Queue(maxsize=MAX_PENDING_MSG)
         self._handle_task: asyncio.Task[Any] | None = None
@@ -159,6 +165,9 @@ class WebsocketClientHandler:
             # Unregister from webserver tracking
             self.webserver.unregister_websocket_client(self)
 
+            # Drop any dashboard registrations owned by this connection
+            self.mass.dashboard.handle_client_disconnected(self.client_id)
+
             try:
                 self._to_write.put_nowait(None)
                 # Make sure all error messages are written before closing
@@ -177,7 +186,7 @@ class WebsocketClientHandler:
 
     async def _handle_command(self, msg: CommandMessage) -> None:
         """Handle an incoming command from the client."""
-        self._logger.debug("Handling command %s", msg.command)
+        self._logger.log(VERBOSE_LOG_LEVEL, "Handling command %s", msg.command)
 
         # Handle special "auth" command
         if msg.command == "auth":
@@ -205,7 +214,7 @@ class WebsocketClientHandler:
             return
 
         # Check authentication if required
-        if handler.authenticated or handler.required_role:
+        if handler.authenticated or handler.required_scope:
             # For Ingress, user should already be set from _handle_ingress_auth
             # For regular connections, user must be set via auth command
             if self._authenticated_user is None:
@@ -219,23 +228,25 @@ class WebsocketClientHandler:
                 )
                 return
 
-            # Set user, token and sendspin player in context for API methods
+            # Set user, token, sendspin player and client id in context for API methods
             set_current_user(self._authenticated_user)
             set_current_token(self._current_token)
             set_sendspin_player_id(self._sendspin_player_id)
+            set_current_client_id(self.client_id)
 
-            # Check role if required
-            if handler.required_role == "admin":
-                if self._authenticated_user.role != UserRole.ADMIN:
-                    await self._send_message(
-                        ErrorResultMessage(
-                            msg.message_id,
-                            InsufficientPermissions.error_code,
-                            "Admin access required",
-                            translation_key="insufficient_permissions",
-                        )
+            # Check scope if required
+            if handler.required_scope and not has_scope(
+                self._authenticated_user, handler.required_scope
+            ):
+                await self._send_message(
+                    ErrorResultMessage(
+                        msg.message_id,
+                        InsufficientPermissions.error_code,
+                        f"This command requires the {handler.required_scope} scope",
+                        translation_key="insufficient_permissions",
                     )
-                    return
+                )
+                return
 
         # schedule task to handle the command
         self.mass.create_task(self._run_handler(handler, msg))
@@ -243,6 +254,10 @@ class WebsocketClientHandler:
     async def _run_handler(self, handler: APICommandHandler, msg: CommandMessage) -> None:
         """Run command handler and send response."""
         try:
+            # handle the optional impersonation argument for impersonation-enabled commands
+            if handler.allow_impersonation and msg.args:
+                if impersonation_user := await resolve_command_impersonation(self.mass, msg.args):
+                    set_impersonated_user(impersonation_user)
             args = parse_arguments(handler.signature, handler.type_hints, msg.args)
             result: Any = handler.target(**args)
             if hasattr(result, "__anext__"):
@@ -529,6 +544,28 @@ class WebsocketClientHandler:
                 and event.object_id != self._sendspin_player_id
             ):
                 return
+
+            if event.event == EventType.SETUP_FLOW_UPDATED:
+                # setup flow steps carry prefilled values, OAuth urls and the
+                # flow_id guarding the unauthenticated callback route - only
+                # users who could interact with the flow may receive them
+                user = self._authenticated_user
+                if user is None:
+                    return
+                required = (
+                    self.mass.config.get_setup_flow_required_scope(event.object_id)
+                    if event.object_id
+                    else None
+                )
+                if required is None:
+                    # flow already popped (terminal step race): the flow kind is no
+                    # longer known, so require both config scopes to be safe
+                    if not has_scope(user, Scope.CONFIG_PROVIDERS_WRITE) or not has_scope(
+                        user, Scope.CONFIG_PLAYERS_WRITE
+                    ):
+                        return
+                elif not has_scope(user, required):
+                    return
 
             if event.event == EventType.TASKS_UPDATED:
                 if self._authenticated_user is None:

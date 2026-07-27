@@ -13,12 +13,13 @@ The final active source can be retrieved by using the 'state' property.
 from __future__ import annotations
 
 import asyncio
+import builtins
 import time
 from abc import ABC
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, cast, final
+from typing import TYPE_CHECKING, Any, TypeVar, cast, final, overload
 
-from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER
+from music_assistant_models.config_entries import MULTI_VALUE_SPLITTER, ConfigValueType
 from music_assistant_models.constants import (
     EXTRA_ATTRIBUTES_TYPES,
     PLAYER_CONTROL_FAKE,
@@ -26,7 +27,7 @@ from music_assistant_models.constants import (
     PLAYER_CONTROL_NONE,
 )
 from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.errors import UnsupportedFeaturedException
+from music_assistant_models.errors import ActionUnavailable, UnsupportedFeaturedException
 from music_assistant_models.player import (
     DeviceInfo,
     OutputProtocol,
@@ -55,6 +56,7 @@ from music_assistant.constants import (
     CONF_POWER_CONTROL,
     CONF_PREFERRED_OUTPUT_PROTOCOL,
     CONF_SAMPLE_RATES,
+    CONF_UNDERLYING_PLAYER_ID,
     CONF_VOLUME_CONTROL,
     EXTERNAL_SOURCES,
     PLAYER_CONTROL_PROTOCOL,
@@ -64,11 +66,15 @@ from music_assistant.constants import (
 from music_assistant.helpers.util import html_to_markdown
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, PlayerConfig
+    from music_assistant_models.config_entries import ConfigEntry, PlayerConfig
     from music_assistant_models.media_items import MediaItemPalette
     from music_assistant_models.player_queue import PlayerQueue
 
     from .player_provider import PlayerProvider
+    from .setup_flow import SetupSession
+
+# TypeVar for config value type inference
+_ConfigValueT = TypeVar("_ConfigValueT", bound=ConfigValueType)
 
 
 def _clamp_elapsed_time(elapsed_time: float | None) -> float | None:
@@ -248,6 +254,8 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
         "mute_control": state.mute_control,
         "active_output_protocol": state.active_output_protocol,
         "needs_setup": state.needs_setup,
+        "setup_reason": state.setup_reason,
+        "has_setup_flow": state.has_setup_flow,
         "sleep_timer_expires_at": state.sleep_timer_expires_at,
         "supported_features": frozenset(state.supported_features),
         "sound_mode_list": tuple((m.id, m.name, m.passive) for m in state.sound_mode_list),
@@ -257,7 +265,15 @@ def _state_fingerprint(state: PlayerState) -> dict[str, Any]:
             for s in state.source_list
         ),
         "output_protocols": tuple(
-            (o.output_protocol_id, o.name, o.protocol_domain, o.is_native, o.priority, o.available)
+            (
+                o.output_protocol_id,
+                o.name,
+                o.protocol_domain,
+                o.is_native,
+                o.priority,
+                o.available,
+                o.derived_from,
+            )
             for o in state.output_protocols
         ),
         "device_info.model": state.device_info.model,
@@ -316,6 +332,7 @@ class Player(ABC):
     _attr_expose_to_ha_by_default: bool = True
     _attr_enabled_by_default: bool = True
     _attr_needs_setup: bool = False
+    _attr_setup_reason: str | None = None
     _attr_supported_sample_rates: list[tuple[int, int]] | None = None
     _attr_underlying_player_id: str | None = None
 
@@ -479,6 +496,56 @@ class Player(ABC):
         such as completing an authentication flow or providing additional configuration.
         """
         return self._attr_needs_setup
+
+    @property
+    def setup_reason(self) -> str | None:
+        """
+        Return a short (translatable) slug describing why the player needs setup.
+
+        Only meaningful while ``needs_setup`` is True; surfaced next to the "Setup
+        required" indicator so the UI can explain what to do (e.g. "pairing_required"
+        or "password_required"). Returns None when there is no specific reason.
+        """
+        return self._attr_setup_reason
+
+    @property
+    @final
+    def available_for_playback(self) -> bool:
+        """
+        Return if the player can currently be used to play (or control) audio.
+
+        A device that is reachable but still needs setup - an unpaired AirPlay
+        receiver, for example - can not accept a stream, so it must never be
+        picked as an output protocol or command target.
+        """
+        return self.available and not self.needs_setup
+
+    @property
+    @final
+    def implements_setup_flow(self) -> bool:
+        """Return if this player implements its own interactive setup flow."""
+        return type(self).run_setup_flow is not Player.run_setup_flow
+
+    @property
+    @final
+    def has_setup_flow(self) -> bool:
+        """
+        Return if an interactive setup flow can be started for this player.
+
+        True when the player implements its own setup flow, or when it wraps a
+        (non-native) protocol child player that does. Unlike ``needs_setup`` this stays
+        True once setup completed, so the UI can offer to re-run the flow on demand
+        (e.g. to redo a pairing step that was skipped).
+        """
+        if self.implements_setup_flow:
+            return True
+        for output_protocol in self.output_protocols:
+            if output_protocol.is_native:
+                continue
+            child = self.mass.players.get_player(output_protocol.output_protocol_id)
+            if child is not None and child.implements_setup_flow:
+                return True
+        return False
 
     @property
     def powered(self) -> bool | None:
@@ -844,21 +911,156 @@ class Player(ABC):
         """
         raise NotImplementedError("poll needs to be implemented when needs_poll is True")
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """
         Return all (provider/player specific) Config Entries for the player.
 
-        action: [optional] action key called from config entries UI.
-        values: the (intermediate) raw values for config entries sent with the action.
+        Called only for an existing player: read current values via ``self.config``/
+        ``self.get_config_value`` and capabilities via ``self.supported_features``.
+        To override a default config entry, define an entry with the same key.
+        Include ``ConfigEntryType.ACTION`` entries for one-shot buttons and handle their
+        presses in ``handle_config_action``.
         """
-        # Return any (player/provider specific) config entries for a player.
-        # To override the default config entries, simply define an entry with the same key
-        # and it will be used instead of the default one.
         return []
+
+    async def handle_config_action(self, action: str) -> list[ConfigEntry]:
+        """
+        Handle a one-shot action button press from this player's config and re-render.
+
+        Override to run the side effect for each ``ConfigEntryType.ACTION`` entry this
+        player declares, then return the (possibly refreshed) config entries to display.
+
+        :param action: The action id of the pressed button (an entry's ``action`` key).
+        """
+        raise ActionUnavailable(f"Unknown action: {action}")
+
+    async def run_setup_flow(self, session: SetupSession) -> None:
+        """
+        Run the interactive setup flow for this player (e.g. pairing).
+
+        Override in player implementations that require user interaction to become
+        usable; players without an override report that there is nothing to set up.
+
+        :param session: The setup flow session used to interact with the user.
+        """
+        raise NotImplementedError
+
+    @overload
+    def get_config_value(
+        self, key: str, default: _ConfigValueT, *, return_type: builtins.type[_ConfigValueT] = ...
+    ) -> _ConfigValueT: ...
+
+    @overload
+    def get_config_value(
+        self, key: str, default: ConfigValueType = ..., *, return_type: builtins.type[_ConfigValueT]
+    ) -> _ConfigValueT: ...
+
+    @overload
+    def get_config_value(
+        self, key: str, default: ConfigValueType = ..., *, return_type: None = ...
+    ) -> ConfigValueType: ...
+
+    def get_config_value(
+        self,
+        key: str,
+        default: ConfigValueType = None,
+        *,
+        return_type: builtins.type[_ConfigValueT | ConfigValueType] | None = None,
+    ) -> _ConfigValueT | ConfigValueType:
+        """
+        Return a single config value from this player's active configuration.
+
+        Entry defaults are already applied to the active configuration, so the
+        default is only returned when the key itself is not present.
+
+        :param key: The config key to retrieve.
+        :param default: Value to return when the key is not present in the config.
+        :param return_type: Optional type hint for type inference (e.g., str, int, bool).
+            Note: This parameter is used purely for static type checking and does not
+            perform runtime type validation. Callers are responsible for ensuring the
+            specified type matches the actual config value type.
+        """
+        return self.config.get_value(key, default)
+
+    def get_setup_value(self, key: str, default: ConfigValueType = None) -> ConfigValueType:
+        """
+        Return a value collected by this player's setup flow (from setup_data).
+
+        Encrypted (string) values are decrypted transparently. Reads setup_data only
+        (no fallback to the config values): player-owned credentials/pairing data live
+        exclusively in setup_data, with a one-time migration moving any legacy values.
+
+        :param key: The setup data key to retrieve.
+        :param default: Value to return when the key is not present.
+        """
+        setup_data = self.mass.config.get(f"{CONF_PLAYERS}/{self.player_id}/setup_data") or {}
+        if key in setup_data:
+            value = setup_data[key]
+            return self.mass.config.decrypt_string(value) if isinstance(value, str) else value
+        return default
+
+    @final
+    def resolve_output_player(self) -> Player:
+        """
+        Return the player that actually renders this player's audio output.
+
+        For a player playing via one of its linked output protocols this is the
+        active protocol player; in all other cases (native output, protocol
+        players themselves, group players serving their own stream) it is the
+        player itself.
+        """
+        active_protocol = self.active_output_protocol
+        if (
+            active_protocol
+            and active_protocol != "native"
+            and (protocol_player := self.mass.players.get_player(active_protocol))
+        ):
+            return protocol_player
+        return self
+
+    @overload
+    def get_output_config_value(
+        self, key: str, default: _ConfigValueT, *, return_type: builtins.type[_ConfigValueT] = ...
+    ) -> _ConfigValueT: ...
+
+    @overload
+    def get_output_config_value(
+        self, key: str, default: ConfigValueType = ..., *, return_type: builtins.type[_ConfigValueT]
+    ) -> _ConfigValueT: ...
+
+    @overload
+    def get_output_config_value(
+        self, key: str, default: ConfigValueType = ..., *, return_type: None = ...
+    ) -> ConfigValueType: ...
+
+    def get_output_config_value(
+        self,
+        key: str,
+        default: ConfigValueType = None,
+        *,
+        return_type: builtins.type[_ConfigValueT | ConfigValueType] | None = None,
+    ) -> _ConfigValueT | ConfigValueType:
+        """
+        Return a config value resolved on the player that renders the audio output.
+
+        Audio/output related settings (output codec, http profile, output channels,
+        sample rates) live on the player(protocol) that actually renders the audio:
+        the active linked protocol player when outputting via a protocol, otherwise
+        this player itself. The output player's value (or its provider's entry
+        default) takes precedence; this player's own value is the fallback for keys
+        the output player has no entry for.
+
+        :param key: The config key to retrieve.
+        :param default: Value to return when the key is not present in any config.
+        :param return_type: Optional type hint for type inference (e.g., str, int, bool).
+            Note: This parameter is used purely for static type checking and does not
+            perform runtime type validation. Callers are responsible for ensuring the
+            specified type matches the actual config value type.
+        """
+        output_player = self.resolve_output_player()
+        if output_player is not self and key in output_player.config.values:
+            return output_player.config.get_value(key, default)
+        return self.get_config_value(key, default)
 
     async def on_config_updated(self) -> None:
         """
@@ -1344,7 +1546,7 @@ class Player(ABC):
                     name=self.provider.name,
                     protocol_domain=self.provider.domain,
                     priority=0,  # Native is always highest priority
-                    available=self.available,
+                    available=self.available_for_playback,
                     is_native=True,
                 )
             )
@@ -1359,7 +1561,7 @@ class Player(ABC):
                     name=self.provider.name,
                     protocol_domain=self.provider.domain,
                     priority=PROTOCOL_PRIORITY[self.provider.domain],
-                    available=self.available,
+                    available=self.available_for_playback,
                     is_native=True,
                 )
             )
@@ -1370,7 +1572,7 @@ class Player(ABC):
             active_ids.add(linked.output_protocol_id)
             # Check if the protocol player is actually available
             protocol_player = self.mass.players.get_player(linked.output_protocol_id)
-            is_available = protocol_player.available if protocol_player else False
+            is_available = protocol_player.available_for_playback if protocol_player else False
             # Use provider name if available, else domain title
             if protocol_player:
                 name = protocol_player.provider.name
@@ -1383,6 +1585,7 @@ class Player(ABC):
                     protocol_domain=linked.protocol_domain,
                     priority=linked.priority,
                     available=is_available,
+                    derived_from=linked.derived_from,
                 )
             )
 
@@ -1399,6 +1602,11 @@ class Player(ABC):
                 provider_id = raw_conf.get("provider", "")
                 protocol_domain = provider_id.split("--")[0] if provider_id else "unknown"
                 priority = PROTOCOL_PRIORITY.get(protocol_domain, 100)
+                # resolve the persisted derived-transport edge (if any) so derived
+                # outputs keep their base reference even while not registered
+                derived_from = raw_conf.get("values", {}).get(CONF_UNDERLYING_PLAYER_ID)
+                if derived_from == self.player_id:
+                    derived_from = "native"
                 result.append(
                     OutputProtocol(
                         output_protocol_id=protocol_id,
@@ -1406,6 +1614,7 @@ class Player(ABC):
                         protocol_domain=protocol_domain,
                         priority=priority,
                         available=False,  # Disabled protocols are not available
+                        derived_from=derived_from,
                     )
                 )
 
@@ -1451,9 +1660,9 @@ class Player(ABC):
         :param protocol_id: The protocol player_id to set as active, "native" for native playback,
             or None to clear the active protocol.
         """
-        # cancel any existing timer to set/clear the active protocol,
+        # cancel any pending scheduled protocol clear,
         # as we're explicitly setting it now
-        self.mass.cancel_timer(f"clear_active_protocol_{self.player_id}")
+        self.mass.cancel_task(f"clear_active_protocol_{self.player_id}")
         if self.__attr_active_output_protocol == protocol_id:
             return  # No change
         if protocol_id == self.player_id:
@@ -1503,7 +1712,9 @@ class Player(ABC):
         for linked in self.__attr_linked_protocols:
             if linked.protocol_domain == protocol_domain:
                 protocol_player = self.mass.players.get_player(linked.output_protocol_id)
-                current_available = protocol_player.available if protocol_player else False
+                current_available = (
+                    protocol_player.available_for_playback if protocol_player else False
+                )
                 return OutputProtocol(
                     output_protocol_id=linked.output_protocol_id,
                     name=protocol_player.provider.name
@@ -1513,6 +1724,7 @@ class Player(ABC):
                     priority=linked.priority,
                     available=current_available,
                     is_native=False,
+                    derived_from=linked.derived_from,
                 )
         return None
 
@@ -1543,7 +1755,7 @@ class Player(ABC):
         """Get the best available protocol player by priority."""
         for linked in sorted(self.__attr_linked_protocols, key=lambda x: x.priority):
             if protocol_player := self.mass.players.get_player(linked.output_protocol_id):
-                if protocol_player.available:
+                if protocol_player.available_for_playback:
                     return protocol_player
         return None
 
@@ -1743,6 +1955,28 @@ class Player(ABC):
                 f"Player {self.display_name} does not support feature {feature.name}"
             )
 
+    def _update_setup_data(self, key: str, value: ConfigValueType, immediate: bool = True) -> None:
+        """
+        Update a single setup_data value for this player (e.g. a rotated pairing credential).
+
+        :param key: The setup data key to update.
+        :param value: The new value; strings are encrypted at rest.
+        :param immediate: Persist to disk right away (the default) instead of on the
+            debounced save timer, so a critical value survives a crash.
+        """
+        if not self.mass.config.get(f"{CONF_PLAYERS}/{self.player_id}"):
+            # only allow setting setup data if the main config entry exists
+            msg = f"Invalid player: {self.player_id}"
+            raise KeyError(msg)
+        stored_value = self.mass.config.encrypt_string(value) if isinstance(value, str) else value
+        self.mass.config.set(
+            f"{CONF_PLAYERS}/{self.player_id}/setup_data/{key}",
+            stored_value,
+            immediate=immediate,
+        )
+        # keep the in-memory config copy in sync with storage
+        self.config.setup_data[key] = stored_value
+
     @final
     def _check_feature_with_active_protocol(
         self, feature: PlayerFeature, active_only: bool = False
@@ -1784,7 +2018,7 @@ class Player(ABC):
             protocol_player = self.mass.players.get_player(active_protocol)
             if (
                 protocol_player
-                and protocol_player.available
+                and protocol_player.available_for_playback
                 and feature in protocol_player.supported_features
             ):
                 return protocol_player
@@ -1801,7 +2035,7 @@ class Player(ABC):
             preferred_protocol = str(preferred_conf)
             if (
                 (_player := self.mass.players.get_player(preferred_protocol))
-                and _player.available
+                and _player.available_for_playback
                 and feature in _player.supported_features
             ):
                 return _player
@@ -1816,7 +2050,7 @@ class Player(ABC):
         ):
             if (
                 (protocol_player := self.mass.players.get_player(linked.output_protocol_id))
-                and protocol_player.available
+                and protocol_player.available_for_playback
                 and feature in protocol_player.supported_features
             ):
                 return protocol_player
@@ -1841,6 +2075,7 @@ class Player(ABC):
             "available": self.available,
             "name": self.name,
             "needs_setup": self.needs_setup,
+            "setup_reason": self.setup_reason,
             "playback_state": self.playback_state,
             "powered": self.powered,
             "volume_level": self.volume_level,
@@ -1896,7 +2131,7 @@ class Player(ABC):
                 self._extra_data.get(ATTR_FAKE_MUTE),
             ),
             "linked_protocols": tuple(
-                (p.output_protocol_id, p.protocol_domain, p.priority)
+                (p.output_protocol_id, p.protocol_domain, p.priority, p.derived_from)
                 for p in self.__attr_linked_protocols
             ),
             "protocol_parent_id": self.__attr_protocol_parent_id,
@@ -1992,6 +2227,8 @@ class Player(ABC):
             output_protocols=self.output_protocols,
             active_output_protocol=self.__attr_active_output_protocol,
             needs_setup=self.needs_setup,
+            setup_reason=self.setup_reason,
+            has_setup_flow=self.has_setup_flow,
             sleep_timer_expires_at=self.sleep_timer_expires_at,
         )
         media_position_jumped = self.__reconcile_current_media_anchor(

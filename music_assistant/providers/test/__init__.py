@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import AsyncGenerator
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry
@@ -41,7 +42,7 @@ from music_assistant.constants import (
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -86,65 +87,53 @@ async def setup(
     return TestProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    return (
-        ConfigEntry(
-            key=CONF_KEY_NUM_ARTISTS,
-            type=ConfigEntryType.INTEGER,
-            label="Number of (test) artists",
-            description="Number of test artists to generate",
-            default_value=5,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_KEY_NUM_ALBUMS,
-            type=ConfigEntryType.INTEGER,
-            label="Number of (test) albums per artist",
-            description="Number of test albums to generate per artist",
-            default_value=5,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_KEY_NUM_TRACKS,
-            type=ConfigEntryType.INTEGER,
-            label="Number of (test) tracks per album",
-            description="Number of test tracks to generate per artist-album",
-            default_value=20,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_KEY_NUM_PODCASTS,
-            type=ConfigEntryType.INTEGER,
-            label="Number of (test) podcasts",
-            description="Number of test podcasts to generate",
-            default_value=5,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_KEY_NUM_AUDIOBOOKS,
-            type=ConfigEntryType.INTEGER,
-            label="Number of (test) audiobooks",
-            description="Number of test audiobooks to generate",
-            default_value=5,
-            required=False,
-        ),
-    )
-
-
 class TestProvider(MusicProvider):
     """Test/Demo provider that creates a collection of fake media items."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_KEY_NUM_ARTISTS,
+                type=ConfigEntryType.INTEGER,
+                label="Number of (test) artists",
+                description="Number of test artists to generate",
+                default_value=5,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_KEY_NUM_ALBUMS,
+                type=ConfigEntryType.INTEGER,
+                label="Number of (test) albums per artist",
+                description="Number of test albums to generate per artist",
+                default_value=5,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_KEY_NUM_TRACKS,
+                type=ConfigEntryType.INTEGER,
+                label="Number of (test) tracks per album",
+                description="Number of test tracks to generate per artist-album",
+                default_value=20,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_KEY_NUM_PODCASTS,
+                type=ConfigEntryType.INTEGER,
+                label="Number of (test) podcasts",
+                description="Number of test podcasts to generate",
+                default_value=5,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_KEY_NUM_AUDIOBOOKS,
+                type=ConfigEntryType.INTEGER,
+                label="Number of (test) audiobooks",
+                description="Number of test audiobooks to generate",
+                default_value=5,
+                required=False,
+            ),
+        )
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -192,7 +181,11 @@ class TestProvider(MusicProvider):
                     provider_instance=self.instance_id,
                 ),
             },
-            metadata=MediaItemMetadata(images=UniqueList([DEFAULT_THUMB]), genres={genre}),
+            metadata=MediaItemMetadata(
+                images=UniqueList([DEFAULT_THUMB]),
+                genres={genre},
+                release_date=datetime(2021, 6, 15, tzinfo=UTC),
+            ),
             disc_number=1,
             track_number=int(track_idx),
         )

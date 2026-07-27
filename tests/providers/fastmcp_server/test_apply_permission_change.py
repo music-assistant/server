@@ -43,6 +43,30 @@ async def test_resource_toggle_triggers_full_restart(
 
 
 @pytest.mark.asyncio
+async def test_lean_admin_schema_toggle_triggers_full_restart(
+    mock_mass: MagicMock, mock_config: MagicMock
+) -> None:
+    """
+    Toggling ``lean_admin_schema`` must restart — it is read at build time.
+
+    The flag decides whether config/debug tools are registered with output
+    schemas, which happens once during :meth:`start`. If a future change
+    mis-files it under ``PERMISSION_KEYS`` it would route to the hot-swap path
+    and the toggle would silently have no effect until the next restart.
+    """
+    from music_assistant.providers.fastmcp_server.server import MCPServerRuntime  # noqa: PLC0415
+
+    runtime = MCPServerRuntime(mock_mass, mock_config, logging.getLogger("t"))
+    runtime.stop = AsyncMock()
+    runtime.start = AsyncMock()
+
+    await runtime.apply_permission_change(mock_config, changed_keys={"lean_admin_schema"})
+
+    runtime.stop.assert_awaited_once()
+    runtime.start.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_empty_changed_keys_does_not_restart(
     mock_mass: MagicMock, mock_config: MagicMock
 ) -> None:
@@ -104,6 +128,31 @@ async def test_permission_only_change_hot_swaps(
     assert "query:library" in runtime._allowed_tags, (
         "default-enabled query:library tag missing — hot-swap rebuild lost defaults"
     )
+
+
+@pytest.mark.asyncio
+async def test_meta_discovery_toggle_hot_swaps(
+    mock_mass: MagicMock, mock_config: MagicMock
+) -> None:
+    """
+    Toggling meta_tool_discovery must NOT restart the runtime.
+
+    The transform reads the flag through a closure over ``_config``, so
+    assigning the new config is the whole hot-swap; a restart would drop
+    live client sessions for a listing-only change.
+    """
+    from music_assistant.providers.fastmcp_server.server import MCPServerRuntime  # noqa: PLC0415
+
+    runtime = MCPServerRuntime(mock_mass, mock_config, logging.getLogger("t"))
+    runtime._allowed_tags = {"query:library"}
+    runtime.stop = AsyncMock()
+    runtime.start = AsyncMock()
+
+    await runtime.apply_permission_change(mock_config, changed_keys={"meta_tool_discovery"})
+
+    runtime.stop.assert_not_awaited()
+    runtime.start.assert_not_awaited()
+    assert runtime._config is mock_config
 
 
 @pytest.mark.asyncio

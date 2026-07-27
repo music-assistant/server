@@ -21,6 +21,7 @@ from music_assistant.constants import (
     DB_TABLE_ARTISTS,
     DB_TABLE_AUDIO_ANALYSIS,
     DB_TABLE_AUDIOBOOKS,
+    DB_TABLE_EXTERNAL_ID_LOOKUP,
     DB_TABLE_GENRE_MEDIA_ITEM_EXCLUSION,
     DB_TABLE_GENRE_MEDIA_ITEM_MAPPING,
     DB_TABLE_GENRES,
@@ -34,11 +35,13 @@ from music_assistant.constants import (
     DEFAULT_GENRE_MAPPING,
     GENRE_ICONS_DIR_NAME,
     LOUDNESS_MEASUREMENT_MIN_LUFS,
+    MEDIA_ITEM_DB_TABLES,
 )
 from music_assistant.controllers.music.constants import DB_SCHEMA_VERSION
 from music_assistant.controllers.music.media.genres import GenreController
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
+from music_assistant.helpers.lyrics import normalize_lrc_lyrics
 
 if TYPE_CHECKING:
     import logging
@@ -254,7 +257,6 @@ async def migrate_database(  # noqa: PLR0915
         db = database._db
 
         empty_metadata = serialize_to_json({})
-        empty_external_ids = serialize_to_json(set())
 
         def _normalize_name(raw_name: str) -> tuple[str, str, str, str]:
             name = raw_name.strip()
@@ -268,9 +270,9 @@ async def migrate_database(  # noqa: PLR0915
         genre_insert_sql = (
             f"INSERT OR IGNORE INTO {DB_TABLE_GENRES}"
             "(name, sort_name, translation_key, description, favorite, "
-            "metadata, external_ids, genre_aliases, play_count, last_played, "
+            "metadata, genre_aliases, play_count, last_played, "
             "search_name, search_sort_name) "
-            "VALUES (?, ?, ?, NULL, 0, ?, ?, ?, 0, 0, ?, ?)"
+            "VALUES (?, ?, ?, NULL, 0, ?, ?, 0, 0, ?, ?)"
         )
         genre_select_sql = f"SELECT item_id FROM {DB_TABLE_GENRES} WHERE search_name = ?"
 
@@ -296,7 +298,6 @@ async def migrate_database(  # noqa: PLR0915
                     sort_name,
                     translation_key,
                     metadata_json,
-                    empty_external_ids,
                     aliases_json,
                     search_name,
                     search_sort_name,
@@ -694,16 +695,309 @@ async def migrate_database(  # noqa: PLR0915
             if "duplicate column" not in str(err):
                 raise
 
-    if prev_version <= 45:
+    if prev_version <= 46:
+        # add artists column to playlog (lightweight artist mappings for track rows) so
+        # recency matching can recognize the same song across different releases/providers
+        try:
+            await database.execute(f"ALTER TABLE {DB_TABLE_PLAYLOG} ADD COLUMN artists json")
+        except Exception as err:
+            if "duplicate column" not in str(err):
+                raise
+
+    if prev_version <= 48:
+        # databases from before the userid column still carry the original inline
+        # UNIQUE(item_id, provider, media_type) constraint, which ALTER TABLE could not
+        # remove. It collides with the per-user upsert (ON CONFLICT on 4 columns) and
+        # raises IntegrityError on every replay of an item. SQLite can only drop an
+        # inline constraint by rebuilding the table.
+        stale_unique = False
+        for index in await database.get_rows_from_query(
+            f"PRAGMA index_list({DB_TABLE_PLAYLOG})", limit=0
+        ):
+            if not index["unique"]:
+                continue
+            index_columns = {
+                column["name"]
+                for column in await database.get_rows_from_query(
+                    f"PRAGMA index_info({index['name']})", limit=0
+                )
+            }
+            if "userid" not in index_columns:
+                stale_unique = True
+                break
+        if stale_unique:
+            logger.info("Rebuilding playlog table to update its unique constraint")
+            await database.execute(
+                f"ALTER TABLE {DB_TABLE_PLAYLOG} RENAME TO {DB_TABLE_PLAYLOG}_old"
+            )
+            await database.execute(
+                f"""CREATE TABLE {DB_TABLE_PLAYLOG}(
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [item_id] TEXT NOT NULL,
+                    [provider] TEXT NOT NULL,
+                    [media_type] TEXT NOT NULL,
+                    [name] TEXT NOT NULL,
+                    [image] json,
+                    [artists] json,
+                    [timestamp] INTEGER DEFAULT 0,
+                    [fully_played] BOOLEAN,
+                    [seconds_played] INTEGER,
+                    [userid] TEXT NOT NULL,
+                    [queue_id] TEXT,
+                    [user_initiated] BOOLEAN NOT NULL DEFAULT 1,
+                    [playback_speed] REAL NOT NULL DEFAULT 1.0,
+                    UNIQUE(item_id, provider, media_type, userid));"""
+            )
+            # rows from before the userid column existed have no owner and cannot be
+            # kept under the NOT NULL schema
+            await database.execute(
+                f"INSERT INTO {DB_TABLE_PLAYLOG} "
+                "(id, item_id, provider, media_type, name, image, artists, timestamp, "
+                "fully_played, seconds_played, userid, queue_id, user_initiated, "
+                "playback_speed) "
+                "SELECT id, item_id, provider, media_type, name, image, artists, timestamp, "
+                "fully_played, seconds_played, userid, queue_id, user_initiated, "
+                f"playback_speed FROM {DB_TABLE_PLAYLOG}_old WHERE userid IS NOT NULL"
+            )
+            await database.execute(f"DROP TABLE {DB_TABLE_PLAYLOG}_old")
+
+    if prev_version <= 50:
+        # external id matching moved from a (unindexable) LIKE scan on the external_ids
+        # JSON column to the new external_id_lookup table, which is now the single source
+        # of truth: backfill the lookup rows from the external_ids JSON of all media item
+        # tables, then drop that column and its old index (which could never be used by
+        # the LIKE scan anyway). The backfill is idempotent, so v50 databases (which
+        # already have a populated lookup table) simply get the column drop.
+        for media_type, table in (
+            (MediaType.ARTIST, DB_TABLE_ARTISTS),
+            (MediaType.ALBUM, DB_TABLE_ALBUMS),
+            (MediaType.TRACK, DB_TABLE_TRACKS),
+            (MediaType.PLAYLIST, DB_TABLE_PLAYLISTS),
+            (MediaType.RADIO, DB_TABLE_RADIOS),
+            (MediaType.AUDIOBOOK, DB_TABLE_AUDIOBOOKS),
+            (MediaType.PODCAST, DB_TABLE_PODCASTS),
+            (MediaType.GENRE, DB_TABLE_GENRES),
+        ):
+            # tables (re)created by an earlier migration step already use the current
+            # schema (no external_ids column) and have nothing to backfill
+            table_columns = {
+                column["name"]
+                for column in await database.get_rows_from_query(
+                    f"PRAGMA table_info({table})", limit=0
+                )
+            }
+            if "external_ids" not in table_columns:
+                continue
+            # the column must not be indexed for DROP COLUMN to succeed
+            await database.execute(f"DROP INDEX IF EXISTS {table}_external_ids_idx")
+            # external_ids is a JSON array of [type, value] pairs; the NOCASE unique
+            # index may collapse case-variants of the same id, hence OR IGNORE
+            await database.execute(
+                f"INSERT OR IGNORE INTO {DB_TABLE_EXTERNAL_ID_LOOKUP} "
+                "(media_type, external_id_type, external_id, item_id) "
+                f"SELECT '{media_type.value}', json_extract(ext.value, '$[0]'), "
+                f"json_extract(ext.value, '$[1]'), {table}.item_id "
+                f"FROM {table}, json_each({table}.external_ids) AS ext "
+                "WHERE json_extract(ext.value, '$[0]') IS NOT NULL "
+                "AND json_extract(ext.value, '$[1]') IS NOT NULL"
+            )
+            await database.execute(f"ALTER TABLE {table} DROP COLUMN external_ids")
+
+    if prev_version <= 52:
+        audio_analysis_table_exists = await database.get_rows_from_query(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :table_name",
+            {"table_name": DB_TABLE_AUDIO_ANALYSIS},
+            limit=1,
+        )
+        if audio_analysis_table_exists:
+            # SQLite does not guarantee WHERE-term evaluation order, so a bare
+            # json_valid() term cannot reliably shield json_each()/json_type()
+            # from raising on malformed rows - guard their input directly instead.
+            # The json() wrapper is required: the JSON subtype does not reliably
+            # survive the scalar-subquery boundary, so without it the rebuilt
+            # array would be stored as an escaped string on some SQLite versions.
+            result = await database.execute(
+                f"""UPDATE {DB_TABLE_AUDIO_ANALYSIS} AS aa
+                SET analysis_data = json_replace(
+                    aa.analysis_data,
+                    '$.spectral_centroid',
+                    json((
+                        SELECT json_group_array(
+                            CASE WHEN centroid.type = 'null'
+                                THEN 0.0 ELSE centroid.value END
+                        )
+                        FROM json_each(
+                            aa.analysis_data, '$.spectral_centroid'
+                        ) AS centroid
+                    ))
+                )
+                WHERE aa.aa_provider_domain = :aa_provider_domain
+                    AND aa.analysis_data LIKE '%null%'
+                    AND json_type(
+                        CASE WHEN json_valid(aa.analysis_data)
+                            THEN aa.analysis_data END,
+                        '$.spectral_centroid'
+                    ) = 'array'
+                    AND EXISTS (
+                        SELECT 1
+                        FROM json_each(
+                            CASE WHEN json_valid(aa.analysis_data)
+                                THEN aa.analysis_data END,
+                            '$.spectral_centroid'
+                        ) AS centroid
+                        WHERE centroid.type = 'null'
+                    )""",
+                {"aa_provider_domain": "smart_fades"},
+            )
+            if result.rowcount:
+                logger.info(
+                    "Repaired null spectral centroid values in %d Smart Fades "
+                    "audio analysis row(s)",
+                    result.rowcount,
+                )
+
+    if prev_version <= 53:
+        # normalize stored synced lyrics: strip LRC ID tags and expand multi-timestamp
+        # (repeating) lines into one line per timestamp
+        tracks_columns = {
+            x["name"]
+            for x in await database.get_rows_from_query(
+                f"PRAGMA table_info({DB_TABLE_TRACKS})", limit=0
+            )
+        }
+        repaired_lyrics_rows = 0
+        if "metadata" in tracks_columns:
+            # guard against (test) databases with stand-in tables
+            async for db_row in database.iter_items(DB_TABLE_TRACKS):
+                if not db_row["metadata"] or '"lrc_lyrics"' not in db_row["metadata"]:
+                    continue
+                try:
+                    metadata = json_loads(db_row["metadata"])
+                except ValueError:
+                    # corrupt metadata rows are handled elsewhere (diagnostics), skip here
+                    continue
+                lrc_lyrics = metadata.get("lrc_lyrics")
+                if not isinstance(lrc_lyrics, str):
+                    continue
+                normalized = normalize_lrc_lyrics(lrc_lyrics)
+                if normalized == lrc_lyrics:
+                    continue
+                metadata["lrc_lyrics"] = normalized
+                await database.update(
+                    DB_TABLE_TRACKS,
+                    {"item_id": db_row["item_id"]},
+                    {"metadata": serialize_to_json(metadata)},
+                )
+                repaired_lyrics_rows += 1
+        if repaired_lyrics_rows:
+            logger.info("Normalized synced lyrics of %d track(s)", repaired_lyrics_rows)
+
+    if prev_version <= 54:
+        # apple music blobstore artwork URLs are presigned with a ~24h expiry and are
+        # no longer persisted: replace the stored (long-dead) signed URLs with the
+        # stable artwork token the provider resolves to a fresh URL on demand
+        migrated_artwork_rows = 0
+        for table, media_type_value in (
+            (DB_TABLE_ARTISTS, "artist"),
+            (DB_TABLE_ALBUMS, "album"),
+            (DB_TABLE_TRACKS, "track"),
+            (DB_TABLE_PLAYLISTS, "playlist"),
+        ):
+            table_columns = {
+                x["name"]
+                for x in await database.get_rows_from_query(f"PRAGMA table_info({table})", limit=0)
+            }
+            if "metadata" not in table_columns:
+                # guard against (test) databases with stand-in tables
+                continue
+            # the (provider_instance, item_id) -> provider item id lookup needed to
+            # derive each item's artwork token from its apple music mapping
+            apple_item_ids = {
+                (row["item_id"], row["provider_instance"]): row["provider_item_id"]
+                for row in await database.get_rows_from_query(
+                    f"SELECT item_id, provider_instance, provider_item_id "
+                    f"FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+                    "WHERE media_type = :media_type AND provider_domain = 'apple_music'",
+                    {"media_type": media_type_value},
+                    limit=0,
+                )
+            }
+            async for db_row in database.iter_items(table):
+                if not db_row["metadata"] or "blobstore.apple.com" not in db_row["metadata"]:
+                    continue
+                try:
+                    metadata = json_loads(db_row["metadata"])
+                except ValueError:
+                    # corrupt metadata rows are handled elsewhere (diagnostics), skip here
+                    continue
+                images = metadata.get("images")
+                if not isinstance(images, list):
+                    continue
+                migrated_images = []
+                changed = False
+                for image in images:
+                    if not isinstance(image, dict) or "blobstore.apple.com" not in (
+                        image.get("path") or ""
+                    ):
+                        migrated_images.append(image)
+                        continue
+                    changed = True
+                    prov_item_id = apple_item_ids.get((db_row["item_id"], image.get("provider")))
+                    if prov_item_id is None:
+                        # no mapping left to resolve through; drop the dead url
+                        continue
+                    image["path"] = f"{media_type_value}/{prov_item_id}"
+                    image["remotely_accessible"] = False
+                    migrated_images.append(image)
+                if not changed:
+                    continue
+                metadata["images"] = migrated_images
+                await database.update(
+                    table,
+                    {"item_id": db_row["item_id"]},
+                    {"metadata": serialize_to_json(metadata)},
+                )
+                migrated_artwork_rows += 1
+        if migrated_artwork_rows:
+            logger.info(
+                "Migrated the Apple Music artwork of %d library item(s) to resolvable tokens",
+                migrated_artwork_rows,
+            )
+
+    # NOTE: this genre restore runs after the <= 50 step on purpose: it inserts genres
+    # with the current code/schema, so the external_ids column must be gone first.
+    if prev_version <= 47:
         # seed the curated podcast & audiobook default genres into their namespaces so existing
-        # installs get them on upgrade (music defaults already exist and are skipped). A partial
-        # restore is idempotent; failures here are non-fatal — defaults can be restored later via
-        # the admin API rather than discarding the whole library.
+        # installs get them on upgrade (music defaults already exist and are skipped), and
+        # refresh 46/47-seeded genres so they pick up their (later added) icon metadata.
+        # A partial restore is idempotent; failures here are non-fatal — defaults can be
+        # restored later via the admin API rather than discarding the whole library.
         await database.commit()
         try:
             await mass.music.genres.restore_default_genres(full_restore=False)
         except Exception as err:
             logger.warning("Could not seed default podcast/audiobook genres: %s", err)
+
+    # (re)build the FTS search tables so they are in sync with the content tables;
+    # this both populates them on first migration to the FTS-enabled schema and
+    # repairs them after any migration that rewrote rows without the sync triggers active
+    for table in MEDIA_ITEM_DB_TABLES:
+        table_columns = {
+            x["name"]
+            for x in await database.get_rows_from_query(f"PRAGMA table_info({table})", limit=0)
+        }
+        if "search_name" not in table_columns:
+            # guard against (test) databases with stand-in tables
+            continue
+        await database.execute(
+            f"""CREATE VIRTUAL TABLE IF NOT EXISTS {table}_fts USING fts5(
+                search_name,
+                content='{table}',
+                content_rowid='item_id',
+                tokenize='trigram'
+                );"""
+        )
+        await database.execute(f"INSERT INTO {table}_fts({table}_fts) VALUES('rebuild')")
 
     # save changes
     await database.commit()

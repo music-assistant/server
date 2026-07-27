@@ -44,6 +44,8 @@ async def handle_device_list(
     mass: MusicAssistant,
     user_id: str,
     exposed_ids: set[str] | None = None,
+    *,
+    playlist_uris: tuple[str, ...] | list[str] = (),
 ) -> DeviceListPayload:
     """Handle /user/devices — return list of all MA players as Yandex devices."""
     devices = []
@@ -51,7 +53,7 @@ async def handle_device_list(
         state = player.state
         if not is_player_exposable(state, exposed_ids=exposed_ids):
             continue
-        devices.append(get_device_description(state))
+        devices.append(get_device_description(state, playlist_uris=playlist_uris))
     _LOGGER.debug("Device list: %d devices exposed", len(devices))
     return DeviceListPayload(user_id=user_id, devices=devices)
 
@@ -60,6 +62,8 @@ async def handle_devices_query(
     mass: MusicAssistant,
     device_ids: list[str],
     exposed_ids: set[str] | None = None,
+    *,
+    playlist_uris: tuple[str, ...] | list[str] = (),
 ) -> DeviceStatesPayload:
     """Handle /user/devices/query — return current states for requested devices."""
     states: list[DeviceState] = []
@@ -78,7 +82,7 @@ async def handle_devices_query(
             states.append(make_error_device_state(device_id))
             continue
 
-        states.append(get_device_state(player_state))  # type: ignore[arg-type]
+        states.append(get_device_state(player_state, playlist_uris=playlist_uris))  # type: ignore[arg-type]
 
     return DeviceStatesPayload(devices=states)
 
@@ -87,6 +91,8 @@ async def handle_devices_action(
     mass: MusicAssistant,
     payload: ActionRequestPayload,
     exposed_ids: set[str] | None = None,
+    *,
+    playlist_uris: tuple[str, ...] | list[str] = (),
 ) -> ActionResultPayload:
     """Handle /user/devices/action — execute capability actions on devices."""
     results: list[DeviceActionResult] = []
@@ -126,7 +132,11 @@ async def handle_devices_action(
         cap_results = []
         for cap_action in device_action.capabilities:
             result = await execute_capability_action(
-                mass, device_action.id, cap_action, current_volume
+                mass,
+                device_action.id,
+                cap_action,
+                current_volume,
+                playlist_uris=playlist_uris,
             )
             cap_results.append(result)
 

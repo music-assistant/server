@@ -8,12 +8,18 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, StreamType
 from music_assistant_models.errors import AudioError, MediaNotFoundError, SetupFailedError
 from music_assistant_models.media_items import AudioFormat, AudioSource, ProviderMapping
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    CONF_BIND_IP,
+    CONF_BIND_PORT,
+    CONF_ENTRY_WARN_PREVIEW,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.models.plugin import PluginProvider
 
 from .constants import (
@@ -25,6 +31,10 @@ from .constants import (
     CONF_VBAN_QUEUE_SIZE,
     CONF_VBAN_QUEUE_STRATEGY,
     CONF_VBAN_STREAM_NAME,
+    DEFAULT_AUDIO_CHANNELS,
+    DEFAULT_PCM_AUDIO_FORMAT,
+    DEFAULT_PCM_SAMPLE_RATE,
+    DEFAULT_UDP_PORT,
     SUPPORTED_FEATURES,
     VBAN_QUEUE_STRATEGIES,
 )
@@ -54,17 +64,33 @@ class VBANReceiverProvider(PluginProvider):
     ) -> None:
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
-        self._bind_port: int = cast("int", self.config.get_value(CONF_BIND_PORT))
-        self._bind_ip: str = cast("str", self.config.get_value(CONF_BIND_IP))
-        self._sender_host: str = cast("str", self.config.get_value(CONF_SENDER_HOST))
-        self._vban_stream_name: str = cast("str", self.config.get_value(CONF_VBAN_STREAM_NAME))
-        self._pcm_audio_format: str = cast("str", self.config.get_value(CONF_PCM_AUDIO_FORMAT))
-        self._pcm_sample_rate: int = cast("int", self.config.get_value(CONF_PCM_SAMPLE_RATE))
-        self._audio_channels: int = cast("int", self.config.get_value(CONF_AUDIO_CHANNELS))
+        # Setup values fall back to legacy option values for existing instances.
+        self._bind_port: int = cast("int", self.get_setup_value(CONF_BIND_PORT) or DEFAULT_UDP_PORT)
+        self._bind_ip: str = cast("str", self.get_setup_value(CONF_BIND_IP) or "0.0.0.0")
+        self._sender_host: str = cast("str", self.get_setup_value(CONF_SENDER_HOST) or "127.0.0.1")
+        self._vban_stream_name: str = cast(
+            "str", self.get_setup_value(CONF_VBAN_STREAM_NAME) or "Network AUX"
+        )
+        self._pcm_audio_format: str = cast(
+            "str", self.get_setup_value(CONF_PCM_AUDIO_FORMAT) or DEFAULT_PCM_AUDIO_FORMAT
+        )
+        self._pcm_sample_rate: int = cast(
+            "int", self.get_setup_value(CONF_PCM_SAMPLE_RATE) or DEFAULT_PCM_SAMPLE_RATE
+        )
+        self._audio_channels: int = cast(
+            "int", self.get_setup_value(CONF_AUDIO_CHANNELS) or DEFAULT_AUDIO_CHANNELS
+        )
         self._vban_queue_strategy: BackPressureStrategy = VBAN_QUEUE_STRATEGIES[
-            cast("str", self.config.get_value(CONF_VBAN_QUEUE_STRATEGY))
+            cast(
+                "str",
+                self.config.get_value(CONF_VBAN_QUEUE_STRATEGY)
+                or next(iter(VBAN_QUEUE_STRATEGIES)),
+            )
         ]
-        self._vban_queue_size: int = cast("int", self.config.get_value(CONF_VBAN_QUEUE_SIZE))
+        self._vban_queue_size: int = cast(
+            "int",
+            self.config.get_value(CONF_VBAN_QUEUE_SIZE) or AsyncVBANClientMod.default_queue_size,
+        )
         self._log_stats: bool = cast("bool", self.config.get_value(CONF_LOG_VBAN_STREAM_STATS))
 
         self._vban_receiver: AsyncVBANClientMod | None = None
@@ -105,6 +131,34 @@ class VBANReceiverProvider(PluginProvider):
             # MA opens the UDP listener on demand; get_audio_stream raises if
             # the configured sender never sends
             can_initiate=True,
+        )
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return runtime options for this provider."""
+        return (
+            CONF_ENTRY_WARN_PREVIEW,
+            ConfigEntry(
+                key=CONF_VBAN_QUEUE_STRATEGY,
+                type=ConfigEntryType.STRING,
+                default_value=next(iter(VBAN_QUEUE_STRATEGIES)),
+                options=[ConfigValueOption(x, title=x) for x in VBAN_QUEUE_STRATEGIES],
+                advanced=True,
+                required=True,
+            ),
+            ConfigEntry(
+                key=CONF_VBAN_QUEUE_SIZE,
+                type=ConfigEntryType.INTEGER,
+                default_value=AsyncVBANClientMod.default_queue_size,
+                advanced=True,
+                required=True,
+            ),
+            ConfigEntry(
+                key=CONF_LOG_VBAN_STREAM_STATS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                advanced=True,
+                required=True,
+            ),
         )
 
     @property

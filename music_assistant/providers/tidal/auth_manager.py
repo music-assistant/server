@@ -1,16 +1,15 @@
 """Authentication manager for Tidal integration."""
 
+import asyncio
 import json
 import random
 import time
 import urllib
 from collections.abc import Callable
 from dataclasses import dataclass
-from types import TracebackType
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any
 
 import pkce
-from music_assistant_models.enums import EventType
 from music_assistant_models.errors import LoginFailed
 
 from music_assistant.helpers.app_vars import app_var
@@ -20,9 +19,10 @@ from .constants import AUTH_URL, LOGIN_URL, REDIRECT_URI, SESSIONS_URL
 if TYPE_CHECKING:
     from aiohttp import ClientSession
 
-    from music_assistant.mass import MusicAssistant
-
 TOKEN_REFRESH_BUFFER = 60 * 7  # 7 minutes
+# Minimum time between two token refreshes, so that (concurrent) requests
+# hitting 401s cannot hammer the token endpoint with refresh calls.
+TOKEN_REFRESH_COOLDOWN = 30
 
 
 @dataclass
@@ -35,37 +35,6 @@ class TidalUser:
     profile_name: str | None = None
     user_name: str | None = None
     email: str | None = None
-
-
-class ManualAuthenticationHelper:
-    """
-    Helper for authentication flows that require manual user intervention.
-
-    For Tidal where the OAuth flow doesn't redirect to our callback,
-    but instead requires the user to manually copy a URL after authentication.
-    """
-
-    def __init__(self, mass: MusicAssistant, session_id: str) -> None:
-        """Initialize the Manual Authentication Helper."""
-        self.mass = mass
-        self.session_id = session_id
-
-    async def __aenter__(self) -> Self:
-        """Enter context manager."""
-        return self
-
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: TracebackType | None,
-    ) -> bool | None:
-        """Exit context manager."""
-        return None
-
-    def send_url(self, auth_url: str) -> None:
-        """Send the URL to the user for authentication."""
-        self.mass.signal_event(EventType.AUTH_SESSION, self.session_id, auth_url)
 
 
 class TidalAuthManager:
@@ -82,6 +51,8 @@ class TidalAuthManager:
         self.update_config = config_updater
         self.logger = logger
         self._auth_info: dict[str, Any] | None = None
+        self._refresh_lock = asyncio.Lock()
+        self._last_refresh: float = 0.0
         self.user = TidalUser()
 
     async def initialize(self, auth_data: str) -> bool:
@@ -133,46 +104,16 @@ class TidalAuthManager:
         return await self.refresh_token()
 
     async def refresh_token(self) -> bool:
-        """Refresh the auth token."""
-        if not self._auth_info:
-            return False
-
-        refresh_token = self._auth_info.get("refresh_token")
-        if not refresh_token:
-            return False
-
-        client_id = self._auth_info.get("client_id", app_var("tidal_client_id"))
-
-        data = {
-            "refresh_token": refresh_token,
-            "client_id": client_id,
-            "grant_type": "refresh_token",
-            "scope": "r_usr w_usr w_sub",
-        }
-
-        headers = {"Content-Type": "application/x-www-form-urlencoded"}
-
-        async with self.http_session.post(
-            f"{AUTH_URL}/token", data=data, headers=headers
-        ) as response:
-            if response.status != 200:
-                self.logger.error("Failed to refresh token: %s", await response.text())
+        """Refresh the auth token (single-flight, with a short cooldown)."""
+        async with self._refresh_lock:
+            # A refresh that just completed (e.g. by a concurrent request that
+            # hit the same 401) is considered good: don't hit the token
+            # endpoint again, let the caller retry with the current token.
+            if time.time() - self._last_refresh < TOKEN_REFRESH_COOLDOWN:
+                return True
+            if not await self._perform_refresh():
                 return False
-
-            token_data = await response.json()
-
-            # Update auth info
-            self._auth_info["access_token"] = token_data["access_token"]
-            if "refresh_token" in token_data:
-                self._auth_info["refresh_token"] = token_data["refresh_token"]
-
-            # Update expiration
-            if "expires_in" in token_data:
-                self._auth_info["expires_at"] = time.time() + token_data["expires_in"]
-
-            # Store updated auth info
-            self.update_config(self._auth_info)
-
+            self._last_refresh = time.time()
             return True
 
     async def update_user_info(self, user_info: dict[str, Any], session_id: str) -> None:
@@ -187,13 +128,17 @@ class TidalAuthManager:
         )
 
     @staticmethod
-    async def generate_auth_url(auth_helper: ManualAuthenticationHelper, quality: str) -> str:
-        """Generate the Tidal authentication URL."""
-        # Generate PKCE challenge
+    def build_pkce_login(quality: str) -> tuple[str, dict[str, Any]]:
+        """
+        Build a fresh PKCE login: the Tidal authorize URL and its matching auth params.
+
+        The returned auth_params dict carries the (single-use) PKCE code_verifier and must
+        be handed back to :meth:`process_pkce_login` to exchange the pasted redirect URL.
+
+        :param quality: The audio quality carried through to the token exchange.
+        """
         code_verifier, code_challenge = pkce.generate_pkce_pair()
-        # Generate unique client key
         client_unique_key = format(random.getrandbits(64), "02x")
-        # Store these values for later use
         auth_params = {
             "code_verifier": code_verifier,
             "client_unique_key": client_unique_key,
@@ -201,8 +146,6 @@ class TidalAuthManager:
             "client_secret": app_var("tidal_client_secret"),
             "quality": quality,
         }
-
-        # Create auth URL
         params = {
             "response_type": "code",
             "redirect_uri": REDIRECT_URI,
@@ -214,14 +157,8 @@ class TidalAuthManager:
             "code_challenge_method": "S256",
             "restrict_signup": "true",
         }
-
-        url = f"{LOGIN_URL}?{urllib.parse.urlencode(params)}"
-
-        # Send URL to user
-        auth_helper.mass.loop.call_soon_threadsafe(auth_helper.send_url, url)
-
-        # Return serialized auth params
-        return json.dumps(auth_params)
+        authorize_url = f"{LOGIN_URL}?{urllib.parse.urlencode(params)}"
+        return authorize_url, auth_params
 
     @staticmethod
     async def process_pkce_login(
@@ -299,3 +236,46 @@ class TidalAuthManager:
         auth_data["client_secret"] = client_secret
 
         return auth_data
+
+    async def _perform_refresh(self) -> bool:
+        """Perform the actual token refresh request."""
+        if not self._auth_info:
+            return False
+
+        refresh_token = self._auth_info.get("refresh_token")
+        if not refresh_token:
+            return False
+
+        client_id = self._auth_info.get("client_id", app_var("tidal_client_id"))
+
+        data = {
+            "refresh_token": refresh_token,
+            "client_id": client_id,
+            "grant_type": "refresh_token",
+            "scope": "r_usr w_usr w_sub",
+        }
+
+        headers = {"Content-Type": "application/x-www-form-urlencoded"}
+
+        async with self.http_session.post(
+            f"{AUTH_URL}/token", data=data, headers=headers
+        ) as response:
+            if response.status != 200:
+                self.logger.error("Failed to refresh token: %s", await response.text())
+                return False
+
+            token_data = await response.json()
+
+            # Update auth info
+            self._auth_info["access_token"] = token_data["access_token"]
+            if "refresh_token" in token_data:
+                self._auth_info["refresh_token"] = token_data["refresh_token"]
+
+            # Update expiration
+            if "expires_in" in token_data:
+                self._auth_info["expires_at"] = time.time() + token_data["expires_in"]
+
+            # Store updated auth info
+            self.update_config(self._auth_info)
+
+            return True

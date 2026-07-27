@@ -63,7 +63,7 @@ class JWTHelper:
             "iat": int(now.timestamp()),
             "exp": int(expires_at.timestamp()),
             "username": user.username,
-            "role": user.role.value,
+            "role": user.role,
             "token_name": token_name,
             "is_long_lived": is_long_lived,
         }

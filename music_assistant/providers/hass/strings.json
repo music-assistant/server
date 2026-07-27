@@ -29,13 +29,28 @@
       "description": "Authenticate to your home assistant instance and generate the long lived token."
     },
     "token": {
-      "label": "Authentication token for HomeAssistant",
-      "description": "You can either paste a Long Lived Token here manually or use the 'authenticate' button to generate a token for you with logging in."
+      "label": "Authentication token for HomeAssistant"
     },
     "verify_ssl": {
       "label": "[%key:common::config_entries::verify_ssl::label%]",
       "description": "[%key:common::config_entries::verify_ssl::description%]"
     }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Connect to Home Assistant",
+      "description": "Enter the URL of your Home Assistant instance. Continue to sign in, or paste a long-lived access token to skip the browser step."
+    },
+    "auth": {
+      "title": "Sign in to Home Assistant",
+      "description": "Sign in and authorize Music Assistant in the window that opens."
+    },
+    "abort": {
+      "nothing_to_configure": "Music Assistant is running as a Home Assistant add-on and is already connected, so there is nothing to set up."
+    }
+  },
+  "errors": {
+    "auth_failed": "Could not authenticate with Home Assistant. Please check the URL and try again."
   },
   "manifest": {
     "description": "Connects Music Assistant with Home Assistant for automation, integration, and enhanced smart-home control."

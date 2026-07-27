@@ -5,17 +5,20 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import soxr
 import torch
 from beat_this.inference import Spect2Frames
-from music_assistant_models.enums import MediaType
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, MediaType
 from torchaudio.transforms import SpectralCentroid
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
-from music_assistant.helpers.util import is_arm
+from music_assistant.helpers.datetime import utc
+from music_assistant.helpers.util import is_arm, system_meets_requirements
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import (
     ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS,
@@ -24,9 +27,22 @@ from music_assistant.models.audio_analysis_provider import (
 
 from .dbn_postprocessor import DBNDownBeatTracker
 from .feature_extractor import AdvancedBeatFeatureExtractor
-from .helpers import calculate_overall_bpm, decode_pcm_chunk_to_mono
+from .helpers import (
+    aggregate_series_to_bins,
+    calculate_overall_bpm,
+    compute_band_rms_frames,
+    decode_pcm_chunk_to_mono,
+)
 from .resources.skey_model import KEY_MAP as SKEY_KEY_MAP
 from .resources.skey_model import load_skey_components
+from .vocal_activity import (
+    FIRERED_SAMPLE_RATE,
+    FireRedFbank,
+    infer_firered_chunk,
+    load_firered_components,
+    split_firered_features,
+    vocal_activity_probabilities,
+)
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -38,6 +54,10 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 ANALYSIS_SAMPLE_RATE = 22050
+# Below the recommended thresholds the provider still runs, but we surface an
+# informational notice (see get_config_entries) as it may be tight under load.
+RECOMMENDED_RAM_GB = 6.0
+RECOMMENDED_CPU_CORES = 4
 
 
 @dataclass
@@ -56,13 +76,19 @@ class SmartFadesData:
     beats_feature_blocks: list[np.ndarray] = field(default_factory=list)
     energy_chunks: list[np.ndarray] = field(default_factory=list)
     centroid_chunks: list[np.ndarray] = field(default_factory=list)
+    frequency_band_chunks: dict[str, list[np.ndarray]] = field(default_factory=dict)
     musical_key_feature_blocks: list[torch.Tensor] = field(default_factory=list)
+    vocal_resampler: soxr.ResampleStream | None = None
+    vocal_fbank: FireRedFbank | None = None
+    vocal_feature_blocks: list[np.ndarray] = field(default_factory=list)
 
 
 class SmartFadesProvider(AudioAnalysisProvider):
     """Smart fades audio analysis provider using Beat This for beat tracking."""
 
     max_analysis_duration = ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS
+    # v3: FireRed AED vocal activity
+    analysis_version = 3
     has_unloadable_models = True
 
     def __init__(
@@ -76,6 +102,20 @@ class SmartFadesProvider(AudioAnalysisProvider):
         super().__init__(mass, manifest, config, supported_features)
         self._data: dict[str, SmartFadesData] = {}
         self._device = "cpu"
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return config entries for this provider."""
+        return (
+            ConfigEntry(
+                key="resource_warning",
+                type=ConfigEntryType.ALERT,
+                required=False,
+                hidden=system_meets_requirements(
+                    min_memory_gb=RECOMMENDED_RAM_GB,
+                    min_cpu_cores=RECOMMENDED_CPU_CORES,
+                ),
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider; idle models are reloaded on demand."""
@@ -120,14 +160,11 @@ class SmartFadesProvider(AudioAnalysisProvider):
         """Cancel a beat tracking session."""
         data = self._data.pop(session_id, None)
         if data:
-            data.pcm_buffer.clear()
-            data.beats_feature_blocks.clear()
-            data.musical_key_feature_blocks.clear()
-            data.features.reset()
+            self._clear_session_data(data)
         await super().cancel(session_id)
 
     async def _load_models(self) -> None:
-        """Load the Beat This and S-KEY models into memory."""
+        """Load the Beat This, S-KEY, and FireRed AED models into memory."""
         (
             self._beat_this_model,
             self._beat_this_post_processor,
@@ -135,16 +172,22 @@ class SmartFadesProvider(AudioAnalysisProvider):
             self._skey_chromanet,
             self._skey_crop,
             self._spectral_centroid,
+            self._firered_model,
+            self._firered_cmvn_means,
+            self._firered_cmvn_inverse_std,
         ) = await asyncio.to_thread(self._initialize_models)
 
     def _free_models(self) -> None:
-        """Release the Beat This and S-KEY models."""
+        """Release the Beat This, S-KEY, and FireRed AED models."""
         self._beat_this_model = None
         self._beat_this_post_processor = None
         self._skey_vqt = None
         self._skey_chromanet = None
         self._skey_crop = None
         self._spectral_centroid = None
+        self._firered_model = None
+        self._firered_cmvn_means = None
+        self._firered_cmvn_inverse_std = None
 
     def _initialize_models(self) -> tuple[Any, ...]:
         """Initialize ML models (runs in a thread to avoid blocking the event loop)."""
@@ -163,6 +206,9 @@ class SmartFadesProvider(AudioAnalysisProvider):
         )
         skey_vqt, skey_chromanet, skey_crop = load_skey_components(device=self._device)
         spectral_centroid = SpectralCentroid(sample_rate=ANALYSIS_SAMPLE_RATE, hop_length=512)
+        firered_model, firered_cmvn_means, firered_cmvn_inverse_std = load_firered_components(
+            device=self._device
+        )
         return (
             beat_this_model,
             beat_this_post_processor,
@@ -170,6 +216,9 @@ class SmartFadesProvider(AudioAnalysisProvider):
             skey_chromanet,
             skey_crop,
             spectral_centroid,
+            firered_model,
+            firered_cmvn_means,
+            firered_cmvn_inverse_std,
         )
 
     async def _start_analysis(
@@ -204,6 +253,18 @@ class SmartFadesProvider(AudioAnalysisProvider):
             )
             if needs_resample
             else None,
+            vocal_resampler=soxr.ResampleStream(
+                in_rate=audio_format.sample_rate,
+                out_rate=FIRERED_SAMPLE_RATE,
+                num_channels=1,
+                dtype="float32",
+            )
+            if audio_format.sample_rate != FIRERED_SAMPLE_RATE
+            else None,
+            vocal_fbank=FireRedFbank(
+                self._firered_cmvn_means,
+                self._firered_cmvn_inverse_std,
+            ),
         )
         self.logger.debug("Started beat tracking session %s", session_id)
         return True
@@ -214,69 +275,122 @@ class SmartFadesProvider(AudioAnalysisProvider):
         if not data:
             return None
 
-        # Flush remaining buffered PCM
-        if data.pcm_samples:
-            await self._process_block(data, last=True)
+        try:
+            if data.pcm_samples:
+                await self._process_block(data, last=True)
+            else:
+                # The vocal resampler and fbank still need an explicit end-of-input flush.
+                await self._run_offloaded(
+                    self._compute_vocal_features,
+                    np.empty(0, dtype=np.float32),
+                    data,
+                    True,
+                )
 
-        # Get final features with end padding
-        final_feats = await data.features.finalize()
-        if final_feats.size:
-            data.beats_feature_blocks.append(final_feats)
+            final_feats = await data.features.finalize()
+            if final_feats.size:
+                data.beats_feature_blocks.append(final_feats)
+            if not data.beats_feature_blocks:
+                return None
 
-        if not data.beats_feature_blocks:
-            return None
+            feats = np.concatenate(data.beats_feature_blocks, axis=0)
+            data.beats_feature_blocks.clear()
+            duration = data.total_pcm_samples / ANALYSIS_SAMPLE_RATE
 
-        feats = np.concatenate(data.beats_feature_blocks, axis=0)
-        duration = data.total_pcm_samples / ANALYSIS_SAMPLE_RATE
+            all_vqt = None
+            if data.musical_key_feature_blocks:
+                all_vqt = torch.cat(data.musical_key_feature_blocks, dim=-1)  # (1, 1, 84, T_total)
+                data.musical_key_feature_blocks.clear()
 
-        # Prepare VQT features for key detection
-        all_vqt = None
-        if data.musical_key_feature_blocks:
-            all_vqt = torch.cat(data.musical_key_feature_blocks, dim=-1)  # (1, 1, 84, T_total)
-            data.musical_key_feature_blocks.clear()
+            if data.vocal_feature_blocks:
+                vocal_features = np.concatenate(data.vocal_feature_blocks)
+                data.vocal_feature_blocks.clear()
+            else:
+                vocal_features = np.empty((0, 80), dtype=np.float32)
 
-        # Run beat and key inference sequentially to keep peak CPU bounded.
-        beats, downbeats = await self._run_offloaded(self._infer_beat_timings, feats)
-        if len(beats) < 2:
-            raise AudioAnalysisError("no rhythmic beat detected")
-        key, mode = await self._run_offloaded(self._infer_musical_key, all_vqt)
+            beat_key_result, vocal_activity = await self._run_final_inference(
+                feats,
+                all_vqt,
+                vocal_features,
+                duration,
+            )
+            beats, downbeats, beats_per_bar, key, mode = beat_key_result
+            return self._build_analysis(
+                data,
+                duration,
+                beats,
+                downbeats,
+                beats_per_bar,
+                key,
+                mode,
+                vocal_activity,
+            )
+        finally:
+            self._clear_session_data(data)
 
+    def _build_analysis(
+        self,
+        data: SmartFadesData,
+        duration: float,
+        beats: np.ndarray,
+        downbeats: np.ndarray,
+        beats_per_bar: int,
+        key: str | None,
+        mode: str | None,
+        vocal_activity: np.ndarray,
+    ) -> AudioAnalysisData:
+        """Build the final Smart Fades analysis payload."""
         bpm = calculate_overall_bpm(beats)
 
-        # Interpolate energy and centroid to 1800 fixed bins
+        # mean power per bin: point sampling aliases beat-rate ripple into the bins
         rms_energy = None
+        energy_peak = 0.0
         if data.energy_chunks:
             energy_all = np.concatenate(data.energy_chunks)
             if len(energy_all) >= 2:
-                src_x = np.linspace(0, 1, len(energy_all))
-                dst_x = np.linspace(0, 1, 1800)
-                rms_energy = np.interp(dst_x, src_x, energy_all).astype(np.float32)
-                peak = rms_energy.max()
-                if peak > 0:
-                    rms_energy = rms_energy / peak
+                rms_energy = aggregate_series_to_bins(energy_all, 1800, power=True)
+                energy_peak = float(rms_energy.max())
+                if energy_peak > 0:
+                    rms_energy = rms_energy / energy_peak
 
         spectral_centroid = None
         if data.centroid_chunks:
             centroid_all = np.concatenate(data.centroid_chunks)
             if len(centroid_all) >= 2:
-                src_x = np.linspace(0, 1, len(centroid_all))
-                dst_x = np.linspace(0, 1, 1800)
-                spectral_centroid = np.interp(dst_x, src_x, centroid_all).astype(np.float32)
+                spectral_centroid = aggregate_series_to_bins(centroid_all, 1800)
                 # Zero out centroid where energy is negligible (noise dominates)
                 if rms_energy is not None:
                     spectral_centroid[rms_energy < 0.01] = 0.0
 
+        vocal_activity_bins = (
+            aggregate_series_to_bins(vocal_activity, 1800)
+            if vocal_activity.size
+            else np.zeros(1800, dtype=np.float32)
+        )
+        extra_data: dict[str, Any] = {"vocal_activity": vocal_activity_bins.tolist()}
+        if energy_peak > 0 and data.frequency_band_chunks:
+            extra_data["band_rms"] = {
+                name: (
+                    aggregate_series_to_bins(np.concatenate(chunks), 1800, power=True) / energy_peak
+                ).tolist()
+                for name, chunks in data.frequency_band_chunks.items()
+            }
+
         analysis = AudioAnalysisData(
             bpm=bpm,
-            beats=beats,
-            downbeats=downbeats,
+            # the model stores plain float lists (numpy-free); convert the analysis arrays
+            beats=beats.tolist(),
+            downbeats=downbeats.tolist(),
             duration=duration,
-            rms_energy=rms_energy,
-            spectral_centroid=spectral_centroid,
+            rms_energy=rms_energy.tolist() if rms_energy is not None else None,
+            spectral_centroid=(
+                spectral_centroid.tolist() if spectral_centroid is not None else None
+            ),
             key=key,
             mode=mode,
+            extra_data=extra_data,
+            beats_per_bar=beats_per_bar or None,
         )
-
         self.logger.debug(
             "Beat analysis for %s: BPM=%.1f, %d beats, %d downbeats, key=%s",
             data.item_id,
@@ -290,7 +404,9 @@ class SmartFadesProvider(AudioAnalysisProvider):
     async def _process_block(self, data: SmartFadesData, *, last: bool = False) -> None:
         """Resample accumulated PCM buffer and extract features."""
         start_time = time.perf_counter()
-        pcm_raw = np.concatenate(data.pcm_buffer)
+        pcm_raw = (
+            np.concatenate(data.pcm_buffer) if data.pcm_buffer else np.empty(0, dtype=np.float32)
+        )
         data.pcm_buffer.clear()
         data.pcm_samples = 0
 
@@ -301,10 +417,19 @@ class SmartFadesProvider(AudioAnalysisProvider):
 
         data.total_pcm_samples += len(pcm_22k)
 
-        feats, _ = await asyncio.gather(
-            data.features.process_pcm(pcm_22k),
-            self._run_offloaded(self._compute_energy_and_spectral_centroids, pcm_22k, data),
-        )
+        if pcm_22k.size:
+            feats, _, _ = await asyncio.gather(
+                data.features.process_pcm(pcm_22k),
+                self._run_offloaded(
+                    self._compute_energy_and_spectral_centroids,
+                    pcm_22k,
+                    data,
+                ),
+                self._run_offloaded(self._compute_vocal_features, pcm_raw, data, last),
+            )
+        else:
+            await self._run_offloaded(self._compute_vocal_features, pcm_raw, data, last)
+            feats = np.empty((0, 128), dtype=np.float32)
 
         if feats.size:
             data.beats_feature_blocks.append(feats)
@@ -332,13 +457,123 @@ class SmartFadesProvider(AudioAnalysisProvider):
             if rms_list:
                 data.energy_chunks.append(np.concatenate(rms_list).astype(np.float32))
 
+            band_frames = compute_band_rms_frames(pcm_22k, sr, window_samples)
+            for name, frames in band_frames.items():
+                data.frequency_band_chunks.setdefault(name, []).append(frames)
+
         # Spectral centroid: keep per-frame (hop_length=512, ~43 frames/s)
         # Skip short tail buffers: STFT reflect-pad requires len > n_fft // 2.
         if len(pcm_22k) >= self._spectral_centroid.n_fft:
             pcm_tensor = torch.from_numpy(pcm_22k)
             centroid_frames = self._spectral_centroid(pcm_tensor.unsqueeze(0)).squeeze(0).numpy()
+            # digitally-silent frames divide 0/0 into NaN; treat them as 0 Hz like
+            # other negligible-energy frames so no non-finite value is ever stored
+            np.nan_to_num(centroid_frames, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
             if len(centroid_frames) > 0:
                 data.centroid_chunks.append(centroid_frames.astype(np.float32))
+
+    def _compute_vocal_features(
+        self,
+        pcm_raw: np.ndarray,
+        data: SmartFadesData,
+        last: bool,
+    ) -> None:
+        """Resample source PCM to 16 kHz and extract FireRed fbank features."""
+        fbank = data.vocal_fbank
+        resampler = data.vocal_resampler
+        if fbank is None:
+            return
+        pcm_16k = resampler.resample_chunk(pcm_raw, last) if resampler is not None else pcm_raw
+        features = fbank.process(pcm_16k)
+        if features.size:
+            data.vocal_feature_blocks.append(features)
+        if last:
+            final_features = fbank.finalize()
+            if final_features.size:
+                data.vocal_feature_blocks.append(final_features)
+
+    async def _run_final_inference(
+        self,
+        beat_features: np.ndarray,
+        key_features: torch.Tensor | None,
+        vocal_features: np.ndarray,
+        duration: float,
+    ) -> tuple[tuple[np.ndarray, np.ndarray, int, str | None, str | None], np.ndarray]:
+        """Run beat/key and vocal inference branches; the first failure cancels the other."""
+        try:
+            async with asyncio.TaskGroup() as task_group:
+                beat_key_task = task_group.create_task(
+                    self._infer_beats_and_key(beat_features, key_features)
+                )
+                vocal_task = task_group.create_task(
+                    self._infer_vocal_activity(vocal_features, duration)
+                )
+        except ExceptionGroup as group:
+            # Unwrap for the base class; prefer the beat/key error since it decides
+            # permanent vs retryable failure recording.
+            beat_key_error = None if beat_key_task.cancelled() else beat_key_task.exception()
+            primary = beat_key_error or group.exceptions[0]
+            for error in group.exceptions:
+                if error is not primary:
+                    self.logger.debug("FireRed vocal inference also failed: %s", error)
+            raise primary from primary.__cause__
+        return beat_key_task.result(), vocal_task.result()
+
+    async def _infer_beats_and_key(
+        self,
+        beat_features: np.ndarray,
+        key_features: torch.Tensor | None,
+    ) -> tuple[np.ndarray, np.ndarray, int, str | None, str | None]:
+        """Run beat inference followed by musical key inference."""
+        beats, downbeats, beats_per_bar = await self._run_offloaded(
+            self._infer_beat_timings,
+            beat_features,
+        )
+        if len(beats) < 2:
+            raise AudioAnalysisError("no rhythmic beat detected")
+        key, mode = await self._run_offloaded(self._infer_musical_key, key_features)
+        return beats, downbeats, beats_per_bar, key, mode
+
+    async def _infer_vocal_activity(
+        self,
+        features: np.ndarray,
+        duration: float,
+    ) -> np.ndarray:
+        """Run FireRed AED inference and return the 100 ms vocal timeline."""
+        try:
+            model = self._firered_model
+            if model is None:
+                raise RuntimeError("FireRed AED model is not loaded")
+            compute_seconds = 0.0
+            chunks = []
+            for chunk, core_offset, core_length in split_firered_features(features):
+                chunk_probabilities, elapsed = await self._run_offloaded_timed(
+                    infer_firered_chunk,
+                    model,
+                    chunk,
+                    self._device,
+                )
+                compute_seconds += elapsed
+                chunks.append(chunk_probabilities[core_offset : core_offset + core_length])
+            frame_probabilities = (
+                np.concatenate(chunks) if chunks else np.empty((0, 3), dtype=np.float32)
+            )
+            probabilities = vocal_activity_probabilities(frame_probabilities, duration)
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            # Avoid permanently suppressing beat and key results for transient model failures.
+            raise AudioAnalysisError(
+                f"FireRed vocal inference failed: {err}",
+                retry_at=utc() + timedelta(hours=24),
+            ) from err
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "FireRed vocal inference: %.1fms compute over %d frames",
+            compute_seconds * 1000,
+            len(features),
+        )
+        return probabilities
 
     def _compute_musical_key_features(
         self, pcm_mono: np.ndarray, sample_rate: int, data: SmartFadesData
@@ -374,8 +609,8 @@ class SmartFadesProvider(AudioAnalysisProvider):
         )
         return parts[0], parts[1].lower()
 
-    def _infer_beat_timings(self, feats: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-        """Run Beat This model inference to detect beat and downbeat timings."""
+    def _infer_beat_timings(self, feats: np.ndarray) -> tuple[np.ndarray, np.ndarray, int]:
+        """Run Beat This model inference to detect beat/downbeat timings and the meter."""
         assert self._beat_this_model is not None
         assert self._beat_this_post_processor is not None
 
@@ -400,7 +635,7 @@ class SmartFadesProvider(AudioAnalysisProvider):
             ]
         )
 
-        dbn_out = self._beat_this_post_processor(combined_act)
+        dbn_out, beats_per_bar = self._beat_this_post_processor(combined_act)
         post_elapsed = (time.perf_counter() - post_start) * 1000
 
         beats = dbn_out[:, 0]
@@ -415,4 +650,17 @@ class SmartFadesProvider(AudioAnalysisProvider):
             len(downbeats),
         )
 
-        return beats, downbeats
+        return beats, downbeats, beats_per_bar
+
+    def _clear_session_data(self, data: SmartFadesData) -> None:
+        """Release all state retained for an analysis session."""
+        data.pcm_buffer.clear()
+        data.beats_feature_blocks.clear()
+        data.energy_chunks.clear()
+        data.centroid_chunks.clear()
+        data.frequency_band_chunks.clear()
+        data.musical_key_feature_blocks.clear()
+        data.vocal_feature_blocks.clear()
+        data.resampler = None
+        data.vocal_resampler = None
+        data.vocal_fbank = None

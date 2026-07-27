@@ -9,9 +9,8 @@ classifiers = [
   "Programming Language :: Python :: 3.14",
 ]
 dependencies = [
-  "aiodns>=3.2.0", # Pin pycares to 4.11.0 until aiodns is updated to support pycares 5.0 API changes  # pycares 5.0.0 (released 2025-12-10) has breaking changes incompatible with current aiodns
-  "pycares==4.11.0",
-  "aiohttp_asyncmdnsresolver==0.1.1",
+  "aiodns>=4.0.4",
+  "aiohttp_asyncmdnsresolver==0.2.0",
   "Brotli>=1.0.9",
   "aiohttp==3.14.1",
   "aiohttp-fast-zlib==0.3.0",
@@ -27,11 +26,11 @@ dependencies = [
   "ifaddr==0.2.0",
   "getmac==0.9.5",
   "mashumaro==3.20",
-  "music-assistant-models==1.1.151",
-  "music-assistant-frontend==2.17.209",
-  "mutagen==1.47.0",
+  "music-assistant-frontend==2.17.246",
+  "music-assistant-models==1.1.173",
+  "mutagen==1.48.1",
   "orjson==3.11.6",
-  "pillow==12.2.0",
+  "pillow==12.3.0",
   "podcastparser==0.6.11",
   "propcache>=0.2.1",
   "python-slugify==8.0.4",
@@ -43,10 +42,11 @@ dependencies = [
   "uv>=0.8.0",
   "librosa==0.11.0",
   "numpy==2.3.5", # numpy 2.4.0+ uses X86_V2 CPU baseline (requires SSE4.2) which breaks older CPUs https://github.com/music-assistant/support/issues/5005#issuecomment-3972476728
-  "torch==2.12.1",
+  "torch==2.13.0",
   "torchaudio==2.11.0",
   "gql[all]==4.0.0",
-  "aiortc>=1.6.0",
+  # TEMPORARY test-drive pin — replace with PyPI release before merge (see webrtc_aiolibdatachannel_plan.md Phase C)
+  "aiolibdatachannel @ git+https://github.com/music-assistant/aiolibdatachannel@feat/certpem-testdrive",
   "pyjwt[crypto]>=2.10.1",
 ]
 description = "Music Assistant"
@@ -57,16 +57,20 @@ version = "0.0.0"
 
 [project.optional-dependencies]
 test = [
-  "codespell==2.4.2",
-  "mypy==2.1.0",
-  "pre-commit==4.5.1",
+  "codespell==2.4.3",
+  "mypy==2.3.0",
+  "pre-commit==4.6.0",
   "pre-commit-hooks==6.0.0",
+  "psutil==7.2.2",
   "pytest==9.0.3",
   "pytest-aiohttp==1.1.0",
+  "pytest-codspeed==5.0.3",
   "pytest-cov==7.0.0",
+  "pytest-timeout==2.4.0",
   "syrupy==5.2.0",
   "tomli==2.4.1",
-  "ruff==0.15.6",
+  "ruff==0.15.22",
+  "yappi==1.7.6",
 ]
 
 [project.scripts]
@@ -180,6 +184,7 @@ line-ending = "lf"
 [tool.pytest.ini_options]
 addopts = "--cov music_assistant"
 asyncio_mode = "auto"
+timeout = 120
 filterwarnings = [
   # Suppress Python 3.14 AsyncMock internal warnings about unawaited coroutines
   "ignore:coroutine.*was never awaited:RuntimeWarning",

@@ -7,6 +7,8 @@ import logging
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import SetupFailedError
 from music_assistant_models.player import PlayerSource
 from pyheos import Heos, HeosError, HeosOptions, MediaItem, PlayerUpdateResult, const
@@ -22,6 +24,7 @@ from .constants import (
     CONNECT_INITIAL_RETRY_DELAY,
     CONNECT_MAX_ATTEMPTS,
     CONNECT_RETRY_BACKOFF_FACTOR,
+    DEFAULT_TIMEOUT,
 )
 from .player import HeosPlayer
 
@@ -53,6 +56,27 @@ class HeosPlayerProvider(PlayerProvider):
         super().__init__(mass, manifest, config, supported_features)
         self._music_source_list: list[PlayerSource] = []
         self._input_source_list: list[MediaItem] = []
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_IP_ADDRESS,
+                type=ConfigEntryType.STRING,
+                required=False,
+                advanced=True,
+                requires_reload=True,
+            ),
+            ConfigEntry(
+                key=CONF_TIMEOUT,
+                type=ConfigEntryType.INTEGER,
+                default_value=DEFAULT_TIMEOUT,
+                required=False,
+                range=(10, 60),
+                requires_reload=True,
+                advanced=True,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

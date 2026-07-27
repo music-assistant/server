@@ -20,8 +20,10 @@ from typing import Any, Final
 from colorlog import ColoredFormatter
 
 from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.logging import activate_log_queue_handler
+from music_assistant.helpers.util import cap_native_thread_pools
 from music_assistant.mass import MusicAssistant
 
 FORMAT_DATE: Final = "%Y-%m-%d"
@@ -107,6 +109,10 @@ def setup_logger(data_path: str, level: str = "DEBUG") -> logging.Logger:
     # The standard destination for them is stderr, which may end up unnoticed.
     # This way they're where other messages are, and can be filtered as usual.
     logging.captureWarnings(True)
+
+    # install the always-on diagnostics capture handler as early as possible
+    # so boot-time warnings/errors end up in the diagnostics report
+    install_diagnostics_log_handler()
 
     # setup file handler
     log_filename = os.path.join(data_path, "musicassistant.log")
@@ -234,6 +240,11 @@ def main() -> None:
 
     # setup logger
     logger = setup_logger(data_dir, log_level)
+
+    # Size the native BLAS/OpenMP pools before any provider imports a math library,
+    # because those pools read the environment once at load time.
+    blas_budget = cap_native_thread_pools()
+    LOGGER.debug("Native BLAS/OpenMP thread pools capped to %d thread(s)", blas_budget)
 
     # Raise the open-file soft limit to the hard limit so the concurrent provider
     # imports at startup can't exhaust it (default soft=1024 in HAOS add-on containers).

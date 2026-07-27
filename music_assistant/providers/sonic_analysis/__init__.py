@@ -38,7 +38,7 @@ from .helpers import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.provider import ProviderManifest
@@ -120,44 +120,6 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider instance with given configuration."""
     return SonicAnalysisProvider(mass, manifest, config)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    :param mass: MusicAssistant instance.
-    :param instance_id: id of an existing provider instance (None if new instance setup).
-    :param action: action key called from config entries UI.
-    :param values: the (intermediate) raw values for config entries sent with the action.
-    """
-    return (
-        ConfigEntry(
-            key="resource_warning",
-            type=ConfigEntryType.ALERT,
-            required=False,
-            hidden=system_meets_requirements(
-                min_memory_gb=RECOMMENDED_RAM_GB,
-                min_cpu_cores=RECOMMENDED_CPU_CORES,
-            ),
-        ),
-        ConfigEntry(
-            key=CONF_CLAP_SAMPLING,
-            type=ConfigEntryType.STRING,
-            default_value=CLAP_SAMPLING_FAST,
-            options=[
-                ConfigValueOption(CLAP_SAMPLING_FAST),
-                ConfigValueOption(CLAP_SAMPLING_BALANCED),
-                ConfigValueOption(CLAP_SAMPLING_THOROUGH),
-            ],
-            required=False,
-        ),
-    )
 
 
 def compute_clap_target_starts(
@@ -341,6 +303,31 @@ class SonicAnalysisProvider(AudioAnalysisProvider):
         self._clap_model: Any = None
         self._clap_text_embeddings: Any = None
         self._clap_prompt_order: list[tuple[str, tuple[str, str]]] = []
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            ConfigEntry(
+                key="resource_warning",
+                type=ConfigEntryType.ALERT,
+                required=False,
+                hidden=system_meets_requirements(
+                    min_memory_gb=RECOMMENDED_RAM_GB,
+                    min_cpu_cores=RECOMMENDED_CPU_CORES,
+                ),
+            ),
+            ConfigEntry(
+                key=CONF_CLAP_SAMPLING,
+                type=ConfigEntryType.STRING,
+                default_value=CLAP_SAMPLING_FAST,
+                options=[
+                    ConfigValueOption(CLAP_SAMPLING_FAST),
+                    ConfigValueOption(CLAP_SAMPLING_BALANCED),
+                    ConfigValueOption(CLAP_SAMPLING_THOROUGH),
+                ],
+                required=False,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """

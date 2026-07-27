@@ -17,8 +17,12 @@ Architecture Overview:
 
 from __future__ import annotations
 
-from typing import override
+from typing import TYPE_CHECKING, override
 
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
+
+from music_assistant.providers.nicovideo.config import build_config_entries
 from music_assistant.providers.nicovideo.provider_mixins import (
     NicovideoMusicProviderAlbumMixin,
     NicovideoMusicProviderArtistMixin,
@@ -51,6 +55,10 @@ class NicovideoMusicProvider(
     """Coordinator combining all nicovideo provider mixins."""
 
     @override
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return await build_config_entries()
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         for mixin_class in NICOVIDEO_MIXINS:

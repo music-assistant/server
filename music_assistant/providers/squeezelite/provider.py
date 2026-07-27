@@ -9,7 +9,8 @@ from aiohttp import web
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import SlimEvent
 from aioslimproto.server import SlimServer
-from music_assistant_models.enums import MediaType
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, MediaType
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import CONF_PORT, CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
@@ -17,7 +18,12 @@ from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import is_port_in_use
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import CONF_CLI_JSON_PORT, CONF_CLI_TELNET_PORT
+from .constants import (
+    CONF_CLI_JSON_PORT,
+    CONF_CLI_TELNET_PORT,
+    CONF_DISCOVERY,
+    DEFAULT_SLIMPROTO_PORT,
+)
 from .player import SqueezelitePlayer
 
 if TYPE_CHECKING:
@@ -28,6 +34,34 @@ class SqueezelitePlayerProvider(PlayerProvider):
     """Player provider for players using slimproto (like Squeezelite)."""
 
     slimproto: SlimServer | None = None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_CLI_TELNET_PORT,
+                type=ConfigEntryType.INTEGER,
+                default_value=9090,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_CLI_JSON_PORT,
+                type=ConfigEntryType.INTEGER,
+                default_value=9000,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_DISCOVERY,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_PORT,
+                type=ConfigEntryType.INTEGER,
+                default_value=DEFAULT_SLIMPROTO_PORT,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -206,14 +240,17 @@ class SqueezelitePlayerProvider(PlayerProvider):
             content_bit_depth=stream.audio_format.bit_depth,  # Flow PCM bit depth (32)
             media_type=MediaType.FLOW_STREAM,
         )
+        output_plan = self.mass.streams.audio.get_player_output_plan(
+            child_player_id,
+            stream.audio_format,
+            output_format,
+            queue_id=stream.queue_id,
+            session_id=stream.session_id,
+        )
 
         async for chunk in stream.get_stream(
             output_format=output_format,
-            filter_params=self.mass.streams.audio.get_player_filter_params(
-                child_player_id, stream.audio_format, output_format
-            )
-            if child_player_id
-            else None,
+            filter_params=output_plan.filter_params,
         ):
             try:
                 await resp.write(chunk)

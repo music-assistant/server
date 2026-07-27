@@ -8,6 +8,8 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType, ContentType
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.helpers.ffmpeg import DEFAULT_MP3_BIT_RATE
+
 UGP_PREFIX: Final[str] = "ugp_"
 
 # Grace period (seconds) before a universal group releases its members after
@@ -30,7 +32,13 @@ UGP_OUTPUT_FLAC_48000_24: Final[str] = "flac_48000_24"
 # multiplexer runs at exactly the rate the encoder needs.
 UGP_OUTPUT_FORMATS: Final[dict[str, tuple[AudioFormat, str]]] = {
     UGP_OUTPUT_MP3: (
-        AudioFormat(content_type=ContentType.MP3, sample_rate=44100, bit_depth=16),
+        AudioFormat(
+            content_type=ContentType.MP3,
+            codec_type=ContentType.MP3,
+            sample_rate=44100,
+            bit_depth=16,
+            bit_rate=DEFAULT_MP3_BIT_RATE,
+        ),
         "mp3",
     ),
     UGP_OUTPUT_FLAC_44100_16: (

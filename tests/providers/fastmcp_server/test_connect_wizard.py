@@ -18,6 +18,7 @@ import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 import yaml
@@ -31,6 +32,7 @@ from music_assistant.providers.fastmcp_server._init_helpers import (
 from music_assistant.providers.fastmcp_server.connect.actions import handle_open_connect_action
 from music_assistant.providers.fastmcp_server.connect.clients import CLIENTS, lookup_client
 from music_assistant.providers.fastmcp_server.connect.mount import mount_connect_wizard
+from music_assistant.providers.fastmcp_server.connect.page import HTML
 from music_assistant.providers.fastmcp_server.constants import CONF_CONNECT_EXTERNAL_URL
 
 from .conftest import FakeWebserver, build_aiohttp_app
@@ -786,14 +788,14 @@ async def test_mount_path_relative(wizard_mass: MagicMock) -> None:
         unmount()
 
 
-# ── ACTION handler (signal_event) ────────────────────────────────────────────
+# ── ACTION handler (returned wizard URL) ─────────────────────────────────────
 
 
 async def test_action_handler_signals_url_with_bootstrap(
     wizard_mass: MagicMock, mock_user: MagicMock
 ) -> None:
     """Action handler mints a bootstrap token and signals a URL containing it."""
-    await handle_open_connect_action(
+    url = await handle_open_connect_action(
         wizard_mass,
         current_user=mock_user,
         mount_path="/mcp/v1",
@@ -805,9 +807,6 @@ async def test_action_handler_signals_url_with_bootstrap(
         name="MCP — wizard bootstrap",
         is_long_lived=False,
     )
-    wizard_mass.signal_event.assert_called_once()
-    args, kwargs = wizard_mass.signal_event.call_args
-    url = kwargs.get("data") if "data" in kwargs else args[-1]
     assert isinstance(url, str)
     # Path-only URL — the MA frontend resolves it against the user's location
     # so the wizard works in Docker / HA add-on deployments where MA's
@@ -827,15 +826,13 @@ async def test_action_handler_uses_url_fragment_for_bootstrap(
     Fragments are never sent to the server, so this is the only form that
     keeps short-lived bootstraps out of log files.
     """
-    await handle_open_connect_action(
+    url = await handle_open_connect_action(
         wizard_mass,
         current_user=mock_user,
         mount_path="/mcp/v1",
         base_url="http://localhost:8095",
     )
 
-    _, kwargs = wizard_mass.signal_event.call_args
-    url = kwargs.get("data") if "data" in kwargs else wizard_mass.signal_event.call_args[0][-1]
     assert isinstance(url, str)
     assert "#bootstrap=" in url, f"bootstrap should ride in #fragment, got {url!r}"
     assert "?bootstrap=" not in url, (
@@ -847,7 +844,7 @@ async def test_action_handler_no_user_signals_plain_url(wizard_mass: MagicMock) 
     """Without a current user we still open the wizard, but without a bootstrap query."""
     wizard_mass.webserver.auth.create_token.reset_mock()
 
-    await handle_open_connect_action(
+    url = await handle_open_connect_action(
         wizard_mass,
         current_user=None,
         mount_path="/mcp/v1",
@@ -855,9 +852,6 @@ async def test_action_handler_no_user_signals_plain_url(wizard_mass: MagicMock) 
     )
 
     wizard_mass.webserver.auth.create_token.assert_not_called()
-    wizard_mass.signal_event.assert_called_once()
-    args, kwargs = wizard_mass.signal_event.call_args
-    url = kwargs.get("data") if "data" in kwargs else args[-1]
     assert isinstance(url, str)
     assert "bootstrap=" not in url
 
@@ -871,16 +865,13 @@ async def test_action_handler_external_base_url_prepended(
     Covers HA add-on ingress, where the path-only URL drops the ingress prefix
     and the wizard opens at the wrong location.
     """
-    await handle_open_connect_action(
+    url = await handle_open_connect_action(
         wizard_mass,
         current_user=mock_user,
         mount_path="/mcp/v1",
         external_base_url="https://ha.example.com/d5369777_music_assistant_dev",
     )
 
-    wizard_mass.signal_event.assert_called_once()
-    args, kwargs = wizard_mass.signal_event.call_args
-    url = kwargs.get("data") if "data" in kwargs else args[-1]
     assert isinstance(url, str)
     assert url.startswith("https://ha.example.com/d5369777_music_assistant_dev/mcp/v1/connect")
     assert "bootstrap=jwt-xyz" in url
@@ -890,31 +881,50 @@ async def test_action_handler_external_base_url_strips_trailing_slash(
     wizard_mass: MagicMock,
 ) -> None:
     """A trailing slash on ``external_base_url`` must not produce a double-slash."""
-    await handle_open_connect_action(
+    url = await handle_open_connect_action(
         wizard_mass,
         current_user=None,
         mount_path="/mcp/v1",
         external_base_url="https://ha.example.com/addon/",
     )
 
-    args, kwargs = wizard_mass.signal_event.call_args
-    url = kwargs.get("data") if "data" in kwargs else args[-1]
     assert url == "https://ha.example.com/addon/mcp/v1/connect"
+
+
+async def test_action_handler_includes_ingress_aware_setup_callback(
+    wizard_mass: MagicMock,
+) -> None:
+    """A setup callback uses the same ingress prefix as the opened wizard."""
+    url = await handle_open_connect_action(
+        wizard_mass,
+        current_user=None,
+        mount_path="/mcp/v1",
+        external_base_url="https://ha.example.com/addon",
+        setup_callback_path="/setup_flow/callback/a1b2",
+    )
+
+    fragment = parse_qs(urlsplit(url).fragment)
+    assert fragment["setup_callback"] == ["/addon/setup_flow/callback/a1b2"]
+
+
+def test_wizard_signals_setup_after_client_config_is_available() -> None:
+    """The browser wizard retains and signals the setup callback after token generation."""
+    assert 'params.get("setup_callback")' in HTML
+    assert "signalSetupComplete();" in HTML
+    assert "fetch(state.setupCallback" in HTML
 
 
 async def test_action_handler_empty_external_base_url_falls_back_to_path(
     wizard_mass: MagicMock,
 ) -> None:
     """An empty / ``None`` ``external_base_url`` preserves the legacy path-only URL."""
-    await handle_open_connect_action(
+    url = await handle_open_connect_action(
         wizard_mass,
         current_user=None,
         mount_path="/mcp/v1",
         external_base_url="",
     )
 
-    args, kwargs = wizard_mass.signal_event.call_args
-    url = kwargs.get("data") if "data" in kwargs else args[-1]
     assert url == "/mcp/v1/connect"
 
 
@@ -949,7 +959,6 @@ async def test_open_connect_gcs_prior_wizard_tokens(
         name="MCP — wizard bootstrap",
         is_long_lived=False,
     )
-    wizard_mass.signal_event.assert_called_once()
 
 
 async def test_open_connect_gc_lookup_failure_does_not_block(
@@ -966,7 +975,6 @@ async def test_open_connect_gc_lookup_failure_does_not_block(
     )
 
     auth.create_token.assert_awaited_once()
-    wizard_mass.signal_event.assert_called_once()
 
 
 async def test_open_connect_no_user_skips_gc(wizard_mass: MagicMock) -> None:
@@ -1107,7 +1115,6 @@ async def test_dispatch_detects_ws_client_base_url(
     user = _matching_user()
     _install_fake_ma_auth_middleware(monkeypatch, user)
 
-    signalled: list[str] = []
     mass = MagicMock()
     mass.webserver.clients = [
         SimpleNamespace(
@@ -1116,17 +1123,13 @@ async def test_dispatch_detects_ws_client_base_url(
         )
     ]
     mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
-    mass.signal_event = MagicMock(
-        side_effect=lambda _evt, object_id, data: signalled.append(data)  # noqa: ARG005
-    )
 
-    await _dispatch_open_connect(
+    url = await _dispatch_open_connect(
         mass,
-        {"mount_path": "/mcp/v1", "session_id": "sess-x"},
+        {"mount_path": "/mcp/v1"},
     )
 
-    assert signalled, "expected signal_event to be called"
-    url = signalled[0]
+    assert url is not None
     assert url.startswith("https://ha.example.com/d5369777_music_assistant_dev/mcp/v1/connect")
     assert "bootstrap=jwt-xyz" in url
 
@@ -1138,24 +1141,19 @@ async def test_dispatch_falls_back_to_config_override(
     user = _matching_user()
     _install_fake_ma_auth_middleware(monkeypatch, user)
 
-    signalled: list[str] = []
     mass = MagicMock()
     mass.webserver.clients = []
     mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
-    mass.signal_event = MagicMock(
-        side_effect=lambda _evt, object_id, data: signalled.append(data)  # noqa: ARG005
-    )
 
-    await _dispatch_open_connect(
+    url = await _dispatch_open_connect(
         mass,
         {
             "mount_path": "/mcp/v1",
-            "session_id": "sess-y",
             CONF_CONNECT_EXTERNAL_URL: "https://override.example.com",
         },
     )
 
-    url = signalled[0]
+    assert url is not None
     assert url.startswith("https://override.example.com/mcp/v1/connect")
 
 
@@ -1171,24 +1169,19 @@ async def test_dispatch_rejects_unsafe_override_and_falls_back(
     user = _matching_user()
     _install_fake_ma_auth_middleware(monkeypatch, user)
 
-    signalled: list[str] = []
     mass = MagicMock()
     mass.webserver.clients = []
     mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
-    mass.signal_event = MagicMock(
-        side_effect=lambda _evt, object_id, data: signalled.append(data)  # noqa: ARG005
-    )
 
-    await _dispatch_open_connect(
+    url = await _dispatch_open_connect(
         mass,
         {
             "mount_path": "/mcp/v1",
-            "session_id": "sess-bad",
             CONF_CONNECT_EXTERNAL_URL: "javascript:alert(1)",
         },
     )
 
-    url = signalled[0]
+    assert url is not None
     assert url.startswith("/mcp/v1/connect")
     assert "javascript" not in url
 
@@ -1200,22 +1193,36 @@ async def test_dispatch_falls_back_to_path_only_when_nothing_known(
     user = _matching_user()
     _install_fake_ma_auth_middleware(monkeypatch, user)
 
-    signalled: list[str] = []
     mass = MagicMock()
     mass.webserver.clients = []
     mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
-    mass.signal_event = MagicMock(
-        side_effect=lambda _evt, object_id, data: signalled.append(data)  # noqa: ARG005
-    )
 
-    await _dispatch_open_connect(
+    url = await _dispatch_open_connect(
         mass,
-        {"mount_path": "/mcp/v1", "session_id": "sess-z"},
+        {"mount_path": "/mcp/v1"},
     )
 
-    url = signalled[0]
+    assert url is not None
     assert url.startswith("/mcp/v1/connect")
     assert "://" not in url.split("?", 1)[0]
+
+
+async def test_dispatch_uses_server_base_url_for_direct_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Direct clients receive an absolute URL that the frontend will open."""
+    user = _matching_user()
+    _install_fake_ma_auth_middleware(monkeypatch, user)
+
+    mass = MagicMock()
+    mass.webserver.clients = []
+    mass.webserver.base_url = "http://192.0.2.20:8095"
+    mass.webserver.auth.create_token = AsyncMock(return_value="jwt-xyz")
+
+    url = await _dispatch_open_connect(mass, {"mount_path": "/mcp/v1"})
+
+    assert url is not None
+    assert url.startswith("http://192.0.2.20:8095/mcp/v1/connect")
 
 
 # ── Client template integrity ────────────────────────────────────────────────

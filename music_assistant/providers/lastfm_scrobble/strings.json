@@ -29,6 +29,19 @@
       "label": "Authorize with {0}"
     }
   },
+  "setup_flow": {
+    "user": {
+      "title": "Choose the scrobbling network",
+      "description": "Select Last.fm or Libre.fm. Advanced users can supply their own API key and secret; leave them blank to use the built-in Last.fm app."
+    },
+    "auth": {
+      "title": "Authorize scrobbling",
+      "description": "Sign in and grant access in the window that opens, then return here to finish."
+    }
+  },
+  "errors": {
+    "auth_failed": "Authorization was not completed. Please try again."
+  },
   "manifest": {
     "description": "Scrobbles your listening history to Last.fm (and others with a compatible API like Libre.fm), building rich listening stats and recommendations."
   }

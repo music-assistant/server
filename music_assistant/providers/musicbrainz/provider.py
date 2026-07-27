@@ -34,8 +34,17 @@ from .models import (
 from .recommendations import MusicBrainzRecommendationManager
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
-    from music_assistant_models.media_items import Album, Artist, RecommendationFolder, Track
+    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.media_items import (
+        Album,
+        Artist,
+        BrowseFolder,
+        ItemMapping,
+        MediaItemType,
+        RecommendationFolder,
+        Track,
+        UniqueList,
+    )
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -52,33 +61,20 @@ async def setup(
     return MusicbrainzProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_RECOMMENDATION_DAYS,
-            type=ConfigEntryType.INTEGER,
-            default_value=3,
-            range=(1, 15),
-            advanced=True,
-        ),
-    )
-
-
 class MusicbrainzProvider(MetadataProvider):
     """The Musicbrainz Metadata provider."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_RECOMMENDATION_DAYS,
+                type=ConfigEntryType.INTEGER,
+                default_value=3,
+                range=(1, 15),
+                advanced=True,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -97,9 +93,19 @@ class MusicbrainzProvider(MetadataProvider):
         """Handle unload/close of the provider."""
         self._recommendations.cancel()
 
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Return birthday/memorial recommendation folders."""
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Return birthday/memorial recommendation rows, without items."""
         return await self._recommendations.get_recommendations()
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Return the items for a single birthday/memorial recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        return await self._recommendations.get_recommendation_items(item_id)
 
     async def search(
         self, artistname: str, albumname: str, trackname: str, trackversion: str | None = None

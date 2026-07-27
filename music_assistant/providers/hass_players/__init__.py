@@ -9,14 +9,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.providers.hass import DOMAIN as HASS_DOMAIN
 
-from .constants import CONF_PLAYERS
-from .helpers import get_hass_media_players
 from .provider import HomeAssistantPlayerProvider
 
 if TYPE_CHECKING:
@@ -38,33 +34,3 @@ async def setup(
         raise SetupFailedError(msg)
     hass_prov = cast("HomeAssistantProvider", hass_prov)
     return HomeAssistantPlayerProvider(mass, manifest, config, hass_prov)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    hass_prov = cast("HomeAssistantProvider|None", mass.get_provider(HASS_DOMAIN))
-    player_entities: list[ConfigValueOption] = []
-    if hass_prov and hass_prov.hass.connected:
-        async for state in get_hass_media_players(hass_prov):
-            name = f"{state['attributes']['friendly_name']} ({state['entity_id']})"
-            player_entities.append(ConfigValueOption(state["entity_id"], title=name))
-    return (
-        ConfigEntry(
-            key=CONF_PLAYERS,
-            type=ConfigEntryType.STRING,
-            multi_value=True,
-            required=True,
-            options=player_entities,
-        ),
-    )

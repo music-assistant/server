@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from aiohttp import web
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
+    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -31,7 +33,12 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import MultiPartPath, StreamDetails, StreamMetadata
 
-from music_assistant.constants import CONF_PASSWORD, CONF_SOCKS_URL, CONF_USERNAME
+from music_assistant.constants import (
+    CONF_ENTRY_UNOFFICIAL_PROVIDER,
+    CONF_PASSWORD,
+    CONF_SOCKS_URL,
+    CONF_USERNAME,
+)
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.aiohttp_client import create_clientsession, get_socks5_url
 from music_assistant.helpers.compare import compare_strings
@@ -40,10 +47,12 @@ from music_assistant.models.music_provider import MusicProvider
 from .constants import (
     ACCOUNT_FLAG_HIGH_QUALITY,
     CONF_QUALITY,
+    CONF_TAKEOVER_ACTION,
     LOGIN_ENDPOINT,
     PLAYBACK_RESUMED_ENDPOINT,
     PLAYLIST_FRAGMENT_ENDPOINT,
     QUALITY_HIGH,
+    QUALITY_STANDARD,
     RETRY_REASON_AUTH,
     RETRY_REASON_STREAM_VIOLATION,
     STATIONS_ENDPOINT,
@@ -97,14 +106,52 @@ class PandoraProvider(MusicProvider):
     _socks_proxy: bool = False
     _high_quality_available: bool = False
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                required=True,
+                default_value=QUALITY_STANDARD,
+                options=[
+                    ConfigValueOption(QUALITY_STANDARD),
+                    ConfigValueOption(QUALITY_HIGH),
+                ],
+            ),
+            ConfigEntry(
+                key=CONF_SOCKS_URL,
+                type=ConfigEntryType.STRING,
+                required=False,
+                default_value="",
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_TAKEOVER_ACTION,
+                type=ConfigEntryType.ACTION,
+                action=CONF_TAKEOVER_ACTION,
+                required=False,
+            ),
+        )
+
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+        """Handle a one-shot config action button press and re-render the entries."""
+        if action == CONF_TAKEOVER_ACTION:
+            await self.takeover_stream()
+            return await self.get_config_entries()
+        return await super().handle_config_action(action)
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._on_unload_callbacks = []
         self._sessions = {}
 
         # Authenticate with Pandora
-        username = str(self.config.get_value(CONF_USERNAME))
-        password = str(self.config.get_value(CONF_PASSWORD))
+        username = str(self.get_setup_value(CONF_USERNAME) or "")
+        password = str(self.get_setup_value(CONF_PASSWORD) or "")
+        if not username.strip() or not password.strip():
+            raise LoginFailed("Username and password are required")
         socks_url = get_socks5_url(str(self.config.get_value(CONF_SOCKS_URL)))
 
         if socks_url:
@@ -214,8 +261,8 @@ class PandoraProvider(MusicProvider):
                 if response.status == 401:
                     if RETRY_REASON_AUTH not in exhausted_retry_reasons:
                         # Auth token expired, re-authenticate and retry once
-                        username = str(self.config.get_value(CONF_USERNAME))
-                        password = str(self.config.get_value(CONF_PASSWORD))
+                        username = str(self.get_setup_value(CONF_USERNAME) or "")
+                        password = str(self.get_setup_value(CONF_PASSWORD) or "")
                         await self._authenticate(username, password)
                         return await self._api_request(
                             method,

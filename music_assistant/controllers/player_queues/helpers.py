@@ -3,22 +3,24 @@
 from __future__ import annotations
 
 import functools
+import random
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Concatenate, Protocol, TypedDict, TypeVar
 
-from music_assistant_models.media_items import Playlist
+from music_assistant_models.media_items import MediaItemMetadata, Playlist, Track
+from music_assistant_models.queue_item import QueueItem
 
 from music_assistant.constants import ATTR_PLAY_ACTION_IN_PROGRESS, PlaylistPlayableItem
 from music_assistant.controllers.players.constants import PlayerLockPurpose
 
 if TYPE_CHECKING:
     from music_assistant_models.enums import ContentType, PlaybackState
-    from music_assistant_models.media_items import MediaItemType
+    from music_assistant_models.media_items import MediaItemType, PlayableMediaItemType
     from music_assistant_models.player_queue import PlayerQueue
-    from music_assistant_models.queue_item import QueueItem
 
     from music_assistant import MusicAssistant
     from music_assistant.controllers.player_queues.state import PlayerQueueData
+    from music_assistant.models.player import Player
 
 _SortableT = TypeVar("_SortableT", bound=PlaylistPlayableItem)
 
@@ -41,7 +43,7 @@ class CompareState(TypedDict):
     last_playing_elapsed_time: int
     stream_title: str | None
     codec_type: ContentType | None
-    output_formats: list[str] | None
+    output_player_ids: list[str] | None
 
 
 class _PlayActionHost(Protocol):
@@ -56,6 +58,10 @@ class _PlayActionHost(Protocol):
     _queue_data: dict[str, PlayerQueueData]
 
     def signal_update(self, queue_id: str, items_changed: bool = False) -> None: ...
+
+    def on_player_update(
+        self, player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None: ...
 
 
 def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
@@ -93,6 +99,11 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
                 if queue_data.play_action_refcount <= 0:
                     queue_data.play_action_refcount = 0
                     queue.extra_attributes[ATTR_PLAY_ACTION_IN_PROGRESS] = False
+                    # the queue follows the player through a debounced update, which is also
+                    # suppressed while an action is transitioning; recalculate it here so the
+                    # update that clears the flag already carries the action's resulting state
+                    if (player := self.mass.players.get_player(queue_id)) is not None:
+                        self.on_player_update(player, {})
                     self.signal_update(queue_id)
 
     return wrapper
@@ -101,6 +112,26 @@ def handle_play_action[PlayActionHostT: _PlayActionHost, **P, R](
 def has_dynamic_source(source_items: list[MediaItemType]) -> bool:
     """Return True if any source is a dynamic playlist (the queue is in dynamic mode)."""
     return any(isinstance(item, Playlist) and item.is_dynamic for item in source_items)
+
+
+def build_queue_item(queue_id: str, media_item: PlayableMediaItemType) -> QueueItem:
+    """
+    Build a QueueItem for enqueueing, keeping its media item slim.
+
+    The returned item only carries the media details needed for the queue listing and stream
+    resolution. For tracks the full metadata is dropped; it is restored from the library when
+    the item becomes the queue's current or next item, so large queues stay light on memory
+    and persisted-cache size.
+
+    :param queue_id: The id of the queue the item is created for.
+    :param media_item: The source media item to enqueue.
+    """
+    queue_item = QueueItem.from_media_item(queue_id, media_item)
+    if isinstance(queue_item.media_item, Track):
+        # the list-row artwork is already captured on QueueItem.image, so dropping the
+        # track's metadata here does not lose anything the queue listing still needs
+        queue_item.media_item.metadata = MediaItemMetadata()
+    return queue_item
 
 
 def sort_tracks(tracks: list[_SortableT], sort_by: str) -> list[_SortableT]:
@@ -145,6 +176,21 @@ def get_current_playback_speed(queue: PlayerQueue) -> float:
     if queue.current_item is None:
         return 1.0
     return float(queue.current_item.extra_attributes.get("playback_speed") or 1.0)
+
+
+def interleave_groups[ItemT](groups: list[list[ItemT]]) -> list[ItemT]:
+    """
+    Randomly interleave groups while preserving the item order within each group.
+
+    :param groups: The ordered item groups to spread across the result.
+    """
+    positioned: list[tuple[float, ItemT]] = []
+    for items in groups:
+        total = len(items)
+        for offset, item in enumerate(items):
+            positioned.append(((offset + random.random()) / total, item))
+    positioned.sort(key=lambda entry: entry[0])
+    return [item for _, item in positioned]
 
 
 # how many bounded passes to make separating directly-adjacent same-artist items

@@ -29,7 +29,7 @@ from .constants import (
 
 if TYPE_CHECKING:
     from async_upnp_client.client import UpnpService, UpnpStateVariable
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.config_entries import ConfigEntry
 
     from .provider import WiimProvider
 
@@ -121,11 +121,7 @@ class WiimPlayer(Player):
             self.logger.exception("Error tearing down WiiM device %s", self.name)
         self.logger.debug("Player %s unloaded, SDK resources released", self.name)
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return player-specific config entries."""
         return [
             create_sample_rates_config_entry(
@@ -381,21 +377,19 @@ class WiimPlayer(Player):
             self.update_state()
             return
 
+        media = self.device.current_media
+        device_uri = media.uri if media and media.uri else ""
+        play_mode = self.device.play_mode
+
         # Playback state
-        if self.device.playing_status is not None:
-            self._attr_playback_state = SDK_TO_MA_STATE.get(
-                self.device.playing_status, PlaybackState.IDLE
-            )
+        if (new_state := self._resolve_playback_state(device_uri, play_mode)) is not None:
+            self._attr_playback_state = new_state
 
         # Group members
         group_members = self._wiim_controller.get_group_members(self.device.udn)
         self._attr_group_members = [
             f"{PLAYER_ID_PREFIX}{m.udn}" for m in group_members if m.udn != self.device.udn
         ]
-
-        media = self.device.current_media
-        device_uri = media.uri if media and media.uri else ""
-        play_mode = self.device.play_mode
 
         if play_mode and play_mode != SOURCE_NETWORK and play_mode in INPUT_MODE_SOURCES:
             self._attr_active_source = INPUT_MODE_SOURCES[play_mode].id
@@ -440,6 +434,35 @@ class WiimPlayer(Player):
 
         self._log_sdk_state_change()
         self.update_state()
+
+    def _resolve_playback_state(
+        self, device_uri: str, play_mode: str | None
+    ) -> PlaybackState | None:
+        """
+        Map the SDK playing status to a MA playback state.
+
+        Returns ``None`` when the current state should be kept: either no status
+        is known yet, or the report is implausible and should not propagate.
+
+        :param device_uri: The media URI currently loaded on the device ("" if none).
+        :param play_mode: The device's current play mode (input source).
+        """
+        # widened annotation: the SDK types playing_status as non-optional, but
+        # we stay tolerant of a None from mocks/edge paths (as the code always has)
+        sdk_status: PlayingStatus | None = self.device.playing_status
+        if sdk_status is None:
+            return None
+        new_state = SDK_TO_MA_STATE.get(sdk_status, PlaybackState.IDLE)
+        # The device acks transport commands with a transient (false) PLAYING
+        # report while no media is loaded yet (observed during group session
+        # setup). Nothing can actually play in network mode without a URI, so
+        # keep the previous state instead of propagating the false start and
+        # the PLAYING->IDLE->PLAYING flicker it causes downstream. External
+        # inputs (line-in, Bluetooth, ...) legitimately play without a URI and
+        # are not affected.
+        if new_state == PlaybackState.PLAYING and play_mode == SOURCE_NETWORK and not device_uri:
+            return None
+        return new_state
 
     def _log_sdk_state_change(self) -> None:
         """Log a debug line whenever the SDK-reported URI or playing_status changes."""

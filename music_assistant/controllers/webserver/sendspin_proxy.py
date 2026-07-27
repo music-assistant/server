@@ -14,6 +14,7 @@ import json
 import logging
 from typing import TYPE_CHECKING
 
+import aiohttp
 from aiohttp import ClientConnectorError, WSMsgType, web
 
 from music_assistant.constants import MASS_LOGGER_NAME
@@ -24,7 +25,6 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 from music_assistant.helpers.util import format_ip_for_url
 
 if TYPE_CHECKING:
-    import aiohttp
     from music_assistant_models.auth import User
 
     from music_assistant.controllers.webserver import WebserverController
@@ -202,15 +202,48 @@ class SendspinProxyHandler:
             self._forward_internal_to_client(client_ws, internal_ws)
         )
 
-        _done, pending = await asyncio.wait(
+        done, pending = await asyncio.wait(
             [client_to_internal, internal_to_client],
             return_when=asyncio.FIRST_COMPLETED,
         )
 
         for task in pending:
             task.cancel()
+        peer_results = await asyncio.gather(*pending, return_exceptions=True)
+
+        # collect everything first so cleanup failures cannot mask the primary error
+        unexpected: list[BaseException] = []
+        for task in done:
             with contextlib.suppress(asyncio.CancelledError):
-                await task
+                if exc := task.exception():
+                    self._collect_proxy_exception(exc, unexpected)
+        for result in peer_results:
+            if isinstance(result, BaseException):
+                self._collect_proxy_exception(result, unexpected)
+        if not unexpected:
+            return
+        for extra in unexpected[1:]:
+            self.logger.warning(
+                "Additional Sendspin proxy error while forwarding: %s",
+                extra,
+            )
+        raise unexpected[0]
+
+    def _collect_proxy_exception(
+        self,
+        exc: BaseException,
+        unexpected: list[BaseException],
+    ) -> None:
+        """Log expected transport disconnects; collect anything else."""
+        if isinstance(exc, asyncio.CancelledError):
+            return
+        if isinstance(
+            exc,
+            (ConnectionError, aiohttp.ClientError, asyncio.IncompleteReadError, EOFError),
+        ):
+            self.logger.debug("Sendspin proxy connection closed while forwarding: %s", exc)
+            return
+        unexpected.append(exc)
 
     async def _forward_client_to_internal(
         self,
@@ -229,6 +262,8 @@ class SendspinProxyHandler:
             elif msg.type == WSMsgType.BINARY:
                 await internal_ws.send_bytes(msg.data)
             elif msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR):
+                if msg.type == WSMsgType.ERROR:
+                    self.logger.debug("Sendspin proxy client transport error: %s", msg.data)
                 break
 
     async def _forward_internal_to_client(
@@ -248,4 +283,6 @@ class SendspinProxyHandler:
             elif msg.type == WSMsgType.BINARY:
                 await client_ws.send_bytes(msg.data)
             elif msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.ERROR):
+                if msg.type == WSMsgType.ERROR:
+                    self.logger.debug("Sendspin proxy internal transport error: %s", msg.data)
                 break

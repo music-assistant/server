@@ -4,14 +4,15 @@ import asyncio
 import contextlib
 import logging
 import pathlib
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable, Iterator
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import aiofiles.os
 from music_assistant_models.enums import EventType, IdentifierType, PlayerFeature, PlayerType
 from music_assistant_models.player import DeviceInfo
 
+from music_assistant.controllers.config.providers import ProviderConfigMixin
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 
@@ -54,6 +55,61 @@ async def wait_for_sync_completion(mass: MusicAssistant) -> AsyncGenerator[None]
                 await flag.wait()
         finally:
             release_cb()
+
+
+# builtin providers that must not be auto-set-up during a fixture boot: local_audio
+# bridges the host machine's sound devices (built-in speakers, bluetooth, ...) as
+# sendspin players, which would leak real hardware into the player registry
+SUPPRESSED_BUILTIN_PROVIDERS = {"local_audio"}
+
+_orig_create_builtin_provider_config = ProviderConfigMixin.create_builtin_provider_config
+
+
+@contextlib.contextmanager
+def use_ephemeral_server_ports(port_factory: Callable[[], int]) -> Iterator[None]:
+    """
+    Give a full-server test fixture unused web and stream server ports.
+
+    :param port_factory: Callable returning an unused TCP port.
+    """
+    with (
+        patch(
+            "music_assistant.controllers.webserver.controller.DEFAULT_SERVER_PORT",
+            port_factory(),
+        ),
+        patch("music_assistant.controllers.streams.controller.DEFAULT_PORT", port_factory()),
+    ):
+        yield
+
+
+@contextlib.contextmanager
+def suppress_auto_loaded_providers() -> Iterator[None]:
+    """
+    Stop a fixture boot from auto-setting-up providers that reach into the host.
+
+    Keeps a booted test instance isolated from the developer's machine: the default
+    device providers (airplay/chromecast/dlna/...) are not auto-configured, and neither
+    is the builtin local_audio provider, which would otherwise bridge the host's sound
+    devices (built-in speakers, bluetooth, ...) into the player registry.
+    """
+    with (
+        patch("music_assistant.mass.DEFAULT_PROVIDERS", ()),
+        patch.object(
+            ProviderConfigMixin,
+            "create_builtin_provider_config",
+            _create_builtin_provider_config_hermetic,
+        ),
+    ):
+        yield
+
+
+async def _create_builtin_provider_config_hermetic(
+    self: ProviderConfigMixin, provider_domain: str
+) -> None:
+    """Create builtin provider configs, skipping providers that discover host hardware."""
+    if provider_domain in SUPPRESSED_BUILTIN_PROVIDERS:
+        return
+    await _orig_create_builtin_provider_config(self, provider_domain)
 
 
 # Mock classes for testing

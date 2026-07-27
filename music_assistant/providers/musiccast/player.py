@@ -18,7 +18,7 @@ from aiomusiccast.exceptions import MusicCastGroupException
 from aiomusiccast.pyamaha import MusicCastConnectionException
 from aiomusiccast.pyamaha import System as MCSystem
 from mashumaro import DataClassDictMixin
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     IdentifierType,
@@ -166,7 +166,6 @@ class MusicCastPlayer(Player):
             PlayerFeature.PLAY_MEDIA,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
-            PlayerFeature.PAUSE,  # for non MA control, see pause method
             PlayerFeature.POWER,
             PlayerFeature.SELECT_SOURCE,
             PlayerFeature.NEXT_PREVIOUS,
@@ -356,10 +355,14 @@ class MusicCastPlayer(Player):
         # player._current_media tells queue controller what is playing
         # and player.set_current_media is the helper function
         # do not access the queue controller to gain playback information here
+        self._attr_supported_features.add(PlayerFeature.PAUSE)  # we support pause...
         if (
             self.upnp_update_helper.current_uri is not None
             and self.upnp_update_helper.controlled_by_mass
         ):
+            self._attr_supported_features.discard(
+                PlayerFeature.PAUSE
+            )  # ...unless we are controlled by MA
             self.set_current_media(uri=self.upnp_update_helper.current_uri, clear_all=True)
         elif self.zone_device.is_client:
             _server = self.zone_device.group_server
@@ -652,13 +655,13 @@ class MusicCastPlayer(Player):
             return
 
         # skip zone handling if disabled via setting
-        if bool(mass_player.config.get_value(CONF_PLAYER_HANDLE_SOURCE_DISABLED)):
+        if mass_player.get_config_value(CONF_PLAYER_HANDLE_SOURCE_DISABLED):
             self.logger.debug("Ignoring zone handling for player %s.", player_id)
             return
 
         self.logger.debug("Handling zone for player %s.", player_id)
 
-        _source = str(mass_player.config.get_value(CONF_PLAYER_SWITCH_SOURCE_NON_NET))
+        _source = mass_player.get_config_value(CONF_PLAYER_SWITCH_SOURCE_NON_NET, return_type=str)
         # verify that this source actually exists and is non net
         _allowed_sources = self._get_allowed_sources_zone_switch(zone_player)
         if _source not in _allowed_sources:
@@ -673,7 +676,7 @@ class MusicCastPlayer(Player):
             _source = _allowed_sources.pop()
 
         await mass_player.select_source(_source)
-        _turn_off = bool(mass_player.config.get_value(CONF_PLAYER_TURN_OFF_ON_LEAVE))
+        _turn_off = mass_player.get_config_value(CONF_PLAYER_TURN_OFF_ON_LEAVE, return_type=bool)
         if _turn_off:
             await asyncio.sleep(2)
             await mass_player.power(powered=False)
@@ -989,13 +992,9 @@ class MusicCastPlayer(Player):
 
         await self._cmd_run(self.zone_device.join_players, child_player_zone_devices)
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Get player config entries."""
-        base_entries = await super().get_config_entries(action=action, values=values)
+        base_entries = await super().get_config_entries()
 
         zone_entries: list[ConfigEntry] = []
         if len(self.physical_device.zone_devices) > 1:

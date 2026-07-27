@@ -19,7 +19,7 @@ def provider_mock() -> Mock:
     provider.instance_id = "tidal_instance"
     provider.auth.user_id = "12345"
     provider.api = AsyncMock()
-    provider.api.get_data.return_value = {"items": []}
+    provider.api.get.return_value = {"items": []}
     provider.api.paginate = MagicMock()
 
     # Configure async iterator for paginate

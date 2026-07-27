@@ -2,29 +2,33 @@
 
 from __future__ import annotations
 
-import contextlib
-import posixpath
-import urllib.parse
 from dataclasses import asdict
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, cast
 from urllib.parse import quote, unquote, urlparse, urlunparse
 
 import aiohttp
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import (
     LoginFailed,
     MediaNotFoundError,
-    MusicAssistantError,
     ProviderUnavailableError,
     SetupFailedError,
 )
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
-from music_assistant.helpers.tags import async_parse_tags, get_embedded_image
+from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+    CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+    CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+    CONF_ENTRY_MISSING_ALBUM_ARTIST,
+    CONF_ENTRY_PROPAGATE_GENRES,
     SUPPORTED_EXTENSIONS,
 )
 from music_assistant.providers.filesystem_local.helpers import FileSystemItem
@@ -34,7 +38,6 @@ from .helpers import WebDAVItem, build_webdav_url, webdav_propfind, webdav_test_
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
-    from music_assistant_models.media_items import Track
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -53,13 +56,31 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
         config: ProviderConfig,
     ) -> None:
         """Initialize WebDAV FileSystem Provider."""
-        base_url = cast("str", config.get_value(CONF_URL)).rstrip("/")
-        super().__init__(mass, manifest, config, base_url)
-        self.base_url = base_url
-        self.username = cast("str | None", config.get_value(CONF_USERNAME))
-        self.password = cast("str | None", config.get_value(CONF_PASSWORD))
-        self.verify_ssl = cast("bool", config.get_value(CONF_VERIFY_SSL))
-        self.media_content_type = cast("str", config.get_value(CONF_CONTENT_TYPE))
+        # the base path (WebDAV URL) is resolved from the setup data below, which needs
+        # the initialized instance, so hand the base class a placeholder and set it after
+        super().__init__(mass, manifest, config, base_path="")
+        self.base_url = cast("str", self.get_setup_value(CONF_URL)).rstrip("/")
+        self.base_path = self.base_url
+        self.username = cast("str | None", self.get_setup_value(CONF_USERNAME))
+        self.password = cast("str | None", self.get_setup_value(CONF_PASSWORD))
+        self.verify_ssl = cast("bool", self.get_setup_value(CONF_VERIFY_SSL))
+        self.media_content_type = cast("str", self.get_setup_value(CONF_CONTENT_TYPE))
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        # connection details and content type are collected by the setup flow; surface the
+        # (immutable) content type read-only so the sync options' depends_on chains resolve
+        content_type = str(self.get_setup_value(CONF_CONTENT_TYPE, "music"))
+        return (
+            ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
+            CONF_ENTRY_MISSING_ALBUM_ARTIST,
+            CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+            CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+            CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+            CONF_ENTRY_PROPAGATE_GENRES,
+        )
 
     @property
     def instance_name_postfix(self) -> str | None:
@@ -331,31 +352,6 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                 )
 
         await _walk("", is_root=True)
-
-    async def _parse_playlist_line(self, line: str, playlist_path: str) -> Track | None:
-        """Try to parse a track from a playlist line."""
-        try:
-            line = line.replace("file://", "").strip()
-            for _line in (line, urllib.parse.unquote(line)):
-                # Try relative to playlist folder
-                if playlist_path:
-                    normalized = posixpath.normpath(f"{playlist_path}/{_line}")
-                    with contextlib.suppress(FileNotFoundError, MediaNotFoundError):
-                        file_item = await self.resolve(normalized)
-                        tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
-                        return await self._parse_track(file_item, tags)
-
-                # Try relative to base path
-                with contextlib.suppress(FileNotFoundError, MediaNotFoundError):
-                    file_item = await self.resolve(_line)
-                    tags = await async_parse_tags(file_item.absolute_path, file_item.file_size)
-                    return await self._parse_track(file_item, tags)
-
-            raise MediaNotFoundError("Invalid path/uri")
-
-        except MusicAssistantError as err:
-            self.logger.warning("Could not parse %s to track: %s", line, str(err))
-        return None
 
     def _get_chapter_path(self, relative_path: str) -> str:
         """Return authenticated WebDAV URL for a chapter file."""

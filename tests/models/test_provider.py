@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import fields
+from typing import cast
 from unittest.mock import MagicMock
 
-from music_assistant_models.enums import ProviderType
+from music_assistant_models.enums import EventType, ProviderType
+from music_assistant_models.errors import LoginFailed
 from music_assistant_models.provider import ProviderInstance
 
 from music_assistant.models.provider import Provider
@@ -30,3 +32,62 @@ def test_to_dict_matches_provider_instance_schema() -> None:
     assert set(result) == {f.name for f in fields(ProviderInstance)}
     # the served payload must also deserialize back into the model
     ProviderInstance.from_dict(result)
+
+
+def test_default_name_uses_instance_number_fallback() -> None:
+    """A multi-instance provider without a custom postfix uses its instance number."""
+    provider = _make_base_provider()
+    provider.config.name = None
+    provider.config.instance_id = "test_instance_2"
+    provider.manifest.name = "Test Provider"
+    cast("MagicMock", provider.mass.config.get).return_value = {
+        "test_instance_1": {
+            "domain": "test_provider",
+            "instance_id": "test_instance_1",
+        },
+        "test_instance_2": {
+            "domain": "test_provider",
+            "instance_id": "test_instance_2",
+        },
+    }
+
+    assert provider.default_name == "Test Provider [2]"
+
+
+def test_signal_provider_event() -> None:
+    """signal_provider_event() emits a PROVIDER_EVENT with the instance_id as object_id."""
+    provider = _make_base_provider()
+    provider.signal_provider_event({"foo": "bar"})
+    cast("MagicMock", provider.mass).signal_event.assert_called_once_with(
+        EventType.PROVIDER_EVENT, object_id="test_instance", data={"foo": "bar"}
+    )
+
+
+def test_signal_provider_event_with_sub_scope() -> None:
+    """signal_provider_event() appends the sub_scope to the object_id."""
+    provider = _make_base_provider()
+    provider.signal_provider_event({"round": 1}, sub_scope="game_state")
+    cast("MagicMock", provider.mass).signal_event.assert_called_once_with(
+        EventType.PROVIDER_EVENT, object_id="test_instance/game_state", data={"round": 1}
+    )
+
+
+def test_unload_with_error_schedules_error_unload() -> None:
+    """unload_with_error schedules unload_provider_with_error so the error is recorded."""
+    provider = _make_base_provider()
+    provider.unload_with_error("boom")
+    mass = cast("MagicMock", provider.mass)
+    mass.call_later.assert_called_once_with(
+        1, mass.unload_provider_with_error, "test_instance", "boom"
+    )
+
+
+def test_unload_with_error_forwards_exception() -> None:
+    """An exception is forwarded unchanged so its error code + localized message are preserved."""
+    provider = _make_base_provider()
+    err = LoginFailed("token revoked")
+    provider.unload_with_error(err)
+    mass = cast("MagicMock", provider.mass)
+    mass.call_later.assert_called_once_with(
+        1, mass.unload_provider_with_error, "test_instance", err
+    )

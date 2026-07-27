@@ -84,18 +84,19 @@ def _detect_external_base_url(mass: MusicAssistant, current_user: Any) -> str | 
 async def _dispatch_open_connect(
     mass: MusicAssistant,
     values: dict[str, ConfigValueType],
-) -> None:
+    setup_callback_path: str | None = None,
+) -> str | None:
     """
-    Mint a wizard bootstrap and signal the wizard URL to the frontend.
-
-    The MA frontend's ``EditProvider`` view subscribes to ``AUTH_SESSION``
-    events and ignores anything whose ``object_id`` does not match the
-    ``session_id`` it injected into ``values``. We must echo that same id
-    back as the event's ``object_id`` so the browser tab actually opens.
+    Mint a wizard bootstrap and return the Connect Wizard URL, or None on failure.
 
     URL resolution order: (1) auto-detect from the active WS client's
     ingress-aware ``base_url``; (2) explicit ``connect_external_url`` config
-    override; (3) path-only fallback resolved against the browser's origin.
+    override; (3) the server's advertised base URL; (4) a path-only fallback.
+
+    :param mass: The Music Assistant instance.
+    :param values: The effective MCP provider config values.
+    :param setup_callback_path: Optional setup-flow callback path for the wizard
+        to signal after generating a client configuration.
     """
     from .connect import handle_open_connect_action  # noqa: PLC0415
     from .constants import (  # noqa: PLC0415
@@ -105,7 +106,6 @@ async def _dispatch_open_connect(
     )
 
     mount_path = str(values.get(CONF_MOUNT_PATH) or DEFAULT_MOUNT_PATH)
-    session_id = str(values.get("session_id") or "")
 
     current_user: object | None = None
     try:
@@ -123,14 +123,19 @@ async def _dispatch_open_connect(
         external_base_url = _sanitize_external_base_url(
             str(values.get(CONF_CONNECT_EXTERNAL_URL) or "")
         )
+    if not external_base_url:
+        external_base_url = _sanitize_external_base_url(
+            str(getattr(mass.webserver, "base_url", "") or "")
+        )
 
     try:
-        await handle_open_connect_action(
+        return await handle_open_connect_action(
             mass,
             current_user=current_user,
             mount_path=mount_path,
-            session_id=session_id or None,
             external_base_url=external_base_url,
+            setup_callback_path=setup_callback_path,
         )
     except Exception:
         LOGGER.exception("Connect Wizard: open_connect action failed")
+        return None

@@ -46,12 +46,14 @@ from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_ENQUEUE_OPTION_ALBUM,
     CONF_DEFAULT_ENQUEUE_OPTION_ARTIST,
     CONF_DEFAULT_ENQUEUE_OPTION_AUDIOBOOK,
+    CONF_DEFAULT_ENQUEUE_OPTION_COLLECTION,
     CONF_DEFAULT_ENQUEUE_OPTION_FOLDER,
     CONF_DEFAULT_ENQUEUE_OPTION_GENRE,
     CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES,
     CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST,
     CONF_DEFAULT_ENQUEUE_OPTION_PODCAST,
     CONF_DEFAULT_ENQUEUE_OPTION_PODCAST_EPISODE,
+    CONF_DEFAULT_ENQUEUE_OPTION_SOUND_EFFECT,
     CONF_DEFAULT_ENQUEUE_OPTION_TRACK,
     CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
     CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
@@ -211,11 +213,17 @@ def _enqueue_default_entries() -> list[ConfigEntry]:
         _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES, QueueOption.REPLACE.value),
         _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST, QueueOption.REPLACE.value),
         _option_entry(
+            CONF_DEFAULT_ENQUEUE_OPTION_COLLECTION, QueueOption.REPLACE.value, hidden=True
+        ),
+        _option_entry(
             CONF_DEFAULT_ENQUEUE_OPTION_AUDIOBOOK, QueueOption.REPLACE.value, hidden=True
         ),
         _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_PODCAST, QueueOption.REPLACE.value, hidden=True),
         _option_entry(
             CONF_DEFAULT_ENQUEUE_OPTION_PODCAST_EPISODE, QueueOption.REPLACE.value, hidden=True
+        ),
+        _option_entry(
+            CONF_DEFAULT_ENQUEUE_OPTION_SOUND_EFFECT, QueueOption.REPLACE.value, hidden=True
         ),
         _option_entry(CONF_DEFAULT_ENQUEUE_OPTION_FOLDER, QueueOption.REPLACE.value, hidden=True),
     ]
