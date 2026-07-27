@@ -672,7 +672,6 @@ class SendspinBasePlayer(Player):
             else None
         )
         actions: list[ConfigEntry] = []
-
         if trusted_unpaired:
             actions.append(action_entry(CONF_ACTION_REVOKE_UNPAIRED, advanced=True))
         elif effective_unpaired_access(info, pairing_config):
@@ -2011,7 +2010,6 @@ class SendspinPlayer(SendspinBasePlayer):
         entries.extend(self._multichannel_config_entries())
         # Build dynamic format options from player's supported formats
         player_role = self._player_role
-
         if player_role is not None:
             supported_formats = player_role.get_supported_formats()
             if supported_formats:

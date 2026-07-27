@@ -176,21 +176,22 @@ class SendspinLocalAudioBridge:
         self.device_channels: int = resolve_channel_count(
             device_info.get("max_output_channels", BRIDGE_CHANNELS)
         )
-        # What this bridge actually runs at. Multichannel is opt-in and off by
-        # default, so nothing changes on upgrade. The toggle lives on the protocol
-        # (Sendspin) player, which is where the device's advertised capability is
-
-        # visible. The client id is derived here rather than reused from start():
-        # this read runs during construction, before start() assigns _device_uuid.
+        # Multichannel is opt-in and off by default, so nothing changes on upgrade.
+        # Toggle lives on the sendspin protocol player.
         _config_client_id = bridge_client_id_from_uuid(
             get_device_uuid(self.device_name, device_info.get("hostapi", 0))
         )
-        self.pa_channels: int = (
-            self.device_channels
-            if self.mass.config.get_raw_player_config_value(
+        # The output-channels mode this bridge was built with, so a later change
+        # can be detected and the bridge rebuilt (the count is fixed at
+        # construction and advertised from then on).
+        self.output_channels_mode: str = str(
+            self.mass.config.get_raw_player_config_value(
                 _config_client_id, CONF_OUTPUT_CHANNELS, "stereo"
             )
-            == OUTPUT_CHANNELS_MULTICHANNEL
+        )
+        self.pa_channels: int = (
+            self.device_channels
+            if self.output_channels_mode == OUTPUT_CHANNELS_MULTICHANNEL
             else BRIDGE_CHANNELS
         )
 
@@ -1315,3 +1316,15 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
         except (FileNotFoundError, RuntimeError):  # fmt: skip
             pass
         return "alsa", enumerate_alsa_devices(logger=logger)
+
+    def _is_bridge_stale(self, bridge: SendspinLocalAudioBridge) -> bool:
+        """Rebuild when the Sendspin server was replaced or the channel mode changed."""
+        if super()._is_bridge_stale(bridge):
+            return True
+        client_id = bridge_client_id_from_uuid(
+            get_device_uuid(bridge.device_name, bridge.device_info.get("hostapi", 0))
+        )
+        current_mode = str(
+            self.mass.config.get_raw_player_config_value(client_id, CONF_OUTPUT_CHANNELS, "stereo")
+        )
+        return current_mode != bridge.output_channels_mode

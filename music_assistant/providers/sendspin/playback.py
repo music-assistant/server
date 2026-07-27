@@ -448,19 +448,6 @@ class SendspinPlaybackSession:
         async with self._state_lock:
             if player_id in self._members:
                 return
-            if self._pcm_format.channels > 2:
-                # The session PCM format is fixed at stream start and every
-                # member receives that same stream, with no per-member
-                # conversion. Admitting a member to a multichannel session
-                # would push a layout it may be unable to render, so the join
-                # is refused while multichannel is active.
-                self.player.logger.warning(
-                    "Refusing to add %s to a %d-channel session: multichannel "
-                    "playback is limited to ungrouped players",
-                    player_id,
-                    self._pcm_format.channels,
-                )
-                return
             self.pending_join_members.add(player_id)
             # Preserve any channel pre-resolved during add_client so join-time
             # role requirements and prepared audio stay on the same channel.

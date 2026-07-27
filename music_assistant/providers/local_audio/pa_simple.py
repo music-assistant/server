@@ -73,23 +73,19 @@ def _build_pa_channel_map(channels: int) -> _PAChannelMap | None:
     """
     Build an explicit pa_channel_map declaring MA/FFmpeg slot order.
 
-    Two reasons this exists, both verified against a live PipeWire pulse
-    server: (1) the server rejected an 8-channel stream relying on the
-    client's *defaulted* channel map with PA_ERR_INVALID, while accepting
-    the byte-identical spec with an explicit map; (2) declaring the data's
-    true slot order (MA/FFmpeg order, from _SOURCE_CHANNEL_ORDER) makes the
-    server itself reorder by position name to the sink's map — hardware
-    channel order is then correct by construction on this backend, with no
-    client-side byte remapping.
-
-    The map is built via libpulse's own pa_channel_map_parse from position
-    names rather than hardcoded enum integers, so the numeric positions are
-    always whatever the linked libpulse defines.
+    Declaring the data's true slot order lets the pulse server reorder by
+    position name to the sink's layout, so no client-side remapping is
+    needed.
 
     :returns: A validated map, or None when the channel count has no entry
         in _SOURCE_CHANNEL_ORDER or parsing/validation fails — callers pass
         no map in that case (previous behavior).
     """
+    # Some pulse servers (observed on PipeWire) reject a multichannel stream
+    # that relies on the client's defaulted channel map with PA_ERR_INVALID
+    # but accept the same spec with an explicit map. Parse the map from
+    # position names via libpulse's own pa_channel_map_parse rather than
+    # hardcoding enum integers, so numeric positions match the linked libpulse.
     names = _SOURCE_CHANNEL_ORDER.get(channels)
     if not names:
         return None
@@ -496,12 +492,6 @@ class PASimpleStream:
             rate=rate,
             channels=channels,
         )
-        # Explicit channel map declaring the data's slot order (MA/FFmpeg
-        # order). Required: the pulse server has been observed to reject
-        # multichannel streams that rely on the client's defaulted map
-        # (PA_ERR_INVALID at 8ch) while accepting the same spec with an
-        # explicit map — and declaring the true order makes the server
-        # route channels by position name to the sink's own map.
         self._channel_map = _build_pa_channel_map(channels)
         error = ctypes.c_int(0)
         self._lib = lib
@@ -614,12 +604,8 @@ def enumerate_alsa_devices(*, logger: logging.Logger) -> list[dict[str, Any]]:
 
         description = _re.sub(r"\s*\(hw:\d+,\d+\)$", "", name).strip()
 
-        # Extract "hw:C,D" so the device can be matched against pactl's
-        # card-port EDID data by card index, and so it can be opened
-        # directly for a chmap query (query_alsa_chmap) even though this
-        # backend never opens a PA sink object — PipeWire still enumerates
-        # the card's ports as long as it's running alongside, regardless of
-        # who actually writes audio.
+        # Extract "hw:C,D" for a direct chmap query (query_alsa_chmap) and
+        # keep the card index for later matching.
         alsa_card_index: int | None = None
         alsa_hw_string: str | None = None
         if hw_match := _re.search(r"\(hw:(\d+,\d+)\)$", name):
@@ -836,14 +822,8 @@ def build_channel_remap_index(
     Remaps MA's standard PCM channel order onto the device's real physical
     channel order.
 
-    Backend-agnostic: works identically whether the caller then applies it
-    to bytes headed for a PulseAudio/PipeWire sink or a raw ALSA hw: device
-    via PortAudio — this only computes *which source channel goes in which
-    output slot*, independent of how those bytes get written.
-
     :param channels: Number of channels in the PCM stream being written.
     :param physical_channel_map: The device's real channel order (from
-
         query_alsa_chmap()), or None if unknown.
     :param logger: The calling provider's logger, so debug output follows the
         log level configured for the provider in Music Assistant.
@@ -857,14 +837,8 @@ def build_channel_remap_index(
     if not physical_channel_map:
         logger.debug("No remap for %d-channel device: physical order unknown", channels)
         return None
-    # Translate driver-reported positions that have no counterpart in the
-    # FFmpeg source vocabulary. HD Audio HDMI devices report the pair beyond 5.1
-    # as rear-left/right-of-center (CEA back-pair naming); FFmpeg 7.1 has no
-    # such positions. Pair them with the side channels so that the chmap's
-    # rear-left/right (matching names) carry the source's rear content and
-    # RLC/RRC carry the side content. For 5.1-in-7.1 sources the side pair
-    # is silent, so this pairing choice is inaudible there; it only matters
-    # for true 7.1 sources, where CEA semantics make it a defensible default.
+    # HD Audio HDMI reports the beyond-5.1 pair as rear-left/right-of-center,
+    # which FFmpeg 7.1 has no name for; alias them to the side channels.
     physical_channel_map = [
         _PHYSICAL_POSITION_ALIASES.get(name, name) for name in physical_channel_map
     ]
@@ -938,12 +912,8 @@ def remap_pcm_channels(
     return remapped.tobytes() + data[usable_len:]
 
 
-# ALSA channel position enum values (alsa/pcm.h SND_CHMAP_*), verified
-# directly against libasound.so.2's snd_pcm_chmap_name()/
-# snd_pcm_chmap_long_name() output rather than assumed from documentation —
-# confirmed e.g. 14="RLC"/"Rear Left Center", matching speaker-test's own
-# printed labels exactly. Only positions a real consumer device can
-# plausibly report are included.
+# ALSA channel position enum values (alsa/pcm.h SND_CHMAP_*) mapped to their
+# long-form position names. Limited to positions a consumer device can report.
 _ALSA_CHMAP_POSITION: Final[dict[int, str]] = {
     3: "front-left",
     4: "front-right",
@@ -1041,31 +1011,16 @@ def query_alsa_chmap(
     device: str, expected_channels: int, sample_rate: int = 48000, *, logger: logging.Logger
 ) -> list[str] | None:
     """
-    Query the channel map actually in effect for a raw ALSA hw: device.
-
-    Primary source is snd_pcm_get_chmap() after configuring the stream at
-    the target channel count — the map the driver will *actually* use for
-    playback, which for HD Audio HDMI is negotiated from the sink's ELD at
-    prepare time. This is the API speaker-test derives its printed
-    "N - Position Name" labels from, so the result matches what listening
-    tests verify.
-
-    snd_pcm_query_chmaps() (the *available* maps list) is only a fallback:
-    on real hardware its first entry has been observed to be the generic
-    CEA allocation order rather than the active map — using it reproduced
-    an incorrect remap identical to EDID-derived data. Available ≠ active.
+    Return the active speaker layout for a raw ALSA hw: device.
 
     :param device: ALSA device string, e.g. "hw:0,3".
-    :param expected_channels: The channel count playback will use — the
-        active map can differ per channel count, so the stream is
-        configured at exactly this count before asking.
-    :param sample_rate: Rate used for the throwaway configuration; the map
-        depends on channel count, not rate, so any supported rate works.
+    :param expected_channels: The channel count playback will use. The map
+        can differ per channel count, so the query is made at this count.
+    :param sample_rate: Sample rate to query at; any supported rate works.
     :returns: Ordered list of long-form position names (index 0..N-1), or
-        None if the device couldn't be opened/configured, reported no
-        usable map, or reported a position this module doesn't recognize —
-        callers must treat None as "no physical order known" and fall back
-        accordingly, rather than guessing.
+        None if the layout could not be determined. Callers must treat None
+        as "no physical order known" and fall back accordingly, rather than
+        guessing.
     """
     lib = _get_asound_lib()
     pcm = ctypes.c_void_p()
