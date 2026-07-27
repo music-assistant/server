@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 # Cache key for the precomputed matches (namespaced per provider instance).
 RECOMMENDATIONS_CACHE_KEY = "artist_timeline_recommendations_v2"
+TIMELINE_FOLDER_ID = "musicbrainz_timeline"
 
 
 class MusicBrainzRecommendationManager:
@@ -65,9 +66,9 @@ class MusicBrainzRecommendationManager:
         """
         Return artists for the musicbrainz_timeline recommendation folder.
 
-        :param item_id: The folder ID (expected to be "musicbrainz_timeline").
+        :param item_id: The folder ID (expected to be TIMELINE_FOLDER_ID).
         """
-        if item_id != "musicbrainz_timeline":
+        if item_id != TIMELINE_FOLDER_ID:
             return UniqueList()
         # Serve from cache (fresh or stale)
         artist_dicts = await self.mass.cache.get(
@@ -177,13 +178,14 @@ class MusicBrainzRecommendationManager:
     def _build_folder_metadata(self) -> RecommendationFolder:
         """Build recommendation folder metadata without items."""
         return RecommendationFolder(
-            item_id="musicbrainz_timeline",
+            item_id=TIMELINE_FOLDER_ID,
             name="Artist Events",
             provider=self.provider.instance_id,
             translation_key="artist_timeline",
             items=UniqueList(),
             is_playable=False,
             type=RecommendationFolderType.TIMELINE,
+            enabled_by_default=False,
         )
 
     # ------------------------------------------------------------------
