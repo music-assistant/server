@@ -1497,7 +1497,9 @@ class PlayerQueuesController(CoreController):
             raise MediaNotFoundError("No playable items found")
 
         # load the items into the queue
-        await self._enqueue_with_option(queue_id, queue_items, option, radio_mode)
+        await self._enqueue_with_option(
+            queue_id, queue_items, option, radio_mode, pin_first=start_item is not None
+        )
 
     async def _enqueue_with_option(
         self,
@@ -1505,8 +1507,18 @@ class PlayerQueuesController(CoreController):
         queue_items: list[QueueItem],
         option: QueueOption | None,
         radio_mode: bool,
+        pin_first: bool = False,
     ) -> None:
-        """Load queue items into the queue according to the given enqueue option."""
+        """
+        Load queue items into the queue according to the given enqueue option.
+
+        :param queue_id: The queue to load the items into.
+        :param queue_items: The items to load.
+        :param option: The enqueue option to apply.
+        :param radio_mode: Whether the items come from radio mode.
+        :param pin_first: The first item was explicitly picked by the user (a start_item), so it
+            must keep its position when the batch is shuffled instead of being moved at random.
+        """
         queue = self._queues[queue_id]
         if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             cur_index = (
@@ -1519,16 +1531,28 @@ class PlayerQueuesController(CoreController):
         insert_at_index = cur_index + 1
         # Radio modes are already shuffled in a pattern we would like to keep.
         shuffle = queue.shuffle_enabled and len(queue_items) > 1 and not radio_mode
+        # a user-picked start item must be the one that actually starts playing, so keep it in
+        # front of the shuffled rest instead of letting the shuffle move it to a random slot
+        pin_first = pin_first and shuffle
 
         # handle replace: clear all items and replace with the new items
         if option == QueueOption.REPLACE:
-            await self.load(
-                queue_id,
-                queue_items=queue_items,
-                keep_remaining=False,
-                keep_played=False,
-                shuffle=shuffle,
-            )
+            if pin_first:
+                await self._load_pinned_first(
+                    queue_id,
+                    queue_items,
+                    insert_at_index=0,
+                    keep_remaining=False,
+                    keep_played=False,
+                )
+            else:
+                await self.load(
+                    queue_id,
+                    queue_items=queue_items,
+                    keep_remaining=False,
+                    keep_played=False,
+                    shuffle=shuffle,
+                )
             await self.play_index(queue_id, 0)
             return
         # handle next: add item(s) in the index next to the playing/loaded/buffered index
@@ -1554,12 +1578,15 @@ class PlayerQueuesController(CoreController):
             # an idle/empty queue has no current item to insert after, so insert at and
             # start from the very first index instead of skipping past it
             play_at_index = 0 if queue.current_index is None else insert_at_index
-            await self.load(
-                queue_id,
-                queue_items=queue_items,
-                insert_at_index=play_at_index,
-                shuffle=shuffle,
-            )
+            if pin_first:
+                await self._load_pinned_first(queue_id, queue_items, play_at_index)
+            else:
+                await self.load(
+                    queue_id,
+                    queue_items=queue_items,
+                    insert_at_index=play_at_index,
+                    shuffle=shuffle,
+                )
             next_index = min(play_at_index, len(self._queue_items[queue_id]) - 1)
             await self.play_index(queue_id, next_index)
             return
@@ -1580,6 +1607,37 @@ class PlayerQueuesController(CoreController):
                 queue.current_item = self.get_item(queue_id, 0)
                 queue.items = len(queue_items)
                 self.signal_update(queue_id)
+
+    async def _load_pinned_first(
+        self,
+        queue_id: str,
+        queue_items: list[QueueItem],
+        insert_at_index: int,
+        keep_remaining: bool = True,
+        keep_played: bool = True,
+    ) -> None:
+        """
+        Insert the first item at the given index and shuffle the rest of the batch behind it.
+
+        :param queue_id: The queue to load the items into.
+        :param queue_items: The items to load; the first one keeps the given index.
+        :param insert_at_index: The index to place the first item at.
+        :param keep_remaining: Keep the queue's existing items from the insert index onwards.
+        :param keep_played: Keep the queue's existing items before the insert index.
+        """
+        await self.load(
+            queue_id,
+            queue_items=queue_items[:1],
+            insert_at_index=insert_at_index,
+            keep_remaining=keep_remaining,
+            keep_played=keep_played,
+        )
+        await self.load(
+            queue_id,
+            queue_items=queue_items[1:],
+            insert_at_index=insert_at_index + 1,
+            shuffle=True,
+        )
 
     @handle_play_action
     async def _handle_play(self, queue_id: str) -> None:
