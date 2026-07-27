@@ -9,9 +9,15 @@ from typing import Any, cast
 from music_assistant.providers.ai_radio.config import get_config_entries
 
 
-def _make_mass(base_url: str) -> Any:
-    """Build a minimal mass stub exposing webserver.base_url."""
-    return cast("Any", SimpleNamespace(webserver=SimpleNamespace(base_url=base_url)))
+def _make_mass(base_url: str, locale: str = "en_US") -> Any:
+    """Build a minimal mass stub exposing webserver.base_url and metadata.locale."""
+    return cast(
+        "Any",
+        SimpleNamespace(
+            webserver=SimpleNamespace(base_url=base_url),
+            metadata=SimpleNamespace(locale=locale),
+        ),
+    )
 
 
 def test_web_ui_url_entry_carries_runtime_url_via_translation_params() -> None:

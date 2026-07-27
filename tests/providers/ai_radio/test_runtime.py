@@ -21,10 +21,23 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import SoundEffect
 
+from music_assistant.helpers.datetime import now as host_now
 from music_assistant.helpers.playlists import PlaylistItem, parse_m3u, parse_m3u_playlist_image
 from music_assistant.helpers.uri import create_uri
 from music_assistant.providers.ai_radio.models import AudioSection, SessionState, Slot
 from music_assistant.providers.ai_radio.runtime import AIRadioRuntimeMixin
+
+
+class StubConfig:
+    """Minimal ProviderConfig stand-in exposing get_value."""
+
+    def __init__(self, values: dict[str, Any] | None = None) -> None:
+        """Initialize with an optional map of config key -> value."""
+        self._values = values or {}
+
+    def get_value(self, key: str, default: Any = None) -> Any:
+        """Return the stubbed value for key, or default when absent."""
+        return self._values.get(key, default)
 
 
 class DummyRuntime(AIRadioRuntimeMixin):
@@ -34,6 +47,7 @@ class DummyRuntime(AIRadioRuntimeMixin):
         """Initialize minimal state for runtime tests."""
         self.logger = logging.getLogger("tests.ai_radio.runtime")
         self._sessions: dict[str, SessionState] = {}
+        self.config = StubConfig()
 
     async def _run_playlist_mode(
         self,
@@ -155,11 +169,9 @@ async def test_prepare_runtime_tokens_logs_unsupported_weather_provider(caplog: 
             }
         ],
         "section_order": [],
-        "general": {
-            "weather_provider": "unsupported_provider",
-            "location": {"city": "Berlin", "country": "DE"},
-        },
+        "general": {"weather_provider": "unsupported_provider"},
     }
+    runtime.config = StubConfig({"weather_city": "Berlin", "weather_country": "DE"})
 
     with caplog.at_level(logging.WARNING):
         tokens = await runtime._prepare_runtime_tokens(station)
@@ -169,7 +181,7 @@ async def test_prepare_runtime_tokens_logs_unsupported_weather_provider(caplog: 
 
 
 async def test_prepare_runtime_tokens_ignores_missing_location(caplog: Any) -> None:
-    """Skip weather preparation when location data is incomplete."""
+    """Skip weather preparation when the configured location is incomplete."""
     runtime = DummyRuntime()
     station = {
         "sections": [
@@ -180,17 +192,54 @@ async def test_prepare_runtime_tokens_ignores_missing_location(caplog: Any) -> N
             }
         ],
         "section_order": [],
-        "general": {
-            "weather_provider": "open_meteo",
-            "location": {"city": "", "country": "DE"},
-        },
+        "general": {"weather_provider": "open_meteo"},
     }
+    runtime.config = StubConfig({"weather_city": "", "weather_country": "DE"})
 
     with caplog.at_level(logging.DEBUG):
         tokens = await runtime._prepare_runtime_tokens(station)
 
     assert tokens == {}
     assert any("no location configured" in message for message in caplog.messages)
+
+
+def test_extract_location_reads_provider_config() -> None:
+    """Weather location comes from the provider config, not the station."""
+    runtime = DummyRuntime()
+    runtime.config = StubConfig({"weather_city": "Berlin", "weather_country": "DE"})
+
+    assert runtime._extract_location() == ("Berlin", "DE")
+
+
+def test_extract_location_defaults_to_empty_when_unset() -> None:
+    """An unconfigured weather location resolves to empty strings, not an error."""
+    runtime = DummyRuntime()
+
+    assert runtime._extract_location() == ("", "")
+
+
+def test_configured_now_uses_valid_configured_timezone() -> None:
+    """A valid configured IANA timezone name is honored for the current time."""
+    runtime = DummyRuntime()
+    runtime.config = StubConfig({"timezone": "Asia/Tokyo"})
+
+    result = runtime._configured_now()
+
+    assert str(result.tzinfo) == "Asia/Tokyo"
+
+
+@pytest.mark.parametrize(
+    "timezone_value",
+    ["", "not-a-real-zone", "CEST", "../../etc/passwd", "Europe/Amsterdam "],
+)
+def test_configured_now_falls_back_when_timezone_blank_or_invalid(timezone_value: str) -> None:
+    """A blank or invalid configured timezone falls back to the host local time."""
+    runtime = DummyRuntime()
+    runtime.config = StubConfig({"timezone": timezone_value})
+
+    result = runtime._configured_now()
+
+    assert result.utcoffset() == host_now().utcoffset()
 
 
 def test_plan_sections_ignores_invalid_optional_chance() -> None:

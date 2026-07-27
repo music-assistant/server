@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import aiofiles
-import orjson
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -36,6 +34,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_ENTRY_LIBRARY_SYNC_PODCASTS
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.countries import get_country_codes
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
     get_podcastparser_dict,
@@ -102,9 +101,7 @@ class ITunesPodcastsProvider(MusicProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
-        json_path = Path(__file__).parent / "itunes_country_codes.json"
-        async with aiofiles.open(json_path) as f:
-            country_codes = orjson.loads(await f.read())
+        country_codes = await asyncio.to_thread(get_country_codes)
 
         language_options = [
             ConfigValueOption(key.lower(), title=val) for key, val in country_codes.items()

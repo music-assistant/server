@@ -63,21 +63,23 @@ def test_normalize_general_uses_known_schema_only() -> None:
     """Normalize general config to known keys and converted value types."""
     storage = DummyStorage()
     raw_general = {
-        "timezone": "Europe/Berlin",
-        "location": {"city": "Berlin", "country": "DE"},
         "instructions": "Keep it concise and conversational.",
         "weather_provider": "open_meteo",
         "weather_timeout_seconds": "30",
+        # timezone/location moved to provider config; a legacy station carrying them
+        # must not resurrect them in the normalized output
+        "timezone": "Europe/Berlin",
+        "location": {"city": "Berlin", "country": "DE"},
         "foo": "bar",
     }
 
     normalized = storage._normalize_general(raw_general)
 
-    assert normalized["timezone"] == "Europe/Berlin"
-    assert normalized["location"] == {"city": "Berlin", "country": "DE"}
     assert normalized["instructions"] == "Keep it concise and conversational."
     assert normalized["weather_timeout_seconds"] == 30
     assert "foo" not in normalized
+    assert "timezone" not in normalized
+    assert "location" not in normalized
 
     default_keys = set(storage._default_station_template()["general"].keys())
     assert set(normalized.keys()) == default_keys
@@ -362,8 +364,6 @@ def test_normalize_general_replaces_null_instructions_with_default() -> None:
     result = storage._normalize_general(
         {
             "instructions": None,
-            "timezone": "UTC",
-            "location": {"city": "", "country": ""},
             "weather_provider": "open_meteo",
             "weather_timeout_seconds": 20,
         }

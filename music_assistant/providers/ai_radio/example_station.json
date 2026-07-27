@@ -11,11 +11,6 @@
   "dynamic_poll_seconds": 5,
   "clear_queue_on_start": true,
   "general": {
-    "timezone": "UTC",
-    "location": {
-      "city": "Berlin",
-      "country": "Germany"
-    },
     "weather_provider": "open_meteo",
     "weather_timeout_seconds": 20,
     "instructions": "Host personality: warm, sharp, music-literate, and slightly premium without sounding formal. Program instructions: write for spoken delivery, keep segments concise, avoid bullet-point phrasing, avoid clichés, mention concrete details when available, and maintain a believable radio flow between sections."

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import datetime
+import os
+from zoneinfo import available_timezones
 
 LOCAL_TIMEZONE = datetime.datetime.now(datetime.UTC).astimezone().tzinfo
 
@@ -45,6 +47,28 @@ def iso_from_utc_timestamp(timestamp: float) -> str:
 def from_iso_string(iso_datetime: str) -> datetime.datetime:
     """Return datetime from ISO datetime string."""
     return datetime.datetime.fromisoformat(iso_datetime)
+
+
+def host_timezone_name() -> str:
+    """
+    Return the host's IANA timezone name (e.g. "Europe/Amsterdam"), falling back to "UTC".
+
+    Unlike ``LOCAL_TIMEZONE`` (a fixed-offset tzinfo, e.g. "CEST"), this resolves an actual
+    IANA zone name, checked in order: the ``TZ`` environment variable, then the
+    ``/etc/localtime`` symlink target. Never raises.
+    """
+    available = available_timezones()
+    tz_env = os.environ.get("TZ", "").strip()
+    if tz_env in available:
+        return tz_env
+    try:
+        link_target = os.readlink("/etc/localtime")
+    except OSError:
+        link_target = ""
+    _, _, candidate = link_target.partition("zoneinfo/")
+    if candidate in available:
+        return candidate
+    return "UTC"
 
 
 def local_clock_time_to_utc(hour: int, minute: int = 0) -> tuple[int, int]:

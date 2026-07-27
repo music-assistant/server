@@ -2,12 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import ConfigEntryType
 
-from .constants import CONF_UI_AUTO_REFRESH_SECONDS
+from music_assistant.helpers.countries import get_country_codes
+from music_assistant.helpers.datetime import host_timezone_name
+
+from .constants import (
+    CONF_TIMEZONE,
+    CONF_UI_AUTO_REFRESH_SECONDS,
+    CONF_WEATHER_CITY,
+    CONF_WEATHER_COUNTRY,
+)
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -22,6 +31,13 @@ async def get_config_entries(
     """Return Config entries to setup this provider."""
     base_url = mass.webserver.base_url.rstrip("/")
     web_ui_url = f"{base_url}/#/ai-radio"
+    country_codes = await asyncio.to_thread(get_country_codes)
+    country_options = [
+        ConfigValueOption(title=name, value=code) for code, name in country_codes.items()
+    ]
+    # default the weather country to the region of the server's language, mirroring
+    # the itunes_podcasts locale precedent
+    region = mass.metadata.locale.split("_")[-1].upper()
     return (
         ConfigEntry(
             key="web_ui_url",
@@ -33,6 +49,25 @@ async def get_config_entries(
             type=ConfigEntryType.INTEGER,
             default_value=2,
             range=(1, 30),
+            category="advanced",
+        ),
+        ConfigEntry(
+            key=CONF_TIMEZONE,
+            type=ConfigEntryType.STRING,
+            default_value=host_timezone_name(),
+            category="advanced",
+        ),
+        ConfigEntry(
+            key=CONF_WEATHER_CITY,
+            type=ConfigEntryType.STRING,
+            default_value="",
+            category="advanced",
+        ),
+        ConfigEntry(
+            key=CONF_WEATHER_COUNTRY,
+            type=ConfigEntryType.STRING,
+            options=country_options,
+            default_value=region if region in country_codes else "",
             category="advanced",
         ),
     )

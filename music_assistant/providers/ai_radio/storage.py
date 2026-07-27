@@ -210,10 +210,6 @@ class AIRadioStorageMixin:
         if not isinstance(source_general, dict):
             return defaults
 
-        location = source_general.get("location")
-        if not isinstance(location, dict):
-            location = {}
-
         def _text(key: str) -> str:
             value = source_general.get(key, defaults[key])
             return str(value or defaults[key]).strip() or str(defaults[key])
@@ -226,11 +222,6 @@ class AIRadioStorageMixin:
                 return int(defaults[key])
 
         return {
-            "timezone": _text("timezone"),
-            "location": {
-                "city": str(location.get("city", "")).strip(),
-                "country": str(location.get("country", "")).strip(),
-            },
             "instructions": str(source_general.get("instructions") or defaults["instructions"]),
             "weather_provider": _text("weather_provider"),
             "weather_timeout_seconds": _int("weather_timeout_seconds"),
@@ -540,11 +531,6 @@ class AIRadioStorageMixin:
             "clear_queue_on_start": True,
             "merge_section_id": "Between_Songs_Smoother",
             "general": {
-                "timezone": "UTC",
-                "location": {
-                    "city": "",
-                    "country": "",
-                },
                 "instructions": DEFAULT_LLM_INSTRUCTIONS,
                 "weather_provider": DEFAULT_WEATHER_PROVIDER,
                 "weather_timeout_seconds": DEFAULT_WEATHER_TIMEOUT_SECONDS,

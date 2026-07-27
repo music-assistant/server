@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
 import random
 from collections import defaultdict
@@ -11,6 +12,7 @@ from copy import deepcopy
 from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, Any, cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from aiohttp import ClientTimeout
 from music_assistant_models.enums import (
@@ -30,7 +32,7 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 
-from music_assistant.helpers.datetime import now
+from music_assistant.helpers.datetime import now, utc
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.playlists import (
     ArtistInfo,
@@ -45,6 +47,9 @@ from music_assistant.helpers.uri import create_uri
 from music_assistant.providers.builtin import CACHE_CATEGORY_MEDIA_INFO
 
 from .constants import (
+    CONF_TIMEZONE,
+    CONF_WEATHER_CITY,
+    CONF_WEATHER_COUNTRY,
     DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS,
     DEFAULT_LLM_INSTRUCTIONS,
     DEFAULT_WEATHER_PROVIDER,
@@ -190,7 +195,7 @@ class AIRadioRuntimeMixin:
         target_provider = str(station.get("target_playlist_provider") or "builtin")
         run_id = session.session_id[:8]
         station_name = str(station.get("name") or "AI Radio").strip()
-        now_local = now()
+        now_local = self._configured_now()
         date_suffix = f"{now_local.strftime('%a')}. {now_local.strftime('%d.%m.')}"
         target_playlist_name = f"AI Radio: {station_name} ({date_suffix}) [{run_id}]"
 
@@ -1216,11 +1221,11 @@ class AIRadioRuntimeMixin:
             )
             return runtime_tokens
 
-        city, country = self._extract_location(station)
+        city, country = self._extract_location()
         if not city or not country:
             self.logger.warning(
                 "Weather placeholders used but no location configured "
-                "(expected station.general.location.city/country)"
+                "(set the weather_city/weather_country provider options)"
             )
             return runtime_tokens
 
@@ -1269,13 +1274,24 @@ class AIRadioRuntimeMixin:
                     return True
         return False
 
-    def _extract_location(self, station: dict[str, Any]) -> tuple[str, str]:
-        """Extract weather location (city/country) from station general config."""
-        general = cast("dict[str, Any]", station.get("general", {}))
-        location = cast("dict[str, Any]", general.get("location", {}))
-        city = str(location.get("city", "")).strip()
-        country = str(location.get("country", "")).strip()
+    def _extract_location(self) -> tuple[str, str]:
+        """Extract weather location (city/country) from the provider config."""
+        city = str(self.config.get_value(CONF_WEATHER_CITY) or "").strip()
+        country = str(self.config.get_value(CONF_WEATHER_COUNTRY) or "").strip()
         return city, country
+
+    def _configured_now(self) -> datetime.datetime:
+        """Return the current time in the configured timezone, falling back to host local time."""
+        tz_name = str(self.config.get_value(CONF_TIMEZONE) or "").strip()
+        if tz_name:
+            try:
+                return utc().astimezone(ZoneInfo(tz_name))
+            except (ZoneInfoNotFoundError, ValueError):
+                # a typo must not take the run down, but it should not pass unnoticed either
+                self.logger.warning(
+                    "Ignoring invalid timezone %r, falling back to the host timezone", tz_name
+                )
+        return now()
 
     async def _fetch_open_meteo_weather(
         self,
@@ -1459,7 +1475,7 @@ class AIRadioRuntimeMixin:
     ) -> dict[str, str]:
         """Resolve placeholders for one slot."""
         general = cast("dict[str, Any]", station.get("general", {}))
-        now_local = now()
+        now_local = self._configured_now()
 
         values: dict[str, str] = {str(key): str(value) for key, value in runtime_tokens.items()}
         prev_track = tracks[slot.prev_index] if slot.prev_index is not None else None
