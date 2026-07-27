@@ -430,3 +430,85 @@ def test_store_sources_keeps_only_container_types_on_wire() -> None:
     assert ctrl._queue_data["q1"].source_items == items
     # but only the container sources are shown to clients, in original order
     assert [mapping.uri for mapping in queue.sources] == [album.uri, podcast.uri]
+
+
+def _shuffled_queue(ctrl: PlayerQueuesController) -> PlayerQueue:
+    """Set up an idle queue with shuffle on and a deterministic (reversing) shuffle."""
+    ctrl._smart_shuffle = Mock()
+    ctrl._smart_shuffle.is_enabled = Mock(return_value=True)
+    ctrl._smart_shuffle.arrange = AsyncMock(
+        side_effect=lambda _queue, items: list(items)[::-1],
+    )
+    queue = PlayerQueue(
+        queue_id="q1",
+        active=True,
+        display_name="Q1",
+        available=True,
+        items=0,
+        shuffle_enabled=True,
+    )
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
+    return queue
+
+
+async def test_play_with_start_item_pins_chosen_track_under_shuffle() -> None:
+    """PLAY from a chosen track keeps that track first when shuffle is on."""
+    ctrl = _controller()
+    play_index = AsyncMock()
+    ctrl.play_index = play_index  # type: ignore[method-assign]
+    _shuffled_queue(ctrl)
+    items = _items("q1", ["chosen", "b", "c", "d"])
+
+    await ctrl._enqueue_with_option("q1", items, QueueOption.PLAY, pin_first=True)
+
+    queue_items = ctrl._queue_data["q1"].items
+    # the track the user picked starts playing; the rest is shuffled behind it
+    assert queue_items[0] is items[0]
+    assert {item.queue_item_id for item in queue_items[1:]} == {"b", "c", "d"}
+    play_index.assert_awaited_once_with("q1", 0)
+
+
+async def test_replace_with_start_item_pins_chosen_track_under_shuffle() -> None:
+    """REPLACE from a chosen track keeps that track first when shuffle is on."""
+    ctrl = _controller()
+    play_index = AsyncMock()
+    ctrl.play_index = play_index  # type: ignore[method-assign]
+    _shuffled_queue(ctrl)
+    items = _items("q1", ["chosen", "b", "c", "d"])
+
+    await ctrl._enqueue_with_option("q1", items, QueueOption.REPLACE, pin_first=True)
+
+    queue_items = ctrl._queue_data["q1"].items
+    assert queue_items[0] is items[0]
+    assert {item.queue_item_id for item in queue_items[1:]} == {"b", "c", "d"}
+    play_index.assert_awaited_once_with("q1", 0)
+
+
+async def test_play_without_start_item_shuffles_the_whole_batch() -> None:
+    """PLAY of a whole playlist under shuffle still randomises which track starts."""
+    ctrl = _controller()
+    play_index = AsyncMock()
+    ctrl.play_index = play_index  # type: ignore[method-assign]
+    _shuffled_queue(ctrl)
+    items = _items("q1", ["a", "b", "c", "d"])
+
+    await ctrl._enqueue_with_option("q1", items, QueueOption.PLAY)
+
+    # nothing is pinned: the deterministic reversal moves the last item to the front
+    assert ctrl._queue_data["q1"].items[0] is items[-1]
+    play_index.assert_awaited_once_with("q1", 0)
+
+
+async def test_play_with_start_item_keeps_order_when_shuffle_is_off() -> None:
+    """With shuffle off, PLAY from a chosen track plays it and keeps the rest in order."""
+    ctrl = _controller()
+    play_index = AsyncMock()
+    ctrl.play_index = play_index  # type: ignore[method-assign]
+    queue = PlayerQueue(queue_id="q1", active=True, display_name="Q1", available=True, items=0)
+    ctrl._queue_data = {"q1": PlayerQueueData(queue=queue)}
+    items = _items("q1", ["chosen", "b", "c"])
+
+    await ctrl._enqueue_with_option("q1", items, QueueOption.PLAY, pin_first=True)
+
+    assert [item.queue_item_id for item in ctrl._queue_data["q1"].items] == ["chosen", "b", "c"]
+    play_index.assert_awaited_once_with("q1", 0)
