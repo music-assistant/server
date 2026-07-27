@@ -135,7 +135,7 @@ def _build_music_tree(root: Path) -> None:
 def test_recursive_iter_happy_path(tmp_path: Path) -> None:
     """Test that a healthy scan yields all supported files and records no errors."""
     _build_music_tree(tmp_path)
-    errors: list[OSError] = []
+    errors = helpers.ScanErrors()
     items = list(
         helpers.recursive_iter(
             str(tmp_path),
@@ -151,12 +151,13 @@ def test_recursive_iter_happy_path(tmp_path: Path) -> None:
         "Artist1/Album1/track2.flac",
         "Artist2/track3.mp3",
     ]
-    assert errors == []
+    assert not errors.fatal
+    assert errors.failed_dirs == 0
 
 
 def test_recursive_iter_root_unreachable_records_error(tmp_path: Path) -> None:
     """Test that a missing root path is reported via scan_errors."""
-    errors: list[OSError] = []
+    errors = helpers.ScanErrors()
     missing = tmp_path / "does-not-exist"
     items = list(
         helpers.recursive_iter(
@@ -168,13 +169,13 @@ def test_recursive_iter_root_unreachable_records_error(tmp_path: Path) -> None:
         )
     )
     assert items == []
-    assert len(errors) == 1
-    assert errors[0].errno == errno.ENOENT
+    assert isinstance(errors.fatal, OSError)
+    assert errors.fatal.errno == errno.ENOENT
 
 
 def test_recursive_iter_root_eacces_records_error() -> None:
     """Test that permission-denied on the root path is reported via scan_errors."""
-    errors: list[OSError] = []
+    errors = helpers.ScanErrors()
     with patch("os.scandir", side_effect=PermissionError(errno.EACCES, "denied")):
         items = list(
             helpers.recursive_iter(
@@ -186,14 +187,14 @@ def test_recursive_iter_root_eacces_records_error() -> None:
             )
         )
     assert items == []
-    assert len(errors) == 1
-    assert errors[0].errno == errno.EACCES
+    assert isinstance(errors.fatal, OSError)
+    assert errors.fatal.errno == errno.EACCES
 
 
 def test_recursive_iter_subfolder_failure_is_not_fatal(tmp_path: Path) -> None:
-    """Test that a sub-folder scan failure does not populate scan_errors."""
+    """Test that a single sub-folder scan failure is not fatal."""
     _build_music_tree(tmp_path)
-    errors: list[OSError] = []
+    errors = helpers.ScanErrors()
     real_scandir = os.scandir
     bad_dir = str(tmp_path / "Artist1" / "Album1")
 
@@ -215,12 +216,14 @@ def test_recursive_iter_subfolder_failure_is_not_fatal(tmp_path: Path) -> None:
 
     rel_paths = sorted(i.relative_path for i in items)
     assert rel_paths == ["Artist2/track3.mp3"]
-    assert errors == []
+    assert not errors.fatal
+    # the scan is incomplete, so callers must not run deletions
+    assert errors.failed_dirs == 1
 
 
 def test_recursive_iter_einval_is_ignored() -> None:
     """Test that EINVAL from an unsupported path name is not recorded."""
-    errors: list[OSError] = []
+    errors = helpers.ScanErrors()
     with patch("os.scandir", side_effect=OSError(errno.EINVAL, "invalid path")):
         items = list(
             helpers.recursive_iter(
@@ -232,4 +235,86 @@ def test_recursive_iter_einval_is_ignored() -> None:
             )
         )
     assert items == []
-    assert errors == []
+    assert not errors.fatal
+    assert errors.failed_dirs == 0
+
+
+def _build_flat_tree(root: Path, count: int) -> None:
+    """Create a music tree with the given number of album folders."""
+    for index in range(count):
+        album_dir = root / f"Album{index:03d}"
+        album_dir.mkdir()
+        (album_dir / "track.mp3").write_bytes(b"x")
+
+
+def test_recursive_iter_aborts_after_consecutive_failures(tmp_path: Path) -> None:
+    """Test that storage disappearing mid-scan aborts the walk instead of grinding on."""
+    _build_flat_tree(tmp_path, helpers.MAX_CONSECUTIVE_SCAN_ERRORS + 10)
+    errors = helpers.ScanErrors()
+    real_scandir = os.scandir
+
+    def fake_scandir(path: str | os.PathLike[str]):  # type: ignore[no-untyped-def]
+        if str(path) == str(tmp_path):
+            return real_scandir(path)
+        raise OSError(errno.EIO, "i/o error")
+
+    with patch("os.scandir", side_effect=fake_scandir):
+        items = list(
+            helpers.recursive_iter(
+                str(tmp_path),
+                str(tmp_path),
+                SUPPORTED,
+                logging.getLogger("test"),
+                errors,
+            )
+        )
+
+    assert items == []
+    assert errors.aborted
+    # the walk stopped at the threshold instead of trying every remaining folder
+    assert errors.failed_dirs == helpers.MAX_CONSECUTIVE_SCAN_ERRORS
+
+
+def test_recursive_iter_einval_does_not_abort(tmp_path: Path) -> None:
+    """Test that skipped (unsupported) path names never trip the abort threshold."""
+    _build_flat_tree(tmp_path, helpers.MAX_CONSECUTIVE_SCAN_ERRORS + 10)
+    (tmp_path / "root.mp3").write_bytes(b"x")
+    errors = helpers.ScanErrors()
+    real_scandir = os.scandir
+
+    def fake_scandir(path: str | os.PathLike[str]):  # type: ignore[no-untyped-def]
+        if str(path) == str(tmp_path):
+            return real_scandir(path)
+        raise OSError(errno.EINVAL, "invalid argument")
+
+    with patch("os.scandir", side_effect=fake_scandir):
+        items = list(
+            helpers.recursive_iter(
+                str(tmp_path),
+                str(tmp_path),
+                SUPPORTED,
+                logging.getLogger("test"),
+                errors,
+            )
+        )
+
+    assert [item.relative_path for item in items] == ["root.mp3"]
+    assert not errors.aborted
+    assert errors.failed_dirs == 0
+
+
+def test_scan_errors_reset_on_successful_read() -> None:
+    """Test that a directory read in between failures resets the abort threshold."""
+    errors = helpers.ScanErrors()
+    err = OSError(errno.EIO, "i/o error")
+    for _ in range(helpers.MAX_CONSECUTIVE_SCAN_ERRORS - 1):
+        errors.record_dir_error(err, is_root=False)
+    assert not errors.aborted
+
+    errors.record_dir_read()
+    assert errors.consecutive_failures == 0
+
+    for _ in range(helpers.MAX_CONSECUTIVE_SCAN_ERRORS - 1):
+        errors.record_dir_error(err, is_root=False)
+    assert not errors.aborted
+    assert errors.failed_dirs == (helpers.MAX_CONSECUTIVE_SCAN_ERRORS - 1) * 2

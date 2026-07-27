@@ -122,6 +122,7 @@ from .cue import (
 )
 from .helpers import (
     FileSystemItem,
+    ScanErrors,
     get_absolute_path,
     get_album_dir,
     get_artist_dir,
@@ -469,9 +470,9 @@ class LocalFileSystemProvider(MusicProvider):
         # absolute paths of every CUE sheet in this scan with the ".cue" stripped,
         # used for O(1) companion-CUE lookups per audio file
         cue_stems: set[str] = set()
-        # populated only when the provider root itself is unreadable;
-        # per-subdirectory failures are logged and skipped
-        root_scan_errors: list[OSError] = []
+        # collects the errors raised while walking the tree; any error means the
+        # scan is incomplete, a fatal one means the provider is unreachable
+        scan_errors = ScanErrors()
 
         self.sync_running = True
         try:
@@ -482,8 +483,15 @@ class LocalFileSystemProvider(MusicProvider):
                 items_to_process=items_to_process,
                 unchanged_cue_items=unchanged_cue_items,
                 cue_stems=cue_stems,
-                root_scan_errors=root_scan_errors,
+                scan_errors=scan_errors,
             )
+            if scan_errors.fatal:
+                # the storage is gone, so reading the files collected before it went
+                # away would only add a timeout each
+                self.logger.error("Aborting sync for %s: %s", self.name, scan_errors.fatal)
+                report_current_task_failure("Sync aborted: filesystem unavailable during scan")
+                self._set_available(False)
+                return
             # a CUE may name an audio file other than its own; hide that companion too
             if self.media_content_type == "music":
                 for cue_item in (
@@ -545,17 +553,6 @@ class LocalFileSystemProvider(MusicProvider):
                     await tm.create_task_with_limit(_process(item, prev_checksum))
         finally:
             self.sync_running = False
-
-        # do not run deletions if the root base path could not be scanned
-        if root_scan_errors:
-            self.logger.error(
-                "Aborting sync for %s: %d root scan error(s)",
-                self.name,
-                len(root_scan_errors),
-            )
-            report_current_task_failure("Sync aborted: filesystem unavailable during scan")
-            self._set_available(False)
-            return
 
         # do not run deletions on a clean but empty scan of a previously non-empty library
         # (wrong share mounted, empty backup mount, ...)
@@ -1010,15 +1007,15 @@ class LocalFileSystemProvider(MusicProvider):
         items_to_process: list[tuple[FileSystemItem, str | None]],
         unchanged_cue_items: list[FileSystemItem],
         cue_stems: set[str],
-        root_scan_errors: list[OSError],
+        scan_errors: ScanErrors,
     ) -> None:
         """
         Walk every supported file under the provider root and populate the sync buckets.
 
         Override in subclasses that cannot use a local ``os.scandir`` walk.
         Implementations must route each discovered file through
-        :meth:`_classify_scan_item` and append to ``root_scan_errors`` only
-        when the provider root itself is unreadable.
+        :meth:`_classify_scan_item`, report every unreadable directory to
+        ``scan_errors`` and stop the walk once it reports ``aborted``.
 
         :param file_checksums: Previously stored checksum per provider item id.
         :param cue_file_checksums: Previously stored checksum keyed by CUE relative_path.
@@ -1026,7 +1023,7 @@ class LocalFileSystemProvider(MusicProvider):
         :param items_to_process: Receives changed or new items to process.
         :param unchanged_cue_items: Receives CUE sheets whose checksum matches.
         :param cue_stems: Receives absolute paths (minus extension) of CUE sheets.
-        :param root_scan_errors: Receives errors that indicate the root is unreadable.
+        :param scan_errors: Receives the errors raised while walking the tree.
         """
         ignore_album_playlists = self.media_content_type == "music" and bool(
             self.config.get_value(CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS.key)
@@ -1039,7 +1036,7 @@ class LocalFileSystemProvider(MusicProvider):
                     self.base_path,
                     SUPPORTED_EXTENSIONS,
                     self.logger,
-                    scan_errors=root_scan_errors,
+                    scan_errors=scan_errors,
                 ),
                 start=1,
             ):

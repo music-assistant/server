@@ -17,6 +17,9 @@ from music_assistant.helpers.security import is_safe_path
 
 logger = logging.getLogger(__name__)
 
+# number of consecutive unreadable directories that marks the storage itself as gone
+MAX_CONSECUTIVE_SCAN_ERRORS = 10
+
 IGNORE_DIRS = (
     "recycle",
     "Recently-Snaphot",
@@ -26,6 +29,53 @@ IGNORE_DIRS = (
     "lost+found",
     "@eaDir",
 )
+
+
+@dataclass
+class ScanErrors:
+    """
+    Error state of a single (recursive) scan of a filesystem provider.
+
+    Shared by all directory levels of one scan, so a storage that goes away
+    halfway through is detected after a handful of failures instead of failing
+    once per remaining directory.
+
+    - fatal: The error that ended the scan: the provider root itself is unreadable
+      or too many directories failed in a row. Callers abort the sync and mark
+      the provider unavailable.
+    - failed_dirs: Number of directories that could not be read. A scan with
+      failed directories is incomplete, so callers must not run deletions.
+    - consecutive_failures: Directories that failed since the last one read
+      successfully.
+    """
+
+    fatal: Exception | None = None
+    failed_dirs: int = 0
+    consecutive_failures: int = 0
+
+    @property
+    def aborted(self) -> bool:
+        """Return True if the scan must be stopped."""
+        return self.fatal is not None
+
+    def record_dir_read(self) -> None:
+        """Register a directory that was read successfully."""
+        self.consecutive_failures = 0
+
+    def record_dir_error(self, err: Exception, *, is_root: bool) -> None:
+        """
+        Register a directory that could not be read.
+
+        :param err: The error raised while reading the directory.
+        :param is_root: True if the directory is the provider's root path.
+        """
+        if is_root:
+            self.fatal = err
+            return
+        self.failed_dirs += 1
+        self.consecutive_failures += 1
+        if self.consecutive_failures >= MAX_CONSECUTIVE_SCAN_ERRORS:
+            self.fatal = err
 
 
 @dataclass
@@ -245,7 +295,7 @@ def recursive_iter(
     base_path: str,
     supported_extensions: set[str],
     log: logging.Logger,
-    scan_errors: list[OSError] | None = None,
+    scan_errors: ScanErrors | None = None,
 ) -> Iterator[FileSystemItem]:
     """
     Recursively traverse directory entries yielding supported files.
@@ -254,11 +304,11 @@ def recursive_iter(
     :param base_path: The root base path for constructing relative paths.
     :param supported_extensions: Set of file extensions to include (lowercase, no dot).
     :param log: Logger instance to use for warnings/debug messages.
-    :param scan_errors: Optional list populated with OSErrors raised while scanning
-        the provider's root base path. Callers treat a non-empty list as "provider
-        unreachable" and abort the sync.
+    :param scan_errors: Optional state object collecting the errors raised during this
+        scan. Callers treat ``fatal`` as "provider unreachable" and abort the sync.
     """
-    is_root = path == base_path
+    if scan_errors is None:
+        scan_errors = ScanErrors()
     try:
         scan_iter = os.scandir(path)
     except OSError as err:
@@ -269,19 +319,18 @@ def recursive_iter(
             )
             return
         log.warning("Unable to scan directory %s: %s", path, err)
-        if is_root and scan_errors is not None:
-            scan_errors.append(err)
+        _record_dir_failure(scan_errors, err, path=path, base_path=base_path, log=log)
         return
     with scan_iter:
         while True:
             try:
                 item = next(scan_iter)
             except StopIteration:
+                scan_errors.record_dir_read()
                 break
             except OSError as err:
                 log.warning("Error while scanning directory %s: %s", path, err)
-                if is_root and scan_errors is not None:
-                    scan_errors.append(err)
+                _record_dir_failure(scan_errors, err, path=path, base_path=base_path, log=log)
                 return
             if item.name in IGNORE_DIRS or item.name.startswith((".", "_")):
                 continue
@@ -305,6 +354,8 @@ def recursive_iter(
                     log,
                     scan_errors,
                 )
+                if scan_errors.aborted:
+                    return
             elif is_file:
                 if "." not in item.name:
                     continue
@@ -386,3 +437,22 @@ def sorted_scandir(base_path: str, sub_path: str, sort: bool = False) -> list[Fi
             key=lambda x: nat_key(x.name),
         )
     return items
+
+
+def _record_dir_failure(
+    scan_errors: ScanErrors,
+    err: OSError,
+    *,
+    path: str,
+    base_path: str,
+    log: logging.Logger,
+) -> None:
+    """Register a directory that could not be read and report it if the scan gives up."""
+    is_root = path == base_path
+    scan_errors.record_dir_error(err, is_root=is_root)
+    if scan_errors.aborted and not is_root:
+        log.error(
+            "Stopping the scan of %s: %d folders in a row could not be read",
+            base_path,
+            scan_errors.consecutive_failures,
+        )
