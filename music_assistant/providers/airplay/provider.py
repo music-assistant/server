@@ -13,6 +13,7 @@ from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import TYPE_CHECKING, Final, cast
 
 from music_assistant_models.enums import PlaybackState
+from music_assistant_models.errors import MediaNotFoundError
 from zeroconf import NonUniqueNameException, ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
@@ -39,6 +40,7 @@ from .constants import (
     CONF_IGNORE_VOLUME,
     CONF_STORED_VOLUME,
     DACP_DISCOVERY_TYPE,
+    EXTERNAL_ARTWORK_PATH_PREFIX,
     FALLBACK_VOLUME,
     MRP_DISCOVERY_TYPE,
     RAOP_DISCOVERY_TYPE,
@@ -326,6 +328,27 @@ class AirPlayProvider(PlayerProvider):
     def get_player(self, player_id: str) -> AirPlayPlayer | None:
         """Return AirplayPlayer by id."""
         return cast("AirPlayPlayer | None", self.mass.players.get_player(player_id))
+
+    async def resolve_image(self, path: str) -> bytes:
+        """
+        Resolve artwork for the current external media on an Apple device.
+
+        :param path: AirPlay artwork path produced for the image proxy.
+        :return: Raw artwork bytes.
+        :raises MediaNotFoundError: If the artwork is invalid, stale, or unavailable.
+        """
+        try:
+            prefix, player_id, artwork_id = path.split("/", 2)
+        except ValueError as err:
+            raise MediaNotFoundError("Invalid AirPlay artwork path") from err
+        player = self.get_player(player_id)
+        if (
+            prefix != EXTERNAL_ARTWORK_PATH_PREFIX
+            or not artwork_id
+            or not isinstance(player, AirPlayControlPlayer)
+        ):
+            raise MediaNotFoundError("AirPlay artwork is unavailable")
+        return await player.async_get_external_artwork(artwork_id)
 
     def _set_pyatv_log_level(self) -> None:
         """Keep pyatv's (very chatty) logging quiet unless verbose logging is enabled."""
