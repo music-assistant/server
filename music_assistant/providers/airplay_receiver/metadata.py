@@ -48,6 +48,8 @@ class MetadataReader:
     async def start(self) -> None:
         """Start reading metadata from the pipe."""
         self._stop = False
+        # Open the FIFO up front so hook writers never block on a missing reader.
+        self._fd = await self._open_pipe()
         self._reader_task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
@@ -57,6 +59,11 @@ class MetadataReader:
             self._reader_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._reader_task
+        # start() opens the pipe, so the fd can outlive a read loop that never ran.
+        if self._fd is not None:
+            with suppress(OSError):
+                os.close(self._fd)
+            self._fd = None
 
     async def _run(self) -> None:
         """
@@ -73,15 +80,18 @@ class MetadataReader:
             if not self._stop:
                 await asyncio.sleep(1)
 
+    async def _open_pipe(self) -> int:
+        """Open the metadata pipe in non-blocking mode and return its file descriptor."""
+        return await asyncio.to_thread(os.open, self.metadata_pipe, os.O_RDONLY | os.O_NONBLOCK)
+
     async def _read_metadata(self) -> None:
         """Read metadata from the pipe using async file descriptor."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         try:
-            # Open the metadata pipe in non-blocking mode
-            # Use O_RDONLY | O_NONBLOCK to avoid blocking on open
-            self._fd = await loop.run_in_executor(
-                None, os.open, self.metadata_pipe, os.O_RDONLY | os.O_NONBLOCK
-            )
+            # start() already opened the pipe; only reopen when a restart closed the fd.
+            if self._fd is None:
+                self._fd = await self._open_pipe()
+            fd = self._fd
 
             # Create an asyncio.Event to signal when data is available
             data_available = asyncio.Event()
@@ -91,7 +101,7 @@ class MetadataReader:
                 data_available.set()
 
             # Register the file descriptor with the event loop
-            loop.add_reader(self._fd, on_readable)
+            loop.add_reader(fd, on_readable)
 
             try:
                 while not self._stop:
@@ -101,7 +111,7 @@ class MetadataReader:
 
                     # Read available data from the pipe
                     try:
-                        chunk = os.read(self._fd, 4096)
+                        chunk = os.read(fd, 4096)
                         if chunk:
                             # Decode as text and add to buffer
                             self._buffer += chunk.decode("utf-8", errors="ignore")
@@ -119,7 +129,7 @@ class MetadataReader:
 
             finally:
                 # Remove the reader callback
-                loop.remove_reader(self._fd)
+                loop.remove_reader(fd)
 
         finally:
             if self._fd is not None:

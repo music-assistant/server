@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import pathlib
+from collections.abc import Callable
 from typing import Any
 
 import pytest
@@ -13,7 +15,7 @@ from music_assistant.providers.airplay_receiver.metadata import MetadataReader
 
 
 @pytest.fixture
-def pipe_path(tmp_path: Any) -> str:
+def pipe_path(tmp_path: pathlib.Path) -> str:
     """Create a metadata FIFO like the provider does."""
     path = str(tmp_path / "metadata_pipe")
     os.mkfifo(path)
@@ -33,7 +35,7 @@ async def _write_marker(pipe_path: str, marker: str) -> None:
     await asyncio.get_event_loop().run_in_executor(None, _write)
 
 
-async def _wait_for(condition: Any, timeout: float = 2.0) -> None:
+async def _wait_for(condition: Callable[[], bool], timeout: float = 2.0) -> None:
     async with asyncio.timeout(timeout):
         while not condition():
             await asyncio.sleep(0.01)
@@ -56,6 +58,18 @@ async def _write_marker_when_reader_present(
         os.close(fd)
 
 
+async def test_pipe_is_open_when_start_returns(pipe_path: str) -> None:
+    """start() attaches to the FIFO so hook writers never block on a missing reader."""
+    reader = MetadataReader(pipe_path, logging.getLogger("test"), None)
+    await reader.start()
+    try:
+        # Opening for write fails with ENXIO while no reader is attached.
+        fd = os.open(pipe_path, os.O_WRONLY | os.O_NONBLOCK)
+        os.close(fd)
+    finally:
+        await reader.stop()
+
+
 async def test_hook_marker_delivered(pipe_path: str) -> None:
     """A sessioncontrol hook marker is delivered as a play_state update."""
     updates: list[dict[str, Any]] = []
@@ -63,7 +77,7 @@ async def test_hook_marker_delivered(pipe_path: str) -> None:
     await reader.start()
     try:
         await _write_marker(pipe_path, "MA_PLAY_BEGIN")
-        await _wait_for(lambda: updates)
+        await _wait_for(lambda: bool(updates))
         assert updates == [{"play_state": "playing"}]
     finally:
         await reader.stop()
@@ -86,7 +100,8 @@ async def test_markers_after_writer_close(pipe_path: str) -> None:
 
 async def test_reader_backs_off_on_eof(pipe_path: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """After all writers closed, the reader backs off instead of spinning the loop."""
-    reader = MetadataReader(pipe_path, logging.getLogger("test"), None)
+    updates: list[dict[str, Any]] = []
+    reader = MetadataReader(pipe_path, logging.getLogger("test"), updates.append)
     real_read = os.read
     read_counts: list[int] = []
 
@@ -99,7 +114,9 @@ async def test_reader_backs_off_on_eof(pipe_path: str, monkeypatch: pytest.Monke
     await reader.start()
     try:
         await _write_marker(pipe_path, "MA_PLAY_BEGIN")
-        await asyncio.sleep(0.1)  # Wait for the reader to reach EOF.
+        # The marker arriving proves the reader consumed it and the writer is gone,
+        # so every read from here on hits EOF.
+        await _wait_for(lambda: bool(updates))
         read_counts.clear()
         await asyncio.sleep(0.5)
         assert len(read_counts) < 20
@@ -129,7 +146,7 @@ async def test_reader_restarts_after_unexpected_error(
         await _write_marker(pipe_path, "MA_PLAY_BEGIN")
         await _wait_for(lambda: not fail_once)
         await _write_marker_when_reader_present(pipe_path, "MA_PLAY_BEGIN")
-        await _wait_for(lambda: updates, timeout=5.0)
+        await _wait_for(lambda: bool(updates), timeout=5.0)
         assert updates[-1] == {"play_state": "playing"}
     finally:
         await reader.stop()
