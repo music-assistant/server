@@ -148,28 +148,6 @@ async def test_start_run_dynamic_rejects_disabled_player() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_ui_settings_returns_default_refresh_interval() -> None:
-    """Return sane default interval when setting is missing."""
-    provider = _make_provider()
-    provider.config = cast("Any", SimpleNamespace(get_value=lambda _key: None))
-
-    result = await provider.get_ui_settings()
-
-    assert result["auto_refresh_seconds"] == 2
-
-
-@pytest.mark.asyncio
-async def test_get_ui_settings_clamps_interval_to_minimum() -> None:
-    """Clamp invalid refresh values to one second."""
-    provider = _make_provider()
-    provider.config = cast("Any", SimpleNamespace(get_value=lambda _key: 0))
-
-    result = await provider.get_ui_settings()
-
-    assert result["auto_refresh_seconds"] == 1
-
-
-@pytest.mark.asyncio
 async def test_stop_run_rejects_already_completed_session() -> None:
     """Reject stopping a session that is already completed."""
     provider = _make_provider()

@@ -13,7 +13,6 @@ from music_assistant.helpers.datetime import host_timezone_name
 
 from .constants import (
     CONF_TIMEZONE,
-    CONF_UI_AUTO_REFRESH_SECONDS,
     CONF_WEATHER_CITY,
     CONF_WEATHER_COUNTRY,
 )
@@ -37,13 +36,6 @@ async def get_config_entries(
     # the itunes_podcasts locale precedent
     region = mass.metadata.locale.split("_")[-1].upper()
     return (
-        ConfigEntry(
-            key=CONF_UI_AUTO_REFRESH_SECONDS,
-            type=ConfigEntryType.INTEGER,
-            default_value=2,
-            range=(1, 30),
-            advanced=True,
-        ),
         ConfigEntry(
             key=CONF_TIMEZONE,
             type=ConfigEntryType.STRING,

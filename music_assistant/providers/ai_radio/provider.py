@@ -15,7 +15,6 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant.models.plugin import PluginProvider
 
 from .constants import (
-    CONF_UI_AUTO_REFRESH_SECONDS,
     DEFAULT_MAX_CONCURRENT_RUNS,
     MAX_FINISHED_SESSIONS,
     SUPPORTED_FEATURES,
@@ -96,14 +95,11 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
             ("ai_radio/start", self.start_run),
             ("ai_radio/stop", self.stop_run),
             ("ai_radio/status", self.get_status),
-            ("ai_radio/ui_settings", self.get_ui_settings),
         )
         for command, handler in api_handlers:
             required_scope = (
                 Scope.CONFIG_PROVIDERS_READ
-                if command.endswith(
-                    ("/list", "/get", "/template", "/validate", "/status", "/ui_settings")
-                )
+                if command.endswith(("/list", "/get", "/template", "/validate", "/status"))
                 else Scope.CONFIG_PROVIDERS_WRITE
             )
             self._unregister_handles.append(
@@ -340,12 +336,6 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
             return {"sessions": [self._sessions[session_id].as_dict()]}
         sessions = sorted(self._sessions.values(), key=lambda item: item.created_at, reverse=True)
         return {"sessions": [session.as_dict() for session in sessions]}
-
-    async def get_ui_settings(self) -> dict[str, int]:
-        """Return UI behavior settings for the plugin web page."""
-        value = self.config.get_value(CONF_UI_AUTO_REFRESH_SECONDS)
-        interval_seconds = max(1, coerce_int(value, 2))
-        return {"auto_refresh_seconds": interval_seconds}
 
     def _prune_finished_sessions(self) -> None:
         """Drop the oldest finished sessions beyond the retention limit."""

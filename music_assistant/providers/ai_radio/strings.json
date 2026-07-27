@@ -1,9 +1,5 @@
 {
   "config_entries": {
-    "ui_auto_refresh_seconds": {
-      "label": "Web UI Auto Refresh Interval (seconds)",
-      "description": "How often the AI Radio web UI refreshes session/player status automatically."
-    },
     "timezone": {
       "label": "Timezone",
       "description": "IANA timezone (e.g. Europe/Amsterdam) used to resolve the current time for stations."

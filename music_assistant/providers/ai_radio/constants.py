@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-CONF_UI_AUTO_REFRESH_SECONDS = "ui_auto_refresh_seconds"
 CONF_TIMEZONE = "timezone"
 CONF_WEATHER_CITY = "weather_city"
 CONF_WEATHER_COUNTRY = "weather_country"

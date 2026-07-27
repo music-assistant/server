@@ -807,8 +807,6 @@
   "provider.acoustid_lookup.manifest.description": "Identifies local audio files using AcoustID/Chromaprint fingerprinting and fills in their MusicBrainz recording ID for subsequent metadata enrichment.",
   "provider.ai_radio.config_entries.timezone.description": "IANA timezone (e.g. Europe/Amsterdam) used to resolve the current time for stations.",
   "provider.ai_radio.config_entries.timezone.label": "Timezone",
-  "provider.ai_radio.config_entries.ui_auto_refresh_seconds.description": "How often the AI Radio web UI refreshes session/player status automatically.",
-  "provider.ai_radio.config_entries.ui_auto_refresh_seconds.label": "Web UI Auto Refresh Interval (seconds)",
   "provider.ai_radio.config_entries.weather_city.description": "City used to look up the weather forecast for stations that reference it.",
   "provider.ai_radio.config_entries.weather_city.label": "Weather City",
   "provider.ai_radio.config_entries.weather_country.description": "Country used to look up the weather forecast for stations that reference it.",

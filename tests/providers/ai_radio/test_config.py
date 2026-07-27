@@ -36,7 +36,7 @@ def test_optional_entries_use_the_advanced_flag_not_the_advanced_category() -> N
     for entry in entries:
         assert entry.category != "advanced", f"{entry.key} uses the deprecated advanced category"
     advanced = {entry.key for entry in entries if entry.advanced}
-    assert advanced == {"ui_auto_refresh_seconds", "timezone"}
+    assert advanced == {"timezone"}
 
 
 def test_weather_country_is_a_dropdown_defaulting_to_the_server_region() -> None:
