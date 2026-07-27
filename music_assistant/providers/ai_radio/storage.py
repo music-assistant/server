@@ -133,10 +133,7 @@ class AIRadioStorageMixin:
     async def _write_json_file(self, target: Path, payload: dict[str, Any]) -> None:
         """Write a JSON payload to disk without corrupting the target on failure."""
         content = await async_json_dumps(payload, indent=True)
-        tmp_file = target.with_name(f"{target.name}.tmp")
-        async with aiofiles.open(tmp_file, "w") as file_handle:
-            await file_handle.write(content)
-        await asyncio.to_thread(os.replace, tmp_file, target)
+        await asyncio.to_thread(self._sync_write_json_file, target, content)
 
     def _materialize_sections(
         self,
@@ -593,3 +590,12 @@ class AIRadioStorageMixin:
                 {"when": "end_of_playlist", "flow": [{"MUST": "Song_Introduction_End"}]},
             ],
         }
+
+    def _sync_write_json_file(self, target: Path, content: str) -> None:
+        """Atomically write JSON content to disk, fsyncing before the rename."""
+        tmp_file = target.with_name(f"{target.name}.tmp")
+        with tmp_file.open("w", encoding="utf-8") as file_handle:
+            file_handle.write(content)
+            file_handle.flush()
+            os.fsync(file_handle.fileno())
+        os.replace(tmp_file, target)

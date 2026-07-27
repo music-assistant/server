@@ -813,7 +813,7 @@ class BuiltinProvider(MusicProvider):
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Get stream details for a track, radio stream, or sound effect."""
         media_info = await self._get_media_info(item_id)
-        is_radio = media_info.get("icy-name") or not media_info.duration
+        is_radio = media_info.get("icyname") or not media_info.duration
         stream_media_type = (
             MediaType.SOUND_EFFECT
             if media_type == MediaType.SOUND_EFFECT

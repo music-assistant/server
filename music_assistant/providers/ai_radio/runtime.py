@@ -523,12 +523,20 @@ class AIRadioRuntimeMixin:
         playlist_name = playlist.name
         tracks = [track async for track in self.mass.music.playlists.tracks(playlist_id, provider)]
         normalized: list[dict[str, Any]] = []
-        for index, track in enumerate(tracks):
+        for track in tracks:
             artist = ""
             track_artists = getattr(track, "artists", None)
             if isinstance(track_artists, list) and track_artists:
                 artist = str(track_artists[0].name)
             uri = await self._track_to_uri(track)
+            if not uri:
+                self.logger.warning(
+                    "Skipping source track with no resolvable uri: %s - %s (item_id=%s)",
+                    artist,
+                    track.name,
+                    track.item_id,
+                )
+                continue
             try:
                 playlist_item = media_item_to_playlist_item(track)
             except Exception:
@@ -540,7 +548,7 @@ class AIRadioRuntimeMixin:
                 playlist_item = None
             normalized.append(
                 {
-                    "index": index,
+                    "index": len(normalized),
                     "item_id": track.item_id,
                     "name": track.name,
                     "artist": artist,
@@ -779,8 +787,8 @@ class AIRadioRuntimeMixin:
         minute_offset: float,
     ) -> bool:
         """Evaluate OPTIONAL section guards."""
-        min_gap_songs = int(guards.get("min_gap_songs", 0) or 0)
-        max_per_60min = int(guards.get("max_per_60min", 0) or 0)
+        min_gap_songs = coerce_int(guards.get("min_gap_songs"), 0)
+        max_per_60min = coerce_int(guards.get("max_per_60min"), 0)
         required_placeholders = guards.get("require_placeholders_present", [])
         events = history.get(section_id, [])
         song_local = slot.next_index if slot.next_index is not None else len(tracks)

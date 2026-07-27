@@ -807,7 +807,7 @@
   "provider.acoustid_lookup.manifest.description": "Identifies local audio files using AcoustID/Chromaprint fingerprinting and fills in their MusicBrainz recording ID for subsequent metadata enrichment.",
   "provider.ai_radio.config_entries.ui_auto_refresh_seconds.description": "How often the AI Radio web UI refreshes session/player status automatically.",
   "provider.ai_radio.config_entries.ui_auto_refresh_seconds.label": "Web UI Auto Refresh Interval (seconds)",
-  "provider.ai_radio.config_entries.web_ui_url.label": "Click (?) to open AI Radio User Interface",
+  "provider.ai_radio.config_entries.web_ui_url.label": "Open the AI Radio user interface: {0}",
   "provider.airplay.config_entries.companion_pairing_pin.label": "Enter the 4-digit PIN shown on the device",
   "provider.airplay.config_entries.encryption.description": "Enable encrypted communication with the player, some (3rd party) players require this to be disabled.",
   "provider.airplay.config_entries.encryption.label": "Enable encryption",

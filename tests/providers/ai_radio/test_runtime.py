@@ -23,7 +23,7 @@ from music_assistant_models.media_items import SoundEffect
 
 from music_assistant.helpers.playlists import PlaylistItem, parse_m3u, parse_m3u_playlist_image
 from music_assistant.helpers.uri import create_uri
-from music_assistant.providers.ai_radio.models import AudioSection, SessionState
+from music_assistant.providers.ai_radio.models import AudioSection, SessionState, Slot
 from music_assistant.providers.ai_radio.runtime import AIRadioRuntimeMixin
 
 
@@ -1127,3 +1127,78 @@ async def test_dynamic_watchdog_tolerates_paused_queue(
     )
 
     assert result["queued_tracks"] == 3
+
+
+def test_passes_optional_guards_handles_non_numeric_guard_values() -> None:
+    """Treat non-numeric guard values as disabled instead of raising ValueError."""
+    runtime = DummyRuntime()
+    slot = Slot(
+        when="between_songs",
+        at_index=1,
+        prev_index=0,
+        next_index=1,
+        very_next_index=2,
+        minute_mark=5.0,
+    )
+
+    result = runtime._passes_optional_guards(
+        section_id="Weather_Short",
+        guards={"min_gap_songs": "abc", "max_per_60min": "xyz"},
+        history={},
+        slot=slot,
+        tracks=[{}, {}, {}],
+        placeholders={},
+        track_index_offset=0,
+        minute_offset=0.0,
+    )
+
+    assert result is True
+
+
+async def test_fetch_source_tracks_skips_tracks_with_no_resolvable_uri(caplog: Any) -> None:
+    """Skip and warn about source tracks with no resolvable uri instead of queuing a dead entry."""
+
+    class DummyPlaylist:
+        name = "Source Playlist"
+
+    class DummyPlaylistsController:
+        def __init__(self, tracks: list[Any]) -> None:
+            self._tracks = tracks
+
+        async def get(self, playlist_id: str, provider: str) -> Any:
+            return DummyPlaylist()
+
+        async def tracks(self, playlist_id: str, provider: str) -> Any:
+            for track in self._tracks:
+                yield track
+
+    class DummyTrack:
+        def __init__(self, item_id: str, name: str, uri: str = "") -> None:
+            self.item_id = item_id
+            self.name = name
+            self.artists: list[Any] = []
+            self.duration = 180
+            self.uri = uri
+            self.provider_mappings: list[Any] = []
+
+    good_track_1 = DummyTrack("1", "Track One", uri="library://track/1")
+    unresolvable_track = DummyTrack("2", "Track Two")
+    good_track_2 = DummyTrack("3", "Track Three", uri="library://track/3")
+
+    class DummyMusic:
+        playlists = DummyPlaylistsController([good_track_1, unresolvable_track, good_track_2])
+
+    class DummyMass:
+        music = DummyMusic()
+
+    runtime = DummyRuntime()
+    _set_runtime_mass(runtime, DummyMass())
+    station = {"source_playlist_id": "playlist-1", "source_playlist_provider": "library"}
+
+    with caplog.at_level(logging.WARNING):
+        tracks, playlist_name = await runtime._fetch_source_tracks(station)
+
+    assert playlist_name == "Source Playlist"
+    assert [track["item_id"] for track in tracks] == ["1", "3"]
+    assert [track["index"] for track in tracks] == [0, 1]
+    assert any("Track Two" in record.message for record in caplog.records)

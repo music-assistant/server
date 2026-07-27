@@ -26,7 +26,7 @@ async def get_config_entries(
         ConfigEntry(
             key="web_ui_url",
             type=ConfigEntryType.LABEL,
-            description=web_ui_url,
+            translation_params=[web_ui_url],
         ),
         ConfigEntry(
             key=CONF_UI_AUTO_REFRESH_SECONDS,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -289,33 +290,11 @@ def test_write_sections_keeps_existing_file_when_write_fails(
     storage._sections_file = sections_file
     storage._sections = {"s1": {"id": "s1", "name": "S1", "type": "ai_text", "prompt": "P"}}
 
-    storage_aiofiles = cast("Any", storage_module).aiofiles
-    real_open = storage_aiofiles.open
+    def failing_fsync(fd: int) -> None:
+        """Raise to simulate a failed disk write."""
+        raise OSError("disk full")
 
-    class FailingWriteFile:
-        """Async file wrapper whose write always fails (simulated disk error)."""
-
-        def __init__(self, inner: Any) -> None:
-            """Wrap the real aiofiles context manager."""
-            self._inner = inner
-
-        async def __aenter__(self) -> Any:
-            await self._inner.__aenter__()
-            return self
-
-        async def __aexit__(self, *exc_info: object) -> Any:
-            return await self._inner.__aexit__(*exc_info)
-
-        async def write(self, content: str) -> None:
-            """Raise to simulate a failed disk write."""
-            raise OSError("disk full")
-
-    def failing_open(path: Any, mode: str = "r", *args: Any, **kwargs: Any) -> Any:
-        if "w" in mode:
-            return FailingWriteFile(real_open(path, mode, *args, **kwargs))
-        return real_open(path, mode, *args, **kwargs)
-
-    monkeypatch.setattr(storage_aiofiles, "open", failing_open)
+    monkeypatch.setattr(cast("Any", storage_module).os, "fsync", failing_fsync)
 
     with pytest.raises(OSError, match="disk full"):
         asyncio.run(storage._write_sections())
@@ -411,3 +390,26 @@ def test_normalize_station_rejects_non_numeric_numeric_field(field: str) -> None
 
     with pytest.raises(InvalidDataError):
         storage._normalize_station(station)
+
+
+def test_write_json_file_round_trips_non_ascii_content_as_utf8(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Write JSON content with an explicit utf-8 encoding and round-trip non-ASCII text."""
+    storage = DummyStorage()
+    target = tmp_path / "sections.json"
+    payload = {"name": "Café Wörld 日本語", "emoji": "🎧"}
+
+    seen_encodings: list[str | None] = []
+    real_open = Path.open
+
+    def spy_open(self: Path, *args: Any, **kwargs: Any) -> Any:
+        seen_encodings.append(kwargs.get("encoding"))
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", spy_open)
+
+    asyncio.run(storage._write_json_file(target, payload))
+
+    assert seen_encodings == ["utf-8"]
+    assert json.loads(target.read_bytes().decode("utf-8")) == payload

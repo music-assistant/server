@@ -1,7 +1,7 @@
 {
   "config_entries": {
     "web_ui_url": {
-      "label": "Click (?) to open AI Radio User Interface"
+      "label": "Open the AI Radio user interface: {0}"
     },
     "ui_auto_refresh_seconds": {
       "label": "Web UI Auto Refresh Interval (seconds)",

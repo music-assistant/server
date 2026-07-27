@@ -127,3 +127,19 @@ async def test_resolve_playlist_item_skips_library_lookup_for_sound_effects() ->
 
     assert isinstance(result, SoundEffect)
     provider.mass.music.get_controller.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_get_stream_details_detects_radio_from_icyname_tag() -> None:
+    """Recognize an icy-name tag (stored as icyname) as a radio stream."""
+    provider = _make_provider()
+    provider._get_media_info = AsyncMock(  # type: ignore[method-assign]
+        return_value=DummyMediaInfo(duration=180, extra={"icyname": "Radio Station"})
+    )
+
+    result = await provider.get_stream_details(
+        "http://example.com/stream.mp3",
+        MediaType.TRACK,
+    )
+
+    assert result.media_type == MediaType.RADIO
