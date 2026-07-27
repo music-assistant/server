@@ -17,7 +17,6 @@ from music_assistant.helpers.process import check_output
 from music_assistant.helpers.util import get_ip_from_host
 from music_assistant.providers.filesystem_local import (
     LocalFileSystemProvider,
-    exists,
     ismount,
     makedirs,
 )
@@ -119,8 +118,9 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         if not share or "/" in share or "\\" in share:
             msg = "Invalid share name"
             raise SetupFailedError(msg)
-        if not await exists(self.base_path):
-            await makedirs(self.base_path)
+        # the mount point may already exist; checking first is not reliable because
+        # reading the path fails while the server is unreachable
+        await makedirs(self.base_path, exist_ok=True)
         try:
             # do unmount first to cleanup any unexpected state
             await self.unmount(ignore_error=True)

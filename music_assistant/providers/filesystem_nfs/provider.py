@@ -16,7 +16,6 @@ from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.util import get_ip_from_host
 from music_assistant.providers.filesystem_local import (
     LocalFileSystemProvider,
-    exists,
     ismount,
     makedirs,
 )
@@ -85,8 +84,9 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
         if not export_path or not export_path.startswith("/") or not is_safe_path(export_path):
             msg = "Invalid export path: must be an absolute path starting with /"
             raise SetupFailedError(msg)
-        if not await exists(self.base_path):
-            await makedirs(self.base_path)
+        # the mount point may already exist; checking first is not reliable because
+        # reading the path fails while the server is unreachable
+        await makedirs(self.base_path, exist_ok=True)
         try:
             # unmount first to cleanup any unexpected state
             await self.unmount(ignore_error=True)
