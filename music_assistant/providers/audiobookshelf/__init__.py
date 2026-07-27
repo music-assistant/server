@@ -175,6 +175,17 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
 
     _on_unload_callbacks: list[Callable[[], None]]
 
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature] | None = None,
+    ) -> None:
+        """Initialize the Audiobookshelf provider."""
+        super().__init__(mass, manifest, config, supported_features)
+        self.libraries = LibrariesHelper()
+
     @staticmethod
     def handle_refresh_token(
         method: Callable[P, Coroutine[Any, Any, R]],
