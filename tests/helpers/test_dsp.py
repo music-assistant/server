@@ -13,6 +13,7 @@ from music_assistant_models.dsp import (
     ParametricEQBandType,
     ParametricEQFilter,
     ToneControlFilter,
+    TransposeFilter,
 )
 from music_assistant_models.media_items.audio_format import AudioFormat
 
@@ -64,6 +65,32 @@ def test_balance_filter_mono_is_skipped() -> None:
     dsp_filter = BalanceFilter(enabled=True, balance=40)
     mono_format = AudioFormat(sample_rate=48000, channels=1)
     assert filter_to_ffmpeg_params(dsp_filter, mono_format) == []
+
+
+def test_transpose_filter_octaves() -> None:
+    """Test that a full octave transpose halves or doubles the pitch ratio."""
+    assert filter_to_ffmpeg_params(TransposeFilter(enabled=True, semitones=12.0), INPUT_FORMAT) == [
+        "rubberband=pitch=2.0:formant=preserved:pitchq=quality:window=long"
+    ]
+    assert filter_to_ffmpeg_params(
+        TransposeFilter(enabled=True, semitones=-12.0), INPUT_FORMAT
+    ) == ["rubberband=pitch=0.5:formant=preserved:pitchq=quality:window=long"]
+
+
+def test_transpose_filter_fractional_semitones() -> None:
+    """Test that a fractional transpose is supported (e.g. A=432Hz concert pitch)."""
+    dsp_filter = TransposeFilter(enabled=True, semitones=-0.318)
+    params = filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT)
+    assert len(params) == 1
+    pitch, _, options = params[0].removeprefix("rubberband=pitch=").partition(":")
+    assert math.isclose(float(pitch), 0.98183, rel_tol=1e-4)
+    assert options == "formant=preserved:pitchq=quality:window=long"
+
+
+def test_transpose_filter_zero_is_passthrough() -> None:
+    """Test that a transpose filter of 0 semitones emits no ffmpeg filter."""
+    dsp_filter = TransposeFilter(enabled=True, semitones=0.0)
+    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT) == []
 
 
 def test_tone_control_filter() -> None:

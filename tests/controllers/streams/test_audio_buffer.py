@@ -6,10 +6,14 @@ import asyncio
 import time
 from collections.abc import AsyncGenerator
 from contextlib import suppress
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import ContentType
+from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.streams.audio_buffer import (
     AudioBuffer,
@@ -45,6 +49,55 @@ async def _make_source(num_chunks: int) -> AsyncGenerator[bytes]:
     """Create an async generator that yields numbered chunks."""
     for i in range(num_chunks):
         yield _make_chunk(i)
+
+
+def _make_stream_details(
+    media_type: MediaType,
+    *,
+    duration: int | None,
+    allow_seek: bool,
+    queue_id: str | None = None,
+) -> StreamDetails:
+    """Build minimal stream details for AudioBuffer.get_buffer tests."""
+    return StreamDetails(
+        provider="builtin",
+        item_id="item-1",
+        audio_format=TEST_PCM_FORMAT,
+        media_type=media_type,
+        stream_type=StreamType.HTTP,
+        path="http://example.com/audio.mp3",
+        duration=duration,
+        can_seek=allow_seek,
+        allow_seek=allow_seek,
+        queue_id=queue_id,
+    )
+
+
+def _make_mass_for_get_buffer(
+    *, queue: Any | None = None
+) -> tuple[MagicMock, AsyncMock, list[asyncio.Task[None]]]:
+    """Build a minimal mass stub for AudioBuffer.get_buffer tests."""
+
+    def _get_media_stream(*_args: Any, **_kwargs: Any) -> AsyncGenerator[bytes]:
+        return _make_source(1)
+
+    mass = MagicMock()
+    mass.config.get_raw_core_config_value.return_value = BufferSize.BALANCED.value
+    mass.player_queues.get.return_value = queue
+    start_analysis = AsyncMock(return_value=None)
+    mass.streams = SimpleNamespace(
+        audio_analysis=SimpleNamespace(start_analysis=start_analysis),
+        audio=SimpleNamespace(get_media_stream=_get_media_stream),
+    )
+    scheduled_tasks: list[asyncio.Task[None]] = []
+
+    def _create_task(coro: Any) -> asyncio.Task[None]:
+        task = asyncio.create_task(coro)
+        scheduled_tasks.append(task)
+        return task
+
+    mass.create_task.side_effect = _create_task
+    return mass, start_analysis, scheduled_tasks
 
 
 # -- Init and properties --
@@ -247,6 +300,59 @@ async def test_fill_error_no_data() -> None:
 
     with pytest.raises(RuntimeError, match="test error"):
         await _consume()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("media_type", [MediaType.SOUND_EFFECT, MediaType.AUDIO_SOURCE])
+async def test_get_buffer_skips_analysis_for_non_analyzed_types(media_type: MediaType) -> None:
+    """get_buffer skips audio analysis for sound effects and audio sources."""
+    mass, start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    streamdetails = _make_stream_details(
+        media_type,
+        duration=30 if media_type == MediaType.SOUND_EFFECT else None,
+        allow_seek=media_type == MediaType.SOUND_EFFECT,
+    )
+
+    buffer = await AudioBuffer.get_buffer(mass, streamdetails, reason="test")
+
+    assert scheduled_tasks == []
+    start_analysis.assert_not_called()
+    await buffer.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_buffer_still_starts_analysis_for_track() -> None:
+    """get_buffer still schedules audio analysis for tracks."""
+    mass, start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=180, allow_seek=True)
+
+    buffer = await AudioBuffer.get_buffer(mass, streamdetails, reason="test")
+
+    assert len(scheduled_tasks) == 1
+    await asyncio.gather(*scheduled_tasks)
+    start_analysis.assert_awaited_once()
+    await buffer.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_buffer_sound_effect_uses_default_ready_threshold_without_crossfade() -> None:
+    """Sound effects should not use the larger crossfade buffering threshold."""
+    mass, start_analysis, scheduled_tasks = _make_mass_for_get_buffer(
+        queue=SimpleNamespace(crossfade_enabled=True)
+    )
+    streamdetails = _make_stream_details(
+        MediaType.SOUND_EFFECT,
+        duration=30,
+        allow_seek=True,
+        queue_id="queue-1",
+    )
+
+    buffer = await AudioBuffer.get_buffer(mass, streamdetails, reason="test")
+
+    assert buffer._ready_at_chunk == 2
+    assert scheduled_tasks == []
+    start_analysis.assert_not_called()
+    await buffer.clear()
 
 
 @pytest.mark.asyncio

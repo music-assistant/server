@@ -85,7 +85,7 @@ mass = "music_assistant.__main__:main"
 # translations/*.json are machine-translated locale files (Lokalise); foreign words aren't typos
 ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,connexion,claus,childrens,"
 skip = """*.js,*.svg,\
-music_assistant/providers/itunes_podcasts/itunes_country_codes.json,\
+music_assistant/helpers/resources/countries.json,\
 music_assistant/helpers/resources/genres/genre_mapping.json,\
 music_assistant/providers/sonic_analysis/vendored_clap/**,\
 music_assistant/translations/*.json,\
