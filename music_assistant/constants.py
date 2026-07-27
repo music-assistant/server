@@ -19,12 +19,19 @@ from music_assistant_models.enums import (
     MediaType,
     PlayerFeature,
 )
-from music_assistant_models.media_items import Audiobook, AudioFormat, PodcastEpisode, Radio, Track
+from music_assistant_models.media_items import (
+    Audiobook,
+    AudioFormat,
+    PodcastEpisode,
+    Radio,
+    SoundEffect,
+    Track,
+)
 
 APPLICATION_NAME: Final = "Music Assistant"
 
 # Type alias for items that can be added to playlists
-PlaylistPlayableItem = Track | Radio | PodcastEpisode | Audiobook
+PlaylistPlayableItem = Track | Radio | PodcastEpisode | Audiobook | SoundEffect
 
 # Default number of tracks a music provider may return as a preview sample for a dynamic playlist
 DYNAMIC_PLAYLIST_SAMPLE_SIZE: Final[int] = 25
@@ -35,6 +42,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
     MediaType.RADIO,
     MediaType.PODCAST_EPISODE,
     MediaType.AUDIOBOOK,
+    MediaType.SOUND_EFFECT,
 )
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
