@@ -132,7 +132,7 @@ def test_crossfeed_filter() -> None:
     """Test that a crossfeed filter maps to an ffmpeg crossfeed filter."""
     dsp_filter = CrossfeedFilter(enabled=True, strength=0.35, soundstage=0.6)
     assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT) == [
-        "crossfeed=strength=0.35:range=0.6"
+        "crossfeed=strength=0.35:range=0.6:level_in=1"
     ]
 
 

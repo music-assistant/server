@@ -213,8 +213,10 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
         # crossfeed blends the left and right channels for headphone listening
         # and is only meaningful on stereo streams
         if input_format.channels == 2:
+            # crossfeed is turned off by disabling the filter, never by a zero strength
+            # level_in defaults to 0.9, which would attenuate every crossfed stream
             filter_params.append(
-                f"crossfeed=strength={dsp_filter.strength}:range={dsp_filter.soundstage}"
+                f"crossfeed=strength={dsp_filter.strength}:range={dsp_filter.soundstage}:level_in=1"
             )
 
     return filter_params
