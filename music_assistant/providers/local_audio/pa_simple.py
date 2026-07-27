@@ -712,7 +712,6 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
         master_device: str | None = properties.get("device.master_device")
         is_remap = master_device is not None or driver == "module-remap-sink.c"
         alsa_card_name: str | None = properties.get("alsa.card_name")
-        active_port: str | None = sink.get("active_port")
         _alsa_card_idx_str: str | None = properties.get("api.alsa.pcm.card") or properties.get(
             "alsa.card"
         )
@@ -764,7 +763,6 @@ def enumerate_pa_sinks() -> list[dict[str, Any]]:
                 "driver": driver,
                 "channel_map": channel_map,
                 "alsa_card_name": alsa_card_name,
-                "active_port": active_port,
                 "alsa_card_index": alsa_card_index,
             }
         )
