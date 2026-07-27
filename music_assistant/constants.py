@@ -3,6 +3,7 @@
 import json
 import os
 import pathlib
+import re
 from copy import deepcopy
 from typing import Any, Final, cast
 
@@ -114,6 +115,9 @@ CONF_PLAYER_DSP_PRESETS: Final[str] = "player_dsp_presets"
 CONF_PLAYER_DSP_IRS: Final[str] = "player_dsp_irs"
 # subdirectory under the storage path holding convolution impulse response files
 DSP_IRS_DIRNAME: Final[str] = "dsp_irs"
+# impulse response ids are lowercased shortuuids, so plain lowercase alphanumerics;
+# validating against this keeps a caller-supplied id from escaping the storage dir
+DSP_IR_ID_RE: Final = re.compile(r"^[a-z0-9]+$")
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
 CONF_FLOW_MODE: Final[str] = "flow_mode"
 CONF_FLOW_MODE_SAMPLE_RATE: Final[str] = "flow_mode_sample_rate"

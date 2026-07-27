@@ -21,6 +21,8 @@ from music_assistant_models.dsp import (
     TransposeFilter,
 )
 
+from music_assistant.constants import DSP_IR_ID_RE
+
 if TYPE_CHECKING:
     from music_assistant_models.media_items.audio_format import AudioFormat
 
@@ -28,26 +30,39 @@ if TYPE_CHECKING:
 
 
 @dataclass(slots=True)
+class ComplexFilterInput:
+    """
+    An extra audio file feeding a ComplexFilter.
+
+    :param path: Audio file to read.
+    :param filters: Optional chain applied to the input before the body consumes
+        it (e.g. "aresample=48000").
+    """
+
+    path: str
+    filters: str = ""
+
+
+@dataclass(slots=True)
 class ComplexFilter:
     """
-    A DSP filter fragment that pulls in one or more extra source inputs.
+    A DSP filter fragment that pulls in one or more extra audio inputs.
 
     Represents a chain entry that cannot be expressed as a plain single-input
     filter string, such as an FFmpeg ``afir`` convolution that needs an
     impulse-response input.
 
-    :param body: The filter consuming the main input followed by each source in
-        order (e.g. "afir=gtype=gn").
-    :param sources: Sub-chains that each produce one extra input for ``body``
-        (e.g. "amovie='/x/ir.wav',aresample=48000").
+    :param body: The filter consuming the main input followed by each extra
+        input in order (e.g. "afir=irnorm=1").
+    :param inputs: Extra audio files for ``body``, in the order it consumes them.
     """
 
     body: str
-    sources: list[str] = field(default_factory=list)
+    inputs: list[ComplexFilterInput] = field(default_factory=list)
 
 
 def filter_to_ffmpeg_params(
-    dsp_filter: DSPFilter, input_format: AudioFormat, ir_dir: str | None = None
+    dsp_filter: DSPFilter, input_format: AudioFormat, *, ir_dir: str
 ) -> list[str | ComplexFilter]:
     """
     Convert a DSP filter model to FFmpeg filter parameters.
@@ -55,7 +70,7 @@ def filter_to_ffmpeg_params(
     Args:
         dsp_filter: DSP filter configuration
         input_format: Audio format containing sample rate
-        ir_dir: Directory holding convolution impulse response files, required to
+        ir_dir: Directory holding convolution impulse response files, used to
             resolve a ConvolutionFilter's ir_id to a file path
 
     Returns:
@@ -225,16 +240,15 @@ def filter_to_ffmpeg_params(
                 f"crossfeed=strength={dsp_filter.strength}:range={dsp_filter.soundstage}:level_in=1"
             )
 
-    # ir_id is a validated alphanumeric token; isalnum() also skips the empty
-    # "no impulse response selected" case and blocks any path traversal attempt
-    if isinstance(dsp_filter, ConvolutionFilter) and ir_dir and dsp_filter.ir_id.isalnum():
-        ir_path = os.path.join(ir_dir, f"{dsp_filter.ir_id}.wav")
-        escaped = ir_path.replace("'", "'\\''")
-        # afir needs the impulse response as a second input; amovie pulls it into
-        # the graph and aresample matches it to the stream rate, gtype=gn keeps
-        # the convolution at unity gain
-        source = f"amovie='{escaped}',aresample={input_format.sample_rate}"
-        filter_params.append(ComplexFilter(body="afir=gtype=gn", sources=[source]))
+    # the id rule also rejects the empty "no impulse response selected" value
+    if isinstance(dsp_filter, ConvolutionFilter) and DSP_IR_ID_RE.match(dsp_filter.ir_id):
+        # afir takes the impulse response as its second input; irnorm holds it at
+        # unity gain, which afir's deprecated gtype no longer does
+        ir_input = ComplexFilterInput(
+            path=os.path.join(ir_dir, f"{dsp_filter.ir_id}.wav"),
+            filters=f"aresample={input_format.sample_rate}",
+        )
+        filter_params.append(ComplexFilter(body="afir=irnorm=1", inputs=[ir_input]))
         if dsp_filter.gain != 0:
             filter_params.append(f"volume={dsp_filter.gain}dB")
 

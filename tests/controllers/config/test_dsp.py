@@ -19,7 +19,11 @@ from music_assistant_models.dsp import (
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import InvalidDataError
 
-from music_assistant.controllers.config.dsp import MAX_IR_BYTES, DSPConfigMixin
+from music_assistant.controllers.config.dsp import (
+    MAX_IR_BYTES,
+    MAX_IR_SECONDS,
+    DSPConfigMixin,
+)
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -165,9 +169,9 @@ async def test_remove_preset_clears_assignments() -> None:
     assert await config.get_dsp_presets() == []
 
 
-def _wav_bytes(tmp_path: Path, channels: int = 2) -> bytes:
+def _wav_bytes(tmp_path: Path, channels: int = 2, duration: float = 0.1) -> bytes:
     """Generate a short wav with the given channel count and return its raw bytes."""
-    wav_path = tmp_path / f"source_{channels}ch.wav"
+    wav_path = tmp_path / f"source_{channels}ch_{duration}s.wav"
     subprocess.run(  # noqa: S603
         [  # noqa: S607
             "ffmpeg",
@@ -175,7 +179,7 @@ def _wav_bytes(tmp_path: Path, channels: int = 2) -> bytes:
             "-f",
             "lavfi",
             "-i",
-            "sine=frequency=1000:duration=0.1:sample_rate=48000",
+            f"sine=frequency=1000:duration={duration}:sample_rate=48000",
             "-ac",
             str(channels),
             str(wav_path),
@@ -260,6 +264,30 @@ async def test_upload_ir_rejects_multichannel_file(tmp_path: Path) -> None:
 
     assert config.get_dsp_irs() == []
     assert list((tmp_path / "dsp_irs").glob("*")) == []
+
+
+async def test_upload_ir_rejects_long_file(tmp_path: Path) -> None:
+    """An impulse response longer than the limit is rejected, as afir would fail on it."""
+    config = _DSPConfigStore()
+    config.mass.storage_path = str(tmp_path)
+
+    data = base64.b64encode(_wav_bytes(tmp_path, duration=MAX_IR_SECONDS + 1)).decode()
+    with pytest.raises(InvalidDataError, match="seconds"):
+        await config.upload_dsp_ir("too long", data)
+
+    assert config.get_dsp_irs() == []
+    assert list((tmp_path / "dsp_irs").glob("*")) == []
+
+
+async def test_remove_ir_drops_record_with_unusable_id(tmp_path: Path) -> None:
+    """A stored id that no longer passes validation can still be removed from the library."""
+    config = _DSPConfigStore()
+    config.mass.storage_path = str(tmp_path)
+    config.set("player_dsp_irs", {"Legacy ID": {"ir_id": "Legacy ID", "name": "old"}})
+
+    await config.remove_dsp_ir("Legacy ID")
+
+    assert config.get_dsp_irs() == []
 
 
 @pytest.mark.parametrize("evil_id", ["../evil", "../../etc/cron.d/x", "/etc/passwd", "a/b"])

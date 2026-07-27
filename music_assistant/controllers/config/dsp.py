@@ -6,7 +6,6 @@ import asyncio
 import base64
 import binascii
 import os
-import re
 from contextlib import suppress
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, Final
@@ -22,6 +21,7 @@ from music_assistant.constants import (
     CONF_PLAYER_DSP,
     CONF_PLAYER_DSP_IRS,
     CONF_PLAYER_DSP_PRESETS,
+    DSP_IR_ID_RE,
     DSP_IRS_DIRNAME,
 )
 from music_assistant.helpers.api import api_command
@@ -31,11 +31,12 @@ from music_assistant.helpers.tags import async_parse_tags
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
-# impulse response ids are lowercased shortuuids, so plain lowercase alphanumerics;
-# validating against this keeps a caller-supplied id from escaping the storage dir
-_IR_ID_RE: Final = re.compile(r"^[a-z0-9]+$")
 # cap the accepted upload so a caller cannot exhaust memory or disk; IRs are small
-MAX_IR_BYTES: Final = 50 * 1024 * 1024
+MAX_IR_BYTES: Final = 10 * 1024 * 1024
+# afir rejects anything over 30 seconds at playback time, so cap it at upload
+MAX_IR_SECONDS: Final = 10.0
+# bound the transcode so a crafted upload cannot leave ffmpeg running forever
+IR_TRANSCODE_TIMEOUT: Final = 60.0
 # a mono IR is applied to both channels and a stereo one channel per side, but afir
 # would silently downmix anything wider (e.g. a four channel true stereo IR) to match
 # the stream, blending the measurements instead of applying them
@@ -183,7 +184,7 @@ class DSPConfigMixin:
             await ir_file.write(raw)
         try:
             # transcoding to wav both validates the upload is decodable audio and
-            # gives amovie a format it can always read back at playback time
+            # gives afir a format it can always read back at playback time
             returncode, output = await check_output(
                 "ffmpeg",
                 "-hide_banner",
@@ -199,6 +200,7 @@ class DSPConfigMixin:
                 "-c:a",
                 "pcm_f32le",
                 ir_path,
+                timeout=IR_TRANSCODE_TIMEOUT,
             )
             if returncode != 0:
                 await self._remove_file(ir_path)
@@ -212,6 +214,15 @@ class DSPConfigMixin:
                     f"Impulse response has {tags.channels} channels: "
                     "only mono and stereo files are supported"
                 )
+            if tags.duration is not None and tags.duration > MAX_IR_SECONDS:
+                await self._remove_file(ir_path)
+                raise InvalidDataError(
+                    f"Impulse response is {tags.duration:.1f} seconds long: "
+                    f"the limit is {MAX_IR_SECONDS:.0f} seconds"
+                )
+        except TimeoutError:
+            await self._remove_file(ir_path)
+            raise InvalidDataError("Impulse response took too long to convert") from None
         finally:
             await self._remove_file(upload_path)
 
@@ -236,11 +247,18 @@ class DSPConfigMixin:
     @api_command("config/dsp_irs/remove", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def remove_dsp_ir(self, ir_id: str) -> None:
         """Remove a stored convolution impulse response by its identifier."""
-        ir_path = self._dsp_ir_path(ir_id)
         stored: dict[str, dict[str, Any]] = self.get(CONF_PLAYER_DSP_IRS, {})
-        if stored.pop(ir_id, None) is not None:
+        known = stored.pop(ir_id, None) is not None
+        if known:
             self.set(CONF_PLAYER_DSP_IRS, stored)
-        await self._remove_file(ir_path)
+        try:
+            ir_path = self._dsp_ir_path(ir_id)
+        except InvalidDataError:
+            # an unusable stored id has no file to remove, but the record is gone
+            if not known:
+                raise
+        else:
+            await self._remove_file(ir_path)
         self._clear_dsp_ir_assignments(ir_id)
 
         self.mass.signal_event(
@@ -323,7 +341,7 @@ class DSPConfigMixin:
         """
         ir_dir = self._dsp_irs_dir()
         ir_path = os.path.join(ir_dir, f"{ir_id}.wav")
-        if not _IR_ID_RE.match(ir_id) or not is_safe_path(ir_path, ir_dir):
+        if not DSP_IR_ID_RE.match(ir_id) or not is_safe_path(ir_path, ir_dir):
             raise InvalidDataError(f"Invalid impulse response id: {ir_id!r}")
         return ir_path
 

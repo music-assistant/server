@@ -679,10 +679,14 @@ def get_ffmpeg_args(
     ):
         filter_params.append(resample_filter)
 
-    if filter_params and "-filter_complex" not in extra_args:
-        extra_args += _build_filtergraph_args(filter_params)
+    # a complex fragment brings its own inputs, which must follow the main input
+    extra_input_args, filter_args = (
+        _build_filtergraph_args(filter_params)
+        if filter_params and "-filter_complex" not in extra_args
+        else ([], [])
+    )
 
-    return generic_args + input_args + extra_args + output_args
+    return generic_args + input_args + extra_input_args + filter_args + extra_args + output_args
 
 
 async def check_ffmpeg_version() -> None:
@@ -730,21 +734,28 @@ async def check_ffmpeg_version() -> None:
     )
 
 
-def _build_filtergraph_args(filter_params: list[str | ComplexFilter]) -> list[str]:
+def _build_filtergraph_args(
+    filter_params: list[str | ComplexFilter],
+) -> tuple[list[str], list[str]]:
     """
     Render a DSP filter chain to FFmpeg command-line arguments.
 
     :param filter_params: Ordered chain of plain filter strings and/or complex
-        fragments that need extra source inputs.
+        fragments that need extra audio inputs.
+    :return: Extra input arguments to append after the main input, and the
+        filter arguments themselves.
     """
     if not any(isinstance(item, ComplexFilter) for item in filter_params):
         simple = [item for item in filter_params if isinstance(item, str) and item]
-        return ["-af", ",".join(simple)] if simple else []
+        return [], (["-af", ",".join(simple)] if simple else [])
 
+    input_args: list[str] = []
     parts: list[str] = []
     pending: list[str] = []
     current = "0:a"
     counter = 0
+    # the main input is 0, so extra inputs are numbered from 1 in the order added
+    next_input = 1
 
     def next_label() -> str:
         nonlocal counter
@@ -765,18 +776,23 @@ def _build_filtergraph_args(filter_params: list[str | ComplexFilter]) -> list[st
             if item:
                 pending.append(item)
             continue
-        # a complex fragment closes the current simple run, pulls its own source
-        # inputs into the graph, then consumes the main pad plus those sources
+        # a complex fragment closes the current simple run, adds its own inputs to
+        # the command, then consumes the main pad plus those inputs
         flush_pending()
         source_labels: list[str] = []
-        for source in item.sources:
-            label = next_label()
-            parts.append(f"{source}[{label}]")
-            source_labels.append(label)
+        for extra_input in item.inputs:
+            input_args += ["-i", extra_input.path]
+            source = f"{next_input}:a"
+            next_input += 1
+            if extra_input.filters:
+                label = next_label()
+                parts.append(f"[{source}]{extra_input.filters}[{label}]")
+                source = label
+            source_labels.append(source)
         label = next_label()
         inputs = f"[{current}]" + "".join(f"[{sl}]" for sl in source_labels)
         parts.append(f"{inputs}{item.body}[{label}]")
         current = label
     flush_pending()
 
-    return ["-filter_complex", ";".join(parts), "-map", f"[{current}]"]
+    return input_args, ["-filter_complex", ";".join(parts), "-map", f"[{current}]"]
