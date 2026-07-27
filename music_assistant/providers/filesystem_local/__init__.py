@@ -568,9 +568,21 @@ class LocalFileSystemProvider(MusicProvider):
             )
             return
 
-        deleted_files = prev_filenames - cur_filenames
-        await self._process_deletions(deleted_files)
-        await self._process_orphaned_albums_and_artists()
+        # a scan that skipped directories is incomplete: the files below them are still
+        # there, so deleting them from the library would throw away valid content
+        if scan_errors.failed_dirs:
+            self.logger.warning(
+                "Skipping deletions for %s: %d directory/directories could not be scanned",
+                self.name,
+                scan_errors.failed_dirs,
+            )
+            report_current_task_failure(
+                f"Deletions skipped: {scan_errors.failed_dirs} folder(s) could not be scanned"
+            )
+        else:
+            deleted_files = prev_filenames - cur_filenames
+            await self._process_deletions(deleted_files)
+            await self._process_orphaned_albums_and_artists()
 
         # flag provider as available again if an earlier sync had marked it down
         self._set_available(True)
