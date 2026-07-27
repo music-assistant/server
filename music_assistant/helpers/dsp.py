@@ -204,7 +204,10 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
         # width scales the side (L-R) signal; a non-stereo source has no side
         # component, so only apply it to stereo streams
         if input_format.channels == 2:
-            filter_params.append(f"extrastereo=m={dsp_filter.width}")
+            # c=0 disables the internal hard clipping extrastereo applies by default,
+            # which would clamp a widened signal before any later filter or the output
+            # gain can bring it down. The float internal format exists for that headroom
+            filter_params.append(f"extrastereo=m={dsp_filter.width}:c=0")
 
     if isinstance(dsp_filter, CrossfeedFilter):
         # crossfeed blends the left and right channels for headphone listening

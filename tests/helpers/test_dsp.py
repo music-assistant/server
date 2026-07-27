@@ -98,13 +98,21 @@ def test_transpose_filter_zero_is_passthrough() -> None:
 def test_stereo_width_filter_wide() -> None:
     """Test that a widened stereo width maps to an extrastereo filter."""
     dsp_filter = StereoWidthFilter(enabled=True, width=1.5)
-    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT) == ["extrastereo=m=1.5"]
+    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT) == ["extrastereo=m=1.5:c=0"]
+
+
+def test_stereo_width_filter_does_not_clip_internally() -> None:
+    """Test that widening never uses the internal clipping extrastereo enables by default."""
+    for width in (0.0, 0.5, 1.5, 2.0):
+        dsp_filter = StereoWidthFilter(enabled=True, width=width)
+        params = filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT)
+        assert params == [f"extrastereo=m={width}:c=0"]
 
 
 def test_stereo_width_filter_mono() -> None:
     """Test that zero width collapses the side signal to mono."""
     dsp_filter = StereoWidthFilter(enabled=True, width=0.0)
-    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT) == ["extrastereo=m=0.0"]
+    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT) == ["extrastereo=m=0.0:c=0"]
 
 
 def test_stereo_width_filter_neutral_is_passthrough() -> None:
