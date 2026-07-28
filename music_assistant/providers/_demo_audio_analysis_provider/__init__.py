@@ -37,7 +37,9 @@ See also our general DEVELOPMENT.md guide in the repository for more information
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
+
+from music_assistant_models.enums import MediaType
 
 from music_assistant.models.audio_analysis_provider import AudioAnalysisProvider
 
@@ -86,6 +88,9 @@ class DemoAudioAnalysisProvider(AudioAnalysisProvider):
     # The controller compares this against the stored version to decide
     # whether to re-analyze a track.
     analysis_version: int = 1
+
+    # Media types this provider will analyze; add RADIO/SOUND_EFFECT if yours suits them.
+    supported_media_types: ClassVar[frozenset[MediaType]] = frozenset({MediaType.TRACK})
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """

@@ -599,6 +599,7 @@ async def test_provider_start_analysis_uses_media_type_for_version_gating() -> N
     provider.domain = "test_domain"
     provider.analysis_version = 1
     provider.max_analysis_duration = None
+    provider.supported_media_types = {MediaType.RADIO}
 
     streamdetails = MagicMock()
     streamdetails.item_id = "shared_id"

@@ -461,12 +461,8 @@ class AudioBuffer:
         streamdetails.buffer = audio_buffer
 
         # attach analyze jobs for ahead-of-time processing
-        # skip AudioSource and SoundEffect — they should not feed the long-running analyzer flow
-        # (radio still runs analysis; the analyzer caps it at 10 minutes)
-        if seek_position_ms == 0 and streamdetails.media_type not in (
-            MediaType.AUDIO_SOURCE,
-            MediaType.SOUND_EFFECT,
-        ):
+        # skip AudioSource: live/realtime; other media types are gated per analysis provider
+        if seek_position_ms == 0 and streamdetails.media_type != MediaType.AUDIO_SOURCE:
             # audio analysis providers (loudness, beat tracking, key detection, etc.).
             # Fire-and-forget: analysis setup — including a possible model (re)load — must never
             # delay the buffer fill. The analysis worker reads the retained chunks once ready.

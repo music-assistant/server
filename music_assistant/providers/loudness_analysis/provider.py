@@ -6,10 +6,10 @@ import contextlib
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, VolumeNormalizationMode
+from music_assistant_models.enums import ConfigEntryType, MediaType, VolumeNormalizationMode
 
 from music_assistant.constants import LOUDNESS_MEASUREMENT_MIN_LUFS
 from music_assistant.helpers.ffmpeg import FFMpeg
@@ -27,7 +27,8 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 MAX_DURATION_SECONDS = 600
-MIN_DURATION_SECONDS = 10
+# low enough to measure short TTS sound effects, high enough to reject a stray fragment
+MIN_DURATION_SECONDS = 3
 
 CONF_WRITE_REPLAYGAIN_TAGS = "write_replaygain_tags"
 
@@ -49,6 +50,9 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
     """Audio analysis provider that measures EBU R128 integrated loudness."""
 
     analysis_version: int = 1
+    supported_media_types: ClassVar[frozenset[MediaType]] = frozenset(
+        {MediaType.TRACK, MediaType.RADIO, MediaType.SOUND_EFFECT}
+    )
 
     def __init__(
         self,
@@ -166,7 +170,7 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
             return None
 
         if data.chunks_received < MIN_DURATION_SECONDS:
-            raise AudioAnalysisError("track too short for loudness measurement")
+            raise AudioAnalysisError("too short for loudness measurement")
 
         loudness, loudness_range, true_peak = metrics
         if loudness is None:

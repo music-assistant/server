@@ -303,14 +303,13 @@ async def test_fill_error_no_data() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("media_type", [MediaType.SOUND_EFFECT, MediaType.AUDIO_SOURCE])
-async def test_get_buffer_skips_analysis_for_non_analyzed_types(media_type: MediaType) -> None:
-    """get_buffer skips audio analysis for sound effects and audio sources."""
+async def test_get_buffer_skips_analysis_for_audio_source() -> None:
+    """get_buffer skips audio analysis for live audio sources."""
     mass, start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
     streamdetails = _make_stream_details(
-        media_type,
-        duration=30 if media_type == MediaType.SOUND_EFFECT else None,
-        allow_seek=media_type == MediaType.SOUND_EFFECT,
+        MediaType.AUDIO_SOURCE,
+        duration=None,
+        allow_seek=False,
     )
 
     buffer = await AudioBuffer.get_buffer(mass, streamdetails, reason="test")
@@ -325,6 +324,20 @@ async def test_get_buffer_still_starts_analysis_for_track() -> None:
     """get_buffer still schedules audio analysis for tracks."""
     mass, start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
     streamdetails = _make_stream_details(MediaType.TRACK, duration=180, allow_seek=True)
+
+    buffer = await AudioBuffer.get_buffer(mass, streamdetails, reason="test")
+
+    assert len(scheduled_tasks) == 1
+    await asyncio.gather(*scheduled_tasks)
+    start_analysis.assert_awaited_once()
+    await buffer.clear()
+
+
+@pytest.mark.asyncio
+async def test_get_buffer_attaches_analysis_for_sound_effect() -> None:
+    """get_buffer now schedules audio analysis for sound effects too."""
+    mass, start_analysis, scheduled_tasks = _make_mass_for_get_buffer()
+    streamdetails = _make_stream_details(MediaType.SOUND_EFFECT, duration=30, allow_seek=True)
 
     buffer = await AudioBuffer.get_buffer(mass, streamdetails, reason="test")
 
@@ -350,8 +363,10 @@ async def test_get_buffer_sound_effect_uses_default_ready_threshold_without_cros
     buffer = await AudioBuffer.get_buffer(mass, streamdetails, reason="test")
 
     assert buffer._ready_at_chunk == 2
-    assert scheduled_tasks == []
-    start_analysis.assert_not_called()
+    # sound effects are analyzed now, so the buffer still schedules the analysis task
+    assert len(scheduled_tasks) == 1
+    await asyncio.gather(*scheduled_tasks)
+    start_analysis.assert_awaited_once()
     await buffer.clear()
 
 
