@@ -471,6 +471,7 @@ async def test_raop_session_resolves_ptp_for_first_ap2_late_joiner() -> None:
     raop_player.player_id = "raop"
     raop_player.stream = MagicMock()
     raop_player.stream.running = True
+    raop_player.stream.cumulative_shift_seconds = 0.0
     ap2_player = _ap2_player()
     ap2_player.player_id = "airplay2"
     ap2_player.stream = None
