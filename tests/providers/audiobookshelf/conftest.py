@@ -7,7 +7,7 @@ from unittest.mock import Mock
 import pytest
 
 from music_assistant.providers.audiobookshelf import SUPPORTED_FEATURES, Audiobookshelf
-from music_assistant.providers.audiobookshelf.helpers import LibrariesHelper, LibraryHelper
+from music_assistant.providers.audiobookshelf.helpers import LibraryHelper
 
 
 @pytest.fixture
@@ -24,8 +24,6 @@ def provider() -> Audiobookshelf:
         "log_level": "GLOBAL",
     }.get(key, default)
     provider = Audiobookshelf(mass, manifest, config, SUPPORTED_FEATURES)
-    # attributes normally set in handle_async_init
-    provider.libraries = LibrariesHelper()
     provider.libraries.audiobooks["lib1"] = LibraryHelper(name="Audiobooks")
     provider._client = Mock()
     return provider
