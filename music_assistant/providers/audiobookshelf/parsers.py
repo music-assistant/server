@@ -242,6 +242,7 @@ def parse_podcast_episode(
     )
 
     mass_episode.metadata.release_date = release_date
+    mass_episode.metadata.description = episode.description
 
     # cover image
     if token is not None and cover_path:
