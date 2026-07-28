@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import re
 import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
@@ -109,6 +110,16 @@ class AirPlayStream:
         # Route the binary resolved for this stream (empty until reported),
         # e.g. "AirPlay 2 (native, PTP)" or "RAOP"
         self.active_route: str = ""
+        # Cumulative playout shift (seconds) this process reported after PCM
+        # starvation re-anchors (AP2 only). The stream session adds the
+        # reference member's shift so a late joiner anchors to the group's real
+        # timeline. Reset per process (and on every re-anchoring START/resume);
+        # a new cliairplay re-anchors from scratch.
+        self.cumulative_shift_seconds: float = 0.0
+        # Set once the machine-readable [STATUS] REANCHOR line is seen: newer
+        # binaries emit it alongside the legacy warn for the same event, so the
+        # warn line is then ignored to avoid double counting.
+        self._reanchor_status_seen: bool = False
 
     @property
     def running(self) -> bool:
@@ -142,6 +153,9 @@ class AirPlayStream:
             NTP timing. None (single-stream callers) falls back to the daemon's
             live state.
         """
+        # A fresh cliairplay process re-anchors from scratch, so drop any shift
+        # (and its status-line supersession flag) carried on this stream object.
+        self.reset_reanchor_shift()
         args = await self._build_cli_args(use_shared_ptp)
         self.player.logger.debug("Starting cliairplay for player %s", self.player.player_id)
         self._cli_proc = AsyncProcess(args, stdin=True, stdout=True, stderr=True, name="cliairplay")
@@ -312,6 +326,11 @@ class AirPlayStream:
         """
         if not self.running or not self.connected:
             raise RuntimeError("Cannot start playback without a connected cliairplay process")
+        # A START re-anchors playout from scratch — the binary zeroes its own
+        # re-anchor total on start/resume — so drop any shift accumulated against
+        # the previous anchor (this also covers the warm-seek FLUSH->refill->START
+        # path) to keep the server and binary baselines aligned.
+        self.reset_reanchor_shift()
         self._start_position = position_ms / 1000
         # Stamp the player's elapsed onto the new anchor's base right away: until
         # the binary's first status arrives, interpolation would otherwise keep
@@ -334,6 +353,11 @@ class AirPlayStream:
             task_id=f"airplay_metadata_after_start_{self._stream_id}",
             abort_existing=True,
         )
+
+    def reset_reanchor_shift(self) -> None:
+        """Clear the accumulated re-anchor shift and its status-line supersession flag."""
+        self.cumulative_shift_seconds = 0.0
+        self._reanchor_status_seen = False
 
     async def send_metadata(
         self,
@@ -780,6 +804,10 @@ class AirPlayStream:
         elif "[STATUS] eof" in line:
             player.logger.debug("End of stream reached")
             return True
+        elif "[STATUS] REANCHOR" in line:
+            self._parse_reanchor_status(line)
+        elif "Re-anchored" in line and "shifted_frames=" in line:
+            self._parse_reanchor_shift(line)
         elif "[ERROR]" in line:
             player.logger.error("cliairplay: %s", line.strip())
         return False
@@ -793,6 +821,69 @@ class AirPlayStream:
         self.player.set_state_from_stream(
             state=PlaybackState.PLAYING, elapsed_time=elapsed_time, stream=self
         )
+
+    def _parse_reanchor_status(self, line: str) -> None:
+        """
+        Parse the machine-readable [STATUS] REANCHOR line from newer binaries.
+
+        Newer cliairplay builds report the shift cumulative since the last
+        start/resume directly, so this SETS the tracked shift (using the sample
+        rate carried on the line when present) and marks the legacy warn line as
+        superseded, since both fire for the same event and would otherwise be
+        double counted.
+
+        :param line: The status line, e.g. ``[STATUS] REANCHOR shifted_frames=67870
+            total_shifted_frames=135740 sample_rate=44100``.
+        """
+        fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+        try:
+            total_frames = int(fields["total_shifted_frames"])
+        except KeyError, ValueError:
+            return
+        self._reanchor_status_seen = True
+        self.cumulative_shift_seconds = total_frames / self._reanchor_sample_rate(
+            fields.get("sample_rate")
+        )
+        self.player.logger.debug(
+            "cliairplay re-anchored %s after PCM starvation: cumulative shift %.3fs",
+            self.player.display_name,
+            self.cumulative_shift_seconds,
+        )
+
+    def _parse_reanchor_shift(self, line: str) -> None:
+        """
+        Track a legacy cliairplay PCM-starvation re-anchor warning on stderr.
+
+        The warn line reports the per-event shift in frames, so it is accumulated
+        at the session PCM rate. Ignored once the machine-readable [STATUS]
+        REANCHOR line has been seen: newer binaries emit both for the same event
+        and the status line carries the authoritative cumulative total.
+
+        :param line: The raw stderr line, e.g. ``[AP2] Re-anchored after PCM
+            starvation: shifted_frames=67870 lead_frames=77175 count=1``.
+        """
+        if self._reanchor_status_seen:
+            return
+        match = re.search(r"shifted_frames=(\d+)", line)
+        if not match:
+            return
+        self.cumulative_shift_seconds += int(match.group(1)) / self._reanchor_sample_rate(None)
+        self.player.logger.debug(
+            "cliairplay re-anchored %s after PCM starvation: cumulative shift %.3fs",
+            self.player.display_name,
+            self.cumulative_shift_seconds,
+        )
+
+    def _reanchor_sample_rate(self, reported: str | None) -> int:
+        """Return the frame->seconds rate, preferring a valid rate reported on the line."""
+        if reported is not None:
+            try:
+                rate = int(reported)
+            except ValueError:
+                rate = 0
+            if rate > 0:
+                return rate
+        return self.pcm_format.sample_rate or 44100
 
     async def _prepare_artwork(self, image_url: str, _generation: int) -> str | None:
         """

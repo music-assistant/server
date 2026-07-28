@@ -751,10 +751,28 @@ async def test_single_player_play_sends_action_play(airplay_player: AirPlayPlaye
     """An unsynced player resumes its paused stream in place with ACTION=PLAY."""
     airplay_player._attr_group_members = []
     send_cmd = _setup_running_stream(airplay_player)
+    send_cmd.return_value = True
 
     await airplay_player.play()
 
     send_cmd.assert_awaited_once_with("ACTION=PLAY")
+    # resume re-anchors the binary, so the tracked re-anchor shift is reset to match
+    cast("MagicMock", airplay_player.stream).reset_reanchor_shift.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_single_player_play_keeps_shift_when_resume_not_delivered(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """An undelivered ACTION=PLAY leaves the tracked re-anchor shift untouched."""
+    airplay_player._attr_group_members = []
+    send_cmd = _setup_running_stream(airplay_player)
+    send_cmd.return_value = False
+
+    await airplay_player.play()
+
+    send_cmd.assert_awaited_once_with("ACTION=PLAY")
+    cast("MagicMock", airplay_player.stream).reset_reanchor_shift.assert_not_called()
 
 
 @pytest.mark.asyncio

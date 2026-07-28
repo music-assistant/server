@@ -887,6 +887,138 @@ def test_elapsed_includes_start_position() -> None:
     )
 
 
+def test_legacy_reanchor_warns_accumulate_per_event() -> None:
+    """The legacy warn line reports a per-event shift, so successive events accumulate."""
+    stream = AirPlayStream(_make_player())
+    assert stream.cumulative_shift_seconds == 0.0
+
+    for _event in range(2):
+        assert (
+            stream._handle_status_line(
+                "[AP2] Re-anchored after PCM starvation: "
+                "shifted_frames=67870 lead_frames=77175 count=1"
+            )
+            is False
+        )
+
+    # two +1.539s events accumulate to ~3.078s
+    assert stream.cumulative_shift_seconds == pytest.approx(2 * 67870 / 44100)
+
+
+def test_reanchor_status_supersedes_legacy_warn() -> None:
+    """The [STATUS] REANCHOR total is authoritative and stops the legacy warn double count."""
+    stream = AirPlayStream(_make_player())
+
+    # a first legacy warn accumulates until the status line arrives
+    stream._handle_status_line(
+        "[AP2] Re-anchored after PCM starvation: shifted_frames=67870 lead_frames=77175 count=1"
+    )
+    # the machine-readable line SETS from the cumulative total and supersedes the warn
+    assert (
+        stream._handle_status_line(
+            "[STATUS] REANCHOR shifted_frames=67870 total_shifted_frames=67870 sample_rate=44100"
+        )
+        is False
+    )
+    assert stream._reanchor_status_seen is True
+    assert stream.cumulative_shift_seconds == pytest.approx(67870 / 44100)
+
+    # both lines fire per event for new binaries: the warn that follows is ignored,
+    # only the status line's cumulative total is tracked (no double count)
+    stream._handle_status_line(
+        "[AP2] Re-anchored after PCM starvation: shifted_frames=67870 lead_frames=77175 count=2"
+    )
+    assert stream.cumulative_shift_seconds == pytest.approx(67870 / 44100)
+    stream._handle_status_line(
+        "[STATUS] REANCHOR shifted_frames=67870 total_shifted_frames=135740 sample_rate=44100"
+    )
+    assert stream.cumulative_shift_seconds == pytest.approx(135740 / 44100)
+
+
+def test_reanchor_status_prefers_line_sample_rate() -> None:
+    """The sample rate carried on the [STATUS] REANCHOR line wins over the stream format."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream.pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=48000, bit_depth=16
+    )
+
+    stream._handle_status_line(
+        "[STATUS] REANCHOR shifted_frames=44100 total_shifted_frames=44100 sample_rate=44100"
+    )
+
+    # converts at 44100 (from the line), not 48000 (the stream format) -> exactly 1.0s
+    assert stream.cumulative_shift_seconds == pytest.approx(1.0)
+
+
+def test_reanchor_status_ignores_line_without_total() -> None:
+    """A [STATUS] REANCHOR line missing the total leaves the shift unchanged."""
+    stream = AirPlayStream(_make_player())
+    stream.cumulative_shift_seconds = 1.5
+
+    stream._handle_status_line("[STATUS] REANCHOR shifted_frames=67870 sample_rate=44100")
+
+    assert stream.cumulative_shift_seconds == 1.5
+    assert stream._reanchor_status_seen is False
+
+
+def test_reanchor_shift_ignores_line_without_frames() -> None:
+    """A malformed legacy re-anchor line leaves the tracked shift unchanged."""
+    stream = AirPlayStream(_make_player())
+    stream.cumulative_shift_seconds = 1.5
+
+    ended = stream._handle_status_line("[AP2] Re-anchored after PCM starvation: shifted_frames=")
+
+    assert ended is False
+    assert stream.cumulative_shift_seconds == 1.5
+
+
+@pytest.mark.asyncio
+async def test_start_resets_reanchor_shift() -> None:
+    """A START re-anchors from scratch, clearing the shift and the status flag."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+    stream.cumulative_shift_seconds = 3.078
+    stream._reanchor_status_seen = True
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
+        await stream.start(START_UNIX_MS, 0)
+
+    assert stream.cumulative_shift_seconds == 0.0
+    assert stream._reanchor_status_seen is False
+
+
+@pytest.mark.asyncio
+async def test_connect_resets_accumulated_shift() -> None:
+    """A fresh cliairplay process starts from a zero playout shift and cleared flag."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream.cumulative_shift_seconds = 5.0
+    stream._reanchor_status_seen = True
+    player.current_media = MagicMock(corrected_elapsed_time=0)
+    process = MagicMock(closed=False)
+    process.start = AsyncMock()
+
+    def consume_task(awaitable: Any) -> MagicMock:
+        awaitable.close()
+        task = MagicMock()
+        task.done.return_value = True
+        return task
+
+    player.provider.mass.create_task.side_effect = consume_task
+    with (
+        patch.object(stream, "_build_cli_args", new_callable=AsyncMock, return_value=["binary"]),
+        patch("music_assistant.providers.airplay.stream.AsyncProcess", return_value=process),
+        patch.object(stream.commands_pipe, "create", new_callable=AsyncMock),
+        patch.object(stream, "send_metadata", new_callable=AsyncMock),
+    ):
+        await stream.connect()
+
+    assert stream.cumulative_shift_seconds == 0.0
+    assert stream._reanchor_status_seen is False
+
+
 @pytest.mark.asyncio
 async def test_initial_metadata_skips_artwork() -> None:
     """The pre-connect metadata push cannot delay setup on artwork rendering."""

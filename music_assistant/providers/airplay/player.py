@@ -318,7 +318,11 @@ class AirPlayPlayer(Player):
             return
         async with self._lock:
             if self.stream and self.stream.running:
-                await self.stream.send_cli_command("ACTION=PLAY")
+                if await self.stream.send_cli_command("ACTION=PLAY"):
+                    # Resuming re-anchors playout; the binary zeroes its own
+                    # re-anchor total on resume, so drop the tracked shift to
+                    # keep the server and binary baselines aligned.
+                    self.stream.reset_reanchor_shift()
 
     async def pause(self) -> None:
         """Send PAUSE command to player."""
