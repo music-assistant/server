@@ -24,6 +24,7 @@ from music_assistant_models.streamdetails import MultiPartPath
 
 from music_assistant.constants import (
     MASS_LOGGER_NAME,
+    NORMALIZATION_MAX_TRUE_PEAK_DBTP,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
@@ -775,3 +776,19 @@ def get_normalization_mode(
 
     # simply return the preference
     return preference
+
+
+def clamp_gain_to_true_peak(gain_db: float, true_peak_dbtp: float | None) -> float:
+    """
+    Limit a positive normalization gain to the headroom the measured true peak allows.
+
+    Returns the gain unchanged when it is not positive or no true peak was measured. The
+    result is never negative: content already above the ceiling keeps its own level instead
+    of being attenuated.
+
+    :param gain_db: Gain the normalization target asks for.
+    :param true_peak_dbtp: Measured true peak in dBTP, or None when unknown.
+    """
+    if gain_db <= 0 or true_peak_dbtp is None:
+        return gain_db
+    return min(gain_db, max(0.0, NORMALIZATION_MAX_TRUE_PEAK_DBTP - true_peak_dbtp))

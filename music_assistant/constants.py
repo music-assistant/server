@@ -249,6 +249,10 @@ VACUUM_MIN_RECLAIM_RATIO: Final[float] = 0.2
 # audio (e.g. when a stream was cancelled early).
 LOUDNESS_MEASUREMENT_MIN_LUFS: Final[float] = -50.0
 
+# Ceiling (dBTP) a positive normalization gain may push a measured true peak to. Keeps
+# headroom for inter-sample peaks that appear after resampling in the output stage.
+NORMALIZATION_MAX_TRUE_PEAK_DBTP: Final[float] = -1.0
+
 
 def load_genre_mapping(mapping_file: pathlib.Path) -> list[dict[str, Any]]:
     """

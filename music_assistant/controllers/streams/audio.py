@@ -103,6 +103,7 @@ from music_assistant.helpers.audio import (
     HTTP_HEADERS_ICY,
     build_concat_filelist,
     calculate_content_length,
+    clamp_gain_to_true_peak,
     get_bit_rate,
     get_normalization_mode,
     get_parts_from_position,
@@ -1586,6 +1587,12 @@ class StreamsAudio:
                 gain_correct = target_loudness - float(streamdetails.loudness)
             else:
                 gain_correct = 0.0
+            if gain_correct > 0:
+                # a positive gain on a peaky master overshoots 0 dBFS and hard-clips in the
+                # output stage, so cap it at the headroom the measured true peak leaves
+                gain_correct = clamp_gain_to_true_peak(
+                    gain_correct, await self._get_measured_true_peak(streamdetails)
+                )
             gain_correct = round(gain_correct, 2)
             filter_params.append(f"volume={gain_correct}dB")
         streamdetails.volume_normalization_gain_correct = gain_correct
@@ -2744,6 +2751,16 @@ class StreamsAudio:
         return VolumeNormalizationMode(
             self.mass.streams.get_config_value(conf_key, return_type=str)
         )
+
+    async def _get_measured_true_peak(self, streamdetails: StreamDetails) -> float | None:
+        """Return the stored EBU R128 true peak (dBTP) for this item, if it was measured."""
+        analysis = await self.mass.streams.audio_analysis.get_audio_analysis(
+            streamdetails.item_id,
+            streamdetails.provider,
+            media_type=streamdetails.media_type,
+            priority=(LOUDNESS_ANALYSIS_DOMAIN,),
+        )
+        return analysis.true_peak if analysis else None
 
     def _update_radio_stream_metadata(
         self,

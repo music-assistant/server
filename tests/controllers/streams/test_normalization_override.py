@@ -155,3 +155,27 @@ async def test_no_override_reevaluates_to_measurement_only(
     cast(
         "MagicMock", controller.mass
     ).streams.audio_analysis.get_audio_analysis.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_measurement_only_gain_clamped_to_true_peak(
+    audio: tuple[StreamsAudio, dict[str, list[str]]],
+) -> None:
+    """
+    A quiet-but-peaky measurement is clamped instead of hard-clipping.
+
+    With TARGET_LOUDNESS = -17.0 and loudness_integrated = -20.3, the raw gain would be
+    +3.3 dB. Applying that unclamped to a track whose true peak already sits at -0.5 dBTP
+    would push it to +2.8 dBTP and clip when converted to 16/24-bit for the player.
+    """
+    controller, captured = audio
+    queue_item = _make_queue_item()
+    mass = cast("MagicMock", controller.mass)
+    mass.streams.audio_analysis.get_audio_analysis = AsyncMock(
+        return_value=SimpleNamespace(loudness_integrated=-20.3, loudness_album=None, true_peak=-0.5)
+    )
+
+    await _drain(controller.get_queue_item_stream(queue_item, PCM_FORMAT))
+
+    assert "volume=0.0dB" in captured["filter_params"]
+    assert not any(p.startswith("loudnorm") for p in captured["filter_params"])
