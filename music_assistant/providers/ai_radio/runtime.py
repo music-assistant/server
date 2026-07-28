@@ -24,7 +24,7 @@ from music_assistant_models.enums import (
     QueueOption,
     TaskStatus,
 )
-from music_assistant_models.errors import InvalidDataError, MusicAssistantError
+from music_assistant_models.errors import InvalidCommand, InvalidDataError, MusicAssistantError
 from music_assistant_models.media_items import (
     MediaItemImage,
     ProviderMapping,
@@ -161,6 +161,7 @@ class AIRadioRuntimeMixin:
         self._set_session_progress(session, "fetch_source_tracks")
         runtime_tokens = await self._prepare_runtime_tokens(station)
         tracks, playlist_name = await self._fetch_source_tracks(station)
+        tracks = self._apply_source_shuffle(tracks, station)
         tracks = self._apply_track_duration_limit(tracks, station)
         if not tracks:
             raise MusicAssistantError("No source tracks available after applying station limits")
@@ -276,6 +277,7 @@ class AIRadioRuntimeMixin:
             raise MusicAssistantError(f"Unknown target player: {player_id}")
 
         tracks, playlist_name = await self._fetch_source_tracks(station)
+        tracks = self._apply_source_shuffle(tracks, station)
         tracks = self._apply_track_duration_limit(tracks, station)
         if not tracks:
             raise MusicAssistantError("No source tracks available after applying station limits")
@@ -322,6 +324,15 @@ class AIRadioRuntimeMixin:
                 PlaybackState.PLAYING,
                 PlaybackState.PAUSED,
             )
+
+        # a shuffled queue reorders each batch, scattering sections away from their tracks
+        try:
+            await self.mass.player_queues.set_shuffle(queue_id, False)
+        except InvalidCommand as err:
+            raise MusicAssistantError(
+                f"Queue {queue_id} is in dynamic mode, which reorders the queue. Disable dynamic "
+                "mode on the player or enable 'clear queue on start' for this station."
+            ) from err
 
         cumulative_minutes = [0.0]
         for track in tracks:
@@ -577,20 +588,34 @@ class AIRadioRuntimeMixin:
             return create_uri(MediaType.TRACK, mapping.provider_instance, mapping.item_id)
         return ""
 
+    def _apply_source_shuffle(
+        self, tracks: list[dict[str, Any]], station: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Return the source tracks in random order when the station asks for it."""
+        if not station.get("shuffle_source_tracks", True) or not tracks:
+            return tracks
+        indices = list(range(len(tracks)))
+        random.Random().shuffle(indices)
+        result: list[dict[str, Any]] = []
+        for new_index, old_index in enumerate(indices):
+            updated = deepcopy(tracks[old_index])
+            updated["index"] = new_index
+            updated["source_index"] = old_index
+            result.append(updated)
+        self.logger.info("Shuffled %d source tracks", len(result))
+        return result
+
     def _apply_track_duration_limit(
         self, tracks: list[dict[str, Any]], station: dict[str, Any]
     ) -> list[dict[str, Any]]:
-        """Apply random max duration truncation if configured."""
+        """Truncate the given tracks to the configured playtime cap, preserving their order."""
         max_duration = float(station.get("max_duration_minutes", 0) or 0)
         if max_duration <= 0 or not tracks:
             return tracks
-        indices = list(range(len(tracks)))
-        rng = random.Random()
-        rng.shuffle(indices)
         chosen: list[int] = []
         total_minutes = 0.0
-        for index in indices:
-            duration = tracks[index].get("duration")
+        for index, track in enumerate(tracks):
+            duration = track.get("duration")
             seconds = (
                 float(duration) if isinstance(duration, (int, float)) and duration > 0 else 210.0
             )
@@ -599,7 +624,7 @@ class AIRadioRuntimeMixin:
             if total_minutes > max_duration:
                 break
         result: list[dict[str, Any]] = []
-        for new_index, old_index in enumerate(sorted(chosen)):
+        for new_index, old_index in enumerate(chosen):
             updated = deepcopy(tracks[old_index])
             updated["index"] = new_index
             updated["source_index"] = old_index
