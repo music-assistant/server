@@ -17,6 +17,7 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
     EventType,
+    ExternalID,
     MediaType,
     ProviderFeature,
     ProviderType,
@@ -1012,6 +1013,33 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
         )
+
+    @api_command("music/track/by_external_id", required_scope=Scope.LIBRARY_READ)
+    async def get_track_by_external_id(
+        self,
+        external_id: str,
+        external_id_type: str,
+    ) -> Track | None:
+        """Get track by external ID."""
+        return await self.tracks.get_item_by_external_id(external_id, ExternalID(external_id_type))
+
+    @api_command("music/album/by_external_id", required_scope=Scope.LIBRARY_READ)
+    async def get_album_by_external_id(
+        self,
+        external_id: str,
+        external_id_type: str,
+    ) -> Album | None:
+        """Get album by external ID."""
+        return await self.albums.get_item_by_external_id(external_id, ExternalID(external_id_type))
+
+    @api_command("music/artist/by_external_id", required_scope=Scope.LIBRARY_READ)
+    async def get_artist_by_external_id(
+        self,
+        external_id: str,
+        external_id_type: str,
+    ) -> Artist | None:
+        """Get artist by external ID."""
+        return await self.artists.get_item_by_external_id(external_id, ExternalID(external_id_type))
 
     @api_command("music/favorites/add_item", required_scope=Scope.LIBRARY_WRITE)
     async def add_item_to_favorites(

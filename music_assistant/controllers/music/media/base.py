@@ -800,6 +800,57 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         return None
 
     @final
+    async def get_item_by_external_id(
+        self,
+        external_id: str,
+        external_id_type: ExternalID,
+    ) -> ItemCls | None:
+        """Get item by external ID, querying library then active providers."""
+        if library_item := await self.get_library_item_by_external_id(
+            external_id, external_id_type
+        ):
+            return library_item
+
+        provider_feature_map = {
+            MediaType.TRACK: ProviderFeature.TRACK_BY_EXTERNAL_ID,
+            MediaType.ALBUM: ProviderFeature.ALBUM_BY_EXTERNAL_ID,
+            MediaType.ARTIST: ProviderFeature.ARTIST_BY_EXTERNAL_ID,
+        }
+
+        if (feature := provider_feature_map.get(self.media_type)) is None:
+            return None
+
+        for prov in self.mass.music.providers:
+            if feature not in prov.supported_features:
+                continue
+
+            try:
+                method_name = f"get_{self.media_type.value}_by_external_id"
+                method = getattr(prov, method_name, None)
+                if method is None:
+                    continue
+
+                if result := await method(external_id, str(external_id_type)):
+                    if result.provider == "library":
+                        return result
+                    return (
+                        await self.get_library_item_by_prov_id(result.item_id, result.provider)
+                        or result
+                    )
+            except NotImplementedError:
+                continue
+            except (MediaNotFoundError, ProviderUnavailableError) as err:
+                self.logger.debug(
+                    "Error looking up %s by external ID on %s: %s",
+                    self.media_type.value,
+                    prov.domain,
+                    err,
+                )
+                continue
+
+        return None
+
+    @final
     async def get_library_items_by_prov_id(
         self,
         provider_domain: str | None = None,
