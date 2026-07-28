@@ -1079,8 +1079,7 @@ class StreamsController(CoreController):
         """Stream announcement audio to a player."""
         self._log_request(request)
         player_id = request.match_info["player_id"]
-        player = self.mass.player_queues.get(player_id)
-        if not player:
+        if not (player := self.mass.players.get_player(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
         if not (announce_data := self.announcements.get(player_id)):
             raise web.HTTPNotFound(reason=f"No pending announcements for Player: {player_id}")
@@ -1090,6 +1089,19 @@ class StreamsController(CoreController):
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
 
         http_profile = self._get_announcement_http_profile(player_id, announce_data)
+
+        # return early if this is not a GET request:
+        # players often probe the url with a HEAD request before fetching it and
+        # rendering the announcement for such a probe would run the entire (costly)
+        # TTS/ffmpeg chain twice for a single announcement.
+        if request.method != "GET":
+            resp = web.StreamResponse(status=200, reason="OK", headers=DEFAULT_STREAM_HEADERS)
+            resp.content_type = get_mime_type(audio_format.output_format_str)
+            if http_profile == "chunked":
+                resp.enable_chunked_encoding()
+            await resp.prepare(request)
+            return resp
+
         if http_profile == "forced_content_length":
             # given the fact that an announcement is just a short audio clip,
             # just send it over completely at once so we have a fixed content length
@@ -1119,15 +1131,11 @@ class StreamsController(CoreController):
 
         await resp.prepare(request)
 
-        # return early if this is not a GET request
-        if request.method != "GET":
-            return resp
-
         # all checks passed, start streaming!
         self.logger.debug(
             "Start serving audio stream for Announcement %s to %s",
             announce_data["announcement_url"],
-            player.state.name,
+            player.display_name,
         )
         announcement_stream = self.get_announcement_stream(
             announcement_url=announce_data["announcement_url"],
@@ -1149,7 +1157,7 @@ class StreamsController(CoreController):
         self.logger.debug(
             "Finished serving audio stream for Announcement %s to %s",
             announce_data["announcement_url"],
-            player.state.name,
+            player.display_name,
         )
 
         return resp
