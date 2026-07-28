@@ -41,6 +41,7 @@ def _make_player() -> MagicMock:
     player.device_info.ip_address = "192.168.1.50"
     player.logger = logging.getLogger("test.airplay.player")
     player.config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
+    player.state.active_group = None
 
     airplay_info = MagicMock()
     airplay_info.port = 7000
@@ -1299,6 +1300,34 @@ async def test_unexpected_death_of_solo_player_schedules_no_rejoin() -> None:
     player.set_state_from_stream.assert_called_once_with(
         state=PlaybackState.IDLE, elapsed_time=0, stream=stream
     )
+
+
+@pytest.mark.asyncio
+async def test_unexpected_death_of_static_group_member_drops_member_only() -> None:
+    """A static group member's death drops just that member, never the whole group."""
+    player = _make_player()
+    player.synced_to = "leader"
+    player.group_members = []
+    # the player is a static member of an actively playing group player, for
+    # which cmd_ungroup would release (stop) the WHOLE group
+    player.state.active_group = "syncgroup1"
+    group_player = MagicMock()
+    group_player.static_group_members = ["leader", player.player_id]
+    leader = MagicMock()
+    leader.group_members = ["leader", player.player_id]
+    player.provider.mass.players.get_player.side_effect = lambda player_id: {
+        "syncgroup1": group_player,
+        "leader": leader,
+    }.get(player_id)
+
+    await _run_unexpected_process_death(player)
+
+    players_controller = player.provider.mass.players
+    players_controller.cmd_set_members.assert_called_once_with(
+        "leader", player_ids_to_remove=[player.player_id]
+    )
+    players_controller.cmd_ungroup.assert_not_called()
+    player.schedule_group_rejoin.assert_called_once_with(["leader"])
 
 
 @pytest.mark.asyncio

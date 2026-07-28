@@ -790,7 +790,21 @@ class AirPlayStream:
                     # its current state here on purpose: the controller only transfers
                     # leadership while the queue still looks active, and transfer_queue or
                     # dissolve sets the final state.
-                    self.mass.create_task(self.mass.players.cmd_ungroup(player.player_id))
+                    # One exception: a member that is a STATIC member of an active group
+                    # player must not go through cmd_ungroup - the controller interprets
+                    # unjoining a static member as releasing the whole group (HA unjoin
+                    # semantics), which would silence every room over one dead transport.
+                    # Its membership is configuration; drop only this member from the
+                    # leader's live session instead.
+                    static_member_of = self._static_group_membership(player)
+                    if static_member_of and player.synced_to:
+                        self.mass.create_task(
+                            self.mass.players.cmd_set_members(
+                                player.synced_to, player_ids_to_remove=[player.player_id]
+                            )
+                        )
+                    else:
+                        self.mass.create_task(self.mass.players.cmd_ungroup(player.player_id))
                     if rejoin_candidates:
                         # the group (or its successor) may still be playing:
                         # schedule bounded attempts to re-join it
@@ -800,6 +814,16 @@ class AirPlayStream:
                 player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
             finally:
                 await self.commands_pipe.remove()
+
+    def _static_group_membership(self, player: AirPlayPlayer) -> str | None:
+        """Return the active group player id the player is a static member of, if any."""
+        active_group_id = player.state.active_group
+        if not active_group_id:
+            return None
+        group_player = self.mass.players.get_player(active_group_id)
+        if group_player and player.player_id in group_player.static_group_members:
+            return active_group_id
+        return None
 
     def _handle_status_line(self, line: str) -> bool:
         """Dispatch one cliairplay status line; True ends the stderr loop."""
