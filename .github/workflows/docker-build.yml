@@ -23,11 +23,11 @@ jobs:
           path: server
           fetch-depth: 0
 
-      # 2️⃣ aiosendspin Fork (Feature-Branch mit 300s Cleanup)
+      # 2️⃣ aiosendspin Upstream (PR #288 gemerged auf main → ClientConnectedEvent verfügbar)
       - uses: actions/checkout@v4
         with:
-          repository: foobarth/sendspin-aiosendspin
-          ref: feat/cleanup-delay-300s
+          repository: Sendspin/aiosendspin
+          ref: main
           path: sendspin
 
       # 3️⃣ Python + Build-Tools

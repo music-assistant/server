@@ -1,0 +1,11 @@
+{
+    "schema_version": 2,
+    "commit": "a149b798f9928b1535ea38d9c1e426f8e2a3187f",
+    "indexed_at": "2026-07-24T12:27:57Z",
+    "project": "srv-k8s-hermes-data-repos-music-assistant-server",
+    "nodes": 55702,
+    "edges": 255213,
+    "original_size": 210632704,
+    "compressed_size": 28807465,
+    "compression_level": 3
+}
