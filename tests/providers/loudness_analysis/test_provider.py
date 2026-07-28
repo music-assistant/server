@@ -15,7 +15,36 @@ from music_assistant.providers.loudness_analysis.provider import (
     MIN_DURATION_SECONDS,
     LoudnessAnalysisProvider,
     LoudnessSessionData,
+    _parse_ebur128_metrics,
 )
+
+# ---------------------------------------------------------------------------
+# _parse_ebur128_metrics tests
+# ---------------------------------------------------------------------------
+
+
+def test_parse_ebur128_metrics_reads_true_peak_labeled_dbfs() -> None:
+    """Verbatim ebur128=framelog=verbose:peak=true output labels true peak in dBFS, not dBTP."""
+    log = """[Parsed_ebur128_0 @ 0xa7902c900] Summary:
+
+  Integrated loudness:
+    I:         -20.3 LUFS
+    Threshold: -30.6 LUFS
+
+  Loudness range:
+    LRA:         1.1 LU
+    Threshold: -40.7 LUFS
+    LRA low:   -21.3 LUFS
+    LRA high:  -20.1 LUFS
+
+  True peak:
+    Peak:       -3.4 dBFS
+"""
+    integrated, lra, true_peak = _parse_ebur128_metrics(log.splitlines())
+
+    assert integrated == -20.3
+    assert lra == 1.1
+    assert true_peak == -3.4
 
 
 def _make_provider() -> LoudnessAnalysisProvider:
