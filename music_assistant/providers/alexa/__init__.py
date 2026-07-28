@@ -55,6 +55,7 @@ ALEXA_LANGUAGE_COMMANDS = {
     "play_audio_fr-FR": "music assistant",
     "play_audio_it-IT": "chiedi a music assistant di riprodurre audio",
     "play_audio_pt-BR": "peça ao music assistant para reproduzir áudio",
+    "play_audio_nl-NL": "vraag music assistant om audio af te spelen",
     "play_audio_default": "ask music assistant to play audio",
 }
 
@@ -405,6 +406,7 @@ class AlexaProvider(PlayerProvider):
                     ConfigValueOption("fr-CA"),
                     ConfigValueOption("it-IT"),
                     ConfigValueOption("pt-BR"),
+                    ConfigValueOption("nl-NL"),
                 ],
                 default_value="en-US",  # choose a sensible default
             ),
