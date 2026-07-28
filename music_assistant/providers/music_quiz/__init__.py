@@ -1732,10 +1732,7 @@ class MusicQuizPlugin(PluginProvider):
             and state.synced_to is None
             and state.active_group is None
             and state.type in (PlayerType.PLAYER, PlayerType.STEREO_PAIR, PlayerType.GROUP)
-            # a universal player has no native playback of its own but plays through
-            # its protocol children, so ask for any usable output instead of native playback
             and any(protocol.available for protocol in state.output_protocols)
-            # the virtual host of a remote session is not a speaker in the room
             and not is_remote_session_host(self.mass, player.player_id)
         )
 

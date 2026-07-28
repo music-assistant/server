@@ -130,7 +130,6 @@ def _make_venue_player(
         and player_type != PlayerType.PROTOCOL
         and provider_domain != "universal_player"
     )
-    # a native player offers its own output, a universal player only the ones it wraps
     output_protocols = (
         [SimpleNamespace(available=True)] if is_native_player or linked_protocol else []
     )
