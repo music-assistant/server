@@ -11,7 +11,9 @@ from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import numpy as np
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
+    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -30,6 +32,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.models.plugin import PluginProvider
 
 from .constants import (
@@ -97,13 +100,17 @@ class LocalAudioSourceProvider(PluginProvider):
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
 
-        # resolve config
-        self._pa_source: str = cast("str", self.config.get_value(CONF_INPUT_DEVICE))
-        self._friendly_name: str = cast("str", self.config.get_value(CONF_FRIENDLY_NAME))
-        self._icon_preset: str = cast(
-            "str", self.config.get_value(CONF_ICON_PRESET) or ICON_PRESET_CUSTOM
+        self._pa_source: str = cast("str", self.get_setup_value(CONF_INPUT_DEVICE))
+        self._friendly_name: str = cast(
+            "str", self.get_setup_value(CONF_FRIENDLY_NAME, "Local Audio Source")
         )
-        self._thumbnail_image: str = cast("str", self.config.get_value(CONF_THUMBNAIL_IMAGE) or "")
+
+        self._icon_preset: str = cast(
+            "str", self.get_setup_value(CONF_ICON_PRESET, ICON_PRESET_CUSTOM)
+        )
+        self._thumbnail_image: str = cast(
+            "str", self.get_setup_value(CONF_THUMBNAIL_IMAGE, "") or ""
+        )
         self._auto_trigger: bool = bool(self.config.get_value(CONF_AUTO_TRIGGER))
         self._target_player_id: str = cast(
             "str", self.config.get_value(CONF_TARGET_PLAYER_ID) or PLAYER_ID_AUTO
@@ -184,6 +191,44 @@ class LocalAudioSourceProvider(PluginProvider):
             allow_external_trigger=self._auto_trigger,
             # capture only starts once a player selects this source
             can_initiate=True,
+        )
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return runtime options for this provider."""
+        player_options = [
+            ConfigValueOption(x.player_id, title=x.display_name)
+            for x in sorted(
+                self.mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
+            )
+        ]
+        return (
+            CONF_ENTRY_WARN_PREVIEW,
+            ConfigEntry(
+                key=CONF_AUTO_TRIGGER,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_TARGET_PLAYER_ID,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(PLAYER_ID_AUTO),
+                    *player_options,
+                ],
+                default_value=PLAYER_ID_AUTO,
+                required=True,
+                depends_on=CONF_AUTO_TRIGGER,
+                depends_on_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_TRIGGER_THRESHOLD_DBFS,
+                type=ConfigEntryType.FLOAT,
+                default_value=DEFAULT_TRIGGER_THRESHOLD_DBFS,
+                required=False,
+                depends_on=CONF_AUTO_TRIGGER,
+                depends_on_value=True,
+            ),
         )
 
     async def resolve_image(self, path: str) -> str | bytes:

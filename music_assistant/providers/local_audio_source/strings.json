@@ -50,6 +50,16 @@
   "manifest": {
     "description": "Pipe realtime audio from a PulseAudio/PipeWire capture source (e.g. Bluetooth receiver or line-in) to any Music Assistant player."
   },
+  "setup_flow": {
+    "monitors": {
+      "title": "Local Audio Source",
+      "description": "Sink monitor sources (loopback capture of what's playing on an output) can optionally be included in the device list on the next step."
+    },
+    "device": {
+      "title": "Select Audio Input",
+      "description": "Pick the PulseAudio/PipeWire source this instance should capture from."
+    }
+  },
   "errors": {
     "no_packets": "No audio could be captured from source {0} for '{1}'."
   }
