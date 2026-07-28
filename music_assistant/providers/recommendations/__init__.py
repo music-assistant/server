@@ -91,6 +91,7 @@ class LibraryRecommendationsProvider(PluginProvider):
                 "Recently added tracks",
                 "recently_added_tracks",
                 "mdi-music-note-plus",
+                False,
             ),
             _folder(
                 LibraryRowID.RECENTLY_ADDED_ALBUMS,
@@ -113,18 +114,21 @@ class LibraryRecommendationsProvider(PluginProvider):
                 "Recently favorited tracks",
                 "recent_favorite_tracks",
                 "mdi-file-music",
+                False,
             ),
             _folder(
                 LibraryRowID.FAVORITE_PLAYLISTS,
                 "Favorite playlists",
                 "favorite_playlists",
                 "mdi-playlist-music",
+                False,
             ),
             _folder(
                 LibraryRowID.FAVORITE_RADIO,
                 "Favorite Radio stations",
                 "favorite_radio_stations",
                 "mdi-access-point",
+                False,
             ),
             _folder(
                 LibraryRowID.RECENT_ARTISTS,
