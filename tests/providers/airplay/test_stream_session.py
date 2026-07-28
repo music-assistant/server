@@ -40,6 +40,7 @@ def _make_session(
     leader.stream.running = True
     leader.stream.connected = True
     leader.stream.wait_audio_present = AsyncMock(return_value=True)
+    leader.stream.cumulative_shift_seconds = 0.0
     leader.config.get_value = MagicMock(return_value=0)
 
     session = AirPlayStreamSession(prov, [leader], pcm_format, MagicMock(elapsed_time=0))
@@ -74,6 +75,7 @@ def _setup_stream(player: MagicMock) -> Any:
         player.stream.wait_audio_present = AsyncMock(return_value=True)
         player.stream.flush = AsyncMock(return_value=True)
         player.stream.start = AsyncMock()
+        player.stream.cumulative_shift_seconds = 0.0
 
     return _side_effect
 
@@ -667,32 +669,40 @@ async def test_late_join_empty_buffer() -> None:
 
 
 @pytest.mark.asyncio
-async def test_late_join_with_buffered_pcm_in_future() -> None:
-    """Late join with start_at already in the future leaves start_at unmodified."""
-    now = time.time()
-    # Place start_at well in the future: start_time = now + 5, buffer = 0 →
-    # start_at = now + 5 + (seconds_streamed - 0) = now + 17.5 (>> min_headroom)
-    start_time = now + 5
+async def test_late_join_caps_prime_at_whole_ring_when_position_predates_it() -> None:
+    """A due position older than the ring caps the prime at the whole buffer."""
+    now = 1_000_000.0
+    # Synthetic anchor in the future forces the due position behind the oldest
+    # buffered sample: only the whole ring can prime and the anchor is pulled
+    # to the ring's first sample so content and anchor stay exactly aligned.
     seconds_streamed = 12.5
+    buffer_seconds = 3
+    start_time = now + 5.0
     session = _make_session(start_time, seconds_streamed)
-    # Fill the ring buffer with 3 seconds of PCM
-    session._pcm_buffer = bytearray(b"\x00" * PCM_SAMPLE_SIZE * 3)
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * buffer_seconds)
     player = _make_late_joiner(wait_start_ms=2000)
+
+    written_chunks: list[bytes] = []
+
+    async def capture_write(_player: Any, chunk: bytes) -> None:
+        written_chunks.append(chunk)
 
     with (
         patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
-        patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
+        patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
     ):
         mock_start.side_effect = _setup_stream(player)
         await session.add_client(player)
 
     assert mock_start.called, "_start_client was never called"
-    # start_at should remain at start_time + (seconds_streamed - 3.0) — already in future
-    expected = start_time + (seconds_streamed - 3.0)
-    captured = _captured_start_at(player)
-    assert abs(captured - expected) < 0.1, (
-        f"start_at should match buffer position, expected {expected}, got {captured}"
-    )
+    # the whole ring is primed, nothing is skipped, and the anchor maps to the
+    # ring's first sample: start_at = start_time + (seconds_streamed - buffer)
+    assert session._client_skip_bytes[player.player_id] == 0
+    assert written_chunks, "expected the whole ring to be primed"
+    assert len(written_chunks[0]) / PCM_SAMPLE_SIZE == pytest.approx(buffer_seconds, abs=0.01)
+    expected = start_time + (seconds_streamed - buffer_seconds)
+    assert _captured_start_at(player) == pytest.approx(expected, abs=0.02)
 
 
 @pytest.mark.asyncio
@@ -750,14 +760,14 @@ async def test_late_join_no_running_session() -> None:
 
 
 @pytest.mark.asyncio
-async def test_late_join_trims_and_shifts_when_start_at_in_past() -> None:
-    """When start_at would be in the past, trim from buffer head and shift start_at forward."""
+async def test_late_join_primes_from_ring_tail_at_headroom() -> None:
+    """A due position inside the ring primes from the tail and anchors at now + headroom."""
     # Freeze time so both the test and the code under test agree on `now`.
     now = 1_000_000.0
     start_time = now - 0.5
     seconds_streamed = 5.0
     session = _make_session(start_time, seconds_streamed)
-    # Fill ring buffer with 5 seconds of non-silent PCM (so trim has something to take)
+    # Fill ring buffer with 5 seconds of non-silent PCM.
     session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 5)
     player = _make_late_joiner(wait_start_ms=2000)
 
@@ -774,33 +784,34 @@ async def test_late_join_trims_and_shifts_when_start_at_in_past() -> None:
         mock_start.side_effect = _setup_stream(player)
         await session.add_client(player)
 
-    # start_at should be pushed to now + min_headroom (session.wait_start = 2.0)
+    # start_at is now + min_headroom (session.wait_start = 2.0); fed_pos_due = 2.5s
     assert mock_start.called, "_start_client was never called"
     assert _captured_start_at(player) - now == pytest.approx(2.0, abs=0.01), (
         f"start_at should be at now + min_headroom, "
         f"got offset {_captured_start_at(player) - now:.4f}s"
     )
 
-    # Buffer should have been trimmed: 2.5s out of 5s (start_at shifted from -0.5 to +2.0)
+    # The last 2.5s of the ring is primed (positions 2.5s..5.0s), nothing skipped.
+    assert session._client_skip_bytes[player.player_id] == 0
     assert written_chunks, "No data was written to the player"
-    written = written_chunks[0]
-    remaining_seconds = len(written) / PCM_SAMPLE_SIZE
+    remaining_seconds = len(written_chunks[0]) / PCM_SAMPLE_SIZE
     assert remaining_seconds == pytest.approx(2.5, abs=0.01), (
-        f"expected 2.5s remaining, got {remaining_seconds:.4f}s"
+        f"expected 2.5s primed, got {remaining_seconds:.4f}s"
     )
 
 
 @pytest.mark.asyncio
-async def test_late_join_drops_buffer_when_trim_exceeds_buffer() -> None:
-    """When the required trim exceeds the buffer, the buffer is dropped entirely."""
+async def test_late_join_skips_live_feed_when_anchor_ahead_of_write_head() -> None:
+    """When the due position is ahead of the write head, skip that many live bytes."""
     # Freeze time so both the test and the code under test agree on `now`.
     now = 1_000_000.0
-    # start_at = now - 4.0 (way in the past). With 3s buffer the required trim
-    # is 6s but buffer only holds 3s → buffer fully consumed.
-    start_time = now - 4.0
-    seconds_streamed = 3.0
+    # Diagnosed clamp case: now - start_time = 8.84s, seconds_streamed = 10.0s,
+    # min_headroom = 2.5s and no group shift -> fed_pos_due = 11.34s > 10.0s.
+    start_time = now - 8.84
+    seconds_streamed = 10.0
     session = _make_session(start_time, seconds_streamed)
-    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 3)
+    session.wait_start = 2.5
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 10)
     player = _make_late_joiner(wait_start_ms=2000)
 
     written_chunks: list[bytes] = []
@@ -816,11 +827,132 @@ async def test_late_join_drops_buffer_when_trim_exceeds_buffer() -> None:
         mock_start.side_effect = _setup_stream(player)
         await session.add_client(player)
 
-    # No bytes should be written (buffer fully trimmed)
-    assert written_chunks == [], "Buffer should have been dropped entirely"
-    # start_at should be exactly now + min_headroom (since the next-chunk anchor would
-    # have landed at now - 1.0, which is below the target).
-    assert _captured_start_at(player) - now == pytest.approx(2.0, abs=0.01)
+    # anchor is now + min_headroom and nothing is primed (position past the head)
+    assert _captured_start_at(player) - now == pytest.approx(2.5, abs=0.01)
+    assert written_chunks == []
+    skip_seconds = session._client_skip_bytes[player.player_id] / PCM_SAMPLE_SIZE
+    assert skip_seconds == pytest.approx(1.34, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_late_join_primes_from_ring_under_group_shift() -> None:
+    """A reference member that re-anchored later pulls the due position back into the ring."""
+    # Freeze time so both the test and the code under test agree on `now`.
+    now = 1_000_000.0
+    # Same base as the clamp case, but the reference member accumulated a
+    # +1.539s starvation shift (67870 frames @44100) so the group's effective
+    # anchor is later: fed_pos_due = 9.80s, back inside the ring. The joiner is
+    # primed with ~0.2s from the ring tail and skips nothing.
+    start_time = now - 8.84
+    seconds_streamed = 10.0
+    session = _make_session(start_time, seconds_streamed)
+    session.wait_start = 2.5
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 10)
+    reference: Any = session.sync_clients[0]
+    reference.stream.cumulative_shift_seconds = 67870 / 44100
+    player = _make_late_joiner(wait_start_ms=2000)
+
+    written_chunks: list[bytes] = []
+
+    async def capture_write(_player: Any, chunk: bytes) -> None:
+        written_chunks.append(chunk)
+
+    with (
+        patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
+        patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        mock_start.side_effect = _setup_stream(player)
+        await session.add_client(player)
+
+    assert _captured_start_at(player) - now == pytest.approx(2.5, abs=0.01)
+    assert session._client_skip_bytes[player.player_id] == 0
+    assert written_chunks, "expected a prime write from the ring tail"
+    primed_seconds = len(written_chunks[0]) / PCM_SAMPLE_SIZE
+    assert primed_seconds == pytest.approx(0.199, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_write_chunk_drains_skip_counter_across_chunks() -> None:
+    """A per-client skip is consumed across chunks, slicing the partial one."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    ffmpeg = MagicMock(closed=False)
+    ffmpeg.write = AsyncMock()
+    session._player_ffmpeg[player.player_id] = ffmpeg
+    # skip 1.5s of a 1s-per-chunk feed
+    session._client_skip_bytes[player.player_id] = PCM_SAMPLE_SIZE * 3 // 2
+
+    chunk_one = b"\x01" * PCM_SAMPLE_SIZE
+    chunk_two = b"\x02" * PCM_SAMPLE_SIZE
+    chunk_three = b"\x03" * PCM_SAMPLE_SIZE
+    for chunk in (chunk_one, chunk_two, chunk_three):
+        await session._write_chunk_to_player(player, chunk)
+
+    written = [call_args.args[0] for call_args in ffmpeg.write.await_args_list]
+    # first chunk fully consumed, second chunk sliced in half, third whole
+    assert written == [b"\x02" * (PCM_SAMPLE_SIZE // 2), chunk_three]
+    assert session._client_skip_bytes[player.player_id] == 0
+
+
+def test_effective_start_time_adds_reference_member_shift() -> None:
+    """The effective anchor adds the first sync client's accumulated shift."""
+    session = _make_session(100.0, 0)
+    reference: Any = session.sync_clients[0]
+    reference.stream.cumulative_shift_seconds = 1.539
+    assert session.effective_start_time == pytest.approx(101.539)
+
+    # the reference transfers to whichever client is first
+    other = MagicMock()
+    other.stream.cumulative_shift_seconds = 0.5
+    session.sync_clients.insert(0, other)
+    assert session.effective_start_time == pytest.approx(100.5)
+
+    # a missing stream falls back to the raw anchor
+    other.stream = None
+    assert session.effective_start_time == pytest.approx(100.0)
+
+
+@pytest.mark.asyncio
+async def test_stop_client_clears_skip_and_shift_state() -> None:
+    """Tearing a client down drops its skip counter and resets its playout shift."""
+    session = _make_session(0, 0)
+    player = _make_late_joiner()
+    player.stream = MagicMock()
+    player.stream.session = session
+    player.stream.stop = AsyncMock()
+    session._client_skip_bytes[player.player_id] = 12_345
+
+    await session.stop_client(player)
+
+    assert player.player_id not in session._client_skip_bytes
+    player.stream.reset_reanchor_shift.assert_called_once_with()
+    player.stream.stop.assert_awaited_once_with(force=True)
+
+
+@pytest.mark.asyncio
+async def test_replace_clears_skip_and_shift_state() -> None:
+    """A warm replace re-anchors everyone, so skip counters and shifts reset."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.config.get_value = MagicMock(return_value=0)
+    stream = player.stream
+    stream.running = True
+    stream.connected = True
+    stream.flush = AsyncMock(return_value=True)
+    stream.wait_audio_present = AsyncMock(return_value=True)
+    stream.start = AsyncMock()
+    session._client_skip_bytes[player.player_id] = 999
+
+    with (
+        patch.object(session, "_start_player_ffmpeg", new_callable=AsyncMock),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=100.0),
+    ):
+        assert await session.replace(MagicMock(), MagicMock(elapsed_time=0))
+
+    assert session._client_skip_bytes == {}
+    stream.reset_reanchor_shift.assert_called()
 
 
 @pytest.mark.asyncio
