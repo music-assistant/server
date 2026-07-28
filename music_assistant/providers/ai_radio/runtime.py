@@ -72,6 +72,7 @@ from .models import (
     AudioSection,
     GeneratedSection,
     PlannedSection,
+    QueueBinding,
     SessionState,
     Slot,
 )
@@ -123,9 +124,11 @@ class AIRadioRuntimeMixin:
             else:
                 result = await self._run_dynamic_mode(session, station)
             session.result = result
-            session.status = "completed"
+            queue_stopped = result.get("ended_reason") == "queue_stopped"
+            session.status = "stopped" if queue_stopped else "completed"
             self.logger.info(
-                "AI Radio run completed: session=%s station=%s mode=%s",
+                "AI Radio run %s: session=%s station=%s mode=%s",
+                session.status,
                 session.session_id,
                 session.station_id,
                 session.mode,
@@ -324,6 +327,8 @@ class AIRadioRuntimeMixin:
                 PlaybackState.PLAYING,
                 PlaybackState.PAUSED,
             )
+        # bind the run to its queue so stopping the show can stop playback too
+        session.queue = QueueBinding(queue_id=queue_id, owned=clear_queue, first_index=base_offset)
 
         # a shuffled queue reorders each batch, scattering sections away from their tracks
         try:
@@ -346,6 +351,9 @@ class AIRadioRuntimeMixin:
         batch_index = 0
         total_entries_queued = 0
         wait_trigger_global_index = -1
+        # only once playback has been observed can an idle queue mean "user stopped it"
+        playback_seen = False
+        queue_stopped = False
         history_state: dict[str, list[tuple[int, float]]] = {}
         self._set_session_progress(
             session,
@@ -505,8 +513,20 @@ class AIRadioRuntimeMixin:
                 elif elapsed_time is not None and elapsed_time != last_elapsed_time:
                     last_elapsed_time = elapsed_time
                     playback_alive = True
+                # elapsed_time also "moves" on the first poll of an idle queue
+                if queue_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+                    playback_seen = True
                 if playback_alive:
                     inactivity_deadline = asyncio.get_running_loop().time() + stall_timeout
+                # a stopped queue means the radio was turned off, not that it stalled
+                if playback_seen and queue_state == PlaybackState.IDLE:
+                    self.logger.info(
+                        "Queue %s was stopped, ending dynamic run (last_index=%s)",
+                        queue_id,
+                        last_seen_index,
+                    )
+                    queue_stopped = True
+                    break
                 if asyncio.get_running_loop().time() >= inactivity_deadline:
                     raise MusicAssistantError(
                         f"Queue {queue_id} stopped advancing for {stall_timeout}s "
@@ -514,8 +534,12 @@ class AIRadioRuntimeMixin:
                     )
                 await asyncio.sleep(poll_seconds)
 
+            if queue_stopped:
+                break
+
         return {
             "mode": "dynamic",
+            "ended_reason": "queue_stopped" if queue_stopped else "source_exhausted",
             "source_playlist_name": playlist_name,
             "source_tracks": len(tracks),
             "queued_tracks": cursor,
@@ -1660,6 +1684,24 @@ class AIRadioRuntimeMixin:
                 "(for example Home Assistant with an ai_task entity)."
             )
         return plugins[0]
+
+    async def _stop_session_queue(self, session: SessionState) -> None:
+        """Stop playback of the queue a run was playing on."""
+        binding = session.queue
+        if binding is None:
+            return
+        queue = self.mass.player_queues.get(binding.queue_id)
+        if queue is None or getattr(queue, "state", None) == PlaybackState.IDLE:
+            return
+        if not binding.owned:
+            # an appended run shares the queue, so only stop once it reached the show
+            current_index = queue.current_index
+            if current_index is None or current_index < binding.first_index:
+                return
+        try:
+            await self.mass.player_queues.stop(binding.queue_id)
+        except MusicAssistantError as err:
+            self.logger.debug("Could not stop queue %s: %s", binding.queue_id, err)
 
     def _get_tts_plugin(self) -> PluginProvider:
         """Return the plugin used for TTS tasks."""

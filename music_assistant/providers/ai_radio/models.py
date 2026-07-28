@@ -60,6 +60,16 @@ class AudioSection:
 
 
 @dataclass(slots=True)
+class QueueBinding:
+    """The player queue a dynamic run plays on."""
+
+    queue_id: str
+    # False when the run appended to a queue that already had items
+    owned: bool
+    first_index: int
+
+
+@dataclass(slots=True)
 class SessionState:
     """State container for an AI Radio run."""
 
@@ -74,6 +84,7 @@ class SessionState:
     result: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
     task: asyncio.Task[Any] | None = field(default=None, repr=False, compare=False)
+    queue: QueueBinding | None = field(default=None, repr=False, compare=False)
 
     def as_dict(self) -> dict[str, Any]:
         """Return session as a serializable dictionary."""

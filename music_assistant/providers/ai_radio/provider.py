@@ -322,10 +322,12 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
         """Stop an active run."""
         selected = self._resolve_session_for_stop(session_id=session_id, station_id=station_id)
 
+        # cancel first so the run cannot queue another batch after playback stopped
         if selected.task and not selected.task.done():
             selected.task.cancel()
         selected.status = "stopped"
         selected.ended_at = utc_now_iso()
+        await self._stop_session_queue(selected)
         self.logger.info(
             "AI Radio session stopped: session=%s station=%s mode=%s",
             selected.session_id,
