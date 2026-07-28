@@ -84,6 +84,7 @@ from music_assistant.helpers.shared_playback import (
     SENDSPIN_DOMAIN,
     SharedPlaybackMode,
     SharedPlaybackSession,
+    is_remote_session_host,
 )
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.plugin import PluginProvider
@@ -1716,8 +1717,7 @@ class MusicQuizPlugin(PluginProvider):
         player = self.mass.players.get_player(player_id)
         return player is not None and self._is_eligible_venue_player(player)
 
-    @staticmethod
-    def _is_eligible_venue_player(player: Player) -> bool:
+    def _is_eligible_venue_player(self, player: Player) -> bool:
         """
         Return whether a player is a real venue playback target.
 
@@ -1732,8 +1732,11 @@ class MusicQuizPlugin(PluginProvider):
             and state.synced_to is None
             and state.active_group is None
             and state.type in (PlayerType.PLAYER, PlayerType.STEREO_PAIR, PlayerType.GROUP)
-            and player.is_native_player
-            and player.provider.domain != SENDSPIN_DOMAIN
+            # a universal player has no native playback of its own but plays through
+            # its protocol children, so ask for any usable output instead of native playback
+            and any(protocol.available for protocol in state.output_protocols)
+            # the virtual host of a remote session is not a speaker in the room
+            and not is_remote_session_host(self.mass, player.player_id)
         )
 
     def _remote_playback_available(self) -> bool:

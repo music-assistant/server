@@ -121,6 +121,7 @@ def _make_venue_player(
     features: set[PlayerFeature] | None = None,
     provider_domain: str = "test_player",
     playback_state: PlaybackState = PlaybackState.IDLE,
+    linked_protocol: bool = False,
 ) -> SimpleNamespace:
     """Return a player-shaped venue target for tests."""
     supported_features = features if features is not None else {PlayerFeature.PLAY_MEDIA}
@@ -128,6 +129,10 @@ def _make_venue_player(
         PlayerFeature.PLAY_MEDIA in supported_features
         and player_type != PlayerType.PROTOCOL
         and provider_domain != "universal_player"
+    )
+    # a native player offers its own output, a universal player only the ones it wraps
+    output_protocols = (
+        [SimpleNamespace(available=True)] if is_native_player or linked_protocol else []
     )
     return SimpleNamespace(
         player_id=player_id,
@@ -145,6 +150,7 @@ def _make_venue_player(
             group_members=[],
             type=player_type,
             supported_features=supported_features,
+            output_protocols=output_protocols,
         ),
         extra_data={},
     )
@@ -296,7 +302,9 @@ def _create_plugin(
     plugin._unregister_handles = []
     plugin.mass.cache.get = AsyncMock(return_value=None)
     plugin.mass.cache.set = AsyncMock()
-    plugin.mass.get_provider.return_value = MagicMock()
+    sendspin_provider = MagicMock()
+    sendspin_provider.is_virtual_player.return_value = False
+    plugin.mass.get_provider.return_value = sendspin_provider
     plugin.mass.players.all_players.return_value = (
         [_make_venue_player(player, "Venue Player")] if player and player != "__auto__" else []
     )
@@ -673,6 +681,13 @@ async def test_playback_options_filter_and_stably_rank_venue_players() -> None:
     active_group_member = _make_venue_player("group-member", "Active Group Member")
     active_group_member.state.active_group = "group"
     group.state.group_members = ["group-member"]
+    universal = _make_venue_player(
+        "universal", "Universal", provider_domain="universal_player", linked_protocol=True
+    )
+    session_host = _make_venue_player("virtual", "Quiz Session", provider_domain="sendspin")
+    cast(
+        "MagicMock", plugin.mass.get_provider.return_value
+    ).is_virtual_player.side_effect = lambda player_id: player_id == "virtual"
     excluded = [
         _make_venue_player("unavailable", "Unavailable", available=False),
         _make_venue_player("disabled", "Disabled", enabled=False),
@@ -683,13 +698,14 @@ async def test_playback_options_filter_and_stably_rank_venue_players() -> None:
         _make_venue_player("protocol", "Protocol", player_type=PlayerType.PROTOCOL),
         _make_venue_player("display", "Display", player_type=PlayerType.DISPLAY),
         _make_venue_player("no-play", "No Playback", features=set()),
-        _make_venue_player("browser", "Browser", provider_domain="sendspin"),
-        _make_venue_player("universal", "Universal", provider_domain="universal_player"),
+        _make_venue_player("browser", "Browser", provider_domain="sendspin", hidden=True),
+        session_host,
     ]
     cast("MagicMock", plugin.mass.players.all_players).return_value = [
         playing_bathroom,
         *excluded,
         group,
+        universal,
         alpha,
     ]
 
@@ -713,12 +729,32 @@ async def test_playback_options_filter_and_stably_rank_venue_players() -> None:
         "venue_players": [
             {"player_id": "alpha", "name": "Alpha Room"},
             {"player_id": "group", "name": "House Group"},
+            {"player_id": "universal", "name": "Universal"},
             {"player_id": "bathroom", "name": "Z Bathroom"},
         ],
     }
     create_venue.assert_not_awaited()
     create_remote.assert_not_awaited()
     assert cast("MagicMock", plugin.mass.player_queues).mock_calls == []
+
+
+@pytest.mark.asyncio
+async def test_playback_options_include_protocol_wrapped_speakers() -> None:
+    """Offer speakers that play through a linked protocol, such as a Sendspin CLI client."""
+    plugin = _create_plugin(player="__auto__")
+    cli_speaker = _make_venue_player(
+        "universal_kitchen",
+        "Kitchen",
+        provider_domain="universal_player",
+        linked_protocol=True,
+    )
+    cast("MagicMock", plugin.mass.players.all_players).return_value = [cli_speaker]
+
+    options = await plugin.playback_options()
+
+    assert options["venue_available"] is True
+    assert options["default_venue_player_id"] == "universal_kitchen"
+    assert options["venue_players"] == [{"player_id": "universal_kitchen", "name": "Kitchen"}]
 
 
 @pytest.mark.asyncio
