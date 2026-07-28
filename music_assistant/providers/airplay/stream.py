@@ -765,6 +765,25 @@ class AirPlayStream:
                     logger.warning(
                         "cliairplay process stopped unexpectedly for %s", player.display_name
                     )
+                    # Candidates for the automatic re-join: the leader this member
+                    # was synced to (plus its other members, in case leadership
+                    # transfers while the backoff runs), or - when this was the
+                    # leader itself - the members that survive it. Captured before
+                    # the ungroup below mutates the group state (create_task
+                    # starts eagerly).
+                    was_leader = bool(player.group_members)
+                    if player.synced_to:
+                        rejoin_candidates = [player.synced_to]
+                        if leader := self.mass.players.get_player(player.synced_to):
+                            rejoin_candidates += [
+                                member_id
+                                for member_id in leader.group_members
+                                if member_id not in (player.player_id, player.synced_to)
+                            ]
+                    else:
+                        rejoin_candidates = [
+                            m for m in player.group_members if m != player.player_id
+                        ]
                     # Hand off to the player controller so it drops just this member, or
                     # transfers leadership to a healthy member, instead of dissolving the
                     # whole group over a single dead transport. A sync leader is left in
@@ -772,7 +791,11 @@ class AirPlayStream:
                     # leadership while the queue still looks active, and transfer_queue or
                     # dissolve sets the final state.
                     self.mass.create_task(self.mass.players.cmd_ungroup(player.player_id))
-                    if player.group_members:
+                    if rejoin_candidates:
+                        # the group (or its successor) may still be playing:
+                        # schedule bounded attempts to re-join it
+                        player.schedule_group_rejoin(rejoin_candidates)
+                    if was_leader:
                         return
                 player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
             finally:
