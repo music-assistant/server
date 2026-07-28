@@ -162,7 +162,7 @@ class PodcastMusicprovider(MusicProvider):
             if item_id == episode["guid"]:
                 stream_url = get_stream_url_from_episode(episode=episode)
                 if stream_url is None:
-                    break
+                    raise MediaNotFoundError(f"Episode {item_id} has no playable stream")
                 return StreamDetails(
                     provider=self.instance_id,
                     item_id=item_id,

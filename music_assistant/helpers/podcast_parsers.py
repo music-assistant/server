@@ -127,7 +127,9 @@ def parse_podcast(
 
 def get_stream_url_from_episode(*, episode: dict[str, Any]) -> str | None:
     """
-    Give the url of the episode's audio enclosure, or None if the episode has none.
+    Give the url of the episode's playable enclosure, or None if the episode has none.
+
+    Prefers the first audio or video enclosure, falling back to any non-image one.
 
     :param episode: A single episode dict as returned by podcastparser.
     """
