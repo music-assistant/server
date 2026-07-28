@@ -795,7 +795,9 @@ class AirPlayStream:
                     # unjoining a static member as releasing the whole group (HA unjoin
                     # semantics), which would silence every room over one dead transport.
                     # Its membership is configuration; drop only this member from the
-                    # leader's live session instead.
+                    # leader's live session instead. The set_members call cannot bounce
+                    # back to the group player: the controller only redirects it when
+                    # the group advertises SET_MEMBERS, which a static group never does.
                     static_member_of = self._static_group_membership(player)
                     if static_member_of and player.synced_to:
                         self.mass.create_task(
