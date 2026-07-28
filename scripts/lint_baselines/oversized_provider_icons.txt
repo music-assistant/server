@@ -21,8 +21,6 @@ music_assistant/providers/internet_archive/icon_monochrome.svg	1
 music_assistant/providers/itunes_podcasts/icon_monochrome.svg	1
 music_assistant/providers/listenbrainz_scrobble/icon.svg	1
 music_assistant/providers/lrclib/icon.svg	1
-music_assistant/providers/motherearthradio/icon.svg	1
-music_assistant/providers/motherearthradio/icon_monochrome.svg	1
 music_assistant/providers/mpd/icon.svg	1
 music_assistant/providers/mpd/icon_monochrome.svg	1
 music_assistant/providers/musicbrainz/icon_monochrome.svg	1

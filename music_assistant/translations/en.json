@@ -1467,7 +1467,6 @@
   "provider.lrclib.config_entries.api_url.description": "URL of the LRCLib API (including 'api' but excluding '/get')",
   "provider.lrclib.config_entries.api_url.label": "API URL",
   "provider.lrclib.manifest.description": "Primary lyrics provider, delivering synced and unsynced lyrics from the LrcLib database.",
-  "provider.motherearthradio.manifest.description": "Stream audiophile-quality internet radio — human-curated, ad-free, and listener supported.",
   "provider.mpd.config_entries.manual_discovery_ip_addresses.description": "List of MPD servers to connect to. Enter one server per line as host or host:port. Port defaults to 6600 if not specified.",
   "provider.mpd.config_entries.manual_discovery_ip_addresses.label": "MPD Servers",
   "provider.mpd.config_entries.password.description": "MPD password, if required by the server.",
