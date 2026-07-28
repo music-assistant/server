@@ -2565,19 +2565,14 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         min_volume, max_volume = self._get_volume_limits(player_id)
         if min_volume == 0 and max_volume == 100:
             return
-        # The state's volume_level holds the logical (0-100) volume resolved from
-        # whatever volume control this player uses (native, protocol player or
-        # external playercontrol) - unlike the raw volume_level attribute, which is
-        # None for players that redirect their volume control (e.g. universal players).
-        # scale_volume_from_device deliberately does not clamp, so a device volume
-        # outside the configured range surfaces here as a logical value outside 0-100.
+        # state.volume_level is the resolved logical volume, available for all
+        # volume control types; a device volume outside the configured range
+        # surfaces here as a value outside 0-100 (scaling does not clamp)
         logical_volume = player.state.volume_level
         if logical_volume is None or 0 <= logical_volume <= 100:
             return
         clamped = max(0, min(100, logical_volume))
-        # Route the correction through the regular volume-set handling so it follows
-        # the same scaling and redirection (protocol player / playercontrol) as a
-        # user-issued volume command.
+        # correct via the regular volume-set path so scaling and redirection apply
         self.mass.create_task(self._handle_cmd_volume_set(player_id, clamped))
 
     def _forward_state_update(

@@ -623,9 +623,7 @@ class SpotifyConnectProvider(PluginProvider):
         os.makedirs(self.cache_dir, exist_ok=True)
         initial_volume = 50
         if self._default_player_id != PLAYER_ID_AUTO:
-            # use the state's logical (0-100) volume: it matches the Spotify volume
-            # scale and is also resolved for players that redirect their volume
-            # control (e.g. universal players), where the raw attribute is None
+            # the resolved logical (0-100) volume matches the Spotify volume scale
             if (player := self.mass.players.get_player(self._default_player_id)) and (
                 player.state.volume_level is not None
             ):
