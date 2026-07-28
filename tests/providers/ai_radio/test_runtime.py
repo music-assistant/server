@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any, cast
@@ -19,7 +20,7 @@ from music_assistant_models.enums import (
     QueueOption,
     TaskStatus,
 )
-from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.errors import InvalidCommand, MusicAssistantError
 from music_assistant_models.media_items import SoundEffect
 
 from music_assistant.helpers.datetime import now as host_now
@@ -794,6 +795,9 @@ async def test_run_dynamic_mode_has_watchdog_for_stalled_playback(
         def clear(self, queue_id: str) -> None:
             return None
 
+        async def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
+            return None
+
         async def play_media(self, **kwargs: Any) -> None:
             return None
 
@@ -964,6 +968,9 @@ def _make_watchdog_runtime_classes() -> tuple[type, type]:
         def clear(self, queue_id: str) -> None:
             return None
 
+        async def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
+            return None
+
         async def play_media(self, **kwargs: Any) -> None:
             return None
 
@@ -1044,16 +1051,26 @@ class RecordingPlayerQueues:
         """Initialize recorder around one fake queue object."""
         self.queue = queue
         self.clear_calls: list[str] = []
+        self.set_shuffle_calls: list[tuple[str, bool]] = []
         self.play_media_calls: list[tuple[Any, int]] = []
         self.play_index_calls: list[tuple[str, int]] = []
+        # combined call order across the methods below, for ordering assertions
+        self.call_order: list[str] = []
 
     def clear(self, queue_id: str) -> None:
         """Record a queue clear call."""
         self.clear_calls.append(queue_id)
+        self.call_order.append("clear")
+
+    async def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
+        """Record a set_shuffle call."""
+        self.set_shuffle_calls.append((queue_id, shuffle_enabled))
+        self.call_order.append("set_shuffle")
 
     async def play_media(self, **kwargs: Any) -> None:
         """Record a play_media call with the poll count at call time."""
         self.play_media_calls.append((kwargs.get("option"), self.queue.polls))
+        self.call_order.append("play_media")
 
     async def play_index(self, queue_id: str, index: int) -> None:
         """Record a play_index call and mark the queue as started."""
@@ -1210,6 +1227,10 @@ async def test_dynamic_mode_targets_active_group_queue(
         def clear(self, queue_id: str) -> None:
             """Record a queue clear call."""
             self.clear_calls.append(queue_id)
+
+        async def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
+            """No-op shuffle toggle for the group queue."""
+            return
 
         async def play_media(self, **kwargs: Any) -> None:
             """Record the queue targeted by a play_media call."""
@@ -1370,3 +1391,162 @@ async def test_fetch_source_tracks_skips_tracks_with_no_resolvable_uri(caplog: A
     assert [track["item_id"] for track in tracks] == ["1", "3"]
     assert [track["index"] for track in tracks] == [0, 1]
     assert any("Track Two" in record.message for record in caplog.records)
+
+
+def test_apply_source_shuffle_returns_unchanged_when_disabled() -> None:
+    """Leave the source list untouched when the station does not request shuffling."""
+    runtime = DummyRuntime()
+    tracks = [{"index": 0, "uri": "a"}, {"index": 1, "uri": "b"}]
+    station = {"shuffle_source_tracks": False}
+
+    result = runtime._apply_source_shuffle(tracks, station)
+
+    assert result is tracks
+
+
+def test_apply_source_shuffle_reorders_and_records_source_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shuffle every track into a new order while keeping all of them and their origin."""
+    # capture the real class before patching it away: runtime.random is the same shared
+    # stdlib module object, so the lambda below would otherwise re-look-up itself
+    original_random_cls = random.Random
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.runtime.random.Random",
+        lambda: original_random_cls(1234),
+    )
+    runtime = DummyRuntime()
+    tracks = [{"uri": f"track/{i}"} for i in range(5)]
+    station = {"shuffle_source_tracks": True}
+
+    result = runtime._apply_source_shuffle(tracks, station)
+
+    assert [track["index"] for track in result] == list(range(len(tracks)))
+    assert {track["uri"] for track in result} == {track["uri"] for track in tracks}
+    for track in result:
+        assert tracks[track["source_index"]]["uri"] == track["uri"]
+    # a seeded shuffle must actually reorder, not silently pass through in place
+    assert [track["source_index"] for track in result] != list(range(len(tracks)))
+
+
+def test_apply_track_duration_limit_keeps_prefix_of_given_order() -> None:
+    """Truncate to the playtime cap by walking the given order, no shuffling."""
+    runtime = DummyRuntime()
+    tracks = [
+        {"uri": "a", "duration": 120},
+        {"uri": "b", "duration": 120},
+        {"uri": "c", "duration": 120},
+        {"uri": "d", "duration": 120},
+    ]
+    station = {"max_duration_minutes": 3}
+
+    result = runtime._apply_track_duration_limit(tracks, station)
+
+    assert [track["uri"] for track in result] == ["a", "b"]
+    assert [track["index"] for track in result] == [0, 1]
+    assert [track["source_index"] for track in result] == [0, 1]
+
+
+def test_apply_track_duration_limit_zero_cap_is_noop() -> None:
+    """A cap of 0 disables truncation entirely."""
+    runtime = DummyRuntime()
+    tracks = [{"uri": "a", "duration": 120}, {"uri": "b", "duration": 120}]
+    station = {"max_duration_minutes": 0}
+
+    result = runtime._apply_track_duration_limit(tracks, station)
+
+    assert result is tracks
+
+
+async def test_dynamic_mode_disables_shuffle_before_first_play_media(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Disable queue shuffle before the first batch is queued, so batches keep their order."""
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
+        0.2,
+    )
+    watchdog_runtime_cls, _ = _make_watchdog_runtime_classes()
+
+    class BusyQueue:
+        """Queue already playing 3 pre-existing items."""
+
+        polls = 0
+        items = 3
+        state = PlaybackState.PLAYING
+        started = False
+
+        @property
+        def current_index(self) -> int:
+            return 2 if self.polls < 4 else 4
+
+        @property
+        def elapsed_time(self) -> float:
+            return float(self.polls * 10)
+
+    class DummyPlayers:
+        def get_player(self, player_id: str) -> Any:
+            return object()
+
+    player_queues = RecordingPlayerQueues(BusyQueue())
+
+    class DummyMass:
+        def __init__(self) -> None:
+            self.players = DummyPlayers()
+            self.player_queues = player_queues
+
+    mass = DummyMass()
+    runtime = watchdog_runtime_cls()
+    _set_runtime_mass(runtime, mass)
+    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
+    runtime._sessions[session.session_id] = session
+
+    await asyncio.wait_for(runtime._run_dynamic_mode(session, _watchdog_station()), timeout=10.0)
+
+    assert player_queues.set_shuffle_calls == [("living_room", False)]
+    assert player_queues.call_order.index("set_shuffle") < player_queues.call_order.index(
+        "play_media"
+    )
+
+
+async def test_dynamic_mode_raises_when_set_shuffle_rejects_dynamic_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Translate a dynamic-mode queue's InvalidCommand into an actionable MusicAssistantError."""
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
+        0.2,
+    )
+    watchdog_runtime_cls, _ = _make_watchdog_runtime_classes()
+
+    class RaisingPlayerQueues(RecordingPlayerQueues):
+        """Player queues stub whose queue is stuck in dynamic (smart-mix) mode."""
+
+        async def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
+            await super().set_shuffle(queue_id, shuffle_enabled)
+            raise InvalidCommand("Cannot change shuffle while the queue is in dynamic mode")
+
+    class DummyPlayers:
+        def get_player(self, player_id: str) -> Any:
+            return object()
+
+    class DummyQueue:
+        items = 0
+        state = PlaybackState.IDLE
+
+    player_queues = RaisingPlayerQueues(DummyQueue())
+
+    class DummyMass:
+        def __init__(self) -> None:
+            self.players = DummyPlayers()
+            self.player_queues = player_queues
+
+    mass = DummyMass()
+    runtime = watchdog_runtime_cls()
+    _set_runtime_mass(runtime, mass)
+    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
+    runtime._sessions[session.session_id] = session
+    station = {**_watchdog_station(), "clear_queue_on_start": True}
+
+    with pytest.raises(MusicAssistantError, match="dynamic mode"):
+        await runtime._run_dynamic_mode(session, station)
