@@ -1335,11 +1335,14 @@ class SendspinPlayer(SendspinBasePlayer):
         self._attr_elapsed_time_last_updated = time.time()
         self.update_state()
         # group.stop() snapshots the live position, which it can only do while the push
-        # stream is up - cancelling first leaves it re-emitting a stale anchor. Keep the
-        # two adjacent: the STOPPED event already cancels this session inline, so an await
-        # between them would interleave the two cancels and cut pipeline teardown short.
-        await self.api.group.stop()
-        await self.playback_session.cancel("stop command")
+        # stream is up - cancelling first leaves it re-emitting a stale anchor. Teardown
+        # goes in finally so a failing group stop can't strand the session, and nothing
+        # may await between the two: the STOPPED event cancels this session inline, and a
+        # suspension in between would let that cancel cut pipeline teardown short.
+        try:
+            await self.api.group.stop()
+        finally:
+            await self.playback_session.cancel("stop command")
 
     def _get_cast_bridge_manager(self) -> SendspinBridgeManager | None:
         """Return the Chromecast provider's Sendspin bridge manager, if loaded."""
