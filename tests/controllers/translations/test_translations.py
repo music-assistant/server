@@ -142,6 +142,21 @@ def test_build_translations_duplicate_key_fails_loudly(
         build_translations_source()
 
 
+def test_build_translations_malformed_file_names_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An authoring file that fails to parse is reported with its file path."""
+    strings_file = tmp_path / "strings.json"
+    strings_file.write_bytes(b'{"errors": ')
+    monkeypatch.setattr(
+        build_translations_module,
+        "_collect_source_files",
+        lambda: [("provider.foo.", str(strings_file))],
+    )
+    with pytest.raises(ValueError, match=r"strings\.json: "):
+        build_translations_source()
+
+
 def test_candidate_keys_common_rewrite() -> None:
     """An owner-namespaced key falls back to the shared common namespace."""
     assert _candidate_keys("provider.ytmusic.config_entries.username.label") == [

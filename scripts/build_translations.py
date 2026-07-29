@@ -66,9 +66,10 @@ def build_translations_source() -> dict[str, str]:
             duplicates.extend(
                 f"{rel_path}: {key_path}" for key_path in _find_duplicate_keys(content)
             )
-        except json.JSONDecodeError as err:
+            data = orjson.loads(content)
+        except (json.JSONDecodeError, UnicodeDecodeError) as err:
             raise ValueError(f"{rel_path}: {err}") from err
-        _flatten_into(orjson.loads(content), prefix, raw)
+        _flatten_into(data, prefix, raw)
     if duplicates:
         raise ValueError("Duplicate strings.json key(s):\n  " + "\n  ".join(sorted(duplicates)))
     return _resolve_references(raw)
