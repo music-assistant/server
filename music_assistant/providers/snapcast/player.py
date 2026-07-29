@@ -15,6 +15,7 @@ from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS, CONF_ENTRY_
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
 from music_assistant.providers.snapcast.constants import (
+    DEFAULT_SNAPCAST_FORMAT,
     SNAPCLIENT_LIVENESS_POLL_INTERVAL,
     SNAPCLIENT_STALE_THRESHOLD,
 )
@@ -68,8 +69,11 @@ class SnapCastPlayer(Player):
         self.snap_client = snap_client
         super().__init__(provider, player_id)
 
-        # snapcast has fixed sample rate/bit depth
-        self._attr_supported_sample_rates = [(48000, 16)]
+        # Snapcast stream format is fixed for a provider instance (from advanced settings)
+        stream_format = getattr(provider, "stream_audio_format", DEFAULT_SNAPCAST_FORMAT)
+        self._attr_supported_sample_rates = [
+            (stream_format.sample_rate, stream_format.bit_depth)
+        ]
 
         self._snap_ma_stream: SnapcastMAStream | None = None
 

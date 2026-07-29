@@ -32,6 +32,14 @@
     },
     "snapcast_stream_idle_threshold": {
       "label": "Snapcast idle threshold stream parameter"
+    },
+    "snapcast_stream_sample_rate": {
+      "label": "Snapcast stream sample rate",
+      "description": "Maximum PCM sample rate for Music Assistant Snapcast TCP sources. Default is 48000. Higher rates require Snapcast clients that support them."
+    },
+    "snapcast_stream_bit_depth": {
+      "label": "Snapcast stream bit depth",
+      "description": "Maximum PCM bit depth for Music Assistant Snapcast TCP sources. Default is 16. 24-bit requires a Snapserver build with packed_s24le TCP ingest support (see snapcast/snapcast#1532)."
     }
   },
   "manifest": {
