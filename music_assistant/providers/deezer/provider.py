@@ -9,6 +9,7 @@ Thin facade that delegates to specialized manager classes:
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator, Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING
@@ -102,6 +103,7 @@ class DeezerProvider(RecommendationPayloadMixin, MusicProvider):
 
         try:
             self.gql_client = DeezerGQLClient(arl=arl_token, session=self.mass.http_session)
+            logging.getLogger("deezer_python_gql").setLevel(self.logger.level + 10)
             me = await self.gql_client.get_me()
             if not me:
                 msg = "Authentication returned no user data"
