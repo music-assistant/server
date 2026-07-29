@@ -51,6 +51,7 @@ from .constants import (
     DEFAULT_HTTP_PORT,
     TRANSPORT_STATE_PAUSED,
     TRANSPORT_STATE_PLAYING,
+    TRANSPORT_STATE_STOPPED,
     UDN_NAMESPACE,
 )
 from .renderer import UPnPRenderer
@@ -395,6 +396,7 @@ class DLNAReceiverProvider(PluginProvider):
         # rebuilds the stream metadata from the sender's DIDL.
         inst = self._instances.get(source_id)
         if inst:
+            inst.renderer.transport_state = TRANSPORT_STATE_STOPPED
             self._clear_instance_playback(inst)
 
     # ------------------------------------------------------------------
@@ -470,7 +472,7 @@ class DLNAReceiverProvider(PluginProvider):
         renderer.on_play = lambda previous_state: self._on_play(inst, previous_state)
         renderer.on_pause = lambda: self._on_pause(inst)
         renderer.on_stop = lambda: self._on_stop(inst)
-        renderer.on_seek = lambda unit, target: self._on_seek(inst, unit, target)
+        renderer.on_get_position = lambda: self._position_for(inst)
         renderer.on_set_volume = lambda vol: self._on_set_volume(inst, vol)
         renderer.on_set_mute = lambda m: self._on_set_mute(inst, m)
 
@@ -566,8 +568,8 @@ class DLNAReceiverProvider(PluginProvider):
             own_renderer_pids: set[str] = set()
             for pid in all_pids:
                 udn = self._deterministic_udn(pid)
-                upnp_pid = "up" + udn.replace("uuid:", "").replace("-", "")
-                own_renderer_pids.add(upnp_pid)
+                own_renderer_pids.add(udn)
+                own_renderer_pids.add(f"up{udn.replace(':', '').replace('-', '').lower()}")
 
             # Also filter already-created instances (belt-and-suspenders)
             own_renderer_pids.update(
@@ -826,19 +828,7 @@ class DLNAReceiverProvider(PluginProvider):
         """Handle Stop for this instance's player."""
         if inst.player_id:
             await self.mass.players.cmd_stop(inst.player_id)
-        inst.current_stream_url = None
         self._clear_instance_playback(inst)
-
-    async def _on_seek(self, inst: RendererInstance, unit: str, target: str) -> None:
-        """Handle Seek for this instance's player."""
-        if not inst.player_id:
-            return
-        position = self._parse_duration(target)
-        if position is not None:
-            LOGGER.info("Seeking player %s to %ds", inst.player_id, position)
-            await self.mass.players.cmd_seek(inst.player_id, position)
-        else:
-            LOGGER.warning("Could not parse seek target: %s", target)
 
     async def _on_set_volume(self, inst: RendererInstance, volume: int) -> None:
         """Handle volume change for this instance's player."""
@@ -868,6 +858,20 @@ class DLNAReceiverProvider(PluginProvider):
         inst.elapsed_offset = 0
         inst.stream_metadata = None
         inst.metadata_dirty = False
+
+    def _position_for(self, inst: RendererInstance) -> tuple[int, int]:
+        """Return the renderer's current elapsed time and duration in seconds."""
+        elapsed = inst.elapsed_offset
+        if inst.play_start_time is not None:
+            elapsed += int(time.time() - inst.play_start_time)
+
+        duration = inst.stream_metadata.duration if inst.stream_metadata else None
+        if duration is None:
+            duration = self._parse_duration((inst.current_metadata or {}).get("duration"))
+        duration = duration or 0
+        if duration:
+            elapsed = min(elapsed, duration)
+        return max(0, elapsed), duration
 
     @staticmethod
     def _should_push_metadata(inst: RendererInstance, now: float) -> bool:
@@ -909,13 +913,7 @@ class DLNAReceiverProvider(PluginProvider):
                     metadata = inst.stream_metadata
                     if metadata is None:
                         continue
-                    if inst.play_start_time:
-                        metadata.elapsed_time = inst.elapsed_offset + int(
-                            now - inst.play_start_time
-                        )
-                    else:
-                        # Paused — keep last_updated fresh to freeze UI display
-                        metadata.elapsed_time = inst.elapsed_offset
+                    metadata.elapsed_time, _duration = self._position_for(inst)
                     metadata.elapsed_time_last_updated = now
 
                     if inst.player_id and not self.mass.players.get_player(inst.player_id):

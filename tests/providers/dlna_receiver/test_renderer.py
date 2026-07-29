@@ -216,7 +216,7 @@ async def test_play_callback_receives_prior_transport_state(
 
 
 async def test_seek_action(client: TestClient[Request, Application]) -> None:
-    """Test that Seek action returns success (no-op)."""
+    """Unsupported Seek returns a standards-compliant SOAP fault."""
     resp = await client.post(
         "/AVTransport/control",
         headers={
@@ -224,11 +224,18 @@ async def test_seek_action(client: TestClient[Request, Application]) -> None:
         },
         data="<Unit>REL_TIME</Unit><Target>00:01:30</Target>",
     )
-    assert resp.status == 200
+    assert resp.status == 500
+    text = await resp.text()
+    assert "<errorCode>710</errorCode>" in text
+    assert "Seek mode not supported" in text
 
 
-async def test_get_position_info(client: TestClient[Request, Application]) -> None:
-    """GetPositionInfo returns a SOAP response containing RelTime."""
+async def test_get_position_info(
+    client: TestClient[Request, Application],
+    renderer: UPnPRenderer,
+) -> None:
+    """GetPositionInfo reports the provider's current duration and elapsed time."""
+    renderer.on_get_position = lambda: (65, 245)
     resp = await client.post(
         "/AVTransport/control",
         headers={
@@ -238,7 +245,9 @@ async def test_get_position_info(client: TestClient[Request, Application]) -> No
     )
     assert resp.status == 200
     text = await resp.text()
-    assert "RelTime" in text
+    assert "<TrackDuration>00:04:05</TrackDuration>" in text
+    assert "<RelTime>00:01:05</RelTime>" in text
+    assert "<AbsTime>00:01:05</AbsTime>" in text
 
 
 async def test_get_connection_info(client: TestClient[Request, Application]) -> None:

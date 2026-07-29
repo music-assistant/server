@@ -2,6 +2,7 @@
   "type": "plugin",
   "domain": "dlna_receiver",
   "name": "DLNA Receiver",
+  "icon": "cast-audio",
   "description": "Expose Music Assistant as a UPnP/DLNA MediaRenderer so external apps can cast audio to any MA player.",
   "codeowners": ["@trudenboy"],
   "credits": [

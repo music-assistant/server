@@ -39,6 +39,7 @@ SCPD_DIR = Path(__file__).parent / "scpd"
 
 SoapCallback = Callable[..., Awaitable[None]]
 PlayCallback = Callable[[str], Awaitable[None]]
+PositionCallback = Callable[[], tuple[int, int]]
 
 # Extra entity mapping for XML attribute values (default escape() handles only &, <, >).
 _ATTR_ENTITIES = {'"': "&quot;"}
@@ -49,6 +50,13 @@ _MAX_SOAP_BODY_CHARS = 64 * 1024
 # Strip a leading XML declaration so we can safely wrap the remaining body in a
 # synthetic root for ElementTree parsing.
 _XML_DECLARATION_RE = re.compile(r"^\s*<\?xml[^?]*\?>\s*", re.IGNORECASE)
+
+
+def _format_upnp_time(seconds: int) -> str:
+    """Format a non-negative duration as an UPnP ``HH:MM:SS`` value."""
+    hours, remainder = divmod(max(0, seconds), 3600)
+    minutes, secs = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}"
 
 
 class UPnPRenderer:
@@ -106,7 +114,7 @@ class UPnPRenderer:
         self.on_play: PlayCallback | None = None
         self.on_pause: SoapCallback | None = None
         self.on_stop: SoapCallback | None = None
-        self.on_seek: SoapCallback | None = None
+        self.on_get_position: PositionCallback | None = None
         self.on_set_volume: SoapCallback | None = None
         self.on_set_mute: SoapCallback | None = None
 
@@ -353,9 +361,7 @@ class UPnPRenderer:
             unit = self._extract_xml_value(body, "Unit") or ""
             target = self._extract_xml_value(body, "Target") or ""
             LOGGER.info("Seek requested: Unit=%s, Target=%s", unit, target)
-            if self.on_seek:
-                await self.on_seek(unit, target)
-            return self._soap_response(action_name, UPNP_SERVICE_AV_TRANSPORT)
+            return self._soap_error(710, "Seek mode not supported")
 
         if action_name == "GetTransportInfo":
             return self._soap_response(
@@ -369,16 +375,18 @@ class UPnPRenderer:
             )
 
         if action_name == "GetPositionInfo":
+            elapsed, duration = self.on_get_position() if self.on_get_position else (0, 0)
+            elapsed_value = _format_upnp_time(elapsed)
             return self._soap_response(
                 action_name,
                 UPNP_SERVICE_AV_TRANSPORT,
                 {
                     "Track": "1",
-                    "TrackDuration": "00:00:00",
+                    "TrackDuration": _format_upnp_time(duration),
                     "TrackMetaData": self.current_uri_metadata,
                     "TrackURI": self.current_uri,
-                    "RelTime": "00:00:00",
-                    "AbsTime": "00:00:00",
+                    "RelTime": elapsed_value,
+                    "AbsTime": elapsed_value,
                     "RelCount": "0",
                     "AbsCount": "0",
                 },

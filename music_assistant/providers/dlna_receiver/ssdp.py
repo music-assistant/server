@@ -171,6 +171,7 @@ class SSDPAdvertiser:
         response = (
             "HTTP/1.1 200 OK\r\n"
             f"CACHE-CONTROL: max-age={SSDP_MAX_AGE}\r\n"
+            "EXT:\r\n"
             f"LOCATION: {self.description_url}\r\n"
             f"ST: {st}\r\n"
             f"USN: {usn}\r\n"

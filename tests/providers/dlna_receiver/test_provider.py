@@ -1,22 +1,24 @@
 """
 Tests for the multi-player provider logic.
 
-Provider module imports music_assistant.models which is only available
-when running inside MA.  We test the pure utility functions directly
-and guard the full-provider import with pytest.importorskip.
+The standalone test bootstrap exposes the installed Music Assistant package,
+so provider tests exercise the real implementation used upstream.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import types
 import uuid
-from typing import TYPE_CHECKING, Any, cast
+from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, QueueOption, StreamType
 from music_assistant_models.streamdetails import StreamMetadata
 
+from music_assistant.providers.dlna_receiver import __file__ as provider_package_file
 from music_assistant.providers.dlna_receiver import get_config_entries
 from music_assistant.providers.dlna_receiver.constants import (
     CONF_BIND_IP,
@@ -25,49 +27,37 @@ from music_assistant.providers.dlna_receiver.constants import (
     TRANSPORT_STATE_PAUSED,
     TRANSPORT_STATE_PLAYING,
     TRANSPORT_STATE_STOPPED,
-    UDN_NAMESPACE,
 )
+from music_assistant.providers.dlna_receiver.provider import DLNAReceiverProvider, RendererInstance
 from music_assistant.providers.dlna_receiver.renderer import UPnPRenderer
-
-if TYPE_CHECKING:
-    from music_assistant.providers.dlna_receiver.provider import (
-        DLNAReceiverProvider,
-        RendererInstance,
-    )
-
-
-def _deterministic_udn(player_id: str) -> str:
-    """Replicate the UDN generation logic for standalone testing."""
-    namespace = uuid.uuid5(uuid.NAMESPACE_URL, UDN_NAMESPACE)
-    return f"uuid:{uuid.uuid5(namespace, player_id or '__default__')}"
 
 
 def test_deterministic_udn_same_input() -> None:
     """Same player_id always produces the same UDN."""
-    udn1 = _deterministic_udn("player_kitchen")
-    udn2 = _deterministic_udn("player_kitchen")
+    udn1 = DLNAReceiverProvider._deterministic_udn("player_kitchen")
+    udn2 = DLNAReceiverProvider._deterministic_udn("player_kitchen")
     assert udn1 == udn2
     assert udn1.startswith("uuid:")
 
 
 def test_deterministic_udn_different_inputs() -> None:
     """Different player_ids produce different UDNs."""
-    udn1 = _deterministic_udn("player_kitchen")
-    udn2 = _deterministic_udn("player_bedroom")
+    udn1 = DLNAReceiverProvider._deterministic_udn("player_kitchen")
+    udn2 = DLNAReceiverProvider._deterministic_udn("player_bedroom")
     assert udn1 != udn2
 
 
 def test_deterministic_udn_default() -> None:
     """Empty player_id produces a stable UDN for the default instance."""
-    udn1 = _deterministic_udn("")
-    udn2 = _deterministic_udn("")
+    udn1 = DLNAReceiverProvider._deterministic_udn("")
+    udn2 = DLNAReceiverProvider._deterministic_udn("")
     assert udn1 == udn2
-    assert udn1 != _deterministic_udn("some_player")
+    assert udn1 != DLNAReceiverProvider._deterministic_udn("some_player")
 
 
 def test_deterministic_udn_is_valid_uuid() -> None:
     """Generated UDN contains a valid UUID5."""
-    udn = _deterministic_udn("test_player")
+    udn = DLNAReceiverProvider._deterministic_udn("test_player")
     uuid_str = udn.replace("uuid:", "")
     parsed = uuid.UUID(uuid_str)
     assert parsed.version == 5
@@ -83,21 +73,21 @@ def test_multiple_renderers_different_ports() -> None:
 
 def test_renderer_with_explicit_udn() -> None:
     """Renderer uses provided UDN instead of generating one."""
-    udn = _deterministic_udn("test_player")
+    udn = DLNAReceiverProvider._deterministic_udn("test_player")
     r = UPnPRenderer("Test", "127.0.0.1", 9999, udn=udn)
     assert r.udn == udn
 
 
 # ---------------------------------------------------------------------
-# Provider-level tests (require full MA import; skip otherwise)
+# Provider-level tests
 # ---------------------------------------------------------------------
 
 
 @pytest.fixture
-def provider_cls():  # type: ignore[no-untyped-def]
-    """Return DLNAReceiverProvider class, skipping if MA isn't installed."""
-    provider_mod = pytest.importorskip("music_assistant.providers.dlna_receiver.provider")
-    return provider_mod.DLNAReceiverProvider
+def provider_cls() -> type[DLNAReceiverProvider]:
+    """Return the real provider class."""
+    provider_type: type[DLNAReceiverProvider] = DLNAReceiverProvider
+    return provider_type
 
 
 class _StubConfig:
@@ -151,6 +141,36 @@ def test_target_players_config_defaults_to_all() -> None:
     assert target_entry.default_value == "*"
 
 
+def test_get_all_players_filters_own_renderer_ids(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """Raw UDN and universal IDs for our renderers must not become targets."""
+    target_id = "player_kitchen"
+    renderer_udn = provider_cls._deterministic_udn(target_id)
+    universal_id = f"up{renderer_udn.replace(':', '').replace('-', '').lower()}"
+    players = [
+        types.SimpleNamespace(player_id=target_id, display_name="Kitchen", name="Kitchen"),
+        types.SimpleNamespace(player_id=renderer_udn, display_name="DLNA raw", name="DLNA raw"),
+        types.SimpleNamespace(
+            player_id=universal_id,
+            display_name="DLNA universal",
+            name="DLNA universal",
+        ),
+    ]
+
+    prov = _make_provider(provider_cls, {})
+    prov.mass = types.SimpleNamespace(
+        players=types.SimpleNamespace(all_players=lambda **_kwargs: players)
+    )
+    prov._instances = {}
+
+    assert prov._get_all_players() == [(target_id, "Kitchen")]
+
+
+def test_manifest_has_provider_icon() -> None:
+    """The provider manifest declares an icon for the UI."""
+    manifest = json.loads(Path(provider_package_file).with_name("manifest.json").read_text())
+    assert manifest["icon"] == "cast-audio"
+
+
 async def test_loaded_without_players_does_not_create_unbound_renderer(provider_cls) -> None:  # type: ignore[no-untyped-def]
     """The all-players default waits instead of advertising a dead renderer."""
 
@@ -182,7 +202,6 @@ async def test_loaded_without_players_does_not_create_unbound_renderer(provider_
 
 def _make_instance(player_id: str, player_name: str, url: str | None = None) -> RendererInstance:
     """Build a RendererInstance with stubbed renderer/ssdp for contract tests."""
-    from music_assistant.providers.dlna_receiver.provider import RendererInstance  # noqa: PLC0415
     from music_assistant.providers.dlna_receiver.ssdp import SSDPAdvertiser  # noqa: PLC0415
 
     friendly = f"Music Assistant — {player_name}" if player_name else "Music Assistant"
@@ -487,6 +506,7 @@ def test_on_stop_clears_only_that_instance(provider_cls) -> None:  # type: ignor
     asyncio.run(_scenario())
 
     assert inst_a.stream_metadata is None
+    assert inst_a.current_stream_url == "http://cp.local/a.flac"
     assert inst_b.stream_metadata is not None
 
 
@@ -514,6 +534,17 @@ def test_on_source_unselected_stops_elapsed_tracking(provider_cls) -> None:  # t
     asyncio.run(_scenario())
 
     assert inst.stream_metadata is None
+    assert inst.renderer.transport_state == TRANSPORT_STATE_STOPPED
+
+
+def test_position_for_reports_elapsed_and_duration(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """Renderer position comes from the instance's tracked playback state."""
+    inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/a.flac")
+    inst.elapsed_offset = 65
+    inst.current_metadata = {"duration": "00:04:05"}
+    prov = _make_contract_provider(provider_cls, {"player_kitchen": inst})
+
+    assert prov._position_for(inst) == (65, 245)
 
 
 def test_get_audio_stream_raises_without_url(provider_cls) -> None:  # type: ignore[no-untyped-def]

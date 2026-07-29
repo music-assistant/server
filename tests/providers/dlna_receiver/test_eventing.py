@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+
+import aiohttp
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestServer
 
 from music_assistant.providers.dlna_receiver.eventing import EventingManager
 
@@ -42,6 +47,29 @@ def test_subscribe_no_callback_raises(manager: EventingManager) -> None:
     """subscribe() rejects an empty CALLBACK header."""
     with pytest.raises(ValueError, match="No valid callback URLs"):
         manager.subscribe("")
+
+
+def test_subscribe_rejects_when_active_limit_is_reached(manager: EventingManager) -> None:
+    """New subscriptions are rejected once the per-service limit is reached."""
+    for idx in range(EventingManager.MAX_SUBSCRIPTIONS):
+        manager.subscribe(f"<http://host:8080/callback/{idx}>")
+
+    with pytest.raises(ValueError, match="limit"):
+        manager.subscribe("<http://host:8080/callback/overflow>")
+
+
+def test_subscribe_reclaims_expired_slot_at_limit(manager: EventingManager) -> None:
+    """Expired subscriptions are removed before enforcing the active limit."""
+    first_sid = ""
+    for idx in range(EventingManager.MAX_SUBSCRIPTIONS):
+        sid, _timeout = manager.subscribe(f"<http://host:8080/callback/{idx}>")
+        first_sid = first_sid or sid
+    manager._subscriptions[first_sid].created_at -= 1801
+
+    manager.subscribe("<http://host:8080/callback/replacement>")
+
+    assert first_sid not in manager._subscriptions
+    assert len(manager._subscriptions) == EventingManager.MAX_SUBSCRIPTIONS
 
 
 def test_unsubscribe(manager: EventingManager) -> None:
@@ -124,9 +152,10 @@ def test_parse_timeout_infinite() -> None:
 
 
 def test_parse_timeout_seconds() -> None:
-    """_parse_timeout extracts the integer from a 'Second-N' header."""
+    """_parse_timeout accepts bounded values and clamps excessive ones."""
     assert EventingManager._parse_timeout("Second-300") == 300
-    assert EventingManager._parse_timeout("Second-7200") == 7200
+    assert EventingManager._parse_timeout("Second-7200") == 1800
+    assert EventingManager._parse_timeout("Second-0") == 1
 
 
 def test_build_propertyset() -> None:
@@ -146,6 +175,43 @@ def test_build_propertyset_escapes_values() -> None:
 async def test_notify_no_subscribers(manager: EventingManager) -> None:
     """Notify with no subscribers should be a no-op."""
     await manager.notify({"TransportState": "PLAYING"})
+
+
+async def test_notify_serializes_delivery_per_subscription() -> None:
+    """Concurrent state changes never overlap NOTIFY delivery for one SID."""
+    active_requests = 0
+    max_active_requests = 0
+    sequences: list[str] = []
+
+    async def _receive_notify(request: web.Request) -> web.Response:
+        nonlocal active_requests, max_active_requests
+        active_requests += 1
+        max_active_requests = max(max_active_requests, active_requests)
+        sequences.append(request.headers["SEQ"])
+        await asyncio.sleep(0.02)
+        active_requests -= 1
+        return web.Response(status=200)
+
+    app = web.Application()
+    app.router.add_route("NOTIFY", "/callback", _receive_notify)
+    server = TestServer(app)
+    await server.start_server()
+    session = aiohttp.ClientSession()
+    manager = EventingManager(session=session)
+    try:
+        await manager.start()
+        manager.subscribe(f"<{server.make_url('/callback')}>")
+
+        await manager.notify({"TransportState": "STOPPED"})
+        await manager.notify({"TransportState": "PLAYING"})
+        await asyncio.gather(*list(manager._pending_tasks))
+
+        assert max_active_requests == 1
+        assert sequences == ["0", "1"]
+    finally:
+        await manager.stop()
+        await session.close()
+        await server.close()
 
 
 async def test_injected_session_is_not_closed_on_stop() -> None:

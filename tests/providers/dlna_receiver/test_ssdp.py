@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from music_assistant.providers.dlna_receiver.ssdp import (
     _MX_MAX_SECONDS,
     SSDPAdvertiser,
     _parse_mx_delay,
 )
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def test_ssdp_advertiser_init() -> None:
@@ -29,6 +34,29 @@ def test_handle_search_ignores_non_matching() -> None:
         bind_ip="192.168.1.100",
     )
     adv.handle_search(b"NOTIFY * HTTP/1.1\r\n", ("192.168.1.1", 1900))
+
+
+def test_search_response_includes_required_ext_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    """M-SEARCH responses include the required empty EXT header."""
+    adv = SSDPAdvertiser(
+        udn="uuid:test-1234",
+        description_url="http://192.168.1.100:8298/description.xml",
+        bind_ip="192.168.1.100",
+    )
+    responses: list[bytes] = []
+    monkeypatch.setattr(
+        adv,
+        "_send_response",
+        lambda response, _addr, _st: responses.append(response),
+    )
+
+    adv.handle_search(
+        b"M-SEARCH * HTTP/1.1\r\nST: upnp:rootdevice\r\n\r\n",
+        ("192.168.1.5", 1900),
+    )
+
+    assert len(responses) == 1
+    assert b"\r\nEXT:\r\n" in responses[0]
 
 
 def test_parse_mx_delay_missing_is_zero() -> None:

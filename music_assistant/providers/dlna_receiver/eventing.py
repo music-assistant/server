@@ -31,6 +31,7 @@ class Subscription:
     timeout: int
     created_at: float = field(default_factory=monotonic)
     seq: int = 0
+    notify_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     @property
     def is_expired(self) -> bool:
@@ -45,6 +46,8 @@ class EventingManager:
     Each UPnP service has its own EventingManager instance keyed by
     service name (e.g., "AVTransport", "RenderingControl").
     """
+
+    MAX_SUBSCRIPTIONS = 32
 
     def __init__(self, session: aiohttp.ClientSession | None = None) -> None:
         """
@@ -110,6 +113,10 @@ class EventingManager:
         callback_urls = self._parse_callback_header(callback_header)
         if not callback_urls:
             raise ValueError("No valid callback URLs in CALLBACK header")
+
+        self._remove_expired_subscriptions()
+        if len(self._subscriptions) >= self.MAX_SUBSCRIPTIONS:
+            raise ValueError("GENA subscription limit reached")
 
         timeout = self._parse_timeout(timeout_header)
         sid = f"uuid:{uuid.uuid4()}"
@@ -202,50 +209,51 @@ class EventingManager:
 
     async def _send_notify(self, sub: Subscription, xml_body: str) -> None:
         """Send a GENA NOTIFY to a single subscriber."""
-        session = self._session
-        if session is None or session.closed:
-            LOGGER.debug("NOTIFY skipped — session not started")
-            return
+        async with sub.notify_lock:
+            session = self._session
+            if session is None or session.closed:
+                LOGGER.debug("NOTIFY skipped — session not started")
+                return
 
-        headers = {
-            "Content-Type": 'text/xml; charset="utf-8"',
-            "NT": "upnp:event",
-            "NTS": "upnp:propchange",
-            "SID": sub.sid,
-            "SEQ": str(sub.seq),
-        }
-        sub.seq += 1
+            headers = {
+                "Content-Type": 'text/xml; charset="utf-8"',
+                "NT": "upnp:event",
+                "NTS": "upnp:propchange",
+                "SID": sub.sid,
+                "SEQ": str(sub.seq),
+            }
+            sub.seq += 1
 
-        # Per-request timeout so we don't depend on the injected session's
-        # default (mass.http_session has no 5s cap) and stay consistent with
-        # the timeout we used when owning our own session.
-        timeout = aiohttp.ClientTimeout(total=5)
+            # Per-request timeout so we don't depend on the injected session's
+            # default (mass.http_session has no 5s cap) and stay consistent with
+            # the timeout we used when owning our own session.
+            timeout = aiohttp.ClientTimeout(total=5)
 
-        # UDA §4.1.2: CALLBACK lists URLs in preference order. Use the first
-        # one that actually accepts the NOTIFY (2xx); on HTTP errors or network
-        # failures, fall through to the next URL.
-        for url in sub.callback_urls:
-            try:
-                async with session.request(
-                    "NOTIFY",
-                    url,
-                    headers=headers,
-                    data=xml_body,
-                    timeout=timeout,
-                ) as resp:
-                    if resp.status >= 300:
-                        LOGGER.warning(
-                            "NOTIFY to %s returned %s",
-                            url,
-                            resp.status,
-                        )
-                        continue
-                    LOGGER.debug("NOTIFY sent to %s (SEQ=%d)", url, sub.seq - 1)
-                    return
-            except Exception:
-                LOGGER.debug("NOTIFY to %s failed, trying next callback", url)
+            # UDA §4.1.2: CALLBACK lists URLs in preference order. Use the first
+            # one that actually accepts the NOTIFY (2xx); on HTTP errors or network
+            # failures, fall through to the next URL.
+            for url in sub.callback_urls:
+                try:
+                    async with session.request(
+                        "NOTIFY",
+                        url,
+                        headers=headers,
+                        data=xml_body,
+                        timeout=timeout,
+                    ) as resp:
+                        if resp.status >= 300:
+                            LOGGER.warning(
+                                "NOTIFY to %s returned %s",
+                                url,
+                                resp.status,
+                            )
+                            continue
+                        LOGGER.debug("NOTIFY sent to %s (SEQ=%d)", url, sub.seq - 1)
+                        return
+                except Exception:
+                    LOGGER.debug("NOTIFY to %s failed, trying next callback", url)
 
-        LOGGER.warning("All NOTIFY callbacks failed for SID %s", sub.sid)
+            LOGGER.warning("All NOTIFY callbacks failed for SID %s", sub.sid)
 
     @staticmethod
     def _build_propertyset(variables: dict[str, str]) -> str:
@@ -288,16 +296,21 @@ class EventingManager:
             return DEFAULT_SUBSCRIPTION_TIMEOUT
         if header.lower().startswith("second-"):
             try:
-                return int(header.split("-", 1)[1])
+                value = int(header.split("-", 1)[1])
+                return min(max(value, 1), DEFAULT_SUBSCRIPTION_TIMEOUT)
             except ValueError, IndexError:
                 pass
         return DEFAULT_SUBSCRIPTION_TIMEOUT
+
+    def _remove_expired_subscriptions(self) -> None:
+        """Remove subscriptions whose timeout has elapsed."""
+        expired = [sid for sid, sub in self._subscriptions.items() if sub.is_expired]
+        for sid in expired:
+            self._subscriptions.pop(sid, None)
+            LOGGER.debug("Cleaned up expired subscription: %s", sid)
 
     async def _cleanup_loop(self) -> None:
         """Periodically remove expired subscriptions."""
         while True:
             await asyncio.sleep(60)
-            expired = [sid for sid, sub in self._subscriptions.items() if sub.is_expired]
-            for sid in expired:
-                self._subscriptions.pop(sid, None)
-                LOGGER.debug("Cleaned up expired subscription: %s", sid)
+            self._remove_expired_subscriptions()
