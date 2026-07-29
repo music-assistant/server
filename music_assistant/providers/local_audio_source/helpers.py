@@ -13,18 +13,12 @@ async def get_available_input_devices(include_monitors: bool = False) -> list[Co
     """
     Scan for available PulseAudio/PipeWire capture sources via `pactl`.
 
-    Runs pactl through the default executor since it shells out; called
-    once per config-entries render, not on the audio hot path.
-
-    :param include_monitors: also list sink monitor sources (loopback
-        capture of what's currently playing on a sink). Off by default —
-        this picker is primarily for physical/external capture devices.
+    :param include_monitors: also list sink monitor sources. Off by default.
     """
     loop = asyncio.get_running_loop()
     try:
         sources = await loop.run_in_executor(None, enumerate_pa_sources)
     except FileNotFoundError, RuntimeError:
-        # pactl not installed, or the PulseAudio/PipeWire server isn't reachable
         sources = []
 
     options: list[ConfigValueOption] = []

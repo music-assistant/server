@@ -66,22 +66,12 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
 
-# directory holding the bundled preset icon svgs, keyed by ICON_PRESETS
 _IMAGES_DIR = Path(__file__).parent / "images"
-
-# capture chunk duration — matches the streams controller's own
-# AUDIO_SOURCE_CHUNK_SECONDS fast-path granularity for consistent latency
 _CHUNK_MS = 20
 
 
 def _pcm_rms_dbfs(chunk: bytes) -> float:
-    """
-    Compute the RMS level of a 16-bit little-endian PCM chunk, in dBFS.
-
-    0 dBFS = full scale (loudest possible sample); silence trends toward
-    -inf, clamped here at -120 dBFS to keep threshold comparisons well
-    defined for empty/near-empty chunks.
-    """
+    """Compute the RMS level of a 16-bit little-endian PCM chunk, in dBFS."""
     if not chunk:
         return -120.0
     samples = np.frombuffer(chunk, dtype=np.int16).astype(np.float64)
@@ -120,41 +110,18 @@ class LocalAudioSourceProvider(PluginProvider):
             self.config.get_value(CONF_TRIGGER_THRESHOLD_DBFS) or DEFAULT_TRIGGER_THRESHOLD_DBFS,
         )
 
-        # fixed audio params
         self._sample_rate: int = SAMPLE_RATE_HZ
         self._channels: int = CHANNELS
 
-        # runtime state
         self._capture_stream: PASimpleRecordStream | None = None
         self._capture_lock = asyncio.Lock()
         self._paused = False
         self._active_stream_id: str = ""
-        # tracks which queue currently owns the exclusive AudioSource. Set in
-        # on_source_selected (NOT in get_stream_details — that path also runs
-        # from queue preload, where claiming would block a later cross-queue
-        # handoff).
         self._in_use_by_queue: str | None = None
-        # _active_session_id is the controller-provided token for the current
-        # stream request — used to reject stale on_source_unselected callbacks
-        # after a same-queue reconnect supersedes the previous request.
         self._active_session_id: str | None = None
-        # set by _trigger_playback() when the signal sensor auto-started a
-        # queue on our own initiative; cleared on manual on_source_unselected
-        # or when the sensor auto-stops it again. Only ever stop a queue via
-        # the sensor if we're the ones who started it — a user-initiated
-        # session (via Live Inputs) is left alone.
         self._auto_triggered_queue: str | None = None
-        # timestamp (loop.time()) of the most recent _trigger_playback() call
-        # that's still waiting for on_source_selected() to confirm the queue
-        # actually started — see the pending-claim timeout in _sensor_loop.
         self._auto_trigger_pending_since: float = 0.0
         self._sensor_task: asyncio.Task[None] | None = None
-        # Dedicated executor for all blocking libpulse-simple calls (pa_simple_new/
-        # read/close), kept off MA's shared default executor so a slow/stuck
-        # PulseAudio/PipeWire call from this provider can't starve unrelated work
-        # elsewhere in the server. max_workers=4 (not 1): a stuck read must not be
-        # able to block a queued close on the same single worker thread — see the
-        # blocking-call caveat on PASimpleRecordStream itself.
         self._pa_executor = ThreadPoolExecutor(
             max_workers=4, thread_name_prefix=f"las-{self.instance_id}"
         )
@@ -189,7 +156,6 @@ class LocalAudioSourceProvider(PluginProvider):
             can_next_previous=False,
             exclusive=True,
             allow_external_trigger=self._auto_trigger,
-            # capture only starts once a player selects this source
             can_initiate=True,
         )
 
@@ -233,8 +199,6 @@ class LocalAudioSourceProvider(PluginProvider):
 
     async def resolve_image(self, path: str) -> str | bytes:
         """Resolve a bundled preset icon path to its on-disk SVG file."""
-        # only ever called with paths we generated ourselves in _build_image,
-        # but validate against the known preset filenames regardless
         if path in {f"{key}.svg" for key in ICON_PRESETS}:
             return str(_IMAGES_DIR / path)
         return path
@@ -261,9 +225,6 @@ class LocalAudioSourceProvider(PluginProvider):
                 await self._sensor_task
         async with self._capture_lock:
             await self._stop_capture_stream()
-        # wait=False: don't block provider unload on any still-running
-        # blocking libpulse call (see PASimpleRecordStream's no-cancellation
-        # caveat) — the stream(s) were already asked to close just above.
         self._pa_executor.shutdown(wait=False)
 
     async def get_audio_sources(self) -> list[AudioSource]:
@@ -271,15 +232,7 @@ class LocalAudioSourceProvider(PluginProvider):
         return [self._audio_source]
 
     async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
-        """
-        Return StreamDetails for streaming the captured PCM audio to a queue.
-
-        Side-effect-free: ownership is claimed in on_source_selected (which the
-        streams controller fires before this method on the actual stream
-        request). Keeping this idempotent means preload paths like
-        player_queues._load_item can fetch streamdetails without claiming the
-        source and blocking a subsequent cross-queue handoff.
-        """
+        """Return StreamDetails for streaming the captured PCM audio to a queue."""
         if source_id != AUDIO_SOURCE_ID:
             raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
         return StreamDetails(
@@ -302,10 +255,6 @@ class LocalAudioSourceProvider(PluginProvider):
         self._active_stream_id = _stream_id
         self._paused = False
         consumer_queue = self._in_use_by_queue
-        # Snapshot the active session id so a same-queue reconnect (which
-        # refreshes _active_session_id but not _in_use_by_queue) supersedes
-        # this stream: the loop exits and the finally release skips so it
-        # doesn't clobber the new session's claim.
         captured_session_id = self._active_session_id
 
         bytes_per_sec = self._sample_rate * self._channels * 2  # 16-bit PCM
@@ -369,26 +318,9 @@ class LocalAudioSourceProvider(PluginProvider):
         """Claim the source for this queue and let any prior stream wind down."""
         if source_id != AUDIO_SOURCE_ID:
             return
-        # Claim ownership for this queue. The lock lives here (not in
-        # get_stream_details) so preload paths can fetch streamdetails without
-        # accidentally blocking a subsequent cross-queue handoff at the actual
-        # stream request. There is no separate stop-previous-player step: this
-        # source only has a single passive PulseAudio/PipeWire capture, so the
-        # previous queue's get_audio_stream loop notices the queue change on
-        # its own and exits cleanly.
         self._in_use_by_queue = queue_id
-        # If a different queue than the one we auto-started is claiming the
-        # source (manual selection elsewhere, or exclusivity handing it to a
-        # new queue), our previous auto-trigger claim is stale — drop it so
-        # the sensor doesn't later try to stop a queue that isn't ours
-        # anymore. When _trigger_playback() itself is what led here, it
-        # already set _auto_triggered_queue to this exact queue_id before
-        # play_media() ran, so this check is a no-op in that case.
         if self._auto_triggered_queue and self._auto_triggered_queue != queue_id:
             self._auto_triggered_queue = None
-        # Record this request's session id so a later on_source_unselected can
-        # tell whether it is the live teardown or a stale callback from a
-        # superseded same-queue request.
         self._active_session_id = stream_session_id
 
     async def on_source_unselected(
@@ -397,11 +329,6 @@ class LocalAudioSourceProvider(PluginProvider):
         """Release the queue-scoped exclusive claim when MA tears down the stream."""
         if source_id != AUDIO_SOURCE_ID:
             return
-        # Reject stale callbacks: only release if this is still the active
-        # session. A queue_id check alone is not sufficient — same-queue
-        # reconnects (player drops + reopens the same stream URL before the
-        # original request's finally fires) would otherwise let the old
-        # request's late callback clear the live claim of the new stream.
         if self._active_session_id != stream_session_id:
             return
         self._active_session_id = None
@@ -440,21 +367,8 @@ class LocalAudioSourceProvider(PluginProvider):
         """
         Ensure the capture stream is open and read one chunk from it.
 
-        Returns None if the caller should just loop again (transient hiccup
-        while (re)opening the stream). Raises AudioError if the configured
-        source can't be opened at all, matching the fail-fast contract other
-        AudioSource plugins follow.
-
-        Once open, the actual read blocks at the source's own real-time
-        pace and is intentionally NOT wrapped in an asyncio timeout: unlike
-        AsyncProcess.read() over a pipe, pa_simple_read() is a synchronous
-        C call run via run_in_executor — an asyncio-side timeout can only
-        abandon the awaiting future, it can't interrupt the blocked C call,
-        so a timeout here would just leak an executor thread rather than
-        actually recovering. pa_simple_new() already fails fast in
-        _start_capture_stream() if the source name is invalid or
-        unreachable, which covers the case a read-level timeout was meant
-        to catch.
+        :return: None if the caller should just loop again.
+        :raises AudioError: if the configured source can't be opened at all.
         """
         async with self._capture_lock:
             if not self._capture_stream:
@@ -519,16 +433,7 @@ class LocalAudioSourceProvider(PluginProvider):
         return False
 
     async def _sensor_loop(self) -> None:
-        """
-        Watch the configured source's signal level and auto play/stop a target player.
-
-        Runs for the lifetime of the provider whenever auto-start-on-signal is
-        enabled. Uses its own PASimpleRecordStream, entirely separate from the
-        one get_audio_stream() opens for actual playback — PulseAudio/PipeWire
-        natively fan a source out to multiple simultaneous readers, so the
-        sensor and an active playback stream can both read the same source at
-        once without conflict.
-        """
+        """Watch the configured source's signal level and auto play/stop a target player."""
         loop = asyncio.get_running_loop()
         chunk_bytes = max(
             256, int(self._sample_rate * self._channels * 2 * (SENSOR_CHUNK_MS / 1000))
@@ -563,19 +468,13 @@ class LocalAudioSourceProvider(PluginProvider):
                     chunk = await loop.run_in_executor(self._pa_executor, stream.read, chunk_bytes)
                 except OSError as err:
                     self.logger.warning("Signal sensor read failed, reopening: %s", err)
-                    with suppress(Exception):
+                    with suppress(OSError):
                         await loop.run_in_executor(self._pa_executor, stream.close)
                     stream = None
                     await asyncio.sleep(1)
                     continue
 
                 now = loop.time()
-                # A pending auto-trigger that never got confirmed by
-                # on_source_selected() (target player unreachable, playback
-                # failed silently, etc) would otherwise wedge the sensor
-                # forever behind the "not self._auto_triggered_queue" guard
-                # below — clear it after a timeout so a retry becomes
-                # possible again.
                 if (
                     self._auto_triggered_queue
                     and not self._in_use_by_queue
@@ -592,15 +491,6 @@ class LocalAudioSourceProvider(PluginProvider):
                 if _pcm_rms_dbfs(chunk) > self._trigger_threshold_dbfs:
                     quiet_since = None
                     loud_since = loud_since or now
-                    # Also require no pending auto-trigger claim, not just no
-                    # active queue: _trigger_playback() sets
-                    # _auto_triggered_queue synchronously before play_media()
-                    # is even scheduled, but on_source_selected() (which sets
-                    # _in_use_by_queue) only fires once that stream actually
-                    # connects — moments later, asynchronously. Without this,
-                    # every sensor iteration in that window would see
-                    # "not _in_use_by_queue" as still true and fire another
-                    # play_media() for the same rising edge.
                     if (
                         not self._in_use_by_queue
                         and not self._auto_triggered_queue
@@ -614,25 +504,18 @@ class LocalAudioSourceProvider(PluginProvider):
                         self._auto_stop_playback()
         finally:
             if stream:
-                with suppress(Exception):
+                with suppress(OSError):
                     await loop.run_in_executor(self._pa_executor, stream.close)
 
     def _player_display_name(self, player_id: str) -> str:
         """Resolve a player_id to its display name for logging, falling back to the raw id."""
         if player := self.mass.players.get_player(player_id):
-            # str(...): player.display_name types as Any due to a
-            # @cached_property/@final interaction in core models/player.py;
-            # coerce explicitly rather than carrying that into our own typing.
             return str(player.display_name)
         return player_id
 
     def _get_target_player_id(self) -> str | None:
         """
         Determine the target player ID for auto-triggered playback.
-
-        - PLAYER_ID_AUTO: prefer a player that's currently playing something
-          else, else fall back to the first available player.
-        - A specific configured player_id: used as-is if it still exists.
 
         :return: The player ID to use, or None if no player is available.
         """
@@ -672,12 +555,7 @@ class LocalAudioSourceProvider(PluginProvider):
             self._friendly_name,
             self._player_display_name(target),
         )
-        # Set before play_media() runs so the on_source_selected callback it
-        # triggers (asynchronously, once the stream actually connects) sees
-        # this queue_id already recorded as ours — see the comment in
-        # on_source_selected. Also start the pending-claim clock here (used
-        # by the sensor loop's stale-claim timeout) since this is the moment
-        # the claim was made, not whenever the task happens to run.
+        # Set before play_media() so on_source_selected() sees the claim already made.
         self._auto_triggered_queue = target
         self._auto_trigger_pending_since = asyncio.get_running_loop().time()
         task = self.mass.create_task(
@@ -701,10 +579,6 @@ class LocalAudioSourceProvider(PluginProvider):
         self._auto_triggered_queue = None
         if not queue_id:
             return
-        # Only actually stop it if it's still playing THIS source: if the
-        # user has since picked something else on that queue, our claim was
-        # already stale (cleared above) and issuing stop() would yank away
-        # playback they started themselves.
         queue = self.mass.player_queues.get(queue_id)
         still_ours = bool(
             queue and queue.current_item and queue.current_item.uri == str(self._audio_source.uri)
@@ -763,5 +637,5 @@ class LocalAudioSourceProvider(PluginProvider):
         if self._capture_stream:
             stream, self._capture_stream = self._capture_stream, None
             loop = asyncio.get_running_loop()
-            with suppress(Exception):
+            with suppress(OSError):
                 await loop.run_in_executor(self._pa_executor, stream.close)
