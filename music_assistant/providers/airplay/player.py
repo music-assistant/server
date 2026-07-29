@@ -166,11 +166,12 @@ class AirPlayPlayer(Player):
     @property
     def needs_setup(self) -> bool:
         """Return if the player needs setup."""
+        # A stored password satisfies password protection on its own (the binary
+        # authenticates with it directly; stored credentials are only its
+        # fallback), so the password side is fully covered by the check above.
         if self.needs_password_setup:
             return True
-        if self._requires_pin_pairing() or (
-            self._requires_password_pairing() and self.protocol == StreamingProtocol.AIRPLAY2
-        ):
+        if self._requires_pin_pairing():
             # Credentials for either protocol keep the player usable: the binary
             # picks the best route for the credentials it has. Re-running the setup
             # flow from the player settings offers replacing a stored pairing.
@@ -820,14 +821,6 @@ class AirPlayPlayer(Player):
         """
         return bool(self._get_flags() & (LEGACY_PAIRING_BIT | PIN_REQUIRED))
 
-    def _requires_password_pairing(self) -> bool:
-        """
-        Check if this device requires password authentication.
-
-        Password can be used for pairing instead of interactive PIN entry.
-        """
-        return bool(self._get_flags() & PASSWORD_BIT)
-
     def _get_credentials_key(self, protocol: StreamingProtocol) -> str:
         """Get the config key for credentials for given protocol."""
         if protocol == StreamingProtocol.RAOP:
@@ -920,9 +913,7 @@ class AirPlayPlayer(Player):
         """
         pin_pairing = self._requires_pin_pairing()
         # a password only replaces PIN pairing on the native AirPlay 2 flow
-        password_pairing = (
-            self._requires_password_pairing() and self.protocol == StreamingProtocol.AIRPLAY2
-        )
+        password_pairing = self.password_required and self.protocol == StreamingProtocol.AIRPLAY2
         if not (pin_pairing or password_pairing):
             for cred_key in (CONF_AIRPLAY_CREDENTIALS, CONF_RAOP_CREDENTIALS):
                 if self.get_setup_value(cred_key) is not None:

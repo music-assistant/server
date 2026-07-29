@@ -151,6 +151,7 @@ def test_requires_pin_pairing(
         ({b"flags": b"0x4"}, None, False),
         ({b"sf": b"0x80"}, None, True),
         ({b"flags": b"0x90"}, None, True),
+        ({b"flags": b"0x1000"}, None, True),
         (None, {b"flags": "0x80"}, True),
         (None, {b"sf": b"0x81"}, True),
         (None, {b"flags": b"0x4"}, False),
@@ -159,22 +160,24 @@ def test_requires_pin_pairing(
         ({}, {}, False),
     ],
 )
-def test_requires_password_pairing(
+def test_password_required(
     airplay_player: AirPlayPlayer,
     aiplay_properties: dict[bytes, bytes] | None,
     raop_properties: dict[bytes, bytes] | None,
     expected: bool,
 ) -> None:
-    """Test the _requires_pairing method of AirPlayPlayer."""
+    """Test the flags-based password announcements (non-Apple-TV model)."""
     if aiplay_properties is not None:
         aiplay_discovery_info = MagicMock()
         aiplay_discovery_info.properties = aiplay_properties
+        aiplay_discovery_info.decoded_properties = {}
         airplay_player.airplay_discovery_info = aiplay_discovery_info
     if raop_properties is not None:
         raop_discovery_info = MagicMock()
         raop_discovery_info.properties = raop_properties
+        raop_discovery_info.decoded_properties = {}
         airplay_player.raop_discovery_info = raop_discovery_info
-    assert airplay_player._requires_password_pairing() == expected
+    assert airplay_player.password_required == expected
 
 
 def test_build_streaming_pairing_uses_discovered_ipv4_address() -> None:
