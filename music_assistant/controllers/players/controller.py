@@ -3773,15 +3773,16 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             ):
                 await target_player.play()
                 return
-            # No active protocol target: if the player natively supports pause and the active
-            # (external) source can be paused, unpause the player directly instead of
+            # No active protocol target: if the player rendering the audio supports pause and
+            # the active (external) source can be paused, unpause it directly instead of
             # restarting the source.
+            output_player = player.resolve_output_player()
             if (
                 active_source
                 and active_source.can_play_pause
-                and PlayerFeature.PAUSE in player.state.supported_features
+                and PlayerFeature.PAUSE in output_player.supported_features
             ):
-                await player.play()
+                await output_player.play()
                 return
 
         # player is not paused: try to resume the player
@@ -3838,15 +3839,16 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         ):
             await target_player.pause()
             return
-        # No active protocol target: if the player natively supports pause and the active
-        # (external) source can be paused, forward the command to the player itself instead
-        # of stopping it (mirrors the external-source handling in cmd_seek/cmd_next_track).
+        # No active protocol target: if the player rendering the audio supports pause and the
+        # active (external) source can be paused, forward the command to it instead of stopping
+        # it (mirrors the external-source handling in cmd_seek/cmd_next_track).
+        output_player = player.resolve_output_player()
         if (
             active_source
             and active_source.can_play_pause
-            and PlayerFeature.PAUSE in player.state.supported_features
+            and PlayerFeature.PAUSE in output_player.supported_features
         ):
-            await player.pause()
+            await output_player.pause()
             return
         # player/protocol does not support pause: fall back to stop
         self.logger.debug(

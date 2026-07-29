@@ -1316,6 +1316,26 @@ def test_announced_password_without_one_stored_needs_setup(
     assert airplay_player.setup_reason == "password_required"
 
 
+def test_apple_tv_password_bit_alone_does_not_need_setup(airplay_player: AirPlayPlayer) -> None:
+    """Apple TVs raise the generic password bit at all times; it means nothing there."""
+    # a paired Apple TV without a password set must not be sent back into setup
+    _set_password_discovery(airplay_player, flags="0x4c4", paired=True)
+    airplay_player.device_info.model = "AppleTV14,1"
+
+    assert airplay_player.password_required is False
+    assert airplay_player.needs_setup is False
+
+
+def test_apple_tv_with_a_password_set_needs_setup(airplay_player: AirPlayPlayer) -> None:
+    """The tvOS-specific flags bit is the Apple TV's only password announcement."""
+    _set_password_discovery(airplay_player, flags="0x14c4")
+    airplay_player.device_info.model = "AppleTV11,1"
+
+    assert airplay_player.password_required is True
+    assert airplay_player.needs_setup is True
+    assert airplay_player.setup_reason == "password_required"
+
+
 @pytest.mark.parametrize(
     ("flags", "pw", "paired"),
     [
