@@ -1240,12 +1240,19 @@ for more details.
                     ),
                 )
                 session_helper.last_sync_time = now
+                session_helper.failed_sync_count = 0
                 self.logger.debug("Synced playback session, position %s s.", position)
                 return True
             except AbsSessionSyncError:
-                self.logger.debug(
-                    "Was unable to sync session. Falling back to non-session approach."
-                )
+                session_helper.failed_sync_count += 1
+                if session_helper.failed_sync_count >= 5:
+                    self.logger.warning(
+                        "Unable to sync session %s after %s attempts - "
+                        "falling back to non-session approach.",
+                        session_helper.abs_session_id,
+                        session_helper.failed_sync_count,
+                    )
+                    self.sessions.pop(prov_item_id, None)
             return False
 
         if media_type == MediaType.PODCAST_EPISODE:
