@@ -40,7 +40,10 @@ from music_assistant.controllers.player_queues.constants import (
     ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
 )
 from music_assistant.controllers.player_queues.helpers import sort_tracks
-from music_assistant.helpers.collections import get_collection_item_media_type_from_item_id
+from music_assistant.helpers.collections import (
+    get_collection_item_id,
+    get_collection_item_media_type_from_item_id,
+)
 
 if TYPE_CHECKING:
     from music_assistant.controllers.player_queues.controller import PlayerQueuesController
@@ -420,6 +423,76 @@ class MediaResolver:
         # return the (remaining) episode(s) to play
         return UniqueList(all_episodes[episode_index:])
 
+    async def get_next_podcast_episode(
+        self, episode: PodcastEpisode, userid: str | None = None
+    ) -> PodcastEpisode | None:
+        """
+        Return the episode to play after the given one, or None if there is none left.
+
+        Episodes are walked in the same order a full podcast enqueue produces, skipping the
+        ones that were already fully played.
+
+        :param episode: The episode that is being continued.
+        :param userid: User whose resume position should be applied.
+        """
+        podcast = episode.podcast
+        all_episodes = [
+            x async for x in self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider)
+        ]
+        all_episodes.sort(key=lambda x: x.position)
+        current_index = next(
+            (idx for idx, x in enumerate(all_episodes) if x.uri == episode.uri), None
+        )
+        if current_index is None:
+            # the episode is no longer part of the feed, so we have nothing to continue from
+            return None
+        for candidate in all_episodes[current_index + 1 :]:
+            if candidate.fully_played:
+                continue
+            # ensure we have accurate resume info
+            fully_played, resume_position_ms = await self.mass.music.get_resume_position(
+                candidate, userid=userid
+            )
+            if fully_played:
+                continue
+            candidate.resume_position_ms = resume_position_ms
+            return candidate
+        return None
+
+    async def get_next_audiobook(
+        self, audiobook: Audiobook, userid: str | None = None
+    ) -> Audiobook | None:
+        """
+        Return the next book in the collection(s) the given book belongs to, if there is one.
+
+        Returns None for a standalone book and for a book whose collection has no not-fully-played
+        book left after it.
+
+        :param audiobook: The audiobook that is being continued.
+        :param userid: User whose resume position should be applied.
+        """
+        # collections are built from the library metadata, so a book that is not in the
+        # library has no series to continue with
+        library_item = (
+            audiobook
+            if audiobook.provider == "library"
+            else await self.mass.music.audiobooks.get_library_item_by_prov_id(
+                audiobook.item_id, audiobook.provider
+            )
+        )
+        if library_item is None:
+            return None
+        for collection in library_item.metadata.collections or []:
+            try:
+                media_collection = await self.mass.music.audiobooks.get_collection(
+                    get_collection_item_id(collection.title, MediaType.AUDIOBOOK)
+                )
+            except MediaNotFoundError:
+                continue
+            if next_book := await self._next_unplayed_book(media_collection, library_item, userid):
+                return next_book
+        return None
+
     async def _set_episode_resume_point(
         self, episode: PodcastEpisode, userid: str | None, start_from_beginning: bool
     ) -> None:
@@ -438,6 +511,29 @@ class MediaResolver:
         )
         episode.fully_played = fully_played
         episode.resume_position_ms = 0 if fully_played else resume_position_ms
+
+    async def _next_unplayed_book(
+        self,
+        collection: MediaCollection[Audiobook],
+        current: Audiobook,
+        userid: str | None,
+    ) -> Audiobook | None:
+        """Return the first not fully played book after `current` in the given collection."""
+        books = [x for x in collection.items if isinstance(x, Audiobook)]
+        current_index = next(
+            (idx for idx, x in enumerate(books) if x.item_id == current.item_id), None
+        )
+        if current_index is None:
+            return None
+        for candidate in books[current_index + 1 :]:
+            fully_played, resume_position_ms = await self.mass.music.get_resume_position(
+                candidate, userid=userid
+            )
+            if fully_played:
+                continue
+            candidate.resume_position_ms = resume_position_ms
+            return candidate
+        return None
 
     async def _resolve_library_artist(self, artist: Artist) -> Artist | None:
         """
