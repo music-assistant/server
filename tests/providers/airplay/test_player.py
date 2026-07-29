@@ -1,5 +1,6 @@
 """Unit tests for AirPlay player."""
 
+import asyncio
 import time
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
@@ -11,6 +12,7 @@ from music_assistant_models.enums import (
     ContentType,
     CrossfadeMode,
     MediaType,
+    PlaybackState,
     PlayerFeature,
     VolumeNormalizationMode,
 )
@@ -862,3 +864,346 @@ async def test_synced_child_pause_parks_session(airplay_player: AirPlayPlayer) -
     session.standby.assert_awaited_once()
     mock_stop.assert_not_called()
     send_cmd.assert_not_called()
+
+
+# --- Automatic group re-join after unexpected stream loss ---
+
+
+def _make_idle_player(player_id: str = "test_player") -> AirPlayPlayer:
+    """Create an idle, ungrouped AirPlayPlayer wired for the re-join tests."""
+    player = AirPlayPlayer(
+        provider=MagicMock(),
+        player_id=player_id,
+        display_name=f"Player {player_id}",
+        address="127.0.0.1",
+        manufacturer="Test Manufacturer",
+        model="Test Model",
+        raop_discovery_info=None,
+        airplay_discovery_info=None,
+    )
+    # the synced_to property scans all players of the provider
+    _players_mock(player).all_players.return_value = []
+    player._attr_group_members = []
+    player._attr_playback_state = PlaybackState.IDLE
+    player.stream = None
+    return player
+
+
+def _make_playing_leader(player_id: str = "leader") -> AirPlayPlayer:
+    """Create an AirPlayPlayer that looks like the playing leader of a live session."""
+    leader = _make_idle_player(player_id)
+    leader._attr_playback_state = PlaybackState.PLAYING
+    stream = MagicMock()
+    stream.running = True
+    stream.session = MagicMock()
+    leader.stream = stream
+    return leader
+
+
+def _players_mock(player: AirPlayPlayer) -> MagicMock:
+    """Return the mocked players controller of the given player."""
+    return cast("MagicMock", player.mass.players)
+
+
+def _attach_running_session(player: AirPlayPlayer, sync_clients: list[AirPlayPlayer]) -> None:
+    """Attach a mock running stream whose session carries the given members."""
+    stream = MagicMock()
+    stream.running = True
+    stream.session = MagicMock()
+    stream.session.sync_clients = sync_clients
+    player.stream = stream
+
+
+_NO_DELAYS = "music_assistant.providers.airplay.player.AIRPLAY_REJOIN_ATTEMPT_DELAYS"
+
+
+@pytest.mark.asyncio
+async def test_rejoin_succeeds_on_first_attempt() -> None:
+    """A re-join attempt joins the player back to the playing leader's session."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+
+    async def cmd_group(player_id: str, target_id: str) -> None:
+        assert player_id == player.player_id
+        assert target_id == leader.player_id
+        _attach_running_session(player, [leader, player])
+
+    players_mock.cmd_group = AsyncMock(side_effect=cmd_group)
+    players_mock.cmd_ungroup = AsyncMock()
+
+    with patch(_NO_DELAYS, (0, 0, 0)):
+        await player._group_rejoin_attempts(["leader"])
+
+    assert players_mock.cmd_group.await_count == 1
+    players_mock.cmd_ungroup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rejoin_retries_after_failure_then_succeeds() -> None:
+    """A failed attempt (device still unreachable) is retried with backoff."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    attempts: list[int] = []
+
+    async def cmd_group(_player_id: str, _target_id: str) -> None:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise PlayerCommandFailed("device unreachable")
+        _attach_running_session(player, [leader, player])
+
+    players_mock.cmd_group = AsyncMock(side_effect=cmd_group)
+
+    with patch(_NO_DELAYS, (0, 0, 0)):
+        await player._group_rejoin_attempts(["leader"])
+
+    assert len(attempts) == 2
+
+
+@pytest.mark.asyncio
+async def test_rejoin_gives_up_after_all_attempts() -> None:
+    """Without a playing group to re-join, the attempts run out and stop cleanly."""
+    player = _make_idle_player()
+    players_mock = _players_mock(player)
+    players_mock.get_player.return_value = None
+    players_mock.cmd_group = AsyncMock()
+
+    with patch(_NO_DELAYS, (0, 0, 0)):
+        await player._group_rejoin_attempts(["leader"])
+
+    players_mock.cmd_group.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rejoin_aborts_when_player_used_meanwhile() -> None:
+    """A player that was grouped or repurposed meanwhile is left alone."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.cmd_group = AsyncMock()
+    # the user started something else on the player during the backoff
+    stream = MagicMock()
+    stream.running = True
+    player.stream = stream
+
+    with patch(_NO_DELAYS, (0, 0, 0)):
+        await player._group_rejoin_attempts(["leader"])
+
+    players_mock.cmd_group.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rejoin_undoes_dangling_membership() -> None:
+    """A join that yields no running stream is rolled back before the next attempt."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    # cmd_group "succeeds" but the late-join failed internally: no stream appears
+    players_mock.cmd_group = AsyncMock()
+    players_mock.cmd_ungroup = AsyncMock()
+
+    with patch(_NO_DELAYS, (0, 0, 0)):
+        await player._group_rejoin_attempts(["leader"])
+
+    # every attempt rolled its dangling membership back
+    assert players_mock.cmd_group.await_count == 3
+    assert players_mock.cmd_ungroup.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_rejoin_cancelled_when_player_unavailable() -> None:
+    """An offline player abandons the re-join right away instead of attempting."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.cmd_group = AsyncMock()
+    player._attr_available = False
+
+    # the later long delays prove the loop returns on the first pass
+    with patch(_NO_DELAYS, (0, 60, 60)):
+        await asyncio.wait_for(player._group_rejoin_attempts(["leader"]), timeout=5)
+
+    players_mock.cmd_group.assert_not_awaited()
+    players_mock.get_player.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rejoin_aborts_when_synced_into_foreign_group() -> None:
+    """A player the user grouped elsewhere meanwhile is left alone."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    foreign_leader = MagicMock()
+    foreign_leader.player_id = "other"
+    foreign_leader.group_members = ["other", player.player_id]
+    # the player reports it is now synced to a leader outside the original group
+    _players_mock(player).all_players.return_value = [foreign_leader]
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.cmd_group = AsyncMock()
+
+    with patch(_NO_DELAYS, (0, 60, 60)):
+        await asyncio.wait_for(player._group_rejoin_attempts(["leader"]), timeout=5)
+
+    players_mock.cmd_group.assert_not_awaited()
+
+
+def test_resolve_rejoin_target_finds_promoted_sibling() -> None:
+    """When the old leader is gone, a promoted (now leading) sibling is the target."""
+    player = _make_idle_player()
+    sibling = _make_playing_leader("sibling")
+    sibling._attr_group_members = ["sibling", "other_member"]
+    _players_mock(player).get_player.side_effect = lambda player_id: {"sibling": sibling}.get(
+        player_id
+    )
+
+    assert player._resolve_rejoin_target(["old_leader", "sibling"]) is sibling
+
+
+def test_resolve_rejoin_target_skips_candidate_in_foreign_group() -> None:
+    """A candidate absorbed into another group is never followed there."""
+    player = _make_idle_player()
+    foreign_leader = _make_playing_leader("foreign")
+    foreign_leader._attr_group_members = ["foreign", "old_leader"]
+    old_leader = _make_playing_leader("old_leader")
+    # the old leader reports it is now synced to the foreign leader
+    _players_mock(old_leader).all_players.return_value = [foreign_leader]
+    _players_mock(player).get_player.side_effect = lambda player_id: {
+        "old_leader": old_leader,
+        "foreign": foreign_leader,
+    }.get(player_id)
+
+    assert player._resolve_rejoin_target(["old_leader"]) is None
+
+
+@pytest.mark.parametrize(
+    ("playback_state", "stream_running", "available", "expected"),
+    [
+        (PlaybackState.PLAYING, True, True, True),
+        # a parked (paused) session has no live timeline to late-join
+        (PlaybackState.PAUSED, True, True, False),
+        (PlaybackState.IDLE, False, True, False),
+        # target device itself dropped off the network
+        (PlaybackState.PLAYING, True, False, False),
+    ],
+)
+def test_resolve_rejoin_target_requires_playing_session(
+    playback_state: PlaybackState, stream_running: bool, available: bool, expected: bool
+) -> None:
+    """Only an available target with an actively playing session is accepted."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    leader._attr_playback_state = playback_state
+    cast("MagicMock", leader.stream).running = stream_running
+    leader._attr_available = available
+    _players_mock(player).get_player.side_effect = lambda player_id: {"leader": leader}.get(
+        player_id
+    )
+
+    target = player._resolve_rejoin_target(["leader"])
+    assert (target is leader) is expected
+
+
+@pytest.mark.asyncio
+async def test_rejoin_heals_session_when_membership_survived() -> None:
+    """A player still holding sync membership (static group) heals the session only."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    # the sync membership survived the stream loss: the player is still listed
+    # as a member of (and synced to) the leader
+    leader._attr_group_members = ["leader", player.player_id]
+    _players_mock(player).all_players.return_value = [leader]
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.cmd_group = AsyncMock()
+    players_mock.cmd_ungroup = AsyncMock()
+    session = cast("MagicMock", leader.stream).session
+
+    async def add_client(joiner: AirPlayPlayer) -> None:
+        assert joiner is player
+        _attach_running_session(player, [leader, player])
+
+    session.add_client = AsyncMock(side_effect=add_client)
+
+    with patch(_NO_DELAYS, (0,)):
+        await player._group_rejoin_attempts(["leader"])
+
+    session.add_client.assert_awaited_once()
+    players_mock.cmd_group.assert_not_awaited()
+    players_mock.cmd_ungroup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rejoin_session_heal_failure_keeps_membership() -> None:
+    """A failed session heal never touches the (configured) group membership."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    leader._attr_group_members = ["leader", player.player_id]
+    _players_mock(player).all_players.return_value = [leader]
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.cmd_group = AsyncMock()
+    players_mock.cmd_ungroup = AsyncMock()
+    session = cast("MagicMock", leader.stream).session
+    # the late-join fails internally: no stream appears on the player
+    session.add_client = AsyncMock()
+
+    with patch(_NO_DELAYS, (0,)):
+        await player._group_rejoin_attempts(["leader"])
+
+    session.add_client.assert_awaited_once()
+    players_mock.cmd_ungroup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_schedule_and_cancel_group_rejoin() -> None:
+    """Scheduling replaces a pending task and cancelling stops it."""
+    player = _make_idle_player()
+    _players_mock(player).get_player.return_value = None
+    cast("MagicMock", player.mass).create_task = lambda coro: (
+        asyncio.get_running_loop().create_task(coro)
+    )
+
+    with patch(_NO_DELAYS, (60, 60, 60)):
+        player.schedule_group_rejoin(["leader"])
+        first_task = player._rejoin_task
+        assert first_task is not None
+        # a second death replaces the pending schedule
+        player.schedule_group_rejoin(["leader"])
+        second_task = player._rejoin_task
+        assert second_task is not None
+        assert second_task is not first_task
+        await asyncio.sleep(0)
+        assert first_task.cancelled()
+        # any deliberate use of the player cancels the pending re-join
+        player.cancel_group_rejoin()
+        assert player._rejoin_task is None
+        await asyncio.sleep(0)
+        assert second_task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_pending_rejoin() -> None:
+    """An explicit stop command on the player drops the pending re-join."""
+    player = _make_idle_player()
+    _players_mock(player).get_player.return_value = None
+    cast("MagicMock", player.mass).create_task = lambda coro: (
+        asyncio.get_running_loop().create_task(coro)
+    )
+
+    with (
+        patch(_NO_DELAYS, (60,)),
+        patch.object(AirPlayPlayer, "update_state"),
+    ):
+        player.schedule_group_rejoin(["leader"])
+        rejoin_task = player._rejoin_task
+        assert rejoin_task is not None
+        await player.stop()
+        assert player._rejoin_task is None
+        await asyncio.sleep(0)
+        assert rejoin_task.cancelled()
