@@ -146,8 +146,9 @@ def _streaming_player(
     player_id: str = "test_player",
     raop: bool = False,
     setup_data: dict[str, Any] | None = None,
+    flags: str = "0x8",
 ) -> AirPlayPlayer:
-    """Create a base AirPlay player that requires PIN pairing (RAOP or AirPlay 2)."""
+    """Create a base AirPlay player; the default flags (0x8) require PIN pairing."""
     provider = MagicMock()
     provider.dacp_id = "0123456789ABCDEF"
     _stub_setup_data(provider, player_id, setup_data or {})
@@ -157,7 +158,7 @@ def _streaming_player(
     else:
         raop_info = None
         airplay_info = _service_info(
-            AIRPLAY_DISCOVERY_TYPE, {"features": AP2_FEATURES, "flags": "0x8"}
+            AIRPLAY_DISCOVERY_TYPE, {"features": AP2_FEATURES, "flags": flags}
         )
     return AirPlayPlayer(
         provider=provider,
@@ -301,16 +302,70 @@ async def test_streaming_pin_pairing_retries_on_wrong_pin() -> None:
     assert pin_form_errors[1].get("base")
 
 
-async def test_streaming_already_paired_finishes_without_pairing() -> None:
-    """Re-running the flow when streaming is already paired skips pairing and finishes."""
+async def test_streaming_repair_offer_declined_keeps_stored_pairing() -> None:
+    """Re-running the flow when already paired offers re-pairing; declining changes nothing."""
     finished_values: dict[str, Any] = {}
 
     async def finish(_session: SetupSession, values: dict[str, Any]) -> dict[str, str]:
         finished_values.update({"values": values})
         return {"player_id": "test_player"}
 
+    session, mass = _make_session(finish)
+    player = _streaming_player(setup_data={CONF_AIRPLAY_CREDENTIALS: FAKE_AP2_CREDS})
+
+    with patch(_PAIRING_TARGET) as pairing_cls:
+        task = asyncio.create_task(player.run_setup_flow(session))
+        await _pump(session, task, lambda _step: {CONF_PAIR_NOW: False})
+
+    pairing_cls.assert_not_called()
+    assert finished_values["values"] == {}
+    forms = [step for step in _published_steps(mass) if step.type == FlowStepType.FORM]
+    assert [step.step_id for step in forms] == ["streaming_repair_offer"]
+
+
+async def test_streaming_repair_offer_accepted_replaces_credentials() -> None:
+    """Accepting the re-pair offer runs a fresh pairing and stores the new credentials."""
+    new_creds = "cd" * 96
+    collected: dict[str, Any] = {}
+
+    async def finish(_session: SetupSession, values: dict[str, Any]) -> dict[str, str]:
+        collected.update(values)
+        return {"player_id": "test_player"}
+
     session, _mass = _make_session(finish)
     player = _streaming_player(setup_data={CONF_AIRPLAY_CREDENTIALS: FAKE_AP2_CREDS})
+    pairing = AsyncMock()
+    pairing.finish_pairing = AsyncMock(return_value=new_creds)
+    responses: dict[str, dict[str, Any]] = {
+        "streaming_repair_offer": {CONF_PAIR_NOW: True},
+        "pair_pin": {CONF_PAIRING_PIN: "1234"},
+    }
+
+    with patch(_PAIRING_TARGET, return_value=pairing):
+        task = asyncio.create_task(player.run_setup_flow(session))
+        await _pump(session, task, lambda step: responses[step.step_id])
+
+    assert collected == {CONF_AIRPLAY_CREDENTIALS: new_creds}
+    pairing.finish_pairing.assert_awaited_once_with(pin="1234")
+
+
+async def test_stale_credentials_cleared_when_pairing_not_required() -> None:
+    """
+    A device that (no longer) requires pairing gets its leftover credentials cleared.
+
+    Covers the HomePod trap: credentials stored while a password was set keep forcing
+    the pair-verify route after the password is removed again, which the device may
+    accept without actually outputting audio. Re-running the flow must reset this.
+    """
+    collected: dict[str, Any] = {}
+
+    async def finish(_session: SetupSession, values: dict[str, Any]) -> dict[str, str]:
+        collected.update(values)
+        return {"player_id": "test_player"}
+
+    session, mass = _make_session(finish)
+    # flags without the PIN/legacy/password bits: no pairing required
+    player = _streaming_player(setup_data={CONF_AIRPLAY_CREDENTIALS: FAKE_AP2_CREDS}, flags="0x4")
 
     with patch(_PAIRING_TARGET) as pairing_cls:
         task = asyncio.create_task(player.run_setup_flow(session))
@@ -318,7 +373,9 @@ async def test_streaming_already_paired_finishes_without_pairing() -> None:
         await task
 
     pairing_cls.assert_not_called()
-    assert finished_values["values"] == {}
+    assert collected == {CONF_AIRPLAY_CREDENTIALS: None}
+    # nothing to ask: the flow finishes without publishing any form
+    assert not [step for step in _published_steps(mass) if step.type == FlowStepType.FORM]
 
 
 async def test_abort_mid_pairing_closes_session() -> None:
@@ -414,18 +471,28 @@ async def test_two_code_sequence_streaming_then_companion() -> None:
     assert "pair_companion" in step_ids
 
 
-async def test_companion_offer_can_be_skipped() -> None:
-    """Declining the optional Companion offer collects nothing and never pairs."""
+async def test_all_pairings_reoffered_and_skippable_when_already_paired() -> None:
+    """
+    A fully paired device re-offers every pairing on a re-run; declining all is a no-op.
+
+    Previously stored credentials silently skipped their steps, leaving no way to
+    redo a stale pairing from the player settings.
+    """
     collected: dict[str, Any] = {}
 
     async def finish(_session: SetupSession, values: dict[str, Any]) -> dict[str, str]:
         collected.update(values)
         return {"player_id": "apctl"}
 
-    session, _mass = _make_session(finish, player_id="apctl")
-    # streaming already paired, so the flow goes straight to the optional offers
-    player = _control_player(setup_data={CONF_AIRPLAY_CREDENTIALS: FAKE_AP2_CREDS})
+    session, mass = _make_session(finish, player_id="apctl")
+    player = _control_player(
+        setup_data={
+            CONF_AIRPLAY_CREDENTIALS: FAKE_AP2_CREDS,
+            CONF_COMPANION_CREDENTIALS: "companion-creds",
+        }
+    )
     responses: dict[str, dict[str, Any]] = {
+        "streaming_repair_offer": {CONF_PAIR_NOW: False},
         "companion_offer": {CONF_PAIR_NOW: False},
         "mrp_offer": {CONF_PAIR_NOW: False},
     }
@@ -440,3 +507,5 @@ async def test_companion_offer_can_be_skipped() -> None:
     assert collected == {}
     pairing_cls.assert_not_called()
     pyatv_pair.assert_not_called()
+    step_ids = [step.step_id for step in _published_steps(mass) if step.type == FlowStepType.FORM]
+    assert step_ids == ["streaming_repair_offer", "companion_offer", "mrp_offer"]
