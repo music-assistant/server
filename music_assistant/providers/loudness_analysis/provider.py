@@ -133,7 +133,6 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
             input_format=audio_format,
             output_format=audio_format,
             audio_output="NULL",
-            # ebur128 measures no peak unless asked
             filter_params=["ebur128=framelog=verbose:peak=true"],
             collect_log_history=True,
             loglevel="info",
