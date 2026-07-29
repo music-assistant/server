@@ -1151,7 +1151,7 @@
     "action_unavailable": "This action is currently unavailable.",
     "authentication_required": "Authentication is required.",
     "authentication_failed": "Authentication failed. The credentials are invalid.",
-    "password_required": "This device requires a password. Set the device password in the player settings.",
+    "password_required": "This device requires a password. Run the setup for this player to enter it.",
     "insufficient_permissions": "You do not have permission to perform this action.",
     "invalid_token": "The access token is invalid or has expired.",
     "resource_busy": "This resource is currently in use elsewhere.",

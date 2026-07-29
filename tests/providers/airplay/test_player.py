@@ -28,6 +28,7 @@ from music_assistant.providers.airplay.constants import (
     CONF_FORCE_RAOP,
     CONF_IGNORE_VOLUME,
     CONF_PASSWORD,
+    CONF_PASSWORD_INVALID,
     CONF_RAOP_CREDENTIALS,
     CONF_STORED_VOLUME,
     StreamingProtocol,
@@ -42,11 +43,24 @@ ALAC_44100_24 = 1 << 19
 ALAC_48000_24 = 1 << 21
 
 
+def _stub_raw_config(provider: MagicMock, stored: dict[str, object] | None = None) -> None:
+    """Serve raw player config values from a dict instead of an (always truthy) mock."""
+    values = stored if stored is not None else {}
+    provider.mass.config.get_raw_player_config_value.side_effect = (
+        lambda _player_id, key, default=None: values.get(key, default)
+    )
+    provider.mass.config.set_raw_player_config_value.side_effect = lambda _player_id, key, value: (
+        values.__setitem__(key, value)
+    )
+
+
 @pytest.fixture
 def airplay_player() -> AirPlayPlayer:
     """Create a basic AirPlayPlayer with mock defaults."""
+    provider = MagicMock()
+    _stub_raw_config(provider)
     return AirPlayPlayer(
-        provider=MagicMock(),
+        provider=provider,
         player_id="test_player",
         display_name="Test Player",
         address="127.0.0.1",
@@ -1210,15 +1224,24 @@ async def test_stop_cancels_pending_rejoin() -> None:
         assert rejoin_task.cancelled()
 
 
-# --- Device password: entry visibility ---
+# --- Device password ---
 
 
-def _set_password_discovery(player: AirPlayPlayer, *, flags: str = "0x0", pw: str = "") -> None:
+def _set_password_discovery(
+    player: AirPlayPlayer,
+    *,
+    flags: str = "0x0",
+    pw: str = "",
+    password: str | None = None,
+    paired: bool = False,
+) -> None:
     """
     Attach an AirPlay 2 + RAOP device announcing password protection.
 
     :param flags: The _airplay service sf/flags bitmask (0x80 marks a password).
     :param pw: The legacy ``pw`` boolean published by the _raop service.
+    :param password: The device password stored in the player config, if any.
+    :param paired: Whether AirPlay 2 pairing credentials are stored for the device.
     """
     airplay_info = MagicMock()
     airplay_info.decoded_properties = {"features": AP2_FEATURES, "flags": flags}
@@ -1228,44 +1251,133 @@ def _set_password_discovery(player: AirPlayPlayer, *, flags: str = "0x0", pw: st
     raop_info.decoded_properties = {"pw": pw} if pw else {}
     raop_info.properties = {}
     player.raop_discovery_info = raop_info
-    _configure_player(player, {CONF_FORCE_RAOP: False})
+    _configure_player(player, {CONF_FORCE_RAOP: False, CONF_PASSWORD: password})
+    credentials = {CONF_AIRPLAY_CREDENTIALS: "a" * 192} if paired else {}
+    player.get_setup_value = (  # type: ignore[method-assign]
+        lambda key, default=None: credentials.get(key, default)
+    )
 
 
 @pytest.mark.asyncio
-async def test_password_entry_shown_for_password_protected_airplay2(
+async def test_password_entry_is_never_offered_in_the_settings(
     airplay_player: AirPlayPlayer,
 ) -> None:
-    """An AirPlay 2 device announcing password protection offers the password field."""
+    """The password is storage only: the setup flow is the sole way to enter it."""
     _set_password_discovery(airplay_player, flags="0x80")
-    assert airplay_player.protocol == StreamingProtocol.AIRPLAY2
     assert airplay_player.password_required is True
 
-    entries = await airplay_player.get_config_entries()
-    entry = next(entry for entry in entries if entry.key == CONF_PASSWORD)
-    assert entry.hidden is False
-
-
-@pytest.mark.asyncio
-async def test_password_entry_shown_for_legacy_pw_txt_record(
-    airplay_player: AirPlayPlayer,
-) -> None:
-    """The classic RAOP ``pw=true`` boolean also reveals the password field."""
-    _set_password_discovery(airplay_player, pw="true")
-
-    assert airplay_player.password_required is True
-    entries = await airplay_player.get_config_entries()
-    entry = next(entry for entry in entries if entry.key == CONF_PASSWORD)
-    assert entry.hidden is False
-
-
-@pytest.mark.asyncio
-async def test_password_entry_hidden_for_airplay2_without_password(
-    airplay_player: AirPlayPlayer,
-) -> None:
-    """An AirPlay 2 device that never asks for a password keeps the field hidden."""
-    _set_password_discovery(airplay_player)
-
-    assert airplay_player.password_required is False
     entries = await airplay_player.get_config_entries()
     entry = next(entry for entry in entries if entry.key == CONF_PASSWORD)
     assert entry.hidden is True
+
+
+@pytest.mark.parametrize(
+    ("flags", "pw"),
+    [
+        # AirPlay 2 announces password protection through the flags bit...
+        ("0x80", ""),
+        # ...a legacy RAOP receiver through the classic pw boolean
+        ("0x0", "true"),
+    ],
+)
+def test_announced_password_without_one_stored_needs_setup(
+    airplay_player: AirPlayPlayer, flags: str, pw: str
+) -> None:
+    """A device that asks for a password it never got must be set up first."""
+    _set_password_discovery(airplay_player, flags=flags, pw=pw)
+
+    assert airplay_player.password_required is True
+    assert airplay_player.needs_setup is True
+    assert airplay_player.setup_reason == "password_required"
+
+
+@pytest.mark.parametrize(
+    ("flags", "pw", "paired"),
+    [
+        # AirPlay 2 collects the password as part of pairing, so it ends up with both
+        ("0x80", "", True),
+        # a legacy RAOP receiver has no pairing at all: the password is enough
+        ("0x0", "true", False),
+    ],
+)
+def test_stored_password_clears_the_setup_requirement(
+    airplay_player: AirPlayPlayer, flags: str, pw: str, paired: bool
+) -> None:
+    """Once the password is stored the player is ready to use again."""
+    _set_password_discovery(airplay_player, flags=flags, pw=pw, password="hunter2", paired=paired)
+
+    assert airplay_player.needs_setup is False
+    assert airplay_player.setup_reason is None
+
+
+def test_rejected_password_marker_forces_setup(airplay_player: AirPlayPlayer) -> None:
+    """A password the device rejected sends an otherwise ready player back into setup."""
+    # the migration case: a paired device that gained password protection later
+    _set_password_discovery(airplay_player, flags="0x80", password="wrong", paired=True)
+    ready_before = airplay_player.needs_setup
+
+    airplay_player.set_password_invalid(True)
+
+    assert ready_before is False
+    assert airplay_player.password_invalid is True
+    assert airplay_player.needs_setup is True
+    assert airplay_player.setup_reason == "password_required"
+
+
+def test_rejected_password_marker_survives_a_restart(airplay_player: AirPlayPlayer) -> None:
+    """The marker is persisted as a raw player config value, not just in memory."""
+    _set_password_discovery(airplay_player, flags="0x80", password="wrong", paired=True)
+
+    airplay_player.set_password_invalid(True)
+
+    airplay_player.mass.config.set_raw_player_config_value.assert_called_once_with(  # type: ignore[attr-defined]
+        "test_player", CONF_PASSWORD_INVALID, True
+    )
+
+
+def test_clearing_the_marker_only_writes_when_it_was_set(airplay_player: AirPlayPlayer) -> None:
+    """Every successful connect clears the marker, but must not write the config."""
+    _set_password_discovery(airplay_player, flags="0x80", password="hunter2", paired=True)
+    set_raw = airplay_player.mass.config.set_raw_player_config_value
+
+    airplay_player.set_password_invalid(False)
+    set_raw.assert_not_called()  # type: ignore[attr-defined]
+
+    airplay_player.set_password_invalid(True)
+    assert airplay_player.needs_setup is True
+    airplay_player.set_password_invalid(False)
+
+    assert airplay_player.password_invalid is False
+    assert airplay_player.needs_setup is False
+
+
+def test_rejected_password_is_published_to_clients(airplay_player: AirPlayPlayer) -> None:
+    """The new setup requirement must reach the wire state, not just the property."""
+    _set_password_discovery(airplay_player, flags="0x80", password="wrong", paired=True)
+    airplay_player.update_state()
+    before = airplay_player.state
+    assert before.needs_setup is False
+    assert before.available is True
+
+    airplay_player.set_password_invalid(True)
+
+    # needs_setup/setup_reason are part of the player's own state inputs, so the
+    # update is neither short-circuited nor left to the next unrelated update
+    after = airplay_player.state
+    assert after.needs_setup is True
+    assert after.setup_reason == "password_required"
+    assert after.available is False
+    changed = airplay_player.mass.players.signal_player_state_update.call_args[0][1]  # type: ignore[attr-defined]
+    assert "needs_setup" in changed
+
+
+def test_pin_pairing_keeps_its_own_setup_reason(airplay_player: AirPlayPlayer) -> None:
+    """A device that only needs PIN pairing is not reported as a password problem."""
+    airplay_info = MagicMock()
+    airplay_info.decoded_properties = {"features": AP2_FEATURES}
+    airplay_info.properties = {b"flags": b"0x8"}
+    airplay_player.airplay_discovery_info = airplay_info
+    airplay_player.get_setup_value = lambda key, default=None: default  # type: ignore[method-assign]  # noqa: ARG005
+
+    assert airplay_player.needs_setup is True
+    assert airplay_player.setup_reason == "pairing_required"

@@ -141,6 +141,19 @@ def _stub_setup_data(provider: MagicMock, player_id: str, setup_data: dict[str, 
     provider.mass.config.get.side_effect = _config_get
     provider.mass.config.decrypt_string.side_effect = lambda value: value
     provider.mass.config.encrypt_string.side_effect = lambda value: value
+    # Raw player config values (device password, password-invalid marker) come from
+    # their own store; without this they would read back as (truthy) mocks. The
+    # player's config reads from the same store so a stored password is observed.
+    raw_values: dict[str, Any] = {}
+    provider.mass.config.get_raw_player_config_value.side_effect = (
+        lambda _player_id, key, default=None: raw_values.get(key, default)
+    )
+    provider.mass.config.set_raw_player_config_value.side_effect = lambda _player_id, key, value: (
+        raw_values.__setitem__(key, value)
+    )
+    config = MagicMock()
+    config.get_value.side_effect = lambda key, default=None: raw_values.get(key, default)
+    provider.mass.config.get_base_player_config.return_value = config
 
 
 def _streaming_player(
@@ -444,11 +457,13 @@ async def test_companion_offer_can_be_skipped() -> None:
     pyatv_pair.assert_not_called()
 
 
-def _password_player(*, player_id: str = "test_player") -> AirPlayPlayer:
+def _password_player(
+    *, player_id: str = "test_player", setup_data: dict[str, Any] | None = None
+) -> AirPlayPlayer:
     """Create an AirPlay 2 player that announces password protection (flags bit 0x80)."""
     provider = MagicMock()
     provider.dacp_id = "0123456789ABCDEF"
-    _stub_setup_data(provider, player_id, {})
+    _stub_setup_data(provider, player_id, setup_data or {})
     return AirPlayPlayer(
         provider=provider,
         player_id=player_id,
@@ -460,6 +475,23 @@ def _password_player(*, player_id: str = "test_player") -> AirPlayPlayer:
         airplay_discovery_info=_service_info(
             AIRPLAY_DISCOVERY_TYPE, {"features": AP2_FEATURES, "flags": "0x80"}
         ),
+    )
+
+
+def _raop_password_player(*, player_id: str = "test_player") -> AirPlayPlayer:
+    """Create a legacy RAOP receiver that publishes the classic ``pw=true`` boolean."""
+    provider = MagicMock()
+    provider.dacp_id = "0123456789ABCDEF"
+    _stub_setup_data(provider, player_id, {})
+    return AirPlayPlayer(
+        provider=provider,
+        player_id=player_id,
+        display_name="Test Speaker",
+        address="127.0.0.1",
+        manufacturer="Denon",
+        model="AVR",
+        raop_discovery_info=_service_info("_raop._tcp.local.", {"pw": "true"}, port=5000),
+        airplay_discovery_info=None,
     )
 
 
@@ -507,3 +539,77 @@ async def test_streaming_password_pairing_uses_a_password_form() -> None:
     assert [step.step_id for step in forms] == ["pair_password"]
     # the device shows no PIN in this flow, so no PIN pairing is started
     pairing.start_pin_pairing.assert_not_awaited()
+
+
+async def test_raop_password_device_is_asked_for_its_password_without_pairing() -> None:
+    """A legacy RAOP receiver has no pairing to do, but still needs its password."""
+    collected: dict[str, Any] = {}
+
+    async def finish(_session: SetupSession, values: dict[str, Any]) -> dict[str, str]:
+        collected.update(values)
+        return {"player_id": "test_player"}
+
+    session, mass = _make_session(finish)
+    player = _raop_password_player()
+    assert player.needs_setup is True
+    assert player.setup_reason == "password_required"
+
+    with patch(_PAIRING_TARGET) as pairing_cls:
+        task = asyncio.create_task(player.run_setup_flow(session))
+        await _pump(session, task, lambda _step: {CONF_PAIRING_PASSWORD: "hunter2"})
+
+    forms = [step for step in _published_steps(mass) if step.type == FlowStepType.FORM]
+    assert [step.step_id for step in forms] == ["pair_password"]
+    # no pairing session is ever built for a device that has nothing to pair
+    pairing_cls.assert_not_called()
+    assert collected == {}
+    player.mass.config.set_raw_player_config_value.assert_any_call(  # type: ignore[attr-defined]
+        "test_player", CONF_PASSWORD, "hunter2"
+    )
+    assert player.needs_setup is False
+
+
+async def test_paired_device_with_a_rejected_password_is_asked_for_it_again() -> None:
+    """
+    Stored credentials must not skip the password step.
+
+    This is the device that gained password protection after it was set up: it is
+    already paired, so there is nothing to pair, yet it cannot stream until the
+    (new) password is entered.
+    """
+
+    async def finish(_session: SetupSession, _values: dict[str, Any]) -> dict[str, str]:
+        return {"player_id": "test_player"}
+
+    session, mass = _make_session(finish)
+    player = _password_player(setup_data={CONF_AIRPLAY_CREDENTIALS: FAKE_AP2_CREDS})
+    player.set_password_invalid(True)
+    assert player.needs_setup is True
+
+    with patch(_PAIRING_TARGET) as pairing_cls:
+        task = asyncio.create_task(player.run_setup_flow(session))
+        await _pump(session, task, lambda _step: {CONF_PAIRING_PASSWORD: "hunter2"})
+
+    forms = [step for step in _published_steps(mass) if step.type == FlowStepType.FORM]
+    assert [step.step_id for step in forms] == ["pair_password"]
+    pairing_cls.assert_not_called()
+    # storing a fresh password clears the reject marker, so the player is ready again
+    assert player.password_invalid is False
+    assert player.needs_setup is False
+
+
+async def test_ready_player_is_not_asked_for_a_password() -> None:
+    """A paired device with a working password runs no form at all."""
+
+    async def finish(_session: SetupSession, _values: dict[str, Any]) -> dict[str, str]:
+        return {"player_id": "test_player"}
+
+    session, mass = _make_session(finish)
+    player = _password_player(setup_data={CONF_AIRPLAY_CREDENTIALS: FAKE_AP2_CREDS})
+    player._store_device_password("hunter2")
+
+    with patch(_PAIRING_TARGET) as pairing_cls:
+        await player.run_setup_flow(session)
+
+    assert [step for step in _published_steps(mass) if step.type == FlowStepType.FORM] == []
+    pairing_cls.assert_not_called()

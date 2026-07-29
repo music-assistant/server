@@ -1701,6 +1701,41 @@ async def test_dead_process_fails_the_connect_wait_immediately() -> None:
     assert asyncio.get_running_loop().time() - started < 1
 
 
+@pytest.mark.asyncio
+async def test_auth_failed_marks_the_stored_password_invalid() -> None:
+    """A rejected password is persisted so the player keeps offering its setup action."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    stream._handle_status_line('[STATUS] error code=auth_failed http=401 detail="bad password"')
+
+    player.set_password_invalid.assert_called_once_with(True)
+
+
+@pytest.mark.asyncio
+async def test_other_connect_failures_leave_the_password_marker_alone() -> None:
+    """Only an authentication failure says anything about the stored password."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    stream._handle_status_line('[STATUS] error code=auth_required http=401 detail="no password"')
+    stream._handle_status_line('[STATUS] error code=connect_failed http=0 detail="no route"')
+
+    player.set_password_invalid.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_successful_connect_clears_the_password_marker() -> None:
+    """Whatever the device accepted is a working password."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    stream._handle_status_line("[STATUS] connected")
+
+    assert stream.connected is True
+    player.set_password_invalid.assert_called_once_with(False)
+
+
 # --- Password preflight ---
 
 

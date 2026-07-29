@@ -869,6 +869,8 @@ class AirPlayStream:
         player = self.player
         if "[STATUS] connected" in line:
             self._connected.set()
+            # whatever the device accepted just now is a working password
+            player.set_password_invalid(False)
         elif "[STATUS] playing elapsed_ms=" in line:
             try:
                 millis = int(line.split("elapsed_ms=")[1])
@@ -1047,7 +1049,10 @@ class AirPlayStream:
 
         A password-protected receiver answers the RTSP setup with a 401 unless the
         binary can present the device password or stored pairing credentials, so
-        without either there is no point in spawning the process at all.
+        without either there is no point in spawning the process at all. A player
+        in this state is already blocked from playback by ``needs_setup``, leaving
+        this as the backstop for a device that only announced its password
+        protection after the player was resolved as a playback target.
 
         :raises PlayerCommandFailed: If the device password is missing.
         """
@@ -1096,18 +1101,19 @@ class AirPlayStream:
             return self._password_required_error()
         if error and error.code == CONNECT_ERROR_AUTH_FAILED:
             return PlayerCommandFailed(
-                f"Authentication failed - {self.player.display_name} rejected "
-                "the configured password.",
+                f"{self.player.display_name} rejected the saved password. "
+                "Run the setup for this player to enter it again.",
                 translation_key="authentication_failed",
+                translation_owner=self.player.translation_owner,
             )
         reason = f": {error.detail}" if error and error.detail else ""
         return TimeoutError(f"cliairplay did not connect to {self.player.display_name}{reason}")
 
     def _password_required_error(self) -> PlayerCommandFailed:
-        """Return the error that points the user at the device password setting."""
+        """Return the error that points the user at the player's setup flow."""
         return PlayerCommandFailed(
             f"{self.player.display_name} requires a password. "
-            "Enter the device password in the player settings.",
+            "Run the setup for this player to enter it.",
             translation_key="password_required",
         )
 
@@ -1129,3 +1135,8 @@ class AirPlayStream:
             self._connect_error.http_status,
             self._connect_error.detail,
         )
+        if self._connect_error.code == CONNECT_ERROR_AUTH_FAILED:
+            # The stored password is wrong: persist that so the player keeps
+            # offering its setup action (across restarts) until a working one
+            # is entered, instead of only failing at the next play attempt.
+            self.player.set_password_invalid(True)
