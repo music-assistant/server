@@ -15,19 +15,20 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Final
 from urllib.parse import urlparse
 
 import aiohttp
 from aiolibdatachannel import (
     ConnectionClosedError,
     IceServer,
+    LogLevel,
     PeerConnection,
     RTCConfiguration,
     RTCError,
     RTCState,
     StateChangeEvent,
-    install_python_logger,
+    init_logger,
 )
 
 from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
@@ -43,6 +44,16 @@ HTTP_PROXY_CONCURRENCY = 6
 
 # Chunk ma-api messages larger than this; libdatachannel caps data-channel messages at 256 KiB.
 MA_API_CHUNK_SIZE = 64 * 1024
+
+# Failing candidates, paths and permissions is how ICE converges, so native warnings drop to INFO.
+_RTC_LOG_LEVELS: Final[dict[int, int]] = {
+    int(LogLevel.FATAL): logging.CRITICAL,
+    int(LogLevel.ERROR): logging.ERROR,
+    int(LogLevel.WARNING): logging.INFO,
+    int(LogLevel.INFO): logging.DEBUG,
+    int(LogLevel.DEBUG): VERBOSE_LOG_LEVEL,
+    int(LogLevel.VERBOSE): VERBOSE_LOG_LEVEL,
+}
 
 
 @dataclass
@@ -153,7 +164,7 @@ class WebRTCGateway:
         if self._running:
             self.logger.warning("WebRTC Gateway already running, skipping start")
             return
-        install_python_logger(self.logger)
+        _install_native_logger(self.logger)
         self.logger.info("Starting WebRTC Gateway")
         self.logger.debug("Signaling URL: %s", self.signaling_url)
         self.logger.debug("Local WS URL: %s", self.local_ws_url)
@@ -822,6 +833,32 @@ class WebRTCGateway:
                     self._set_sendspin_player_callback(session.session_id, client_id)
         except json.JSONDecodeError, TypeError:
             pass  # Not valid JSON, ignore
+
+
+def _install_native_logger(logger: logging.Logger) -> None:
+    """
+    Route libdatachannel's own logging onto the given logger.
+
+    :param logger: Logger to emit native lines on, using :data:`_RTC_LOG_LEVELS` for severity.
+    """
+
+    def forward(rtc_level: int, message: str) -> None:
+        # libdatachannel terminates its lines, so strip it and let the formatter own linebreaks
+        logger.log(_RTC_LOG_LEVELS.get(rtc_level, logging.DEBUG), "%s", message.rstrip())
+
+    init_logger(_rtc_log_level_for(logger), forward)
+
+
+def _rtc_log_level_for(logger: logging.Logger) -> LogLevel:
+    """
+    Return the most detailed rtcLogLevel whose mapped records the logger would still emit.
+
+    :param logger: Logger the native lines are forwarded to.
+    """
+    for rtc_level, py_level in sorted(_RTC_LOG_LEVELS.items(), reverse=True):
+        if logger.isEnabledFor(py_level):
+            return LogLevel(rtc_level)
+    return LogLevel.NONE
 
 
 def _is_usable_ice_url(url: str) -> bool:

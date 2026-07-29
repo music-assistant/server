@@ -234,14 +234,15 @@ async def test_webrtc_gateway_local_ice_servers_skip_non_udp_turn(
 ) -> None:
     """Test the local peer connection only gets ICE servers libjuice can use."""
     cert_pem, key_pem = cert_pems
+    cred = {"username": "u", "credential": "p"}
     # shape of what HA Cloud hands us: one UDP TURN url plus TCP/TLS variants
     ha_cloud_ice_servers = [
         {"urls": "stun:stun.cloudflare.com:3478"},
-        {"urls": "turn:turn.cloudflare.com:3478?transport=udp", "username": "u", "credential": "p"},
-        {"urls": "turn:turn.cloudflare.com:53", "username": "u", "credential": "p"},
-        {"urls": "turn:turn.cloudflare.com:3478?transport=tcp", "username": "u", "credential": "p"},
-        {"urls": "turns:turn.cloudflare.com:5349?transport=tcp", "username": "u", "credential": "p"},
-        {"urls": "turns:turn.cloudflare.com:443?transport=tcp", "username": "u", "credential": "p"},
+        {"urls": "turn:turn.cloudflare.com:3478?transport=udp", **cred},
+        {"urls": "turn:turn.cloudflare.com:53", **cred},
+        {"urls": "turn:turn.cloudflare.com:3478?transport=tcp", **cred},
+        {"urls": "turns:turn.cloudflare.com:5349?transport=tcp", **cred},
+        {"urls": "turns:turn.cloudflare.com:443?transport=tcp", **cred},
     ]
 
     gateway = WebRTCGateway(
@@ -257,8 +258,7 @@ async def test_webrtc_gateway_local_ice_servers_skip_non_udp_turn(
         "turn:turn.cloudflare.com:3478?transport=udp",
         "turn:turn.cloudflare.com:53",
     ]
-    # the unfiltered list stays what we advertise to remote clients, whose browsers do support
-    # TCP/TLS TURN
+    # remote clients still get the unfiltered list, since browsers do support TCP/TLS TURN
     assert gateway.ice_servers == ha_cloud_ice_servers
 
 
