@@ -180,7 +180,7 @@ audio stream:
 |------|-------------|-------------|
 | Queue tracks | Yes (SEEKABLE) | Regular track playback with full buffering |
 | Radio streams | Yes (ROLLING) | Short rolling buffer, non-seekable |
-| Announcements | No | Short one-off audio (TTS), streamed directly |
+| Announcements | Yes (SEEKABLE) | Short one-off audio (TTS), rendered once and shared by all consumers |
 | Plugin sources | No | Real-time audio (microphone, aux), streamed directly |
 
 ## Configuration

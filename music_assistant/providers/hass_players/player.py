@@ -311,7 +311,7 @@ class HomeAssistantPlayer(Player):
                 self.display_name,
             )
         hass_prov = cast("HomeAssistantPlayerProvider", self.provider).hass_prov
-        await hass_prov.play_announcement_on_entity(self.player_id, announcement.uri)
+        await hass_prov.play_announcement_on_entity(self.player_id, announcement)
         self.logger.debug(
             "Playing announcement on %s completed",
             self.display_name,
