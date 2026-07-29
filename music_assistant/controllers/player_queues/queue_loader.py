@@ -61,7 +61,6 @@ from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items.metadata import MediaItemImage
-    from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.providers.radio_playlist import RadioPlaylistProvider
@@ -487,52 +486,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             queue_items,
             insert_at_index=len(self._queue_data[queue_id].items) + 1,
         )
-
-    async def _try_resume_from_playlog(self, queue: PlayerQueue) -> bool:
-        """
-        Try to resume playback from playlog when queue is empty.
-
-        Attempts to find user-initiated recently played items in the following order:
-        1. By userid AND queue_id
-        2. By queue_id only
-        3. By userid only (if available)
-        4. Any recently played item
-
-        :param queue: The queue to resume playback on.
-        :return: True if playback was started, False otherwise.
-        """
-        # Try different filter combinations in order of specificity
-        queue_data = self._queue_data[queue.queue_id]
-        filter_attempts: list[tuple[str | None, str | None, str]] = []
-        if queue_data.userid:
-            filter_attempts.append((queue_data.userid, queue.queue_id, "userid + queue_id match"))
-        filter_attempts.append((None, queue.queue_id, "queue_id match"))
-        if queue_data.userid:
-            filter_attempts.append((queue_data.userid, None, "userid match"))
-        filter_attempts.append((None, None, "any recent item"))
-
-        for userid, queue_id, match_type in filter_attempts:
-            items = await self.mass.music.recently_played(
-                limit=5,
-                fully_played_only=False,
-                user_initiated_only=True,
-                userid=userid,
-                queue_id=queue_id,
-            )
-            for item in items:
-                if not item.uri:
-                    continue
-                try:
-                    await self._handle_play_media(queue.queue_id, item)
-                    self.logger.info(
-                        "Resumed queue %s from playlog (%s)", queue.display_name, match_type
-                    )
-                    return True
-                except MusicAssistantError as err:
-                    self.logger.debug("Failed to resume with item %s: %s", item.name, err)
-                    continue
-
-        return False
 
     @handle_play_action
     async def _handle_play_media(

@@ -16,7 +16,7 @@ import time
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from music_assistant_models.constants import (
@@ -1331,6 +1331,11 @@ class TestPlayAnnouncementCleanup:
 
         mock_mass.streams.announcements = announcements
         mock_mass.streams.get_announcement_url = MagicMock(side_effect=_get_announcement_url)
+        render = MagicMock()
+        render.wait_ready = AsyncMock(return_value=True)
+        render.wait_finished = AsyncMock(return_value=3.0)
+        mock_mass.streams.announcement_renderer.acquire = MagicMock(return_value=render)
+        mock_mass.streams.announcement_renderer.release = AsyncMock()
         player.update_state(signal_event=False)
         return controller, player
 
@@ -1349,6 +1354,7 @@ class TestPlayAnnouncementCleanup:
 
         player.play_announcement.assert_awaited_once()
         assert announcements == {}
+        mock_mass.streams.announcement_renderer.release.assert_awaited_once()
 
     async def test_announcement_data_removed_on_error(self, mock_mass: MagicMock) -> None:
         """The registered announcement data is released even when playback fails."""
@@ -1360,10 +1366,26 @@ class TestPlayAnnouncementCleanup:
             await controller.play_announcement("player_1", "http://test/announcement.mp3")
 
         assert announcements == {}
+        mock_mass.streams.announcement_renderer.release.assert_awaited_once()
+
+    async def test_native_announcement_starts_on_first_audio(self, mock_mass: MagicMock) -> None:
+        """A native implementation is handed the url as soon as there is audio to serve."""
+        announcements: dict[str, object] = {}
+        controller, player = self._make_player(mock_mass, announcements)
+        render = mock_mass.streams.announcement_renderer.acquire.return_value
+        player.play_announcement = AsyncMock()  # type: ignore[method-assign]
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        player.play_announcement.assert_awaited_once()
+        # waiting for the whole clip here would delay the player for a slow source;
+        # the length is resolved downstream while it plays
+        render.wait_ready.assert_awaited_once()
+        render.wait_finished.assert_not_awaited()
 
 
 class TestPlayAnnouncementRestore:
-    """Test the playback restore of the default (fallback) announcement implementation."""
+    """Test the state restore of the default (fallback) announcement implementation."""
 
     def _make_player(
         self, mock_mass: MagicMock, prev_media: PlayerMedia
@@ -1377,14 +1399,46 @@ class TestPlayAnnouncementRestore:
         player._cache.clear()
         controller._players = {"player_1": player}
         mock_mass.players = controller
+        # the (temporary and restored) volume commands are dispatched through the
+        # TaskManager, so background tasks must actually run in these tests
+        mock_mass.create_task = MagicMock(
+            side_effect=lambda coro, **_kwargs: asyncio.ensure_future(coro)
+        )
         resume_mock = AsyncMock()
         controller._handle_cmd_resume = resume_mock  # type: ignore[method-assign]
         controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
         controller._handle_play_media = AsyncMock()  # type: ignore[method-assign]
         controller._wait_for_playback_state = AsyncMock()  # type: ignore[method-assign]
         controller.get_announcement_volume = MagicMock(return_value=None)  # type: ignore[method-assign]
+        player.set_initialized()
         player.update_state(signal_event=False)
         return controller, player, resume_mock
+
+    @staticmethod
+    def _add_group(
+        controller: PlayerController, player: MockPlayer, *, supports_set_members: bool
+    ) -> MockPlayer:
+        """Register a powered group player that holds the given player as its member."""
+        group = MockPlayer(
+            cast("MockProvider", player.provider),
+            "group_1",
+            "Group 1",
+            player_type=PlayerType.GROUP,
+        )
+        group._attr_powered = True
+        group._attr_group_members = [player.player_id]
+        if supports_set_members:
+            group._attr_supported_features.add(PlayerFeature.SET_MEMBERS)
+        controller._players[group.player_id] = group
+        group.set_initialized()
+        group._cache.clear()
+        group.update_state(signal_event=False)
+        # the member has no own input change to trigger a recalculation of its
+        # (group derived) state, so force it here - just like register() does
+        player._cache.clear()
+        player.update_state(force_update=True, signal_event=False)
+        assert player.state.active_group == group.player_id
+        return group
 
     @staticmethod
     def _announcement() -> PlayerMedia:
@@ -1416,6 +1470,139 @@ class TestPlayAnnouncementRestore:
         await controller._play_announcement(player, self._announcement())
 
         resume_mock.assert_not_awaited()
+
+    async def test_volume_is_restored_when_playback_fails(self, mock_mass: MagicMock) -> None:
+        """A failing announcement never leaves the player at the raised volume."""
+        controller, player, _ = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+        player._attr_volume_level = 20
+        player._cache.clear()
+        player.update_state(force_update=True, signal_event=False)
+        controller.get_announcement_volume = MagicMock(return_value=80)  # type: ignore[method-assign]
+        volume_mock = AsyncMock()
+        controller._handle_cmd_volume_set = volume_mock  # type: ignore[method-assign]
+        controller._handle_play_media = AsyncMock(  # type: ignore[method-assign]
+            side_effect=PlayerCommandFailed("player went away")
+        )
+
+        with pytest.raises(PlayerCommandFailed):
+            await controller._play_announcement(player, self._announcement())
+
+        assert volume_mock.call_args_list == [call("player_1", 80), call("player_1", 20)]
+
+    async def test_zero_announcement_volume_is_applied_and_restored(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """An announcement volume of 0 is a real volume, not an 'unset' fallback."""
+        controller, player, _ = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+        player._attr_volume_level = 20
+        player._cache.clear()
+        player.update_state(force_update=True, signal_event=False)
+        controller.get_announcement_volume = MagicMock(return_value=0)  # type: ignore[method-assign]
+        volume_mock = AsyncMock()
+        controller._handle_cmd_volume_set = volume_mock  # type: ignore[method-assign]
+
+        await controller._play_announcement(player, self._announcement())
+
+        assert volume_mock.call_args_list == [call("player_1", 0), call("player_1", 20)]
+
+    async def test_playback_is_restored_when_duration_is_unknown(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """An announcement of unknown length still hands the player back to its content."""
+        controller, player, resume_mock = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+        announcement = self._announcement()
+        announcement.duration = None
+
+        # an unknown length waits for the player to report it finished instead of failing
+        await controller._play_announcement(player, announcement)
+
+        resume_mock.assert_awaited_once()
+
+    async def test_group_membership_is_restored_when_playback_fails(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A failing announcement never leaves the player out of its group player."""
+        controller, player, _ = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+        group = self._add_group(controller, player, supports_set_members=True)
+        group.set_members = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_play_media = AsyncMock(  # type: ignore[method-assign]
+            side_effect=PlayerCommandFailed("player went away")
+        )
+
+        with pytest.raises(PlayerCommandFailed):
+            await controller._play_announcement(player, self._announcement())
+
+        assert group.set_members.await_args_list == [
+            call(player_ids_to_remove=["player_1"]),
+            call(player_ids_to_add=["player_1"]),
+        ]
+
+    async def test_restore_failure_does_not_mask_the_announcement_error(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A provider blowing up during the restore must not hide why the announcement failed."""
+        controller, player, _ = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+        group = self._add_group(controller, player, supports_set_members=True)
+        # set_members is a raw provider call: whatever its client library raises comes
+        # through unwrapped, so the ungroup succeeds and the regroup times out
+        group.set_members = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[None, TimeoutError("provider timeout")]
+        )
+        controller._handle_play_media = AsyncMock(  # type: ignore[method-assign]
+            side_effect=PlayerCommandFailed("player went away")
+        )
+
+        with pytest.raises(PlayerCommandFailed, match="player went away"):
+            await controller._play_announcement(player, self._announcement())
+
+    async def test_group_without_set_members_is_the_one_powered_off(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A group that can not release members is powered off, not the announcement target."""
+        controller, player, _ = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+        self._add_group(controller, player, supports_set_members=False)
+        power_mock = AsyncMock()
+        controller._handle_cmd_power = power_mock  # type: ignore[method-assign]
+        play_mock = AsyncMock()
+        controller.cmd_play = play_mock  # type: ignore[method-assign]
+
+        await controller._play_announcement(player, self._announcement())
+
+        # the group is switched off for the announcement and restarted afterwards
+        power_mock.assert_awaited_once_with("group_1", False)
+        play_mock.assert_awaited_once_with("group_1")
+
+    async def test_idle_player_without_power_control_is_regrouped(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """An idle player that has no power state to restore is still put back in its group."""
+        controller, player, _ = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+        player._attr_playback_state = PlaybackState.IDLE
+        player._attr_powered = None
+        group = self._add_group(controller, player, supports_set_members=True)
+        assert player.state.power_control == PLAYER_CONTROL_NONE
+        group.set_members = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._play_announcement(player, self._announcement())
+
+        assert group.set_members.await_args_list == [
+            call(player_ids_to_remove=["player_1"]),
+            call(player_ids_to_add=["player_1"]),
+        ]
 
 
 class TestScheduleActiveOutputProtocolClear:

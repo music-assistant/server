@@ -881,9 +881,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 queue_id, resume_item.queue_item_id, int(resume_pos), fade_in or False
             )
         else:
-            # Queue is empty, try to resume from playlog
-            if await self._try_resume_from_playlog(queue):
-                return
             msg = f"Resume queue requested but queue {queue.display_name} is empty"
             raise QueueEmpty(msg)
 

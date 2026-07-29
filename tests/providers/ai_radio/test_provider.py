@@ -8,7 +8,8 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.enums import PlaybackState
+from music_assistant_models.errors import InvalidDataError, PlayerUnavailableError
 
 from music_assistant.providers.ai_radio.constants import MAX_FINISHED_SESSIONS
 from music_assistant.providers.ai_radio.models import SessionState
@@ -18,6 +19,15 @@ from music_assistant.providers.ai_radio.provider import AIRadioProvider
 def _close(coro: Any) -> None:
     """Close an un-awaited coroutine so the test does not warn."""
     coro.close()
+
+
+def _recording_stop(recorder: list[str]) -> Any:
+    """Return an async queue-stop stub that records the queue ids it was called with."""
+
+    async def _stop(queue_id: str) -> None:
+        recorder.append(queue_id)
+
+    return _stop
 
 
 def _make_provider() -> AIRadioProvider:
@@ -330,3 +340,69 @@ async def test_concurrent_start_run_calls_respect_the_run_limit() -> None:
     assert len(started) == 1
     assert len(rejected) == 1
     assert "Max concurrent runs reached" in str(rejected[0])
+
+
+@pytest.mark.asyncio
+async def test_stop_run_stops_the_queue_it_owns() -> None:
+    """Stop playback on the target queue when the show is stopped from the UI."""
+    provider = _make_provider()
+    provider.logger = cast(
+        "Any",
+        SimpleNamespace(debug=lambda *_a, **_kw: None, info=lambda *_a, **_kw: None),
+    )
+    stopped: list[str] = []
+    provider.mass = cast(
+        "Any",
+        SimpleNamespace(
+            player_queues=SimpleNamespace(
+                get=lambda _queue_id: SimpleNamespace(state=PlaybackState.PLAYING, current_index=3),
+                stop=_recording_stop(stopped),
+            )
+        ),
+    )
+    provider._sessions["s_run"] = SessionState(
+        session_id="s_run",
+        station_id="st",
+        mode="dynamic",
+        status="running",
+        queue_id="living_room",
+    )
+
+    result = await provider.stop_run(session_id="s_run")
+
+    assert result["status"] == "stopped"
+    assert stopped == ["living_room"]
+
+
+@pytest.mark.asyncio
+async def test_stop_run_survives_an_unavailable_player() -> None:
+    """Still mark the session stopped when the target player has gone away."""
+    provider = _make_provider()
+    provider.logger = cast(
+        "Any",
+        SimpleNamespace(debug=lambda *_a, **_kw: None, info=lambda *_a, **_kw: None),
+    )
+
+    async def _raise(queue_id: str) -> None:
+        raise PlayerUnavailableError(f"Player {queue_id} is not available")
+
+    provider.mass = cast(
+        "Any",
+        SimpleNamespace(
+            player_queues=SimpleNamespace(
+                get=lambda _queue_id: SimpleNamespace(state=PlaybackState.PLAYING, current_index=3),
+                stop=_raise,
+            )
+        ),
+    )
+    provider._sessions["s_run"] = SessionState(
+        session_id="s_run",
+        station_id="st",
+        mode="dynamic",
+        status="running",
+        queue_id="living_room",
+    )
+
+    result = await provider.stop_run(session_id="s_run")
+
+    assert result["status"] == "stopped"
