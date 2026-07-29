@@ -19,7 +19,9 @@ import aiofiles
 import shortuuid
 import xmltodict
 from aiofiles.os import wrap
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
+    ConfigEntryType,
     ContentType,
     EventType,
     ExternalID,
@@ -73,6 +75,7 @@ from music_assistant.controllers.tasks.context import (
     update_current_task_progress_from_index,
     update_current_task_progress_text,
 )
+from music_assistant.helpers import lyrics
 from music_assistant.helpers.compare import compare_strings, create_safe_string
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
@@ -93,15 +96,13 @@ from .constants import (
     CACHE_CATEGORY_FOLDER_IMAGES,
     CACHE_CATEGORY_PODCAST_METADATA,
     CACHE_CATEGORY_SOUND_EFFECTS,
-    CONF_ENTRY_CONTENT_TYPE,
-    CONF_ENTRY_CONTENT_TYPE_READ_ONLY,
+    CONF_CONTENT_TYPE,
     CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
     CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
     CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
-    CONF_ENTRY_PATH,
     CONF_ENTRY_PROPAGATE_GENRES,
     CUE_EXTENSIONS,
     DEFAULT_AUDIOBOOK_PODCAST_GENRE,
@@ -131,7 +132,7 @@ from .helpers import (
 from .parsers import parse_album_nfo
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -156,37 +157,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    base_path = cast("str", config.get_value(CONF_PATH))
-    return LocalFileSystemProvider(mass, manifest, config, base_path)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    base_entries = [
-        CONF_ENTRY_PATH,
-        CONF_ENTRY_MISSING_ALBUM_ARTIST,
-        CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
-        CONF_ENTRY_LIBRARY_SYNC_TRACKS,
-        CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
-        CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
-        CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
-        CONF_ENTRY_PROPAGATE_GENRES,
-    ]
-    if instance_id is None or values is None:
-        return (CONF_ENTRY_CONTENT_TYPE, *base_entries)
-    return (CONF_ENTRY_CONTENT_TYPE_READ_ONLY, *base_entries)
+    return LocalFileSystemProvider(mass, manifest, config)
 
 
 class LocalFileSystemProvider(MusicProvider):
@@ -206,17 +177,37 @@ class LocalFileSystemProvider(MusicProvider):
         mass: MusicAssistant,
         manifest: ProviderManifest,
         config: ProviderConfig,
-        base_path: str,
+        base_path: str | None = None,
     ) -> None:
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
-        self.base_path: str = base_path
+        # subclasses (NFS/SMB/...) mount elsewhere and pass their own base_path;
+        # the plain local provider reads its scan directory from the setup data
+        self.base_path: str = (
+            base_path if base_path is not None else cast("str", self.get_setup_value(CONF_PATH))
+        )
         self.write_access: bool = False
         self.sync_running: bool = False
         self._sync_tracks: bool = True
         self._sync_playlists: bool = True
-        self.media_content_type = cast("str", config.get_value(CONF_ENTRY_CONTENT_TYPE.key))
+        self.media_content_type = cast("str", self.get_setup_value(CONF_CONTENT_TYPE))
         self._cue = CueSheetHandler(self)
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        # content type and path are collected by the setup flow; surface the (immutable)
+        # content type read-only so the sync options' depends_on chains still resolve
+        content_type = str(self.get_setup_value(CONF_CONTENT_TYPE, "music"))
+        return (
+            ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
+            CONF_ENTRY_MISSING_ALBUM_ARTIST,
+            CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+            CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+            CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+            CONF_ENTRY_PROPAGATE_GENRES,
+        )
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
@@ -1504,6 +1495,8 @@ class LocalFileSystemProvider(MusicProvider):
                     lrc_path,
                     str(err),
                 )
+        elif syn_lyrics := tags.synchronized_lyrics:
+            track.metadata.lrc_lyrics = lyrics.convert_to_lrc_lyrics(syn_lyrics)
 
         return track
 

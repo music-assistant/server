@@ -2,10 +2,7 @@
   "config_entries": {
     "api_base_url": {
       "label": "API base URL",
-      "description": "Base URL of your local NeteaseCloudMusicApi-compatible service (for Home Assistant users, see companion add-on PR #16)."
-    },
-    "qr_page_url": {
-      "label": "QR login page URL"
+      "description": "Base URL of your local NeteaseCloudMusicApi-compatible service."
     },
     "quality": {
       "label": "Preferred quality",
@@ -18,17 +15,16 @@
         "jyeffect": "JY Effect",
         "jymaster": "JY Master"
       }
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Connect NetEase Cloud Music",
+      "description": "Enter the address of your local NeteaseCloudMusicApi-compatible backend service. The next step shows a QR code to sign in."
     },
-    "start_qr_auth": {
-      "label": "QR Login",
-      "description": "Generate QR code and open login popup page."
-    },
-    "check_qr_auth": {
-      "label": "Check QR status",
-      "description": "Manually check whether scan confirmation completed."
-    },
-    "clear_auth": {
-      "label": "[%key:common::config_entries::clear_auth::label%]"
+    "scan_qr": {
+      "title": "Scan to sign in",
+      "description": "Scan the QR code with the NetEase Cloud Music app and confirm the login. A fresh code is shown automatically if it expires."
     }
   },
   "media": {

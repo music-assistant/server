@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 @pytest.fixture
 async def profiler(mass: MusicAssistant) -> ProfilerProvider:
     """Load the profiler provider into a running Music Assistant instance."""
-    await mass.config.save_provider_config("profiler", {})
+    await mass.config._create_provider_instance("profiler", {})
     provider = mass.get_provider("profiler", provider_type=ProfilerProvider)
     assert provider is not None
     await provider.initialized.wait()
@@ -135,7 +135,7 @@ async def test_unload_cleans_up(profiler: ProfilerProvider) -> None:
 async def test_tracemalloc_lifecycle(mass: MusicAssistant) -> None:
     """Test that tracemalloc is started/stopped with the provider when enabled."""
     was_tracing = tracemalloc.is_tracing()
-    await mass.config.save_provider_config("profiler", {CONF_TRACEMALLOC_ENABLED: True})
+    await mass.config._create_provider_instance("profiler", {CONF_TRACEMALLOC_ENABLED: True})
     provider = mass.get_provider("profiler", provider_type=ProfilerProvider)
     assert provider is not None
     await provider.initialized.wait()

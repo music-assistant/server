@@ -1,21 +1,16 @@
-"""Unit tests for the AirPlay provider (sync_adjust migration + PTP timing source)."""
+"""Unit tests for the AirPlay provider."""
 
 import asyncio
 import logging
 import time
 from contextlib import AbstractContextManager
 from typing import cast
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant_models.enums import PlaybackState
 
-from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.providers.airplay.constants import (
-    CONF_FORCE_RAOP,
-    CONF_LEGACY_AIRPLAY_PROTOCOL,
-    CONF_LEGACY_FORCE_RAOP,
-    CONF_PROTOCOL_MIGRATION_MARKER,
-    CONF_SYNC_ADJUST_RESET_MARKER,
     AirPlayRemoteCommand,
     StreamingProtocol,
 )
@@ -41,128 +36,19 @@ DAEMON_UP_LINE = (
 )
 
 
-def _make_provider(
-    marker_set: bool,
-    player_configs: dict[str, dict[str, object]],
-    stored_sync_adjust: dict[str, int],
-) -> AirPlayProvider:
-    """
-    Build a bare provider wired to a mocked config store.
-
-    :param marker_set: Whether the one-time migration already ran.
-    :param player_configs: Raw player config store contents.
-    :param stored_sync_adjust: Persisted sync_adjust value per player id.
-    """
+def _make_provider() -> AirPlayProvider:
+    """Build a bare provider wired to a mocked Music Assistant instance."""
     prov = AirPlayProvider.__new__(AirPlayProvider)
     prov.mass = MagicMock()
     prov.logger = logging.getLogger("test.airplay.provider")
     prov.config = MagicMock()
     prov.config.instance_id = INSTANCE_ID
-    prov.mass.config.get_raw_provider_config_value.return_value = marker_set
-    prov.mass.config.get.return_value = player_configs
-    prov.mass.config.get_raw_player_config_value.side_effect = lambda player_id, _key, default=0: (
-        stored_sync_adjust.get(player_id, default)
-    )
     return prov
-
-
-def test_sync_adjust_migration_resets_stored_values() -> None:
-    """Persisted sync_adjust values are reset once and the marker is written."""
-    player_configs: dict[str, dict[str, object]] = {
-        "apaaa": {"player_id": "apaaa", "provider": INSTANCE_ID},
-        "apbbb": {"player_id": "apbbb", "provider": INSTANCE_ID},
-        # player of another provider must be left alone
-        "sonos1": {"player_id": "sonos1", "provider": "sonos"},
-    }
-    prov = _make_provider(
-        marker_set=False,
-        player_configs=player_configs,
-        stored_sync_adjust={"apaaa": 120, "apbbb": 0, "sonos1": 250},
-    )
-
-    prov._migrate_sync_adjust()
-
-    # only the airplay player with a non-zero offset is reset
-    cast("MagicMock", prov.mass.config).set_raw_player_config_value.assert_called_once_with(
-        "apaaa", CONF_SYNC_ADJUST, 0
-    )
-    # the one-time marker is written afterwards
-    cast("MagicMock", prov.mass.config).set_raw_provider_config_value.assert_called_once_with(
-        INSTANCE_ID, CONF_SYNC_ADJUST_RESET_MARKER, True
-    )
-
-
-def test_sync_adjust_migration_runs_only_once() -> None:
-    """With the marker set, the migration must not touch player configs again."""
-    player_configs: dict[str, dict[str, object]] = {
-        "apaaa": {"player_id": "apaaa", "provider": INSTANCE_ID}
-    }
-    prov = _make_provider(
-        marker_set=True,
-        player_configs=player_configs,
-        stored_sync_adjust={"apaaa": 120},
-    )
-
-    prov._migrate_sync_adjust()
-
-    cast("MagicMock", prov.mass.config).set_raw_player_config_value.assert_not_called()
-    cast("MagicMock", prov.mass.config).set_raw_provider_config_value.assert_not_called()
-
-
-def test_protocol_migration_preserves_only_explicit_raop_preferences() -> None:
-    """Legacy forced RAOP values migrate without overriding newer toggle values."""
-    player_configs: dict[str, dict[str, object]] = {
-        "raop": {"player_id": "raop", "provider": INSTANCE_ID},
-        "airplay2": {"player_id": "airplay2", "provider": INSTANCE_ID},
-        "automatic": {"player_id": "automatic", "provider": INSTANCE_ID},
-        "new-toggle": {"player_id": "new-toggle", "provider": INSTANCE_ID},
-        "other": {"player_id": "other", "provider": "sonos"},
-    }
-    stored_values: dict[tuple[str, str], object] = {
-        ("raop", CONF_LEGACY_AIRPLAY_PROTOCOL): StreamingProtocol.RAOP,
-        ("airplay2", CONF_LEGACY_AIRPLAY_PROTOCOL): StreamingProtocol.AIRPLAY2,
-        ("automatic", CONF_LEGACY_AIRPLAY_PROTOCOL): 0,
-        ("new-toggle", CONF_LEGACY_AIRPLAY_PROTOCOL): StreamingProtocol.RAOP,
-        ("new-toggle", CONF_FORCE_RAOP): False,
-        ("other", CONF_LEGACY_AIRPLAY_PROTOCOL): StreamingProtocol.RAOP,
-    }
-    prov = _make_provider(False, player_configs, {})
-    config = cast("MagicMock", prov.mass.config)
-    config.get_raw_player_config_value.side_effect = lambda player_id, key, default=None: (
-        stored_values.get((player_id, key), default)
-    )
-
-    prov._migrate_protocol_preferences()
-
-    cast("MagicMock", prov.mass.config).set_raw_player_config_value.assert_has_calls(
-        [
-            call("raop", CONF_FORCE_RAOP, True),
-            call("raop", CONF_LEGACY_FORCE_RAOP, True),
-        ]
-    )
-    assert cast("MagicMock", prov.mass.config).set_raw_player_config_value.call_count == 2
-    cast("MagicMock", prov.mass.config).set_raw_provider_config_value.assert_called_once_with(
-        INSTANCE_ID, CONF_PROTOCOL_MIGRATION_MARKER, True
-    )
-
-
-def test_protocol_migration_runs_only_once() -> None:
-    """The protocol migration marker prevents a disabled toggle being restored later."""
-    prov = _make_provider(
-        True,
-        {"raop": {"player_id": "raop", "provider": INSTANCE_ID}},
-        {},
-    )
-
-    prov._migrate_protocol_preferences()
-
-    cast("MagicMock", prov.mass.config).set_raw_player_config_value.assert_not_called()
-    cast("MagicMock", prov.mass.config).set_raw_provider_config_value.assert_not_called()
 
 
 def test_remote_pause_routes_to_sendspin_session() -> None:
     """A bridged device pause targets the owning Sendspin session."""
-    prov = _make_provider(False, {}, {})
+    prov = _make_provider()
     players = cast("MagicMock", prov.mass.players)
     manager = SendspinBridgeManager(prov)
     prov._bridge_manager = manager
@@ -196,7 +82,7 @@ def test_remote_pause_routes_to_sendspin_session() -> None:
 
 def test_remote_pause_keeps_normal_airplay_routing() -> None:
     """An inactive bridge does not change normal AirPlay pause routing."""
-    prov = _make_provider(False, {}, {})
+    prov = _make_provider()
     players = cast("MagicMock", prov.mass.players)
     manager = SendspinBridgeManager(prov)
     prov._bridge_manager = manager
@@ -355,6 +241,27 @@ async def test_ptp_daemon_spawn_traces_at_verbose_level() -> None:
         await prov._start_ptp_daemon()
 
     assert process_cls.call_args.args[0][-2:] == ["--debug", "10"]
+
+
+def test_pyatv_logging_quiet_at_debug_level() -> None:
+    """A normal debug session keeps pyatv's own (very chatty) logging quiet."""
+    prov = _ptp_provider()
+    prov.logger.setLevel(logging.DEBUG)
+
+    prov._set_pyatv_log_level()
+
+    # pyatv debug output is dropped; only INFO and above pass through
+    assert logging.getLogger("pyatv").level == logging.INFO
+
+
+def test_pyatv_logging_traces_at_verbose_level() -> None:
+    """A verbose session passes pyatv's debug logging through."""
+    prov = _ptp_provider()
+    prov.logger.setLevel(VERBOSE_LOG_LEVEL)
+
+    prov._set_pyatv_log_level()
+
+    assert logging.getLogger("pyatv").level == logging.DEBUG
 
 
 def test_ptp_daemon_ready_event_set_on_daemon_up_line() -> None:
@@ -564,6 +471,7 @@ async def test_raop_session_resolves_ptp_for_first_ap2_late_joiner() -> None:
     raop_player.player_id = "raop"
     raop_player.stream = MagicMock()
     raop_player.stream.running = True
+    raop_player.stream.cumulative_shift_seconds = 0.0
     ap2_player = _ap2_player()
     ap2_player.player_id = "airplay2"
     ap2_player.stream = None
@@ -583,12 +491,10 @@ async def test_raop_session_resolves_ptp_for_first_ap2_late_joiner() -> None:
     prov.wait_ptp_daemon_ready = AsyncMock(side_effect=_wait_ptp_daemon_ready)
 
     async def _start_client(player: MagicMock, _use_shared_ptp: bool) -> None:
-        player.stream = MagicMock(running=True)
+        player.stream = MagicMock(running=True, connected=True)
         player.stream.wait_for_connection = AsyncMock()
-        player.stream.prepare_generation = AsyncMock()
-        player.stream.wait_generation_ready = AsyncMock(return_value=True)
-        player.stream.wait_generation_primed = AsyncMock(return_value=True)
-        player.stream.start_generation = AsyncMock()
+        player.stream.flush = AsyncMock(return_value=True)
+        player.stream.start = AsyncMock()
 
     with patch.object(
         session, "_start_client", new_callable=AsyncMock, side_effect=_start_client
@@ -611,10 +517,8 @@ async def test_session_start_applies_uniform_ptp_decision_to_all_members() -> No
     for player in players:
         player.stream = MagicMock()
         player.stream.wait_for_connection = AsyncMock()
-        player.stream.prepare_generation = AsyncMock()
-        player.stream.wait_generation_ready = AsyncMock(return_value=True)
-        player.stream.wait_generation_primed = AsyncMock(return_value=True)
-        player.stream.start_generation = AsyncMock()
+        player.stream.wait_audio_present = AsyncMock(return_value=True)
+        player.stream.start = AsyncMock()
     session = _make_ptp_session(prov, players)
 
     with (
@@ -637,10 +541,9 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
     for player in players:
         player.stream = MagicMock()
         player.stream.wait_for_connection = AsyncMock()
-        player.stream.prepare_generation = AsyncMock()
-        player.stream.wait_generation_ready = AsyncMock(return_value=True)
-        player.stream.wait_generation_primed = AsyncMock(return_value=True)
-        player.stream.start_generation = AsyncMock()
+        player.stream.wait_audio_present = AsyncMock(return_value=True)
+        player.stream.start = AsyncMock()
+        player.config.get_value = MagicMock(return_value=0)
     session = _make_ptp_session(prov, players)
     now = 100.0
 
@@ -660,10 +563,12 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
     ):
         await session.start(MagicMock())
 
-    assert session.start_unix_ms == 103_750
+    # anchor = now (103_000 ms) + the group start lead (500 ms); readiness is
+    # event-confirmed, so no setup-time guess is added on top.
+    assert session.start_unix_ms == 103_500
     for player in players:
-        player.stream.start_generation.assert_awaited_once()
-        assert player.stream.start_generation.await_args.args[2] == 103_750
+        player.stream.start.assert_awaited_once()
+        assert player.stream.start.await_args.args[0] == 103_500
 
 
 # --- Session decision reaches the CLI args (overrides bare liveness) ------------
@@ -750,25 +655,39 @@ def _receiver_filter_provider(
     receiver_instances: tuple[MagicMock, ...] = (),
 ) -> AirPlayProvider:
     """Build a bare provider wired to raw provider configs and running receiver instances."""
+
+    def get_setup_value(instance_id: str, key: str) -> object | None:
+        setup_data = provider_configs.get(instance_id, {}).get("setup_data")
+        return setup_data.get(key) if isinstance(setup_data, dict) else None
+
     prov = AirPlayProvider.__new__(AirPlayProvider)
     prov.mass = MagicMock()
     prov.logger = logging.getLogger("test.airplay.provider")
     prov.mass.config.get.return_value = provider_configs
+    prov.mass.config.get_provider_setup_value.side_effect = get_setup_value
     prov.mass.get_provider_instances.return_value = list(receiver_instances)
     return prov
 
 
 def _receiver_config(
-    airplay_name: str | None = "Garage [AirPlay]", enabled: bool = True
+    airplay_name: str | None = "Garage [AirPlay]",
+    enabled: bool = True,
+    use_setup_data: bool = False,
 ) -> dict[str, dict[str, object]]:
     """Build the raw provider config store with a single AirPlay Receiver instance."""
-    values: dict[str, object] = {"airplay_name": airplay_name} if airplay_name else {}
+    values: dict[str, object] = (
+        {"airplay_name": airplay_name} if airplay_name and not use_setup_data else {}
+    )
+    setup_data: dict[str, object] = (
+        {"airplay_name": airplay_name} if airplay_name and use_setup_data else {}
+    )
     return {
         RECEIVER_INSTANCE_ID: {
             "domain": "airplay_receiver",
             "instance_id": RECEIVER_INSTANCE_ID,
             "enabled": enabled,
             "values": values,
+            "setup_data": setup_data,
         },
         "spotify": {"domain": "spotify", "instance_id": "spotify", "values": {}},
     }
@@ -813,6 +732,15 @@ async def test_own_receiver_filtered_with_default_name() -> None:
 
     with _patch_host_ips():
         assert await prov._is_own_airplay_receiver("Music Assistant", info) is True
+
+
+async def test_own_receiver_filtered_with_setup_flow_name() -> None:
+    """A receiver name stored by its setup flow is used before the instance loads."""
+    prov = _receiver_filter_provider(_receiver_config(use_setup_data=True))
+    info = _discovery_info(["192.168.1.10"], port=9999)
+
+    with _patch_host_ips():
+        assert await prov._is_own_airplay_receiver("Garage [AirPlay]", info) is True
 
 
 async def test_own_receiver_filtered_on_loopback() -> None:

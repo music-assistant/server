@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Any
 import psutil
 import yappi
 from music_assistant_models.auth import Scope
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.helpers.datetime import utc
 from music_assistant.models.plugin import PluginProvider
@@ -63,6 +65,59 @@ class ProfilerProvider(PluginProvider):
     windows. All collected data is aggregated into a shareable report via
     the `profiler/report` API command.
     """
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            ConfigEntry(
+                key="profiler_note",
+                type=ConfigEntryType.LABEL,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_CPU_PROFILE_ENABLED,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_CPU_PROFILE_DURATION,
+                type=ConfigEntryType.INTEGER,
+                default_value=60,
+                range=(CPU_PROFILE_MIN_DURATION, CPU_PROFILE_MAX_DURATION),
+                required=False,
+                advanced=True,
+                depends_on=CONF_CPU_PROFILE_ENABLED,
+            ),
+            ConfigEntry(
+                key=CONF_CPU_PROFILE_INTERVAL,
+                type=ConfigEntryType.INTEGER,
+                default_value=30,
+                range=(CPU_PROFILE_MIN_INTERVAL, CPU_PROFILE_MAX_INTERVAL),
+                required=False,
+                advanced=True,
+                depends_on=CONF_CPU_PROFILE_ENABLED,
+            ),
+            ConfigEntry(
+                key=CONF_ACTION_RUN_CPU_PROFILE,
+                type=ConfigEntryType.ACTION,
+                action=CONF_ACTION_RUN_CPU_PROFILE,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_TRACEMALLOC_ENABLED,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+            ),
+        )
+
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+        """Handle a one-shot config action button press and re-render the entries."""
+        if action == CONF_ACTION_RUN_CPU_PROFILE:
+            self.start_cpu_profile()
+            return await self.get_config_entries()
+        return await super().handle_config_action(action)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

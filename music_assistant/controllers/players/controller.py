@@ -123,7 +123,6 @@ if TYPE_CHECKING:
 
     from music_assistant_models.config_entries import (
         ConfigEntry,
-        ConfigValueType,
         CoreConfig,
         PlayerConfig,
     )
@@ -243,11 +242,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                         del self._task_held_locks[task]
                 lock.release()
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the Player Controller."""
         return ()
 
@@ -2803,6 +2798,14 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         prev_source = player.state.active_source
         prev_media = player.state.current_media
         prev_media_name = prev_media.title or prev_media.uri if prev_media else None
+        # An announcement is transient: a player that is still busy with an earlier
+        # announcement holds no user content, so there is nothing to restore for it.
+        # The raw media attribute is read here (instead of state.current_media, which
+        # reports the active queue item) since it tells what the device is playing.
+        restore_playback = prev_state == PlaybackState.PLAYING and not (
+            player.current_media is not None
+            and player.current_media.media_type == MediaType.ANNOUNCEMENT
+        )
         if prev_synced_to:
             # ungroup player if its currently synced
             self.logger.debug(
@@ -2940,7 +2943,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                     prev_group.display_name,
                 )
                 await prev_group.set_members(player_ids_to_add=[player.player_id])
-            elif prev_state == PlaybackState.PLAYING:
+            elif restore_playback:
                 # if the player is part of a group player that does not support set_members,
                 # we need to restart the groupplayer
                 self.logger.debug(
@@ -2949,7 +2952,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                     prev_group.display_name,
                 )
                 await self.cmd_play(prev_group.player_id)
-        elif prev_state == PlaybackState.PLAYING:
+        elif restore_playback:
             # player was playing something before the announcement - try to resume that here
             await self._handle_cmd_resume(player.player_id, prev_source, prev_media)
 

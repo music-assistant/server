@@ -19,9 +19,7 @@ from collections.abc import Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -52,7 +50,7 @@ from music_assistant.providers.airplay_receiver.helpers import get_shairport_syn
 from music_assistant.providers.airplay_receiver.metadata import MetadataReader
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -92,45 +90,6 @@ async def setup(
     return AirPlayReceiverProvider(mass, manifest, config)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    return (
-        CONF_ENTRY_WARN_PREVIEW,
-        ConfigEntry(
-            key=CONF_MASS_PLAYER_ID,
-            type=ConfigEntryType.STRING,
-            multi_value=False,
-            default_value=PLAYER_ID_AUTO,
-            options=[
-                ConfigValueOption(PLAYER_ID_AUTO),
-                *(
-                    ConfigValueOption(x.player_id, title=x.display_name)
-                    for x in sorted(
-                        mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
-                    )
-                ),
-            ],
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_AIRPLAY_NAME,
-            type=ConfigEntryType.STRING,
-            default_value=DEFAULT_AIRPLAY_NAME,
-        ),
-    )
-
-
 class AirPlayReceiverProvider(PluginProvider):
     """Implementation of an AirPlay Receiver Plugin."""
 
@@ -139,9 +98,12 @@ class AirPlayReceiverProvider(PluginProvider):
     ) -> None:
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
-        # Default player ID from config (PLAYER_ID_AUTO or a specific player_id)
+        # Configured default player (PLAYER_ID_AUTO or a specific player id)
         self._default_player_id: str = (
-            cast("str", self.config.get_value(CONF_MASS_PLAYER_ID)) or PLAYER_ID_AUTO
+            cast("str", self.get_setup_value(CONF_MASS_PLAYER_ID)) or PLAYER_ID_AUTO
+        )
+        self._airplay_name = (
+            cast("str", self.get_setup_value(CONF_AIRPLAY_NAME)) or DEFAULT_AIRPLAY_NAME
         )
         # Currently active player (the one currently playing or selected)
         self._active_player_id: str | None = None
@@ -160,7 +122,6 @@ class AirPlayReceiverProvider(PluginProvider):
         # The port must be stable across restarts: the AirPlay provider uses it to
         # recognize (and ignore) our own shairport-sync advertisement in discovery.
         self.airplay_port = airplay_receiver_port(self.instance_id)
-        airplay_name = cast("str", self.config.get_value(CONF_AIRPLAY_NAME)) or self.name
         # _audio_format describes the original AirPlay source (ALAC at 44.1/16,
         # the protocol-native format AirPlay senders use) and is what we
         # advertise to clients for source-format display.
@@ -181,7 +142,7 @@ class AirPlayReceiverProvider(PluginProvider):
             bit_depth=16,
             channels=2,
         )
-        self._stream_metadata = StreamMetadata(title=f"AirPlay | {airplay_name}")
+        self._stream_metadata = StreamMetadata(title=f"AirPlay | {self._airplay_name}")
         self._audio_source = AudioSource(
             item_id=AUDIO_SOURCE_ID,
             provider=self.instance_id,
@@ -217,6 +178,15 @@ class AirPlayReceiverProvider(PluginProvider):
         self._runner_error_count = 0
         self._metadata_reader: MetadataReader | None = None
         self._first_volume_event_received = False  # Track if we've received the first volume event
+
+    @property
+    def instance_name_postfix(self) -> str | None:
+        """Return the advertised receiver name as the multi-instance postfix."""
+        return self._airplay_name if self._airplay_name != DEFAULT_AIRPLAY_NAME else None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return runtime options for this provider."""
+        return (CONF_ENTRY_WARN_PREVIEW,)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -458,13 +428,11 @@ class AirPlayReceiverProvider(PluginProvider):
             self.mass.players.trigger_player_update(prev_player_id)
 
     def _save_last_player_id(self, player_id: str) -> None:
-        """Persist the selected player ID to config as the new default."""
+        """Persist the selected player ID as the new default."""
         if self._default_player_id == player_id:
             return  # No change needed
         try:
-            self.mass.config.set_raw_provider_config_value(
-                self.instance_id, CONF_MASS_PLAYER_ID, player_id
-            )
+            self._update_setup_data(CONF_MASS_PLAYER_ID, player_id)
             self._default_player_id = player_id
         except Exception as err:
             self.logger.debug("Failed to persist player ID: %s", err)
@@ -481,8 +449,7 @@ class AirPlayReceiverProvider(PluginProvider):
         template = await asyncio.to_thread(_read_template)
 
         # Replace placeholders
-        airplay_name = cast("str", self.config.get_value(CONF_AIRPLAY_NAME)) or self.name
-        config_content = template.replace("{AIRPLAY_NAME}", airplay_name)
+        config_content = template.replace("{AIRPLAY_NAME}", self._airplay_name)
         config_content = config_content.replace("{METADATA_PIPE}", self.metadata_pipe.path)
         config_content = config_content.replace("{AUDIO_PIPE}", self.audio_pipe.path)
         config_content = config_content.replace("{PORT}", str(self.airplay_port))

@@ -24,6 +24,16 @@
       "description": "The ID of the Drive folder to scan, i.e. the part after /folders/ in the URL when the folder is opened in the Google Drive web app (not the folder name). Leave as 'root' to scan the whole drive."
     }
   },
+  "setup_flow": {
+    "user": {
+      "title": "Enter your Google OAuth credentials",
+      "description": "Music Assistant needs its own Google OAuth client. In the Google Cloud console, enable the Google Drive API and create an OAuth client ID, then paste its client ID and secret below."
+    },
+    "authenticate": {
+      "title": "Authorize with Google",
+      "description": "Sign in with Google in the window that opens to grant Music Assistant read-only access to your Drive."
+    }
+  },
   "manifest": {
     "description": "Stream music, audiobooks and podcasts stored in Google Drive"
   }

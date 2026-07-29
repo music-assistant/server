@@ -10,6 +10,9 @@ from collections import deque
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any, cast
 
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import ConfigEntryType
+
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import (
@@ -19,12 +22,15 @@ from .constants import (
     CONF_HTTP_PORT,
     CONF_OUTPUT_FORMAT,
     CONF_PLAYER_IDLE_TIMEOUT,
+    CONF_SHOW_STOP_NOTIFICATION,
     DEFAULT_ENABLE_GROUPING,
     DEFAULT_ENABLE_SENDSPIN_BRIDGE,
     DEFAULT_GROUP_STREAM_MODE,
     DEFAULT_HTTP_PORT,
     DEFAULT_OUTPUT_FORMAT,
     DEFAULT_PLAYER_IDLE_TIMEOUT,
+    DEFAULT_SHOW_STOP_NOTIFICATION,
+    GROUP_STREAM_MODE_INDEPENDENT,
     GROUP_STREAM_MODE_REDIRECT,
     GROUP_STREAM_MODE_SHARED,
     MSX_PLAYER_ID_PREFIX,
@@ -284,6 +290,64 @@ class MSXBridgeProvider(PlayerProvider):
         self._shared_streams = {}
         self._shared_stream_lock = asyncio.Lock()
         self._background_tasks = set()
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_HTTP_PORT,
+                type=ConfigEntryType.INTEGER,
+                required=True,
+                default_value=str(DEFAULT_HTTP_PORT),
+            ),
+            ConfigEntry(
+                key=CONF_OUTPUT_FORMAT,
+                type=ConfigEntryType.STRING,
+                required=True,
+                default_value=DEFAULT_OUTPUT_FORMAT,
+            ),
+            ConfigEntry(
+                key=CONF_PLAYER_IDLE_TIMEOUT,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=str(DEFAULT_PLAYER_IDLE_TIMEOUT),
+            ),
+            ConfigEntry(
+                key=CONF_SHOW_STOP_NOTIFICATION,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=DEFAULT_SHOW_STOP_NOTIFICATION,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_GROUPING,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=DEFAULT_ENABLE_GROUPING,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_SENDSPIN_BRIDGE,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=DEFAULT_ENABLE_SENDSPIN_BRIDGE,
+            ),
+            ConfigEntry(
+                key=CONF_GROUP_STREAM_MODE,
+                type=ConfigEntryType.STRING,
+                required=False,
+                default_value=DEFAULT_GROUP_STREAM_MODE,
+                options=[
+                    ConfigValueOption(
+                        GROUP_STREAM_MODE_INDEPENDENT,
+                    ),
+                    ConfigValueOption(
+                        GROUP_STREAM_MODE_SHARED,
+                    ),
+                    ConfigValueOption(
+                        GROUP_STREAM_MODE_REDIRECT,
+                    ),
+                ],
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization — start embedded HTTP server."""

@@ -1,16 +1,24 @@
 """Unit tests for AirPlay provider helpers."""
 
+import plistlib
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiohttp import ClientError
 
 from music_assistant.providers.airplay.helpers import (
+    _CLI_BINARY_CHECK_TIMEOUT,
     get_cli_binary,
     get_decoded_property,
+    probe_audio_formats,
     serialize_txt_records,
     supports_airplay2,
     supports_companion_pairing,
 )
+
+ALAC_44100_24 = 1 << 19
+ALAC_48000_24 = 1 << 21
 
 
 def test_get_decoded_property_matches_case_insensitively() -> None:
@@ -122,4 +130,112 @@ async def test_get_cli_binary_uses_release_asset_name(
     result = await get_cli_binary()
 
     assert result.endswith(f"/bin/{expected_name}")
-    check_output.assert_awaited_once_with(result, "--check")
+    check_output.assert_awaited_once_with(result, "--check", timeout=_CLI_BINARY_CHECK_TIMEOUT)
+
+
+async def test_get_cli_binary_raises_when_check_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A binary that never answers --check surfaces as RuntimeError, not a hang."""
+    check_output = AsyncMock(side_effect=TimeoutError)
+    monkeypatch.setattr(
+        "music_assistant.providers.airplay.helpers.platform.system", lambda: "Darwin"
+    )
+    monkeypatch.setattr(
+        "music_assistant.providers.airplay.helpers.platform.machine", lambda: "aarch64"
+    )
+    monkeypatch.setattr("music_assistant.providers.airplay.helpers.check_output", check_output)
+
+    with pytest.raises(RuntimeError, match="did not respond to --check"):
+        await get_cli_binary()
+
+
+@pytest.mark.parametrize(
+    ("info", "expected_hires"),
+    [
+        # Apple TV: 24-bit listed for the buffered stream only
+        (
+            {
+                "supportedAudioFormatsExtended": {
+                    "audioStream": [11, 18, 22, 24],
+                    "bufferStream": [19, 21, 22, 23],
+                }
+            },
+            True,
+        ),
+        # Sonos: 16-bit only on both streams
+        (
+            {
+                "supportedAudioFormatsExtended": {
+                    "audioStream": [18, 22],
+                    "bufferStream": [18, 22],
+                }
+            },
+            False,
+        ),
+        # Mac: legacy mask for the realtime stream, extended table for the buffered one
+        (
+            {
+                "supportedFormats": {"audioStream": 0x1440800},
+                "supportedAudioFormatsExtended": {"bufferStream": [21, 22, 23]},
+            },
+            True,
+        ),
+        # receivers that publish no format tables at all
+        ({"deviceid": "AA:BB:CC:DD:EE:FF"}, False),
+    ],
+)
+async def test_probe_audio_formats(info: dict[str, Any], expected_hires: bool) -> None:
+    """The advertised formats are read from the union of both /info stream tables."""
+    mass = _mass_serving_info(info)
+
+    formats = await probe_audio_formats(mass, "10.0.0.5", 7000)
+
+    assert bool(formats & (ALAC_44100_24 | ALAC_48000_24)) is expected_hires
+    mass.http_session.get.assert_called_once()
+    assert mass.http_session.get.call_args.args[0] == "http://10.0.0.5:7000/info"
+
+
+async def test_probe_audio_formats_ipv6_address() -> None:
+    """An IPv6 receiver address is bracketed for the request URL."""
+    mass = _mass_serving_info({})
+
+    await probe_audio_formats(mass, "fe80::1", 7000)
+
+    assert mass.http_session.get.call_args.args[0] == "http://[fe80::1]:7000/info"
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        ClientError("unreachable"),
+        TimeoutError,
+        b"not-a-plist",
+        404,
+    ],
+)
+async def test_probe_audio_formats_failures(response: Any) -> None:
+    """An unreachable, slow or nonsensical receiver reports no formats instead of raising."""
+    if isinstance(response, int):
+        mass = _mass_serving_info({}, status=response)
+    elif isinstance(response, bytes):
+        mass = _mass_serving_info({})
+        mass.http_session.get.return_value.__aenter__.return_value.read = AsyncMock(
+            return_value=response
+        )
+    else:
+        mass = MagicMock()
+        mass.http_session.get = MagicMock(side_effect=response)
+
+    assert await probe_audio_formats(mass, "10.0.0.5", 7000) == 0
+
+
+def _mass_serving_info(info: dict[str, Any], status: int = 200) -> MagicMock:
+    """Build a mass mock whose http session serves the given /info plist."""
+    response = MagicMock()
+    response.status = status
+    response.read = AsyncMock(return_value=plistlib.dumps(info, fmt=plistlib.FMT_BINARY))
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=response)
+    context.__aexit__ = AsyncMock(return_value=False)
+    mass = MagicMock()
+    mass.http_session.get = MagicMock(return_value=context)
+    return mass

@@ -79,7 +79,6 @@ from aioaudiobookshelf.schema.shelf import ShelfType as AbsShelfType
 from aiohttp import web
 from music_assistant_models.config_entries import (
     ConfigEntry,
-    ConfigValueType,
     ProviderConfig,
 )
 from music_assistant_models.enums import (
@@ -167,68 +166,6 @@ async def setup(
     return Audiobookshelf(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key="label",
-            type=ConfigEntryType.LABEL,
-        ),
-        ConfigEntry(
-            key=CONF_URL,
-            type=ConfigEntryType.STRING,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_API_TOKEN,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_OLD_TOKEN,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-            hidden=True,
-        ),
-        ConfigEntry(
-            key=CONF_VERIFY_SSL,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            advanced=True,
-            default_value=True,
-        ),
-        ConfigEntry(
-            key=CONF_HIDE_EMPTY_PODCASTS,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            advanced=True,
-            default_value=False,
-        ),
-    )
-
-
 R = TypeVar("R")
 P = ParamSpec("P")
 
@@ -237,6 +174,17 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
     """Audiobookshelf MusicProvider."""
 
     _on_unload_callbacks: list[Callable[[], None]]
+
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature] | None = None,
+    ) -> None:
+        """Initialize the Audiobookshelf provider."""
+        super().__init__(mass, manifest, config, supported_features)
+        self.libraries = LibrariesHelper()
 
     @staticmethod
     def handle_refresh_token(
@@ -256,17 +204,29 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
 
         return wrapper
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_HIDE_EMPTY_PODCASTS,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                advanced=True,
+                default_value=False,
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Pass config values to client and initialize."""
         self._on_unload_callbacks: list[Callable[[], None]] = []
         self.sessions: dict[str, SessionHelper] = {}  # key is the mass_item_id
         self.create_session_lock = asyncio.Lock()
-        base_url = str(self.config.get_value(CONF_URL))
-        username = str(self.config.get_value(CONF_USERNAME))
-        password = str(self.config.get_value(CONF_PASSWORD))
-        token_old = self.config.get_value(CONF_OLD_TOKEN)
-        token_api = self.config.get_value(CONF_API_TOKEN)
-        verify_ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
+        base_url = str(self.get_setup_value(CONF_URL))
+        username = str(self.get_setup_value(CONF_USERNAME))
+        password = str(self.get_setup_value(CONF_PASSWORD))
+        token_old = self.get_setup_value(CONF_OLD_TOKEN)
+        token_api = self.get_setup_value(CONF_API_TOKEN)
+        verify_ssl = bool(self.get_setup_value(CONF_VERIFY_SSL))
         session_config = AbsSessionConfiguration(
             session=self.mass.http_session,
             url=base_url,
@@ -480,7 +440,7 @@ for more details.
                     instance_id=self.instance_id,
                     domain=self.domain,
                     token=self._client.token,
-                    base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                    base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 )
             for abs_narrator in await self._client.get_library_narrators(library_id=book_lib_id):
                 self.libraries.narrators[book_lib_id].add(abs_narrator.id_)
@@ -542,7 +502,7 @@ for more details.
             instance_id=self.instance_id,
             domain=self.domain,
             token=self._client.token,
-            base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+            base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
         )
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist]:
@@ -566,7 +526,7 @@ for more details.
                             instance_id=self.instance_id,
                             domain=self.domain,
                             token=self._client.token,
-                            base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                            base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                             owner=self.abs_username,
                             media_type=media_type,
                         )
@@ -610,7 +570,7 @@ for more details.
                         domain=self.domain,
                         token=self._client.token,
                         media_progress=progress,
-                        base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                        base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                     )
                 )
             elif isinstance(item, AbsPlaylistItemExpandedPodcast):
@@ -626,7 +586,7 @@ for more details.
                         instance_id=self.instance_id,
                         domain=self.domain,
                         token=self._client.token,
-                        base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                        base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                         media_progress=progress,
                         cover_path=item.library_item.media.cover_path,
                         cover_version=item.library_item.updated_at,
@@ -666,7 +626,7 @@ for more details.
                 instance_id=self.instance_id,
                 domain=self.domain,
                 token=self._client.token,
-                base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 owner=self.abs_username,
                 media_type=media_type,
             )
@@ -760,7 +720,7 @@ for more details.
                         instance_id=self.instance_id,
                         domain=self.domain,
                         token=self._client.token,
-                        base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                        base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                     )
                     if (
                         bool(self.config.get_value(CONF_HIDE_EMPTY_PODCASTS))
@@ -810,7 +770,7 @@ for more details.
             instance_id=self.instance_id,
             domain=self.domain,
             token=self._client.token,
-            base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+            base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
         )
 
     async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
@@ -840,7 +800,7 @@ for more details.
                 instance_id=self.instance_id,
                 domain=self.domain,
                 token=self._client.token,
-                base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 media_progress=progress,
                 cover_path=abs_podcast.media.cover_path,
                 cover_version=abs_podcast.updated_at,
@@ -871,7 +831,7 @@ for more details.
                     instance_id=self.instance_id,
                     domain=self.domain,
                     token=self._client.token,
-                    base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                    base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                     media_progress=progress,
                     cover_path=abs_podcast.media.cover_path,
                     cover_version=abs_podcast.updated_at,
@@ -905,7 +865,7 @@ for more details.
                         instance_id=self.instance_id,
                         domain=self.domain,
                         token=self._client.token,
-                        base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                        base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                     )
                     yield mass_audiobook
 
@@ -935,7 +895,7 @@ for more details.
             instance_id=self.instance_id,
             domain=self.domain,
             token=self._client.token,
-            base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+            base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
             media_progress=progress,
         )
 
@@ -963,7 +923,7 @@ for more details.
         We always use a custom stream type, also for single file, such
         that we can handle an ffmpeg error and refresh our tokens.
         """
-        abs_base_url = str(self.config.get_value(CONF_URL))
+        abs_base_url = str(self.get_setup_value(CONF_URL))
         tracks = abs_session.audio_tracks
 
         if len(tracks) == 0:
@@ -1077,7 +1037,7 @@ for more details.
         except IndexError:
             return web.Response(status=404, text="Part not found")
 
-        base_url = str(self.config.get_value(CONF_URL))
+        base_url = str(self.get_setup_value(CONF_URL))
         stream_url = f"{base_url}{part_track.content_url}?token={self._client.token}"
         # redirect to the actual stream url
         raise web.HTTPFound(location=stream_url)
@@ -1174,7 +1134,7 @@ for more details.
                                 instance_id=self.instance_id,
                                 domain=self.domain,
                                 token=self._client.token,
-                                base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                                base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                                 cover_path=_cover_path,
                                 cover_version=_cover_version,
                             )
@@ -1753,7 +1713,7 @@ for more details.
                         instance_id=self.instance_id,
                         domain=self.domain,
                         token=self._client.token,
-                        base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                        base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                     ),
                     overwrite_existing=True,
                 )
@@ -1769,7 +1729,7 @@ for more details.
                     instance_id=self.instance_id,
                     domain=self.domain,
                     token=self._client.token,
-                    base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                    base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 )
                 if not (
                     bool(self.config.get_value(CONF_HIDE_EMPTY_PODCASTS))
@@ -1854,7 +1814,7 @@ for more details.
                 instance_id=self.instance_id,
                 domain=self.domain,
                 token=self._client.token,
-                base_url=str(self.config.get_value(CONF_URL)).rstrip("/"),
+                base_url=str(self.get_setup_value(CONF_URL)).rstrip("/"),
                 owner=self.abs_username,
                 media_type=media_type,
             )
@@ -1906,8 +1866,8 @@ for more details.
                 await asyncio.sleep(0.5)
         async with self.reauthenticate_lock:
             await self._client.session_config.authenticate(
-                username=str(self.config.get_value(CONF_USERNAME)),
-                password=str(self.config.get_value(CONF_PASSWORD)),
+                username=str(self.get_setup_value(CONF_USERNAME)),
+                password=str(self.get_setup_value(CONF_PASSWORD)),
             )
             self.reauthenticate_last = time.time()
 

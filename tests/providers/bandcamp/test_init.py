@@ -77,13 +77,11 @@ async def bandcamp_provider(mass: MusicAssistant) -> AsyncGenerator[ProviderConf
         mock_client.get_track.return_value = mock_track
 
         async with wait_for_sync_completion(mass):
-            config = await mass.config.save_provider_config(
+            config = await mass.config._create_provider_instance(
                 "bandcamp",
-                {
-                    "identity": "mock_identity_token",
-                    "search_limit": 10,
-                    "top_tracks_limit": 50,
-                },
+                {"search_limit": 10, "top_tracks_limit": 50},
+                # the identity cookie is collected by the setup flow and lives in setup_data
+                setup_data=mass.config._encrypt_values({"identity": "mock_identity_token"}),
             )
             await mass.music.start_sync()
 

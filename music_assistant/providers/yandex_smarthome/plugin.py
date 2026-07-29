@@ -18,9 +18,12 @@ Connection modes:
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict
 from typing import Any
 
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import ConfigEntryType
 from ya_dialogs_api import SecretStr
 
 from music_assistant.models.plugin import PluginProvider
@@ -55,6 +58,7 @@ from .handlers import (
     parse_action_payload,
 )
 from .notifier import StateNotifier
+from .playlists import fetch_playlist_options
 from .schema import CloudRequest
 
 
@@ -73,28 +77,72 @@ class YandexSmartHomePlugin(PluginProvider):
     _cloud_task: Any = None
     _user_id: str = ""
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return Config entries to configure this provider.
+
+        Authentication and cloud/skill provisioning are handled by the setup flow (see
+        setup_flow.py); only the genuine playback options are configurable here.
+        """
+        player_options = await self._list_player_options()
+        playlist_options: list[ConfigValueOption] = []
+        try:
+            playlist_options = await fetch_playlist_options(self.mass)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self.logger.debug("could not enumerate playlists")
+
+        return (
+            ConfigEntry(
+                key=CONF_INSTANCE_NAME,
+                type=ConfigEntryType.STRING,
+                required=False,
+                default_value="Music Assistant",
+            ),
+            ConfigEntry(
+                key=CONF_EXPOSED_PLAYERS,
+                type=ConfigEntryType.STRING,
+                required=False,
+                multi_value=True,
+                default_value=[],
+                options=list(player_options) if player_options else [],
+            ),
+            ConfigEntry(
+                key=CONF_EXPOSED_PLAYLISTS,
+                type=ConfigEntryType.STRING,
+                required=False,
+                multi_value=True,
+                default_value=[],
+                options=list(playlist_options) if playlist_options else [],
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the plugin."""
+        # credentials collected by the setup flow live in setup_data; get_setup_value reads
+        # them (and transparently falls back to the legacy config values for installs
+        # configured before the flow existed, so no data migration is needed)
         self._connection_type = str(
-            self.config.get_value(CONF_CONNECTION_TYPE) or CONNECTION_TYPE_CLOUD
+            self.get_setup_value(CONF_CONNECTION_TYPE) or CONNECTION_TYPE_CLOUD
         )
         self._instance_name = str(self.config.get_value(CONF_INSTANCE_NAME) or "Music Assistant")
-        cloud_token_raw = str(self.config.get_value(CONF_CLOUD_INSTANCE_PASSWORD) or "")
+        cloud_token_raw = str(self.get_setup_value(CONF_CLOUD_INSTANCE_PASSWORD) or "")
         self._cloud_token: SecretStr | None = (
             SecretStr(cloud_token_raw) if cloud_token_raw else None
         )
-        conn_token_raw = str(self.config.get_value(CONF_CLOUD_CONNECTION_TOKEN) or "")
+        conn_token_raw = str(self.get_setup_value(CONF_CLOUD_CONNECTION_TOKEN) or "")
         self._connection_token: SecretStr | None = (
             SecretStr(conn_token_raw) if conn_token_raw else None
         )
-        self._cloud_instance_id = str(self.config.get_value(CONF_CLOUD_INSTANCE_ID) or "")
-        self._skill_id = str(self.config.get_value(CONF_SKILL_ID) or "")
-        skill_token_raw = str(self.config.get_value(CONF_SKILL_TOKEN) or "")
+        self._cloud_instance_id = str(self.get_setup_value(CONF_CLOUD_INSTANCE_ID) or "")
+        self._skill_id = str(self.get_setup_value(CONF_SKILL_ID) or "")
+        skill_token_raw = str(self.get_setup_value(CONF_SKILL_TOKEN) or "")
         self._skill_token: SecretStr | None = (
             SecretStr(skill_token_raw) if skill_token_raw else None
         )
-        self._direct_access_token = str(self.config.get_value(CONF_DIRECT_ACCESS_TOKEN) or "")
-        self._direct_client_secret = str(self.config.get_value(CONF_DIRECT_CLIENT_SECRET) or "")
+        self._direct_access_token = str(self.get_setup_value(CONF_DIRECT_ACCESS_TOKEN) or "")
+        self._direct_client_secret = str(self.get_setup_value(CONF_DIRECT_CLIENT_SECRET) or "")
 
         # Parse exposed players filter
         exposed_raw = self.config.get_value(CONF_EXPOSED_PLAYERS) or []
@@ -256,7 +304,7 @@ class YandexSmartHomePlugin(PluginProvider):
         def _on_token_created(token: str) -> None:
             """Persist new access token generated during OAuth flow."""
             self._direct_access_token = token
-            self._update_config_value(CONF_DIRECT_ACCESS_TOKEN, token, encrypted=True)
+            self._update_setup_data(CONF_DIRECT_ACCESS_TOKEN, token, immediate=True)
 
         self._direct_handler = DirectConnectionHandler(
             mass=self.mass,
@@ -370,3 +418,16 @@ class YandexSmartHomePlugin(PluginProvider):
         except Exception:
             self.logger.exception("Error handling cloud request: %s", action)
             return build_response(request_id, {})
+
+    async def _list_player_options(self) -> list[ConfigValueOption]:
+        """Build the player-picker options list."""
+        options: list[ConfigValueOption] = []
+        try:
+            for player in self.mass.players.all_players():
+                state = player.state
+                options.append(
+                    ConfigValueOption(title=state.name or state.player_id, value=state.player_id)
+                )
+        except Exception:
+            self.logger.debug("could not enumerate players")
+        return options

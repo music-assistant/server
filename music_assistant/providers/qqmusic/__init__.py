@@ -7,18 +7,15 @@ import logging
 import re
 import time
 from asyncio import Semaphore
-from base64 import b64encode
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
-from aiohttp import web
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
-    EventType,
     MediaType,
     ProviderFeature,
     StreamType,
@@ -44,7 +41,6 @@ from music_assistant_models.media_items import (
     UniqueList,
 )
 from music_assistant_models.streamdetails import StreamDetails
-from pydantic import ValidationError
 from qqmusic_api import (
     CgiApiException,
     Credential,
@@ -56,7 +52,6 @@ from qqmusic_api import (
     Client as QQClient,
 )
 from qqmusic_api.algorithms import qrc_decrypt
-from qqmusic_api.models.login import QR, QRCodeLoginEvents, QRLoginType
 from qqmusic_api.modules.search import SearchType
 from qqmusic_api.modules.singer import TabType
 from qqmusic_api.modules.song import SongFileInfo, SongFileType, SpecialSongFileType
@@ -66,18 +61,10 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
 from .constants import (
-    CONF_ACTION_CHECK_QR_AUTH,
-    CONF_ACTION_CLEAR_AUTH,
-    CONF_ACTION_START_QQ_QR_AUTH,
-    CONF_ACTION_START_QR_AUTH,
-    CONF_ACTION_START_WX_QR_AUTH,
     CONF_CREDENTIAL_JSON,
     CONF_LOGIN_TYPE,
     CONF_MUSICID,
     CONF_MUSICKEY,
-    CONF_QR_IDENTIFIER,
-    CONF_QR_PAGE_URL,
-    CONF_QR_TYPE,
     CONF_QUALITY,
     CONF_UIN,
     QUALITY_FLAC,
@@ -126,7 +113,6 @@ SUPPORTED_FEATURES = {
     ProviderFeature.LYRICS,
 }
 
-_QR_ROUTE_UNREGISTER: dict[str, Any] = {}
 _LRC_TIMESTAMP_PATTERN = re.compile(r"\[\d{1,2}:\d{2}(?:\.\d{1,3})?\]")
 _HEX_LYRIC_PATTERN = re.compile(r"^[0-9A-Fa-f]{32,}$")
 _RECOMMEND_GUESS_TTL = 60 * 60
@@ -134,97 +120,11 @@ _RECOMMEND_NEWSONG_TTL = 60 * 60 * 6
 _RECOMMEND_PLAYLIST_TTL = 60 * 60 * 6
 
 
-def _clear_qr_route(route_path: str | None) -> None:
-    """Unregister one temporary QR route if present."""
-    if not route_path:
-        return
-    if unregister := _QR_ROUTE_UNREGISTER.pop(route_path, None):
-        with suppress(Exception):
-            unregister()
-
-
-def _get_qr_route_path(values: dict[str, ConfigValueType]) -> str | None:
-    """Resolve current session QR route path from config values."""
-    qr_page_url = str(values.get(CONF_QR_PAGE_URL) or "")
-    if qr_page_url:
-        parsed = urlparse(qr_page_url)
-        path = parsed.path or qr_page_url
-        if path and not path.startswith("/"):
-            path = f"/{path}"
-        if path.startswith("/auth/qqmusic/qr/"):
-            return path
-    if session_id := values.get("session_id"):
-        return f"/auth/qqmusic/qr/{session_id}"
-    return None
-
-
-def _register_qr_auth_page(
-    mass: MusicAssistant,
-    session_id: str,
-    image_bytes: bytes,
-    mime_type: str,
-) -> str:
-    """Register a temporary web route for QR image and return client-safe URL."""
-    if not getattr(mass, "webserver", None):
-        b64 = b64encode(image_bytes).decode("ascii")
-        return f"data:{mime_type};base64,{b64}"
-
-    route_path = f"/auth/qqmusic/qr/{session_id}"
-    _clear_qr_route(route_path)
-
-    async def _serve_qr(_: web.Request) -> web.Response:
-        return web.Response(
-            body=image_bytes,
-            content_type=mime_type,
-            headers={"Cache-Control": "no-store, max-age=0"},
-        )
-
-    unregister = mass.webserver.register_dynamic_route(route_path, _serve_qr, "GET")
-    _QR_ROUTE_UNREGISTER[route_path] = unregister
-    # Use a relative URL (without leading slash) so this also works behind HA Ingress.
-    return f"{route_path.lstrip('/')}?ts={int(time.time())}"
-
-
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return QQMusicProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-def _is_verified(values: dict[str, ConfigValueType]) -> bool:
-    credential_json = str(values.get(CONF_CREDENTIAL_JSON) or "").strip()
-    if not credential_json:
-        return False
-    with suppress(ValidationError, ValueError):
-        credential = Credential.model_validate_json(credential_json)
-        return bool(credential.musicid and credential.musickey and credential.encrypt_uin)
-    return False
-
-
-def _get_qr_login_type(values: dict[str, ConfigValueType]) -> Any:
-    qr_type_value = str(values.get(CONF_QR_TYPE) or "qq")
-    return next(
-        (item for item in QRLoginType if item.value == qr_type_value),
-        QRLoginType.QQ,
-    )
-
-
-def _get_qr_login_name(values: dict[str, ConfigValueType]) -> str:
-    return "WeChat" if str(values.get(CONF_QR_TYPE) or "") == "wx" else "QQ"
-
-
-def _clear_auth(values: dict[str, ConfigValueType]) -> None:
-    route_path = _get_qr_route_path(values)
-    values[CONF_UIN] = None
-    values[CONF_MUSICID] = None
-    values[CONF_MUSICKEY] = None
-    values[CONF_LOGIN_TYPE] = None
-    values[CONF_CREDENTIAL_JSON] = None
-    values[CONF_QR_IDENTIFIER] = None
-    values[CONF_QR_TYPE] = None
-    values[CONF_QR_PAGE_URL] = None
-    _clear_qr_route(route_path)
 
 
 def _store_credential(values: dict[str, ConfigValueType], credential: Any) -> None:
@@ -250,220 +150,6 @@ def _store_credential(values: dict[str, ConfigValueType], credential: Any) -> No
     values[CONF_MUSICKEY] = str(credential.musickey)
     values[CONF_LOGIN_TYPE] = str(credential.login_type or 2)
     values[CONF_CREDENTIAL_JSON] = credential_json
-    values[CONF_QR_IDENTIFIER] = None
-    values[CONF_QR_TYPE] = None
-    values[CONF_QR_PAGE_URL] = None
-
-
-async def _start_qr_auth(
-    mass: MusicAssistant,
-    values: dict[str, ConfigValueType],
-    login_type: Any,
-) -> None:
-    _clear_qr_route(_get_qr_route_path(values))
-    client = QQClient()
-    try:
-        qr = await client.login.get_qrcode(login_type)
-        if not getattr(qr, "identifier", None) or not getattr(qr, "data", None):
-            raise LoginFailed("Failed to generate QQ Music login QR code")
-        values[CONF_QR_IDENTIFIER] = str(qr.identifier)
-        values[CONF_QR_TYPE] = str(getattr(qr.qr_type, "value", "qq"))
-        if session_id := values.get("session_id"):
-            qr_page_url = _register_qr_auth_page(
-                mass,
-                str(session_id),
-                bytes(qr.data),
-                str(getattr(qr, "mimetype", "image/png")),
-            )
-            values[CONF_QR_PAGE_URL] = qr_page_url
-            mass.signal_event(EventType.AUTH_SESSION, str(session_id), qr_page_url)
-            # Keep the config action response open briefly so the MA frontend can
-            # consume AUTH_SESSION before its loading overlay unmounts the auth link.
-            await asyncio.sleep(0.5)
-        if not callable(getattr(client.login, "check_qrcode", None)):
-            return
-        deadline = time.monotonic() + 120
-        while time.monotonic() < deadline:
-            result = await client.login.check_qrcode(qr)
-            if result.event == QRCodeLoginEvents.DONE and result.credential:
-                _store_credential(values, result.credential)
-                return
-            if result.event == QRCodeLoginEvents.TIMEOUT:
-                values[CONF_QR_IDENTIFIER] = None
-                values[CONF_QR_TYPE] = None
-                values[CONF_QR_PAGE_URL] = None
-                raise InvalidDataError("QR code expired, please generate a new one")
-            if result.event == QRCodeLoginEvents.REFUSE:
-                raise InvalidDataError(f"Login was rejected in {_get_qr_login_name(values)} app")
-            await asyncio.sleep(1.0)
-        if values.get(CONF_QR_IDENTIFIER):
-            raise InvalidDataError("Waiting for QR scan confirmation timed out, please try again")
-    finally:
-        await client.close()
-
-
-async def _check_qr_auth(
-    values: dict[str, ConfigValueType],
-    client: Any | None = None,
-    qr: Any | None = None,
-) -> None:
-    qr_identifier = str(values.get(CONF_QR_IDENTIFIER) or "")
-    if not qr_identifier:
-        raise InvalidDataError("Please generate a QR code first")
-    qr_type = _get_qr_login_type(values)
-    if qr is None:
-        qr = QR(
-            data=b"",
-            qr_type=qr_type,
-            mimetype="image/png",
-            identifier=qr_identifier,
-        )
-    close_client = client is None
-    if client is None:
-        client = QQClient()
-    try:
-        result = await client.login.check_qrcode(qr)
-    finally:
-        if close_client:
-            await client.close()
-    if result.event == QRCodeLoginEvents.DONE and result.credential:
-        _store_credential(values, result.credential)
-        return
-    if result.event == QRCodeLoginEvents.SCAN:
-        raise InvalidDataError("QR code not scanned yet")
-    if result.event == QRCodeLoginEvents.CONF:
-        raise InvalidDataError(
-            f"QR scanned, please confirm login in {_get_qr_login_name(values)} app"
-        )
-    if result.event == QRCodeLoginEvents.TIMEOUT:
-        values[CONF_QR_IDENTIFIER] = None
-        values[CONF_QR_TYPE] = None
-        values[CONF_QR_PAGE_URL] = None
-        raise InvalidDataError("QR code expired, please generate a new one")
-    if result.event == QRCodeLoginEvents.REFUSE:
-        raise InvalidDataError(f"Login was rejected in {_get_qr_login_name(values)} app")
-    raise LoginFailed("Unable to determine QR login status")
-
-
-def _build_config_entries(values: dict[str, ConfigValueType]) -> tuple[ConfigEntry, ...]:
-    is_verified = _is_verified(values)
-    entries = [
-        ConfigEntry(
-            key=CONF_UIN,
-            type=ConfigEntryType.STRING,
-            label=CONF_UIN,
-            hidden=True,
-            required=False,
-            value=str(values.get(CONF_UIN) or ""),
-        ),
-        ConfigEntry(
-            key=CONF_QUALITY,
-            type=ConfigEntryType.STRING,
-            default_value=QUALITY_MP3_320,
-            options=[
-                ConfigValueOption(QUALITY_MP3_128),
-                ConfigValueOption(QUALITY_MP3_320),
-                ConfigValueOption(QUALITY_FLAC),
-                ConfigValueOption(QUALITY_HI_RES),
-            ],
-            hidden=not is_verified,
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_START_QQ_QR_AUTH,
-            type=ConfigEntryType.ACTION,
-            action=CONF_ACTION_START_QQ_QR_AUTH,
-            hidden=is_verified,
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_START_WX_QR_AUTH,
-            type=ConfigEntryType.ACTION,
-            action=CONF_ACTION_START_WX_QR_AUTH,
-            hidden=is_verified,
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_CLEAR_AUTH,
-            type=ConfigEntryType.ACTION,
-            action=CONF_ACTION_CLEAR_AUTH,
-            hidden=not is_verified,
-        ),
-        ConfigEntry(
-            key=CONF_MUSICID,
-            type=ConfigEntryType.STRING,
-            label=CONF_MUSICID,
-            hidden=True,
-            required=False,
-            value=str(values.get(CONF_MUSICID) or ""),
-        ),
-        ConfigEntry(
-            key=CONF_MUSICKEY,
-            type=ConfigEntryType.SECURE_STRING,
-            label=CONF_MUSICKEY,
-            hidden=True,
-            required=False,
-            value=str(values.get(CONF_MUSICKEY) or ""),
-        ),
-        ConfigEntry(
-            key=CONF_LOGIN_TYPE,
-            type=ConfigEntryType.STRING,
-            label=CONF_LOGIN_TYPE,
-            hidden=True,
-            required=False,
-            value=str(values.get(CONF_LOGIN_TYPE) or ""),
-        ),
-        ConfigEntry(
-            key=CONF_CREDENTIAL_JSON,
-            type=ConfigEntryType.SECURE_STRING,
-            label=CONF_CREDENTIAL_JSON,
-            hidden=True,
-            required=False,
-            value=str(values.get(CONF_CREDENTIAL_JSON) or ""),
-        ),
-        ConfigEntry(
-            key=CONF_QR_IDENTIFIER,
-            type=ConfigEntryType.STRING,
-            label=CONF_QR_IDENTIFIER,
-            hidden=True,
-            required=False,
-            value=str(values.get(CONF_QR_IDENTIFIER) or ""),
-        ),
-        ConfigEntry(
-            key=CONF_QR_TYPE,
-            type=ConfigEntryType.STRING,
-            label=CONF_QR_TYPE,
-            hidden=True,
-            required=False,
-            value=str(values.get(CONF_QR_TYPE) or ""),
-        ),
-        ConfigEntry(
-            key=CONF_QR_PAGE_URL,
-            type=ConfigEntryType.STRING,
-            label=CONF_QR_PAGE_URL,
-            hidden=True,
-            required=False,
-            value=str(values.get(CONF_QR_PAGE_URL) or ""),
-        ),
-    ]
-    return tuple(entries)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    if values is None:
-        values = {}
-    if action == CONF_ACTION_CLEAR_AUTH:
-        _clear_auth(values)
-    elif action in (CONF_ACTION_START_QR_AUTH, CONF_ACTION_START_QQ_QR_AUTH):
-        await _start_qr_auth(mass, values, QRLoginType.QQ)
-    elif action == CONF_ACTION_START_WX_QR_AUTH:
-        await _start_qr_auth(mass, values, QRLoginType.WX)
-    elif action == CONF_ACTION_CHECK_QR_AUTH:
-        await _check_qr_auth(values)
-    return (CONF_ENTRY_UNOFFICIAL_PROVIDER, *_build_config_entries(values))
 
 
 class QQMusicProvider(MusicProvider):
@@ -486,10 +172,32 @@ class QQMusicProvider(MusicProvider):
     _euin: str = ""
     _recommend_payload_cache: dict[str, tuple[float, Any]]
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the configuration (options) entries for the QQ Music provider.
+
+        Authentication runs in the interactive setup flow (see ``setup_flow.py``); the only
+        genuine option configured here is the preferred streaming quality.
+        """
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                default_value=QUALITY_MP3_320,
+                options=[
+                    ConfigValueOption(QUALITY_MP3_128),
+                    ConfigValueOption(QUALITY_MP3_320),
+                    ConfigValueOption(QUALITY_FLAC),
+                    ConfigValueOption(QUALITY_HI_RES),
+                ],
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Validate auth and initialize qqmusic api adapters."""
         credential: Credential | None = None
-        if credential_json := str(self.config.get_value(CONF_CREDENTIAL_JSON) or "").strip():
+        if credential_json := str(self.get_setup_value(CONF_CREDENTIAL_JSON) or "").strip():
             try:
                 credential = Credential.model_validate_json(credential_json)
             except Exception as err:
@@ -499,38 +207,20 @@ class QQMusicProvider(MusicProvider):
                 )
 
         if not credential or not credential.musicid or not credential.musickey:
-            config_musicid = self.config.get_value(CONF_MUSICID) or self.config.get_value(CONF_UIN)
-            config_musickey = self.config.get_value(CONF_MUSICKEY)
-            config_login_type = self.config.get_value(CONF_LOGIN_TYPE)
+            config_musicid = self.get_setup_value(CONF_MUSICID) or self.get_setup_value(CONF_UIN)
+            config_musickey = self.get_setup_value(CONF_MUSICKEY)
+            config_login_type = self.get_setup_value(CONF_LOGIN_TYPE)
             if not (config_musicid and config_musickey):
-                pending_values = {
-                    CONF_QR_IDENTIFIER: self.config.get_value(CONF_QR_IDENTIFIER),
-                    CONF_QR_TYPE: self.config.get_value(CONF_QR_TYPE),
-                    CONF_QR_PAGE_URL: self.config.get_value(CONF_QR_PAGE_URL),
-                }
-                if pending_values[CONF_QR_IDENTIFIER]:
-                    await _check_qr_auth(pending_values)
-                    if pending_credential_json := str(
-                        pending_values.get(CONF_CREDENTIAL_JSON) or ""
-                    ).strip():
-                        credential = Credential.model_validate_json(pending_credential_json)
-                    config_musicid = pending_values.get(CONF_MUSICID)
-                    config_musickey = pending_values.get(CONF_MUSICKEY)
-                    config_login_type = pending_values.get(CONF_LOGIN_TYPE)
-                if not (config_musicid and config_musickey):
-                    raise LoginFailed(
-                        "No QQ Music authentication configured, please login by QR code"
-                    )
+                raise LoginFailed("No QQ Music authentication configured, please login by QR code")
             login_type_raw = str(config_login_type or "2")
             login_type = int(login_type_raw) if login_type_raw.isdigit() else 2
-            if not credential or not credential.musicid or not credential.musickey:
-                credential = Credential.model_validate(
-                    {
-                        "musicid": int(str(config_musicid).strip()),
-                        "musickey": str(config_musickey),
-                        "loginType": login_type,
-                    }
-                )
+            credential = Credential.model_validate(
+                {
+                    "musicid": int(str(config_musicid).strip()),
+                    "musickey": str(config_musickey),
+                    "loginType": login_type,
+                }
+            )
         if not credential.encrypt_uin:
             raise LoginFailed(
                 "QQ Music credential is missing encryptUin, please re-authenticate by QR code"
@@ -633,24 +323,16 @@ class QQMusicProvider(MusicProvider):
         return items
 
     def _persist_credential(self) -> None:
-        """Persist current credential into provider config values."""
+        """Persist the current credential into this provider's setup data."""
         if not self._credential:
             return
-        self._set_config_value_safe(CONF_UIN, str(self._credential.musicid))
-        self._set_config_value_safe(CONF_MUSICID, str(self._credential.musicid))
-        self._set_config_value_safe(CONF_MUSICKEY, str(self._credential.musickey), encrypted=True)
-        self._set_config_value_safe(CONF_LOGIN_TYPE, str(self._credential.login_type or 2))
-        self._set_config_value_safe(
-            CONF_CREDENTIAL_JSON,
-            self._credential.model_dump_json(by_alias=True),
-            encrypted=True,
+        self._update_setup_data(CONF_UIN, str(self._credential.musicid))
+        self._update_setup_data(CONF_MUSICID, str(self._credential.musicid))
+        self._update_setup_data(CONF_MUSICKEY, str(self._credential.musickey))
+        self._update_setup_data(CONF_LOGIN_TYPE, str(self._credential.login_type or 2))
+        self._update_setup_data(
+            CONF_CREDENTIAL_JSON, self._credential.model_dump_json(by_alias=True)
         )
-
-    def _set_config_value_safe(self, key: str, value: Any, encrypted: bool = False) -> None:
-        """Safely update provider config at runtime, tolerant of missing cached keys."""
-        self.mass.config.set_raw_provider_config_value(self.instance_id, key, value, encrypted)
-        if key in self.config.values:
-            self.config.values[key].value = value
 
     async def _ensure_valid_credential(self) -> None:
         """Refresh credential when expired and persistence data allows refresh."""
@@ -720,11 +402,6 @@ class QQMusicProvider(MusicProvider):
         """Handle unload/close of provider."""
         if self._qq_client:
             await self._qq_client.close()
-        if is_removed:
-            route_path = _get_qr_route_path(
-                {CONF_QR_PAGE_URL: str(self.config.get_value(CONF_QR_PAGE_URL) or "")}
-            )
-            _clear_qr_route(route_path)
         self._qq_client = None
         self._recommend_payload_cache = {}
         await super().unload(is_removed)

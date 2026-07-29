@@ -33,7 +33,7 @@ from music_assistant.controllers.tasks.context import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.images import cleanup_thumb_cache
-from music_assistant.helpers.lyrics import normalize_lrc_lyrics
+from music_assistant.helpers.lyrics import extract_lrc_lyrics, normalize_lrc_lyrics
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.helpers.util import try_parse_int
 from music_assistant.models.core_controller import CoreController
@@ -59,7 +59,7 @@ from .images import ImageProxyMixin
 from .radio import RadioArtworkMixin
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, CoreConfig
+    from music_assistant_models.config_entries import CoreConfig
     from music_assistant_models.media_items import (
         Album,
         Artist,
@@ -114,11 +114,7 @@ class MetaDataController(
         # corrupt metadata rows found by the last scan pass, per table, for diagnostics
         self._corrupt_metadata_rows: dict[str, list[dict[str, str | int]]] = {}
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         return (
             ConfigEntry(
@@ -321,7 +317,8 @@ class MetaDataController(
         """
         lyrics, lrc_lyrics = await self._get_track_lyrics(track)
         # on-demand lookups are not stored in the library db, so normalize on the way out
-        return lyrics, normalize_lrc_lyrics(lrc_lyrics)
+        # promoting LRC formatted text stored in the plain lyrics tag
+        return lyrics, normalize_lrc_lyrics(lrc_lyrics or extract_lrc_lyrics(lyrics))
 
     async def get_diagnostics(self) -> dict[str, SerializableType] | None:
         """Return diagnostics info for this controller to include in diagnostics reports."""

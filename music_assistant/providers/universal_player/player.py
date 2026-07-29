@@ -75,7 +75,7 @@ class UniversalPlayer(Player):
     def available(self) -> bool:
         """Return if the player is currently available."""
         return any(
-            (p := self.mass.players.get_player(pid)) and p.available and not p.needs_setup
+            (p := self.mass.players.get_player(pid)) and p.available_for_playback
             for pid in self._protocol_player_ids
         )
 
@@ -84,10 +84,16 @@ class UniversalPlayer(Player):
         """Return if the player needs setup (a protocol is connected but not set up)."""
         if self.available:
             return False
-        return any(
-            (p := self.mass.players.get_player(pid)) and p.available and p.needs_setup
-            for pid in self._protocol_player_ids
-        )
+        return self._get_protocol_player_needing_setup() is not None
+
+    @property
+    def setup_reason(self) -> str | None:
+        """Return why the player needs setup, or None when it is ready to use."""
+        if self.available:
+            return None
+        if protocol_player := self._get_protocol_player_needing_setup():
+            return protocol_player.setup_reason
+        return None
 
     @property
     def supported_features(self) -> set[PlayerFeature]:
@@ -185,6 +191,14 @@ class UniversalPlayer(Player):
         """Remove a protocol player from this universal player."""
         if protocol_player_id in self._protocol_player_ids:
             self._protocol_player_ids.remove(protocol_player_id)
+
+    def _get_protocol_player_needing_setup(self) -> Player | None:
+        """Return the first connected protocol player that still needs setup, if any."""
+        for pid in self._protocol_player_ids:
+            protocol_player = self.mass.players.get_player(pid)
+            if protocol_player and protocol_player.available and protocol_player.needs_setup:
+                return protocol_player
+        return None
 
     def _get_active_output_protocol_player(self) -> Player | None:
         """Return the protocol player currently selected as this player's output, if any."""

@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from hass_client.models import CompressedState
     from hass_client.models import Entity as HassEntity
     from hass_client.models import State as HassState
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant_models.config_entries import ConfigEntry
 
     from .provider import HomeAssistantPlayerProvider
 
@@ -134,11 +134,7 @@ class HomeAssistantPlayer(Player):
         # hass media players are a hot mess so play it safe and always use flow mode
         return True
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         base_entries = [*DEFAULT_PLAYER_CONFIG_ENTRIES]
         # add alert if the player (type) is also supported by a native MA provider

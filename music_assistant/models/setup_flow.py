@@ -157,10 +157,15 @@ class SetupSession:
         self._unregister_callback_route: Callable[[], None] | None = None
 
     @property
+    def callback_path(self) -> str:
+        """Return the local callback path that resumes this flow's external step."""
+        self._ensure_callback_route()
+        return self._callback_path
+
+    @property
     def callback_url(self) -> str:
         """Return the public callback URL that resumes this flow's external step."""
-        self._ensure_callback_route()
-        return f"{self.mass.webserver.base_url}{self._callback_path}"
+        return f"{self.mass.webserver.base_url}{self.callback_path}"
 
     async def form(
         self,
@@ -169,6 +174,7 @@ class SetupSession:
         errors: dict[str, str] | None = None,
         last_step: bool | None = None,
         expires_in: float | None = None,
+        translation_params: list[str] | None = None,
     ) -> dict[str, ConfigValueType]:
         """
         Show a form to the user and wait for the submitted (validated) values.
@@ -179,6 +185,7 @@ class SetupSession:
         :param last_step: Optional hint that this is the flow's final form.
         :param expires_in: Optional deadline in seconds; when it passes,
             StepExpiredError is raised here (and the client countdown runs out).
+        :param translation_params: Optional values for placeholders in the step translations.
         """
         step = self._build_step(
             FlowStepType.FORM,
@@ -186,6 +193,7 @@ class SetupSession:
             entries=self._prepare_entries(entries),
             errors=dict(errors) if errors else {},
             last_step=last_step,
+            translation_params=translation_params,
             expires_in=expires_in,
         )
         self._input_future = asyncio.get_running_loop().create_future()
@@ -253,8 +261,10 @@ class SetupSession:
         Publish a progress step and wait for the given awaitable, deadline-enforced.
 
         Display and enforcement come from the single ``expires_in`` declaration: the
-        step's countdown and the engine deadline cannot drift. On the deadline the
-        awaitable is cancelled and StepExpiredError is raised here.
+        step's countdown and the engine deadline cannot drift. On the deadline
+        StepExpiredError is raised here and the awaitable is cancelled - this also
+        cancels a pre-existing Task (cancellation propagates through the await);
+        wrap work in ``asyncio.shield`` if it must survive the deadline.
 
         :param awaitable: The work/wait to perform while the progress step shows.
         :param step_id: Stable slug identifying this step (also the i18n key segment).
@@ -279,11 +289,48 @@ class SetupSession:
 
         :param values: The values to persist as the target's setup_data.
         """
+        if self.finished:
+            msg = "Setup flow already finished"
+            raise RuntimeError(msg)
         result = await self._finish_handler(self, values)
         self.finished = True
         step = self._build_step(FlowStepType.FINISH, "finish", result=result)
         self._publish_step(step)
         return result
+
+    def retarget(
+        self,
+        *,
+        domain: str,
+        instance_id: str | None,
+        player_id: str,
+        setup_data: dict[str, Any],
+        values: dict[str, ConfigValueType],
+    ) -> None:
+        """
+        Re-point this running flow at a different (child) player.
+
+        Used by a parent player's wrapper flow to delegate to one of its protocol
+        children: after re-pointing, the child's steps localize under the child's
+        provider namespace and ``finish()`` persists to the child's config. The steps
+        published before the retarget (e.g. a "which device" selection form owned by
+        the parent) keep the parent's namespace.
+
+        :param domain: The child provider's domain.
+        :param instance_id: The child provider instance id.
+        :param player_id: The child player id (the new persist/finish target).
+        :param setup_data: The child's decrypted setup_data, for prefill.
+        :param values: The child's existing config values, for prefill.
+        """
+        self.context = replace(
+            self.context,
+            domain=domain,
+            instance_id=instance_id,
+            player_id=player_id,
+            setup_data=setup_data,
+            values=values,
+        )
+        self._translation_owner = f"provider.{domain}"
 
     # ------------------------------------------------------------------------------
     # Engine-facing methods below: called by the SetupFlowMixin, never by flow authors
@@ -358,8 +405,11 @@ class SetupSession:
                     params.update({key: str(val) for key, val in (await request.post()).items()})
             except Exception as err:
                 LOGGER.error("Failed to parse setup flow callback body: %s", err)
-        self.last_activity = time.monotonic()
         if self._callback_future is not None and not self._callback_future.done():
+            # only a callback that resolves a pending external step counts as
+            # activity: the route is unauthenticated, so bare requests must not
+            # be able to keep the flow alive past the idle TTL
+            self.last_activity = time.monotonic()
             self._callback_future.set_result(params)
         else:
             LOGGER.debug(
@@ -427,6 +477,7 @@ class SetupSession:
         image: str | None = None,
         result: dict[str, str] | None = None,
         reason: str | None = None,
+        translation_params: list[str] | None = None,
         expires_in: float | None = None,
     ) -> SetupFlowStep:
         """Build a SetupFlowStep for this flow, stamping owner and absolute deadline."""
@@ -446,16 +497,17 @@ class SetupSession:
             result=result,
             reason=reason,
             translation_owner=self._translation_owner,
+            translation_params=translation_params,
         )
 
     def _prepare_entries(self, entries: list[ConfigEntry]) -> list[ConfigEntry]:
         """Return copies of the form entries, validated and stamped for this flow."""
         prepared: list[ConfigEntry] = []
         for entry in entries:
-            if entry.action:
+            if entry.action or entry.type == ConfigEntryType.ACTION:
                 # actions are the pseudo-flow mechanism of the options surface;
                 # inside real flows they are structurally banned
-                msg = f"Config entry {entry.key} carries an action, not allowed in setup flows"
+                msg = f"Config entry {entry.key} is an action entry, not allowed in setup flows"
                 raise ValueError(msg)
             # replace() returns a copy so the (often module-level) entry definitions
             # are never mutated by submit-side value/owner stamping

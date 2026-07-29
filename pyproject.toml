@@ -26,8 +26,8 @@ dependencies = [
   "ifaddr==0.2.0",
   "getmac==0.9.5",
   "mashumaro==3.20",
-  "music-assistant-frontend==2.17.232",
-  "music-assistant-models==1.1.169",
+  "music-assistant-models==1.1.175",
+  "music-assistant-frontend==2.17.250",
   "mutagen==1.48.1",
   "orjson==3.11.6",
   "pillow==12.3.0",
@@ -57,8 +57,8 @@ version = "0.0.0"
 
 [project.optional-dependencies]
 test = [
-  "codespell==2.4.2",
-  "mypy==2.1.0",
+  "codespell==2.4.3",
+  "mypy==2.3.0",
   "pre-commit==4.6.0",
   "pre-commit-hooks==6.0.0",
   "psutil==7.2.2",
@@ -66,6 +66,7 @@ test = [
   "pytest-aiohttp==1.1.0",
   "pytest-codspeed==5.0.3",
   "pytest-cov==7.0.0",
+  "pytest-timeout==2.4.0",
   "syrupy==5.2.0",
   "tomli==2.4.1",
   "ruff==0.15.22",
@@ -84,7 +85,7 @@ mass = "music_assistant.__main__:main"
 # translations/*.json are machine-translated locale files (Lokalise); foreign words aren't typos
 ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,connexion,claus,childrens,"
 skip = """*.js,*.svg,\
-music_assistant/providers/itunes_podcasts/itunes_country_codes.json,\
+music_assistant/helpers/resources/countries.json,\
 music_assistant/helpers/resources/genres/genre_mapping.json,\
 music_assistant/providers/sonic_analysis/vendored_clap/**,\
 music_assistant/translations/*.json,\
@@ -183,6 +184,7 @@ line-ending = "lf"
 [tool.pytest.ini_options]
 addopts = "--cov music_assistant"
 asyncio_mode = "auto"
+timeout = 120
 filterwarnings = [
   # Suppress Python 3.14 AsyncMock internal warnings about unawaited coroutines
   "ignore:coroutine.*was never awaited:RuntimeWarning",

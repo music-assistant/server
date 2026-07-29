@@ -9,7 +9,8 @@ from collections.abc import AsyncGenerator, Coroutine, Sequence
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ImageType, MediaType, ProviderFeature
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import ConfigEntryType, ImageType, MediaType, ProviderFeature
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -33,6 +34,7 @@ from music_assistant_models.media_items import (
 )
 from PIL import Image as PilImage
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import utc
 from music_assistant.models.music_provider import MusicProvider
@@ -42,10 +44,12 @@ from .constants import (
     BROWSE_INITIAL_TRACKS,
     COLLECTION_FOLDER_ID,
     CONF_BASE_URL,
+    CONF_CODECS,
     CONF_LIKED_TRACKS_MAX_TRACKS,
     CONF_MY_WAVE_MAX_TRACKS,
     CONF_QUALITY,
     CONF_TOKEN,
+    CONF_TRANSPORT,
     DEFAULT_BASE_URL,
     DISCOVERY_INITIAL_TRACKS,
     FOR_YOU_FOLDER_ID,
@@ -58,6 +62,9 @@ from .constants import (
     MY_WAVES_SET_FOLDER_ID,
     PINNED_ITEMS_FOLDER_ID,
     PLAYLIST_ID_SPLITTER,
+    QUALITY_BALANCED,
+    QUALITY_EFFICIENT,
+    QUALITY_HIGH,
     QUALITY_LOSSLESS,
     RADIO_FOLDER_ID,
     RADIO_TRACK_ID_SEP,
@@ -71,6 +78,8 @@ from .constants import (
     TAG_SEASONAL_MAP,
     TAG_SLUG_CATEGORY,
     TRACK_BATCH_SIZE,
+    TRANSPORT_ENCRAW,
+    TRANSPORT_RAW,
     WAVE_CATEGORY_DISPLAY_ORDER,
     WAVES_FOLDER_ID,
     WAVES_LANDING_FOLDER_ID,
@@ -285,38 +294,79 @@ class KionMusicProvider(MusicProvider):
             return UniqueList()
         return folder.items
 
-    def _media_source_name(self, group: str, key: str) -> str | None:
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
-        Return the authored English ``name`` for *key* in *group*, or None when not authored.
+        Return Config entries to configure this provider.
 
-        :param group: Media translation group (``folder``, ``recommendations`` or ``playlist``).
-        :param key: Authoring key within the group.
+        The token is collected by the interactive setup flow (see setup_flow.py); this
+        surface only exposes the genuine playback options.
         """
-        return self.mass.translations.get_translation(
-            f"provider.{self.domain}.media.{group}.{key}.name"
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            # Quality
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(QUALITY_EFFICIENT),
+                    ConfigValueOption(QUALITY_BALANCED),
+                    ConfigValueOption(QUALITY_HIGH),
+                    ConfigValueOption(QUALITY_LOSSLESS),
+                ],
+                default_value=QUALITY_BALANCED,
+            ),
+            # My Mix maximum tracks (advanced)
+            ConfigEntry(
+                key=CONF_MY_WAVE_MAX_TRACKS,
+                type=ConfigEntryType.INTEGER,
+                range=(10, 1000),
+                default_value=150,
+                required=False,
+                advanced=True,
+            ),
+            # Liked Tracks maximum tracks (advanced)
+            ConfigEntry(
+                key=CONF_LIKED_TRACKS_MAX_TRACKS,
+                type=ConfigEntryType.INTEGER,
+                range=(50, 2000),
+                default_value=500,
+                required=False,
+                advanced=True,
+            ),
+            # Transport mode (advanced)
+            ConfigEntry(
+                key=CONF_TRANSPORT,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(TRANSPORT_RAW),
+                    ConfigValueOption(TRANSPORT_ENCRAW),
+                ],
+                default_value=TRANSPORT_RAW,
+                required=False,
+                advanced=True,
+            ),
+            # Custom codecs override (advanced)
+            ConfigEntry(
+                key=CONF_CODECS,
+                type=ConfigEntryType.STRING,
+                default_value="",
+                required=False,
+                advanced=True,
+            ),
+            # API Base URL (advanced)
+            ConfigEntry(
+                key=CONF_BASE_URL,
+                type=ConfigEntryType.STRING,
+                translation_params=[DEFAULT_BASE_URL],
+                default_value=DEFAULT_BASE_URL,
+                required=False,
+                advanced=True,
+            ),
         )
-
-    def _media_label(self, group: str, key: str, fallback: str) -> tuple[str, str | None]:
-        """
-        Map a browse label to the in-code ``name`` and ``translation_key`` for its media item.
-
-        Authored keys return ``(English source name, key)`` — the English name from the
-        provider's ``strings.json`` plus a ``translation_key`` so the server localizes it for
-        the connection locale at serialization. An unauthored key — e.g. a tag discovered from
-        KION's landing API — returns ``(fallback, None)`` so its already-localized name is kept.
-
-        :param group: Media translation group (``folder``, ``recommendations`` or ``playlist``).
-        :param key: Authoring key within the group; also the item's ``translation_key``.
-        :param fallback: English name to use when no string is authored for *key*.
-        """
-        source = self._media_source_name(group, key)
-        if source is None:
-            return fallback, None
-        return source, key
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        token = self.config.get_value(CONF_TOKEN)
+        token = self.get_setup_value(CONF_TOKEN)
         if not token:
             raise LoginFailed("No KION Music token provided")
 
@@ -552,6 +602,35 @@ class KionMusicProvider(MusicProvider):
         if len(folders) == 1:
             return await self.browse(folders[0].path)
         return folders
+
+    def _media_source_name(self, group: str, key: str) -> str | None:
+        """
+        Return the authored English ``name`` for *key* in *group*, or None when not authored.
+
+        :param group: Media translation group (``folder``, ``recommendations`` or ``playlist``).
+        :param key: Authoring key within the group.
+        """
+        return self.mass.translations.get_translation(
+            f"provider.{self.domain}.media.{group}.{key}.name"
+        )
+
+    def _media_label(self, group: str, key: str, fallback: str) -> tuple[str, str | None]:
+        """
+        Map a browse label to the in-code ``name`` and ``translation_key`` for its media item.
+
+        Authored keys return ``(English source name, key)`` — the English name from the
+        provider's ``strings.json`` plus a ``translation_key`` so the server localizes it for
+        the connection locale at serialization. An unauthored key — e.g. a tag discovered from
+        KION's landing API — returns ``(fallback, None)`` so its already-localized name is kept.
+
+        :param group: Media translation group (``folder``, ``recommendations`` or ``playlist``).
+        :param key: Authoring key within the group; also the item's ``translation_key``.
+        :param fallback: English name to use when no string is authored for *key*.
+        """
+        source = self._media_source_name(group, key)
+        if source is None:
+            return fallback, None
+        return source, key
 
     async def _browse_my_wave(
         self, path: str, sub_subpath: str | None

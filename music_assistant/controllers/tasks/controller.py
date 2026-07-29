@@ -64,7 +64,6 @@ from .models import ManagedTask
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import (
         ConfigEntry,
-        ConfigValueType,
         CoreConfig,
     )
 
@@ -100,11 +99,7 @@ class TasksController(CoreController):
             self._log_handler = TaskLogHandler(self.mass, self._append_task_log)
             logging.getLogger().addHandler(self._log_handler)
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         return (CONF_ENTRY_MAX_CONCURRENT_TASKS,)
 

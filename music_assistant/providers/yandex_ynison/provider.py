@@ -11,7 +11,9 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
 
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
+    ConfigEntryType,
     ContentType,
     EventType,
     MediaType,
@@ -169,9 +171,9 @@ class YandexYnisonProvider(PluginProvider):
         """Initialize the Ynison plugin provider."""
         super().__init__(mass, manifest, config, supported_features)
 
-        # Config values
+        # Setup identity and playback options
         self._default_player_id: str = (
-            cast("str", self.config.get_value(CONF_MASS_PLAYER_ID)) or PLAYER_ID_AUTO
+            cast("str", self.get_setup_value(CONF_MASS_PLAYER_ID)) or PLAYER_ID_AUTO
         )
         allow_switch_value = self.config.get_value(CONF_ALLOW_PLAYER_SWITCH)
         self._allow_player_switch: bool = (
@@ -184,12 +186,12 @@ class YandexYnisonProvider(PluginProvider):
             cast("str", self.config.get_value(CONF_OUTPUT_BIT_DEPTH)) or OUTPUT_AUTO
         )
         self._display_name: str = (
-            cast("str", self.config.get_value(CONF_PUBLISH_NAME)) or DEFAULT_DISPLAY_NAME
+            cast("str", self.get_setup_value(CONF_PUBLISH_NAME)) or DEFAULT_DISPLAY_NAME
         )
 
         # Token source — None = own (manually entered CONF_TOKEN);
         # otherwise the instance_id of a linked yandex_music provider to borrow from.
-        ym_instance_value = cast("str | None", self.config.get_value(CONF_YM_INSTANCE))
+        ym_instance_value = cast("str | None", self.get_setup_value(CONF_YM_INSTANCE))
         self._ym_instance_id: str | None = (
             ym_instance_value
             if ym_instance_value and ym_instance_value != YM_INSTANCE_OWN
@@ -292,6 +294,50 @@ class YandexYnisonProvider(PluginProvider):
         self._token_cache: dict[str, _CachedToken] = {}
         self._token_refresh_lock = asyncio.Lock()
         self._now: Callable[[], float] = time.monotonic
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return Config entries to configure this provider.
+
+        Account, player and device identity are collected by the interactive setup flow;
+        only runtime playback options live here.
+        """
+        return (
+            ConfigEntry(
+                key=CONF_ALLOW_PLAYER_SWITCH,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_OUTPUT_SAMPLE_RATE,
+                type=ConfigEntryType.STRING,
+                default_value=OUTPUT_AUTO,
+                options=[
+                    ConfigValueOption(OUTPUT_AUTO),
+                    ConfigValueOption("44100"),
+                    ConfigValueOption("48000"),
+                    ConfigValueOption("96000"),
+                ],
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_OUTPUT_BIT_DEPTH,
+                type=ConfigEntryType.STRING,
+                default_value=OUTPUT_AUTO,
+                options=[
+                    ConfigValueOption(OUTPUT_AUTO),
+                    ConfigValueOption("16"),
+                    ConfigValueOption("24"),
+                ],
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_DEVICE_ID,
+                type=ConfigEntryType.STRING,
+                hidden=True,
+                required=False,
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Provider lifecycle
@@ -903,10 +949,10 @@ class YandexYnisonProvider(PluginProvider):
         if self._borrow_source is not None:
             return await self._borrow_source.resolve_music_token()
 
-        token = cast("str | None", self.config.get_value(CONF_TOKEN))
+        token = cast("str | None", self.get_setup_value(CONF_TOKEN))
         if token:
             return SecretStr(token)
-        x_token = cast("str | None", self.config.get_value(CONF_X_TOKEN))
+        x_token = cast("str | None", self.get_setup_value(CONF_X_TOKEN))
         if x_token:
             self.logger.debug("Own-mode token not present — refreshing from stored x_token")
             return await self._refresh_via_x_token(x_token)
@@ -942,7 +988,7 @@ class YandexYnisonProvider(PluginProvider):
             self.logger.info("Refreshing Yandex Music token for Ynison reconnect (borrow mode)")
             return await self._borrow_source.resolve_music_token()
 
-        x_token = cast("str | None", self.config.get_value(CONF_X_TOKEN))
+        x_token = cast("str | None", self.get_setup_value(CONF_X_TOKEN))
         if x_token:
             self._invalidate_cached_token(x_token)
             self.logger.info("Refreshing Yandex Music token for Ynison reconnect (own mode)")

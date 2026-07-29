@@ -9,13 +9,15 @@ import pytest
 from aiohttp import ClientError
 from music_assistant_models.errors import LoginFailed, ProviderUnavailableError
 
+from music_assistant.providers.filesystem_cloud.base import CONF_REFRESH_TOKEN
 from music_assistant.providers.filesystem_onedrive.auth import MAOneDriveAuth, _friendly_auth_error
-from music_assistant.providers.filesystem_onedrive.constants import CONF_REFRESH_TOKEN
 
 
 def _make_auth() -> tuple[MAOneDriveAuth, MagicMock]:
     """Return an auth helper plus the mocked mass behind it."""
     mass = MagicMock()
+    # the store keeps values encrypted; encrypt is an identity map for the test
+    mass.config.encrypt_string = MagicMock(side_effect=lambda value: value)
     return MAOneDriveAuth(mass, "onedrive--test", "client-id", "client-secret", "refresh-1"), mass
 
 
@@ -59,13 +61,14 @@ async def test_refresh_persists_rotated_token_immediately() -> None:
     assert await auth.async_get_access_token() == "access-1"
 
     assert auth._refresh_token == "refresh-2"
-    mass.config.set_raw_provider_config_value.assert_called_once_with(
-        "onedrive--test", CONF_REFRESH_TOKEN, "refresh-2", encrypted=True, immediate=True
+    # the rotated token is persisted into setup_data (encrypt is identity here)
+    mass.config.set.assert_called_once_with(
+        f"providers/onedrive--test/setup_data/{CONF_REFRESH_TOKEN}", "refresh-2", immediate=True
     )
 
 
 async def test_refresh_skips_persisting_unchanged_token() -> None:
-    """No config write happens when Microsoft returns the same refresh token."""
+    """No setup_data write happens when Microsoft returns the same refresh token."""
     auth, mass = _make_auth()
     mass.http_session.post = MagicMock(
         return_value=_response_cm(
@@ -77,7 +80,7 @@ async def test_refresh_skips_persisting_unchanged_token() -> None:
 
     await auth.async_get_access_token()
 
-    mass.config.set_raw_provider_config_value.assert_not_called()
+    mass.config.set.assert_not_called()
 
 
 async def test_refresh_keeps_token_when_none_returned() -> None:
@@ -90,7 +93,7 @@ async def test_refresh_keeps_token_when_none_returned() -> None:
     await auth.async_get_access_token()
 
     assert auth._refresh_token == "refresh-1"
-    mass.config.set_raw_provider_config_value.assert_not_called()
+    mass.config.set.assert_not_called()
 
 
 async def test_refresh_auth_error_raises_login_failed() -> None:

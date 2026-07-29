@@ -253,7 +253,7 @@ async def test_remove_virtual_player_rejects_regular_player(mass: MusicAssistant
 
 async def test_virtual_player_removed_on_owner_unload(mass: MusicAssistant) -> None:
     """Test that unloading the owner provider removes its virtual players."""
-    await mass.config.save_provider_config("profiler", {})
+    await mass.config._create_provider_instance("profiler", {})
     owner = mass.get_provider("profiler")
     assert owner is not None
     await owner.initialized.wait()

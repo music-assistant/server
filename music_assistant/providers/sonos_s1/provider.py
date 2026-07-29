@@ -6,13 +6,15 @@ import asyncio
 import logging
 from typing import Any, cast
 
-from music_assistant_models.enums import PlayerFeature
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, PlayerFeature
 from requests.exceptions import RequestException
 from soco import SoCo, events_asyncio, zonegroupstate
 from soco import config as soco_config
-from soco.discovery import discover
+from soco.discovery import discover, scan_network
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_LOG_LEVEL
+from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.models.player_provider import PlayerProvider
 
 from .constants import CONF_HOUSEHOLD_ID, CONF_NETWORK_SCAN, SUBSCRIPTION_TIMEOUT
@@ -28,6 +30,25 @@ class SonosPlayerProvider(PlayerProvider):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize the provider."""
         super().__init__(*args, **kwargs)
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        household_ids = await self._discover_household_ids()
+        return (
+            CONF_ENTRY_MANUAL_DISCOVERY_IPS,
+            ConfigEntry(
+                key=CONF_NETWORK_SCAN,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+            ),
+            ConfigEntry(
+                key=CONF_HOUSEHOLD_ID,
+                type=ConfigEntryType.STRING,
+                default_value=household_ids[0] if household_ids else None,
+                advanced=True,
+                required=False,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -162,3 +183,33 @@ class SonosPlayerProvider(PlayerProvider):
 
         except Exception as err:
             self.logger.error("Error setting up Sonos player %s: %s", player_id, err)
+
+    async def _discover_household_ids(self, prefer_s1: bool = True) -> list[str]:
+        """Discover the HouseHold ID of S1 speaker(s) the network."""
+        if cache := await self.mass.cache.get("sonos_household_ids"):
+            return cast("list[str]", cache)
+        household_ids: list[str] = []
+
+        def get_all_sonos_ips() -> set[SoCo]:
+            """Run full network discovery and return IP's of all devices found on the network."""
+            discovered_zones: set[SoCo] | None
+            if discovered_zones := scan_network(multi_household=True):
+                return {zone.ip_address for zone in discovered_zones}
+            return set()
+
+        all_sonos_ips = await asyncio.to_thread(get_all_sonos_ips)
+        for ip_address in all_sonos_ips:
+            async with self.mass.http_session.get(
+                f"http://{format_ip_for_url(ip_address)}:1400/status/zp"
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.text()
+                    if prefer_s1 and "<SWGen>2</SWGen>" in data:
+                        continue
+                    if "HouseholdControlID" in data:
+                        household_id = data.split("<HouseholdControlID>")[1].split(
+                            "</HouseholdControlID>"
+                        )[0]
+                        household_ids.append(household_id)
+        await self.mass.cache.set("sonos_household_ids", household_ids, 3600)
+        return household_ids

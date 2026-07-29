@@ -74,7 +74,7 @@ from .helpers import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -119,58 +119,6 @@ async def setup(
     return RadiothekProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return provider configuration entries."""
-    # ruff: noqa: ARG001
-    values = values or {}
-
-    return (
-        ConfigEntry(
-            key=CONF_STREAM_PROTO,
-            type=ConfigEntryType.STRING,
-            required=False,
-            default_value="hls",
-            value=values.get(CONF_STREAM_PROTO),
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_STREAM_QUALITY,
-            type=ConfigEntryType.STRING,
-            required=False,
-            default_value="qxa",
-            value=values.get(CONF_STREAM_QUALITY),
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_INCLUDE_HIDDEN,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            default_value=False,
-            value=values.get(CONF_INCLUDE_HIDDEN),
-            advanced=True,
-        ),
-        ConfigEntry(
-            key=CONF_CATCHUP_PROTO,
-            type=ConfigEntryType.STRING,
-            required=False,
-            default_value="progressive",
-            value=values.get(CONF_CATCHUP_PROTO),
-        ),
-        ConfigEntry(
-            key=CONF_CATCHUP_STATIONS,
-            type=ConfigEntryType.STRING,
-            required=False,
-            default_value="",
-            value=values.get(CONF_CATCHUP_STATIONS),
-        ),
-    )
-
-
 class RadiothekProvider(MusicProvider):
     """ORF Radiothek provider."""
 
@@ -186,6 +134,44 @@ class RadiothekProvider(MusicProvider):
 
         self.catchup_proto = "progressive"
         self.catchup_stations = ""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return provider configuration entries."""
+        return (
+            ConfigEntry(
+                key=CONF_STREAM_PROTO,
+                type=ConfigEntryType.STRING,
+                required=False,
+                default_value="hls",
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_STREAM_QUALITY,
+                type=ConfigEntryType.STRING,
+                required=False,
+                default_value="qxa",
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_INCLUDE_HIDDEN,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=False,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_CATCHUP_PROTO,
+                type=ConfigEntryType.STRING,
+                required=False,
+                default_value="progressive",
+            ),
+            ConfigEntry(
+                key=CONF_CATCHUP_STATIONS,
+                type=ConfigEntryType.STRING,
+                required=False,
+                default_value="",
+            ),
+        )
 
     @property
     def is_streaming_provider(self) -> bool:

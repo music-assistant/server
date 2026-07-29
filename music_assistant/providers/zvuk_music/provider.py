@@ -6,7 +6,14 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import aiohttp
-from music_assistant_models.enums import ContentType, MediaType, ProviderFeature, StreamType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    ContentType,
+    MediaType,
+    ProviderFeature,
+    StreamType,
+)
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -30,6 +37,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
@@ -40,6 +48,7 @@ from .constants import (
     DEFAULT_LIMIT,
     PLAYLIST_TRACK_FETCH_LIMIT,
     PLAYLIST_TRACKS_PAGE_SIZE,
+    QUALITY_HIGH,
     QUALITY_LOSSLESS,
     SYNTHESIS_PLAYLIST_IDS,
 )
@@ -61,9 +70,24 @@ class ZvukMusicProvider(MusicProvider):
             raise ProviderUnavailableError("Provider not initialized")
         return self._client
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(QUALITY_HIGH),
+                    ConfigValueOption(QUALITY_LOSSLESS),
+                ],
+                default_value=QUALITY_HIGH,
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        token = self.config.get_value(CONF_TOKEN)
+        token = self.get_setup_value(CONF_TOKEN)
         if not token:
             raise LoginFailed("No Zvuk Music token provided")
 
@@ -612,7 +636,7 @@ class ZvukMusicProvider(MusicProvider):
             ),
         }
         if is_zvuk:
-            token = self.config.get_value(CONF_TOKEN)
+            token = self.get_setup_value(CONF_TOKEN)
             if not token:
                 return str(path)
             headers["X-Auth-Token"] = str(token)

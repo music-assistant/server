@@ -41,7 +41,9 @@ from aiosendspin.server import (
     SendspinEvent,
     SendspinServer,
 )
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
+    ConfigEntryType,
     EventType,
     IdentifierType,
     PlayerFeature,
@@ -248,8 +250,12 @@ class SendspinProvider(PlayerProvider):
     ) -> None:
         """Initialize a new Sendspin player provider."""
         super().__init__(mass, manifest, config)
-        # Handle config option for manual IP's
-        manual_ip_config = cast("list[str]", config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key))
+        # Handle config option for manual IP's. Read a default here: at construction the
+        # config only carries the server defaults + stored raw values (the provider's typed
+        # option entries are resolved and applied by the config controller right after this).
+        manual_ip_config = cast(
+            "list[str]", config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key) or []
+        )
         self._manual_ip_config = tuple(address for address in manual_ip_config if address.strip())
         self._pending_unregisters = {}
         self._bridge_identifiers = {}
@@ -260,7 +266,6 @@ class SendspinProvider(PlayerProvider):
         self._client_event_task_counts = {}
         self._virtual_players = {}
         self._pin_sessions: dict[str, PinPairingSession] = {}
-        self._token_pairing: set[str] = set()
         self._management_sessions: dict[str, ManagementSession] = {}
         self._pairing_config_snapshots: dict[
             str, tuple[SendspinConnection, ManagementResultData]
@@ -268,6 +273,23 @@ class SendspinProvider(PlayerProvider):
         self._unloading = False
         self._hass_available = False
         self.unregister_cbs = []
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            CONF_ENTRY_MANUAL_DISCOVERY_IPS,
+            ConfigEntry(
+                key=CONF_ALLOW_UNENCRYPTED,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_MIN_PIN_LENGTH,
+                type=ConfigEntryType.INTEGER,
+                range=(4, 12),
+                default_value=DEFAULT_MIN_PIN_LENGTH,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Load the persistent server identity and pairing store, then create the server."""
@@ -578,18 +600,6 @@ class SendspinProvider(PlayerProvider):
             self._cancel_pin_idle_timeout(client_id)
             self._pin_sessions.pop(client_id, None)
 
-    def is_token_pairing(self, client_id: str) -> bool:
-        """Whether the operator is in the token-entry pairing submenu for a client."""
-        return client_id in self._token_pairing
-
-    def open_token_pairing(self, client_id: str) -> None:
-        """Enter the token-entry pairing submenu for a client."""
-        self._token_pairing.add(client_id)
-
-    def close_token_pairing(self, client_id: str) -> None:
-        """Leave the token-entry pairing submenu for a client."""
-        self._token_pairing.discard(client_id)
-
     async def start_pin_pairing(
         self, client_id: str, *, verify: bool = False, static: bool = False
     ) -> PinPairingSession:
@@ -816,7 +826,6 @@ class SendspinProvider(PlayerProvider):
                 session.task.cancel()
             self._cancel_pin_idle_timeout(session.client_id)
         self._pin_sessions.clear()
-        self._token_pairing.clear()
         for management_session in self._management_sessions.values():
             self.mass.cancel_timer(_management_idle_task_id(management_session.client_id))
         self._management_sessions.clear()

@@ -5,16 +5,30 @@ from __future__ import annotations
 import platform
 from pathlib import PurePosixPath
 
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.process import check_output
+from music_assistant.helpers.security import is_safe_path
+from music_assistant.helpers.util import get_ip_from_host
 from music_assistant.providers.filesystem_local import (
     LocalFileSystemProvider,
     exists,
     ismount,
     makedirs,
+)
+from music_assistant.providers.filesystem_local.constants import (
+    CONF_CONTENT_TYPE,
+    CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+    CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+    CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+    CONF_ENTRY_MISSING_ALBUM_ARTIST,
+    CONF_ENTRY_PROPAGATE_GENRES,
 )
 
 from .constants import CONF_EXPORT_PATH, CONF_HOST, CONF_NFS_VERSION, CONF_SUBFOLDER
@@ -29,11 +43,27 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
     are handled by the base LocalFileSystemProvider.
     """
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        # connection details and content type are collected by the setup flow; surface the
+        # (immutable) content type read-only so the sync options' depends_on chains resolve
+        content_type = str(self.get_setup_value(CONF_CONTENT_TYPE, "music"))
+        return (
+            ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
+            CONF_ENTRY_MISSING_ALBUM_ARTIST,
+            CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+            CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+            CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+            CONF_ENTRY_PROPAGATE_GENRES,
+        )
+
     @property
     def instance_name_postfix(self) -> str | None:
         """Return a (default) instance name postfix for this provider instance."""
-        export_path = str(self.config.get_value(CONF_EXPORT_PATH))
-        subfolder = str(self.config.get_value(CONF_SUBFOLDER) or "")
+        export_path = str(self.get_setup_value(CONF_EXPORT_PATH))
+        subfolder = str(self.get_setup_value(CONF_SUBFOLDER) or "")
         if subfolder:
             return subfolder
         if export_path:
@@ -42,6 +72,19 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        # validate the connection details before attempting to mount
+        server = str(self.get_setup_value(CONF_HOST))
+        if not await get_ip_from_host(server):
+            msg = f"Unable to resolve {server}, make sure the address is resolvable."
+            raise SetupFailedError(
+                msg,
+                translation_key="host_unresolvable",
+                translation_args=[server],
+            )
+        export_path = str(self.get_setup_value(CONF_EXPORT_PATH))
+        if not export_path or not export_path.startswith("/") or not is_safe_path(export_path):
+            msg = "Invalid export path: must be an absolute path starting with /"
+            raise SetupFailedError(msg)
         if not await exists(self.base_path):
             await makedirs(self.base_path)
         try:
@@ -70,11 +113,11 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
 
     async def mount(self) -> None:
         """Mount the NFS export to a temporary folder."""
-        server = str(self.config.get_value(CONF_HOST))
-        export_path = str(self.config.get_value(CONF_EXPORT_PATH))
+        server = str(self.get_setup_value(CONF_HOST))
+        export_path = str(self.get_setup_value(CONF_EXPORT_PATH))
 
         # build full export path including optional subfolder
-        subfolder = str(self.config.get_value(CONF_SUBFOLDER) or "").strip()
+        subfolder = str(self.get_setup_value(CONF_SUBFOLDER) or "").strip()
         full_export = (
             str(PurePosixPath(export_path) / subfolder.lstrip("/")) if subfolder else export_path
         )
@@ -110,7 +153,7 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
         else:
             options = ["noatime", "nolock", "tcp", "soft", "timeo=30", "retrans=5"]
 
-        nfs_version = str(self.config.get_value(CONF_NFS_VERSION) or "")
+        nfs_version = str(self.get_setup_value(CONF_NFS_VERSION) or "")
         if nfs_version:
             options.append(f"vers={nfs_version}")
 

@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import aiofiles
-import orjson
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -36,6 +34,7 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_ENTRY_LIBRARY_SYNC_PODCASTS
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.countries import get_country_codes
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
     get_podcastparser_dict,
@@ -52,7 +51,7 @@ from music_assistant.providers.itunes_podcasts.schema import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -62,6 +61,9 @@ if TYPE_CHECKING:
 CONF_LOCALE = "locale"
 CONF_EXPLICIT = "explicit"
 CONF_NUM_EPISODES = "num_episodes"
+
+# store to search when the server's language has no matching iTunes storefront
+DEFAULT_LOCALE = "us"
 
 CACHE_CATEGORY_PODCASTS = 0
 CACHE_CATEGORY_RECOMMENDATIONS = 1
@@ -92,54 +94,43 @@ async def setup(
     return ITunesPodcastsProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    json_path = Path(__file__).parent / "itunes_country_codes.json"
-    async with aiofiles.open(json_path) as f:
-        country_codes = orjson.loads(await f.read())
-
-    language_options = [
-        ConfigValueOption(key.lower(), title=val) for key, val in country_codes.items()
-    ]
-    return (
-        CONF_ENTRY_LIBRARY_SYNC_PODCASTS_HIDDEN,
-        ConfigEntry(
-            key=CONF_LOCALE,
-            type=ConfigEntryType.STRING,
-            required=True,
-            options=language_options,
-        ),
-        ConfigEntry(
-            key=CONF_NUM_EPISODES,
-            type=ConfigEntryType.INTEGER,
-            required=False,
-            default_value=0,
-        ),
-        ConfigEntry(
-            key=CONF_EXPLICIT,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            default_value=True,
-        ),
-    )
-
-
 class ITunesPodcastsProvider(MusicProvider):
     """ITunesPodcastsProvider."""
 
     throttler: ThrottlerManager
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        country_codes = await asyncio.to_thread(get_country_codes)
+
+        language_options = [
+            ConfigValueOption(key.lower(), title=val) for key, val in country_codes.items()
+        ]
+        # the store country decides which catalog is searched; default to the region of the
+        # server's language so the provider can be added without picking one first
+        region = self.mass.metadata.locale.split("_")[-1].upper()
+        return (
+            CONF_ENTRY_LIBRARY_SYNC_PODCASTS_HIDDEN,
+            ConfigEntry(
+                key=CONF_LOCALE,
+                type=ConfigEntryType.STRING,
+                required=True,
+                options=language_options,
+                default_value=region.lower() if region in country_codes else DEFAULT_LOCALE,
+            ),
+            ConfigEntry(
+                key=CONF_NUM_EPISODES,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=0,
+            ),
+            ConfigEntry(
+                key=CONF_EXPLICIT,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=True,
+            ),
+        )
 
     @property
     def is_streaming_provider(self) -> bool:

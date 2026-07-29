@@ -17,6 +17,7 @@ from pychromecast.discovery import CastBrowser, SimpleCastListener
 from music_assistant.constants import (
     CONF_ENABLED,
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
+    CONF_LOG_LEVEL,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.json import SerializableType
@@ -29,7 +30,7 @@ from .player import ChromecastPlayer
 from .sendspin_bridge import SendspinBridgeManager
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.provider import ProviderManifest
     from pychromecast.models import CastInfo
@@ -56,8 +57,12 @@ class ChromecastProvider(PlayerProvider):
         self._discover_lock = threading.Lock()
         self._pending_discoveries: set[str] = set()
         self.mz_mgr = MultizoneManager()
-        # Handle config option for manual IP's
-        manual_ip_config = cast("list[str]", config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key))
+        # Handle config option for manual IP's. Read a default: at construction the config
+        # carries only the server defaults + stored raw values (typed option entries are
+        # applied right after by the config controller).
+        manual_ip_config = cast(
+            "list[str]", config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key) or []
+        )
         self.browser = CastBrowser(
             SimpleCastListener(
                 add_callback=self._on_chromecast_discovered,
@@ -70,11 +75,11 @@ class ChromecastProvider(PlayerProvider):
         self._discovery_running = False
         self.bridge_manager = SendspinBridgeManager(self)
         self.dashboards = ChromecastDashboards(self)
-        # set-up pychromecast logging
-        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
-            logging.getLogger("pychromecast").setLevel(logging.DEBUG)
-        else:
-            logging.getLogger("pychromecast").setLevel(self.logger.level + 10)
+        self._set_pychromecast_log_level()
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (CONF_ENTRY_MANUAL_DISCOVERY_IPS,)
 
     async def discover_players(self) -> None:
         """Discover Cast players on the network."""
@@ -112,6 +117,14 @@ class ChromecastProvider(PlayerProvider):
 
             await self.mass.loop.run_in_executor(None, stop_discovery)
 
+    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        await super().update_config(config, changed_keys)
+        # a log level(-only) change does not reload the provider,
+        # so realign pychromecast's logger here
+        if f"values/{CONF_LOG_LEVEL}" in changed_keys:
+            self._set_pychromecast_log_level()
+
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
         cast_players = [player for player in self.players if isinstance(player, ChromecastPlayer)]
@@ -130,6 +143,16 @@ class ChromecastProvider(PlayerProvider):
             ),
             "models": models,
         }
+
+    def _set_pychromecast_log_level(self) -> None:
+        """Align pychromecast's log level with the provider's log level."""
+        # pychromecast is very chatty at debug level (it logs every socket
+        # message of each cast connection), so only pass through its debug
+        # logging when verbose logging is enabled
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            logging.getLogger("pychromecast").setLevel(logging.DEBUG)
+        else:
+            logging.getLogger("pychromecast").setLevel(self.logger.level + 10)
 
     ### Discovery callbacks
 

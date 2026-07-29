@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from collections.abc import AsyncGenerator
 from contextlib import suppress
@@ -15,9 +14,13 @@ from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.ffmpeg import FFMpeg
-from music_assistant.helpers.named_pipe import open_named_pipe_writer
 
-from .constants import AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS, StreamingProtocol
+from .constants import (
+    AIRPLAY_GROUP_START_LEAD_MS,
+    AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
+    AIRPLAY_START_LEAD_MS,
+    StreamingProtocol,
+)
 from .helpers import get_final_output_format
 from .stream import AirPlayStream
 
@@ -76,9 +79,41 @@ class AirPlayStreamSession:
         # with enough slack left to prime the joiner.
         self._pcm_buffer = bytearray()
         self._pcm_buffer_max = pcm_format.pcm_sample_size * 10  # 10 seconds
+        # Bytes still to skip off the head of the live feed for a late joiner
+        # whose anchor lands ahead of the current write head, keyed by player id.
+        self._client_skip_bytes: dict[str, int] = {}
+
+    @property
+    def effective_start_time(self) -> float:
+        """
+        Return the session anchor adjusted for the reference member's clock shift.
+
+        ``start_time`` is the wall-clock anchor set at the last group (re)start.
+        A member's cliairplay can re-anchor its playout LATER after recovering
+        from a PCM starvation, shifting the group's real timeline; that shift is
+        tracked per member. The first sync client is taken as the reference and
+        its accumulated shift is added, so a late joiner maps its first sample to
+        where the group actually plays. Divergent per-member shifts make any
+        single reference imperfect; the current first client is the best
+        available choice and the reference transfers to the new first client when
+        the old one is removed.
+        """
+        if not self.sync_clients:
+            return self.start_time
+        reference_stream = self.sync_clients[0].stream
+        if reference_stream is None:
+            return self.start_time
+        return self.start_time + reference_stream.cumulative_shift_seconds
 
     async def start(self, audio_source: AsyncGenerator[bytes]) -> None:
-        """Initialize stream session for all players."""
+        """
+        Connect every member and anchor synchronized playback.
+
+        Spawns and connects each member's CLI, wires the per-seek ffmpeg into its
+        persistent stdin and starts feeding audio, then commands one shared
+        audible start instant. On any failure the whole session is stopped so the
+        caller can fall back to a cold restart.
+        """
         ap2_members = sum(1 for p in self.sync_clients if p.protocol == StreamingProtocol.AIRPLAY2)
         if ap2_members:
             # Resolve the timing source before calculating the audible anchor so
@@ -87,8 +122,6 @@ class AirPlayStreamSession:
             self._shared_ptp_resolved = True
         self.wait_start = max(p.wait_start for p in self.sync_clients) / 1000
         position_ms = int((self.media.elapsed_time or 0) * 1000)
-        generations: dict[str, int] = {}
-        commit_attempted = False
         try:
             async with asyncio.TaskGroup() as task_group:
                 for player in self.sync_clients:
@@ -96,29 +129,19 @@ class AirPlayStreamSession:
             await asyncio.gather(
                 *[p.stream.wait_for_connection() for p in self.sync_clients if p.stream]
             )
-            await self._prepare_initial_generations(generations, position_ms)
-            ready = await asyncio.gather(
-                *[p.stream.wait_generation_ready(0) for p in self.sync_clients if p.stream]
-            )
-            if not all(ready):
-                raise PlayerCommandFailed("generation reader ready timeout")
+            # The binary buffers stdin into its ring from process start; feed
+            # audio first and wait for every member to confirm it flowing, then
+            # anchor with a short lead. Readiness is fully event-driven
+            # (connected + audio), so no guessed setup time is needed; the
+            # binary bursts the receiver pre-fill after START.
             self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
-            primed = await asyncio.gather(
-                *[p.stream.wait_generation_primed(0) for p in self.sync_clients if p.stream]
-            )
-            if not all(primed):
-                raise PlayerCommandFailed("generation prime timeout")
-            commit_attempted = True
-            await self._commit_generations(generations, position_ms)
+            await self._wait_members_audio_present()
+            await self._start_members(position_ms, self._anchor_start_unix_ms())
         except asyncio.CancelledError:
-            if not commit_attempted:
-                await self._discard_generations(generations)
             await self.stop()
             raise
         except Exception as err:
             # playback failed to start, cleanup
-            if not commit_attempted:
-                await self._discard_generations(generations)
             await self.stop()
             raise PlayerCommandFailed("Playback failed to start") from err
 
@@ -146,103 +169,65 @@ class AirPlayStreamSession:
         """
         Warm-replace the playing media with a new source (seek/next-track).
 
-        Each member stages the new source as its next generation on a fresh
-        pipe while the old audio keeps playing; once every member reports
-        primed, one shared START commits the switch (warm flush + re-anchor)
-        a few hundred milliseconds later. Returns False when anything fails,
-        so the caller can fall back to the cold path.
+        Stops feeding old audio and kills each member's ffmpeg (never the
+        persistent cli stdin), flushes every member's live stream in place, then
+        feeds a fresh ffmpeg into the same stdin and anchors all members at one
+        shared instant. A group flushes every member and awaits all acks before
+        the shared start. Returns False when anything fails so the caller can
+        fall back to the cold path.
         """
         position_ms = int((media.elapsed_time or 0) * 1000)
-        generations: dict[str, int] = {}
-        fifos: dict[str, str] = {}
-        writer_fds: dict[str, int] = {}
-        started_at = time.monotonic()
-        committed = False
-        commit_attempted = False
         try:
-            await self._allocate_warm_generation_fifos(generations, fifos)
-            await self._prepare_warm_generations(
-                generations,
-                fifos,
-                position_ms,
-                started_at,
-            )
-            async with asyncio.TaskGroup() as task_group:
-                for player in self.sync_clients:
-                    task_group.create_task(
-                        self._wait_warm_generation_ready(
-                            player,
-                            generations[player.player_id],
-                            started_at,
-                        )
-                    )
-
-            for player in self.sync_clients:
-                player_id = player.player_id
-                writer_fds[player_id] = await open_named_pipe_writer(fifos[player_id])
-                self._log_generation_phase(
-                    player_id, generations[player_id], "writer-open", started_at
-                )
-
+            # Stop feeding old audio and drop each member's buffered ffmpeg output
+            # before flushing: the binary drains stdin to EAGAIN on FLUSH, so no
+            # bytes may be written between the old ffmpeg dying and the flush ack.
+            # Killing ffmpeg never closes the cli stdin (MA holds the write end),
+            # so the binary keeps its stdin reader alive across the seek.
             if self._audio_source_task and not self._audio_source_task.done():
                 self._audio_source_task.cancel()
                 with suppress(asyncio.CancelledError):
                     await self._audio_source_task
             for player in self.sync_clients:
-                await self._start_generation_ffmpeg(player, writer_fds.pop(player.player_id), media)
+                if ffmpeg := self._player_ffmpeg.pop(player.player_id, None):
+                    await ffmpeg.kill()
+            flushed = await asyncio.gather(
+                *[self._flush_member(player) for player in self.sync_clients]
+            )
+            if not all(flushed):
+                raise PlayerCommandFailed("warm flush was not acknowledged")
+            for player in self.sync_clients:
+                await self._start_player_ffmpeg(player, media)
             self.media = media
             # The stream position counter and the late-join prime buffer both
-            # describe the OLD generation's timeline; restart them before the
-            # new source starts pumping.
+            # describe the OLD timeline; restart them before the new source pumps.
             self.seconds_streamed = 0
             self._pcm_buffer.clear()
+            # The shared START below re-establishes start_time, so the per-client
+            # late-join skip counters and every member's accumulated starvation
+            # shift describe a timeline that no longer exists: reset them.
+            self._client_skip_bytes.clear()
+            self._reset_member_shifts()
             self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
-
-            async with asyncio.TaskGroup() as task_group:
-                for player in self.sync_clients:
-                    task_group.create_task(
-                        self._wait_warm_generation_primed(
-                            player,
-                            generations[player.player_id],
-                            started_at,
-                        )
-                    )
-            commit_attempted = True
-            await self._commit_generations(generations, position_ms)
-            for player_id, generation in generations.items():
-                self._log_generation_phase(player_id, generation, "commit", started_at)
-            committed = True
+            # Anchor only after every member confirms the new audio flowing;
+            # the live connection and clock survive the flush, so a short
+            # re-anchor lead replaces the full setup lead.
+            await self._wait_members_audio_present()
+            await self._start_members(position_ms, self._anchor_start_unix_ms())
         except asyncio.CancelledError:
-            if not commit_attempted:
-                await self._discard_generations(generations, started_at)
             raise
         except Exception as err:
             self.prov.logger.warning(
                 "Warm replacement failed (%r); falling back to a cold restart", err
             )
-            if not commit_attempted:
-                await self._discard_generations(generations, started_at)
             return False
-        finally:
-            for fifo_fd in writer_fds.values():
-                with suppress(OSError):
-                    os.close(fifo_fd)
-            for fifo in fifos.values():
-                if not committed:
-                    # Give any staged reader EOF before removing its path. FLUSH has
-                    # no positive acknowledgement, so pipe cleanup remains explicit.
-                    with suppress(OSError):
-                        os.close(os.open(fifo, os.O_WRONLY | os.O_NONBLOCK))
-                with suppress(OSError):
-                    await asyncio.to_thread(os.unlink, fifo)
         return True
 
     async def standby(self) -> bool:
         """
         Park the session: stall every member but keep the connections alive.
 
-        The next play_media (resume or seek) commits a new generation over the
-        live connections — the same coordinated warm restart as seek/next.
+        The next play_media (resume or seek) replaces the media warm over the
+        live connections — the same coordinated flush-refill as seek/next.
         Returns False when any member lacks a running, connected stream or its
         standby command cannot be delivered so the caller can fall back to a
         full stop.
@@ -278,6 +263,8 @@ class AirPlayStreamSession:
         # a parked session has no live timeline; the resume re-anchors it
         self.seconds_streamed = 0
         self._pcm_buffer.clear()
+        self._client_skip_bytes.clear()
+        self._reset_member_shifts()
         return True
 
     async def stop(self) -> None:
@@ -320,40 +307,35 @@ class AirPlayStreamSession:
             airplay_player.player_id,
             reason,
         )
+        self._client_skip_bytes.pop(airplay_player.player_id, None)
         ffmpeg = self._player_ffmpeg.pop(airplay_player.player_id, None)
         # note that we use kill instead of graceful close here,
         # because otherwise it can take a very long time for the process to exit.
         if ffmpeg and not ffmpeg.closed:
             await ffmpeg.kill()
         if airplay_player.stream and airplay_player.stream.session == self:
+            airplay_player.stream.reset_reanchor_shift()
             await airplay_player.stream.stop(force=True)
 
     async def add_client(self, airplay_player: AirPlayPlayer) -> None:  # noqa: PLR0915
         """
         Add a sync client to the session as a late joiner.
 
-        Uses the PCM ring buffer to prime the late joiner's pipeline so it
-        starts playing quickly. Timing-source readiness is resolved before the
-        session lock; buffer calculations and writes stay under the lock so
-        ``seconds_streamed`` and the buffer remain consistent.
+        The joiner cannot honour an anchor in the past — cliairplay makes the
+        first post-START stdin byte audible exactly at the commanded instant and
+        then freezes the anchor, with no catch-up. So the anchor is chosen a
+        fixed headroom into the future and the stream position due at that
+        instant is derived from the group's effective (shift-adjusted) timeline.
+        Depending on where that position falls relative to the ring buffer the
+        joiner is either primed from the ring tail (position at or behind the
+        write head) or has the leading bytes of the live feed skipped (position
+        ahead of the write head), so its first audible sample lands exactly where
+        the group is playing.
 
-        Devices generally cannot honour a start anchor that is in the
-        past — they just play whatever the pipe gives them, trailing the
-        group by the deficit. To stay in sync we therefore push the late
-        joiner's ``start_at`` into the future (at least ``wait_start`` ahead
-        of now) and trim the corresponding amount from the head of the
-        buffered PCM, so the first sample we send maps to the correct future
-        stream position.
-
-        1. Connect the new client without starting playback.
-        2. Snapshot the ring buffer and map its first byte to its stream
-           position; if the
-           resulting start anchor is in the past, shift it forward to
-           ``now + min_headroom`` and trim that many seconds from the buffer
-           head so timing stays aligned with the rest of the group.
-        3. Prepare generation 0, write the (possibly trimmed) buffer, and add
-           the client so the live stream continues priming it.
-        4. Start generation 0 only after the client reports primed.
+        Timing-source readiness is resolved before the session lock; all buffer
+        and anchor math stays under the lock so ``seconds_streamed``, the ring
+        buffer and the per-client skip counter stay consistent with the live
+        feed.
         """
         await self._resolve_late_joiner_ptp(airplay_player)
         async with self._lock:
@@ -390,88 +372,99 @@ class AirPlayStreamSession:
             now = time.time()
             pcm_sample_size = self.pcm_format.pcm_sample_size
             frame_size = (self.pcm_format.bit_depth // 8) * self.pcm_format.channels
-            # Snapshot the buffer and calculate its duration
+            # Snapshot the ring buffer and map its span onto stream positions:
+            # it covers [seconds_streamed - buffer_seconds, seconds_streamed].
             buffered_pcm = bytes(self._pcm_buffer)
             buffer_seconds = len(buffered_pcm) / pcm_sample_size
-            # The first byte in the buffer corresponds to this stream position
-            first_byte_pos = self.seconds_streamed - buffer_seconds
-            first_sample_pos = first_byte_pos
-            start_at = self.start_time + first_byte_pos
+            ring_floor = self.seconds_streamed - buffer_seconds
 
-            # The audio we hand to ffmpeg → cliairplay must be bit-aligned with
-            # ``start_at``: the first sample sent should be the one that should
-            # play at ``start_at``. cliairplay buffers ``wait_start`` seconds of
-            # audio before starting playback, so we keep ``start_at`` at least
-            # that far in the future (using the larger of the session's
-            # existing wait_start, the late joiner's own and the late-join
-            # floor, which is more conservative than the plain session lead).
+            # cliairplay makes the first post-START stdin byte audible exactly at
+            # the anchor and then freezes it (no catch-up), so pick the anchor
+            # first — far enough ahead that the device can connect and prime —
+            # then derive which stream position the group plays at that instant.
+            # min_headroom is the most conservative of the session lead, the
+            # joiner's own lead and the late-join floor.
             min_headroom = max(
                 self.wait_start,
                 airplay_player.wait_start / 1000,
                 AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000,
             )
-            target_start_at = now + min_headroom
-            trim_seconds = 0.0
-            if start_at < target_start_at:
-                # Shift start_at forward so the device has time to prep, and
-                # trim the buffer head by the same amount so the first sample
-                # we send is the one that should play at the new start_at.
-                trim_seconds = target_start_at - start_at
-                trim_bytes = int(trim_seconds * pcm_sample_size)
-                trim_bytes -= trim_bytes % frame_size
-                if trim_bytes >= len(buffered_pcm):
-                    # Nothing left of the buffer after the trim. Drop it and
-                    # let the audio_streamer feed the late joiner from the
-                    # next chunk. Set start_at to the current live position;
-                    # the clamp below may still move it later to preserve
-                    # the required headroom.
-                    buffered_pcm = b""
-                    first_sample_pos = self.seconds_streamed
-                    start_at = self.start_time + self.seconds_streamed
-                else:
-                    buffered_pcm = buffered_pcm[trim_bytes:]
-                    # Advance start_at by exactly the trimmed duration so the
-                    # NTP anchor matches the first sample we actually send.
-                    trimmed_seconds = trim_bytes / pcm_sample_size
-                    first_sample_pos += trimmed_seconds
-                    start_at += trimmed_seconds
-                # Make sure start_at still leaves enough lead time for slow
-                # connections / very-far-behind joiners.
-                start_at = max(start_at, target_start_at)
+            start_at = now + min_headroom
+            effective_start_time = self.effective_start_time
+            fed_pos_due = start_at - effective_start_time
+
+            skip_bytes = 0
+            prime = b""
+            if fed_pos_due <= self.seconds_streamed:
+                # The due position is at or behind the write head: prime the
+                # joiner from the ring so the live feed then continues seamlessly.
+                if fed_pos_due < ring_floor:
+                    # The due position predates the ring (an unusually large
+                    # lead). Cap the prime at the whole buffer and grow the
+                    # headroom so the anchor still maps to the prime's first
+                    # sample exactly.
+                    self.prov.logger.debug(
+                        "Late joiner %s: due position %.2fs predates the %.2fs ring; "
+                        "capping prime at the whole buffer",
+                        airplay_player.player_id,
+                        fed_pos_due,
+                        buffer_seconds,
+                    )
+                    fed_pos_due = ring_floor
+                    start_at = effective_start_time + fed_pos_due
+                keep_bytes = int((self.seconds_streamed - fed_pos_due) * pcm_sample_size)
+                keep_bytes -= keep_bytes % frame_size
+                if keep_bytes:
+                    prime = buffered_pcm[len(buffered_pcm) - keep_bytes :]
+            else:
+                # The due position is ahead of the write head: skip that many
+                # bytes off the head of the live feed so the joiner's first
+                # delivered byte is the sample due at the anchor.
+                skip_bytes = int((fed_pos_due - self.seconds_streamed) * pcm_sample_size)
+                skip_bytes -= skip_bytes % frame_size
+
+            self._client_skip_bytes[airplay_player.player_id] = skip_bytes
 
             start_unix_ms = int(start_at * 1000)
-            position_ms = int(((self.media.elapsed_time or 0) + first_sample_pos) * 1000)
+            sync_adjust = airplay_player.config.get_value(CONF_SYNC_ADJUST, 0)
+            if isinstance(sync_adjust, int):
+                start_unix_ms += sync_adjust
+            position_ms = int(((self.media.elapsed_time or 0) + fed_pos_due) * 1000)
 
             self.prov.logger.debug(
-                "Late joiner %s: sending %.2fs of buffered audio, "
-                "stream_pos=%.2fs, first_byte_pos=%.2fs, "
-                "start_at is %.2fs from now (min_headroom=%.2fs, trimmed=%.2fs)",
+                "Late joiner %s: priming %.2fs, skipping %.2fs, stream_pos=%.2fs, "
+                "fed_pos_due=%.2fs, start_at is %.2fs from now "
+                "(min_headroom=%.2fs, effective_shift=%.2fs)",
                 airplay_player.player_id,
-                len(buffered_pcm) / pcm_sample_size,
+                len(prime) / pcm_sample_size,
+                skip_bytes / pcm_sample_size,
                 self.seconds_streamed,
-                first_byte_pos,
+                fed_pos_due,
                 start_at - now,
                 min_headroom,
-                trim_seconds,
+                effective_start_time - self.start_time,
             )
 
             try:
-                await stream.prepare_generation(0, "-", position_ms)
-                if not await stream.wait_generation_ready(0):
-                    raise PlayerCommandFailed("generation reader ready timeout")
-                if buffered_pcm:
-                    await self._write_chunk_to_player(airplay_player, buffered_pcm)
+                # Anchor the joiner BEFORE feeding the prime: pre-START the
+                # binary only buffers stdin into its bounded ring and sends
+                # nothing, so a prime longer than that ring would wedge the
+                # write here — and, through the session lock, stall the whole
+                # group's feed. Anchored, the binary drains the prime as it
+                # streams in. The START does not re-anchor the session
+                # timeline (the group keeps playing).
+                await stream.start(start_unix_ms, position_ms)
+                if prime:
+                    await self._write_chunk_to_player(airplay_player, prime)
             except asyncio.CancelledError:
-                await self._discard_generation(airplay_player, stream, 0)
-                await self.stop_client(airplay_player, reason="late joiner prepare cancelled")
+                await self.stop_client(airplay_player, reason="late joiner start cancelled")
                 raise
             except Exception as err:
                 self.prov.logger.warning(
-                    "Late joiner %s: failed to start/prime pipeline: %s",
+                    "Late joiner %s: failed to start/prime pipeline: %r",
                     airplay_player.player_id,
                     err,
                 )
-                await self._discard_generation(airplay_player, stream, 0)
                 await self.stop_client(airplay_player, reason="late joiner start/prime failed")
                 return
 
@@ -485,34 +478,8 @@ class AirPlayStreamSession:
                 )
                 self._warn_degraded_shared_ptp(ap2_members)
 
-        commit_attempted = False
-        try:
-            if not await stream.wait_generation_primed(0):
-                raise PlayerCommandFailed("generation prime timeout")
-            commit_attempted = True
-            await self._commit_generations(
-                {airplay_player.player_id: 0},
-                position_ms,
-                start_unix_ms,
-                reanchor_session=False,
-            )
-        except asyncio.CancelledError:
-            if not commit_attempted:
-                await self._discard_generation(airplay_player, stream, 0)
-            await self.remove_client(airplay_player, reason="late joiner prime cancelled")
-            raise
-        except Exception as err:
-            self.prov.logger.warning(
-                "Late joiner %s: failed to prime generation: %s",
-                airplay_player.player_id,
-                err,
-            )
-            if not commit_attempted:
-                await self._discard_generation(airplay_player, stream, 0)
-            await self.remove_client(airplay_player, reason="late joiner prime failed")
-            return
         self.prov.logger.debug(
-            "Late joiner %s: device primed after %.2fs",
+            "Late joiner %s: started after %.2fs",
             airplay_player.player_id,
             time.time() - now,
         )
@@ -696,6 +663,15 @@ class AirPlayStreamSession:
     async def _write_chunk_to_player(self, airplay_player: AirPlayPlayer, chunk: bytes) -> None:
         """Write audio chunk to a player's ffmpeg process."""
         player_id = airplay_player.player_id
+        # Drain any pending late-join skip first: a joiner anchored ahead of the
+        # write head must drop that many leading bytes of the live feed so its
+        # first delivered byte is the sample due at its anchor.
+        if skip := self._client_skip_bytes.get(player_id, 0):
+            if skip >= len(chunk):
+                self._client_skip_bytes[player_id] = skip - len(chunk)
+                return
+            chunk = chunk[skip:]
+            self._client_skip_bytes[player_id] = 0
         if ffmpeg := self._player_ffmpeg.get(player_id):
             if ffmpeg.closed:
                 return
@@ -711,7 +687,7 @@ class AirPlayStreamSession:
 
     async def _start_client(self, airplay_player: AirPlayPlayer, use_shared_ptp: bool) -> None:
         """
-        Connect a CLI process and start ffmpeg for a single client.
+        Connect a CLI process and start its ffmpeg for a single client.
 
         :param airplay_player: The player to start streaming to.
         :param use_shared_ptp: The session-wide shared-PTP decision applied to
@@ -724,20 +700,91 @@ class AirPlayStreamSession:
         stream_pcm_format = airplay_player.get_stream_pcm_format(self.pcm_format)
         airplay_player.stream = AirPlayStream(airplay_player, pcm_format=stream_pcm_format)
         airplay_player.stream.session = self
-        await airplay_player.stream.start(use_shared_ptp)
-        # Start ffmpeg to feed audio to CLI stdin
-        if ffmpeg := self._player_ffmpeg.pop(airplay_player.player_id, None):
-            await ffmpeg.close()
-        handoff_format = airplay_player.stream.pcm_format
-        output_plan = self.mass.streams.audio.get_player_output_plan(
-            airplay_player.player_id,
-            input_format=self.pcm_format,
-            output_format=get_final_output_format(handoff_format, airplay_player),
-            handoff_format=handoff_format,
-            queue_id=self.media.source_id,
-            session_id=get_media_session_id(self.media),
+        await airplay_player.stream.connect(use_shared_ptp)
+        await self._start_player_ffmpeg(airplay_player, self.media)
+
+    def _anchor_start_unix_ms(self) -> int:
+        """Return the shared audible-start instant for a readiness-confirmed start."""
+        lead_ms = (
+            AIRPLAY_START_LEAD_MS if len(self.sync_clients) == 1 else AIRPLAY_GROUP_START_LEAD_MS
         )
-        cli_proc = airplay_player.stream._cli_proc
+        return int(time.time() * 1000) + lead_ms
+
+    async def _wait_members_audio_present(self) -> None:
+        """Wait until every member's binary reports the new audio flowing."""
+        results = await asyncio.gather(
+            *[p.stream.wait_audio_present() for p in self.sync_clients if p.stream]
+        )
+        if not all(results):
+            raise PlayerCommandFailed("audio feed was not confirmed")
+
+    async def _start_members(
+        self,
+        position_ms: int,
+        start_unix_ms: int,
+        *,
+        reanchor_session: bool = True,
+    ) -> None:
+        """
+        Anchor every member's playback at one shared audible instant.
+
+        :param position_ms: Media position mapped to the first sample of the anchor.
+        :param start_unix_ms: Shared audible-start instant in unix epoch ms.
+        :param reanchor_session: Whether this start becomes the session timeline anchor.
+        """
+        async with asyncio.TaskGroup() as task_group:
+            for player in self.sync_clients:
+                stream = player.stream
+                if stream is None:
+                    continue
+                member_start = start_unix_ms
+                sync_adjust = player.config.get_value(CONF_SYNC_ADJUST, 0)
+                if isinstance(sync_adjust, int):
+                    member_start += sync_adjust
+                task_group.create_task(stream.start(member_start, position_ms))
+        if reanchor_session:
+            self.start_unix_ms = start_unix_ms
+            self.start_time = start_unix_ms / 1000
+
+    async def _flush_member(self, player: AirPlayPlayer) -> bool:
+        """Flush one member's live stream in place and report the binary's ack."""
+        stream = player.stream
+        if stream is None:
+            return False
+        return await stream.flush()
+
+    def _reset_member_shifts(self) -> None:
+        """Zero every member's accumulated starvation shift for a fresh anchor."""
+        for player in self.sync_clients:
+            if player.stream is not None:
+                player.stream.reset_reanchor_shift()
+
+    async def _start_player_ffmpeg(self, player: AirPlayPlayer, media: PlayerMedia) -> None:
+        """
+        Start the per-seek ffmpeg feeding a member's persistent cli stdin.
+
+        Retires any ffmpeg still tracked for the player and wires a fresh one to
+        the same cli stdin fd. Killing ffmpeg never closes cli stdin (MA holds
+        the write end via its process transport), so the binary's stdin reader
+        survives a warm seek.
+
+        :param player: The member whose ffmpeg is (re)started.
+        :param media: Media whose queue/session identify the output plan.
+        """
+        if ffmpeg := self._player_ffmpeg.pop(player.player_id, None):
+            await ffmpeg.close()
+        stream = player.stream
+        assert stream
+        handoff_format = stream.pcm_format
+        output_plan = self.mass.streams.audio.get_player_output_plan(
+            player.player_id,
+            input_format=self.pcm_format,
+            output_format=get_final_output_format(handoff_format, player),
+            handoff_format=handoff_format,
+            queue_id=media.source_id,
+            session_id=get_media_session_id(media),
+        )
+        cli_proc = stream._cli_proc
         assert cli_proc
         assert cli_proc.proc
         assert cli_proc.proc.stdin
@@ -751,237 +798,4 @@ class AirPlayStreamSession:
             audio_output=audio_output,
         )
         await ffmpeg.start()
-        self._player_ffmpeg[airplay_player.player_id] = ffmpeg
-
-    async def _commit_generations(
-        self,
-        generations: dict[str, int],
-        position_ms: int,
-        start_unix_ms: int | None = None,
-        *,
-        reanchor_session: bool = True,
-    ) -> None:
-        """
-        Start prepared member generations at one audible instant.
-
-        :param generations: Generation number keyed by player ID.
-        :param position_ms: Media position represented by each generation's first sample.
-        :param start_unix_ms: Optional audible-start instant in unix epoch milliseconds.
-        :param reanchor_session: Whether this generation becomes the session timeline anchor.
-        """
-        if start_unix_ms is None:
-            start_lead_ms = 400 if len(generations) == 1 else 750
-            start_unix_ms = int(time.time() * 1000) + start_lead_ms
-        async with asyncio.TaskGroup() as task_group:
-            for player in self.sync_clients:
-                generation = generations.get(player.player_id)
-                if generation is None:
-                    continue
-                member_start = start_unix_ms
-                sync_adjust = player.config.get_value(CONF_SYNC_ADJUST, 0)
-                if isinstance(sync_adjust, int):
-                    member_start += sync_adjust
-                stream = player.stream
-                assert stream
-                task_group.create_task(
-                    stream.start_generation(generation, position_ms, member_start)
-                )
-        if reanchor_session:
-            self.start_unix_ms = start_unix_ms
-            self.start_time = start_unix_ms / 1000
-
-    async def _start_generation_ffmpeg(
-        self, player: AirPlayPlayer, fifo_fd: int, media: PlayerMedia
-    ) -> None:
-        """
-        Start the per-player DSP ffmpeg for a staged generation.
-
-        Retires the player's previous ffmpeg and spawns a fresh one writing
-        into the prepared generation pipe.
-
-        :param player: AirPlay player receiving the generation.
-        :param fifo_fd: Blocking write descriptor paired with the prepared reader.
-        :param media: Media that owns the new generation.
-        """
-        try:
-            if ffmpeg := self._player_ffmpeg.get(player.player_id):
-                # Kill, not close: a graceful close waits for the old ffmpeg to
-                # drain its buffered audio into the binary at playback speed
-                # (seconds), and that audio is superseded anyway. The binary keeps
-                # playing the old generation from its own ring until START lands.
-                await ffmpeg.kill()
-                if self._player_ffmpeg.get(player.player_id) is ffmpeg:
-                    self._player_ffmpeg.pop(player.player_id)
-            stream = player.stream
-            assert stream
-            handoff_format = stream.pcm_format
-            output_plan = self.mass.streams.audio.get_player_output_plan(
-                player.player_id,
-                input_format=self.pcm_format,
-                output_format=get_final_output_format(handoff_format, player),
-                handoff_format=handoff_format,
-                queue_id=media.source_id,
-                session_id=get_media_session_id(media),
-            )
-            ffmpeg = FFMpeg(
-                audio_input="-",
-                input_format=self.pcm_format,
-                output_format=handoff_format,
-                filter_params=output_plan.filter_params,
-                audio_output=fifo_fd,
-            )
-            await ffmpeg.start()
-            self._player_ffmpeg[player.player_id] = ffmpeg
-        finally:
-            # the ffmpeg child inherited the descriptor; drop our copy so the
-            # pipe sees EOF when ffmpeg exits
-            os.close(fifo_fd)
-
-    async def _allocate_warm_generation_fifos(
-        self, generations: dict[str, int], fifos: dict[str, str]
-    ) -> None:
-        """Allocate one staged generation FIFO for every session member."""
-        for player in self.sync_clients:
-            stream = player.stream
-            assert stream
-            generation = stream.next_generation()
-            fifo = f"/tmp/ma-gen-{player.player_id}-{generation}.pcm"  # noqa: S108
-            with suppress(FileNotFoundError):
-                await asyncio.to_thread(os.unlink, fifo)
-            await asyncio.to_thread(os.mkfifo, fifo)
-            generations[player.player_id] = generation
-            fifos[player.player_id] = fifo
-
-    async def _prepare_initial_generations(
-        self, generations: dict[str, int], position_ms: int
-    ) -> None:
-        """Deliver every generation-0 PREPARE before surfacing a startup failure."""
-        streams: list[AirPlayStream] = []
-        for player in self.sync_clients:
-            stream = player.stream
-            assert stream
-            generations[player.player_id] = 0
-            streams.append(stream)
-        results = await asyncio.gather(
-            *[stream.prepare_generation(0, "-", position_ms) for stream in streams],
-            return_exceptions=True,
-        )
-        for result in results:
-            if isinstance(result, BaseException):
-                raise result
-
-    async def _prepare_warm_generations(
-        self,
-        generations: dict[str, int],
-        fifos: dict[str, str],
-        position_ms: int,
-        started_at: float,
-    ) -> None:
-        """Deliver every queued PREPARE before surfacing a partial-group failure."""
-        results = await asyncio.gather(
-            *[
-                self._prepare_warm_generation(
-                    player,
-                    generations[player.player_id],
-                    fifos[player.player_id],
-                    position_ms,
-                    started_at,
-                )
-                for player in self.sync_clients
-            ],
-            return_exceptions=True,
-        )
-        for result in results:
-            if isinstance(result, BaseException):
-                raise result
-
-    async def _prepare_warm_generation(
-        self,
-        player: AirPlayPlayer,
-        generation: int,
-        fifo: str,
-        position_ms: int,
-        started_at: float,
-    ) -> None:
-        """Deliver PREPARE for one member without changing its active generation."""
-        stream = player.stream
-        assert stream
-        await stream.prepare_generation(generation, fifo, position_ms)
-        self._log_generation_phase(player.player_id, generation, "prepare-delivered", started_at)
-
-    async def _wait_warm_generation_ready(
-        self, player: AirPlayPlayer, generation: int, started_at: float
-    ) -> None:
-        """Wait for one member to open its staged generation reader."""
-        stream = player.stream
-        assert stream
-        if not await stream.wait_generation_ready(generation):
-            raise PlayerCommandFailed(
-                f"generation {generation} reader ready timeout for {player.player_id}"
-            )
-        self._log_generation_phase(player.player_id, generation, "ready", started_at)
-
-    async def _wait_warm_generation_primed(
-        self, player: AirPlayPlayer, generation: int, started_at: float
-    ) -> None:
-        """Wait for one member to buffer its staged generation."""
-        stream = player.stream
-        assert stream
-        if not await stream.wait_generation_primed(generation):
-            raise PlayerCommandFailed(
-                f"generation {generation} prime timeout for {player.player_id}"
-            )
-        self._log_generation_phase(player.player_id, generation, "primed", started_at)
-
-    async def _discard_generations(
-        self, generations: dict[str, int], started_at: float | None = None
-    ) -> None:
-        """Best-effort discard every generation staged before shared START."""
-        members: dict[str, tuple[AirPlayPlayer, AirPlayStream]] = {}
-        for player in self.sync_clients:
-            if player.stream is not None:
-                members[player.player_id] = (player, player.stream)
-        player_ids = [player_id for player_id in generations if player_id in members]
-        await asyncio.gather(
-            *[
-                self._discard_generation(
-                    members[player_id][0],
-                    members[player_id][1],
-                    generations[player_id],
-                    started_at,
-                )
-                for player_id in player_ids
-            ]
-        )
-
-    async def _discard_generation(
-        self,
-        player: AirPlayPlayer,
-        stream: AirPlayStream,
-        generation: int,
-        started_at: float | None = None,
-    ) -> None:
-        """Best-effort discard one generation staged before START."""
-        try:
-            await stream.discard_generation(generation)
-        except Exception as err:
-            self.prov.logger.warning(
-                "Could not discard staged AirPlay generation for player %s: %s",
-                player.player_id,
-                err,
-            )
-            return
-        if started_at is not None:
-            self._log_generation_phase(player.player_id, generation, "discard", started_at)
-
-    def _log_generation_phase(
-        self, player_id: str, generation: int, phase: str, started_at: float
-    ) -> None:
-        """Log a warm generation phase with elapsed staging time."""
-        self.prov.logger.debug(
-            "AirPlay warm generation: player=%s generation=%d phase=%s elapsed=%.3fs",
-            player_id,
-            generation,
-            phase,
-            time.monotonic() - started_at,
-        )
+        self._player_ffmpeg[player.player_id] = ffmpeg

@@ -9,9 +9,12 @@ from music_assistant_models.dsp import (
     BalanceFilter,
     DSPFilter,
     GainFilter,
+    HighLowPassFilter,
+    HighLowPassMode,
     ParametricEQBandType,
     ParametricEQFilter,
     ToneControlFilter,
+    TransposeFilter,
 )
 
 if TYPE_CHECKING:
@@ -127,26 +130,12 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
                     f"biquad=b0={b0}:b1={b1}:b2={b2}:a0={a0}:a1={a1}:a2={a2}{channels}"
                 )
             elif b.type == ParametricEQBandType.HIGH_PASS:
-                b0 = (1 + math.cos(w_0)) / 2
-                b1 = -(1 + math.cos(w_0))
-                b2 = (1 + math.cos(w_0)) / 2
-                a0 = 1 + alpha
-                a1 = -2 * math.cos(w_0)
-                a2 = 1 - alpha
-
                 filter_params.append(
-                    f"biquad=b0={b0}:b1={b1}:b2={b2}:a0={a0}:a1={a1}:a2={a2}{channels}"
+                    _pass_biquad_params(high_pass=True, w_0=w_0, alpha=alpha, channels=channels)
                 )
             elif b.type == ParametricEQBandType.LOW_PASS:
-                b0 = (1 - math.cos(w_0)) / 2
-                b1 = 1 - math.cos(w_0)
-                b2 = (1 - math.cos(w_0)) / 2
-                a0 = 1 + alpha
-                a1 = -2 * math.cos(w_0)
-                a2 = 1 - alpha
-
                 filter_params.append(
-                    f"biquad=b0={b0}:b1={b1}:b2={b2}:a0={a0}:a1={a1}:a2={a2}{channels}"
+                    _pass_biquad_params(high_pass=False, w_0=w_0, alpha=alpha, channels=channels)
                 )
             elif b.type == ParametricEQBandType.NOTCH:
                 b0 = 1
@@ -186,5 +175,51 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
                 filter_params.append(f"pan=stereo|FL={attenuation}*FL|FR=FR")
             else:
                 filter_params.append(f"pan=stereo|FL=FL|FR={attenuation}*FR")
+    if isinstance(dsp_filter, TransposeFilter) and dsp_filter.semitones != 0:
+        # rubberband expects a frequency ratio rather than a number of semitones
+        pitch = 2 ** (dsp_filter.semitones / 12)
+        # preserving formants keeps voices natural instead of chipmunk-like; revisit
+        # these quality options if they prove too costly on low powered hardware
+        filter_params.append(
+            f"rubberband=pitch={pitch}:formant=preserved:pitchq=quality:window=long"
+        )
+
+    if isinstance(dsp_filter, HighLowPassFilter):
+        # A high/low-pass of a given slope is a cascade of second-order Butterworth
+        # sections, each adding 12 dB/octave, at the same cutoff but different Q.
+        # slope is validated to 12, 24 or 48 dB/octave, so order is 2, 4 or 8.
+        high_pass = dsp_filter.mode == HighLowPassMode.HIGH_PASS
+        order = dsp_filter.slope // 6
+        w_0 = 2 * math.pi * dsp_filter.frequency / input_format.sample_rate
+        sin_w0 = math.sin(w_0)
+        for section in range(order // 2):
+            # Butterworth pole Q for this section
+            q = 1 / (2 * math.cos(math.pi * (2 * section + 1) / (2 * order)))
+            alpha = sin_w0 / (2 * q)
+            filter_params.append(_pass_biquad_params(high_pass=high_pass, w_0=w_0, alpha=alpha))
 
     return filter_params
+
+
+def _pass_biquad_params(*, high_pass: bool, w_0: float, alpha: float, channels: str = "") -> str:
+    """
+    Build the FFmpeg biquad parameters for one high-pass or low-pass section.
+
+    :param high_pass: True for a high-pass section, False for a low-pass section.
+    :param w_0: Normalised angular cutoff frequency, 2*pi*frequency/sample_rate.
+    :param alpha: Cookbook alpha term, sin(w_0)/(2*Q).
+    :param channels: Optional FFmpeg channel selector suffix, e.g. ":c=FL".
+    """
+    cos_w0 = math.cos(w_0)
+    if high_pass:
+        b0 = (1 + cos_w0) / 2
+        b1 = -(1 + cos_w0)
+        b2 = (1 + cos_w0) / 2
+    else:
+        b0 = (1 - cos_w0) / 2
+        b1 = 1 - cos_w0
+        b2 = (1 - cos_w0) / 2
+    a0 = 1 + alpha
+    a1 = -2 * cos_w0
+    a2 = 1 - alpha
+    return f"biquad=b0={b0}:b1={b1}:b2={b2}:a0={a0}:a1={a1}:a2={a2}{channels}"
