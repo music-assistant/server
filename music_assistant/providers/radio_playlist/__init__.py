@@ -1,8 +1,8 @@
 """
-Radio Playlists provider for Music Assistant.
+Endless Mix Playlists provider for Music Assistant.
 
-Generates dynamic "radio" playlists from a seed media item (artist / album / track / genre /
-playlist) — a mix of the seed's own tracks and similar tracks. A radio playlist is a normal dynamic
+Generates dynamic "endless mix" playlists from a seed media item (artist / album / track / genre /
+playlist) — a mix of the seed's own tracks and similar tracks. An endless mix is a normal dynamic
 playlist (``is_dynamic=True``): the queue and the rest of Music Assistant treat it exactly like any
 other provider's dynamic playlist (a station, a smart playlist). The playlist's ``item_id`` is the
 seed item's own URI, so ``radio_playlist://playlist/<seed-uri>`` round-trips straight back to the
@@ -80,7 +80,7 @@ class RadioPlaylistProvider(PluginProvider):
         playlist = Playlist(
             item_id=prov_playlist_id,
             provider=self.instance_id,
-            name=f"{seed.name} Radio",
+            name=f"{seed.name} Endless Mix",
             provider_mappings={
                 ProviderMapping(
                     item_id=prov_playlist_id,
