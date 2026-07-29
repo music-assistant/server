@@ -29,7 +29,9 @@ from music_assistant.controllers.translations import (
     _format,
     _locale_candidates,
 )
+from scripts import build_translations as build_translations_module
 from scripts.build_translations import (
+    _find_duplicate_keys,
     _flatten_into,
     _resolve_references,
     build_translations_source,
@@ -37,6 +39,7 @@ from scripts.build_translations import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+    from pathlib import Path
 
 
 def _make_controller() -> TranslationController:
@@ -107,6 +110,51 @@ def test_resolve_references_missing_target_raises() -> None:
         _resolve_references(
             {"provider.deezer.media.x.name": "[%key:common::media::does::not::exist%]"}
         )
+
+
+def test_find_duplicate_keys() -> None:
+    """Duplicated object keys are reported with their full key path, at any nesting depth."""
+    assert _find_duplicate_keys(b'{"a": "1", "b": {"c": "2"}}') == []
+    # two blocks with the same name at the top level (parsers keep only the last one)
+    assert _find_duplicate_keys(b'{"errors": {"a": "1"}, "other": {}, "errors": {"b": "2"}}') == [
+        "errors"
+    ]
+    assert _find_duplicate_keys(b'{"errors": {"pin": "a", "pin": "b"}}') == ["errors.pin"]
+    assert _find_duplicate_keys(b'{"a": [{"k": "1", "k": "2"}, {"k": "3"}]}') == ["a[0].k"]
+    assert _find_duplicate_keys(b'{"a": "1", "a": "2", "b": {"x": "1", "x": "2"}}') == [
+        "a",
+        "b.x",
+    ]
+
+
+def test_build_translations_duplicate_key_fails_loudly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A duplicated key in an authoring file fails the build, naming the file and key path."""
+    strings_file = tmp_path / "strings.json"
+    strings_file.write_bytes(b'{"errors": {"pin": "a"}, "errors": {"pin": "b"}}')
+    monkeypatch.setattr(
+        build_translations_module,
+        "_collect_source_files",
+        lambda: [("provider.foo.", str(strings_file))],
+    )
+    with pytest.raises(ValueError, match=r"Duplicate strings\.json key\(s\):[\s\S]*: errors"):
+        build_translations_source()
+
+
+def test_build_translations_malformed_file_names_the_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An authoring file that fails to parse is reported with its file path."""
+    strings_file = tmp_path / "strings.json"
+    strings_file.write_bytes(b'{"errors": ')
+    monkeypatch.setattr(
+        build_translations_module,
+        "_collect_source_files",
+        lambda: [("provider.foo.", str(strings_file))],
+    )
+    with pytest.raises(ValueError, match=r"strings\.json: "):
+        build_translations_source()
 
 
 def test_candidate_keys_common_rewrite() -> None:
