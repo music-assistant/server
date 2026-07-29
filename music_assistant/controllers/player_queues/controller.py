@@ -298,7 +298,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # (an active dynamic source manages its own refills, so leave it be)
         if (
             queue.autoplay_enabled
-            and queue_data.enqueued_media_items
             and not queue.is_dynamic
             and queue.current_index is not None
             and (queue.items - queue.current_index) < 5
