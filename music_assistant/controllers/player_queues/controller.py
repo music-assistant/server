@@ -582,18 +582,29 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
     def clear(self, queue_id: str, skip_stop: bool = False) -> None:
         """Clear all items in the queue."""
         queue = self._queue_data[queue_id].queue
-        self.mass.streams.audio_processing.clear(queue_id)
         self.store_sources(queue, [])
         queue.is_dynamic = False
         if queue.state != PlaybackState.IDLE and not skip_stop:
             self.mass.create_task(self.stop(queue_id))
+        self.reset_playback_position(queue_id)
+        self.update_items(queue_id, [])
+
+    def reset_playback_position(self, queue_id: str) -> None:
+        """
+        Reset the queue to its start position, keeping the items intact.
+
+        :param queue_id: The queue_id of the queue to reset.
+        """
+        queue = self._queue_data[queue_id].queue
+        self.mass.streams.audio_processing.clear(queue_id)
         queue.current_index = None
         queue.current_item = None
+        queue.next_item = None
         queue.elapsed_time = 0
         queue.elapsed_time_last_updated = time.time()
         queue.index_in_buffer = None
+        queue.resume_pos = 0
         self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
-        self.update_items(queue_id, [])
 
     @api_command("player_queues/save_as_playlist", required_scope=Scope.LIBRARY_WRITE)
     async def save_as_playlist(self, queue_id: str, name: str) -> BackgroundTask:
@@ -881,9 +892,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 queue_id, resume_item.queue_item_id, int(resume_pos), fade_in or False
             )
         else:
-            # Queue is empty, try to resume from playlog
-            if await self._try_resume_from_playlog(queue):
-                return
             msg = f"Resume queue requested but queue {queue.display_name} is empty"
             raise QueueEmpty(msg)
 

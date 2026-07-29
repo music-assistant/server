@@ -513,8 +513,12 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                         queue.display_name,
                         err,
                     )
-            self.logger.info("End of queue reached, clearing items")
-            self.clear(queue.queue_id)
+            # The items are deliberately kept: a queue that played to its end is rewound
+            # to the start instead of emptied, so pressing play again replays it from the
+            # beginning. Only an explicit clear (or a new enqueue) empties the queue.
+            self.logger.info("End of queue reached for %s, rewinding to start", queue.display_name)
+            self.reset_playback_position(queue.queue_id)
+            self.signal_update(queue.queue_id)
 
         # all checks passed, we stopped playback at the last (or single) track of the queue
         # now determine if the item was fully played before clearing/resuming
