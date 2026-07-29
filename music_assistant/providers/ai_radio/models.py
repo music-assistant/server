@@ -74,6 +74,7 @@ class SessionState:
     result: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
     task: asyncio.Task[Any] | None = field(default=None, repr=False, compare=False)
+    queue_id: str | None = field(default=None, repr=False, compare=False)
 
     def as_dict(self) -> dict[str, Any]:
         """Return session as a serializable dictionary."""

@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 from collections.abc import AsyncIterator, Callable, Coroutine
 from types import SimpleNamespace
 from typing import Any, cast
@@ -12,9 +13,10 @@ from urllib.parse import urlparse
 
 import aiohttp
 import pytest
-from aiolibdatachannel import DataChannel, IceServer, PeerConnection, RTCConfiguration
+from aiolibdatachannel import DataChannel, IceServer, LogLevel, PeerConnection, RTCConfiguration
 from cryptography.hazmat.primitives import serialization
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.webserver.remote_access import (
     STARTUP_DELAY,
     TASK_ID_START_GATEWAY,
@@ -25,6 +27,7 @@ from music_assistant.controllers.webserver.remote_access.gateway import (
     MA_API_CHUNK_SIZE,
     WebRTCGateway,
     WebRTCSession,
+    _is_usable_ice_url,
 )
 from music_assistant.helpers.webrtc_certificate import (
     _generate_certificate,
@@ -228,6 +231,58 @@ async def test_webrtc_gateway_custom_ice_servers(cert_pems: tuple[str, str]) -> 
     assert gateway.ice_servers == custom_ice_servers
 
 
+async def test_webrtc_gateway_local_ice_servers_skip_non_udp_turn(
+    cert_pems: tuple[str, str],
+) -> None:
+    """Test the local peer connection only gets ICE servers libjuice can use."""
+    cert_pem, key_pem = cert_pems
+    cred = {"username": "u", "credential": "p"}
+    # shape of what HA Cloud hands us: one UDP TURN url plus TCP/TLS variants
+    ha_cloud_ice_servers = [
+        {"urls": "stun:stun.cloudflare.com:3478"},
+        {"urls": "turn:turn.cloudflare.com:3478?transport=udp", **cred},
+        {"urls": "turn:turn.cloudflare.com:53", **cred},
+        {"urls": "turn:turn.cloudflare.com:3478?transport=tcp", **cred},
+        {"urls": "turns:turn.cloudflare.com:5349?transport=tcp", **cred},
+        {"urls": "turns:turn.cloudflare.com:443?transport=tcp", **cred},
+    ]
+
+    gateway = WebRTCGateway(
+        http_session=Mock(),
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+        ice_servers=ha_cloud_ice_servers,
+    )
+
+    assert [server.url for server in gateway._build_ice_servers(ha_cloud_ice_servers)] == [
+        "stun:stun.cloudflare.com:3478",
+        "turn:turn.cloudflare.com:3478?transport=udp",
+        "turn:turn.cloudflare.com:53",
+    ]
+    # remote clients still get the unfiltered list, since browsers do support TCP/TLS TURN
+    assert gateway.ice_servers == ha_cloud_ice_servers
+
+
+@pytest.mark.parametrize(
+    ("url", "usable"),
+    [
+        ("stun:stun.example.com:3478", True),
+        ("turn:turn.example.com:3478", True),
+        ("turn:turn.example.com:3478?transport=udp", True),
+        # the transport parameter wins over the scheme, matching rtc::IceServer
+        ("turns:turn.example.com:5349?transport=udp", True),
+        ("turn:turn.example.com:3478?transport=tcp", False),
+        ("turns:turn.example.com:5349", False),
+        ("turn:turn.example.com:3478?transport=tls", False),
+        ("https://turn.example.com", False),
+    ],
+)
+def test_is_usable_ice_url(url: str, usable: bool) -> None:
+    """Test only ICE server urls libjuice can actually use are kept."""
+    assert _is_usable_ice_url(url) is usable
+
+
 async def test_webrtc_gateway_start_stop(cert_pems: tuple[str, str]) -> None:
     """Test WebRTCGateway start and stop."""
     cert_pem, key_pem = cert_pems
@@ -247,6 +302,41 @@ async def test_webrtc_gateway_start_stop(cert_pems: tuple[str, str]) -> None:
 
         await gateway.stop()
         assert gateway.is_running is False
+
+
+@pytest.mark.parametrize(
+    ("logger_level", "expected_rtc_level"),
+    [
+        (VERBOSE_LOG_LEVEL, LogLevel.VERBOSE),
+        (logging.DEBUG, LogLevel.DEBUG),
+        (logging.INFO, LogLevel.ERROR),
+        (logging.WARNING, LogLevel.ERROR),
+    ],
+)
+async def test_webrtc_gateway_native_log_level(
+    cert_pems: tuple[str, str], logger_level: int, expected_rtc_level: LogLevel
+) -> None:
+    """Test native libdatachannel logging is capped at ERROR unless debugging."""
+    cert_pem, key_pem = cert_pems
+    gateway = WebRTCGateway(
+        http_session=Mock(),
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+    )
+    gateway.logger = logging.getLogger("test_webrtc_native_log_level")
+    gateway.logger.setLevel(logger_level)
+
+    with (
+        patch.object(gateway, "_run", new_callable=AsyncMock),
+        patch(
+            "music_assistant.controllers.webserver.remote_access.gateway.install_python_logger"
+        ) as install_logger,
+    ):
+        await gateway.start()
+        await gateway.stop()
+
+    install_logger.assert_called_once_with(gateway.logger, level=expected_rtc_level)
 
 
 async def test_webrtc_gateway_handle_registration_message(cert_pems: tuple[str, str]) -> None:

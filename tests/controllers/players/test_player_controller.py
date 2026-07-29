@@ -1331,6 +1331,11 @@ class TestPlayAnnouncementCleanup:
 
         mock_mass.streams.announcements = announcements
         mock_mass.streams.get_announcement_url = MagicMock(side_effect=_get_announcement_url)
+        render = MagicMock()
+        render.wait_ready = AsyncMock(return_value=True)
+        render.wait_finished = AsyncMock(return_value=3.0)
+        mock_mass.streams.announcement_renderer.acquire = MagicMock(return_value=render)
+        mock_mass.streams.announcement_renderer.release = AsyncMock()
         player.update_state(signal_event=False)
         return controller, player
 
@@ -1349,6 +1354,7 @@ class TestPlayAnnouncementCleanup:
 
         player.play_announcement.assert_awaited_once()
         assert announcements == {}
+        mock_mass.streams.announcement_renderer.release.assert_awaited_once()
 
     async def test_announcement_data_removed_on_error(self, mock_mass: MagicMock) -> None:
         """The registered announcement data is released even when playback fails."""
@@ -1360,6 +1366,22 @@ class TestPlayAnnouncementCleanup:
             await controller.play_announcement("player_1", "http://test/announcement.mp3")
 
         assert announcements == {}
+        mock_mass.streams.announcement_renderer.release.assert_awaited_once()
+
+    async def test_native_announcement_starts_on_first_audio(self, mock_mass: MagicMock) -> None:
+        """A native implementation is handed the url as soon as there is audio to serve."""
+        announcements: dict[str, object] = {}
+        controller, player = self._make_player(mock_mass, announcements)
+        render = mock_mass.streams.announcement_renderer.acquire.return_value
+        player.play_announcement = AsyncMock()  # type: ignore[method-assign]
+
+        await controller.play_announcement("player_1", "http://test/announcement.mp3")
+
+        player.play_announcement.assert_awaited_once()
+        # waiting for the whole clip here would delay the player for a slow source;
+        # the length is resolved downstream while it plays
+        render.wait_ready.assert_awaited_once()
+        render.wait_finished.assert_not_awaited()
 
 
 class TestPlayAnnouncementRestore:
@@ -1487,7 +1509,7 @@ class TestPlayAnnouncementRestore:
 
         assert volume_mock.call_args_list == [call("player_1", 0), call("player_1", 20)]
 
-    async def test_playback_is_restored_when_duration_lookup_fails(
+    async def test_playback_is_restored_when_duration_is_unknown(
         self, mock_mass: MagicMock
     ) -> None:
         """An announcement of unknown length still hands the player back to its content."""
@@ -1497,8 +1519,8 @@ class TestPlayAnnouncementRestore:
         announcement = self._announcement()
         announcement.duration = None
 
-        with pytest.raises(ValueError, match="custom_data"):
-            await controller._play_announcement(player, announcement)
+        # an unknown length waits for the player to report it finished instead of failing
+        await controller._play_announcement(player, announcement)
 
         resume_mock.assert_awaited_once()
 

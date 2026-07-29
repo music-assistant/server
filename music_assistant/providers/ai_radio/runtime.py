@@ -24,7 +24,7 @@ from music_assistant_models.enums import (
     QueueOption,
     TaskStatus,
 )
-from music_assistant_models.errors import InvalidCommand, InvalidDataError, MusicAssistantError
+from music_assistant_models.errors import InvalidDataError, MusicAssistantError
 from music_assistant_models.media_items import (
     MediaItemImage,
     ProviderMapping,
@@ -123,9 +123,11 @@ class AIRadioRuntimeMixin:
             else:
                 result = await self._run_dynamic_mode(session, station)
             session.result = result
-            session.status = "completed"
+            queue_stopped = result.get("ended_reason") == "queue_stopped"
+            session.status = "stopped" if queue_stopped else "completed"
             self.logger.info(
-                "AI Radio run completed: session=%s station=%s mode=%s",
+                "AI Radio run %s: session=%s station=%s mode=%s",
+                session.status,
                 session.session_id,
                 session.station_id,
                 session.mode,
@@ -296,7 +298,6 @@ class AIRadioRuntimeMixin:
             poll_seconds,
             prefetch_remaining_tracks,
         )
-        clear_queue = bool(station.get("clear_queue_on_start", True))
         # a grouped player plays from the group leader's queue, so resolve the
         # active queue up front and target that one for queueing and polling
         queue_id = player_id
@@ -311,28 +312,11 @@ class AIRadioRuntimeMixin:
             prefetch_remaining_tracks=prefetch_remaining_tracks,
             queue_id=queue_id,
         )
-        # without clearing, batches are appended after the existing queue items,
-        # so all trigger index math below must be offset by the current queue size
-        base_offset = 0
-        queue_was_active = False
-        if clear_queue:
-            self.mass.player_queues.clear(queue_id)
-        else:
-            existing_queue = self.mass.player_queues.get(queue_id)
-            base_offset = int(getattr(existing_queue, "items", 0) or 0)
-            queue_was_active = getattr(existing_queue, "state", None) in (
-                PlaybackState.PLAYING,
-                PlaybackState.PAUSED,
-            )
+        self.mass.player_queues.clear(queue_id)
+        session.queue_id = queue_id
 
         # a shuffled queue reorders each batch, scattering sections away from their tracks
-        try:
-            await self.mass.player_queues.set_shuffle(queue_id, False)
-        except InvalidCommand as err:
-            raise MusicAssistantError(
-                f"Queue {queue_id} is in dynamic mode, which reorders the queue. Disable dynamic "
-                "mode on the player or enable 'clear queue on start' for this station."
-            ) from err
+        await self.mass.player_queues.set_shuffle(queue_id, False)
 
         cumulative_minutes = [0.0]
         for track in tracks:
@@ -346,6 +330,8 @@ class AIRadioRuntimeMixin:
         batch_index = 0
         total_entries_queued = 0
         wait_trigger_global_index = -1
+        playback_seen = False
+        queue_stopped = False
         history_state: dict[str, list[tuple[int, float]]] = {}
         self._set_session_progress(
             session,
@@ -435,17 +421,13 @@ class AIRadioRuntimeMixin:
                 else entry
                 for entry in entries
             ]
-            option = QueueOption.REPLACE if is_first and clear_queue else QueueOption.ADD
+            option = QueueOption.REPLACE if is_first else QueueOption.ADD
             await self.mass.player_queues.play_media(
                 queue_id=queue_id,
                 media=media_entries,
                 option=option,
             )
-            if is_first and not clear_queue and not queue_was_active:
-                # ADD does not start playback on an idle queue
-                await self.mass.player_queues.play_index(queue_id, base_offset)
-
-            batch_start_global = base_offset + total_entries_queued
+            batch_start_global = total_entries_queued
             total_entries_queued += len(entries)
             if source_positions:
                 trigger_position = max(0, len(source_positions) - prefetch_remaining_tracks)
@@ -505,8 +487,19 @@ class AIRadioRuntimeMixin:
                 elif elapsed_time is not None and elapsed_time != last_elapsed_time:
                     last_elapsed_time = elapsed_time
                     playback_alive = True
+                # elapsed_time also "moves" on the first poll of an idle queue
+                if queue_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+                    playback_seen = True
                 if playback_alive:
                     inactivity_deadline = asyncio.get_running_loop().time() + stall_timeout
+                if playback_seen and queue_state == PlaybackState.IDLE:
+                    self.logger.info(
+                        "Queue %s was stopped, ending dynamic run (last_index=%s)",
+                        queue_id,
+                        last_seen_index,
+                    )
+                    queue_stopped = True
+                    break
                 if asyncio.get_running_loop().time() >= inactivity_deadline:
                     raise MusicAssistantError(
                         f"Queue {queue_id} stopped advancing for {stall_timeout}s "
@@ -514,8 +507,12 @@ class AIRadioRuntimeMixin:
                     )
                 await asyncio.sleep(poll_seconds)
 
+            if queue_stopped:
+                break
+
         return {
             "mode": "dynamic",
+            "ended_reason": "queue_stopped" if queue_stopped else "source_exhausted",
             "source_playlist_name": playlist_name,
             "source_tracks": len(tracks),
             "queued_tracks": cursor,
@@ -1660,6 +1657,19 @@ class AIRadioRuntimeMixin:
                 "(for example Home Assistant with an ai_task entity)."
             )
         return plugins[0]
+
+    async def _stop_session_queue(self, session: SessionState) -> None:
+        """Stop playback of the queue a run was playing on."""
+        queue_id = session.queue_id
+        if queue_id is None:
+            return
+        queue = self.mass.player_queues.get(queue_id)
+        if queue is None or getattr(queue, "state", None) == PlaybackState.IDLE:
+            return
+        try:
+            await self.mass.player_queues.stop(queue_id)
+        except MusicAssistantError as err:
+            self.logger.debug("Could not stop queue %s: %s", queue_id, err)
 
     def _get_tts_plugin(self) -> PluginProvider:
         """Return the plugin used for TTS tasks."""
