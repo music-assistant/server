@@ -40,6 +40,7 @@ def _media_status(content_id: str, *, player_is_playing: bool, player_is_paused:
 def test_dashboard_keepalive_video_treated_as_idle() -> None:
     """A playing dashboard-keepalive.mp4 status must not surface as MA playback."""
     fake = _fake_player()
+    fake._attr_elapsed_time = 123.0
     status = _media_status(
         "https://cast.music-assistant.io/dashboard-keepalive.mp4",
         player_is_playing=True,
@@ -51,12 +52,15 @@ def test_dashboard_keepalive_video_treated_as_idle() -> None:
     assert fake._attr_playback_state == PlaybackState.IDLE
     assert fake._attr_current_media is None
     assert fake._attr_active_source is None
+    assert fake._attr_elapsed_time == 0
+    assert isinstance(fake._attr_elapsed_time_last_updated, float)
     fake.update_state.assert_called_once()
 
 
 def test_legacy_keepalive_image_treated_as_idle() -> None:
     """The legacy paused keepalive.png status must also not surface as MA playback."""
     fake = _fake_player()
+    fake._attr_elapsed_time = 123.0
     status = _media_status(
         "https://cast.music-assistant.io/keepalive.png",
         player_is_playing=False,
@@ -68,4 +72,6 @@ def test_legacy_keepalive_image_treated_as_idle() -> None:
     assert fake._attr_playback_state == PlaybackState.IDLE
     assert fake._attr_current_media is None
     assert fake._attr_active_source is None
+    assert fake._attr_elapsed_time == 0
+    assert isinstance(fake._attr_elapsed_time_last_updated, float)
     fake.update_state.assert_called_once()

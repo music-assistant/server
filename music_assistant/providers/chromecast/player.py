@@ -499,6 +499,8 @@ class ChromecastPlayer(Player):
             self._attr_playback_state = PlaybackState.IDLE
             self._attr_current_media = None
             self._attr_active_source = None
+            self._attr_elapsed_time = 0
+            self._attr_elapsed_time_last_updated = time.time()
             self.update_state()
             return
 
