@@ -956,21 +956,34 @@ class StorytelHelper:
         self, items: list[dict[str, Any]]
     ) -> list[Audiobook | Podcast]:
         """Parse Storytel recommendation payload items into media items."""
-        task_results: list[Task[Audiobook | Podcast]] = []
+
+        async def _parse_item(item: dict[str, Any]) -> Audiobook | Podcast | None:
+            item_type = str(item.get("resultType") or "").strip().lower()
+            if item_type not in {"book", "podcast"}:
+                return None
+            item_id = str(item.get("id") or "").strip()
+            if not item_id:
+                return None
+            try:
+                if item_type == "book":
+                    return await self._parse_search_audiobook_item(item)
+                return await self._parse_search_podcast_item(item)
+            except (InvalidDataError, MediaNotFoundError, ProviderUnavailableError) as err:
+                self.logger.debug("Skipping Storytel recommendation item %s: %s", item_id, err)
+                return None
+
+        task_results: list[Task[Audiobook | Podcast | None]] = []
 
         async with TaskGroup() as tg:
             for item in items:
-                item_type = str(item.get("resultType") or "").strip().lower()
-                if item_type not in {"book", "podcast"}:
-                    continue
-                item_id = str(item.get("id") or "").strip()
-                if not item_id:
-                    continue
-                if item_type == "book":
-                    task_results.append(tg.create_task(self._parse_search_audiobook_item(item)))
-                else:
-                    task_results.append(tg.create_task(self._parse_search_podcast_item(item)))
-        return [task.result() for task in task_results]
+                task_results.append(tg.create_task(_parse_item(item)))
+
+        parsed_items: list[Audiobook | Podcast] = []
+        for task in task_results:
+            parsed_item = task.result()
+            if parsed_item is not None:
+                parsed_items.append(parsed_item)
+        return parsed_items
 
     def _encrypt_password_hex(self, password: str) -> str:
         """Encrypt password for Storytel API."""

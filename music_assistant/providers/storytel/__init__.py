@@ -8,7 +8,7 @@ lightweight client used to interact with Storytel APIs.
 from __future__ import annotations
 
 import functools
-from asyncio import Task, TaskGroup
+from asyncio import Semaphore, Task, TaskGroup
 from collections.abc import AsyncGenerator, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypeVar, cast
@@ -254,13 +254,20 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
     async def get_library_audiobooks(self) -> AsyncGenerator[Audiobook]:
         """Yield audiobooks from the user's Storytel bookshelf."""
         books, _ = await self.api.get_library()
+        failed_provider_error: ProviderUnavailableError | None = None
+        yielded_any = False
         for consumable_id in books:
             try:
-                yield await self.get_audiobook(consumable_id)
-            except Exception as err:
-                if isinstance(err, (LoginFailed, ProviderUnavailableError, SetupFailedError)):
-                    raise
-                self.logger.error("Failed to map Storytel book %s: %s", consumable_id, err)
+                audiobook = await self.get_audiobook(consumable_id)
+                yielded_any = True
+                yield audiobook
+            except (MediaNotFoundError, ProviderUnavailableError, InvalidDataError) as err:
+                if isinstance(err, ProviderUnavailableError):
+                    failed_provider_error = failed_provider_error or err
+                self.logger.debug("Skipping Storytel book %s: %s", consumable_id, err)
+
+        if not yielded_any and failed_provider_error is not None:
+            raise failed_provider_error
 
     @handle_login_failed
     async def get_audiobook(self, prov_audiobook_id: str, use_cache: bool = True) -> Audiobook:
@@ -447,6 +454,25 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
         :param prov_podcast_id: the provider specific ID of the podcast.
         :param use_cache: boolean to indicate if a cache lookup is allowed.
         """
+        failed_provider_error: ProviderUnavailableError | None = None
+        episode_semaphore = Semaphore(10)
+
+        async def _fetch_episode(episode: dict[str, Any]) -> PodcastEpisode | None:
+            nonlocal failed_provider_error
+            consumable_id = str(episode.get("id") or "").strip()
+            if not consumable_id:
+                return None
+            async with episode_semaphore:
+                try:
+                    return await self.get_podcast_episode(consumable_id, use_cache=True)
+                except (MediaNotFoundError, ProviderUnavailableError, InvalidDataError) as err:
+                    if isinstance(err, ProviderUnavailableError):
+                        failed_provider_error = failed_provider_error or err
+                    self.logger.debug(
+                        "Skipping Storytel podcast episode %s: %s", consumable_id, err
+                    )
+                    return None
+
         if use_cache:
             cached_episodes = await self.mass.cache.get(
                 key=prov_podcast_id,
@@ -456,14 +482,16 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
             )
             if cached_episodes is not None:
                 async with TaskGroup() as tg:
-                    cached_tasks: list[Task[PodcastEpisode]] = []
+                    cached_tasks: list[Task[PodcastEpisode | None]] = []
                     for episode in cached_episodes:
-                        consumable_id = episode.get("id") or ""
-                        cached_tasks.append(
-                            tg.create_task(self.get_podcast_episode(consumable_id, use_cache=True))
-                        )
+                        cached_tasks.append(tg.create_task(_fetch_episode(episode)))
+                yielded_any = False
                 for task in cached_tasks:
-                    yield task.result()
+                    if episode := task.result():
+                        yielded_any = True
+                        yield episode
+                if not yielded_any and failed_provider_error is not None:
+                    raise failed_provider_error
                 return
         podcast = await self.get_podcast(prov_podcast_id, use_cache=use_cache)
         podcast_episodes = await self.api.get_podcast_episodes(
@@ -479,27 +507,36 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
                     data=podcast_episodes,
                 )
             async with TaskGroup() as tg:
-                live_tasks: list[Task[PodcastEpisode]] = []
+                live_tasks: list[Task[PodcastEpisode | None]] = []
                 for episode in podcast_episodes:
-                    consumable_id = episode.get("id") or ""
-                    live_tasks.append(
-                        tg.create_task(self.get_podcast_episode(consumable_id, use_cache=True))
-                    )
+                    live_tasks.append(tg.create_task(_fetch_episode(episode)))
+            yielded_any = False
             for task in live_tasks:
-                yield task.result()
+                if episode := task.result():
+                    yielded_any = True
+                    yield episode
+            if not yielded_any and failed_provider_error is not None:
+                raise failed_provider_error
 
     @handle_login_failed_generator
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Yield podcasts from the user's library."""
         _, podcasts = await self.api.get_library()
+        failed_provider_error: ProviderUnavailableError | None = None
+        yielded_any = False
         for podcast_data in podcasts.values():
             podcast_id = (podcast_data.get("model") or {}).get("id") or ""
             try:
-                yield await self.get_podcast(podcast_id)
-            except Exception as err:
-                if isinstance(err, (LoginFailed, ProviderUnavailableError, SetupFailedError)):
-                    raise
-                self.logger.error("Failed to map Storytel podcast %s: %s", podcast_id, err)
+                podcast = await self.get_podcast(podcast_id)
+                yielded_any = True
+                yield podcast
+            except (MediaNotFoundError, ProviderUnavailableError, InvalidDataError) as err:
+                if isinstance(err, ProviderUnavailableError):
+                    failed_provider_error = failed_provider_error or err
+                self.logger.debug("Skipping Storytel podcast %s: %s", podcast_id, err)
+
+        if not yielded_any and failed_provider_error is not None:
+            raise failed_provider_error
 
     @handle_login_failed
     async def search(
