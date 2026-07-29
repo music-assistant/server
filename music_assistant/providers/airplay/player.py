@@ -42,6 +42,7 @@ from .constants import (
     CONF_ENTRY_SYNC_ADJUST_AIRPLAY,
     CONF_FORCE_RAOP,
     CONF_IGNORE_VOLUME,
+    CONF_PAIR_NOW,
     CONF_PAIRING_PASSWORD,
     CONF_PAIRING_PIN,
     CONF_PASSWORD,
@@ -167,9 +168,8 @@ class AirPlayPlayer(Player):
             self._requires_password_pairing() and self.protocol == StreamingProtocol.AIRPLAY2
         ):
             # Credentials for either protocol keep the player usable: the binary
-            # picks the best route for the credentials it has. The pairing section
-            # in the player config still offers pairing for the active protocol
-            # (e.g. to upgrade a legacy RAOP pairing to AirPlay 2).
+            # picks the best route for the credentials it has. Re-running the setup
+            # flow from the player settings offers replacing a stored pairing.
             if not (
                 self.get_setup_value(CONF_AIRPLAY_CREDENTIALS)
                 or self.get_setup_value(CONF_RAOP_CREDENTIALS)
@@ -817,26 +817,36 @@ class AirPlayPlayer(Player):
         self, session: SetupSession, collected: dict[str, ConfigValueType]
     ) -> None:
         """
-        Pair the streaming protocol (RAOP or AirPlay 2), unless already paired.
+        Pair the streaming protocol (RAOP or AirPlay 2).
 
-        Credentials for either protocol keep the player usable, so this no-ops when
-        any are already stored (e.g. when the flow is re-launched from the player
-        settings). The obtained credentials are added to ``collected`` under the
-        protocol-specific key.
+        When the device requires pairing this runs it, re-offering it as a skippable
+        step when credentials are already stored (so a re-launched flow can replace a
+        stale pairing). When the device requires no pairing, any leftover credentials
+        are cleared: they would keep forcing the pair-verify route, which some
+        receivers (e.g. HomePods after their password was removed) accept while
+        refusing to actually output audio. The obtained credentials are added to
+        ``collected`` under the protocol-specific key.
 
         :param session: The setup flow session used to interact with the user.
         :param collected: The values collected so far; updated in place.
         """
-        if self.get_setup_value(CONF_AIRPLAY_CREDENTIALS) or self.get_setup_value(
-            CONF_RAOP_CREDENTIALS
-        ):
-            return
         pin_pairing = self._requires_pin_pairing()
         # a password only replaces PIN pairing on the native AirPlay 2 flow
         password_pairing = (
             self._requires_password_pairing() and self.protocol == StreamingProtocol.AIRPLAY2
         )
         if not (pin_pairing or password_pairing):
+            for cred_key in (CONF_AIRPLAY_CREDENTIALS, CONF_RAOP_CREDENTIALS):
+                if self.get_setup_value(cred_key) is not None:
+                    collected[cred_key] = None
+            return
+        already_paired = bool(
+            self.get_setup_value(CONF_AIRPLAY_CREDENTIALS)
+            or self.get_setup_value(CONF_RAOP_CREDENTIALS)
+        )
+        if already_paired and not await self._offer_optional_pairing(
+            session, "streaming_repair_offer"
+        ):
             return
 
         protocol = self.protocol
@@ -878,6 +888,26 @@ class AirPlayPlayer(Player):
                 await pairing.close()
             collected[cred_key] = credentials
             return
+
+    async def _offer_optional_pairing(self, session: SetupSession, step_id: str) -> bool:
+        """
+        Ask whether to run the offered (optional) pairing now.
+
+        :param session: The setup flow session used to interact with the user.
+        :param step_id: The (i18n) step id describing the offered pairing.
+        """
+        values = await session.form(
+            [
+                ConfigEntry(
+                    key=CONF_PAIR_NOW,
+                    type=ConfigEntryType.BOOLEAN,
+                    default_value=False,
+                    category="protocol_generic",
+                )
+            ],
+            step_id=step_id,
+        )
+        return bool(values[CONF_PAIR_NOW])
 
     async def _prepare_streaming_pairing(
         self, protocol: StreamingProtocol, *, pin_pairing: bool
