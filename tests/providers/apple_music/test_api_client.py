@@ -8,7 +8,11 @@ import pytest
 from aiohttp import ClientPayloadError, ClientResponseError, ServerDisconnectedError
 from aiohttp.client_reqrep import RequestInfo
 from multidict import CIMultiDict, CIMultiDictProxy
-from music_assistant_models.errors import ResourceTemporarilyUnavailable, RetriesExhausted
+from music_assistant_models.errors import (
+    LoginFailed,
+    ResourceTemporarilyUnavailable,
+    RetriesExhausted,
+)
 from yarl import URL
 
 from music_assistant.providers.apple_music.api_client import (
@@ -257,3 +261,42 @@ async def test_get_all_items_persistent_truncation_raises() -> None:
     )
     with pytest.raises(ResourceTemporarilyUnavailable):
         await client.get_all_items("me/library/songs")
+
+
+# ---------------------------------------------------------------------------
+# P4: a rejected music user token surfaces as an auth error
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("status", [401, 403])
+@pytest.mark.asyncio
+async def test_get_data_auth_error_raises_login_failed(status: int) -> None:
+    """A revoked/expired user token surfaces as LoginFailed, not a bare HTTP error."""
+    client, provider = _make_client()
+    provider.mass.http_session.get = MagicMock(
+        return_value=_FakeRequestCtx(_make_response(status=status))
+    )
+    with patch(_SLEEP_TARGET, new=AsyncMock()), pytest.raises(LoginFailed):
+        await client.get_data("me/storefront")
+    # the token will not become valid on its own, so this must not be retried
+    assert provider.mass.http_session.get.call_count == 1
+
+
+@pytest.mark.parametrize("status", [401, 403])
+@pytest.mark.asyncio
+async def test_write_requests_auth_error_raises_login_failed(status: int) -> None:
+    """Library mutations report a rejected user token as LoginFailed too."""
+    client, provider = _make_client()
+    for method in ("put", "post", "delete"):
+        setattr(
+            provider.mass.http_session,
+            method,
+            MagicMock(return_value=_FakeRequestCtx(_make_response(status=status))),
+        )
+    with patch(_SLEEP_TARGET, new=AsyncMock()):
+        with pytest.raises(LoginFailed):
+            await client.put_data("me/ratings/library-playlists/p.1")
+        with pytest.raises(LoginFailed):
+            await client.post_data("me/library")
+        with pytest.raises(LoginFailed):
+            await client.delete_data("me/library/playlists/p.1")
