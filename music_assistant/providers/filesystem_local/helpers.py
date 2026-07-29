@@ -46,7 +46,7 @@ class ScanErrors:
     - failed_dirs: Number of directories that could not be read. A scan with
       failed directories is incomplete, so callers must not run deletions.
     - consecutive_failures: Directories that failed since the last one read
-      successfully.
+      successfully, excluding failures that do not point at unreachable storage.
     """
 
     fatal: Exception | None = None
@@ -62,17 +62,24 @@ class ScanErrors:
         """Register a directory that was read successfully."""
         self.consecutive_failures = 0
 
-    def record_dir_error(self, err: Exception, *, is_root: bool) -> None:
+    def record_dir_error(
+        self, err: Exception, *, is_root: bool, counts_toward_abort: bool = True
+    ) -> None:
         """
         Register a directory that could not be read.
 
         :param err: The error raised while reading the directory.
         :param is_root: True if the directory is the provider's root path.
+        :param counts_toward_abort: False for an error that leaves the scan incomplete
+            but says nothing about the storage being reachable, such as a folder that
+            is only permission-denied.
         """
         if is_root:
             self.fatal = err
             return
         self.failed_dirs += 1
+        if not counts_toward_abort:
+            return
         self.consecutive_failures += 1
         if self.consecutive_failures >= MAX_CONSECUTIVE_SCAN_ERRORS:
             self.fatal = err
@@ -449,7 +456,9 @@ def _record_dir_failure(
 ) -> None:
     """Register a directory that could not be read and report it if the scan gives up."""
     is_root = path == base_path
-    scan_errors.record_dir_error(err, is_root=is_root)
+    # a folder we may not read is an ACL problem; the storage itself is still there
+    denied = err.errno in (errno.EACCES, errno.EPERM)
+    scan_errors.record_dir_error(err, is_root=is_root, counts_toward_abort=not denied)
     if scan_errors.aborted and not is_root:
         log.error(
             "Stopping the scan of %s: %d folders in a row could not be read",

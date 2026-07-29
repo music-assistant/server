@@ -303,6 +303,36 @@ def test_recursive_iter_einval_does_not_abort(tmp_path: Path) -> None:
     assert errors.failed_dirs == 0
 
 
+def test_recursive_iter_permission_denied_does_not_abort(tmp_path: Path) -> None:
+    """Test that ACL-protected folders leave the scan incomplete without aborting it."""
+    _build_flat_tree(tmp_path, helpers.MAX_CONSECUTIVE_SCAN_ERRORS + 10)
+    (tmp_path / "root.mp3").write_bytes(b"x")
+    errors = helpers.ScanErrors()
+    real_scandir = os.scandir
+
+    def fake_scandir(path: str | os.PathLike[str]):  # type: ignore[no-untyped-def]
+        if str(path) == str(tmp_path):
+            return real_scandir(path)
+        raise PermissionError(errno.EACCES, "denied")
+
+    with patch("os.scandir", side_effect=fake_scandir):
+        items = list(
+            helpers.recursive_iter(
+                str(tmp_path),
+                str(tmp_path),
+                SUPPORTED,
+                logging.getLogger("test"),
+                errors,
+            )
+        )
+
+    assert [item.relative_path for item in items] == ["root.mp3"]
+    assert not errors.aborted
+    assert errors.consecutive_failures == 0
+    # the folders were still missed, so callers must not run deletions
+    assert errors.failed_dirs == helpers.MAX_CONSECUTIVE_SCAN_ERRORS + 10
+
+
 def test_scan_errors_reset_on_successful_read() -> None:
     """Test that a directory read in between failures resets the abort threshold."""
     errors = helpers.ScanErrors()
