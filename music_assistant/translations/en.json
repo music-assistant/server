@@ -844,6 +844,8 @@
   "provider.airplay.setup_flow.pair_password.title": "Enter the device password",
   "provider.airplay.setup_flow.pair_pin.description": "A PIN code is shown on the screen of your device. Enter it below to complete pairing.",
   "provider.airplay.setup_flow.pair_pin.title": "Pair with your device",
+  "provider.airplay.setup_flow.streaming_repair_offer.description": "This device is already paired for streaming. Optionally pair again to replace the stored pairing, for example after the device was reset or its password was changed. You can skip this to keep the current pairing.",
+  "provider.airplay.setup_flow.streaming_repair_offer.title": "Pair again (optional)",
   "provider.airplay_receiver.config_entries.airplay_name.description": "How should this AirPlay receiver be named in the AirPlay device list?",
   "provider.airplay_receiver.config_entries.airplay_name.label": "AirPlay Device Name",
   "provider.airplay_receiver.config_entries.mass_player_id.description": "The Music Assistant player connected to this AirPlay receiver plugin. When you stream audio via AirPlay to this virtual speaker, the audio will play on the selected player. Set to 'Auto' to automatically select a currently playing player, or the first available player if none is playing.",

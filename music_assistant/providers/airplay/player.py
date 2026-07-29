@@ -42,6 +42,7 @@ from .constants import (
     CONF_ENTRY_SYNC_ADJUST_AIRPLAY,
     CONF_FORCE_RAOP,
     CONF_IGNORE_VOLUME,
+    CONF_PAIR_NOW,
     CONF_PAIRING_PASSWORD,
     CONF_PAIRING_PIN,
     CONF_PASSWORD,
@@ -170,9 +171,8 @@ class AirPlayPlayer(Player):
             self._requires_password_pairing() and self.protocol == StreamingProtocol.AIRPLAY2
         ):
             # Credentials for either protocol keep the player usable: the binary
-            # picks the best route for the credentials it has. The pairing section
-            # in the player config still offers pairing for the active protocol
-            # (e.g. to upgrade a legacy RAOP pairing to AirPlay 2).
+            # picks the best route for the credentials it has. Re-running the setup
+            # flow from the player settings offers replacing a stored pairing.
             if not (
                 self.get_setup_value(CONF_AIRPLAY_CREDENTIALS)
                 or self.get_setup_value(CONF_RAOP_CREDENTIALS)
@@ -716,6 +716,13 @@ class AirPlayPlayer(Player):
                 # Native parent volume is on the receiver/amplifier scale.
                 # Keep the AirPlay child volume learned from DACP feedback instead.
                 return
+            if parent_player.state.volume_level == 0:
+                # A parent volume of 0 usually means the (idle) sibling interface
+                # feeding the parent doesn't know the real device volume, e.g. the
+                # cast side of the same device reports 0 while in standby. Adopting
+                # it would start the stream hard muted, so keep our own last known
+                # volume instead.
+                return
             if self._attr_volume_level == parent_player.state.volume_level:
                 return
             self._attr_volume_level = parent_player.state.volume_level
@@ -891,25 +898,35 @@ class AirPlayPlayer(Player):
         """
         Pair the streaming protocol (RAOP or AirPlay 2), unless already paired.
 
-        Credentials for either protocol keep the player usable, so this no-ops when
-        any are already stored (e.g. when the flow is re-launched from the player
-        settings). The obtained credentials are added to ``collected`` under the
-        protocol-specific key.
+        When the device requires pairing this runs it, re-offering it as a skippable
+        step when credentials are already stored (so a re-launched flow can replace a
+        stale pairing). When the device requires no pairing, any leftover credentials
+        are cleared: they would keep forcing the pair-verify route, which some
+        receivers (e.g. HomePods after their password was removed) accept while
+        refusing to actually output audio. The obtained credentials are added to
+        ``collected`` under the protocol-specific key.
 
         :param session: The setup flow session used to interact with the user.
         :param collected: The values collected so far; updated in place.
         :return: Whether the device password was collected as part of the pairing.
         """
-        if self.get_setup_value(CONF_AIRPLAY_CREDENTIALS) or self.get_setup_value(
-            CONF_RAOP_CREDENTIALS
-        ):
-            return False
         pin_pairing = self._requires_pin_pairing()
         # a password only replaces PIN pairing on the native AirPlay 2 flow
         password_pairing = (
             self._requires_password_pairing() and self.protocol == StreamingProtocol.AIRPLAY2
         )
         if not (pin_pairing or password_pairing):
+            for cred_key in (CONF_AIRPLAY_CREDENTIALS, CONF_RAOP_CREDENTIALS):
+                if self.get_setup_value(cred_key) is not None:
+                    collected[cred_key] = None
+            return False
+        already_paired = bool(
+            self.get_setup_value(CONF_AIRPLAY_CREDENTIALS)
+            or self.get_setup_value(CONF_RAOP_CREDENTIALS)
+        )
+        if already_paired and not await self._offer_optional_pairing(
+            session, "streaming_repair_offer"
+        ):
             return False
 
         protocol = self.protocol
@@ -981,6 +998,26 @@ class AirPlayPlayer(Player):
             step_id="pair_password",
         )
         self._store_device_password(str(values[CONF_PAIRING_PASSWORD]))
+
+    async def _offer_optional_pairing(self, session: SetupSession, step_id: str) -> bool:
+        """
+        Ask whether to run the offered (optional) pairing now.
+
+        :param session: The setup flow session used to interact with the user.
+        :param step_id: The (i18n) step id describing the offered pairing.
+        """
+        values = await session.form(
+            [
+                ConfigEntry(
+                    key=CONF_PAIR_NOW,
+                    type=ConfigEntryType.BOOLEAN,
+                    default_value=False,
+                    category="protocol_generic",
+                )
+            ],
+            step_id=step_id,
+        )
+        return bool(values[CONF_PAIR_NOW])
 
     async def _prepare_streaming_pairing(
         self, protocol: StreamingProtocol, *, pin_pairing: bool

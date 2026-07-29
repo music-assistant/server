@@ -744,6 +744,31 @@ def test_sync_volume_level_uses_parent_volume_without_native_parent(
     mock_update.assert_called_once()
 
 
+def test_sync_volume_level_ignores_parent_volume_zero(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    Keep the last known volume when the parent reports volume 0.
+
+    An idle sibling interface (e.g. the cast side of the same device in standby)
+    may feed the parent a volume of 0 that doesn't reflect the real device volume;
+    adopting it would start the stream hard muted.
+    """
+    parent = MagicMock()
+    parent.state.volume_level = 0
+    parent.volume_control = None
+    airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_level = 48
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.sync_volume_level()
+
+    assert airplay_player._attr_volume_level == 48
+    airplay_player.mass.config.set_raw_player_config_value.assert_not_called()  # type: ignore[attr-defined]
+    mock_update.assert_not_called()
+
+
 # --- Pause / stop dispatch tests ---
 
 

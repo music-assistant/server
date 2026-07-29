@@ -58,7 +58,6 @@ from .constants import (
     CONF_MRP_CREDENTIALS,
     CONF_MRP_PAIRING_PIN,
     CONF_NATIVE_MRP_CREDENTIALS,
-    CONF_PAIR_NOW,
     CONF_STORED_VOLUME,
     EXTERNAL_ARTWORK_PATH_PREFIX,
     FALLBACK_VOLUME,
@@ -230,8 +229,8 @@ class AirPlayControlPlayer(AirPlayPlayer):
         The streaming pairing (if any) is the required "device code" that gates
         ``needs_setup``; the optional Companion (remote control) and MRP (playback
         monitoring) pairings are offered afterwards as sequential, skippable steps.
-        Re-launching from the player settings with streaming already paired goes
-        straight to those optional offers.
+        Re-launching from the player settings re-offers every pairing, so a stored
+        pairing can be redone (replaced) when it went stale.
 
         :param session: The setup flow session used to interact with the user.
         """
@@ -814,17 +813,17 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self, session: SetupSession, collected: dict[str, ConfigValueType]
     ) -> None:
         """
-        Offer optional Companion (remote control) pairing, when supported and unpaired.
+        Offer optional Companion (remote control) pairing, when supported.
 
         Shows a skippable choice; on "set up now" it drives the PIN pairing and adds
-        the resulting credentials to ``collected``.
+        the resulting credentials to ``collected`` (replacing any stored ones).
 
         :param session: The setup flow session used to interact with the user.
         :param collected: The values collected so far; updated in place.
         """
-        if self.get_setup_value(CONF_COMPANION_CREDENTIALS) or not self.companion_pairing_supported:
+        if not self.companion_pairing_supported:
             return
-        if not await self._offer_control_pairing(session, "companion_offer"):
+        if not await self._offer_optional_pairing(session, "companion_offer"):
             return
         errors: dict[str, str] | None = None
         while True:
@@ -859,19 +858,19 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self, session: SetupSession, collected: dict[str, ConfigValueType]
     ) -> None:
         """
-        Offer optional MRP (playback monitoring) pairing, when supported and unpaired.
+        Offer optional MRP (playback monitoring) pairing, when supported.
 
         :param session: The setup flow session used to interact with the user.
         :param collected: The values collected so far; updated in place.
         """
-        if self._mrp_credentials or not self.mrp_pairing_supported:
+        if not self.mrp_pairing_supported:
             return
         endpoint = self._mrp_endpoint
         if endpoint is None:
             return
         discovery_info, protocol = endpoint
         cred_key = self._mrp_credentials_key
-        if not await self._offer_control_pairing(session, "mrp_offer"):
+        if not await self._offer_optional_pairing(session, "mrp_offer"):
             return
         errors: dict[str, str] | None = None
         while True:
@@ -899,26 +898,6 @@ class AirPlayControlPlayer(AirPlayPlayer):
                 await pairing.close()
             collected[cred_key] = credentials
             return
-
-    async def _offer_control_pairing(self, session: SetupSession, step_id: str) -> bool:
-        """
-        Ask whether to set up this optional control pairing now.
-
-        :param session: The setup flow session used to interact with the user.
-        :param step_id: The (i18n) step id describing the offered pairing.
-        """
-        values = await session.form(
-            [
-                ConfigEntry(
-                    key=CONF_PAIR_NOW,
-                    type=ConfigEntryType.BOOLEAN,
-                    default_value=False,
-                    category="protocol_generic",
-                )
-            ],
-            step_id=step_id,
-        )
-        return bool(values[CONF_PAIR_NOW])
 
     async def _begin_pyatv_pairing(
         self, discovery_info: AsyncServiceInfo | None, protocol: Protocol

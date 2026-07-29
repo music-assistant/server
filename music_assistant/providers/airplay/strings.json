@@ -45,6 +45,10 @@
       "title": "Enter the device password",
       "description": "This device is protected with a password. Enter it below to connect."
     },
+    "streaming_repair_offer": {
+      "title": "Pair again (optional)",
+      "description": "This device is already paired for streaming. Optionally pair again to replace the stored pairing, for example after the device was reset or its password was changed. You can skip this to keep the current pairing."
+    },
     "companion_offer": {
       "title": "Set up remote control (optional)",
       "description": "Optionally pair Companion controls to monitor power, wake the device before playback, and control native playback and volume. You can skip this and set it up later from the player settings."

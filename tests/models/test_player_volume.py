@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from music_assistant_models.enums import PlayerFeature
+from music_assistant_models.player import OutputProtocol
 
 from music_assistant.constants import CONF_MUTE_CONTROL, CONF_VOLUME_CONTROL
 from tests.common import MockPlayer, MockProvider
@@ -95,6 +96,85 @@ class TestFinalVolumeLevel:
 
         player.update_state(signal_event=False)
         assert player.state.volume_level == 42
+
+    def test_ignores_zero_from_idle_linked_protocol(self, mock_mass: MagicMock) -> None:
+        """Volume 0 from a linked protocol that is not the active output is not authoritative."""
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=lambda _pid, key, *_a: "cast_child" if key == CONF_VOLUME_CONTROL else None
+        )
+        provider = MockProvider("test", mass=mock_mass)
+        player = MockPlayer(provider, "main_player", "Main")
+        player._attr_volume_level = 55
+        player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="cast_child",
+                    name="Chromecast",
+                    protocol_domain="chromecast",
+                )
+            ]
+        )
+
+        control = MagicMock()
+        control.player_id = "cast_child"
+        control.volume_level = 0
+        mock_mass.players.get_player = MagicMock(return_value=control)
+        mock_mass.players.get_player_control = MagicMock(return_value=None)
+        # With default min=0, max=100, scaling is identity
+        mock_mass.players.scale_volume_from_device = MagicMock(side_effect=lambda _pid, vol: vol)
+
+        player.update_state(signal_event=False)
+        assert player.state.volume_level == 55
+
+    def test_uses_zero_from_active_linked_protocol(self, mock_mass: MagicMock) -> None:
+        """Volume 0 from the linked protocol that is actively rendering is trusted."""
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=lambda _pid, key, *_a: "cast_child" if key == CONF_VOLUME_CONTROL else None
+        )
+        provider = MockProvider("test", mass=mock_mass)
+        player = MockPlayer(provider, "main_player", "Main")
+        player._attr_volume_level = 55
+        player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="cast_child",
+                    name="Chromecast",
+                    protocol_domain="chromecast",
+                )
+            ]
+        )
+
+        control = MagicMock()
+        control.player_id = "cast_child"
+        control.volume_level = 0
+        mock_mass.players.get_player = MagicMock(return_value=control)
+        mock_mass.players.get_player_control = MagicMock(return_value=None)
+        # With default min=0, max=100, scaling is identity
+        mock_mass.players.scale_volume_from_device = MagicMock(side_effect=lambda _pid, vol: vol)
+
+        player.set_active_output_protocol("cast_child")
+        player.update_state(signal_event=False)
+        assert player.state.volume_level == 0
+
+    def test_uses_zero_from_external_control_player(self, mock_mass: MagicMock) -> None:
+        """Volume 0 from an external (non-linked) control player is trusted as genuine."""
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=lambda _pid, key, *_a: "amplifier" if key == CONF_VOLUME_CONTROL else None
+        )
+        provider = MockProvider("test", mass=mock_mass)
+        player = MockPlayer(provider, "main_player", "Main")
+        player._attr_volume_level = 55
+
+        control = MagicMock()
+        control.player_id = "amplifier"
+        control.volume_level = 0
+        mock_mass.players.get_player = MagicMock(return_value=control)
+        mock_mass.players.get_player_control = MagicMock(return_value=None)
+        # With default min=0, max=100, scaling is identity
+        mock_mass.players.scale_volume_from_device = MagicMock(side_effect=lambda _pid, vol: vol)
+
+        player.update_state(signal_event=False)
+        assert player.state.volume_level == 0
 
 
 class TestFinalVolumeMutedState:
