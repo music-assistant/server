@@ -35,6 +35,7 @@ from .constants import (
     AIRPLAY_HIRES_SAMPLE_RATES,
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_RAOP_SETUP_LEAD_MS,
+    AIRPLAY_REJOIN_ATTEMPT_DELAYS,
     BASE_PLAYER_FEATURES,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_ENCRYPTION,
@@ -102,6 +103,7 @@ class AirPlayPlayer(Player):
         self.last_command_sent = 0.0
         self._lock = asyncio.Lock()
         self._transitioning = False  # Set during stream replacement to ignore stale DACP messages
+        self._rejoin_task: asyncio.Task[None] | None = None
         # Set (static) player attributes
         self._attr_name = display_name
         self._attr_available = True
@@ -284,6 +286,9 @@ class AirPlayPlayer(Player):
 
     async def stop(self) -> None:
         """Send STOP command to player."""
+        # an explicit stop (including power-off routed as stop) is user intent:
+        # drop any pending automatic re-join
+        self.cancel_group_rejoin()
         async with self._lock:
             if self.stream and self.stream.session:
                 # forward stop to the entire stream session
@@ -352,6 +357,9 @@ class AirPlayPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
+        # the player is being (re)purposed on purpose: drop any pending
+        # automatic re-join left over from an unexpected stream loss
+        self.cancel_group_rejoin()
         async with self._lock:
             if self.synced_to:
                 # this should not happen, but guard anyways
@@ -671,11 +679,44 @@ class AirPlayPlayer(Player):
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
+        self.cancel_group_rejoin()
         if self.stream:
             # remove this player from the stream session if it is running
             if self.stream.running and self.stream.session:
                 await self.stream.session.remove_client(self, reason="player unloaded")
             self.stream = None
+
+    def schedule_group_rejoin(self, candidate_ids: list[str]) -> None:
+        """
+        Schedule a bounded automatic re-join of this player to its still-active group.
+
+        Used when this player's stream process died unexpectedly while it was part
+        of a playing sync group (e.g. the device rode out a network blackout): the
+        player is re-added to the group's live session through the regular
+        late-join path after a short backoff. Any user action on the player (or it
+        joining a session by other means) cancels the re-join; when the group is
+        no longer playing, its membership was changed meanwhile or the device is
+        offline, the re-join is abandoned and the player simply stays idle.
+
+        :param candidate_ids: Player ids that led or shared the group at the
+            moment the stream was lost, used to resolve the re-join target (the
+            leadership may transfer while the backoff runs).
+        """
+        self.cancel_group_rejoin()
+        self.logger.info(
+            "Scheduling automatic re-join of %s to its group after unexpected stream loss",
+            self.display_name,
+        )
+        self._rejoin_task = self.mass.create_task(self._group_rejoin_attempts(candidate_ids))
+
+    def cancel_group_rejoin(self) -> None:
+        """Cancel any pending automatic group re-join attempts for this player."""
+        rejoin_task = self._rejoin_task
+        self._rejoin_task = None
+        # never self-cancel: the re-join attempt itself flows through the same
+        # session (re)start paths that call this to clear stale schedules
+        if rejoin_task and not rejoin_task.done() and rejoin_task is not asyncio.current_task():
+            rejoin_task.cancel()
 
     @property
     def _has_native_protocol_parent(self) -> bool:
@@ -960,6 +1001,125 @@ class AirPlayPlayer(Player):
             if client := cast("AirPlayPlayer | None", self.mass.players.get_player(child_id)):
                 sync_clients.append(client)
         return sync_clients
+
+    async def _group_rejoin_attempts(self, candidate_ids: list[str]) -> None:
+        """Re-join this player to its group's live session after a bounded backoff."""
+        max_attempts = len(AIRPLAY_REJOIN_ATTEMPT_DELAYS)
+        for attempt, delay in enumerate(AIRPLAY_REJOIN_ATTEMPT_DELAYS, start=1):
+            await asyncio.sleep(delay)
+            if (
+                self.group_members
+                or (self.stream and self.stream.running)
+                or self.playback_state != PlaybackState.IDLE
+                # synced into a group outside the original one = deliberate regroup.
+                # Still pointing at an original candidate is fine: a static group
+                # keeps the sync membership while only the session lost this player.
+                or (self.synced_to and self.synced_to not in candidate_ids)
+            ):
+                # the player was grouped or repurposed by other means meanwhile
+                self.logger.debug(
+                    "Automatic group re-join for %s cancelled: player is active again",
+                    self.display_name,
+                )
+                return
+            if not self.available:
+                # the device is offline: an attempt cannot succeed and the user
+                # may well have switched it off on purpose
+                self.logger.debug(
+                    "Automatic group re-join for %s cancelled: player is unavailable",
+                    self.display_name,
+                )
+                return
+            target = self._resolve_rejoin_target(candidate_ids)
+            if target is None:
+                # the group may be between sessions (e.g. a track change); keep
+                # trying until the attempts run out
+                self.logger.debug(
+                    "Automatic group re-join attempt %d/%d for %s: no playing group found",
+                    attempt,
+                    max_attempts,
+                    self.display_name,
+                )
+                continue
+            # When the sync membership survived the stream loss (a static group,
+            # where membership is configuration), only the running session needs
+            # healing; a group command would no-op on the existing membership.
+            heal_session = (
+                target.stream.session
+                if self.player_id in target.group_members and target.stream is not None
+                else None
+            )
+            try:
+                if heal_session is not None:
+                    await heal_session.add_client(self)
+                else:
+                    await self.mass.players.cmd_group(self.player_id, target.player_id)
+            except Exception as err:
+                self.logger.warning(
+                    "Automatic re-join of %s to group of %s failed (attempt %d/%d): %s",
+                    self.display_name,
+                    target.display_name,
+                    attempt,
+                    max_attempts,
+                    err,
+                )
+                continue
+            # A failed late-join is swallowed inside the grouping path (the player
+            # then holds group membership without a live stream), so verify the
+            # session actually carries this player before declaring success.
+            if (
+                self.stream
+                and self.stream.running
+                and self.stream.session
+                and self in self.stream.session.sync_clients
+            ):
+                self.logger.info(
+                    "Automatically re-joined %s to the group of %s after stream loss",
+                    self.display_name,
+                    target.display_name,
+                )
+                return
+            self.logger.warning(
+                "Automatic re-join of %s did not produce a running stream (attempt %d/%d)",
+                self.display_name,
+                attempt,
+                max_attempts,
+            )
+            if heal_session is None:
+                # undo the group membership this attempt created so a retry (or
+                # a manual regroup) starts from a clean join
+                await self.mass.players.cmd_ungroup(self.player_id)
+        self.logger.warning(
+            "Giving up on automatic group re-join for %s after %d attempt(s); "
+            "the player stays idle",
+            self.display_name,
+            max_attempts,
+        )
+
+    def _resolve_rejoin_target(self, candidate_ids: list[str]) -> AirPlayPlayer | None:
+        """Resolve which player now carries the group's actively playing session."""
+        for candidate_id in candidate_ids:
+            candidate = self.mass.players.get_player(candidate_id)
+            if candidate is None or candidate is self:
+                continue
+            if not isinstance(candidate, AirPlayPlayer):
+                continue
+            if candidate.synced_to:
+                # the candidate was absorbed into another group since the loss
+                # (user intent): never follow the old group's players elsewhere.
+                # A leadership transfer inside the original group is still found:
+                # the promoted member is itself one of the candidates.
+                continue
+            if not candidate.available:
+                continue
+            # only a PLAYING session can absorb a late joiner: a parked (paused)
+            # session has no live timeline to anchor against
+            if candidate.playback_state != PlaybackState.PLAYING:
+                continue
+            if not (candidate.stream and candidate.stream.running and candidate.stream.session):
+                continue
+            return candidate
+        return None
 
 
 class GenericAirPlayPlayer(AirPlayPlayer):

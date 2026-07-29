@@ -72,6 +72,14 @@ AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 2000
 AIRPLAY_START_LEAD_MS: Final[int] = 250
 AIRPLAY_GROUP_START_LEAD_MS: Final[int] = 500
 
+# Delay (seconds) before automatically re-joining a group member whose
+# cliairplay process died unexpectedly mid-session (e.g. the device rode out a
+# network blackout longer than the binary's own keepalive tolerance). A single
+# attempt keeps the behaviour predictable: it waits long enough for a short
+# blackout to clear, and if the device is still gone the player is left idle.
+# Staged retries can be reintroduced by adding entries to the tuple.
+AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5,)
+
 # Cover art is rendered to a local JPEG for the binary to embed (the binary
 # does not fetch URLs). 512px keeps the SET_PARAMETER payload small while still
 # looking sharp on speaker apps and the Apple TV now-playing screen.

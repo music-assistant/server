@@ -693,6 +693,8 @@ class AirPlayStreamSession:
         :param use_shared_ptp: The session-wide shared-PTP decision applied to
             this member so the whole group shares one timing source.
         """
+        # joining a session supersedes any pending automatic group re-join
+        airplay_player.cancel_group_rejoin()
         # sync volume from parent player if needed
         airplay_player.sync_volume_level()
         if airplay_player.stream and airplay_player.stream.running:
