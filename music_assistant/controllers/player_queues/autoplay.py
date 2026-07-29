@@ -40,10 +40,14 @@ GENRE_SEED_ITEM_COUNT = 3
 GENRE_SEED_MEDIA_TYPES = (MediaType.TRACK, MediaType.ALBUM, MediaType.ARTIST)
 # media types that end on their own but have a natural successor of their own: Autoplay
 # continues these with the next episode/book instead of appending music
-SERIES_MEDIA_TYPES = (MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE)
+AUTOPLAY_SERIES_MEDIA_TYPES = (MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE)
 # media types Autoplay does not apply to: a live source has no natural end (stopping it means
 # the source stopped, not that the queue ran out) and a sound effect is a one-off
-EXCLUDED_MEDIA_TYPES = (MediaType.RADIO, MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT)
+AUTOPLAY_EXCLUDED_MEDIA_TYPES = (
+    MediaType.RADIO,
+    MediaType.AUDIO_SOURCE,
+    MediaType.SOUND_EFFECT,
+)
 
 
 class AutoplayMode(StrEnum):

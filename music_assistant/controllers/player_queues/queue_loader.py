@@ -41,8 +41,8 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
 from music_assistant.controllers.player_queues.autoplay import (
-    EXCLUDED_MEDIA_TYPES,
-    SERIES_MEDIA_TYPES,
+    AUTOPLAY_EXCLUDED_MEDIA_TYPES,
+    AUTOPLAY_SERIES_MEDIA_TYPES,
     AutoplayMode,
 )
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
@@ -440,7 +440,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if not queue_data.items:
             return
         last_item = queue_data.items[-1]
-        if last_item.media_type in EXCLUDED_MEDIA_TYPES:
+        if last_item.media_type in AUTOPLAY_EXCLUDED_MEDIA_TYPES:
             return
         # Restore the queue owner's user context so provider filters, library access and
         # resume positions are respected during this background refill, mirroring
@@ -451,7 +451,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             else None
         )
         set_current_user(playback_user)
-        if last_item.media_type in SERIES_MEDIA_TYPES:
+        if last_item.media_type in AUTOPLAY_SERIES_MEDIA_TYPES:
             await self._fill_autoplay_next_in_series(queue_id, last_item)
             return
         await self._fill_autoplay_music_tracks(queue_id)
