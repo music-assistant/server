@@ -4210,10 +4210,12 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 if (prev_volume := volume_player.state.volume_level) is None:
                     continue
                 announcement_volume = self.get_announcement_volume(volume_player_id, volume_level)
+                # get_announcement_volume already returns None when the volume must be left
+                # alone, so any number it does return is the volume to announce at - including
+                # 0, which must not be mistaken for 'no volume configured'
                 if announcement_volume is None:
                     continue
-                temp_volume = announcement_volume or player.state.volume_level
-                if temp_volume != prev_volume:
+                if announcement_volume != prev_volume:
                     prev_volumes[volume_player_id] = prev_volume
                     self.logger.debug(
                         "Announcement to player %s - setting temporary volume (%s)...",

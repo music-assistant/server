@@ -1469,6 +1469,24 @@ class TestPlayAnnouncementRestore:
 
         assert volume_mock.call_args_list == [call("player_1", 80), call("player_1", 20)]
 
+    async def test_zero_announcement_volume_is_applied_and_restored(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """An announcement volume of 0 is a real volume, not an 'unset' fallback."""
+        controller, player, _ = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+        player._attr_volume_level = 20
+        player._cache.clear()
+        player.update_state(force_update=True, signal_event=False)
+        controller.get_announcement_volume = MagicMock(return_value=0)  # type: ignore[method-assign]
+        volume_mock = AsyncMock()
+        controller._handle_cmd_volume_set = volume_mock  # type: ignore[method-assign]
+
+        await controller._play_announcement(player, self._announcement())
+
+        assert volume_mock.call_args_list == [call("player_1", 0), call("player_1", 20)]
+
     async def test_playback_is_restored_when_duration_lookup_fails(
         self, mock_mass: MagicMock
     ) -> None:
