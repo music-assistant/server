@@ -109,7 +109,7 @@ LISTEN_IN_COMMANDS = (
 )
 
 
-def _make_venue_player(
+def _make_venue_player(  # noqa: PLR0913
     player_id: str,
     name: str,
     *,
@@ -684,9 +684,8 @@ async def test_playback_options_filter_and_stably_rank_venue_players() -> None:
         "universal", "Universal", provider_domain="universal_player", linked_protocol=True
     )
     session_host = _make_venue_player("virtual", "Quiz Session", provider_domain="sendspin")
-    cast(
-        "MagicMock", plugin.mass.get_provider.return_value
-    ).is_virtual_player.side_effect = lambda player_id: player_id == "virtual"
+    sendspin_provider = cast("MagicMock", plugin.mass.get_provider).return_value
+    sendspin_provider.is_virtual_player.side_effect = lambda player_id: player_id == "virtual"
     excluded = [
         _make_venue_player("unavailable", "Unavailable", available=False),
         _make_venue_player("disabled", "Disabled", enabled=False),
