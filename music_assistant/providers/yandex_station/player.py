@@ -446,7 +446,7 @@ class YandexStationPlayer(Player):
             _raise_if_failed(result, "Audio announcement")
             # externalCommandBypass playback doesn't update state.playing,
             # so we can't observe completion — wait by known duration instead.
-            duration = announcement.duration
+            duration = await self.mass.streams.get_announcement_duration(announcement)
             wait_time = (
                 min(duration + 1, announcement_timeout)
                 if duration and duration > 0
