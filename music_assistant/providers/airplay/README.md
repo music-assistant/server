@@ -532,7 +532,7 @@ keeps their exposed player id stable and their Universal Player merging intact.
 - **`force_raop`**: Advanced per-player escape hatch to force the legacy RAOP protocol (default: off). Only offered for AirPlay 2-capable non-Apple devices that also advertise RAOP; route selection is otherwise fully automatic (the binary resolves it from the mDNS TXT)
 
 ### General
-- **`password`**: Device password if required (RAOP)
+- **`password`**: Device password, stored encrypted (hidden). It is entered through the player's setup flow, not the settings form: a device that announces password protection without one stored - or that rejects the stored one - is marked as needing setup, which offers the password step again
 - **`ignore_volume`**: Ignore device volume reports (default: false)
 - **`sync_adjust`**: Per-player audio synchronization delay correction in milliseconds (default: 0; negative = play earlier, e.g. to compensate for a TV/AV receiver that adds latency). The playback lead/buffer is handled automatically by the binary.
 

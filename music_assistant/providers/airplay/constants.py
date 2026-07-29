@@ -33,6 +33,10 @@ class AirPlayRemoteCommand(StrEnum):
 
 CONF_VOLUME_START: Final[str] = "volume_start"
 CONF_PASSWORD: Final[str] = "password"
+# Storage-only marker (no config entry) set when the device rejected the stored
+# password, so the player keeps asking for setup across restarts until a working
+# password is entered.
+CONF_PASSWORD_INVALID: Final[str] = "password_invalid"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_ENCRYPTION: Final[str] = "encryption"
 # Advanced per-device escape hatch: force the legacy RAOP protocol on an

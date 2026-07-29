@@ -952,7 +952,9 @@ class AirPlayControlPlayer(AirPlayPlayer):
             pin_code = int(pin)
         except (TypeError, ValueError) as err:
             raise PlayerCommandFailed(
-                "Enter the numeric PIN shown on the device", translation_key="invalid_pin"
+                "Enter the numeric PIN shown on the device",
+                translation_key="invalid_pin",
+                translation_owner=self.translation_owner,
             ) from err
         try:
             pairing.pin(pin_code)

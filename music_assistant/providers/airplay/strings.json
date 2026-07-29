@@ -70,12 +70,11 @@
     }
   },
   "errors": {
-    "invalid_pin": "Enter the numeric PIN shown on the screen of your device."
+    "invalid_pin": "Enter the numeric PIN shown on the screen of your device.",
+    "authentication_failed": "The device rejected the saved password. Run the setup for this player to enter it again.",
+    "show_dashboard_failed": "Failed to show the dashboard on {0}."
   },
   "manifest": {
     "description": "Stream to AirPlay-enabled devices on your local network."
-  },
-  "errors": {
-    "show_dashboard_failed": "Failed to show the dashboard on {0}."
   }
 }
