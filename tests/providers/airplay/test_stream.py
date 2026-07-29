@@ -1713,12 +1713,27 @@ async def test_auth_failed_marks_the_stored_password_invalid() -> None:
 
 
 @pytest.mark.asyncio
-async def test_other_connect_failures_leave_the_password_marker_alone() -> None:
-    """Only an authentication failure says anything about the stored password."""
+async def test_auth_required_also_marks_the_password_as_needed() -> None:
+    """
+    A device that demanded a password we could not supply flips into setup.
+
+    Devices can enforce a password without announcing it (stale TXT records), so
+    the runtime signal must set the marker too - it is the only reliable one.
+    """
     player = _make_player()
     stream = AirPlayStream(player)
 
     stream._handle_status_line('[STATUS] error code=auth_required http=401 detail="no password"')
+
+    player.set_password_invalid.assert_called_once_with(True)
+
+
+@pytest.mark.asyncio
+async def test_plain_connect_failures_leave_the_password_marker_alone() -> None:
+    """A non-authentication failure says nothing about the stored password."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
     stream._handle_status_line('[STATUS] error code=connect_failed http=0 detail="no route"')
 
     player.set_password_invalid.assert_not_called()

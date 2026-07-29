@@ -1135,8 +1135,11 @@ class AirPlayStream:
             self._connect_error.http_status,
             self._connect_error.detail,
         )
-        if self._connect_error.code == CONNECT_ERROR_AUTH_FAILED:
-            # The stored password is wrong: persist that so the player keeps
-            # offering its setup action (across restarts) until a working one
-            # is entered, instead of only failing at the next play attempt.
+        if self._connect_error.code in (CONNECT_ERROR_AUTH_FAILED, CONNECT_ERROR_AUTH_REQUIRED):
+            # The stored password is wrong, or the device demanded one we could
+            # not supply (devices can enforce a password without announcing it -
+            # e.g. an Apple TV with stale TXT records after the password was
+            # enabled). Persist that so the player keeps offering its setup
+            # action (across restarts) until a working password is entered,
+            # instead of only failing at the next play attempt.
             self.player.set_password_invalid(True)
