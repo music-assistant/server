@@ -1078,7 +1078,7 @@ class SendspinPlayer(SendspinBasePlayer):
             # the device's announcement pipeline plays at its own volume;
             # the announce volume config entries are hidden for this player
             self.logger.debug("Ignoring announcement volume level for player %s", self.display_name)
-        await hass.play_announcement_on_entity(entity_id, announcement.uri)
+        await hass.play_announcement_on_entity(entity_id, announcement)
         self.logger.debug("Playing announcement on %s completed", self.display_name)
 
     def restore_bridge_identity(
