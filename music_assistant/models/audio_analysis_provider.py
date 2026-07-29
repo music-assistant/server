@@ -9,9 +9,7 @@ import time
 from abc import abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar, TypeVar
-
-from music_assistant_models.enums import MediaType
+from typing import TYPE_CHECKING, TypeVar
 
 from music_assistant.models.audio_analysis import AudioAnalysisError
 
@@ -100,9 +98,6 @@ class AudioAnalysisProvider(Provider):
     # start_analysis. None means no limit. Providers that accumulate whole-track state set it.
     max_analysis_duration: float | None = None
 
-    # Media types this provider will analyze; widen it when the analysis suits more than tracks.
-    supported_media_types: ClassVar[frozenset[MediaType]] = frozenset({MediaType.TRACK})
-
     # Whether this provider holds heavy ML models that can be unloaded while idle and reloaded
     # on demand. Providers that load such models set this True (see _load_models/_free_models).
     has_unloadable_models: bool = False
@@ -136,8 +131,6 @@ class AudioAnalysisProvider(Provider):
         :param streamdetails: The stream details for the item being analyzed.
         :param audio_format: PCM format of the audio stream.
         """
-        if streamdetails.media_type not in self.supported_media_types:
-            return False
         if (
             self.max_analysis_duration is not None
             and streamdetails.duration

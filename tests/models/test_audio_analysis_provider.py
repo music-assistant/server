@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType
 
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import (
@@ -67,7 +66,6 @@ async def test_finalize_calls_post_analysis_when_finalize_returns_analysis() -> 
     """When _finalize returns analysis, finalize must call post_analysis with it."""
     provider = _make_provider()
     streamdetails = MagicMock()
-    streamdetails.media_type = MediaType.TRACK
     audio_format = MagicMock()
     analysis = AudioAnalysisData(loudness_integrated=-14.0)
 
@@ -86,7 +84,6 @@ async def test_finalize_skips_post_analysis_when_finalize_returns_none() -> None
     """When _finalize returns None, post_analysis must NOT be called."""
     provider = _make_provider()
     streamdetails = MagicMock()
-    streamdetails.media_type = MediaType.TRACK
     audio_format = MagicMock()
 
     provider._finalize = AsyncMock(return_value=None)  # type: ignore[method-assign]
@@ -104,7 +101,6 @@ async def test_finalize_swallows_finalize_exception_and_skips_post_analysis() ->
     """If _finalize raises, post_analysis must not be called and the exception must not propagate."""
     provider = _make_provider()
     streamdetails = MagicMock()
-    streamdetails.media_type = MediaType.TRACK
     audio_format = MagicMock()
 
     provider._finalize = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
@@ -122,7 +118,6 @@ async def test_finalize_swallows_post_analysis_exception() -> None:
     """post_analysis raising must be caught; the analysis row stays valid."""
     provider = _make_provider()
     streamdetails = MagicMock()
-    streamdetails.media_type = MediaType.TRACK
     audio_format = MagicMock()
     analysis = AudioAnalysisData()
 
@@ -144,7 +139,6 @@ async def test_start_analysis_skips_tracks_over_max_duration() -> None:
     provider.max_analysis_duration = 1800.0
     provider._start_analysis = AsyncMock(return_value=True)  # type: ignore[method-assign]
     streamdetails = MagicMock()
-    streamdetails.media_type = MediaType.TRACK
     streamdetails.duration = 7200  # 2 hours
 
     accepted = await provider.start_analysis("s", streamdetails, MagicMock())
@@ -163,7 +157,6 @@ async def test_start_analysis_allows_tracks_under_max_duration() -> None:
     provider.max_analysis_duration = 1800.0
     provider._start_analysis = AsyncMock(return_value=True)  # type: ignore[method-assign]
     streamdetails = MagicMock()
-    streamdetails.media_type = MediaType.TRACK
     streamdetails.duration = 240
 
     assert await provider.start_analysis("s", streamdetails, MagicMock()) is True
@@ -176,24 +169,9 @@ async def test_start_analysis_no_duration_cap_by_default() -> None:
     provider = _make_provider()
     provider._start_analysis = AsyncMock(return_value=True)  # type: ignore[method-assign]
     streamdetails = MagicMock()
-    streamdetails.media_type = MediaType.TRACK
     streamdetails.duration = 99999
 
     assert await provider.start_analysis("s", streamdetails, MagicMock()) is True
-
-
-@pytest.mark.asyncio
-async def test_start_analysis_rejects_media_type_outside_supported_set() -> None:
-    """A provider's default supported_media_types (tracks only) declines a sound effect session."""
-    provider = _make_provider()
-    provider._start_analysis = AsyncMock(return_value=True)  # type: ignore[method-assign]
-    streamdetails = MagicMock()
-    streamdetails.media_type = MediaType.SOUND_EFFECT
-
-    accepted = await provider.start_analysis("s", streamdetails, MagicMock())
-
-    assert accepted is False
-    provider._start_analysis.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -581,7 +559,6 @@ async def test_start_analysis_rejects_when_model_load_fails() -> None:
 
     provider._load_models = _load  # type: ignore[method-assign]
     streamdetails = MagicMock()
-    streamdetails.media_type = MediaType.TRACK
     streamdetails.duration = 120
 
     assert await provider.start_analysis("s", streamdetails, MagicMock()) is False

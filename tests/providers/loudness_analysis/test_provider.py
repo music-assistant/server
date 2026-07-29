@@ -124,56 +124,6 @@ async def test_finalize_raises_when_insufficient_duration() -> None:
         await provider._finalize(session_id)
 
 
-@pytest.mark.asyncio
-async def test_finalize_accepts_item_at_the_minimum_duration(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A clip just above the minimum duration finalizes to a measurement."""
-    provider = _make_provider()
-    session_id = "test-session-short-clip"
-
-    session_data, streamdetails = _make_session_data()
-    streamdetails.media_type = MediaType.SOUND_EFFECT
-    session_data.chunks_received = MIN_DURATION_SECONDS + 1
-    session_data.eof_sent = True
-
-    provider._data[session_id] = session_data
-    provider._sessions[session_id] = AnalysisSessionData(
-        streamdetails=streamdetails,
-        audio_format=MagicMock(),
-    )
-
-    monkeypatch.setattr(
-        "music_assistant.providers.loudness_analysis.provider._parse_ebur128_metrics",
-        lambda _log: (-14.5, 7.2, -1.2),
-    )
-
-    result = await provider._finalize(session_id)
-
-    assert isinstance(result, AudioAnalysisData)
-    assert result.loudness_integrated == -14.5
-
-
-@pytest.mark.asyncio
-async def test_start_analysis_accepts_sound_effect(monkeypatch: pytest.MonkeyPatch) -> None:
-    """LoudnessAnalysisProvider's widened supported_media_types accepts a sound effect session."""
-    provider = _make_provider()
-    streamdetails = MagicMock()
-    streamdetails.media_type = MediaType.SOUND_EFFECT
-    streamdetails.volume_normalization_mode = None
-
-    fake_ffmpeg = MagicMock()
-    fake_ffmpeg.start = AsyncMock()
-    monkeypatch.setattr(
-        "music_assistant.providers.loudness_analysis.provider.FFMpeg",
-        MagicMock(return_value=fake_ffmpeg),
-    )
-
-    accepted = await provider.start_analysis("session-sfx", streamdetails, MagicMock())
-
-    assert accepted is True
-
-
 # ---------------------------------------------------------------------------
 # post_analysis tests
 # ---------------------------------------------------------------------------
