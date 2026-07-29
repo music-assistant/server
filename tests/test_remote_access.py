@@ -25,6 +25,7 @@ from music_assistant.controllers.webserver.remote_access.gateway import (
     MA_API_CHUNK_SIZE,
     WebRTCGateway,
     WebRTCSession,
+    _is_usable_ice_url,
 )
 from music_assistant.helpers.webrtc_certificate import (
     _generate_certificate,
@@ -226,6 +227,58 @@ async def test_webrtc_gateway_custom_ice_servers(cert_pems: tuple[str, str]) -> 
     )
 
     assert gateway.ice_servers == custom_ice_servers
+
+
+async def test_webrtc_gateway_local_ice_servers_skip_non_udp_turn(
+    cert_pems: tuple[str, str],
+) -> None:
+    """Test the local peer connection only gets ICE servers libjuice can use."""
+    cert_pem, key_pem = cert_pems
+    # shape of what HA Cloud hands us: one UDP TURN url plus TCP/TLS variants
+    ha_cloud_ice_servers = [
+        {"urls": "stun:stun.cloudflare.com:3478"},
+        {"urls": "turn:turn.cloudflare.com:3478?transport=udp", "username": "u", "credential": "p"},
+        {"urls": "turn:turn.cloudflare.com:53", "username": "u", "credential": "p"},
+        {"urls": "turn:turn.cloudflare.com:3478?transport=tcp", "username": "u", "credential": "p"},
+        {"urls": "turns:turn.cloudflare.com:5349?transport=tcp", "username": "u", "credential": "p"},
+        {"urls": "turns:turn.cloudflare.com:443?transport=tcp", "username": "u", "credential": "p"},
+    ]
+
+    gateway = WebRTCGateway(
+        http_session=Mock(),
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+        ice_servers=ha_cloud_ice_servers,
+    )
+
+    assert [server.url for server in gateway._build_ice_servers(ha_cloud_ice_servers)] == [
+        "stun:stun.cloudflare.com:3478",
+        "turn:turn.cloudflare.com:3478?transport=udp",
+        "turn:turn.cloudflare.com:53",
+    ]
+    # the unfiltered list stays what we advertise to remote clients, whose browsers do support
+    # TCP/TLS TURN
+    assert gateway.ice_servers == ha_cloud_ice_servers
+
+
+@pytest.mark.parametrize(
+    ("url", "usable"),
+    [
+        ("stun:stun.example.com:3478", True),
+        ("turn:turn.example.com:3478", True),
+        ("turn:turn.example.com:3478?transport=udp", True),
+        # the transport parameter wins over the scheme, matching rtc::IceServer
+        ("turns:turn.example.com:5349?transport=udp", True),
+        ("turn:turn.example.com:3478?transport=tcp", False),
+        ("turns:turn.example.com:5349", False),
+        ("turn:turn.example.com:3478?transport=tls", False),
+        ("https://turn.example.com", False),
+    ],
+)
+def test_is_usable_ice_url(url: str, usable: bool) -> None:
+    """Test only ICE server urls libjuice can actually use are kept."""
+    assert _is_usable_ice_url(url) is usable
 
 
 async def test_webrtc_gateway_start_stop(cert_pems: tuple[str, str]) -> None:
