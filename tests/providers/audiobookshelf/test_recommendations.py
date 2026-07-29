@@ -7,12 +7,14 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from aioaudiobookshelf.exceptions import NotFoundError as AbsNotFoundError
 from aioaudiobookshelf.schema.shelf import ShelfBook, ShelfLibraryItemMinified
 from aioaudiobookshelf.schema.shelf import ShelfId as AbsShelfId
 from aioaudiobookshelf.schema.shelf import ShelfType as AbsShelfType
 from music_assistant_models.media_items import BrowseFolder, UniqueList
 
 from music_assistant.providers.audiobookshelf import Audiobookshelf
+from music_assistant.providers.audiobookshelf.helpers import LibraryHelper
 
 
 def _make_shelf() -> Mock:
@@ -164,3 +166,21 @@ async def test_get_recommendation_items_unknown_id_returns_empty(
 
     assert isinstance(items, UniqueList)
     assert len(items) == 0
+
+
+@pytest.mark.asyncio
+async def test_get_recommendations_skips_unsupported_libraries(
+    provider: Audiobookshelf,
+) -> None:
+    """A podcast library returning 404 is skipped; the audiobook lib still yields rows."""
+    _install_cache_mocks(provider)
+    view_mock = AsyncMock()
+    view_mock.side_effect = [AbsNotFoundError(""), [_make_shelf()]]
+    provider._client.get_library_personalized_view = view_mock  # type: ignore[method-assign]
+    provider.mass.music.get_library_item_by_prov_id = AsyncMock(return_value=Mock())  # type: ignore[method-assign]
+    provider.libraries.podcasts["pod_lib1"] = LibraryHelper(name="Podcasts")
+
+    rows = await provider.get_recommendations()
+
+    assert view_mock.await_count == 2
+    assert any(f.item_id == "recently-added" for f in rows)

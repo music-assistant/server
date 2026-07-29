@@ -2066,9 +2066,12 @@ for more details.
         limit_items_per_lib = 1 if limit_items_per_lib == 0 else limit_items_per_lib
 
         for library_id in all_libraries:
-            shelves = await self._client.get_library_personalized_view(
-                library_id=library_id, limit=limit_items_per_lib
-            )
+            try:
+                shelves = await self._client.get_library_personalized_view(
+                    library_id=library_id, limit=limit_items_per_lib
+                )
+            except AbsNotFoundError:
+                continue
             await self._recommendations_iter_shelves(shelves, library_id, items_by_shelf_id)
 
         folders: list[RecommendationFolder] = []
