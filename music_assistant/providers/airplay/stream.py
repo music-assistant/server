@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import re
 import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
@@ -109,6 +110,16 @@ class AirPlayStream:
         # Route the binary resolved for this stream (empty until reported),
         # e.g. "AirPlay 2 (native, PTP)" or "RAOP"
         self.active_route: str = ""
+        # Cumulative playout shift (seconds) this process reported after PCM
+        # starvation re-anchors (AP2 only). The stream session adds the
+        # reference member's shift so a late joiner anchors to the group's real
+        # timeline. Reset per process (and on every re-anchoring START/resume);
+        # a new cliairplay re-anchors from scratch.
+        self.cumulative_shift_seconds: float = 0.0
+        # Set once the machine-readable [STATUS] REANCHOR line is seen: newer
+        # binaries emit it alongside the legacy warn for the same event, so the
+        # warn line is then ignored to avoid double counting.
+        self._reanchor_status_seen: bool = False
 
     @property
     def running(self) -> bool:
@@ -142,6 +153,9 @@ class AirPlayStream:
             NTP timing. None (single-stream callers) falls back to the daemon's
             live state.
         """
+        # A fresh cliairplay process re-anchors from scratch, so drop any shift
+        # (and its status-line supersession flag) carried on this stream object.
+        self.reset_reanchor_shift()
         args = await self._build_cli_args(use_shared_ptp)
         self.player.logger.debug("Starting cliairplay for player %s", self.player.player_id)
         self._cli_proc = AsyncProcess(args, stdin=True, stdout=True, stderr=True, name="cliairplay")
@@ -312,6 +326,11 @@ class AirPlayStream:
         """
         if not self.running or not self.connected:
             raise RuntimeError("Cannot start playback without a connected cliairplay process")
+        # A START re-anchors playout from scratch — the binary zeroes its own
+        # re-anchor total on start/resume — so drop any shift accumulated against
+        # the previous anchor (this also covers the warm-seek FLUSH->refill->START
+        # path) to keep the server and binary baselines aligned.
+        self.reset_reanchor_shift()
         self._start_position = position_ms / 1000
         # Stamp the player's elapsed onto the new anchor's base right away: until
         # the binary's first status arrives, interpolation would otherwise keep
@@ -334,6 +353,11 @@ class AirPlayStream:
             task_id=f"airplay_metadata_after_start_{self._stream_id}",
             abort_existing=True,
         )
+
+    def reset_reanchor_shift(self) -> None:
+        """Clear the accumulated re-anchor shift and its status-line supersession flag."""
+        self.cumulative_shift_seconds = 0.0
+        self._reanchor_status_seen = False
 
     async def send_metadata(
         self,
@@ -595,10 +619,13 @@ class AirPlayStream:
         Monitor stdout for the running cliairplay process.
 
         The binary reports its resolved route at startup, the effective lead
-        plus receiver-reported buffering window after connect, and the result
-        of MediaRemote now-playing pushes (Apple devices):
+        plus receiver-reported buffering window after connect, the audio formats
+        the receiver advertises, and the result of MediaRemote now-playing
+        pushes (Apple devices):
           [STATUS] route protocol=<raop|airplay2> flow=<...> timing=<ntp|ptp> buffered=<0|1>
           [STATUS] latency lead_ms=<int> device_min_frames=<int> device_max_frames=<int>
+          [STATUS] capabilities requested=<hex> realtime_formats=<hex> realtime_known=<0|1>
+            buffered_formats=<hex> buffered_known=<0|1>
           [STATUS] mrp path=<command> status=<http status>
           [EVENT] remote command=<play|pause|play_pause|next|previous>
         """
@@ -618,6 +645,8 @@ class AirPlayStream:
                     self._parse_mrp_status(line)
                 elif "[STATUS] latency" in line:
                     self._parse_latency_status(line)
+                elif "[STATUS] capabilities" in line:
+                    self._parse_capabilities_status(line)
                 elif line.startswith("[EVENT] remote command="):
                     self._parse_remote_event(line)
                 self.player.logger.log(VERBOSE_LOG_LEVEL, line)
@@ -644,6 +673,32 @@ class AirPlayStream:
             self.player.display_name,
             fields.get("status", "?"),
         )
+
+    def _parse_capabilities_status(self, line: str) -> None:
+        """Parse the [STATUS] capabilities line and refresh the player's audio formats."""
+        # The binary reports the format tables it read from the receiver's /info,
+        # which corrects a device that was unreachable when it was discovered.
+        # Only the native AirPlay 2 flow reads them; the other routes report
+        # zeroes with the known flags unset. A change applies to the next stream.
+        fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+        formats = 0
+        for mask_field, known_field in (
+            ("realtime_formats", "realtime_known"),
+            ("buffered_formats", "buffered_known"),
+        ):
+            if fields.get(known_field) != "1":
+                continue
+            try:
+                formats |= int(fields[mask_field], 16)
+            except KeyError, ValueError:
+                continue
+        if formats and formats != self.player.advertised_audio_formats:
+            self.player.logger.debug(
+                "Audio formats advertised by %s changed to 0x%x",
+                self.player.display_name,
+                formats,
+            )
+            self.player.advertised_audio_formats = formats
 
     def _parse_route_status(self, line: str) -> None:
         """Parse the [STATUS] route line and log which route this stream took."""
@@ -710,18 +765,67 @@ class AirPlayStream:
                     logger.warning(
                         "cliairplay process stopped unexpectedly for %s", player.display_name
                     )
+                    # Candidates for the automatic re-join: the leader this member
+                    # was synced to (plus its other members, in case leadership
+                    # transfers while the backoff runs), or - when this was the
+                    # leader itself - the members that survive it. Captured before
+                    # the ungroup below mutates the group state (create_task
+                    # starts eagerly).
+                    was_leader = bool(player.group_members)
+                    if player.synced_to:
+                        rejoin_candidates = [player.synced_to]
+                        if leader := self.mass.players.get_player(player.synced_to):
+                            rejoin_candidates += [
+                                member_id
+                                for member_id in leader.group_members
+                                if member_id not in (player.player_id, player.synced_to)
+                            ]
+                    else:
+                        rejoin_candidates = [
+                            m for m in player.group_members if m != player.player_id
+                        ]
                     # Hand off to the player controller so it drops just this member, or
                     # transfers leadership to a healthy member, instead of dissolving the
                     # whole group over a single dead transport. A sync leader is left in
                     # its current state here on purpose: the controller only transfers
                     # leadership while the queue still looks active, and transfer_queue or
                     # dissolve sets the final state.
-                    self.mass.create_task(self.mass.players.cmd_ungroup(player.player_id))
-                    if player.group_members:
+                    # One exception: a member that is a STATIC member of an active group
+                    # player must not go through cmd_ungroup - the controller interprets
+                    # unjoining a static member as releasing the whole group (HA unjoin
+                    # semantics), which would silence every room over one dead transport.
+                    # Its membership is configuration; drop only this member from the
+                    # leader's live session instead. The set_members call cannot bounce
+                    # back to the group player: the controller only redirects it when
+                    # the group advertises SET_MEMBERS, which a static group never does.
+                    static_member_of = self._static_group_membership(player)
+                    if static_member_of and player.synced_to:
+                        self.mass.create_task(
+                            self.mass.players.cmd_set_members(
+                                player.synced_to, player_ids_to_remove=[player.player_id]
+                            )
+                        )
+                    else:
+                        self.mass.create_task(self.mass.players.cmd_ungroup(player.player_id))
+                    if rejoin_candidates:
+                        # the group (or its successor) may still be playing:
+                        # schedule bounded attempts to re-join it
+                        player.schedule_group_rejoin(rejoin_candidates)
+                    if was_leader:
                         return
                 player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
             finally:
                 await self.commands_pipe.remove()
+
+    def _static_group_membership(self, player: AirPlayPlayer) -> str | None:
+        """Return the active group player id the player is a static member of, if any."""
+        active_group_id = player.state.active_group
+        if not active_group_id:
+            return None
+        group_player = self.mass.players.get_player(active_group_id)
+        if group_player and player.player_id in group_player.static_group_members:
+            return active_group_id
+        return None
 
     def _handle_status_line(self, line: str) -> bool:
         """Dispatch one cliairplay status line; True ends the stderr loop."""
@@ -749,6 +853,10 @@ class AirPlayStream:
         elif "[STATUS] eof" in line:
             player.logger.debug("End of stream reached")
             return True
+        elif "[STATUS] REANCHOR" in line:
+            self._parse_reanchor_status(line)
+        elif "Re-anchored" in line and "shifted_frames=" in line:
+            self._parse_reanchor_shift(line)
         elif "[ERROR]" in line:
             player.logger.error("cliairplay: %s", line.strip())
         return False
@@ -762,6 +870,69 @@ class AirPlayStream:
         self.player.set_state_from_stream(
             state=PlaybackState.PLAYING, elapsed_time=elapsed_time, stream=self
         )
+
+    def _parse_reanchor_status(self, line: str) -> None:
+        """
+        Parse the machine-readable [STATUS] REANCHOR line from newer binaries.
+
+        Newer cliairplay builds report the shift cumulative since the last
+        start/resume directly, so this SETS the tracked shift (using the sample
+        rate carried on the line when present) and marks the legacy warn line as
+        superseded, since both fire for the same event and would otherwise be
+        double counted.
+
+        :param line: The status line, e.g. ``[STATUS] REANCHOR shifted_frames=67870
+            total_shifted_frames=135740 sample_rate=44100``.
+        """
+        fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+        try:
+            total_frames = int(fields["total_shifted_frames"])
+        except KeyError, ValueError:
+            return
+        self._reanchor_status_seen = True
+        self.cumulative_shift_seconds = total_frames / self._reanchor_sample_rate(
+            fields.get("sample_rate")
+        )
+        self.player.logger.debug(
+            "cliairplay re-anchored %s after PCM starvation: cumulative shift %.3fs",
+            self.player.display_name,
+            self.cumulative_shift_seconds,
+        )
+
+    def _parse_reanchor_shift(self, line: str) -> None:
+        """
+        Track a legacy cliairplay PCM-starvation re-anchor warning on stderr.
+
+        The warn line reports the per-event shift in frames, so it is accumulated
+        at the session PCM rate. Ignored once the machine-readable [STATUS]
+        REANCHOR line has been seen: newer binaries emit both for the same event
+        and the status line carries the authoritative cumulative total.
+
+        :param line: The raw stderr line, e.g. ``[AP2] Re-anchored after PCM
+            starvation: shifted_frames=67870 lead_frames=77175 count=1``.
+        """
+        if self._reanchor_status_seen:
+            return
+        match = re.search(r"shifted_frames=(\d+)", line)
+        if not match:
+            return
+        self.cumulative_shift_seconds += int(match.group(1)) / self._reanchor_sample_rate(None)
+        self.player.logger.debug(
+            "cliairplay re-anchored %s after PCM starvation: cumulative shift %.3fs",
+            self.player.display_name,
+            self.cumulative_shift_seconds,
+        )
+
+    def _reanchor_sample_rate(self, reported: str | None) -> int:
+        """Return the frame->seconds rate, preferring a valid rate reported on the line."""
+        if reported is not None:
+            try:
+                rate = int(reported)
+            except ValueError:
+                rate = 0
+            if rate > 0:
+                return rate
+        return self.pcm_format.sample_rate or 44100
 
     async def _prepare_artwork(self, image_url: str, _generation: int) -> str | None:
         """

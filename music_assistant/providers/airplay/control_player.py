@@ -13,12 +13,14 @@ import pyatv
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
+    ImageType,
     MediaType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
 )
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFailed
+from music_assistant_models.media_items import MediaItemImage
 from music_assistant_models.player import PlayerSource
 from pyatv import exceptions as pyatv_exceptions
 from pyatv.conf import AppleTV as AppleTVConfig
@@ -58,6 +60,7 @@ from .constants import (
     CONF_NATIVE_MRP_CREDENTIALS,
     CONF_PAIR_NOW,
     CONF_STORED_VOLUME,
+    EXTERNAL_ARTWORK_PATH_PREFIX,
     FALLBACK_VOLUME,
 )
 from .helpers import (
@@ -394,6 +397,35 @@ class AirPlayControlPlayer(AirPlayPlayer):
         if device is None:
             raise PlayerCommandFailed(f"App launching is unavailable for {self.display_name}")
         await self._run_control_command(device.apps.launch_app(bundle_id_or_url), "launch app")
+
+    async def async_get_external_artwork(self, artwork_id: str) -> bytes:
+        """
+        Return artwork bytes for the current externally playing item.
+
+        :param artwork_id: Identifier of the artwork requested by the image proxy.
+        :raises MediaNotFoundError: If the artwork is stale or unavailable.
+        """
+        device = self._mrp_device
+        if (
+            device is None
+            or self._stream_active
+            or not self._feature_available(device, FeatureName.Artwork)
+            or device.metadata.artwork_id != artwork_id
+        ):
+            raise MediaNotFoundError("External AirPlay artwork is unavailable")
+        try:
+            artwork = await device.metadata.artwork()
+        except _COMMAND_ERRORS as err:
+            raise MediaNotFoundError("Unable to retrieve external AirPlay artwork") from err
+        if (
+            artwork is None
+            or not artwork.bytes
+            or self._mrp_device is not device
+            or self._stream_active
+            or device.metadata.artwork_id != artwork_id
+        ):
+            raise MediaNotFoundError("External AirPlay artwork is no longer current")
+        return artwork.bytes
 
     def set_discovery_info(self, discovery_info: AsyncServiceInfo, display_name: str) -> None:
         """Update AirPlay discovery data and reconnect device control if needed."""
@@ -990,7 +1022,12 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     def _handle_volume_update(self, source: str, volume: float) -> None:
         """Apply a pushed pyatv volume level."""
-        if source == "mrp" and self._companion_device is not None:
+        # MRP volume is ignored when Companion owns volume, and always on a transient
+        # tunnel: that only exposes the speaker's own volume, which Music Assistant
+        # never drives. Worse, a 0 from there latches a mute, and a muted player
+        # skips the stream volume command entirely - so every later volume change
+        # silently stops reaching the device.
+        if source == "mrp" and (self._companion_device is not None or self._uses_transient_mrp):
             return
         # While Music Assistant streams, volume_set drives the stream volume and
         # deliberately leaves the native device volume alone. The two are separate
@@ -1066,6 +1103,14 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._ensure_source(source_id, source_name)
         self._attr_elapsed_time = float(playing.position or 0)
         self._attr_elapsed_time_last_updated = time.time()
+        image_url: str | None = None
+        if (
+            self._mrp_device
+            and self._feature_available(self._mrp_device, FeatureName.Artwork)
+            and isinstance(artwork_id := self._mrp_device.metadata.artwork_id, str)
+            and artwork_id
+        ):
+            image_url = self._get_external_artwork_url(artwork_id)
         media_type = (
             MediaType.TRACK if playing.media_type == PyatvMediaType.Music else MediaType.UNKNOWN
         )
@@ -1075,6 +1120,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
             title=playing.title or source_name,
             artist=playing.artist,
             album=playing.album,
+            image_url=image_url,
             duration=playing.total_time,
             source_id=source_id,
             elapsed_time=playing.position,
@@ -1084,24 +1130,41 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     def _ensure_source(self, source_id: str, source_name: str) -> None:
         """Add a passive source reported by MRP playback monitoring."""
-        if any(source.id == source_id for source in self._attr_source_list):
+        can_play_pause = bool(
+            self._device_for_feature(FeatureName.Play)
+            or self._device_for_feature(FeatureName.Pause)
+        )
+        can_next_previous = bool(
+            self._device_for_feature(FeatureName.Next)
+            or self._device_for_feature(FeatureName.Previous)
+        )
+        for source in self._attr_source_list:
+            if source.id != source_id:
+                continue
+            source.name = source_name
+            source.can_play_pause = can_play_pause
+            source.can_next_previous = can_next_previous
             return
         self._attr_source_list.append(
             PlayerSource(
                 id=source_id,
                 name=source_name,
                 passive=True,
-                can_play_pause=bool(
-                    self._device_for_feature(FeatureName.Play)
-                    or self._device_for_feature(FeatureName.Pause)
-                ),
+                can_play_pause=can_play_pause,
                 can_seek=False,
-                can_next_previous=bool(
-                    self._device_for_feature(FeatureName.Next)
-                    or self._device_for_feature(FeatureName.Previous)
-                ),
+                can_next_previous=can_next_previous,
             )
         )
+
+    def _get_external_artwork_url(self, artwork_id: str) -> str:
+        """Return the image-proxy URL for external MRP artwork."""
+        image = MediaItemImage(
+            type=ImageType.THUMB,
+            path=f"{EXTERNAL_ARTWORK_PATH_PREFIX}/{self.player_id}/{artwork_id}",
+            provider=self.provider_id,
+            remotely_accessible=False,
+        )
+        return self.mass.metadata.get_image_url(image)
 
     def _handle_connection_closed(
         self,

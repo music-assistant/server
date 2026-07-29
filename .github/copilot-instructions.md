@@ -1,89 +1,54 @@
 # PR Review Standards
 
-## Review Philosophy
-- Only comment when confident an issue exists
-- Be concise: one sentence per comment when possible
-- Focus on actionable feedback, not observations
-- When reviewing text, only comment on clarity issues if the text is genuinely confusing or could lead to errors
-- If you're uncertain whether something is an issue, don't comment
+## Philosophy
 
-## What to Analyze
+Comment only where you're confident there's a real issue — if you're uncertain whether something is a problem, don't raise it. Actionable feedback, not observations. One sentence where one sentence does the job. On documentation or user-facing text, flag wording only when it's genuinely confusing or could mislead someone into an error.
 
-Review all code changes for:
-- Code quality and style consistency with the existing codebase
-- Potential bugs or issues
-- Performance implications
-- Blocking IO in async code
-- Security concerns
-- Test coverage
-- Documentation updates if needed
+## What to review
 
-## New Provider Reviews
+Correctness and bugs, blocking IO in async code, security, performance, test coverage, docs the change makes wrong, and consistency with the surrounding code. `AGENTS.md` holds the project standards — deviations from it are at least `[PROBLEM]`.
 
-When the PR adds a new provider (new files under `music_assistant/providers/`), use the relevant demo provider as ground truth:
+## Linked issues
 
-| Provider type | Demo reference |
+If the PR references an issue, read it before reviewing the diff. Then judge two things: whether the change actually resolves the reported problem, and whether it does so in the most elegant way available. A fix that works but patches a symptom, sits at the wrong layer, or adds a special case where the existing design already had a seam for it is a `[PROBLEM]` — say which approach would be cleaner and why. A change that leaves part of the issue unaddressed, or addresses something else entirely, is `[CRITICAL]`.
+
+## Reuse over reimplementation
+
+Check whether `music_assistant/helpers/` already covers what new code does; providers are expected to use the shared helpers rather than reimplement. A music provider parsing PLS itself instead of calling `parse_pls` from `music_assistant.helpers.playlists` is a `[PROBLEM]`.
+
+## New providers
+
+When the PR adds files under `music_assistant/providers/`, the matching demo provider is the ground truth — it's the annotated template that encodes the required structure, lifecycle and config schema:
+
+| Provider type | Reference |
 |---|---|
-| Music source | `_demo_music_provider` |
-| Player | `_demo_player_provider` |
-| Plugin | `_demo_plugin_provider` |
-| Audio analysis | `_demo_audio_analysis_provider` |
+| Music source | `music_assistant/providers/_demo_music_provider` |
+| Player | `music_assistant/providers/_demo_player_provider` |
+| Plugin | `music_assistant/providers/_demo_plugin_provider` |
+| Audio analysis | `music_assistant/providers/_demo_audio_analysis_provider` |
 
-- Flag any deviations from the requirements and patterns outlined in the demo provider as `[PROBLEM]` or `[CRITICAL]` depending on severity.
-- Provider icons (e.g. icon.svg) are allowed to be 5KB max. If larger, flag as a critical.
+Read the demo provider alongside the new one, then flag deviations from its requirements and patterns as `[PROBLEM]` or `[CRITICAL]` depending on what breaks. Provider icons (`icon.svg`) are capped at 5KB — anything larger is `[CRITICAL]`.
 
-## Project standards
-Respect the project standards as outlined in AGENTS.md. Any deviations must be raised as `[PROBLEM]`.
+## Don't duplicate CI
 
-## Helper Function Reuse
+Reviews happen before CI finishes, which makes it tempting to flag what CI will catch on its own — formatting, lint, test failures, missing dependencies. Those comments cost the author a round trip and tell them nothing they won't hear from CI a minute later; `.pre-commit-config.yaml` and `.github/workflows/test.yml` are the authority on that class of problem. Spend the review on what CI can't see.
 
-Check if existing helper functions in `music_assistant/helpers/` cover what new code is doing. Providers should use shared helpers instead of reimplementing logic. Example: if a music provider does PLS parsing, it should use `parse_pls` from `music_assistant.helpers.playlists` instead of writing its own.
+## PR title
 
-## PR Title
+A functional description of the change, with no conventional-commit prefix (`feat:`, `fix:`, `refactor:`, `chore:`, ...) — labels do the categorizing. A prefixed title is a `[PROBLEM]`.
 
-The PR title must be a functional description of the change. It must NOT contain conventional commit prefixes such as `feat:`, `fix:`, `refactor:`, `chore:`, etc. Labels categorize PRs, not the title. Flag as `[PROBLEM]` if the title uses such prefixes.
+## Existing review comments
 
-## Existing Review Comments
+Flag earlier review comments on the PR that haven't been addressed.
 
-Check if existing review comments on the PR have been addressed. Flag unaddressed comments.
+## Severity
 
-## CI Context
-
-You review PRs immediately, before CI completes. Do not flag issues that CI will catch.
-
-### What CI Checks (`.github/workflows/test.yml`)
-**Lint:** `SKIP=no-commit-to-branch pre-commit run --all-files` (see `.pre-commit-config.yaml` for full list)
-**Tests:** `pytest --durations 10 --cov-report term-missing --cov=music_assistant --cov-report=xml tests/`
-
-## Skip These (Low Value)
-
-Do not comment on:
-- Style/formatting (pre-commit handles this)
-- Test failures (CI catches this)
-- Missing dependencies (CI catches this)
-- Minor naming suggestions
-- Suggestions to add comments
-- Logging suggestions unless security-related
-
-## Issue Categories
-
-Categorize every issue as:
-- `[CRITICAL]` — must fix before merging (bugs, security issues, broken functionality)
-- `[PROBLEM]` — should fix (code quality, bad patterns, missing tests)
-- `[SUGGESTION]` — optional improvement (style, minor refactors, nice-to-haves)
+- `[CRITICAL]` — must fix before merge: bugs, security issues, broken functionality
+- `[PROBLEM]` — should fix: bad patterns, missing tests, standards deviations
+- `[SUGGESTION]` — optional: minor refactors, nice-to-haves
 
 ## Output
 
-- Post inline comments on GitHub for every `[CRITICAL]` and `[PROBLEM]` issue found.
-- Do NOT post `[SUGGESTION]` items to GitHub.
-- Do not list things that are already correct.
+Post an inline comment on GitHub for every `[CRITICAL]` and `[PROBLEM]`. Do not post `[SUGGESTION]` items, and don't comment on what's already fine.
 
-## Output Comment Format
-
-1. State the severity ([CRITICAL], [PROBLEM], [SUGGESTION])
-2. State the problem (1 sentence)
-3. Why it matters (1 sentence, if needed)
-4. Suggested fix (snippet or specific action)
-
-Example:
-This could generate a `KeyError` if `"name"` does not exist in the `dict`. Consider using `.get("name")` or adding a check.
+Each comment carries its severity, states the problem in a sentence, says why it matters when that isn't self-evident, and gives a concrete fix or snippet.

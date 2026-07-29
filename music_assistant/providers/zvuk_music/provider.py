@@ -43,7 +43,6 @@ from music_assistant.models.music_provider import MusicProvider
 
 from .api_client import ZvukMusicClient
 from .constants import (
-    CONF_ACTION_CLEAR_AUTH,
     CONF_QUALITY,
     CONF_TOKEN,
     DEFAULT_LIMIT,
@@ -73,21 +72,8 @@ class ZvukMusicProvider(MusicProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
-        is_authenticated = bool(self.get_config_value(CONF_TOKEN))
         return (
             CONF_ENTRY_UNOFFICIAL_PROVIDER,
-            ConfigEntry(
-                key=CONF_TOKEN,
-                type=ConfigEntryType.SECURE_STRING,
-                required=True,
-                hidden=is_authenticated,
-            ),
-            ConfigEntry(
-                key=CONF_ACTION_CLEAR_AUTH,
-                type=ConfigEntryType.ACTION,
-                action=CONF_ACTION_CLEAR_AUTH,
-                hidden=not is_authenticated,
-            ),
             ConfigEntry(
                 key=CONF_QUALITY,
                 type=ConfigEntryType.STRING,
@@ -99,16 +85,9 @@ class ZvukMusicProvider(MusicProvider):
             ),
         )
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
-        """Handle a one-shot config action button press and re-render the entries."""
-        if action == CONF_ACTION_CLEAR_AUTH:
-            self._update_config_value(CONF_TOKEN, None, immediate=True)
-            return await self.get_config_entries()
-        return await super().handle_config_action(action)
-
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        token = self.config.get_value(CONF_TOKEN)
+        token = self.get_setup_value(CONF_TOKEN)
         if not token:
             raise LoginFailed("No Zvuk Music token provided")
 
@@ -657,7 +636,7 @@ class ZvukMusicProvider(MusicProvider):
             ),
         }
         if is_zvuk:
-            token = self.config.get_value(CONF_TOKEN)
+            token = self.get_setup_value(CONF_TOKEN)
             if not token:
                 return str(path)
             headers["X-Auth-Token"] = str(token)

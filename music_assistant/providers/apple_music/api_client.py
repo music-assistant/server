@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Concatenate, cast
 from aiohttp import ClientConnectionError, ClientPayloadError, ClientTimeout
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import (
+    LoginFailed,
     MediaNotFoundError,
     RateLimited,
     ResourceTemporarilyUnavailable,
@@ -53,6 +54,22 @@ def _retry_transient_transport_errors[ClientT, **P, R](
     return wrapper
 
 
+def _raise_on_auth_error(status: int, endpoint: str) -> None:
+    """
+    Raise LoginFailed when Apple rejected our credentials.
+
+    Apple answers a revoked or expired music user token with 401/403 on every endpoint,
+    so this surfaces as an auth error the user can act on instead of a bare HTTP error.
+
+    :param status: The HTTP status code returned by Apple.
+    :param endpoint: The endpoint that was called, used in the error message.
+    """
+    if status in (401, 403):
+        raise LoginFailed(
+            f"Apple Music denied access to {endpoint}: the account needs to be signed in again"
+        )
+
+
 class AppleMusicAPIClient:
     """Handles all HTTP communication with the Apple Music API."""
 
@@ -86,6 +103,7 @@ class AppleMusicAPIClient:
                 timeout=ClientTimeout(total=120),
             ) as response,
         ):
+            _raise_on_auth_error(response.status, endpoint)
             if response.status == 404 and "limit" in kwargs and "offset" in kwargs:
                 return {}
             if response.status == 404:
@@ -125,6 +143,7 @@ class AppleMusicAPIClient:
                 timeout=ClientTimeout(total=120),
             ) as response,
         ):
+            _raise_on_auth_error(response.status, endpoint)
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
             if response.status == 429:
@@ -148,6 +167,7 @@ class AppleMusicAPIClient:
                 timeout=ClientTimeout(total=120),
             ) as response,
         ):
+            _raise_on_auth_error(response.status, endpoint)
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
             if response.status == 429:
@@ -174,6 +194,7 @@ class AppleMusicAPIClient:
                 timeout=ClientTimeout(total=120),
             ) as response,
         ):
+            _raise_on_auth_error(response.status, endpoint)
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
             if response.status == 429:

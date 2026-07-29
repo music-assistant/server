@@ -1,22 +1,31 @@
 """Unit tests for AirPlay player."""
 
+import asyncio
 import time
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
-from music_assistant_models.enums import ConfigEntryType, ContentType, PlayerFeature
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    ContentType,
+    CrossfadeMode,
+    MediaType,
+    PlaybackState,
+    PlayerFeature,
+    VolumeNormalizationMode,
+)
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.constants import CONF_SYNC_ADJUST
+from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_PCM_FORMAT,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_ENCRYPTION,
     CONF_FORCE_RAOP,
-    CONF_HIRES_PLAYBACK,
     CONF_IGNORE_VOLUME,
     CONF_RAOP_CREDENTIALS,
     CONF_STORED_VOLUME,
@@ -26,6 +35,10 @@ from music_assistant.providers.airplay.player import AirPlayPlayer
 
 # _airplay._tcp features bitmask with the AirPlay 2 feature bits set (bit 38/48).
 AP2_FEATURES = "0x4A7FDFD5,0x3C177FDE"
+# audioFormat bits as advertised in a receiver's /info format tables.
+ALAC_44100_16 = 1 << 18
+ALAC_44100_24 = 1 << 19
+ALAC_48000_24 = 1 << 21
 
 
 @pytest.fixture
@@ -41,6 +54,40 @@ def airplay_player() -> AirPlayPlayer:
         raop_discovery_info=None,
         airplay_discovery_info=None,
     )
+
+
+@pytest.mark.parametrize(
+    ("manufacturer", "model", "expected"),
+    [
+        ("Apple", "MacBookPro18,3", False),
+        ("Apple Inc.", "MacBook Air (MacBookAir10,1)", False),
+        ("Apple", "iMac (iMac21,1)", False),
+        ("Apple", "Mac mini (Mac16,11)", False),
+        ("Apple", "Mac Pro (MacPro7,1)", False),
+        ("Apple", "Mac Studio (Mac14,13)", False),
+        ("Apple", "HomePod Mini", True),
+        ("Apple", "Apple TV 4K", True),
+        ("Acme", "Mac-compatible receiver", True),
+    ],
+)
+def test_macos_devices_are_disabled_by_default(
+    manufacturer: str, model: str, expected: bool
+) -> None:
+    """Macs are disabled by default without affecting other AirPlay receivers."""
+    provider = MagicMock()
+    player = AirPlayPlayer(
+        provider=provider,
+        player_id="test_player",
+        display_name="Test Player",
+        address="127.0.0.1",
+        manufacturer=manufacturer,
+        model=model,
+        raop_discovery_info=None,
+        airplay_discovery_info=None,
+    )
+
+    assert player.enabled_by_default is expected
+    assert provider.mass.config.create_default_player_config.call_args.args[-1] is expected
 
 
 @pytest.mark.parametrize(
@@ -407,40 +454,46 @@ def _configure_player(player: AirPlayPlayer, values: dict[str, object]) -> None:
 
 
 @pytest.mark.parametrize(
-    ("hires_enabled", "force_raop", "has_airplay_info", "expected"),
+    ("advertised_audio_formats", "force_raop", "airplay2_capable", "expected"),
     [
-        # hi-res on an AirPlay 2 capable device advertises the 24-bit rates
-        (True, False, True, [(44100, 24), (48000, 24)]),
+        # 24-bit advertised on the realtime stream
+        (ALAC_44100_24, False, True, [(44100, 24), (48000, 24)]),
+        # the Apple TV advertises 24-bit for its buffered stream only
+        (ALAC_48000_24, False, True, [(44100, 24), (48000, 24)]),
         # forced RAOP cannot do 24-bit: falls back to the 16-bit base
-        (True, True, True, [(44100, 16)]),
-        # no _airplay._tcp service: hi-res not possible
-        (True, False, False, [(44100, 16)]),
-        # option disabled: the 16-bit default
-        (False, False, True, [(44100, 16)]),
+        (ALAC_44100_24, True, True, [(44100, 16)]),
+        # a receiver that streams RAOP never gets 24-bit, whatever it advertises
+        (ALAC_44100_24, False, False, [(44100, 16)]),
+        # only 16-bit advertised: the 16-bit default
+        (ALAC_44100_16, False, True, [(44100, 16)]),
+        # nothing advertised (unreachable device or no format tables)
+        (0, False, True, [(44100, 16)]),
     ],
 )
 def test_hires_supported_sample_rates(
     airplay_player: AirPlayPlayer,
-    hires_enabled: bool,
+    advertised_audio_formats: int,
     force_raop: bool,
-    has_airplay_info: bool,
+    airplay2_capable: bool,
     expected: list[tuple[int, int]],
 ) -> None:
-    """The hi-res toggle drives the advertised sample rates (AirPlay 2, not forced to RAOP)."""
+    """The formats the device advertises drive the advertised sample rates."""
     _set_discovery_info(
-        airplay_player, raop=True, airplay=has_airplay_info, airplay_features=AP2_FEATURES
-    )
-    _configure_player(
         airplay_player,
-        {CONF_HIRES_PLAYBACK: hires_enabled, CONF_FORCE_RAOP: force_raop},
+        raop=True,
+        airplay=True,
+        airplay_features=AP2_FEATURES if airplay2_capable else None,
     )
+    airplay_player.advertised_audio_formats = advertised_audio_formats
+    _configure_player(airplay_player, {CONF_FORCE_RAOP: force_raop})
     assert airplay_player.supported_sample_rates == expected
 
 
 def test_get_stream_pcm_format_hires(airplay_player: AirPlayPlayer) -> None:
-    """With hi-res enabled the stream format is 24-bit in a s32le container."""
-    _set_discovery_info(airplay_player, raop=True, airplay=True)
-    _configure_player(airplay_player, {CONF_HIRES_PLAYBACK: True, CONF_FORCE_RAOP: False})
+    """For a 24-bit capable device the stream format is 24-bit in a s32le container."""
+    _set_discovery_info(airplay_player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
+    airplay_player.advertised_audio_formats = ALAC_44100_24
+    _configure_player(airplay_player, {CONF_FORCE_RAOP: False})
 
     session_format = AudioFormat(
         content_type=ContentType.PCM_F32LE, sample_rate=48000, bit_depth=32
@@ -461,40 +514,92 @@ def test_get_stream_pcm_format_hires(airplay_player: AirPlayPlayer) -> None:
 
 
 def test_get_stream_pcm_format_default(airplay_player: AirPlayPlayer) -> None:
-    """Without hi-res the stream format is the 44.1/16 default."""
+    """Without a 24-bit capable device the stream format is the 44.1/16 default."""
     _set_discovery_info(airplay_player, raop=True, airplay=True)
-    _configure_player(airplay_player, {CONF_HIRES_PLAYBACK: False, CONF_FORCE_RAOP: False})
+    _configure_player(airplay_player, {CONF_FORCE_RAOP: False})
     session_format = AudioFormat(
         content_type=ContentType.PCM_F32LE, sample_rate=48000, bit_depth=32
     )
     assert airplay_player.get_stream_pcm_format(session_format) == AIRPLAY_PCM_FORMAT
 
 
-def test_session_pcm_format_selection(airplay_player: AirPlayPlayer) -> None:
-    """The session runs at 48 kHz only for 48k content when every member supports it."""
-    hires_client = MagicMock()
-    hires_client.supported_sample_rates = [(44100, 24), (48000, 24)]
-    cd_client = MagicMock()
-    cd_client.supported_sample_rates = [(44100, 16)]
+@pytest.mark.asyncio
+async def test_session_pcm_format_selection(airplay_player: AirPlayPlayer) -> None:
+    """AirPlay delegates the complete session format decision to the shared selector."""
+    selected_format = AudioFormat(
+        content_type=ContentType.PCM_S24LE,
+        sample_rate=48000,
+        bit_depth=24,
+    )
+    streams_audio = cast("MagicMock", airplay_player.mass.streams.audio)
+    streams_audio.select_flow_pcm_format = AsyncMock(return_value=selected_format)
+    cast("MagicMock", airplay_player.mass.player_queues.get).return_value = None
     media = MagicMock()
     media.source_id = "queue1"
     media.queue_item_id = "item1"
     queue_item = MagicMock()
     queue_item.streamdetails.audio_format.sample_rate = 48000
     airplay_player.mass.player_queues.get_item.return_value = queue_item  # type: ignore[attr-defined]
+    sync_clients = [airplay_player, airplay_player]
 
-    # all members hi-res capable + 48k-family content: session lifts to 48 kHz
-    fmt = airplay_player._get_session_pcm_format([hires_client, hires_client], media)
+    fmt = await airplay_player._get_session_pcm_format(sync_clients, media)
+
+    assert fmt is selected_format
+    streams_audio.select_flow_pcm_format.assert_awaited_once_with(
+        airplay_player,
+        start_streamdetails=queue_item.streamdetails,
+        crossfade_enabled=False,
+        overlay_active=False,
+        fallback_sample_rate=AIRPLAY_PCM_FORMAT.sample_rate,
+        output_players=sync_clients,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("normalization_mode", "expected_content_type", "expected_bit_depth"),
+    [
+        (VolumeNormalizationMode.DISABLED, ContentType.PCM_S24LE, 24),
+        (VolumeNormalizationMode.MEASUREMENT_ONLY, ContentType.PCM_F32LE, 32),
+    ],
+)
+async def test_session_pcm_format_selects_processing_depth(
+    airplay_player: AirPlayPlayer,
+    normalization_mode: VolumeNormalizationMode,
+    expected_content_type: ContentType,
+    expected_bit_depth: int,
+) -> None:
+    """An AirPlay session only uses float PCM when processing needs headroom."""
+    _set_discovery_info(airplay_player, raop=True, airplay=True, airplay_features=AP2_FEATURES)
+    airplay_player.advertised_audio_formats = ALAC_48000_24
+    _configure_player(airplay_player, {CONF_FORCE_RAOP: False})
+    airplay_player.mass.streams.audio = StreamsAudio(airplay_player.mass)
+    cast("MagicMock", airplay_player.mass.config.get_player_dsp_config).return_value = MagicMock(
+        enabled=False
+    )
+    cast(
+        "MagicMock", airplay_player.mass.streams.get_crossfade_mode
+    ).return_value = CrossfadeMode.DISABLED
+
+    streamdetails = MagicMock()
+    streamdetails.audio_format = AudioFormat(
+        content_type=ContentType.FLAC,
+        sample_rate=48000,
+        bit_depth=24,
+    )
+    streamdetails.media_type = MediaType.TRACK
+    streamdetails.volume_normalization_mode = normalization_mode
+    queue_item = MagicMock(streamdetails=streamdetails)
+    queue = MagicMock(crossfade_enabled=False, overlay_enabled=False, overlay_source=None)
+    cast("MagicMock", airplay_player.mass.player_queues.get).return_value = queue
+    cast("MagicMock", airplay_player.mass.player_queues.get_item).return_value = queue_item
+    media = MagicMock(source_id="queue1", queue_item_id="item1", media_type=MediaType.TRACK)
+
+    fmt = await airplay_player._get_session_pcm_format([airplay_player], media)
+
+    assert fmt.content_type == expected_content_type
     assert fmt.sample_rate == 48000
-
-    # a 16-bit member pins the session at the 44.1 kHz base
-    fmt = airplay_player._get_session_pcm_format([hires_client, cd_client], media)
-    assert fmt.sample_rate == 44100
-
-    # 44.1-family content stays at 44.1 kHz even for an all-hi-res group
-    queue_item.streamdetails.audio_format.sample_rate = 88200
-    fmt = airplay_player._get_session_pcm_format([hires_client], media)
-    assert fmt.sample_rate == 44100
+    assert fmt.bit_depth == expected_bit_depth
 
 
 # --- Volume and Mute tests ---
@@ -648,10 +753,28 @@ async def test_single_player_play_sends_action_play(airplay_player: AirPlayPlaye
     """An unsynced player resumes its paused stream in place with ACTION=PLAY."""
     airplay_player._attr_group_members = []
     send_cmd = _setup_running_stream(airplay_player)
+    send_cmd.return_value = True
 
     await airplay_player.play()
 
     send_cmd.assert_awaited_once_with("ACTION=PLAY")
+    # resume re-anchors the binary, so the tracked re-anchor shift is reset to match
+    cast("MagicMock", airplay_player.stream).reset_reanchor_shift.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_single_player_play_keeps_shift_when_resume_not_delivered(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """An undelivered ACTION=PLAY leaves the tracked re-anchor shift untouched."""
+    airplay_player._attr_group_members = []
+    send_cmd = _setup_running_stream(airplay_player)
+    send_cmd.return_value = False
+
+    await airplay_player.play()
+
+    send_cmd.assert_awaited_once_with("ACTION=PLAY")
+    cast("MagicMock", airplay_player.stream).reset_reanchor_shift.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -741,3 +864,346 @@ async def test_synced_child_pause_parks_session(airplay_player: AirPlayPlayer) -
     session.standby.assert_awaited_once()
     mock_stop.assert_not_called()
     send_cmd.assert_not_called()
+
+
+# --- Automatic group re-join after unexpected stream loss ---
+
+
+def _make_idle_player(player_id: str = "test_player") -> AirPlayPlayer:
+    """Create an idle, ungrouped AirPlayPlayer wired for the re-join tests."""
+    player = AirPlayPlayer(
+        provider=MagicMock(),
+        player_id=player_id,
+        display_name=f"Player {player_id}",
+        address="127.0.0.1",
+        manufacturer="Test Manufacturer",
+        model="Test Model",
+        raop_discovery_info=None,
+        airplay_discovery_info=None,
+    )
+    # the synced_to property scans all players of the provider
+    _players_mock(player).all_players.return_value = []
+    player._attr_group_members = []
+    player._attr_playback_state = PlaybackState.IDLE
+    player.stream = None
+    return player
+
+
+def _make_playing_leader(player_id: str = "leader") -> AirPlayPlayer:
+    """Create an AirPlayPlayer that looks like the playing leader of a live session."""
+    leader = _make_idle_player(player_id)
+    leader._attr_playback_state = PlaybackState.PLAYING
+    stream = MagicMock()
+    stream.running = True
+    stream.session = MagicMock()
+    leader.stream = stream
+    return leader
+
+
+def _players_mock(player: AirPlayPlayer) -> MagicMock:
+    """Return the mocked players controller of the given player."""
+    return cast("MagicMock", player.mass.players)
+
+
+def _attach_running_session(player: AirPlayPlayer, sync_clients: list[AirPlayPlayer]) -> None:
+    """Attach a mock running stream whose session carries the given members."""
+    stream = MagicMock()
+    stream.running = True
+    stream.session = MagicMock()
+    stream.session.sync_clients = sync_clients
+    player.stream = stream
+
+
+_NO_DELAYS = "music_assistant.providers.airplay.player.AIRPLAY_REJOIN_ATTEMPT_DELAYS"
+
+
+@pytest.mark.asyncio
+async def test_rejoin_succeeds_on_first_attempt() -> None:
+    """A re-join attempt joins the player back to the playing leader's session."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+
+    async def cmd_group(player_id: str, target_id: str) -> None:
+        assert player_id == player.player_id
+        assert target_id == leader.player_id
+        _attach_running_session(player, [leader, player])
+
+    players_mock.cmd_group = AsyncMock(side_effect=cmd_group)
+    players_mock.cmd_ungroup = AsyncMock()
+
+    with patch(_NO_DELAYS, (0, 0, 0)):
+        await player._group_rejoin_attempts(["leader"])
+
+    assert players_mock.cmd_group.await_count == 1
+    players_mock.cmd_ungroup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rejoin_retries_after_failure_then_succeeds() -> None:
+    """A failed attempt (device still unreachable) is retried with backoff."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    attempts: list[int] = []
+
+    async def cmd_group(_player_id: str, _target_id: str) -> None:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise PlayerCommandFailed("device unreachable")
+        _attach_running_session(player, [leader, player])
+
+    players_mock.cmd_group = AsyncMock(side_effect=cmd_group)
+
+    with patch(_NO_DELAYS, (0, 0, 0)):
+        await player._group_rejoin_attempts(["leader"])
+
+    assert len(attempts) == 2
+
+
+@pytest.mark.asyncio
+async def test_rejoin_gives_up_after_all_attempts() -> None:
+    """Without a playing group to re-join, the attempts run out and stop cleanly."""
+    player = _make_idle_player()
+    players_mock = _players_mock(player)
+    players_mock.get_player.return_value = None
+    players_mock.cmd_group = AsyncMock()
+
+    with patch(_NO_DELAYS, (0, 0, 0)):
+        await player._group_rejoin_attempts(["leader"])
+
+    players_mock.cmd_group.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rejoin_aborts_when_player_used_meanwhile() -> None:
+    """A player that was grouped or repurposed meanwhile is left alone."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.cmd_group = AsyncMock()
+    # the user started something else on the player during the backoff
+    stream = MagicMock()
+    stream.running = True
+    player.stream = stream
+
+    with patch(_NO_DELAYS, (0, 0, 0)):
+        await player._group_rejoin_attempts(["leader"])
+
+    players_mock.cmd_group.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rejoin_undoes_dangling_membership() -> None:
+    """A join that yields no running stream is rolled back before the next attempt."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    # cmd_group "succeeds" but the late-join failed internally: no stream appears
+    players_mock.cmd_group = AsyncMock()
+    players_mock.cmd_ungroup = AsyncMock()
+
+    with patch(_NO_DELAYS, (0, 0, 0)):
+        await player._group_rejoin_attempts(["leader"])
+
+    # every attempt rolled its dangling membership back
+    assert players_mock.cmd_group.await_count == 3
+    assert players_mock.cmd_ungroup.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_rejoin_cancelled_when_player_unavailable() -> None:
+    """An offline player abandons the re-join right away instead of attempting."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.cmd_group = AsyncMock()
+    player._attr_available = False
+
+    # the later long delays prove the loop returns on the first pass
+    with patch(_NO_DELAYS, (0, 60, 60)):
+        await asyncio.wait_for(player._group_rejoin_attempts(["leader"]), timeout=5)
+
+    players_mock.cmd_group.assert_not_awaited()
+    players_mock.get_player.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rejoin_aborts_when_synced_into_foreign_group() -> None:
+    """A player the user grouped elsewhere meanwhile is left alone."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    foreign_leader = MagicMock()
+    foreign_leader.player_id = "other"
+    foreign_leader.group_members = ["other", player.player_id]
+    # the player reports it is now synced to a leader outside the original group
+    _players_mock(player).all_players.return_value = [foreign_leader]
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.cmd_group = AsyncMock()
+
+    with patch(_NO_DELAYS, (0, 60, 60)):
+        await asyncio.wait_for(player._group_rejoin_attempts(["leader"]), timeout=5)
+
+    players_mock.cmd_group.assert_not_awaited()
+
+
+def test_resolve_rejoin_target_finds_promoted_sibling() -> None:
+    """When the old leader is gone, a promoted (now leading) sibling is the target."""
+    player = _make_idle_player()
+    sibling = _make_playing_leader("sibling")
+    sibling._attr_group_members = ["sibling", "other_member"]
+    _players_mock(player).get_player.side_effect = lambda player_id: {"sibling": sibling}.get(
+        player_id
+    )
+
+    assert player._resolve_rejoin_target(["old_leader", "sibling"]) is sibling
+
+
+def test_resolve_rejoin_target_skips_candidate_in_foreign_group() -> None:
+    """A candidate absorbed into another group is never followed there."""
+    player = _make_idle_player()
+    foreign_leader = _make_playing_leader("foreign")
+    foreign_leader._attr_group_members = ["foreign", "old_leader"]
+    old_leader = _make_playing_leader("old_leader")
+    # the old leader reports it is now synced to the foreign leader
+    _players_mock(old_leader).all_players.return_value = [foreign_leader]
+    _players_mock(player).get_player.side_effect = lambda player_id: {
+        "old_leader": old_leader,
+        "foreign": foreign_leader,
+    }.get(player_id)
+
+    assert player._resolve_rejoin_target(["old_leader"]) is None
+
+
+@pytest.mark.parametrize(
+    ("playback_state", "stream_running", "available", "expected"),
+    [
+        (PlaybackState.PLAYING, True, True, True),
+        # a parked (paused) session has no live timeline to late-join
+        (PlaybackState.PAUSED, True, True, False),
+        (PlaybackState.IDLE, False, True, False),
+        # target device itself dropped off the network
+        (PlaybackState.PLAYING, True, False, False),
+    ],
+)
+def test_resolve_rejoin_target_requires_playing_session(
+    playback_state: PlaybackState, stream_running: bool, available: bool, expected: bool
+) -> None:
+    """Only an available target with an actively playing session is accepted."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    leader._attr_playback_state = playback_state
+    cast("MagicMock", leader.stream).running = stream_running
+    leader._attr_available = available
+    _players_mock(player).get_player.side_effect = lambda player_id: {"leader": leader}.get(
+        player_id
+    )
+
+    target = player._resolve_rejoin_target(["leader"])
+    assert (target is leader) is expected
+
+
+@pytest.mark.asyncio
+async def test_rejoin_heals_session_when_membership_survived() -> None:
+    """A player still holding sync membership (static group) heals the session only."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    # the sync membership survived the stream loss: the player is still listed
+    # as a member of (and synced to) the leader
+    leader._attr_group_members = ["leader", player.player_id]
+    _players_mock(player).all_players.return_value = [leader]
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.cmd_group = AsyncMock()
+    players_mock.cmd_ungroup = AsyncMock()
+    session = cast("MagicMock", leader.stream).session
+
+    async def add_client(joiner: AirPlayPlayer) -> None:
+        assert joiner is player
+        _attach_running_session(player, [leader, player])
+
+    session.add_client = AsyncMock(side_effect=add_client)
+
+    with patch(_NO_DELAYS, (0,)):
+        await player._group_rejoin_attempts(["leader"])
+
+    session.add_client.assert_awaited_once()
+    players_mock.cmd_group.assert_not_awaited()
+    players_mock.cmd_ungroup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rejoin_session_heal_failure_keeps_membership() -> None:
+    """A failed session heal never touches the (configured) group membership."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    leader._attr_group_members = ["leader", player.player_id]
+    _players_mock(player).all_players.return_value = [leader]
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.cmd_group = AsyncMock()
+    players_mock.cmd_ungroup = AsyncMock()
+    session = cast("MagicMock", leader.stream).session
+    # the late-join fails internally: no stream appears on the player
+    session.add_client = AsyncMock()
+
+    with patch(_NO_DELAYS, (0,)):
+        await player._group_rejoin_attempts(["leader"])
+
+    session.add_client.assert_awaited_once()
+    players_mock.cmd_ungroup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_schedule_and_cancel_group_rejoin() -> None:
+    """Scheduling replaces a pending task and cancelling stops it."""
+    player = _make_idle_player()
+    _players_mock(player).get_player.return_value = None
+    cast("MagicMock", player.mass).create_task = lambda coro: (
+        asyncio.get_running_loop().create_task(coro)
+    )
+
+    with patch(_NO_DELAYS, (60, 60, 60)):
+        player.schedule_group_rejoin(["leader"])
+        first_task = player._rejoin_task
+        assert first_task is not None
+        # a second death replaces the pending schedule
+        player.schedule_group_rejoin(["leader"])
+        second_task = player._rejoin_task
+        assert second_task is not None
+        assert second_task is not first_task
+        await asyncio.sleep(0)
+        assert first_task.cancelled()
+        # any deliberate use of the player cancels the pending re-join
+        player.cancel_group_rejoin()
+        assert player._rejoin_task is None
+        await asyncio.sleep(0)
+        assert second_task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_pending_rejoin() -> None:
+    """An explicit stop command on the player drops the pending re-join."""
+    player = _make_idle_player()
+    _players_mock(player).get_player.return_value = None
+    cast("MagicMock", player.mass).create_task = lambda coro: (
+        asyncio.get_running_loop().create_task(coro)
+    )
+
+    with (
+        patch(_NO_DELAYS, (60,)),
+        patch.object(AirPlayPlayer, "update_state"),
+    ):
+        player.schedule_group_rejoin(["leader"])
+        rejoin_task = player._rejoin_task
+        assert rejoin_task is not None
+        await player.stop()
+        assert player._rejoin_task is None
+        await asyncio.sleep(0)
+        assert rejoin_task.cancelled()

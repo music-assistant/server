@@ -13,7 +13,9 @@ from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
+    CrossfadeMode,
     IdentifierType,
+    MediaType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
@@ -21,6 +23,7 @@ from music_assistant_models.enums import (
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
+from music_assistant.controllers.streams.audio import overlay_active
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf, is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.setup_flow import AbortFlow
@@ -28,16 +31,16 @@ from music_assistant.models.setup_flow import AbortFlow
 from .constants import (
     AIRPLAY_AP2_SETUP_LEAD_MS,
     AIRPLAY_DISCOVERY_TYPE,
-    AIRPLAY_FLOW_PCM_FORMAT,
+    AIRPLAY_HIRES_AUDIO_FORMATS,
     AIRPLAY_HIRES_SAMPLE_RATES,
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_RAOP_SETUP_LEAD_MS,
+    AIRPLAY_REJOIN_ATTEMPT_DELAYS,
     BASE_PLAYER_FEATURES,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_ENCRYPTION,
     CONF_ENTRY_SYNC_ADJUST_AIRPLAY,
     CONF_FORCE_RAOP,
-    CONF_HIRES_PLAYBACK,
     CONF_IGNORE_VOLUME,
     CONF_PAIRING_PASSWORD,
     CONF_PAIRING_PIN,
@@ -53,6 +56,7 @@ from .constants import (
 )
 from .helpers import (
     is_apple_device,
+    is_macos_device,
     player_id_to_mac_address,
     supports_airplay2,
 )
@@ -89,12 +93,17 @@ class AirPlayPlayer(Player):
         """Initialize AirPlayPlayer."""
         self.raop_discovery_info = raop_discovery_info
         self.airplay_discovery_info = airplay_discovery_info
+        # Audio formats the receiver advertises, learned from its /info response;
+        # zero until that lands (or when the device publishes no format tables).
+        self.advertised_audio_formats = 0
+        self._attr_enabled_by_default = not is_macos_device(manufacturer, model)
         super().__init__(provider, player_id)
         self.address = address
         self.stream: AirPlayStream | None = None
         self.last_command_sent = 0.0
         self._lock = asyncio.Lock()
         self._transitioning = False  # Set during stream replacement to ignore stale DACP messages
+        self._rejoin_task: asyncio.Task[None] | None = None
         # Set (static) player attributes
         self._attr_name = display_name
         self._attr_available = True
@@ -110,7 +119,6 @@ class AirPlayPlayer(Player):
         self._attr_device_info.add_identifier(IdentifierType.AIRPLAY_ID, player_id)
         self._attr_volume_level = initial_volume
         self._attr_can_group_with = {provider.instance_id}
-        self._attr_enabled_by_default = True
 
     @property
     def protocol(self) -> StreamingProtocol:
@@ -136,13 +144,13 @@ class AirPlayPlayer(Player):
 
     @property
     def hires_playback_enabled(self) -> bool:
-        """Return if 24-bit hi-res playback is enabled (and possible) for this player."""
-        # 24-bit only works over the native AirPlay 2 flow, so the opt-in is
-        # only effective for AirPlay 2 capable devices that are not forced to RAOP.
+        """Return if 24-bit hi-res playback is possible for this player."""
+        # 24-bit only works over the AirPlay 2 flow, so a device that streams RAOP
+        # (a legacy receiver, or the force-RAOP escape hatch) stays on the 16-bit
+        # base whatever it advertises.
         return (
-            bool(self.config.get_value(CONF_HIRES_PLAYBACK, False))
-            and self.airplay_discovery_info is not None
-            and self.protocol_override != StreamingProtocol.RAOP
+            bool(self.advertised_audio_formats & AIRPLAY_HIRES_AUDIO_FORMATS)
+            and self.protocol == StreamingProtocol.AIRPLAY2
         )
 
     @property
@@ -216,10 +224,9 @@ class AirPlayPlayer(Player):
         # interactive setup flow (run_setup_flow) and stored in the player's setup_data.
         base_entries: list[ConfigEntry] = []
 
-        # Effective RAOP state from the current (stored) force-RAOP setting, so the RAOP
-        # device password and the hi-res option show/hide consistently with it.
-        force_raop = self._force_raop_active
-        is_raop = force_raop or not self._is_airplay2_capable
+        # Effective RAOP state from the current (stored) force-RAOP setting, so the
+        # RAOP-only entries show/hide consistently with it.
+        is_raop = self._force_raop_active or not self._is_airplay2_capable
 
         # "Force RAOP" escape hatch: only for AirPlay-2-capable non-Apple receivers
         # (see _force_raop_available). Framed as a per-device workaround for a
@@ -263,16 +270,6 @@ class AirPlayPlayer(Player):
                 category="protocol_generic",
                 advanced=True,
             ),
-            ConfigEntry(
-                key=CONF_HIRES_PLAYBACK,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=False,
-                # 24-bit requires the native AirPlay 2 flow, so the option is only
-                # offered for AirPlay 2 capable devices that are not forced to RAOP
-                hidden=not self.airplay_discovery_info or is_raop,
-                category="protocol_generic",
-                advanced=True,
-            ),
         ]
 
         return base_entries
@@ -289,6 +286,9 @@ class AirPlayPlayer(Player):
 
     async def stop(self) -> None:
         """Send STOP command to player."""
+        # an explicit stop (including power-off routed as stop) is user intent:
+        # drop any pending automatic re-join
+        self.cancel_group_rejoin()
         async with self._lock:
             if self.stream and self.stream.session:
                 # forward stop to the entire stream session
@@ -323,7 +323,11 @@ class AirPlayPlayer(Player):
             return
         async with self._lock:
             if self.stream and self.stream.running:
-                await self.stream.send_cli_command("ACTION=PLAY")
+                if await self.stream.send_cli_command("ACTION=PLAY"):
+                    # Resuming re-anchors playout; the binary zeroes its own
+                    # re-anchor total on resume, so drop the tracked shift to
+                    # keep the server and binary baselines aligned.
+                    self.stream.reset_reanchor_shift()
 
     async def pause(self) -> None:
         """Send PAUSE command to player."""
@@ -353,6 +357,9 @@ class AirPlayPlayer(Player):
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
+        # the player is being (re)purposed on purpose: drop any pending
+        # automatic re-join left over from an unexpected stream loss
+        self.cancel_group_rejoin()
         async with self._lock:
             if self.synced_to:
                 # this should not happen, but guard anyways
@@ -360,7 +367,7 @@ class AirPlayPlayer(Player):
             self._attr_current_media = media
 
             sync_clients = self._get_sync_clients()
-            session_pcm_format = self._get_session_pcm_format(sync_clients, media)
+            session_pcm_format = await self._get_session_pcm_format(sync_clients, media)
 
             # Warm path: a live, compatible session absorbs the new media via a
             # flush-refill in place (seek/next never pays the reconnect cost).
@@ -672,11 +679,44 @@ class AirPlayPlayer(Player):
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
+        self.cancel_group_rejoin()
         if self.stream:
             # remove this player from the stream session if it is running
             if self.stream.running and self.stream.session:
                 await self.stream.session.remove_client(self, reason="player unloaded")
             self.stream = None
+
+    def schedule_group_rejoin(self, candidate_ids: list[str]) -> None:
+        """
+        Schedule a bounded automatic re-join of this player to its still-active group.
+
+        Used when this player's stream process died unexpectedly while it was part
+        of a playing sync group (e.g. the device rode out a network blackout): the
+        player is re-added to the group's live session through the regular
+        late-join path after a short backoff. Any user action on the player (or it
+        joining a session by other means) cancels the re-join; when the group is
+        no longer playing, its membership was changed meanwhile or the device is
+        offline, the re-join is abandoned and the player simply stays idle.
+
+        :param candidate_ids: Player ids that led or shared the group at the
+            moment the stream was lost, used to resolve the re-join target (the
+            leadership may transfer while the backoff runs).
+        """
+        self.cancel_group_rejoin()
+        self.logger.info(
+            "Scheduling automatic re-join of %s to its group after unexpected stream loss",
+            self.display_name,
+        )
+        self._rejoin_task = self.mass.create_task(self._group_rejoin_attempts(candidate_ids))
+
+    def cancel_group_rejoin(self) -> None:
+        """Cancel any pending automatic group re-join attempts for this player."""
+        rejoin_task = self._rejoin_task
+        self._rejoin_task = None
+        # never self-cancel: the re-join attempt itself flows through the same
+        # session (re)start paths that call this to clear stale schedules
+        if rejoin_task and not rejoin_task.done() and rejoin_task is not asyncio.current_task():
+            rejoin_task.cancel()
 
     @property
     def _has_native_protocol_parent(self) -> bool:
@@ -921,41 +961,35 @@ class AirPlayPlayer(Player):
         progress = int(metadata.corrected_elapsed_time or 0)
         self.mass.create_task(self.stream.send_metadata(progress, metadata))
 
-    def _get_session_pcm_format(
+    async def _get_session_pcm_format(
         self, sync_clients: list[AirPlayPlayer], media: PlayerMedia
     ) -> AudioFormat:
         """
-        Select the session (flow) PCM format for a new stream session.
+        Select the shared PCM format for a new stream session.
 
         :param sync_clients: All players that will take part in the session.
         :param media: The media that is about to be played.
         """
-        # The session runs at 48 kHz only when every member supports it (hi-res
-        # enabled); any 16-bit/44.1 member pins the session to the 44.1 base.
-        common_rates = set.intersection(
-            *({sample_rate for sample_rate, _ in c.supported_sample_rates} for c in sync_clients)
+        queue = self.mass.player_queues.get(media.source_id) if media.source_id else None
+        queue_item = (
+            self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
+            if media.source_id and media.queue_item_id
+            else None
         )
-        if 48000 not in common_rates:
-            return AIRPLAY_FLOW_PCM_FORMAT
-        # Only lift the session to 48 kHz for 48k-family content; 44.1k(-family)
-        # content stays at 44.1 to avoid a pointless resample for the common case.
-        content_rate = 0
-        if (
-            media.source_id
-            and media.queue_item_id
-            and (
-                queue_item := self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
-            )
-            and queue_item.streamdetails
-        ):
-            content_rate = queue_item.streamdetails.audio_format.sample_rate
-        if content_rate and content_rate % 48000 == 0:
-            return AudioFormat(
-                content_type=AIRPLAY_FLOW_PCM_FORMAT.content_type,
-                sample_rate=48000,
-                bit_depth=AIRPLAY_FLOW_PCM_FORMAT.bit_depth,
-            )
-        return AIRPLAY_FLOW_PCM_FORMAT
+        streamdetails = queue_item.streamdetails if queue_item else None
+        crossfade_enabled = bool(
+            queue
+            and media.media_type == MediaType.TRACK
+            and self.mass.streams.get_crossfade_mode(queue) != CrossfadeMode.DISABLED
+        )
+        return await self.mass.streams.audio.select_flow_pcm_format(
+            self,
+            start_streamdetails=streamdetails,
+            crossfade_enabled=crossfade_enabled,
+            overlay_active=bool(queue and overlay_active(queue)),
+            fallback_sample_rate=AIRPLAY_PCM_FORMAT.sample_rate,
+            output_players=sync_clients,
+        )
 
     def _get_sync_clients(self) -> list[AirPlayPlayer]:
         """Get all sync clients for a player."""
@@ -967,6 +1001,125 @@ class AirPlayPlayer(Player):
             if client := cast("AirPlayPlayer | None", self.mass.players.get_player(child_id)):
                 sync_clients.append(client)
         return sync_clients
+
+    async def _group_rejoin_attempts(self, candidate_ids: list[str]) -> None:
+        """Re-join this player to its group's live session after a bounded backoff."""
+        max_attempts = len(AIRPLAY_REJOIN_ATTEMPT_DELAYS)
+        for attempt, delay in enumerate(AIRPLAY_REJOIN_ATTEMPT_DELAYS, start=1):
+            await asyncio.sleep(delay)
+            if (
+                self.group_members
+                or (self.stream and self.stream.running)
+                or self.playback_state != PlaybackState.IDLE
+                # synced into a group outside the original one = deliberate regroup.
+                # Still pointing at an original candidate is fine: a static group
+                # keeps the sync membership while only the session lost this player.
+                or (self.synced_to and self.synced_to not in candidate_ids)
+            ):
+                # the player was grouped or repurposed by other means meanwhile
+                self.logger.debug(
+                    "Automatic group re-join for %s cancelled: player is active again",
+                    self.display_name,
+                )
+                return
+            if not self.available:
+                # the device is offline: an attempt cannot succeed and the user
+                # may well have switched it off on purpose
+                self.logger.debug(
+                    "Automatic group re-join for %s cancelled: player is unavailable",
+                    self.display_name,
+                )
+                return
+            target = self._resolve_rejoin_target(candidate_ids)
+            if target is None:
+                # the group may be between sessions (e.g. a track change); keep
+                # trying until the attempts run out
+                self.logger.debug(
+                    "Automatic group re-join attempt %d/%d for %s: no playing group found",
+                    attempt,
+                    max_attempts,
+                    self.display_name,
+                )
+                continue
+            # When the sync membership survived the stream loss (a static group,
+            # where membership is configuration), only the running session needs
+            # healing; a group command would no-op on the existing membership.
+            heal_session = (
+                target.stream.session
+                if self.player_id in target.group_members and target.stream is not None
+                else None
+            )
+            try:
+                if heal_session is not None:
+                    await heal_session.add_client(self)
+                else:
+                    await self.mass.players.cmd_group(self.player_id, target.player_id)
+            except Exception as err:
+                self.logger.warning(
+                    "Automatic re-join of %s to group of %s failed (attempt %d/%d): %s",
+                    self.display_name,
+                    target.display_name,
+                    attempt,
+                    max_attempts,
+                    err,
+                )
+                continue
+            # A failed late-join is swallowed inside the grouping path (the player
+            # then holds group membership without a live stream), so verify the
+            # session actually carries this player before declaring success.
+            if (
+                self.stream
+                and self.stream.running
+                and self.stream.session
+                and self in self.stream.session.sync_clients
+            ):
+                self.logger.info(
+                    "Automatically re-joined %s to the group of %s after stream loss",
+                    self.display_name,
+                    target.display_name,
+                )
+                return
+            self.logger.warning(
+                "Automatic re-join of %s did not produce a running stream (attempt %d/%d)",
+                self.display_name,
+                attempt,
+                max_attempts,
+            )
+            if heal_session is None:
+                # undo the group membership this attempt created so a retry (or
+                # a manual regroup) starts from a clean join
+                await self.mass.players.cmd_ungroup(self.player_id)
+        self.logger.warning(
+            "Giving up on automatic group re-join for %s after %d attempt(s); "
+            "the player stays idle",
+            self.display_name,
+            max_attempts,
+        )
+
+    def _resolve_rejoin_target(self, candidate_ids: list[str]) -> AirPlayPlayer | None:
+        """Resolve which player now carries the group's actively playing session."""
+        for candidate_id in candidate_ids:
+            candidate = self.mass.players.get_player(candidate_id)
+            if candidate is None or candidate is self:
+                continue
+            if not isinstance(candidate, AirPlayPlayer):
+                continue
+            if candidate.synced_to:
+                # the candidate was absorbed into another group since the loss
+                # (user intent): never follow the old group's players elsewhere.
+                # A leadership transfer inside the original group is still found:
+                # the promoted member is itself one of the candidates.
+                continue
+            if not candidate.available:
+                continue
+            # only a PLAYING session can absorb a late joiner: a parked (paused)
+            # session has no live timeline to anchor against
+            if candidate.playback_state != PlaybackState.PLAYING:
+                continue
+            if not (candidate.stream and candidate.stream.running and candidate.stream.session):
+                continue
+            return candidate
+        return None
 
 
 class GenericAirPlayPlayer(AirPlayPlayer):

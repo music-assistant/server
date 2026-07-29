@@ -648,11 +648,14 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         item_id: str,
         provider_instance_id_or_domain: str,
     ) -> ItemCls | None:
-        """Get the library item for the given provider_instance."""
+        """Get the library item for the given provider item, if present."""
         assert item_id
         assert provider_instance_id_or_domain
         if provider_instance_id_or_domain == "library":
-            return await self.get_library_item(item_id)
+            try:
+                return await self.get_library_item(item_id)
+            except MediaNotFoundError:
+                return None
         for item in await self.get_library_items_by_prov_id(
             provider_instance_id_or_domain=provider_instance_id_or_domain,
             provider_item_id=item_id,

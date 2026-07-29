@@ -24,6 +24,7 @@ from music_assistant_models.media_items import (
     PodcastEpisode,
     ProviderMapping,
     Radio,
+    SoundEffect,
     Track,
     UniqueList,
 )
@@ -434,7 +435,17 @@ def construct_media_item_from_playlist_item(
     item_id = first_provider.item_id if first_provider else item.path.rsplit("/", 1)[-1]
 
     media_item: MediaItemType
-    if media_type == MediaType.RADIO:
+    if media_type == MediaType.SOUND_EFFECT:
+        media_item = SoundEffect(
+            item_id=item_id,
+            provider=item_provider,
+            name=name,
+            provider_mappings=provider_mappings,
+            external_ids=external_ids,
+        )
+        if duration is not None:
+            media_item.duration = duration
+    elif media_type == MediaType.RADIO:
         media_item = Radio(
             item_id=item_id,
             provider=item_provider,

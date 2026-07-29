@@ -41,6 +41,7 @@ def _make_player() -> MagicMock:
     player.device_info.ip_address = "192.168.1.50"
     player.logger = logging.getLogger("test.airplay.player")
     player.config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
+    player.state.active_group = None
 
     airplay_info = MagicMock()
     airplay_info.port = 7000
@@ -268,6 +269,51 @@ def test_parse_latency_status() -> None:
     assert stream.latency_lead_ms == 1750
     assert stream.device_min_frames == 11025
     assert stream.device_max_frames == 88200
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        # both tables published: the union is kept
+        (
+            "[STATUS] capabilities requested=0x80000 realtime_formats=0x40000 "
+            "realtime_known=1 buffered_formats=0x80000 buffered_known=1",
+            0xC0000,
+        ),
+        # the Apple TV publishes 24-bit for its buffered stream only
+        (
+            "[STATUS] capabilities requested=0x80000 realtime_formats=0x1440800 "
+            "realtime_known=1 buffered_formats=0xe80000 buffered_known=1",
+            0x1EC0800,
+        ),
+        # a table the device did not publish is ignored, even when non-zero
+        (
+            "[STATUS] capabilities requested=0x40000 realtime_formats=0x40000 "
+            "realtime_known=1 buffered_formats=0x80000 buffered_known=0",
+            0x40000,
+        ),
+        # RAOP-compat routes report nothing: the probed value survives
+        (
+            "[STATUS] capabilities requested=0x40000 realtime_formats=0x0 "
+            "realtime_known=0 buffered_formats=0x0 buffered_known=0",
+            0x1234,
+        ),
+        # a malformed mask is ignored rather than raising
+        (
+            "[STATUS] capabilities realtime_formats=nonsense realtime_known=1",
+            0x1234,
+        ),
+    ],
+)
+def test_parse_capabilities_status(line: str, expected: int) -> None:
+    """The [STATUS] capabilities line refreshes the formats the player advertises."""
+    player = _make_player()
+    player.advertised_audio_formats = 0x1234
+    stream = AirPlayStream(player)
+
+    stream._parse_capabilities_status(line)
+
+    assert player.advertised_audio_formats == expected
 
 
 @pytest.mark.parametrize(
@@ -842,6 +888,138 @@ def test_elapsed_includes_start_position() -> None:
     )
 
 
+def test_legacy_reanchor_warns_accumulate_per_event() -> None:
+    """The legacy warn line reports a per-event shift, so successive events accumulate."""
+    stream = AirPlayStream(_make_player())
+    assert stream.cumulative_shift_seconds == 0.0
+
+    for _event in range(2):
+        assert (
+            stream._handle_status_line(
+                "[AP2] Re-anchored after PCM starvation: "
+                "shifted_frames=67870 lead_frames=77175 count=1"
+            )
+            is False
+        )
+
+    # two +1.539s events accumulate to ~3.078s
+    assert stream.cumulative_shift_seconds == pytest.approx(2 * 67870 / 44100)
+
+
+def test_reanchor_status_supersedes_legacy_warn() -> None:
+    """The [STATUS] REANCHOR total is authoritative and stops the legacy warn double count."""
+    stream = AirPlayStream(_make_player())
+
+    # a first legacy warn accumulates until the status line arrives
+    stream._handle_status_line(
+        "[AP2] Re-anchored after PCM starvation: shifted_frames=67870 lead_frames=77175 count=1"
+    )
+    # the machine-readable line SETS from the cumulative total and supersedes the warn
+    assert (
+        stream._handle_status_line(
+            "[STATUS] REANCHOR shifted_frames=67870 total_shifted_frames=67870 sample_rate=44100"
+        )
+        is False
+    )
+    assert stream._reanchor_status_seen is True
+    assert stream.cumulative_shift_seconds == pytest.approx(67870 / 44100)
+
+    # both lines fire per event for new binaries: the warn that follows is ignored,
+    # only the status line's cumulative total is tracked (no double count)
+    stream._handle_status_line(
+        "[AP2] Re-anchored after PCM starvation: shifted_frames=67870 lead_frames=77175 count=2"
+    )
+    assert stream.cumulative_shift_seconds == pytest.approx(67870 / 44100)
+    stream._handle_status_line(
+        "[STATUS] REANCHOR shifted_frames=67870 total_shifted_frames=135740 sample_rate=44100"
+    )
+    assert stream.cumulative_shift_seconds == pytest.approx(135740 / 44100)
+
+
+def test_reanchor_status_prefers_line_sample_rate() -> None:
+    """The sample rate carried on the [STATUS] REANCHOR line wins over the stream format."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream.pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=48000, bit_depth=16
+    )
+
+    stream._handle_status_line(
+        "[STATUS] REANCHOR shifted_frames=44100 total_shifted_frames=44100 sample_rate=44100"
+    )
+
+    # converts at 44100 (from the line), not 48000 (the stream format) -> exactly 1.0s
+    assert stream.cumulative_shift_seconds == pytest.approx(1.0)
+
+
+def test_reanchor_status_ignores_line_without_total() -> None:
+    """A [STATUS] REANCHOR line missing the total leaves the shift unchanged."""
+    stream = AirPlayStream(_make_player())
+    stream.cumulative_shift_seconds = 1.5
+
+    stream._handle_status_line("[STATUS] REANCHOR shifted_frames=67870 sample_rate=44100")
+
+    assert stream.cumulative_shift_seconds == 1.5
+    assert stream._reanchor_status_seen is False
+
+
+def test_reanchor_shift_ignores_line_without_frames() -> None:
+    """A malformed legacy re-anchor line leaves the tracked shift unchanged."""
+    stream = AirPlayStream(_make_player())
+    stream.cumulative_shift_seconds = 1.5
+
+    ended = stream._handle_status_line("[AP2] Re-anchored after PCM starvation: shifted_frames=")
+
+    assert ended is False
+    assert stream.cumulative_shift_seconds == 1.5
+
+
+@pytest.mark.asyncio
+async def test_start_resets_reanchor_shift() -> None:
+    """A START re-anchors from scratch, clearing the shift and the status flag."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+    stream.cumulative_shift_seconds = 3.078
+    stream._reanchor_status_seen = True
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
+        await stream.start(START_UNIX_MS, 0)
+
+    assert stream.cumulative_shift_seconds == 0.0
+    assert stream._reanchor_status_seen is False
+
+
+@pytest.mark.asyncio
+async def test_connect_resets_accumulated_shift() -> None:
+    """A fresh cliairplay process starts from a zero playout shift and cleared flag."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream.cumulative_shift_seconds = 5.0
+    stream._reanchor_status_seen = True
+    player.current_media = MagicMock(corrected_elapsed_time=0)
+    process = MagicMock(closed=False)
+    process.start = AsyncMock()
+
+    def consume_task(awaitable: Any) -> MagicMock:
+        awaitable.close()
+        task = MagicMock()
+        task.done.return_value = True
+        return task
+
+    player.provider.mass.create_task.side_effect = consume_task
+    with (
+        patch.object(stream, "_build_cli_args", new_callable=AsyncMock, return_value=["binary"]),
+        patch("music_assistant.providers.airplay.stream.AsyncProcess", return_value=process),
+        patch.object(stream.commands_pipe, "create", new_callable=AsyncMock),
+        patch.object(stream, "send_metadata", new_callable=AsyncMock),
+    ):
+        await stream.connect()
+
+    assert stream.cumulative_shift_seconds == 0.0
+    assert stream._reanchor_status_seen is False
+
+
 @pytest.mark.asyncio
 async def test_initial_metadata_skips_artwork() -> None:
     """The pre-connect metadata push cannot delay setup on artwork rendering."""
@@ -1055,6 +1233,101 @@ async def test_process_eof_cleans_up_command_pipe() -> None:
 
     assert stream._stopped is True
     remove_pipe.assert_awaited_once()
+    player.schedule_group_rejoin.assert_not_called()
+
+
+async def _run_unexpected_process_death(player: MagicMock) -> AirPlayStream:
+    """Drive the stderr reader through an unexpected process exit."""
+    stream = AirPlayStream(player)
+    process = MagicMock()
+    stream._cli_proc = process
+
+    async def _stderr_lines() -> AsyncGenerator[str]:
+        yield "some final log line"
+
+    with (
+        patch.object(process, "iter_stderr", return_value=_stderr_lines()),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
+    ):
+        await stream._stderr_reader()
+    return stream
+
+
+@pytest.mark.asyncio
+async def test_unexpected_death_of_synced_child_schedules_rejoin() -> None:
+    """A grouped member whose process dies unexpectedly gets a re-join scheduled."""
+    player = _make_player()
+    player.synced_to = "leader"
+    player.group_members = []
+    # the leader's other members are captured as fallback candidates in case
+    # leadership transfers while the re-join backoff runs
+    leader = MagicMock()
+    leader.group_members = ["leader", player.player_id, "sibling"]
+    player.provider.mass.players.get_player.return_value = leader
+
+    stream = await _run_unexpected_process_death(player)
+
+    player.schedule_group_rejoin.assert_called_once_with(["leader", "sibling"])
+    player.set_state_from_stream.assert_called_once_with(
+        state=PlaybackState.IDLE, elapsed_time=0, stream=stream
+    )
+
+
+@pytest.mark.asyncio
+async def test_unexpected_death_of_leader_schedules_rejoin_to_members() -> None:
+    """A dying leader re-joins towards its surviving members (leadership transfers)."""
+    player = _make_player()
+    player.synced_to = None
+    player.group_members = [player.player_id, "child1", "child2"]
+
+    await _run_unexpected_process_death(player)
+
+    player.schedule_group_rejoin.assert_called_once_with(["child1", "child2"])
+    # the controller sets the leader's final state (transfer or dissolve)
+    player.set_state_from_stream.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unexpected_death_of_solo_player_schedules_no_rejoin() -> None:
+    """An ungrouped player's process death only marks the player idle."""
+    player = _make_player()
+    player.synced_to = None
+    player.group_members = []
+
+    stream = await _run_unexpected_process_death(player)
+
+    player.schedule_group_rejoin.assert_not_called()
+    player.set_state_from_stream.assert_called_once_with(
+        state=PlaybackState.IDLE, elapsed_time=0, stream=stream
+    )
+
+
+@pytest.mark.asyncio
+async def test_unexpected_death_of_static_group_member_drops_member_only() -> None:
+    """A static group member's death drops just that member, never the whole group."""
+    player = _make_player()
+    player.synced_to = "leader"
+    player.group_members = []
+    # the player is a static member of an actively playing group player, for
+    # which cmd_ungroup would release (stop) the WHOLE group
+    player.state.active_group = "syncgroup1"
+    group_player = MagicMock()
+    group_player.static_group_members = ["leader", player.player_id]
+    leader = MagicMock()
+    leader.group_members = ["leader", player.player_id]
+    player.provider.mass.players.get_player.side_effect = lambda player_id: {
+        "syncgroup1": group_player,
+        "leader": leader,
+    }.get(player_id)
+
+    await _run_unexpected_process_death(player)
+
+    players_controller = player.provider.mass.players
+    players_controller.cmd_set_members.assert_called_once_with(
+        "leader", player_ids_to_remove=[player.player_id]
+    )
+    players_controller.cmd_ungroup.assert_not_called()
+    player.schedule_group_rejoin.assert_called_once_with(["leader"])
 
 
 @pytest.mark.asyncio

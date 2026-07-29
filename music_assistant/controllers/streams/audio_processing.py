@@ -577,8 +577,6 @@ def _is_bit_perfect(
         return None
     if item.alters_audio:
         return False
-    if get_audio_quality(source_format) not in (AudioQuality.LOSSLESS, AudioQuality.HI_RES):
-        return False
     if get_audio_quality(output_format) not in (AudioQuality.LOSSLESS, AudioQuality.HI_RES):
         return False
     formats = [source_format]

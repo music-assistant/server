@@ -9,7 +9,7 @@ from typing import Final
 from music_assistant_models.enums import ContentType, PlayerFeature
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import CONF_ENTRY_SYNC_ADJUST, INTERNAL_PCM_FORMAT
+from music_assistant.constants import CONF_ENTRY_SYNC_ADJUST
 
 DOMAIN = "airplay"
 
@@ -39,7 +39,6 @@ CONF_ENCRYPTION: Final[str] = "encryption"
 # AirPlay-2-capable receiver whose AirPlay 2 implementation misbehaves.
 CONF_FORCE_RAOP: Final[str] = "force_raop"
 CONF_STORED_VOLUME: Final[str] = "stored_volume"
-CONF_HIRES_PLAYBACK: Final[str] = "hires_playback"
 CONF_COMPANION_CREDENTIALS: Final[str] = "companion_credentials"
 CONF_MRP_CREDENTIALS: Final[str] = "mrp_credentials"
 CONF_NATIVE_MRP_CREDENTIALS: Final[str] = "native_mrp_credentials"
@@ -73,10 +72,19 @@ AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 2000
 AIRPLAY_START_LEAD_MS: Final[int] = 250
 AIRPLAY_GROUP_START_LEAD_MS: Final[int] = 500
 
+# Delay (seconds) before automatically re-joining a group member whose
+# cliairplay process died unexpectedly mid-session (e.g. the device rode out a
+# network blackout longer than the binary's own keepalive tolerance). A single
+# attempt keeps the behaviour predictable: it waits long enough for a short
+# blackout to clear, and if the device is still gone the player is left idle.
+# Staged retries can be reintroduced by adding entries to the tuple.
+AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5,)
+
 # Cover art is rendered to a local JPEG for the binary to embed (the binary
 # does not fetch URLs). 512px keeps the SET_PARAMETER payload small while still
 # looking sharp on speaker apps and the Apple TV now-playing screen.
 AIRPLAY_ARTWORK_SIZE: Final[int] = 512
+EXTERNAL_ARTWORK_PATH_PREFIX: Final[str] = "external_artwork"
 
 # Per-protocol credential storage keys
 CONF_RAOP_CREDENTIALS: Final[str] = "raop_credentials"
@@ -103,18 +111,20 @@ BACKOFF_TIME_UPPER_LIMIT: Final[int] = 300  # Five minutes
 FALLBACK_VOLUME: Final[int] = 20
 AIRPLAY_VOLUME_MUTE: Final[float] = -144.0
 
-AIRPLAY_FLOW_PCM_FORMAT = AudioFormat(
-    content_type=INTERNAL_PCM_FORMAT.content_type,
-    sample_rate=44100,
-    bit_depth=INTERNAL_PCM_FORMAT.bit_depth,
-)
 AIRPLAY_PCM_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16
 )
-# Sample rates advertised when the per-player hi-res option is enabled (AirPlay 2
-# native flow only). At 24-bit the cliairplay binary expects raw s32le on stdin
-# and truncates to 24-bit ALAC internally.
+# Sample rates advertised for a receiver that supports 24-bit (AirPlay 2 flow
+# only). At 24-bit the cliairplay binary expects raw s32le on stdin and truncates
+# to 24-bit ALAC internally.
 AIRPLAY_HIRES_SAMPLE_RATES: Final[list[tuple[int, int]]] = [(44100, 24), (48000, 24)]
+
+# Bits in the audioFormat bit space (shared with the receiver's /info format
+# tables) that mark 24-bit ALAC: 44.1 kHz and 48 kHz respectively. Receivers
+# understate these - the Apple TV lists them for its buffered stream only, yet
+# renders them fine on the realtime stream - so a device advertising either bit
+# on either stream is treated as 24-bit capable.
+AIRPLAY_HIRES_AUDIO_FORMATS: Final[int] = (1 << 19) | (1 << 21)
 
 BASE_PLAYER_FEATURES: Final[set[PlayerFeature]] = {
     PlayerFeature.PLAY_MEDIA,

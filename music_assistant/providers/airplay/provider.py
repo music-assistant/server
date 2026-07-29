@@ -13,6 +13,7 @@ from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import TYPE_CHECKING, Final, cast
 
 from music_assistant_models.enums import PlaybackState
+from music_assistant_models.errors import MediaNotFoundError
 from zeroconf import NonUniqueNameException, ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
@@ -39,6 +40,7 @@ from .constants import (
     CONF_IGNORE_VOLUME,
     CONF_STORED_VOLUME,
     DACP_DISCOVERY_TYPE,
+    EXTERNAL_ARTWORK_PATH_PREFIX,
     FALLBACK_VOLUME,
     MRP_DISCOVERY_TYPE,
     RAOP_DISCOVERY_TYPE,
@@ -52,6 +54,7 @@ from .helpers import (
     get_cli_binary,
     get_model_info,
     is_apple_device,
+    probe_audio_formats,
 )
 from .player import AirPlayPlayer, GenericAirPlayPlayer
 from .sendspin_bridge import SendspinBridgeManager
@@ -326,6 +329,27 @@ class AirPlayProvider(PlayerProvider):
         """Return AirplayPlayer by id."""
         return cast("AirPlayPlayer | None", self.mass.players.get_player(player_id))
 
+    async def resolve_image(self, path: str) -> bytes:
+        """
+        Resolve artwork for the current external media on an Apple device.
+
+        :param path: AirPlay artwork path produced for the image proxy.
+        :return: Raw artwork bytes.
+        :raises MediaNotFoundError: If the artwork is invalid, stale, or unavailable.
+        """
+        try:
+            prefix, player_id, artwork_id = path.split("/", 2)
+        except ValueError as err:
+            raise MediaNotFoundError("Invalid AirPlay artwork path") from err
+        player = self.get_player(player_id)
+        if (
+            prefix != EXTERNAL_ARTWORK_PATH_PREFIX
+            or not artwork_id
+            or not isinstance(player, AirPlayControlPlayer)
+        ):
+            raise MediaNotFoundError("AirPlay artwork is unavailable")
+        return await player.async_get_external_artwork(artwork_id)
+
     def _set_pyatv_log_level(self) -> None:
         """Keep pyatv's (very chatty) logging quiet unless verbose logging is enabled."""
         # pyatv is extremely chatty at debug level (it logs every protocol
@@ -467,12 +491,26 @@ class AirPlayProvider(PlayerProvider):
             )
         await self.mass.players.register(player)
 
+        # A receiver only publishes its audio formats (and so whether it can do
+        # 24-bit) in its /info response, never in its mDNS records, so ask it
+        # directly. Off the discovery path: mdns callbacks are serialized per
+        # provider, so an unreachable device must not hold up the next player.
+        if airplay_discovery_info and airplay_discovery_info.port:
+            self.mass.create_task(
+                self._learn_audio_formats(player, address, airplay_discovery_info.port)
+            )
+
         # Set up Sendspin bridge for protocol linking (if Sendspin provider is available)
         await self._bridge_manager.evaluate_bridge(player)
 
         # Track control players (Apple TVs) for dashboard eligibility
         if isinstance(player, AirPlayControlPlayer):
             self.dashboards.setup_player(player)
+
+    async def _learn_audio_formats(self, player: AirPlayPlayer, host: str, port: int) -> None:
+        """Read the audio formats a receiver advertises, so 24-bit can be auto-enabled."""
+        if formats := await probe_audio_formats(self.mass, host, port):
+            player.advertised_audio_formats = formats
 
     async def _is_own_airplay_receiver(
         self, display_name: str, discovery_info: AsyncServiceInfo
@@ -499,8 +537,12 @@ class AirPlayProvider(PlayerProvider):
                 continue
             if not raw_conf.get("enabled", True):
                 continue
+            setup_name = self.mass.config.get_provider_setup_value(
+                str(instance_id), CONF_AIRPLAY_NAME
+            )
             values = raw_conf.get("values")
-            airplay_name = values.get(CONF_AIRPLAY_NAME) if isinstance(values, dict) else None
+            legacy_name = values.get(CONF_AIRPLAY_NAME) if isinstance(values, dict) else None
+            airplay_name = setup_name or legacy_name
             receiver_names.add(str(airplay_name) if airplay_name else DEFAULT_AIRPLAY_NAME)
             receiver_ports.add(airplay_receiver_port(str(instance_id)))
         # running instances are authoritative for the actual daemon ports

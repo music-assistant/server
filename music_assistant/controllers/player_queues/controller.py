@@ -62,6 +62,7 @@ from music_assistant.controllers.player_queues.config import (
 from music_assistant.controllers.player_queues.constants import (
     CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
     CACHE_CATEGORY_PLAYER_QUEUE_STATE,
+    PLAYBACK_START_TIMEOUT,
     QUEUE_CACHE_SAVE_DELAY,
 )
 from music_assistant.controllers.player_queues.helpers import (
@@ -880,9 +881,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 queue_id, resume_item.queue_item_id, int(resume_pos), fade_in or False
             )
         else:
-            # Queue is empty, try to resume from playlog
-            if await self._try_resume_from_playlog(queue):
-                return
             msg = f"Resume queue requested but queue {queue.display_name} is empty"
             raise QueueEmpty(msg)
 
@@ -999,13 +997,21 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
             # Reset flow_mode - the streams controller will set it if flow mode is used.
             queue.flow_mode = False
-            await self.mass.players.play_media(
+            player_media = await self.player_media_from_queue_item(queue_item)
+            # Hold the play action until the player confirms playback so the UI keeps
+            # showing the command as in progress instead of falling back to a play button
+            # for the time the player still needs to connect and start. The queue update
+            # for the new item goes out first, so the item shows while it is starting.
+            async with self.mass.players.wait_for_player_update(
                 queue_id,
-                await self.player_media_from_queue_item(queue_item),
-            )
-            queue.current_index = index
-            queue.current_item = queue_item
-            self.signal_update(queue_id)
+                attribute_name="playback_state",
+                attribute_value=PlaybackState.PLAYING,
+                timeout=PLAYBACK_START_TIMEOUT,
+            ):
+                await self.mass.players.play_media(queue_id, player_media)
+                queue.current_index = index
+                queue.current_item = queue_item
+                self.signal_update(queue_id)
         finally:
             self._set_transitioning(queue_id, False)
 
@@ -1669,8 +1675,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue_player is None:
             raise PlayerUnavailableError(f"Player {queue_id} is not available")
         if (queue := self.get(queue_id)) and queue.active and queue.state == PlaybackState.PAUSED:
-            # forward the actual play/unpause command to the player
-            await queue_player.play()
+            # forward the actual play/unpause command to the player,
+            # holding the action until the player confirms it resumed playback
+            async with self.mass.players.wait_for_player_update(
+                queue_id,
+                attribute_name="playback_state",
+                attribute_value=PlaybackState.PLAYING,
+                timeout=PLAYBACK_START_TIMEOUT,
+            ):
+                await queue_player.play()
             return
         # player is not paused, perform resume instead
         await self.resume(queue_id)

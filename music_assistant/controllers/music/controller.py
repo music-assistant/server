@@ -935,10 +935,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         if provider_instance_id_or_domain == "database":
             # backwards compatibility - to remove when 2.0 stable is released
             provider_instance_id_or_domain = "library"
-        if provider_instance_id_or_domain == "builtin":
+        provider = self.mass.get_provider(provider_instance_id_or_domain)
+        if media_type in (MediaType.TRACK, MediaType.RADIO, MediaType.SOUND_EFFECT) and (
+            provider_instance_id_or_domain == "builtin"
+            or (provider and getattr(provider, "domain", None) == "builtin")
+        ):
             # handle special case of 'builtin' MusicProvider which allows us to play regular url's
-            builtin_prov = cast("BuiltinProvider", self.mass.get_provider("builtin"))
-            return await builtin_prov.parse_item(item_id)
+            builtin_prov = cast("BuiltinProvider", provider or self.mass.get_provider("builtin"))
+            return await builtin_prov.parse_item(item_id, requested_media_type=media_type)
         if media_type == MediaType.PODCAST_EPISODE:
             # special case for podcast episodes
             return await self.podcasts.episode(item_id, provider_instance_id_or_domain)
@@ -990,7 +994,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         item_id: str,
         provider_instance_id_or_domain: str,
     ) -> MediaItemType | None:
-        """Get single library music item by id and media type."""
+        """Get the library item for the given provider item, if present."""
         ctrl = self.get_controller(media_type)
         return await ctrl.get_library_item_by_prov_id(
             item_id=item_id,

@@ -66,6 +66,13 @@ MANAGED_POOL_SOURCE_CAP = 250
 CACHE_CATEGORY_PLAYER_QUEUE_STATE = 0
 CACHE_CATEGORY_PLAYER_QUEUE_ITEMS = 1
 
+# A play command is only complete once the player actually reports playback: several player
+# implementations return from play_media as soon as the start command is out while the device
+# needs another moment to connect and start (AirPlay anchors its audible start in the future).
+# The play action - and with it the UI's in-progress indication - is held until the player
+# reports PLAYING, capped by this timeout so a player that never reports state can't block.
+PLAYBACK_START_TIMEOUT = 5.0
+
 # The queue's cached state/items are written through a debounced timer, so a burst of updates (or
 # the per-track updates during playback) collapses into a single write instead of hitting the cache
 # db on every signal_update.

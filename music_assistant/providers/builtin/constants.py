@@ -94,13 +94,6 @@ CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS_HIDDEN = ConfigEntry.from_dict(
         "default_value": True,
     }
 )
-CONF_ENTRY_LIBRARY_SYNC_TRACKS_HIDDEN = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_LIBRARY_SYNC_TRACKS.to_dict(),
-        "hidden": True,
-        "default_value": True,
-    }
-)
 CONF_ENTRY_LIBRARY_SYNC_RADIOS_HIDDEN = ConfigEntry.from_dict(
     {
         **CONF_ENTRY_LIBRARY_SYNC_RADIOS.to_dict(),

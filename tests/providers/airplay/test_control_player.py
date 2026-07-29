@@ -7,8 +7,15 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType, PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.enums import (
+    ImageType,
+    MediaType,
+    PlaybackState,
+    PlayerFeature,
+    PlayerType,
+)
+from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFailed
+from music_assistant_models.media_items import MediaItemImage
 from pyatv import exceptions as pyatv_exceptions
 from pyatv.const import (
     DeviceState,
@@ -18,7 +25,7 @@ from pyatv.const import (
     Protocol,
 )
 from pyatv.const import MediaType as PyatvMediaType
-from pyatv.interface import App, AppleTV, Playing
+from pyatv.interface import App, AppleTV, ArtworkInfo, Playing
 from pyatv.settings import MrpTunnel
 from zeroconf import ServiceStateChange
 
@@ -29,6 +36,7 @@ from music_assistant.providers.airplay.constants import (
     CONF_COMPANION_CREDENTIALS,
     CONF_MRP_CREDENTIALS,
     CONF_NATIVE_MRP_CREDENTIALS,
+    EXTERNAL_ARTWORK_PATH_PREFIX,
     MRP_DISCOVERY_TYPE,
 )
 from music_assistant.providers.airplay.control_player import AirPlayControlPlayer
@@ -349,6 +357,25 @@ def test_native_volume_update_ignored_while_streaming() -> None:
     update_state.assert_not_called()
 
 
+def test_transient_mrp_volume_report_never_latches_mute() -> None:
+    """A transient MRP tunnel never mutes the player or rewrites its volume."""
+    # A muted player skips the stream volume command, so a phantom mute learned while
+    # idle would silently stop every later volume change from reaching the device.
+    player = _make_control_player(model="HomePod Mini", companion_flags="0x62792")
+    assert player._uses_transient_mrp is True
+    player.stream = MagicMock(running=False)
+    player._attr_volume_level = 62
+    player._attr_volume_muted = False
+
+    with patch.object(player, "update_state") as update_state:
+        player._handle_volume_update("mrp", 0)
+
+    assert player.volume_muted is False
+    assert player.volume_level == 62
+    cast("MagicMock", player.mass.config).set_raw_player_config_value.assert_not_called()
+    update_state.assert_not_called()
+
+
 def test_native_volume_update_applies_when_idle() -> None:
     """Native volume reports still drive player state while no stream is running."""
     player = _make_control_player()
@@ -525,6 +552,80 @@ def test_mrp_updates_external_source_and_media() -> None:
     assert player.current_media.title == "External track"
     assert player.current_media.elapsed_time == 12
     assert player.source_list[0].name == "Music"
+
+
+def test_mrp_update_publishes_external_artwork() -> None:
+    """MRP artwork is exposed as a cached Music Assistant image-proxy URL."""
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.Artwork
+    device.metadata.app = App("NLZIET", "nl.nlziet")
+    artwork_id = "https://artwork.example/{w}x{h}/cover"
+    device.metadata.artwork_id = artwork_id
+    player._mrp_device = device
+
+    with (
+        patch.object(player, "update_state"),
+        patch.object(
+            player.mass.metadata,
+            "get_image_url",
+            return_value="http://mass/imageproxy/artwork",
+        ) as get_image_url,
+    ):
+        player._handle_playing_update(
+            Playing(device_state=DeviceState.Playing, title="De Eindmusical")
+        )
+
+    assert player.current_media is not None
+    assert player.current_media.image_url == "http://mass/imageproxy/artwork"
+    image = get_image_url.call_args.args[0]
+    assert image == MediaItemImage(
+        type=ImageType.THUMB,
+        path=f"{EXTERNAL_ARTWORK_PATH_PREFIX}/{PLAYER_ID}/{artwork_id}",
+        provider="airplay",
+        remotely_accessible=False,
+    )
+
+
+def test_mrp_update_refreshes_existing_app_name() -> None:
+    """A late app name replaces the bundle id on an existing source."""
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.return_value = False
+    device.metadata.app = App(None, "nl.nlziet")
+    player._mrp_device = device
+    playing = Playing(device_state=DeviceState.Playing, title="De Eindmusical")
+
+    with patch.object(player, "update_state"):
+        player._handle_playing_update(playing)
+        device.metadata.app = App("NLZIET", "nl.nlziet")
+        player._handle_playing_update(playing)
+
+    assert len(player.source_list) == 1
+    assert player.source_list[0].name == "NLZIET"
+
+
+async def test_airplay_provider_resolves_only_current_external_artwork() -> None:
+    """The image proxy can retrieve current MRP artwork but not stale artwork."""
+    player = _make_control_player()
+    device = MagicMock(spec=AppleTV)
+    device.features.in_state.side_effect = lambda _state, feature: feature == FeatureName.Artwork
+    artwork_id = "https://artwork.example/{w}x{h}/cover"
+    device.metadata.artwork_id = artwork_id
+    device.metadata.artwork = AsyncMock(
+        return_value=ArtworkInfo(b"artwork-bytes", "image/jpeg", 512, 288)
+    )
+    player._mrp_device = device
+    provider = AirPlayProvider.__new__(AirPlayProvider)
+    provider.mass = MagicMock()
+    provider.mass.players.get_player.return_value = player
+    artwork_path = f"{EXTERNAL_ARTWORK_PATH_PREFIX}/{PLAYER_ID}/{artwork_id}"
+
+    assert await provider.resolve_image(artwork_path) == b"artwork-bytes"
+
+    device.metadata.artwork_id = "replacement-artwork"
+    with pytest.raises(MediaNotFoundError):
+        await provider.resolve_image(artwork_path)
 
 
 def test_mrp_update_without_app_uses_generic_source() -> None:

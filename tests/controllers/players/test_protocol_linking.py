@@ -1292,6 +1292,83 @@ class TestSelectBestOutputProtocol:
         assert selected_player == native_player
         assert output_protocol is None  # None means native playback
 
+    def test_skip_protocol_that_needs_setup(self, mock_mass: MagicMock) -> None:
+        """Test that a protocol player which still needs setup is never selected."""
+        controller = PlayerController(mock_mass)
+
+        # Universal player wrapping the protocols of a device without native playback
+        universal_provider = MockProvider("universal_player", mass=mock_mass)
+        universal_player = MockPlayer(
+            universal_provider,
+            "up_AABBCCDDEEFF",
+            "Living Room TV",
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        # AirPlay protocol player that is discovered but still awaits pairing
+        airplay_provider = MockProvider("airplay", mass=mock_mass)
+        airplay_player = MockPlayer(
+            airplay_provider,
+            "airplay_AABBCCDDEEFF",
+            "Living Room TV AirPlay",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+        airplay_player._attr_needs_setup = True
+
+        dlna_provider = MockProvider("dlna", mass=mock_mass)
+        dlna_player = MockPlayer(
+            dlna_provider,
+            "dlna_AABBCCDDEEFF",
+            "Living Room TV DLNA",
+            player_type=PlayerType.PROTOCOL,
+            identifiers={IdentifierType.MAC_ADDRESS: "AA:BB:CC:DD:EE:FF"},
+        )
+
+        # Wire up mock_mass.players to controller
+        mock_mass.players = controller
+
+        # Register players
+        controller._players = {
+            "up_AABBCCDDEEFF": universal_player,
+            "airplay_AABBCCDDEEFF": airplay_player,
+            "dlna_AABBCCDDEEFF": dlna_player,
+        }
+
+        # Link both protocols, AirPlay with the better priority
+        universal_player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="airplay_AABBCCDDEEFF",
+                    name="AirPlay",
+                    protocol_domain="airplay",
+                    priority=10,
+                ),
+                OutputProtocol(
+                    output_protocol_id="dlna_AABBCCDDEEFF",
+                    name="DLNA",
+                    protocol_domain="dlna",
+                    priority=50,
+                ),
+            ]
+        )
+
+        selected_player, output_protocol = controller._select_best_output_protocol(universal_player)
+
+        # Should skip the unpaired AirPlay output and fall through to DLNA
+        assert selected_player == dlna_player
+        assert output_protocol is not None
+        assert output_protocol.output_protocol_id == "dlna_AABBCCDDEEFF"
+
+        # and the unpaired output must be reported as unavailable
+        universal_player.update_state(signal_event=False)
+        airplay_output = next(
+            protocol
+            for protocol in universal_player.output_protocols
+            if protocol.output_protocol_id == "airplay_AABBCCDDEEFF"
+        )
+        assert airplay_output.available is False
+
 
 class TestPlayerGrouping:
     """Tests for player grouping scenarios."""

@@ -61,7 +61,6 @@ from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items.metadata import MediaItemImage
-    from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.providers.radio_playlist import RadioPlaylistProvider
@@ -75,8 +74,17 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         queue_id: str,
         queue_items: list[QueueItem],
         option: QueueOption | None,
+        pin_first: bool = False,
     ) -> None:
-        """Load queue items into the queue according to the given enqueue option."""
+        """
+        Load queue items into the queue according to the given enqueue option.
+
+        :param queue_id: The queue to load the items into.
+        :param queue_items: The items to load.
+        :param option: The enqueue option to apply.
+        :param pin_first: The first item was explicitly picked by the user (a start_item), so it
+            must keep its position when the batch is shuffled instead of being moved at random.
+        """
         queue = self._queue_data[queue_id].queue
         if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             cur_index = (
@@ -88,16 +96,28 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             cur_index = queue.current_index or 0
         insert_at_index = cur_index + 1
         shuffle = queue.shuffle_enabled and len(queue_items) > 1
+        # a user-picked start item must be the one that actually starts playing, so keep it in
+        # front of the shuffled rest instead of letting the shuffle move it to a random slot
+        pin_first = pin_first and shuffle
 
         # handle replace: clear all items and replace with the new items
         if option == QueueOption.REPLACE:
-            await self.load(
-                queue_id,
-                queue_items=queue_items,
-                keep_remaining=False,
-                keep_played=False,
-                shuffle=shuffle,
-            )
+            if pin_first:
+                await self._load_pinned_first(
+                    queue_id,
+                    queue_items,
+                    insert_at_index=0,
+                    keep_remaining=False,
+                    keep_played=False,
+                )
+            else:
+                await self.load(
+                    queue_id,
+                    queue_items=queue_items,
+                    keep_remaining=False,
+                    keep_played=False,
+                    shuffle=shuffle,
+                )
             await self.play_index(queue_id, 0)
             return
         # handle next: add item(s) in the index next to the playing/loaded/buffered index
@@ -107,17 +127,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 # buffered index so it plays next, the rest of the batch is shuffled into the tail
                 # behind it. insert_at_index is the first un-buffered slot, so the track the player
                 # already prepared for crossfade is left untouched.
-                await self.load(
-                    queue_id,
-                    queue_items=queue_items[:1],
-                    insert_at_index=insert_at_index,
-                )
-                await self.load(
-                    queue_id,
-                    queue_items=queue_items[1:],
-                    insert_at_index=insert_at_index + 1,
-                    shuffle=True,
-                )
+                await self._load_pinned_first(queue_id, queue_items, insert_at_index)
             else:
                 await self.load(
                     queue_id,
@@ -128,13 +138,18 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             self._ensure_current_index(queue_id)
             return
         if option == QueueOption.REPLACE_NEXT:
-            await self.load(
-                queue_id,
-                queue_items=queue_items,
-                insert_at_index=insert_at_index,
-                keep_remaining=False,
-                shuffle=shuffle,
-            )
+            if pin_first:
+                await self._load_pinned_first(
+                    queue_id, queue_items, insert_at_index, keep_remaining=False
+                )
+            else:
+                await self.load(
+                    queue_id,
+                    queue_items=queue_items,
+                    insert_at_index=insert_at_index,
+                    keep_remaining=False,
+                    shuffle=shuffle,
+                )
             self._ensure_current_index(queue_id)
             return
         # handle play: replace current loaded/playing index with new item(s)
@@ -142,12 +157,15 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             # an idle/empty queue has no current item to insert after, so insert at and
             # start from the very first index instead of skipping past it
             play_at_index = 0 if queue.current_index is None else insert_at_index
-            await self.load(
-                queue_id,
-                queue_items=queue_items,
-                insert_at_index=play_at_index,
-                shuffle=shuffle,
-            )
+            if pin_first:
+                await self._load_pinned_first(queue_id, queue_items, play_at_index)
+            else:
+                await self.load(
+                    queue_id,
+                    queue_items=queue_items,
+                    insert_at_index=play_at_index,
+                    shuffle=shuffle,
+                )
             next_index = min(play_at_index, len(self._queue_data[queue_id].items) - 1)
             await self.play_index(queue_id, next_index)
             return
@@ -170,6 +188,37 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 shuffle=queue.shuffle_enabled,
             )
             self._ensure_current_index(queue_id)
+
+    async def _load_pinned_first(
+        self,
+        queue_id: str,
+        queue_items: list[QueueItem],
+        insert_at_index: int,
+        keep_remaining: bool = True,
+        keep_played: bool = True,
+    ) -> None:
+        """
+        Insert the first item at the given index and shuffle the rest of the batch behind it.
+
+        :param queue_id: The queue to load the items into.
+        :param queue_items: The items to load; the first one keeps the given index.
+        :param insert_at_index: The index to place the first item at.
+        :param keep_remaining: Keep the queue's existing items from the insert index onwards.
+        :param keep_played: Keep the queue's existing items before the insert index.
+        """
+        await self.load(
+            queue_id,
+            queue_items=queue_items[:1],
+            insert_at_index=insert_at_index,
+            keep_remaining=keep_remaining,
+            keep_played=keep_played,
+        )
+        await self.load(
+            queue_id,
+            queue_items=queue_items[1:],
+            insert_at_index=insert_at_index + 1,
+            shuffle=True,
+        )
 
     def _ensure_current_index(self, queue_id: str) -> None:
         """
@@ -438,52 +487,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             insert_at_index=len(self._queue_data[queue_id].items) + 1,
         )
 
-    async def _try_resume_from_playlog(self, queue: PlayerQueue) -> bool:
-        """
-        Try to resume playback from playlog when queue is empty.
-
-        Attempts to find user-initiated recently played items in the following order:
-        1. By userid AND queue_id
-        2. By queue_id only
-        3. By userid only (if available)
-        4. Any recently played item
-
-        :param queue: The queue to resume playback on.
-        :return: True if playback was started, False otherwise.
-        """
-        # Try different filter combinations in order of specificity
-        queue_data = self._queue_data[queue.queue_id]
-        filter_attempts: list[tuple[str | None, str | None, str]] = []
-        if queue_data.userid:
-            filter_attempts.append((queue_data.userid, queue.queue_id, "userid + queue_id match"))
-        filter_attempts.append((None, queue.queue_id, "queue_id match"))
-        if queue_data.userid:
-            filter_attempts.append((queue_data.userid, None, "userid match"))
-        filter_attempts.append((None, None, "any recent item"))
-
-        for userid, queue_id, match_type in filter_attempts:
-            items = await self.mass.music.recently_played(
-                limit=5,
-                fully_played_only=False,
-                user_initiated_only=True,
-                userid=userid,
-                queue_id=queue_id,
-            )
-            for item in items:
-                if not item.uri:
-                    continue
-                try:
-                    await self._handle_play_media(queue.queue_id, item)
-                    self.logger.info(
-                        "Resumed queue %s from playlog (%s)", queue.display_name, match_type
-                    )
-                    return True
-                except MusicAssistantError as err:
-                    self.logger.debug("Failed to resume with item %s: %s", item.name, err)
-                    continue
-
-        return False
-
     @handle_play_action
     async def _handle_play_media(
         self,
@@ -661,6 +664,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                         queue_id=queue_id,
                         sort_by=sort_by,
                         start_from_beginning=start_from_beginning,
+                        # under shuffle "start here and play forward" has no meaning, so keep the
+                        # whole playlist/album (chosen track first) instead of dropping everything
+                        # before it - the chosen track is pinned in front of the shuffled rest
+                        keep_preceding_items=queue.shuffle_enabled,
                     )
 
             except MusicAssistantError as err:
@@ -695,7 +702,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         if not queue_items:
             raise MediaNotFoundError("No playable items found")
 
-        await self._enqueue_with_option(queue_id, queue_items, option)
+        await self._enqueue_with_option(
+            queue_id, queue_items, option, pin_first=start_item is not None
+        )
 
     async def _enter_dynamic_mode(self, queue_id: str, option: QueueOption | None) -> None:
         """
