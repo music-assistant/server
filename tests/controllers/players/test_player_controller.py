@@ -1523,6 +1523,26 @@ class TestPlayAnnouncementRestore:
             call(player_ids_to_add=["player_1"]),
         ]
 
+    async def test_restore_failure_does_not_mask_the_announcement_error(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A provider blowing up during the restore must not hide why the announcement failed."""
+        controller, player, _ = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+        group = self._add_group(controller, player, supports_set_members=True)
+        # set_members is a raw provider call: whatever its client library raises comes
+        # through unwrapped, so the ungroup succeeds and the regroup times out
+        group.set_members = AsyncMock(  # type: ignore[method-assign]
+            side_effect=[None, TimeoutError("provider timeout")]
+        )
+        controller._handle_play_media = AsyncMock(  # type: ignore[method-assign]
+            side_effect=PlayerCommandFailed("player went away")
+        )
+
+        with pytest.raises(PlayerCommandFailed, match="player went away"):
+            await controller._play_announcement(player, self._announcement())
+
     async def test_group_without_set_members_is_the_one_powered_off(
         self, mock_mass: MagicMock
     ) -> None:

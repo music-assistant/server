@@ -4298,7 +4298,10 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             elif restore_playback:
                 # player was playing something before the announcement - try to resume that here
                 await self._handle_cmd_resume(player.player_id, prev_source, prev_media)
-        except MusicAssistantError as err:
+        except Exception as err:
+            # deliberately broad: set_members is a raw provider call that is not wrapped
+            # into a MusicAssistantError, so it can surface anything its client library
+            # raises. CancelledError is a BaseException and still propagates.
             self.logger.warning(
                 "Announcement to player %s - restoring the previous state failed: %s",
                 player.state.name,
