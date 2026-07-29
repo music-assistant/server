@@ -29,6 +29,12 @@
       "description": "Pandora only allows one active stream at a time per account. You can request that Pandora terminate any existing stream on other devices and allow streaming here. You must manually restart playback after performing this action."
     }
   },
+  "setup_flow": {
+    "user": {
+      "title": "Sign in to Pandora",
+      "description": "Enter the username (or email address) and password of your Pandora account."
+    }
+  },
   "media": {
     "radio": {
       "pandora_station": {

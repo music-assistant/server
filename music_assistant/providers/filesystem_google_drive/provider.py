@@ -14,22 +14,35 @@ from typing import TYPE_CHECKING, Any, cast
 from aiohttp import ClientError
 from google_drive_api.api import GoogleDriveApi
 from google_drive_api.exceptions import AuthException, GoogleDriveApiError
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import (
     LoginFailed,
     ProviderUnavailableError,
     SetupFailedError,
 )
 
-from music_assistant.providers.filesystem_cloud.base import CloudFileSystemProvider
-
-from .auth import MAGoogleDriveAuth
-from .constants import (
+from music_assistant.providers.filesystem_cloud.base import (
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
     CONF_FOLDER_ID,
     CONF_REFRESH_TOKEN,
-    FOLDER_MIME_TYPE,
+    CloudFileSystemProvider,
+    read_setup_value,
 )
+from music_assistant.providers.filesystem_local.constants import (
+    CONF_CONTENT_TYPE,
+    CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+    CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+    CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+    CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+    CONF_ENTRY_MISSING_ALBUM_ARTIST,
+    CONF_ENTRY_PROPAGATE_GENRES,
+)
+
+from .auth import MAGoogleDriveAuth
+from .constants import FOLDER_MIME_TYPE
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -55,18 +68,43 @@ class GoogleDriveFileSystemProvider(CloudFileSystemProvider):
         config: ProviderConfig,
     ) -> None:
         """Initialize Google Drive FileSystem Provider."""
-        # the "root" for this provider is a Google Drive folder ID
+        # the "root" for this provider is a Google Drive folder ID; read it setup-data-aware
+        # here since the instance (and self.get_setup_value) does not exist yet
         super().__init__(
-            mass, manifest, config, cast("str", config.get_value(CONF_FOLDER_ID) or "root")
+            mass,
+            manifest,
+            config,
+            cast("str", read_setup_value(mass, config, CONF_FOLDER_ID) or "root"),
         )
         self.auth = MAGoogleDriveAuth(
             mass,
-            cast("str", config.get_value(CONF_CLIENT_ID)),
-            cast("str", config.get_value(CONF_CLIENT_SECRET)),
-            cast("str", config.get_value(CONF_REFRESH_TOKEN)),
+            cast("str", self.get_setup_value(CONF_CLIENT_ID)),
+            cast("str", self.get_setup_value(CONF_CLIENT_SECRET)),
+            cast("str", self.get_setup_value(CONF_REFRESH_TOKEN)),
         )
         self.api = GoogleDriveApi(self.auth)
         self._root_folder_name: str | None = None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return Config entries to setup this provider.
+
+        Credentials, the content type and root folder are collected by the setup flow (see
+        setup_flow.py); only the genuine sync options are configurable here.
+        """
+        # the content type is set by the setup flow; surface it read-only so the sync
+        # options' depends_on chains still resolve
+        content_type = getattr(self, "media_content_type", "music")
+        return (
+            ConfigEntry(key=CONF_CONTENT_TYPE, type=ConfigEntryType.LABEL, value=content_type),
+            CONF_ENTRY_MISSING_ALBUM_ARTIST,
+            CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_TRACKS,
+            CONF_ENTRY_LIBRARY_SYNC_PLAYLISTS,
+            CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
+            CONF_ENTRY_LIBRARY_SYNC_AUDIOBOOKS,
+            CONF_ENTRY_PROPAGATE_GENRES,
+        )
 
     @property
     def instance_name_postfix(self) -> str | None:

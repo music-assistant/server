@@ -21,9 +21,7 @@ from collections.abc import AsyncGenerator
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     MediaType,
     PlaybackState,
@@ -44,7 +42,7 @@ from .client import GoLibrespotClient
 from .helpers import generate_device_id, get_go_librespot_binary
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -52,6 +50,7 @@ if TYPE_CHECKING:
 
 CONF_MASS_PLAYER_ID = "mass_player_id"
 CONF_PUBLISH_NAME = "publish_name"
+DEFAULT_PUBLISH_NAME = "Music Assistant"
 
 # Special value for auto player selection
 PLAYER_ID_AUTO = "__auto__"
@@ -104,45 +103,6 @@ async def setup(
     return SpotifyConnectProvider(mass, manifest, config)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    :param instance_id: id of an existing provider instance (None if new instance setup).
-    :param action: [optional] action key called from config entries UI.
-    :param values: the (intermediate) raw values for config entries sent with the action.
-    """
-    return (
-        CONF_ENTRY_WARN_PREVIEW,
-        ConfigEntry(
-            key=CONF_MASS_PLAYER_ID,
-            type=ConfigEntryType.STRING,
-            multi_value=False,
-            default_value=PLAYER_ID_AUTO,
-            options=[
-                ConfigValueOption(PLAYER_ID_AUTO),
-                *(
-                    ConfigValueOption(x.player_id, title=x.display_name)
-                    for x in sorted(
-                        mass.players.all_players(False, False), key=lambda p: p.display_name.lower()
-                    )
-                ),
-            ],
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_PUBLISH_NAME,
-            type=ConfigEntryType.STRING,
-            default_value="Music Assistant",
-        ),
-    )
-
-
 class SpotifyConnectProvider(PluginProvider):
     """Implementation of a Spotify Connect Plugin (backed by go-librespot)."""
 
@@ -151,9 +111,12 @@ class SpotifyConnectProvider(PluginProvider):
     ) -> None:
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config, SUPPORTED_FEATURES)
-        # Default player ID from config (PLAYER_ID_AUTO or a specific player_id)
+        # Configured default player (PLAYER_ID_AUTO or a specific player id)
         self._default_player_id: str = (
-            cast("str", self.config.get_value(CONF_MASS_PLAYER_ID)) or PLAYER_ID_AUTO
+            cast("str", self.get_setup_value(CONF_MASS_PLAYER_ID)) or PLAYER_ID_AUTO
+        )
+        self._publish_name = (
+            cast("str", self.get_setup_value(CONF_PUBLISH_NAME)) or DEFAULT_PUBLISH_NAME
         )
         # Currently active player (the one currently playing or selected)
         self._active_player_id: str | None = None
@@ -166,7 +129,6 @@ class SpotifyConnectProvider(PluginProvider):
         self._events_task: asyncio.Task[None] | None = None
         self._proc: AsyncProcess | None = None
         self._restart_error_count = 0
-        connect_name = cast("str", self.config.get_value(CONF_PUBLISH_NAME)) or self.name
         self.logger.debug(
             "Init plugin with name '%s' for player '%s' with instance id '%s'",
             self.name,
@@ -194,7 +156,7 @@ class SpotifyConnectProvider(PluginProvider):
             bit_depth=16,
             channels=2,
         )
-        self._stream_metadata = StreamMetadata(title=f"Spotify Connect | {connect_name}")
+        self._stream_metadata = StreamMetadata(title=f"Spotify Connect | {self._publish_name}")
         self._audio_source = self._build_audio_source()
         # _in_use_by_queue is the queue currently streaming us. Claimed in
         # on_source_selected (NOT in get_stream_details — that path also runs
@@ -226,10 +188,21 @@ class SpotifyConnectProvider(PluginProvider):
         self._last_context_uri: str | None = None
         self._last_track_uri: str | None = None
 
+    @property
+    def instance_name_postfix(self) -> str | None:
+        """Return the advertised device name as the multi-instance postfix."""
+        return self._publish_name if self._publish_name != DEFAULT_PUBLISH_NAME else None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return runtime options for this provider."""
+        return (CONF_ENTRY_WARN_PREVIEW,)
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._binary = get_go_librespot_binary()
-        self._api_port = await select_free_port(API_PORT_RANGE_START, API_PORT_RANGE_END)
+        self._api_port = await select_free_port(
+            API_PORT_RANGE_START, API_PORT_RANGE_END, host="127.0.0.1"
+        )
         self._client = GoLibrespotClient(
             self.mass, f"http://127.0.0.1:{self._api_port}", self.logger
         )
@@ -491,11 +464,10 @@ class SpotifyConnectProvider(PluginProvider):
 
     def _not_active_error(self) -> AudioError:
         """Build the localized 'not the active Spotify device' error, naming this device."""
-        connect_name = cast("str", self.config.get_value(CONF_PUBLISH_NAME)) or self.name
         return AudioError(
-            NOT_ACTIVE_DEVICE_MESSAGE.format(connect_name),
+            NOT_ACTIVE_DEVICE_MESSAGE.format(self._publish_name),
             translation_key="not_active_device",
-            translation_args=[connect_name],
+            translation_args=[self._publish_name],
             translation_owner=self.translation_owner,
         )
 
@@ -630,13 +602,11 @@ class SpotifyConnectProvider(PluginProvider):
             self.mass.players.trigger_player_update(prev_player_id)
 
     def _save_last_player_id(self, player_id: str) -> None:
-        """Persist the selected player ID to config as the new default."""
+        """Persist the selected player ID as the new default."""
         if self._default_player_id == player_id:
             return
         try:
-            self.mass.config.set_raw_provider_config_value(
-                self.instance_id, CONF_MASS_PLAYER_ID, player_id
-            )
+            self._update_setup_data(CONF_MASS_PLAYER_ID, player_id)
             self._default_player_id = player_id
         except Exception as err:
             self.logger.debug("Failed to persist player ID: %s", err)
@@ -651,7 +621,6 @@ class SpotifyConnectProvider(PluginProvider):
         cache so the Spotify Connect device stays paired across restarts.
         """
         os.makedirs(self.cache_dir, exist_ok=True)
-        connect_name = cast("str", self.config.get_value(CONF_PUBLISH_NAME)) or self.name
         initial_volume = 50
         if self._default_player_id != PLAYER_ID_AUTO:
             if (player := self.mass.players.get_player(self._default_player_id)) and (
@@ -659,7 +628,7 @@ class SpotifyConnectProvider(PluginProvider):
             ):
                 initial_volume = player.volume_level
         config: dict[str, Any] = {
-            "device_name": connect_name,
+            "device_name": self._publish_name,
             "device_type": "speaker",
             "device_id": generate_device_id(self.instance_id),
             "bitrate": 320,

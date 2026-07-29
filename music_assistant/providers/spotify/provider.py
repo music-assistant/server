@@ -12,7 +12,9 @@ from datetime import datetime
 from typing import Any, cast
 
 import aiohttp
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
+    ConfigEntryType,
     ContentType,
     ImageType,
     MediaType,
@@ -49,6 +51,7 @@ from music_assistant_models.media_items.metadata import MediaItemChapter
 from music_assistant_models.streamdetails import StreamDetails
 from orjson import JSONDecodeError
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.json import SerializableType, json_loads
@@ -107,6 +110,32 @@ class SpotifyProvider(MusicProvider):
     dev_session_active: bool = False
     throttler: ThrottlerManager
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return Config entries to setup this provider.
+
+        Authentication is handled by the setup flow (see setup_flow.py); only the genuine
+        options are configurable here.
+        """
+        # audiobook progress sync is only offered where the account's region supports audiobooks
+        audiobooks_supported = bool(getattr(self, "audiobooks_supported", False))
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_SYNC_PODCAST_PROGRESS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                category="sync_options",
+            ),
+            ConfigEntry(
+                key=CONF_SYNC_AUDIOBOOK_PROGRESS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                category="sync_options",
+                hidden=not audiobooks_supported,
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.cache_dir = os.path.join(self.mass.cache_path, self.instance_id)
@@ -121,8 +150,8 @@ class SpotifyProvider(MusicProvider):
         await self.login()
 
         # Check if user has a custom client ID with valid dev token
-        client_id = self.config.get_value(CONF_CLIENT_ID)
-        dev_token = self.config.get_value(CONF_REFRESH_TOKEN_DEV)
+        client_id = self.get_setup_value(CONF_CLIENT_ID)
+        dev_token = self.get_setup_value(CONF_REFRESH_TOKEN_DEV)
 
         if client_id and dev_token and self._sp_user:
             await self.login_dev()
@@ -869,7 +898,7 @@ class SpotifyProvider(MusicProvider):
                 # If the stored token was rotated while this refresh was in flight, the token
                 # we tried is merely stale, so keep the newer one instead of forcing re-auth.
                 if not self._refresh_token_superseded(CONF_REFRESH_TOKEN_GLOBAL, refresh_token):
-                    self._update_config_value(CONF_REFRESH_TOKEN_GLOBAL, None)
+                    self._update_setup_data(CONF_REFRESH_TOKEN_GLOBAL, None)
                     if self.available:
                         self.unload_with_error(err)
             elif self.available:
@@ -882,16 +911,15 @@ class SpotifyProvider(MusicProvider):
         # persist immediately to ensure the new token survives a crash within the debounced-save
         # window and avoids a forced re-auth; an unchanged token uses the normal debounced save.
         token_rotated = auth_info["refresh_token"] != refresh_token
-        self._update_config_value(
+        self._update_setup_data(
             CONF_REFRESH_TOKEN_GLOBAL,
             auth_info["refresh_token"],
-            encrypted=True,
             immediate=token_rotated,
         )
 
         # Setup librespot with global token only if dev token is not configured
         # (if dev token exists, librespot will be set up in login_dev instead)
-        if not self.config.get_value(CONF_REFRESH_TOKEN_DEV):
+        if not self.get_setup_value(CONF_REFRESH_TOKEN_DEV):
             await self._setup_librespot_auth(auth_info["access_token"])
 
         # get logged-in user info
@@ -921,7 +949,7 @@ class SpotifyProvider(MusicProvider):
         # read the refresh token from the persisted store rather than the in-memory config copy,
         # which can lag a rotation and would make us refresh with a stale (revoked) token
         refresh_token = self._stored_refresh_token(CONF_REFRESH_TOKEN_DEV)
-        client_id = self.config.get_value(CONF_CLIENT_ID)
+        client_id = self.get_setup_value(CONF_CLIENT_ID)
         if not refresh_token or not client_id:
             raise LoginFailed("Developer authentication not configured")
 
@@ -939,8 +967,8 @@ class SpotifyProvider(MusicProvider):
                 # If the stored token was rotated while this refresh was in flight, the token
                 # we tried is merely stale, so keep the newer one instead of forcing re-auth.
                 if not self._refresh_token_superseded(CONF_REFRESH_TOKEN_DEV, refresh_token):
-                    self._update_config_value(CONF_REFRESH_TOKEN_DEV, None)
-                    self._update_config_value(CONF_CLIENT_ID, None)
+                    self._update_setup_data(CONF_REFRESH_TOKEN_DEV, None)
+                    self._update_setup_data(CONF_CLIENT_ID, None)
             # Don't unload - we can still use the global session
             self.dev_session_active = False
             self.logger.warning(str(err))
@@ -952,10 +980,9 @@ class SpotifyProvider(MusicProvider):
         # persist immediately to ensure the new token survives a crash within the debounced-save
         # window and avoids a forced re-auth; an unchanged token uses the normal debounced save.
         token_rotated = auth_info["refresh_token"] != refresh_token
-        self._update_config_value(
+        self._update_setup_data(
             CONF_REFRESH_TOKEN_DEV,
             auth_info["refresh_token"],
-            encrypted=True,
             immediate=token_rotated,
         )
 
@@ -1566,12 +1593,13 @@ class SpotifyProvider(MusicProvider):
         """
         Return the currently persisted refresh token, or None if not set.
 
-        :param key: Config key of the refresh token to read.
+        Reads through the live setup_data (kept in sync with a just-rotated token) so a
+        refresh never uses a stale, revoked token from a lagging in-memory config copy.
+
+        :param key: Setup data key of the refresh token to read.
         """
-        raw_stored = self.mass.config.get_raw_provider_config_value(self.instance_id, key)
-        if not raw_stored:
-            return None
-        return self.mass.config.decrypt_string(cast("str", raw_stored))
+        token = self.get_setup_value(key)
+        return cast("str", token) if token else None
 
     def _refresh_token_superseded(self, key: str, used_token: str) -> bool:
         """

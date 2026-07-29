@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import (
     LoginFailed,
 )
@@ -19,13 +21,16 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.constants import (
+    CONF_ENTRY_UNOFFICIAL_PROVIDER,
     CONF_PASSWORD,
     CONF_USERNAME,
 )
 from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 from music_assistant.providers.yousee.api_client import YouSeeAPIClient
 from music_assistant.providers.yousee.auth_manager import YouSeeAuthManager
+from music_assistant.providers.yousee.constants import CONF_QUALITY
 from music_assistant.providers.yousee.library import YouSeeLibraryManager
 from music_assistant.providers.yousee.media import YouSeeMediaManager
 from music_assistant.providers.yousee.playlist import YouSeePlaylistManager
@@ -39,23 +44,44 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import (
         Album,
         Artist,
+        BrowseFolder,
+        ItemMapping,
         MediaItemType,
         Playlist,
         RecommendationFolder,
         SearchResults,
         Track,
+        UniqueList,
     )
     from music_assistant_models.streamdetails import StreamDetails
 
 
-class YouSeeMusikProvider(MusicProvider):
+class YouSeeMusikProvider(RecommendationPayloadMixin, MusicProvider):
     """Provider implementation for YouSee Musik."""
+
+    # the personalized sections barely change intraday; keep the pre-refactor 24h interval
+    recommendation_payload_ttl = 3600 * 24
 
     auth: YouSeeAuthManager
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.INTEGER,
+                default_value=320,
+                options=[
+                    ConfigValueOption(320),
+                    ConfigValueOption(192),
+                ],
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_PASSWORD):
+        if not self.get_setup_value(CONF_USERNAME) or not self.get_setup_value(CONF_PASSWORD):
             msg = "Invalid login credentials"
             raise LoginFailed(msg)
         # try to get a token, raise if that fails
@@ -69,7 +95,7 @@ class YouSeeMusikProvider(MusicProvider):
 
         token = await self.auth.auth_token()
         if not token:
-            msg = f"Login failed for user {self.config.get_value(CONF_USERNAME)}"
+            msg = f"Login failed for user {self.get_setup_value(CONF_USERNAME)}"
             raise LoginFailed(msg)
 
     async def search(
@@ -203,12 +229,20 @@ class YouSeeMusikProvider(MusicProvider):
             streamdetails,
         )
 
-    @use_cache(3600 * 24)  # Cache for 1 day
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """
-        Get this provider's recommendations.
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        return await self._recommendation_rows_from_payload()
 
-        Returns an actual (and often personalised) list of recommendations
-        from this provider for the user/account.
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
         """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        return await self._recommendation_items_from_payload(item_id)
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch and parse the full recommendations payload (folders WITH items)."""
         return await self.recommendations_manager.get_recommendations()

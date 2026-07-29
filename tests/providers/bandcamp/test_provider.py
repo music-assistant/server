@@ -32,6 +32,7 @@ from music_assistant_models.errors import (
 from music_assistant_models.media_items import Album, Artist, BrowseFolder, Track
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.helpers.throttle_retry import ThrottlerManager
 from music_assistant.providers.bandcamp import BandcampProvider, split_id
 from music_assistant.providers.bandcamp.constants import (
     CACHE_EMPTY_RESULTS,
@@ -66,6 +67,10 @@ def mass_mock() -> Mock:
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
     mass.cache.delete = AsyncMock()
+    # setup_data is unset in these unit tests, so get_setup_value falls through to
+    # the provider config's get_value (which the config mock stubs)
+    mass.config.get = Mock(return_value=None)
+    mass.config.get_raw_provider_config_value = Mock(return_value=None)
     return mass
 
 
@@ -84,6 +89,7 @@ def config_mock() -> Mock:
     config.name = "Bandcamp Test"
     config.instance_id = "bandcamp_test"
     config.enabled = True
+    config.values = {}
     config.get_value.side_effect = lambda key, default=None: {
         "identity": "mock_identity_token",
         "search_limit": 10,
@@ -102,6 +108,12 @@ def config_mock() -> Mock:
 async def provider(mass_mock: Mock, manifest_mock: Mock, config_mock: Mock) -> BandcampProvider:
     """Return a BandcampProvider instance."""
     provider = BandcampProvider(mass_mock, manifest_mock, config_mock, SUPPORTED_FEATURES)
+    provider.throttler = ThrottlerManager(
+        rate_limit=provider.throttler.throttler.rate_limit,
+        period=provider.throttler.throttler.period,
+        retry_attempts=provider.throttler.retry_attempts,
+        initial_backoff=provider.throttler.initial_backoff,
+    )
 
     # Initialize the provider
     with patch("music_assistant.providers.bandcamp.BandcampAPIClient") as mock_client_class:
@@ -151,6 +163,7 @@ async def test_handle_async_init_with_identity(provider: BandcampProvider) -> No
 async def test_handle_async_init_without_identity(mass_mock: Mock, manifest_mock: Mock) -> None:
     """Test async initialization without identity token."""
     config = Mock()
+    config.values = {}
     config.get_value.side_effect = lambda key, default=None: (
         default if default is not None else ("INFO" if key == "log_level" else None)
     )
@@ -609,9 +622,7 @@ async def test_fetch_api_track_rate_limit_error(provider: BandcampProvider) -> N
         await provider._fetch_api_track("123-456-789")
 
     assert mock_get_album.call_count == provider.throttler.retry_attempts
-    # At least retry_attempts - 1 sleeps from backoff; may be higher if the
-    # class-level Throttler also called asyncio.sleep due to accumulated entries.
-    assert mock_sleep.call_count >= provider.throttler.retry_attempts - 1
+    assert mock_sleep.call_count == provider.throttler.retry_attempts - 1
 
 
 async def test_fetch_api_track_generic_api_error(provider: BandcampProvider) -> None:
@@ -789,30 +800,7 @@ async def test_fetch_api_track_login_error(provider: BandcampProvider) -> None:
         await provider._fetch_api_track("123-456-789")
 
 
-# --- Recommendations tests ---
-
-
-async def test_recommendations_returns_feed_and_wishlist(provider: BandcampProvider) -> None:
-    """Test recommendations surfaces the feed and wishlist as folders."""
-    feed_track = Mock()
-    wishlist_album = Mock()
-
-    with (
-        patch.object(provider, "_get_feed_tracks", new_callable=AsyncMock) as mock_feed,
-        patch.object(provider, "_browse_person_content", new_callable=AsyncMock) as mock_wishlist,
-    ):
-        mock_feed.return_value = [feed_track]
-        mock_wishlist.return_value = [wishlist_album]
-
-        folders = await provider.recommendations()
-
-        mock_wishlist.assert_called_once_with(None, CollectionType.WISHLIST)
-        assert [f.name for f in folders] == ["Bandcamp Feed", "Wishlist"]
-        assert feed_track in folders[0].items
-        assert wishlist_album in folders[1].items
-        # Both folders must be playable; browsing their slug resolves to tracks
-        # (see test_browse_feed_returns_tracks and the existing wishlist browse tests).
-        assert all(f.is_playable for f in folders)
+# --- Feed tests (the feed powers a recommendation row and a browse path) ---
 
 
 async def test_browse_feed_returns_tracks(provider: BandcampProvider) -> None:
@@ -824,24 +812,6 @@ async def test_browse_feed_returns_tracks(provider: BandcampProvider) -> None:
         result = await provider.browse("bandcamp_test://feed")
 
         assert result == [feed_track]
-
-
-async def test_recommendations_no_identity(provider: BandcampProvider) -> None:
-    """Test recommendations returns nothing without an identity token."""
-    provider._client.identity = None
-    assert await provider.recommendations() == []
-
-
-async def test_recommendations_omits_empty_folders(provider: BandcampProvider) -> None:
-    """Test that empty feed and wishlist produce no folders."""
-    with (
-        patch.object(provider, "_get_feed_tracks", new_callable=AsyncMock) as mock_feed,
-        patch.object(provider, "_browse_person_content", new_callable=AsyncMock) as mock_wishlist,
-    ):
-        mock_feed.return_value = []
-        mock_wishlist.return_value = []
-
-        assert await provider.recommendations() == []
 
 
 async def test_get_feed_tracks_filters_non_streamable(provider: BandcampProvider) -> None:

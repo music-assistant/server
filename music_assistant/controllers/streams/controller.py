@@ -20,7 +20,7 @@ from uuid import uuid4
 from aiofiles.os import wrap
 from aiohttp import web
 from music_assistant_models.audio_processing import AudioQueueProcessing
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -251,9 +251,7 @@ class StreamsController(CoreController):
         """Return whether the queue's effective crossfade mode is smart crossfade."""
         return self.get_crossfade_mode(queue) == CrossfadeMode.SMART_CROSSFADE
 
-    async def get_config_entries(
-        self, action: str | None = None, values: dict[str, ConfigValueType] | None = None
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         ip_addresses = await get_ip_addresses(include_ipv6=True)
         return (
@@ -1009,6 +1007,7 @@ class StreamsController(CoreController):
             start_queue_item=start_queue_item,
             pcm_format=flow_pcm_format,
             session_id=session_id,
+            protocol_player=player,
         )
         if overlay_active(queue):
             flow_stream = self.audio.get_overlay_mixed_stream(queue, flow_stream, flow_pcm_format)
@@ -1080,8 +1079,7 @@ class StreamsController(CoreController):
         """Stream announcement audio to a player."""
         self._log_request(request)
         player_id = request.match_info["player_id"]
-        player = self.mass.player_queues.get(player_id)
-        if not player:
+        if not (player := self.mass.players.get_player(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
         if not (announce_data := self.announcements.get(player_id)):
             raise web.HTTPNotFound(reason=f"No pending announcements for Player: {player_id}")
@@ -1090,10 +1088,20 @@ class StreamsController(CoreController):
         fmt = request.match_info["fmt"]
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
 
-        mass_player = self.mass.players.get_player(player_id)
-        http_profile = (
-            mass_player.get_config_value(CONF_HTTP_PROFILE, "default") if mass_player else "default"
-        )
+        http_profile = self._get_announcement_http_profile(player_id, announce_data)
+
+        # return early if this is not a GET request:
+        # players often probe the url with a HEAD request before fetching it and
+        # rendering the announcement for such a probe would run the entire (costly)
+        # TTS/ffmpeg chain twice for a single announcement.
+        if request.method != "GET":
+            resp = web.StreamResponse(status=200, reason="OK", headers=DEFAULT_STREAM_HEADERS)
+            resp.content_type = get_mime_type(audio_format.output_format_str)
+            if http_profile == "chunked":
+                resp.enable_chunked_encoding()
+            await resp.prepare(request)
+            return resp
+
         if http_profile == "forced_content_length":
             # given the fact that an announcement is just a short audio clip,
             # just send it over completely at once so we have a fixed content length
@@ -1123,15 +1131,11 @@ class StreamsController(CoreController):
 
         await resp.prepare(request)
 
-        # return early if this is not a GET request
-        if request.method != "GET":
-            return resp
-
         # all checks passed, start streaming!
         self.logger.debug(
             "Start serving audio stream for Announcement %s to %s",
             announce_data["announcement_url"],
-            player.state.name,
+            player.display_name,
         )
         announcement_stream = self.get_announcement_stream(
             announcement_url=announce_data["announcement_url"],
@@ -1153,7 +1157,7 @@ class StreamsController(CoreController):
         self.logger.debug(
             "Finished serving audio stream for Announcement %s to %s",
             announce_data["announcement_url"],
-            player.state.name,
+            player.display_name,
         )
 
         return resp
@@ -1280,6 +1284,7 @@ class StreamsController(CoreController):
                     start_queue_item=start_queue_item,
                     pcm_format=pcm_format,
                     session_id=queue_session_id,
+                    protocol_player=protocol_player,
                 )
                 if overlay_active(queue):
                     flow_stream = self.audio.get_overlay_mixed_stream(
@@ -1583,6 +1588,23 @@ class StreamsController(CoreController):
             ),
             alters_audio=queue_item.streamdetails.fade_in,
         )
+
+    def _get_announcement_http_profile(self, player_id: str, announce_data: AnnounceData) -> str:
+        """
+        Resolve the http profile for serving an announcement stream.
+
+        Announcement urls are registered under the visible player's id, but the
+        stream may be fetched by a linked protocol player; the profile must come
+        from the player that actually performs the fetch.
+        """
+        announce_player = None
+        if announce_player_id := announce_data.get("announce_player_id"):
+            announce_player = self.mass.players.get_player(announce_player_id)
+        if announce_player is None:
+            announce_player = self.mass.players.get_player(player_id)
+        if announce_player is None:
+            return "default"
+        return announce_player.get_output_config_value(CONF_HTTP_PROFILE, "default")
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""

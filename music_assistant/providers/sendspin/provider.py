@@ -41,7 +41,9 @@ from aiosendspin.server import (
     SendspinEvent,
     SendspinServer,
 )
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
+    ConfigEntryType,
     EventType,
     IdentifierType,
     PlayerFeature,
@@ -90,7 +92,7 @@ from music_assistant.providers.sendspin.security import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable
+    from collections.abc import Awaitable, Sequence
 
     from aiosendspin.models.core import PairMethodDescriptor
     from aiosendspin.models.management import (
@@ -241,14 +243,19 @@ class SendspinProvider(PlayerProvider):
     _manual_ip_config: tuple[str, ...]
     _virtual_players: dict[str, str]
     _unloading: bool
+    _hass_available: bool
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
         """Initialize a new Sendspin player provider."""
         super().__init__(mass, manifest, config)
-        # Handle config option for manual IP's
-        manual_ip_config = cast("list[str]", config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key))
+        # Handle config option for manual IP's. Read a default here: at construction the
+        # config only carries the server defaults + stored raw values (the provider's typed
+        # option entries are resolved and applied by the config controller right after this).
+        manual_ip_config = cast(
+            "list[str]", config.get_value(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key) or []
+        )
         self._manual_ip_config = tuple(address for address in manual_ip_config if address.strip())
         self._pending_unregisters = {}
         self._bridge_identifiers = {}
@@ -259,13 +266,30 @@ class SendspinProvider(PlayerProvider):
         self._client_event_task_counts = {}
         self._virtual_players = {}
         self._pin_sessions: dict[str, PinPairingSession] = {}
-        self._token_pairing: set[str] = set()
         self._management_sessions: dict[str, ManagementSession] = {}
         self._pairing_config_snapshots: dict[
             str, tuple[SendspinConnection, ManagementResultData]
         ] = {}
         self._unloading = False
+        self._hass_available = False
         self.unregister_cbs = []
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            CONF_ENTRY_MANUAL_DISCOVERY_IPS,
+            ConfigEntry(
+                key=CONF_ALLOW_UNENCRYPTED,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_MIN_PIN_LENGTH,
+                type=ConfigEntryType.INTEGER,
+                range=(4, 12),
+                default_value=DEFAULT_MIN_PIN_LENGTH,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Load the persistent server identity and pairing store, then create the server."""
@@ -319,6 +343,9 @@ class SendspinProvider(PlayerProvider):
             self.server_api.add_event_listener(self.event_cb),
             self.mass.subscribe(self._on_providers_updated, EventType.PROVIDERS_UPDATED),
         ]
+        # seed the hass availability snapshot so the first (un)load is seen as a change
+        hass = self.mass.get_provider("hass")
+        self._hass_available = hass is not None and hass.available
 
     def event_cb(self, server: SendspinServer, event: SendspinEvent) -> None:
         """Event callback registered to the sendspin server."""
@@ -334,6 +361,19 @@ class SendspinProvider(PlayerProvider):
                 self.mass.create_task(self._handle_client_updated(client_id, event_version))
             case _:
                 self.logger.error("Unknown sendspin event: %s", event)
+
+    def on_player_enabled(self, player_id: str) -> None:
+        """Call (by config manager) when a player gets enabled."""
+        # A client that connected while disabled has no player object;
+        # replay the add event so re-enabling takes effect immediately.
+        if (
+            self.server_api.get_client(player_id) is not None
+            and self.mass.players.get_player(player_id) is None
+        ):
+            event_version = self._begin_client_event(player_id)
+            self.mass.create_task(self._handle_client_added(player_id, event_version))
+            return
+        super().on_player_enabled(player_id)
 
     def register_bridge_identifiers(
         self, client_id: str, identifiers: dict[IdentifierType, str]
@@ -559,18 +599,6 @@ class SendspinProvider(PlayerProvider):
         if session is not None and session.finished:
             self._cancel_pin_idle_timeout(client_id)
             self._pin_sessions.pop(client_id, None)
-
-    def is_token_pairing(self, client_id: str) -> bool:
-        """Whether the operator is in the token-entry pairing submenu for a client."""
-        return client_id in self._token_pairing
-
-    def open_token_pairing(self, client_id: str) -> None:
-        """Enter the token-entry pairing submenu for a client."""
-        self._token_pairing.add(client_id)
-
-    def close_token_pairing(self, client_id: str) -> None:
-        """Leave the token-entry pairing submenu for a client."""
-        self._token_pairing.discard(client_id)
 
     async def start_pin_pairing(
         self, client_id: str, *, verify: bool = False, static: bool = False
@@ -798,7 +826,6 @@ class SendspinProvider(PlayerProvider):
                 session.task.cancel()
             self._cancel_pin_idle_timeout(session.client_id)
         self._pin_sessions.clear()
-        self._token_pairing.clear()
         for management_session in self._management_sessions.values():
             self.mass.cancel_timer(_management_idle_task_id(management_session.client_id))
         self._management_sessions.clear()
@@ -843,15 +870,56 @@ class SendspinProvider(PlayerProvider):
         """Return True if the event version is still the latest for the client."""
         return self._client_event_versions.get(client_id) == event_version
 
-    async def _apply_hass_name_override(self, player: SendspinBasePlayer, client_id: str) -> None:
-        """Apply Home Assistant display name for ESPHome-backed Sendspin players."""
-        if player.device_info.manufacturer != "ESPHome":
+    async def _apply_hass_esphome_enrichment(self, players: Sequence[SendspinBasePlayer]) -> None:
+        """
+        Apply Home Assistant-sourced enrichment to ESPHome-backed Sendspin players.
+
+        Applies the HA display name and resolves the HA media_player entity that
+        announcements are relayed to: ESPHome devices support announcements
+        natively, but that capability is only reachable through the HA API.
+        Players are correlated by MAC address (the Sendspin client id).
+        """
+        esphome_players = [
+            player for player in players if player.device_info.manufacturer == "ESPHome"
+        ]
+        if not esphome_players:
             return
-        if not (hass := self.mass.get_provider("hass")):
+        hass = cast("HomeAssistantProvider | None", self.mass.get_provider("hass"))
+        if hass is None or not hass.available:
+            for player in esphome_players:
+                if isinstance(player, SendspinPlayer):
+                    player.set_hass_announce_entity(None)
             return
-        hass = cast("HomeAssistantProvider", hass)
-        if hass_device := await hass.get_device_by_connection(client_id):
-            player._attr_name = hass_device["name_by_user"] or hass_device["name"] or player.name
+        try:
+            device_infos = await hass.get_media_player_device_infos(
+                [player.player_id for player in esphome_players], platform="esphome"
+            )
+        except Exception as err:
+            self.logger.warning("Failed to apply Home Assistant enrichment: %s", err)
+            return
+        for player in esphome_players:
+            device_info = device_infos.get(player.player_id.lower())
+            if device_info is not None and device_info["name"]:
+                player._attr_name = device_info["name"]
+            if isinstance(player, SendspinPlayer):
+                player.set_hass_announce_entity(
+                    device_info["announce_entity_id"] if device_info is not None else None
+                )
+
+    async def _refresh_hass_esphome_enrichment(self) -> None:
+        """Re-apply the HA enrichment to all registered ESPHome players (in place)."""
+        players = [
+            player
+            for player in self.players
+            if isinstance(player, SendspinBasePlayer)
+            and player.device_info.manufacturer == "ESPHome"
+        ]
+        if not players:
+            return
+        await self._apply_hass_esphome_enrichment(players)
+        for player in players:
+            if player.initialized.is_set():
+                player.update_state()
 
     def _create_player(
         self,
@@ -1141,9 +1209,9 @@ class SendspinProvider(PlayerProvider):
             for id_type, id_value in preserved_identifiers.items():
                 player.device_info.add_identifier(id_type, id_value)
             self.logger.debug("Client %s connected", client_id)
-            await self._apply_hass_name_override(player, client_id)
+            await self._apply_hass_esphome_enrichment([player])
             if not self._is_current_client_event(client_id, event_version):
-                self.logger.debug("Skipping stale add event for %s after name override", client_id)
+                self.logger.debug("Skipping stale add event for %s after HA enrichment", client_id)
                 player._unsubscribe_client_callbacks()
                 return
             try:
@@ -1200,7 +1268,7 @@ class SendspinProvider(PlayerProvider):
             existing_player._refresh_client_info(sendspin_client)
             if isinstance(existing_player, SendspinPlayer):
                 existing_player.restore_bridge_identity(previous_device_info, previous_type)
-            await self._apply_hass_name_override(existing_player, client_id)
+            await self._apply_hass_esphome_enrichment([existing_player])
             if not self._is_current_client_event(client_id, event_version):
                 self.logger.debug("Skipping stale update event for %s after refresh", client_id)
                 return
@@ -1302,11 +1370,12 @@ class SendspinProvider(PlayerProvider):
         """Accept stream start requests for virtual players (nothing to connect)."""
 
     async def _on_providers_updated(self, event: MassEvent) -> None:
-        """Remove virtual players whose owning provider is no longer loaded."""
+        """Handle a change in the loaded providers."""
         # during (server) shutdown all providers unload; the startup sweep
         # takes care of configs whose owner is really gone
         if self._unloading or self.mass.closing:
             return
+        # remove virtual players whose owning provider is no longer loaded
         for player_id, owner_instance_id in list(self._virtual_players.items()):
             if self.mass.get_provider(owner_instance_id) is not None:
                 continue
@@ -1314,6 +1383,12 @@ class SendspinProvider(PlayerProvider):
                 "Removing virtual player %s: owner %s unloaded", player_id, owner_instance_id
             )
             await self.remove_virtual_player(player_id)
+        # (re)apply the HA-backed enrichment when the hass plugin (un)loads
+        hass = self.mass.get_provider("hass")
+        hass_available = hass is not None and hass.available
+        if hass_available != self._hass_available:
+            self._hass_available = hass_available
+            await self._refresh_hass_esphome_enrichment()
 
     def _remove_orphan_virtual_player_configs(self) -> None:
         """Delete stored configs of virtual players whose owner provider is gone."""

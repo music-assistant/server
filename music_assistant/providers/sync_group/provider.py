@@ -14,11 +14,18 @@ from .constants import SGP_PREFIX
 from .player import SyncGroupPlayer
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
+
     from music_assistant.models.player import Player
 
 
 class SyncGroupProvider(PlayerProvider):
     """Sync Group Player Provider."""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        # nothing to configure (for now)
+        return ()
 
     async def create_group_player(
         self, name: str, members: list[str], dynamic: bool = True

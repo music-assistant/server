@@ -22,7 +22,7 @@ from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.media_items import Artist
     from music_assistant_models.provider import ProviderManifest
 
@@ -44,17 +44,6 @@ async def setup(
     return WikipediaMetadataProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    # ruff: noqa: ARG001
-    return ()
-
-
 class WikipediaMetadataProvider(MetadataProvider):
     """Wikipedia Metadata provider."""
 
@@ -64,6 +53,10 @@ class WikipediaMetadataProvider(MetadataProvider):
     def priority(self) -> int:
         """Priority for this provider (lower = more preferred)."""
         return 25
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return ()
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""

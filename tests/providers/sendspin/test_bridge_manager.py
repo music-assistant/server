@@ -80,6 +80,11 @@ def _make_environment() -> tuple[
         side_effect=lambda key, default=None: player_configs.get(key, default)
     )
 
+    async def fake_save_player_config(player_id: str, values: dict[str, Any]) -> None:
+        player_configs.setdefault(f"players/{player_id}", {}).update(values)
+
+    mass.config.save_player_config = AsyncMock(side_effect=fake_save_player_config)
+
     provider = MagicMock()
     provider.mass = mass
     provider.logger = logging.getLogger("test.bridge_manager")
@@ -126,14 +131,20 @@ class TestBridgeLifecycleReconciliation:
     @pytest.mark.asyncio
     async def test_bridge_removed_when_bridge_client_disabled(self) -> None:
         """Test the bridge is torn down when its own Sendspin client gets disabled."""
-        manager, _, player, _, player_configs = _make_environment()
+        manager, mass, player, _, player_configs = _make_environment()
         await manager.evaluate_bridge(player)
         assert manager.get_bridge("player_1") is not None
 
-        player_configs["players/spb_player_1"] = {"enabled": False}
+        # a user-made disable carries the parent link the toggle was rendered under
+        player_configs["players/player_1"] = {"enabled": True}
+        player_configs["players/spb_player_1"] = {
+            "enabled": False,
+            "values": {"protocol_parent_id": "player_1"},
+        }
         await manager.evaluate_bridge(player)
 
         assert manager.get_bridge("player_1") is None
+        mass.config.save_player_config.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_bridge_not_created_for_unregistered_player(self) -> None:
@@ -163,7 +174,11 @@ class TestBridgeLifecycleReconciliation:
     async def test_config_event_on_bridge_client_recreates_bridge(self) -> None:
         """Test a config event on the bridge client id re-evaluates the base player."""
         manager, _, player, _, player_configs = _make_environment()
-        player_configs["players/spb_player_1"] = {"enabled": False}
+        player_configs["players/player_1"] = {"enabled": True}
+        player_configs["players/spb_player_1"] = {
+            "enabled": False,
+            "values": {"protocol_parent_id": "player_1"},
+        }
         await manager.evaluate_bridge(player)
         assert manager.get_bridge("player_1") is None
 
@@ -174,6 +189,45 @@ class TestBridgeLifecycleReconciliation:
         await manager._on_player_config_updated(event)
 
         assert manager.get_bridge("player_1") is not None
+
+    @pytest.mark.asyncio
+    async def test_stale_disabled_client_reenabled_when_parent_gone(self) -> None:
+        """Test a client disabled under a no-longer-existing parent is re-enabled."""
+        manager, mass, player, _, player_configs = _make_environment()
+        # e.g. left behind by a cascade-disable from a parent player whose
+        # config was removed (device re-setup changed its player id)
+        player_configs["players/spb_player_1"] = {
+            "enabled": False,
+            "values": {"protocol_parent_id": "cc_old_uuid"},
+        }
+
+        await manager.evaluate_bridge(player)
+
+        mass.config.save_player_config.assert_awaited_once_with("spb_player_1", {"enabled": True})
+        assert manager.get_bridge("player_1") is not None
+
+    @pytest.mark.asyncio
+    async def test_stale_disabled_client_without_parent_link_reenabled(self) -> None:
+        """Test a disabled client without any parent link is re-enabled."""
+        manager, mass, player, _, player_configs = _make_environment()
+        player_configs["players/spb_player_1"] = {"enabled": False}
+
+        await manager.evaluate_bridge(player)
+
+        mass.config.save_player_config.assert_awaited_once_with("spb_player_1", {"enabled": True})
+        assert manager.get_bridge("player_1") is not None
+
+    @pytest.mark.asyncio
+    async def test_no_heal_when_base_player_disabled(self) -> None:
+        """Test a stale client disable is left alone while the base player is disabled."""
+        manager, mass, player, _, player_configs = _make_environment()
+        player_configs["players/player_1"] = {"enabled": False}
+        player_configs["players/spb_player_1"] = {"enabled": False}
+
+        await manager.evaluate_bridge(player)
+
+        mass.config.save_player_config.assert_not_awaited()
+        assert manager.get_bridge("player_1") is None
 
     @pytest.mark.asyncio
     async def test_stale_bridge_rebuilt_after_sendspin_reload(self) -> None:
@@ -210,6 +264,8 @@ class TestCastBridgePolicy:
         """
         mass = MagicMock()
         mass.subscribe = MagicMock(return_value=MagicMock())
+        mass.players.subscribe_player_state_update = MagicMock(return_value=MagicMock())
+        mass.create_task = MagicMock()
         provider = MagicMock()
         provider.mass = mass
         provider.logger = logging.getLogger("test.cast_bridge_manager")
@@ -223,6 +279,8 @@ class TestCastBridgePolicy:
         cast_player.device_info.manufacturer = "TestCo"
         cast_player.device_info.model = "TestSpeaker"
         cast_player.protocol_parent_id = "parent_1"
+        cast_player.provider = provider
+        provider.players = [cast_player]
 
         manager = CastSendspinBridgeManager(provider)
         return manager, mass, cast_player
@@ -261,6 +319,104 @@ class TestCastBridgePolicy:
         mass.players.get_player = MagicMock(return_value=parent)
 
         assert manager._should_have_bridge(cast_player) is True
+
+    def test_blocklist_message_only_repeats_after_policy_change(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Test repeated blocklist checks only log when the policy result changes."""
+        manager, _, cast_player = self._make_cast_environment()
+        cast_player.device_info.manufacturer = "Harman Luxury Audio"
+        cast_player.protocol_parent_id = None
+
+        with caplog.at_level(logging.DEBUG, logger=manager.logger.name):
+            assert manager._should_have_bridge(cast_player) is False
+            assert manager._should_have_bridge(cast_player) is False
+            cast_player.device_info.manufacturer = "TestCo"
+            assert manager._should_have_bridge(cast_player) is True
+            cast_player.device_info.manufacturer = "Harman Luxury Audio"
+            assert manager._should_have_bridge(cast_player) is False
+
+        blocklist_records = [
+            record for record in caplog.records if "device is blocklisted" in record.message
+        ]
+        assert len(blocklist_records) == 2
+
+    def test_irrelevant_state_update_does_not_schedule_evaluation(self) -> None:
+        """Test playback state updates do not re-evaluate bridge policy."""
+        manager, mass, cast_player = self._make_cast_environment()
+
+        manager._on_player_state_updated(cast_player, {"volume_level": (20, 30)})
+
+        mass.create_task.assert_not_called()
+
+    def test_relevant_cast_state_update_schedules_evaluation(self) -> None:
+        """Test device policy changes re-evaluate the affected Cast bridge."""
+        manager, mass, cast_player = self._make_cast_environment()
+
+        manager._on_player_state_updated(
+            cast_player, {"device_info.model": ("Old Model", "New Model")}
+        )
+
+        mass.create_task.assert_called_once_with(
+            manager._process_pending_bridge_evaluations,
+            cast_player.player_id,
+            task_id="evaluate_chromecast_sendspin_bridge_cc_player",
+        )
+
+    def test_parent_protocol_update_schedules_evaluation(self) -> None:
+        """Test protocol changes on a parent re-evaluate its Cast bridge."""
+        manager, mass, _ = self._make_cast_environment()
+        parent = MagicMock()
+        parent.player_id = "parent_1"
+        parent.protocol_parent_id = None
+
+        manager._on_player_state_updated(parent, {"output_protocols": ((), ("airplay",))})
+
+        mass.create_task.assert_called_once()
+
+    def test_unregistered_parent_schedules_evaluation(self) -> None:
+        """Test removal of a protocol parent re-evaluates its Cast bridge."""
+        manager, mass, _ = self._make_cast_environment()
+        mass.players.get_player.return_value = None
+        event = MagicMock()
+        event.object_id = "parent_1"
+
+        manager._on_player_unregistered(event)
+
+        mass.create_task.assert_called_once()
+
+    def test_registered_player_event_does_not_duplicate_evaluation(self) -> None:
+        """Test regular player events remain on the filtered state-update path."""
+        manager, mass, _ = self._make_cast_environment()
+        mass.players.get_player.return_value = MagicMock()
+        event = MagicMock()
+        event.object_id = "parent_1"
+
+        manager._on_player_unregistered(event)
+
+        mass.create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_update_during_evaluation_triggers_trailing_reconciliation(self) -> None:
+        """Test a policy update during reconciliation is processed afterward."""
+        manager, mass, cast_player = self._make_cast_environment()
+        mass.players.get_player.return_value = cast_player
+        evaluation_count = 0
+
+        async def evaluate_bridge(player: Any) -> None:
+            nonlocal evaluation_count
+            evaluation_count += 1
+            if evaluation_count == 1:
+                manager._pending_bridge_evaluations.add(player.player_id)
+
+        evaluate_mock = AsyncMock(side_effect=evaluate_bridge)
+        manager.evaluate_bridge = evaluate_mock  # type: ignore[method-assign]
+        manager._pending_bridge_evaluations.add(cast_player.player_id)
+
+        await manager._process_pending_bridge_evaluations(cast_player.player_id)
+
+        assert evaluate_mock.await_count == 2
+        assert not manager._pending_bridge_evaluations
 
 
 class TestLocalAudioBridgeManager:

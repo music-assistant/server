@@ -1,5 +1,6 @@
 """Tests for utility/helper functions."""
 
+import os
 import signal
 import subprocess
 import sys
@@ -713,6 +714,61 @@ def test_is_arm(machine: str, expected: bool) -> None:
     """is_arm recognizes 32/64-bit ARM and rejects x86."""
     with patch("music_assistant.helpers.util.platform.machine", return_value=machine):
         assert util.is_arm() is expected
+
+
+@pytest.mark.parametrize(
+    ("cpu_count", "expected"),
+    [(1, 1), (2, 1), (4, 1), (8, 2), (12, 3), (32, 8)],
+)
+def test_inference_thread_budget(cpu_count: int, expected: int) -> None:
+    """The inference thread budget is a quarter of the cores, never below one."""
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=cpu_count),
+        patch.dict(os.environ, {}, clear=False),
+    ):
+        os.environ.pop("OMP_NUM_THREADS", None)
+        assert util.inference_thread_budget() == expected
+
+
+def test_inference_thread_budget_follows_operator_override() -> None:
+    """An operator-supplied OMP_NUM_THREADS becomes the torch budget too, so the two agree."""
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=32),
+        patch.dict(os.environ, {"OMP_NUM_THREADS": "2"}, clear=False),
+    ):
+        assert util.inference_thread_budget() == 2
+
+
+def test_cap_native_thread_pools_sets_env() -> None:
+    """The native pool caps are published to the environment for load-time pickup."""
+    env_vars = (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    )
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=8),
+        patch.dict(os.environ, dict.fromkeys(env_vars, ""), clear=False),
+    ):
+        for env_var in env_vars:
+            del os.environ[env_var]
+        assert util.cap_native_thread_pools() == 2
+        for env_var in env_vars:
+            assert os.environ[env_var] == "2"
+
+
+def test_cap_native_thread_pools_respects_operator_value() -> None:
+    """An operator-supplied cap is kept, reported back, and applied to the other pools."""
+    with (
+        patch("music_assistant.helpers.util.os.process_cpu_count", return_value=8),
+        patch.dict(os.environ, {"OMP_NUM_THREADS": "1"}, clear=False),
+    ):
+        os.environ.pop("OPENBLAS_NUM_THREADS", None)
+        assert util.cap_native_thread_pools() == 1
+        assert os.environ["OMP_NUM_THREADS"] == "1"
+        assert os.environ["OPENBLAS_NUM_THREADS"] == "1"
 
 
 # 4/8/2 GiB expressed in bytes, for cgroup fixture files.

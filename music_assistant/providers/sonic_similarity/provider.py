@@ -20,9 +20,17 @@ from typing import TYPE_CHECKING, Any, cast
 import numpy as np
 from music_assistant_models.auth import Scope
 from music_assistant_models.background_task import TaskSchedule
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.enums import ConfigEntryType, MediaType, ProviderFeature
 from music_assistant_models.errors import MusicAssistantError, SetupFailedError
-from music_assistant_models.media_items import Album, RecommendationFolder, SearchResults
+from music_assistant_models.media_items import (
+    Album,
+    BrowseFolder,
+    ItemMapping,
+    MediaItemType,
+    RecommendationFolder,
+    SearchResults,
+)
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import DB_TABLE_AUDIO_ANALYSIS
@@ -32,12 +40,17 @@ from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.sonic_similarity.clap_index import ClapIndex
 from music_assistant.providers.sonic_similarity.constants import (
     AA_PROVIDER_DOMAIN,
+    ACTION_REBUILD_18DIM,
+    ACTION_REBUILD_CLAP,
     CONF_DISCOVER_DIVERSITY,
     CONF_DISCOVER_ENGINE,
     CONF_DISCOVER_PRESET,
     CONF_ENABLE_CLAP_INDEX,
     CONF_ENABLE_DISCOVER_ROW,
     CONF_ENABLE_TEXT_SEARCH,
+    CONF_LABEL_STATUS_18DIM,
+    CONF_LABEL_STATUS_CLAP,
+    CONF_LABEL_STATUS_TEXT,
     CONF_SIMILAR_DIVERSITY,
     CONF_SIMILAR_PRESET,
     CONF_SIMILAR_TRACKS_ENGINE,
@@ -119,6 +132,159 @@ class SonicSimilarityPlugin(PluginProvider):
         # Per-label last error from fire-and-forget rebuild tasks.
         self._last_rebuild_error: dict[str, str] = {}
         self._last_seen_row_count: int = 0
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        status_18, status_clap, status_text = await self._collect_status_text()
+
+        return (
+            # === Generic: the two opt-in engine toggles ===
+            ConfigEntry(
+                key=CONF_ENABLE_CLAP_INDEX,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_TEXT_SEARCH,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+            ),
+            # === Similarity search: engine choice + 18-dim tuning ===
+            ConfigEntry(
+                key=CONF_SIMILAR_TRACKS_ENGINE,
+                type=ConfigEntryType.STRING,
+                default_value=SIMILAR_ENGINE_18DIM,
+                options=[
+                    ConfigValueOption(SIMILAR_ENGINE_18DIM),
+                    ConfigValueOption(SIMILAR_ENGINE_CLAP),
+                ],
+                category="similarity_search",
+                depends_on=CONF_ENABLE_CLAP_INDEX,
+                depends_on_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_SIMILAR_PRESET,
+                type=ConfigEntryType.STRING,
+                default_value="balanced",
+                options=[
+                    ConfigValueOption("balanced"),
+                    ConfigValueOption("vibe"),
+                    ConfigValueOption("party"),
+                    ConfigValueOption("genre_era"),
+                    ConfigValueOption("discover"),
+                ],
+                category="similarity_search",
+                depends_on=CONF_SIMILAR_TRACKS_ENGINE,
+                depends_on_value=SIMILAR_ENGINE_18DIM,
+            ),
+            ConfigEntry(
+                key=CONF_SIMILAR_DIVERSITY,
+                type=ConfigEntryType.INTEGER,
+                default_value=0,
+                range=(0, 10),
+                category="similarity_search",
+                depends_on=CONF_SIMILAR_TRACKS_ENGINE,
+                depends_on_value=SIMILAR_ENGINE_18DIM,
+            ),
+            # === Discover row ===
+            ConfigEntry(
+                key=CONF_ENABLE_DISCOVER_ROW,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                category="discover",
+            ),
+            ConfigEntry(
+                key=CONF_DISCOVER_ENGINE,
+                type=ConfigEntryType.STRING,
+                default_value=SIMILAR_ENGINE_18DIM,
+                options=[
+                    ConfigValueOption(SIMILAR_ENGINE_18DIM),
+                    ConfigValueOption(SIMILAR_ENGINE_CLAP),
+                ],
+                category="discover",
+                depends_on=CONF_ENABLE_DISCOVER_ROW,
+                depends_on_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_DISCOVER_PRESET,
+                type=ConfigEntryType.STRING,
+                default_value="discover",
+                options=[
+                    ConfigValueOption("discover"),
+                    ConfigValueOption("balanced"),
+                    ConfigValueOption("vibe"),
+                    ConfigValueOption("party"),
+                    ConfigValueOption("genre_era"),
+                ],
+                category="discover",
+                depends_on=CONF_DISCOVER_ENGINE,
+                depends_on_value=SIMILAR_ENGINE_18DIM,
+            ),
+            ConfigEntry(
+                key=CONF_DISCOVER_DIVERSITY,
+                type=ConfigEntryType.INTEGER,
+                default_value=2,
+                range=(0, 10),
+                category="discover",
+                depends_on=CONF_DISCOVER_ENGINE,
+                depends_on_value=SIMILAR_ENGINE_18DIM,
+            ),
+            # === Status: each rebuild (advanced) sits directly under its own status row ===
+            ConfigEntry(
+                key=CONF_LABEL_STATUS_18DIM,
+                type=ConfigEntryType.LABEL,
+                label=status_18,
+                category="status",
+            ),
+            ConfigEntry(
+                key=ACTION_REBUILD_18DIM,
+                type=ConfigEntryType.ACTION,
+                action=ACTION_REBUILD_18DIM,
+                category="status",
+                advanced=True,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_LABEL_STATUS_CLAP,
+                type=ConfigEntryType.LABEL,
+                label=status_clap,
+                category="status",
+                depends_on=CONF_ENABLE_CLAP_INDEX,
+                depends_on_value=True,
+            ),
+            ConfigEntry(
+                key=ACTION_REBUILD_CLAP,
+                type=ConfigEntryType.ACTION,
+                action=ACTION_REBUILD_CLAP,
+                category="status",
+                advanced=True,
+                required=False,
+                depends_on=CONF_ENABLE_CLAP_INDEX,
+                depends_on_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_LABEL_STATUS_TEXT,
+                type=ConfigEntryType.LABEL,
+                label=status_text,
+                category="status",
+                depends_on=CONF_ENABLE_TEXT_SEARCH,
+                depends_on_value=True,
+            ),
+        )
+
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+        """Handle a rebuild button press (fire-and-forget) and re-render the entries."""
+        if action == ACTION_REBUILD_18DIM:
+            # per-engine locks in _safe_rebuild serialise double-clicks
+            self.mass.create_task(self._safe_rebuild("Traits", self._rebuild_search_index))
+            return await self.get_config_entries()
+        if action == ACTION_REBUILD_CLAP:
+            if self._clap_index is not None:
+                self.mass.create_task(
+                    self._safe_rebuild("Character", self._rebuild_clap_index_from_database)
+                )
+            return await self.get_config_entries()
+        return await super().handle_config_action(action)
 
     async def handle_async_init(self) -> None:
         """
@@ -256,22 +422,60 @@ class SonicSimilarityPlugin(PluginProvider):
             )
         return await self._similar_tracks_via_18dim(track, limit)
 
-    @use_cache(60, base_class=RecommendationFolder, allow_expired_cache=True)
-    async def recommendations(self) -> list[RecommendationFolder]:
+    async def get_recommendations(self) -> list[RecommendationFolder]:
         """
-        Yield an 'Inspired by recently played' folder for the discover page.
+        Get the 'Inspired by recently played' row descriptor, without items.
 
-        Returns [] when the engine isn't ready or when no recent tracks
-        intersect the index — the cross-provider dispatcher then simply
-        omits us from the response (no empty card on the page).
+        Returns [] when the discover row is disabled in the plugin config.
         """
         if not bool(self.config.get_value(CONF_ENABLE_DISCOVER_ROW)):
             return []
+        return [
+            RecommendationFolder(
+                item_id="inspired_by_recently_played",
+                provider=self.instance_id,
+                name="Inspired by recently played",
+                translation_key="inspired_by_recently_played",
+                icon="mdi-shimmer",
+            ),
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for the 'Inspired by recently played' row.
+
+        Returns an empty list for an unknown row, when the row is disabled,
+        when the engine isn't ready or when no recent tracks intersect the
+        index.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if item_id != "inspired_by_recently_played":
+            return UniqueList()
+        folder = await self._get_inspired_recommendations()
+        if folder is None:
+            return UniqueList()
+        return folder.items
+
+    @use_cache(60, base_class=RecommendationFolder, allow_expired_cache=True)
+    async def _get_inspired_recommendations(self) -> RecommendationFolder | None:
+        """
+        Build the 'Inspired by recently played' folder with its items.
+
+        Returns None when the row is disabled, the engine isn't ready or no
+        recent tracks intersect the index. A None result is still cached
+        (a negative hit), matching the previous behavior of caching the
+        empty result for the same TTL.
+        """
+        if not bool(self.config.get_value(CONF_ENABLE_DISCOVER_ROW)):
+            return None
 
         discover_engine = str(self.config.get_value(CONF_DISCOVER_ENGINE) or SIMILAR_ENGINE_18DIM)
         use_clap = discover_engine == SIMILAR_ENGINE_CLAP and self._clap_index is not None
         if not use_clap and (self.corpus_means is None or not self._signature_cache):
-            return []
+            return None
 
         try:
             recent = await self.mass.music.recently_played(
@@ -281,9 +485,9 @@ class SonicSimilarityPlugin(PluginProvider):
             )
         except Exception as err:
             self.logger.debug("recently_played failed: %s", err)
-            return []
+            return None
         if not recent:
-            return []
+            return None
 
         # Walk each recent mapping into a seed item_id our index has analysed.
         # The mapping is library-aggregated; we need the underlying streaming
@@ -305,7 +509,7 @@ class SonicSimilarityPlugin(PluginProvider):
                 seen_seeds.add(seed_id)
 
         if not seeds:
-            return []
+            return None
 
         preset = str(self.config.get_value(CONF_DISCOVER_PRESET) or "discover")
         # The slider is a 0-10 integer; the engine wants a 0.0-1.0 weight.
@@ -350,7 +554,7 @@ class SonicSimilarityPlugin(PluginProvider):
                 break
 
         if not candidate_order:
-            return []
+            return None
 
         async def _resolve(provider: str, item_id: str) -> Track | None:
             try:
@@ -359,20 +563,17 @@ class SonicSimilarityPlugin(PluginProvider):
                 return None
 
         resolved = await asyncio.gather(*[_resolve(p, i) for p, i in candidate_order])
-        items = [t for t in resolved if t is not None]
-        if not items:
-            return []
-
-        return [
-            RecommendationFolder(
-                item_id="inspired_by_recently_played",
-                provider=self.instance_id,
-                name="Inspired by recently played",
-                translation_key="inspired_by_recently_played",
-                icon="mdi-shimmer",
-                items=UniqueList(items),
-            ),
-        ]
+        items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList(
+            [t for t in resolved if t is not None]
+        )
+        return RecommendationFolder(
+            item_id="inspired_by_recently_played",
+            provider=self.instance_id,
+            name="Inspired by recently played",
+            translation_key="inspired_by_recently_played",
+            icon="mdi-shimmer",
+            items=items,
+        )
 
     async def search(
         self,
@@ -408,6 +609,60 @@ class SonicSimilarityPlugin(PluginProvider):
             *[_resolve(cand.provider, cand.item_id) for cand in matches]
         )
         return SearchResults(tracks=[t for t in resolved if t is not None])
+
+    async def _collect_status_text(self) -> tuple[str, str, str]:
+        """
+        Return (18-dim, CLAP, text-encoder) label-text triples for the plugin page.
+
+        Each string is single-line, safe to render in a LABEL config entry, and
+        degrades gracefully depending on the current engine/index state.
+        """
+        eighteen = "Traits engine: not yet loaded"
+        clap = "Character engine: disabled"
+        text = "Text encoder: disabled"
+
+        # Optional coverage lookup against the upstream AA provider via #3851's API.
+        coverage_pct: float | None = None
+        try:
+            coverage = await self.mass.streams.audio_analysis.get_coverage(AA_PROVIDER_DOMAIN)
+        except Exception:
+            coverage = None
+        if coverage is not None:
+            total = coverage.analyzed + coverage.pending
+            if total > 0:
+                coverage_pct = round(100.0 * coverage.analyzed / total, 1)
+
+        # 18-dim line.
+        index_size = len(self._search_index) if self._search_index is not None else 0
+        parts = [
+            f"{index_size:,} tracks indexed",
+            f"{len(self._signature_cache):,} signatures cached",
+            f"corpus stats {'ready' if self.corpus_means is not None else 'pending'}",
+        ]
+        if coverage_pct is not None:
+            parts.append(f"{coverage_pct}% coverage")
+        eighteen = "Traits engine: " + " · ".join(parts)
+        if (err_18dim := self._last_rebuild_error.get("Traits")) is not None:
+            eighteen += f" — last rebuild failed: {err_18dim}"
+
+        # CLAP line (only meaningful when the index is built).
+        if self._clap_index is not None:
+            clap_size = len(self._clap_index)
+            clap_parts = [f"{clap_size:,} embeddings indexed"]
+            if coverage_pct is not None:
+                clap_parts.append(f"{coverage_pct}% coverage")
+            clap = "Character engine: " + " · ".join(clap_parts)
+            if (err_clap := self._last_rebuild_error.get("Character")) is not None:
+                clap += f" — last rebuild failed: {err_clap}"
+
+        # Text-encoder line - encoder state is independent of the index.
+        if bool(self.config.get_value(CONF_ENABLE_TEXT_SEARCH)):
+            if self._text_encoder is not None:
+                text = "Text encoder: loaded (warm)"
+            else:
+                text = "Text encoder: cold (downloads on first query, ~500MB)"
+
+        return eighteen, clap, text
 
     async def _safe_rebuild(self, label: str, rebuild_fn: Callable[[], Awaitable[None]]) -> None:
         """

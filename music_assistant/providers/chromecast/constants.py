@@ -17,6 +17,10 @@ APP_MEDIA_RECEIVER = "CC1AD845"
 SENDSPIN_CAST_APP_ID = "DD107DDB"
 SENDSPIN_CAST_NAMESPACE = "urn:x-cast:sendspin"
 CONF_USE_MASS_APP = "use_mass_app"
+DASHBOARD_NAMESPACE = "urn:x-cast:io.music-assistant.cast"
+
+# keepalive media the cast receiver plays while showing a dashboard
+DASHBOARD_KEEPALIVE_SUFFIXES = ("/dashboard-keepalive.mp4", "/keepalive.png")
 
 # Interval (seconds) before an unavailable player is re-evaluated as a possible
 # passive multichannel endpoint that should be removed from the setup.

@@ -77,7 +77,47 @@
       "label": "Clear authentication",
       "description": "Clear the current authentication details.",
       "action_label": "Clear authentication"
+    },
+    "auth_method": {
+      "label": "How do you want to sign in?",
+      "options": {
+        "myplex": "Plex account (recommended)",
+        "local": "Local username and password"
+      }
     }
+  },
+  "setup_flow": {
+    "discovering": {
+      "progress_text": "Searching for Plex servers on your network..."
+    },
+    "server": {
+      "title": "Plex server details",
+      "description": "Enter the address of your Plex Media Server, or confirm the discovered one."
+    },
+    "auth_method": {
+      "title": "Choose how to connect",
+      "description": "Sign in with your Plex account, or connect directly to a server that allows access without an account."
+    },
+    "myplex_auth": {
+      "title": "Sign in to Plex",
+      "description": "Sign in with your Plex account in the window that opens to authorize Music Assistant."
+    },
+    "finalizing_auth": {
+      "progress_text": "Completing sign-in with Plex..."
+    },
+    "loading_libraries": {
+      "progress_text": "Loading libraries from your Plex server..."
+    },
+    "library": {
+      "title": "Choose a library",
+      "description": "Pick the Plex library to use and whether it holds music, audiobooks, or podcasts."
+    },
+    "abort": {
+      "myplex_auth_failed": "Could not complete sign-in with your Plex account. Please try again."
+    }
+  },
+  "errors": {
+    "no_libraries": "No compatible libraries were found on this Plex server."
   },
   "manifest": {
     "description": "Stream your personal music, podcasts, and radio via your Plex media server."

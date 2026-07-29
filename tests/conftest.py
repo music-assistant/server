@@ -4,7 +4,8 @@ import asyncio
 import logging
 import pathlib
 import threading
-from collections.abc import AsyncGenerator, Generator
+from collections.abc import AsyncGenerator, Callable, Generator
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 
 import pytest
@@ -14,8 +15,10 @@ from zeroconf.asyncio import AsyncZeroconf
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.discovery import DiscoveryController
+from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.tasks import TasksController
 from music_assistant.mass import MusicAssistant
-from tests.common import suppress_auto_loaded_providers
+from tests.common import suppress_auto_loaded_providers, use_ephemeral_server_ports
 
 
 @pytest.fixture(autouse=True)
@@ -63,7 +66,10 @@ def _create_mock_zeroconf() -> MagicMock:
 
 
 @pytest.fixture
-async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
+async def mass(
+    tmp_path: pathlib.Path,
+    unused_tcp_port_factory: Callable[[], int],
+) -> AsyncGenerator[MusicAssistant]:
     """
     Start a Music Assistant in test mode.
 
@@ -78,16 +84,12 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
 
     mass_instance = MusicAssistant(str(storage_path), str(cache_path))
 
-    # TODO: Configure a random port to avoid conflicts when MA is already running
-    # The conftest was modified in PR #2738 to add port configuration but it doesn't
-    # work correctly - the settings.json file is created but the config isn't respected.
-    # For now, tests that use the `mass` fixture will fail if MA is running on port 8095.
-
     # Mock zeroconf to prevent real network I/O during tests
     mock_zc = _create_mock_zeroconf()
     mock_browser = NonCallableMagicMock()  # Use NonCallable to avoid api_cmd issues
 
     with (
+        use_ephemeral_server_ports(unused_tcp_port_factory),
         patch(
             "music_assistant.controllers.discovery.controller.AsyncZeroconf",
             return_value=mock_zc,
@@ -124,6 +126,33 @@ async def mass_minimal(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]
 
     :param tmp_path: Temporary directory for test data.
     """
+    async with _minimal_mass_context(tmp_path) as mass_instance:
+        yield mass_instance
+
+
+@pytest.fixture(scope="class")
+async def music_mass_class(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> AsyncGenerator[MusicAssistant]:
+    """Create a class-scoped Music Assistant instance with only library storage."""
+    async with _music_mass_context(tmp_path_factory.mktemp("music_class")) as mass_instance:
+        yield mass_instance
+
+
+@pytest.fixture(scope="module")
+async def music_mass_module(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> AsyncGenerator[MusicAssistant]:
+    """Create a module-scoped Music Assistant instance with only library storage."""
+    async with _music_mass_context(tmp_path_factory.mktemp("music_module")) as mass_instance:
+        yield mass_instance
+
+
+@asynccontextmanager
+async def _minimal_mass_context(
+    tmp_path: pathlib.Path,
+) -> AsyncGenerator[MusicAssistant]:
+    """Create a minimal Music Assistant instance for a fixture."""
     storage_path = tmp_path / "data"
     cache_path = tmp_path / "cache"
     storage_path.mkdir(parents=True)
@@ -132,20 +161,42 @@ async def mass_minimal(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]
     logging.getLogger("aiosqlite").level = logging.INFO
 
     mass_instance = MusicAssistant(str(storage_path), str(cache_path))
-
     mass_instance.loop = asyncio.get_running_loop()
-    # fixture runs on the event loop thread, like MusicAssistant.start()
     mass_instance.loop_thread_id = threading.get_ident()
-
     mass_instance.config = ConfigController(mass_instance)
     await mass_instance.config.setup()
     mass_instance.discovery = DiscoveryController(mass_instance)
-
     mass_instance.cache = CacheController(mass_instance)
 
     try:
         yield mass_instance
     finally:
-        if mass_instance.cache.database:
-            await mass_instance.cache.database.close()
+        await mass_instance.cache.close()
         await mass_instance.config.close()
+
+
+@asynccontextmanager
+async def _music_mass_context(
+    tmp_path: pathlib.Path,
+) -> AsyncGenerator[MusicAssistant]:
+    """Create a minimal Music Assistant instance with a real library database."""
+    async with _minimal_mass_context(tmp_path) as mass_instance:
+        mass_instance.tasks = TasksController(mass_instance)
+        tasks_config = await mass_instance.config.get_core_config(mass_instance.tasks.domain)
+        await mass_instance.tasks.setup(tasks_config)
+
+        mass_instance.metadata = MagicMock()
+        mass_instance.metadata.schedule_update_metadata = MagicMock()
+        mass_instance.metadata.invalidate_image_cache = AsyncMock()
+        mass_instance.webserver = MagicMock()
+        mass_instance.webserver.auth.list_users = AsyncMock(return_value=[])
+
+        mass_instance.music = MusicController(mass_instance)
+        music_config = await mass_instance.config.get_core_config(mass_instance.music.domain)
+        await mass_instance.music.setup(music_config)
+        await mass_instance.music.post_setup()
+        try:
+            yield mass_instance
+        finally:
+            await mass_instance.tasks.close()
+            await mass_instance.music.close()

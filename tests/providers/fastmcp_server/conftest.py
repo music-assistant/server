@@ -128,7 +128,9 @@ def mock_mass(mock_user: MagicMock) -> MagicMock:
     mass.music.search = AsyncMock()
     mass.music.recently_added_tracks = AsyncMock(return_value=[])
     mass.music.recently_played = AsyncMock(return_value=[])
-    mass.music.recommendations = AsyncMock(return_value=[])
+    mass.music.recommendations = MagicMock()
+    mass.music.recommendations.get_recommendations = AsyncMock(return_value=[])
+    mass.music.recommendations.get_recommendation_items = AsyncMock(return_value=[])
     mass.music.get_item_by_uri = AsyncMock()
 
     mass.music.tracks.library_items = AsyncMock(return_value=[])
@@ -516,6 +518,7 @@ def mock_config_targets(mock_mass: Any) -> Any:
 
     mock_mass.config.get_provider_config = AsyncMock(return_value=cfg)
     mock_mass.config.get_provider_config_entries = AsyncMock(return_value=list(entries.values()))
+    mock_mass.config.invoke_provider_config_action = AsyncMock(return_value=list(entries.values()))
     mock_mass.config.get_core_config = AsyncMock(return_value=cfg)
     mock_mass.config.get_core_config_entries = AsyncMock(return_value=list(entries.values()))
     mock_mass.config.get_player_config = AsyncMock(return_value=cfg)

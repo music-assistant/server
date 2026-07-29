@@ -62,6 +62,7 @@ from music_assistant.controllers.player_queues.config import (
 from music_assistant.controllers.player_queues.constants import (
     CACHE_CATEGORY_PLAYER_QUEUE_ITEMS,
     CACHE_CATEGORY_PLAYER_QUEUE_STATE,
+    PLAYBACK_START_TIMEOUT,
     QUEUE_CACHE_SAVE_DELAY,
 )
 from music_assistant.controllers.player_queues.helpers import (
@@ -86,7 +87,6 @@ if TYPE_CHECKING:
     from music_assistant_models.config_entries import (
         ConfigEntry,
         ConfigValueOption,
-        ConfigValueType,
         CoreConfig,
     )
     from music_assistant_models.queue_item import QueueItem
@@ -163,11 +163,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             "total_items": sum(queue.items for queue in queues),
         }
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return the core-module (global) config entries: the queue-controller defaults."""
         # kept cheap (no library lookup): the config controller populates the global autoplay
         # playlist dropdown for the UI, so this stays fast on the config value/parse path
@@ -479,6 +475,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         radio_mode: bool = False,
         start_item: PlayableMediaItemType | str | None = None,
         sort_by: str | None = None,
+        start_from_beginning: bool = False,
     ) -> None:
         """
         Play media item(s) on the given queue.
@@ -490,12 +487,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             prefer enqueuing that URI directly.
         :param start_item: Optional item to start the playlist or album from.
         :param sort_by: Optional sort key to order tracks before applying start_item.
+        :param start_from_beginning: Start a podcast episode at position 0, ignoring any
+            saved resume position. The stored progress itself is left untouched.
         """
         self._check_player_permission(queue_id)
         if not self.get(queue_id):
             raise PlayerUnavailableError(f"Queue {queue_id} is not available")
         # Lock is acquired by the @handle_play_action decorator on the internal handler
-        await self._handle_play_media(queue_id, media, option, radio_mode, start_item, sort_by)
+        await self._handle_play_media(
+            queue_id, media, option, radio_mode, start_item, sort_by, start_from_beginning
+        )
 
     @api_command("player_queues/move_item", required_scope=Scope.QUEUES_CONTROL)
     def move_item(self, queue_id: str, queue_item_id: str, pos_shift: int = 1) -> None:
@@ -963,6 +964,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     # if we reach this point, loading the item succeeded, break the loop
                     queue.current_index = index
                     queue.current_item = queue_item
+                    # reset the elapsed clock together with the item switch (like
+                    # next/previous do), so queue updates signaled before the player
+                    # reports position don't carry the previous item's elapsed_time
+                    queue.elapsed_time = seek_position if attempt == 0 else 0
+                    queue.elapsed_time_last_updated = time.time()
                     break
                 except (MediaNotFoundError, AudioError) as err:
                     item_name = queue_item.name if queue_item else "unknown"
@@ -994,13 +1000,21 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
 
             # Reset flow_mode - the streams controller will set it if flow mode is used.
             queue.flow_mode = False
-            await self.mass.players.play_media(
+            player_media = await self.player_media_from_queue_item(queue_item)
+            # Hold the play action until the player confirms playback so the UI keeps
+            # showing the command as in progress instead of falling back to a play button
+            # for the time the player still needs to connect and start. The queue update
+            # for the new item goes out first, so the item shows while it is starting.
+            async with self.mass.players.wait_for_player_update(
                 queue_id,
-                await self.player_media_from_queue_item(queue_item),
-            )
-            queue.current_index = index
-            queue.current_item = queue_item
-            self.signal_update(queue_id)
+                attribute_name="playback_state",
+                attribute_value=PlaybackState.PLAYING,
+                timeout=PLAYBACK_START_TIMEOUT,
+            ):
+                await self.mass.players.play_media(queue_id, player_media)
+                queue.current_index = index
+                queue.current_item = queue_item
+                self.signal_update(queue_id)
         finally:
             self._set_transitioning(queue_id, False)
 
@@ -1664,8 +1678,15 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         if queue_player is None:
             raise PlayerUnavailableError(f"Player {queue_id} is not available")
         if (queue := self.get(queue_id)) and queue.active and queue.state == PlaybackState.PAUSED:
-            # forward the actual play/unpause command to the player
-            await queue_player.play()
+            # forward the actual play/unpause command to the player,
+            # holding the action until the player confirms it resumed playback
+            async with self.mass.players.wait_for_player_update(
+                queue_id,
+                attribute_name="playback_state",
+                attribute_value=PlaybackState.PLAYING,
+                timeout=PLAYBACK_START_TIMEOUT,
+            ):
+                await queue_player.play()
             return
         # player is not paused, perform resume instead
         await self.resume(queue_id)

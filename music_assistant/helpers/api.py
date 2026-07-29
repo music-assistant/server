@@ -497,7 +497,7 @@ def parse_value(  # noqa: PLR0911
     if value is None and value_type is NoneType:
         return None
     origin = get_origin(value_type)
-    if origin in (tuple, list, Sequence, Iterable):
+    if origin in (tuple, list, set, frozenset, Sequence, Iterable):
         # For abstract types like Sequence and Iterable, use list as the concrete type
         concrete_type = list if origin in (Sequence, Iterable) else origin
         return concrete_type(
@@ -519,9 +519,10 @@ def parse_value(  # noqa: PLR0911
     if origin is Union or origin is UnionType:
         # try all possible types
         sub_value_types = get_args(value_type)
+        if value is None and NoneType in sub_value_types:
+            # an optional annotation with no value needs no further parsing
+            return None
         for sub_arg_type in sub_value_types:
-            if value is NoneType and sub_arg_type is NoneType:
-                return value
             # try them all until one succeeds
             try:
                 return parse_value(

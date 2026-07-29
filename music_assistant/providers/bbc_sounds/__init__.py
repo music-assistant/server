@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Literal
 from music_assistant_models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
-    ConfigValueType,
     ProviderConfig,
 )
 from music_assistant_models.enums import ConfigEntryType, ImageType, MediaType, ProviderFeature
@@ -54,6 +53,7 @@ from music_assistant.helpers.datetime import LOCAL_TIMEZONE
 from music_assistant.mass import MusicAssistant
 from music_assistant.models import ProviderInstanceType
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 from music_assistant.providers.bbc_sounds.adaptor import Adaptor
 from music_assistant.providers.bbc_sounds.constants import _Constants
 from music_assistant.providers.bbc_sounds.metadata import _find_segment, _segment_to_metadata
@@ -80,69 +80,48 @@ async def setup(
     return instance
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-
-    return (
-        CONF_ENTRY_UNOFFICIAL_PROVIDER,
-        ConfigEntry(
-            key=_Constants.CONF_INTRO,
-            type=ConfigEntryType.LABEL,
-        ),
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-        ),
-        ConfigEntry(
-            key=_Constants.CONF_SHOW_LOCAL,
-            advanced=True,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=False,
-        ),
-        ConfigEntry(
-            key=_Constants.CONF_STREAM_FORMAT,
-            advanced=True,
-            type=ConfigEntryType.STRING,
-            options=[
-                ConfigValueOption(_Constants.CONF_STREAM_FORMAT_HLS),
-                ConfigValueOption(_Constants.CONF_STREAM_FORMAT_DASH),
-            ],
-            default_value=_Constants.CONF_STREAM_FORMAT_HLS,
-        ),
-    )
-
-
-class BBCSoundsProvider(MusicProvider):
+class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
     """A MusicProvider class to interact with the BBC Sounds API via auntie-sounds."""
+
+    # keep the pre-refactor 3h refresh interval for the experience-menu payload
+    recommendation_payload_ttl = 3600 * 3
 
     client: SoundsClient
     menu: Menu | None = None
     logged_in: bool = False
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            CONF_ENTRY_UNOFFICIAL_PROVIDER,
+            ConfigEntry(
+                key=_Constants.CONF_INTRO,
+                type=ConfigEntryType.LABEL,
+            ),
+            ConfigEntry(
+                key=_Constants.CONF_SHOW_LOCAL,
+                advanced=True,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+            ),
+            ConfigEntry(
+                key=_Constants.CONF_STREAM_FORMAT,
+                advanced=True,
+                type=ConfigEntryType.STRING,
+                options=[
+                    ConfigValueOption(_Constants.CONF_STREAM_FORMAT_HLS),
+                    ConfigValueOption(_Constants.CONF_STREAM_FORMAT_DASH),
+                ],
+                default_value=_Constants.CONF_STREAM_FORMAT_HLS,
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         # If we have an account, authenticate. Testing shows all features work without auth
         # but BBC will be disabling BBC Sounds from outside the UK at some point
-        username = self.config.get_value(CONF_USERNAME)
-        password = self.config.get_value(CONF_PASSWORD)
+        username = self.get_setup_value(CONF_USERNAME)
+        password = self.get_setup_value(CONF_PASSWORD)
         if username and password:
             self.client = SoundsClient(
                 session=self.mass.http_session,
@@ -186,6 +165,24 @@ class BBCSoundsProvider(MusicProvider):
     def is_streaming_provider(self) -> bool:
         """Return True as the provider is a streaming provider."""
         return True
+
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this provider's available recommendation rows, without items."""
+        if not self.logged_in:
+            return []
+        return await self._recommendation_rows_from_payload()
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if not self.logged_in:
+            return UniqueList()
+        return await self._recommendation_items_from_payload(item_id)
 
     def _get_provider_mapping(self, item_id: str) -> ProviderMapping:
         return ProviderMapping(
@@ -659,27 +656,6 @@ class BBCSoundsProvider(MusicProvider):
 
         return results
 
-    @use_cache(expiration=_Constants.SHORT_EXPIRATION)
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Get available recommendations."""
-        folders = []
-
-        if self.logged_in:
-            recommendations = await self.client.personal.get_experience_menu(
-                recommendations=MenuRecommendationOptions.ONLY
-            )
-            self.logger.debug("Getting recommendations from API")
-            if recommendations.sub_items:
-                for recommendation in recommendations.sub_items:
-                    # recommendation is a RecommendedMenuItem
-                    folder = await self.adaptor.new_object(
-                        recommendation, force_type=RecommendationFolder
-                    )
-                    if isinstance(folder, RecommendationFolder):
-                        folders.append(folder)
-            return folders
-        return []
-
     async def on_played(
         self,
         media_type: MediaType,
@@ -710,3 +686,20 @@ class BBCSoundsProvider(MusicProvider):
                         self.logger.debug(f"Updated play status: {success}")
                     except exceptions.APIResponseError as err:
                         self.logger.error(f"Error updating play status: {err}")
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch the experience-menu recommendation folders, with items."""
+        self.logger.debug("Getting recommendations from API")
+        folders: list[RecommendationFolder] = []
+        recommendations = await self.client.personal.get_experience_menu(
+            recommendations=MenuRecommendationOptions.ONLY
+        )
+        if recommendations.sub_items:
+            for recommendation in recommendations.sub_items:
+                # recommendation is a RecommendedMenuItem
+                folder = await self.adaptor.new_object(
+                    recommendation, force_type=RecommendationFolder
+                )
+                if isinstance(folder, RecommendationFolder):
+                    folders.append(folder)
+        return folders

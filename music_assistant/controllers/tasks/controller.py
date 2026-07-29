@@ -10,7 +10,7 @@ from contextlib import suppress
 from datetime import datetime
 from functools import partial
 from threading import get_ident
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from music_assistant_models.auth import Scope, User
@@ -23,6 +23,10 @@ from music_assistant_models.background_task import (
 from music_assistant_models.enums import EventType, TaskStatus
 from music_assistant_models.errors import InvalidDataError
 
+from music_assistant.constants import (
+    CONF_ENTRY_MAX_CONCURRENT_TASKS,
+    CONF_MAX_CONCURRENT_TASKS,
+)
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_scope,
@@ -58,7 +62,10 @@ from .helpers import (
 from .models import ManagedTask
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import CoreConfig
+    from music_assistant_models.config_entries import (
+        ConfigEntry,
+        CoreConfig,
+    )
 
     from music_assistant import MusicAssistant
     from music_assistant.helpers.json import SerializableType
@@ -85,10 +92,16 @@ class TasksController(CoreController):
     async def setup(self, config: CoreConfig) -> None:
         """Set up the controller."""
         self.config = config
-        self._max_concurrent_tasks = DEFAULT_MAX_CONCURRENT_TASKS
+        self._max_concurrent_tasks = cast(
+            "int", config.get_value(CONF_MAX_CONCURRENT_TASKS, DEFAULT_MAX_CONCURRENT_TASKS)
+        )
         if self._log_handler is None:
             self._log_handler = TaskLogHandler(self.mass, self._append_task_log)
             logging.getLogger().addHandler(self._log_handler)
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return all Config Entries for this core module (if any)."""
+        return (CONF_ENTRY_MAX_CONCURRENT_TASKS,)
 
     async def close(self) -> None:
         """Clean up the controller."""
@@ -643,7 +656,10 @@ class TasksController(CoreController):
             task_info.last_error = None
             now = utcnow()
             self._append_task_lifecycle_log(
-                task_info.id, level=logging.WARNING, message="Task cancelled", created_at=now
+                task_info.id,
+                level=logging.WARNING,
+                message="Task cancelled",
+                created_at=now,
             )
         except Exception as err:
             task_info.status = TaskStatus.FAILED

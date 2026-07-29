@@ -8,7 +8,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import VolumeNormalizationMode
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, VolumeNormalizationMode
 
 from music_assistant.constants import LOUDNESS_MEASUREMENT_MIN_LUFS
 from music_assistant.helpers.ffmpeg import FFMpeg
@@ -59,6 +60,17 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
         """Initialize the provider."""
         super().__init__(mass, manifest, config, supported_features)
         self._data: dict[str, LoudnessSessionData] = {}
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return config entries for this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_WRITE_REPLAYGAIN_TAGS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+            ),
+        )
 
     async def process_pcm_chunk(
         self,

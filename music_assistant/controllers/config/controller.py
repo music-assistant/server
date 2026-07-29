@@ -26,7 +26,8 @@ from music_assistant.constants import (
 from music_assistant.controllers.config.constants import DEFAULT_SAVE_DELAY
 from music_assistant.controllers.config.core import CoreConfigMixin
 from music_assistant.controllers.config.dsp import DSPConfigMixin
-from music_assistant.controllers.config.migrations import migrate
+from music_assistant.controllers.config.flows import SetupFlowMixin
+from music_assistant.controllers.config.migrations import migrate, migrate_provider_setup_data
 from music_assistant.controllers.config.players import PlayerConfigMixin
 from music_assistant.controllers.config.providers import ProviderConfigMixin
 from music_assistant.controllers.config.queues import PlayerQueueConfigMixin
@@ -49,6 +50,7 @@ class ConfigController(
     PlayerQueueConfigMixin,
     DSPConfigMixin,
     CoreConfigMixin,
+    SetupFlowMixin,
 ):
     """Controller that handles storage of persistent configuration settings."""
 
@@ -72,6 +74,11 @@ class ConfigController(
         self._init_encryption()
         config_entries.ENCRYPT_CALLBACK = self.encrypt_string
         config_entries.DECRYPT_CALLBACK = self.decrypt_string
+        # one-off: move pre-setup-flow provider values into (encrypted) setup_data.
+        # runs here, after encryption is initialized, so string values are encrypted
+        # at rest (the migrate() pass in _load() runs before encryption is available).
+        if migrate_provider_setup_data(self._data, self.encrypt_string):
+            self.save(immediate=True)
         if not self.onboard_done:
             self.mass.register_api_command(
                 "config/onboard_complete",

@@ -93,7 +93,7 @@ async def test_trigger_action_relays_entries(mounted_config: Any, mock_config_ta
             {"instance_id": "yandex_music", "action_key": "auth_qr"},
         )
     assert result.data.action_key == "auth_qr"
-    mock_config_targets.config.get_provider_config_entries.assert_awaited()
+    mock_config_targets.config.invoke_provider_config_action.assert_awaited()
 
 
 async def test_save_provider_bulk_persists(mounted_config: Any, mock_config_targets: Any) -> None:

@@ -10,6 +10,7 @@ from concurrent import futures
 from contextlib import suppress
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final
+from uuid import uuid4
 
 from aiohttp import WSMsgType, web
 from music_assistant_models.api import (
@@ -18,7 +19,7 @@ from music_assistant_models.api import (
     MessageType,
     SuccessResultMessage,
 )
-from music_assistant_models.auth import AuthProviderType, User
+from music_assistant_models.auth import AuthProviderType, Scope, User
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import (
     AuthenticationRequired,
@@ -38,6 +39,7 @@ from .helpers.auth_middleware import (
     has_scope,
     is_request_from_ingress,
     resolve_command_impersonation,
+    set_current_client_id,
     set_current_token,
     set_current_user,
     set_impersonated_user,
@@ -60,6 +62,7 @@ class WebsocketClientHandler:
         self.webserver = webserver
         self.mass = webserver.mass
         self.request = request
+        self.client_id = uuid4().hex
         self.wsock = web.WebSocketResponse(heartbeat=25)
         self._to_write: asyncio.Queue[str | None] = asyncio.Queue(maxsize=MAX_PENDING_MSG)
         self._handle_task: asyncio.Task[Any] | None = None
@@ -162,6 +165,9 @@ class WebsocketClientHandler:
             # Unregister from webserver tracking
             self.webserver.unregister_websocket_client(self)
 
+            # Drop any dashboard registrations owned by this connection
+            self.mass.dashboard.handle_client_disconnected(self.client_id)
+
             try:
                 self._to_write.put_nowait(None)
                 # Make sure all error messages are written before closing
@@ -222,10 +228,11 @@ class WebsocketClientHandler:
                 )
                 return
 
-            # Set user, token and sendspin player in context for API methods
+            # Set user, token, sendspin player and client id in context for API methods
             set_current_user(self._authenticated_user)
             set_current_token(self._current_token)
             set_sendspin_player_id(self._sendspin_player_id)
+            set_current_client_id(self.client_id)
 
             # Check scope if required
             if handler.required_scope and not has_scope(
@@ -537,6 +544,28 @@ class WebsocketClientHandler:
                 and event.object_id != self._sendspin_player_id
             ):
                 return
+
+            if event.event == EventType.SETUP_FLOW_UPDATED:
+                # setup flow steps carry prefilled values, OAuth urls and the
+                # flow_id guarding the unauthenticated callback route - only
+                # users who could interact with the flow may receive them
+                user = self._authenticated_user
+                if user is None:
+                    return
+                required = (
+                    self.mass.config.get_setup_flow_required_scope(event.object_id)
+                    if event.object_id
+                    else None
+                )
+                if required is None:
+                    # flow already popped (terminal step race): the flow kind is no
+                    # longer known, so require both config scopes to be safe
+                    if not has_scope(user, Scope.CONFIG_PROVIDERS_WRITE) or not has_scope(
+                        user, Scope.CONFIG_PLAYERS_WRITE
+                    ):
+                        return
+                elif not has_scope(user, required):
+                    return
 
             if event.event == EventType.TASKS_UPDATED:
                 if self._authenticated_user is None:

@@ -64,7 +64,7 @@ from music_assistant.providers.smart_playlist.helpers import (
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
 
@@ -89,23 +89,6 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return SmartPlaylistProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    return (
-        ConfigEntry(
-            key=CONF_AI_DESCRIPTIONS,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            default_value=True,
-        ),
-    )
 
 
 def _filter_by_explicit(tracks: list[Track], explicit_rule: bool | None) -> list[Track]:
@@ -173,6 +156,17 @@ class SmartPlaylistProvider(PluginProvider):
     _descriptions_store: dict[str, str]
     _unregister_handles: list[Callable[[], None]]
     _flush_lock: asyncio.Lock
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_AI_DESCRIPTIONS,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=True,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization."""
@@ -287,22 +281,33 @@ class SmartPlaylistProvider(PluginProvider):
             playlists.append(await self._build_playlist(pid, rules))
         return playlists
 
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Return smart playlists as a recommendation folder."""
-        playlists = []
-        for pid, r in self._rules_store.items():
-            playlists.append(await self._build_playlist(pid, r))
-        if playlists:
-            return [
-                RecommendationFolder(
-                    item_id="smart_playlists",
-                    provider=self.domain,
-                    name="Smart Playlists",
-                    translation_key="smart_playlists",
-                    items=playlists,  # type: ignore[arg-type]
-                )
-            ]
-        return []
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this plugin's available recommendation rows, without items."""
+        if not self._rules_store:
+            return []
+        return [
+            RecommendationFolder(
+                item_id="smart_playlists",
+                provider=self.instance_id,
+                name="Smart Playlists",
+                translation_key="smart_playlists",
+            )
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the smart playlists for a single recommendation row.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        items: UniqueList[MediaItemType | ItemMapping | BrowseFolder] = UniqueList()
+        if item_id != "smart_playlists":
+            return items
+        for pid, rules in self._rules_store.items():
+            items.append(await self._build_playlist(pid, rules))
+        return items
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get playlist details by provider id."""

@@ -53,6 +53,17 @@ class SharedPlaybackMode(StrEnum):
     REMOTE = "remote"
 
 
+def is_remote_session_host(mass: MusicAssistant, player_id: str) -> bool:
+    """
+    Return whether the given player is the virtual host of a REMOTE session.
+
+    :param mass: MusicAssistant instance.
+    :param player_id: Player to inspect.
+    """
+    sendspin = cast("SendspinProvider | None", mass.get_provider(SENDSPIN_DOMAIN))
+    return sendspin is not None and sendspin.is_virtual_player(player_id)
+
+
 class SharedPlaybackSession:
     """
     A player/queue that hosts a shared listening experience.

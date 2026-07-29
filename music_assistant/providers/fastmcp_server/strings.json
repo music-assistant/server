@@ -159,6 +159,9 @@
     "config_write_secret": {
       "label": "Config: allow writing secret values",
       "description": "Required IN ADDITION to a category write flag before any SECURE_STRING (password/token) value can be written. With this off, secret writes are rejected while non-secret edits still work. Keep off unless deliberately rotating credentials."
+    },
+    "connect_wizard_url": {
+      "label": "Connect Wizard"
     }
   },
   "config_categories": {
@@ -168,6 +171,12 @@
     "delete_permissions": "Delete Permissions",
     "mcp_resources": "MCP Resources",
     "mcp_config": "Config"
+  },
+  "setup_flow": {
+    "connect": {
+      "title": "Connect an MCP client",
+      "description": "Open the Connect Wizard, choose your AI client and generate its Music Assistant configuration. Setup completes automatically when the configuration is ready."
+    }
   },
   "manifest": {
     "description": "Exposes Music Assistant as a Model Context Protocol (MCP) server for Claude, Codex, and other MCP-aware LLM clients."
