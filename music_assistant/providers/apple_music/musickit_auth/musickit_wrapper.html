@@ -129,6 +129,10 @@
         }
       }
       xmlHttp.open(callback_method, url, true);
+      if (data !== null) {
+        // without this the browser labels the JSON body text/plain and the flow drops it
+        xmlHttp.setRequestHeader('Content-Type', 'application/json');
+      }
       xmlHttp.onreadystatechange = () => {
         if (xmlHttp.readyState === XMLHttpRequest.DONE) {
           callbackConsumed = true;
