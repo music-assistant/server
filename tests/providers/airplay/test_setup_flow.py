@@ -21,7 +21,9 @@ from music_assistant.providers.airplay.constants import (
     CONF_COMPANION_CREDENTIALS,
     CONF_COMPANION_PAIRING_PIN,
     CONF_PAIR_NOW,
+    CONF_PAIRING_PASSWORD,
     CONF_PAIRING_PIN,
+    CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
 )
 from music_assistant.providers.airplay.control_player import AirPlayControlPlayer
@@ -440,3 +442,68 @@ async def test_companion_offer_can_be_skipped() -> None:
     assert collected == {}
     pairing_cls.assert_not_called()
     pyatv_pair.assert_not_called()
+
+
+def _password_player(*, player_id: str = "test_player") -> AirPlayPlayer:
+    """Create an AirPlay 2 player that announces password protection (flags bit 0x80)."""
+    provider = MagicMock()
+    provider.dacp_id = "0123456789ABCDEF"
+    _stub_setup_data(provider, player_id, {})
+    return AirPlayPlayer(
+        provider=provider,
+        player_id=player_id,
+        display_name="Test HomePod",
+        address="127.0.0.1",
+        manufacturer="Apple",
+        model="HomePod mini",
+        raop_discovery_info=None,
+        airplay_discovery_info=_service_info(
+            AIRPLAY_DISCOVERY_TYPE, {"features": AP2_FEATURES, "flags": "0x80"}
+        ),
+    )
+
+
+async def test_streaming_password_pairing_persists_the_device_password() -> None:
+    """The entered password is stored as player config, not discarded with the form."""
+    collected: dict[str, Any] = {}
+
+    async def finish(_session: SetupSession, values: dict[str, Any]) -> dict[str, str]:
+        collected.update(values)
+        return {"player_id": "test_player"}
+
+    session, _mass = _make_session(finish)
+    player = _password_player()
+    pairing = AsyncMock()
+    pairing.finish_pairing = AsyncMock(return_value=FAKE_AP2_CREDS)
+
+    with patch(_PAIRING_TARGET, return_value=pairing):
+        task = asyncio.create_task(player.run_setup_flow(session))
+        await _pump(session, task, lambda _step: {CONF_PAIRING_PASSWORD: "hunter2"})
+
+    # the pairing credentials still go to setup_data...
+    assert collected == {CONF_AIRPLAY_CREDENTIALS: FAKE_AP2_CREDS}
+    # ...and the password itself is persisted so every stream can present it
+    player.mass.config.set_raw_player_config_value.assert_called_once_with(  # type: ignore[attr-defined]
+        "test_player", CONF_PASSWORD, "hunter2"
+    )
+
+
+async def test_streaming_password_pairing_uses_a_password_form() -> None:
+    """A password-protected device is asked for a password instead of a PIN."""
+
+    async def finish(_session: SetupSession, _values: dict[str, Any]) -> dict[str, str]:
+        return {"player_id": "test_player"}
+
+    session, mass = _make_session(finish)
+    player = _password_player()
+    pairing = AsyncMock()
+    pairing.finish_pairing = AsyncMock(return_value=FAKE_AP2_CREDS)
+
+    with patch(_PAIRING_TARGET, return_value=pairing):
+        task = asyncio.create_task(player.run_setup_flow(session))
+        await _pump(session, task, lambda _step: {CONF_PAIRING_PASSWORD: "hunter2"})
+
+    forms = [step for step in _published_steps(mass) if step.type == FlowStepType.FORM]
+    assert [step.step_id for step in forms] == ["pair_password"]
+    # the device shows no PIN in this flow, so no PIN pairing is started
+    pairing.start_pin_pairing.assert_not_awaited()

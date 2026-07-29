@@ -183,6 +183,18 @@ class AirPlayPlayer(Player):
         return "pairing_required" if self.needs_setup else None
 
     @property
+    def password_required(self) -> bool:
+        """Return if the device announces that it is password protected."""
+        # Two independent announcements: AirPlay 2 devices set the password bit in
+        # their sf/flags, while a legacy RAOP receiver only publishes the classic
+        # pw boolean in its TXT record.
+        if self._requires_password_pairing():
+            return True
+        if raop_info := self.raop_discovery_info:
+            return (raop_info.decoded_properties.get("pw") or "").lower() == "true"
+        return False
+
+    @property
     def requires_flow_mode(self) -> bool:
         """Return if the player requires flow mode."""
         return True
@@ -258,8 +270,10 @@ class AirPlayPlayer(Player):
                 type=ConfigEntryType.SECURE_STRING,
                 default_value=None,
                 required=False,
-                # the device password is only consumed by the RAOP flow
-                hidden=not is_raop,
+                # Both streaming flows consume the device password, but only a RAOP
+                # receiver can be password protected without announcing it, so the
+                # AirPlay 2 side is offered the field on its announcement alone.
+                hidden=not (is_raop or self.password_required),
                 category="protocol_generic",
                 advanced=True,
             ),
@@ -869,7 +883,8 @@ class AirPlayPlayer(Player):
                     step_id=step_id,
                     errors=errors,
                 )
-                credentials = await pairing.finish_pairing(pin=str(values[field_key]))
+                entered_value = str(values[field_key])
+                credentials = await pairing.finish_pairing(pin=entered_value)
             except PlayerCommandFailed as err:
                 errors = {"base": err.translation_key or str(err)}
                 continue
@@ -877,6 +892,11 @@ class AirPlayPlayer(Player):
                 # tears down the subprocess on retry, success and abort (cancellation)
                 await pairing.close()
             collected[cred_key] = credentials
+            if password_pairing:
+                # The device password authenticates every later stream too (the
+                # binary's transient leg), so keep it next to the credentials
+                # instead of discarding it with the setup form.
+                self._store_device_password(entered_value)
             return
 
     async def _prepare_streaming_pairing(
@@ -1120,6 +1140,16 @@ class AirPlayPlayer(Player):
                 continue
             return candidate
         return None
+
+    def _store_device_password(self, password: str) -> None:
+        """
+        Persist a device password so every later stream can authenticate with it.
+
+        :param password: The plaintext password entered by the user.
+        """
+        self.mass.config.set_raw_player_config_value(
+            self.player_id, CONF_PASSWORD, self.mass.config.encrypt_string(password)
+        )
 
 
 class GenericAirPlayPlayer(AirPlayPlayer):

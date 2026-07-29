@@ -268,6 +268,7 @@
   "common.errors.invalid_token": "The access token is invalid or has expired.",
   "common.errors.login_failed": "Login failed. Please check your credentials and try again.",
   "common.errors.media_not_found": "The requested media item could not be found.",
+  "common.errors.password_required": "This device requires a password. Set the device password in the player settings.",
   "common.errors.player_command_failed": "The command to the player failed.",
   "common.errors.player_unavailable": "The player is not available.",
   "common.errors.provider_permission_denied": "The provider denied this action due to insufficient permissions.",

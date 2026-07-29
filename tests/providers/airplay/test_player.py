@@ -27,6 +27,7 @@ from music_assistant.providers.airplay.constants import (
     CONF_ENCRYPTION,
     CONF_FORCE_RAOP,
     CONF_IGNORE_VOLUME,
+    CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
     CONF_STORED_VOLUME,
     StreamingProtocol,
@@ -1207,3 +1208,64 @@ async def test_stop_cancels_pending_rejoin() -> None:
         assert player._rejoin_task is None
         await asyncio.sleep(0)
         assert rejoin_task.cancelled()
+
+
+# --- Device password: entry visibility ---
+
+
+def _set_password_discovery(player: AirPlayPlayer, *, flags: str = "0x0", pw: str = "") -> None:
+    """
+    Attach an AirPlay 2 + RAOP device announcing password protection.
+
+    :param flags: The _airplay service sf/flags bitmask (0x80 marks a password).
+    :param pw: The legacy ``pw`` boolean published by the _raop service.
+    """
+    airplay_info = MagicMock()
+    airplay_info.decoded_properties = {"features": AP2_FEATURES, "flags": flags}
+    airplay_info.properties = {b"flags": flags.encode()}
+    player.airplay_discovery_info = airplay_info
+    raop_info = MagicMock()
+    raop_info.decoded_properties = {"pw": pw} if pw else {}
+    raop_info.properties = {}
+    player.raop_discovery_info = raop_info
+    _configure_player(player, {CONF_FORCE_RAOP: False})
+
+
+@pytest.mark.asyncio
+async def test_password_entry_shown_for_password_protected_airplay2(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """An AirPlay 2 device announcing password protection offers the password field."""
+    _set_password_discovery(airplay_player, flags="0x80")
+    assert airplay_player.protocol == StreamingProtocol.AIRPLAY2
+    assert airplay_player.password_required is True
+
+    entries = await airplay_player.get_config_entries()
+    entry = next(entry for entry in entries if entry.key == CONF_PASSWORD)
+    assert entry.hidden is False
+
+
+@pytest.mark.asyncio
+async def test_password_entry_shown_for_legacy_pw_txt_record(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """The classic RAOP ``pw=true`` boolean also reveals the password field."""
+    _set_password_discovery(airplay_player, pw="true")
+
+    assert airplay_player.password_required is True
+    entries = await airplay_player.get_config_entries()
+    entry = next(entry for entry in entries if entry.key == CONF_PASSWORD)
+    assert entry.hidden is False
+
+
+@pytest.mark.asyncio
+async def test_password_entry_hidden_for_airplay2_without_password(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """An AirPlay 2 device that never asks for a password keeps the field hidden."""
+    _set_password_discovery(airplay_player)
+
+    assert airplay_player.password_required is False
+    entries = await airplay_player.get_config_entries()
+    entry = next(entry for entry in entries if entry.key == CONF_PASSWORD)
+    assert entry.hidden is True
