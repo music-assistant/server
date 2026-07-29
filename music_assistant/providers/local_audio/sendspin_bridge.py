@@ -1010,9 +1010,7 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
             # sinks to be silently skipped as "already exists". Append the
             # ALSA card index to disambiguate: "Creative_X_Fi_card0" vs
             # "Creative_X_Fi_card3".
-            all_card_names = [
-                d.get("alsa_card_name") for d in devices if not d.get("is_remap")
-            ]
+            all_card_names = [d.get("alsa_card_name") for d in devices if not d.get("is_remap")]
             is_duplicate_card_name = all_card_names.count(alsa_card_name) > 1
             alsa_card_index: str | None = (
                 device.get("alsa_card_index") if is_duplicate_card_name else None
