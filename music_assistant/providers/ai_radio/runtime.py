@@ -24,7 +24,7 @@ from music_assistant_models.enums import (
     QueueOption,
     TaskStatus,
 )
-from music_assistant_models.errors import InvalidCommand, InvalidDataError, MusicAssistantError
+from music_assistant_models.errors import InvalidDataError, MusicAssistantError
 from music_assistant_models.media_items import (
     MediaItemImage,
     ProviderMapping,
@@ -72,7 +72,6 @@ from .models import (
     AudioSection,
     GeneratedSection,
     PlannedSection,
-    QueueBinding,
     SessionState,
     Slot,
 )
@@ -299,7 +298,6 @@ class AIRadioRuntimeMixin:
             poll_seconds,
             prefetch_remaining_tracks,
         )
-        clear_queue = bool(station.get("clear_queue_on_start", True))
         # a grouped player plays from the group leader's queue, so resolve the
         # active queue up front and target that one for queueing and polling
         queue_id = player_id
@@ -314,30 +312,11 @@ class AIRadioRuntimeMixin:
             prefetch_remaining_tracks=prefetch_remaining_tracks,
             queue_id=queue_id,
         )
-        # without clearing, batches are appended after the existing queue items,
-        # so all trigger index math below must be offset by the current queue size
-        base_offset = 0
-        queue_was_active = False
-        if clear_queue:
-            self.mass.player_queues.clear(queue_id)
-        else:
-            existing_queue = self.mass.player_queues.get(queue_id)
-            base_offset = int(getattr(existing_queue, "items", 0) or 0)
-            queue_was_active = getattr(existing_queue, "state", None) in (
-                PlaybackState.PLAYING,
-                PlaybackState.PAUSED,
-            )
-        # bind the run to its queue so stopping the show can stop playback too
-        session.queue = QueueBinding(queue_id=queue_id, owned=clear_queue, first_index=base_offset)
+        self.mass.player_queues.clear(queue_id)
+        session.queue_id = queue_id
 
         # a shuffled queue reorders each batch, scattering sections away from their tracks
-        try:
-            await self.mass.player_queues.set_shuffle(queue_id, False)
-        except InvalidCommand as err:
-            raise MusicAssistantError(
-                f"Queue {queue_id} is in dynamic mode, which reorders the queue. Disable dynamic "
-                "mode on the player or enable 'clear queue on start' for this station."
-            ) from err
+        await self.mass.player_queues.set_shuffle(queue_id, False)
 
         cumulative_minutes = [0.0]
         for track in tracks:
@@ -351,7 +330,6 @@ class AIRadioRuntimeMixin:
         batch_index = 0
         total_entries_queued = 0
         wait_trigger_global_index = -1
-        # only once playback has been observed can an idle queue mean "user stopped it"
         playback_seen = False
         queue_stopped = False
         history_state: dict[str, list[tuple[int, float]]] = {}
@@ -443,17 +421,13 @@ class AIRadioRuntimeMixin:
                 else entry
                 for entry in entries
             ]
-            option = QueueOption.REPLACE if is_first and clear_queue else QueueOption.ADD
+            option = QueueOption.REPLACE if is_first else QueueOption.ADD
             await self.mass.player_queues.play_media(
                 queue_id=queue_id,
                 media=media_entries,
                 option=option,
             )
-            if is_first and not clear_queue and not queue_was_active:
-                # ADD does not start playback on an idle queue
-                await self.mass.player_queues.play_index(queue_id, base_offset)
-
-            batch_start_global = base_offset + total_entries_queued
+            batch_start_global = total_entries_queued
             total_entries_queued += len(entries)
             if source_positions:
                 trigger_position = max(0, len(source_positions) - prefetch_remaining_tracks)
@@ -518,7 +492,6 @@ class AIRadioRuntimeMixin:
                     playback_seen = True
                 if playback_alive:
                     inactivity_deadline = asyncio.get_running_loop().time() + stall_timeout
-                # a stopped queue means the radio was turned off, not that it stalled
                 if playback_seen and queue_state == PlaybackState.IDLE:
                     self.logger.info(
                         "Queue %s was stopped, ending dynamic run (last_index=%s)",
@@ -1687,21 +1660,16 @@ class AIRadioRuntimeMixin:
 
     async def _stop_session_queue(self, session: SessionState) -> None:
         """Stop playback of the queue a run was playing on."""
-        binding = session.queue
-        if binding is None:
+        queue_id = session.queue_id
+        if queue_id is None:
             return
-        queue = self.mass.player_queues.get(binding.queue_id)
+        queue = self.mass.player_queues.get(queue_id)
         if queue is None or getattr(queue, "state", None) == PlaybackState.IDLE:
             return
-        if not binding.owned:
-            # an appended run shares the queue, so only stop once it reached the show
-            current_index = queue.current_index
-            if current_index is None or current_index < binding.first_index:
-                return
         try:
-            await self.mass.player_queues.stop(binding.queue_id)
+            await self.mass.player_queues.stop(queue_id)
         except MusicAssistantError as err:
-            self.logger.debug("Could not stop queue %s: %s", binding.queue_id, err)
+            self.logger.debug("Could not stop queue %s: %s", queue_id, err)
 
     def _get_tts_plugin(self) -> PluginProvider:
         """Return the plugin used for TTS tasks."""
