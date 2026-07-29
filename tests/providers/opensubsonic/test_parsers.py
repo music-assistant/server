@@ -18,6 +18,7 @@ from libopensonic.media import (
     PodcastEpisode,
     StructuredLyrics,
 )
+from libopensonic.media.media_types import InternetRadioStation
 
 from music_assistant.providers.opensubsonic.parsers import (
     parse_album,
@@ -25,6 +26,7 @@ from music_assistant.providers.opensubsonic.parsers import (
     parse_epsiode,
     parse_playlist,
     parse_podcast,
+    parse_radio,
     parse_structured_lyrics,
     parse_track,
 )
@@ -129,6 +131,27 @@ async def test_parse_episode(example: pathlib.Path, snapshot: SnapshotAssertion)
     # sort external Ids to ensure they are always in the same order for snapshot testing
     parsed["external_ids"].sort()
     assert snapshot == parsed
+
+
+def test_parse_radio() -> None:
+    """Test we can parse an internet radio station into a Music Assistant radio item."""
+    station = InternetRadioStation(
+        id="station-1",
+        name="Sample Station",
+        stream_url="https://example.com/stream",
+        home_page_url="https://example.com",
+        cover_art="/cover.jpg",
+    )
+
+    parsed = parse_radio("xx-instance-id-xx", station)
+    images = parsed.metadata.images
+    assert parsed.item_id == "station-1"
+    assert parsed.name == "Sample Station"
+    assert parsed.provider == "xx-instance-id-xx"
+    assert parsed.uri == "https://example.com/stream"
+    assert images is not None
+    assert images[0].path == "/cover.jpg"
+    assert parsed.provider_mappings
 
 
 @pytest.mark.parametrize("example", TRACK_FIXTURES, ids=lambda val: str(val.stem))
