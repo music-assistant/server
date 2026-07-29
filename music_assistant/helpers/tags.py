@@ -12,6 +12,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from json import JSONDecodeError
 from typing import Any
+from uuid import UUID
 
 import mutagen
 from music_assistant_models.enums import AlbumType
@@ -42,6 +43,26 @@ TAG_SPLITTER = ";"
 def clean_tuple(values: Iterable[str]) -> tuple[str, ...]:
     """Return a tuple with all empty values removed."""
     return tuple(x.strip() for x in values if x not in (None, "", " "))
+
+
+def clean_mbid(value: str | None, source: str | None = None) -> str | None:
+    """
+    Return a MusicBrainz identifier in canonical (lowercase UUID) form, or None if invalid.
+
+    :param value: The raw MusicBrainz identifier value from the file tags.
+    :param source: Origin of the value (e.g. filename), included in the log when invalid.
+    """
+    if not value:
+        return None
+    # taggers may write NUL-terminated or padded values (e.g. in a UFID frame)
+    try:
+        return str(UUID(value.strip("\x00 \t\r\n")))
+    except ValueError, TypeError, AttributeError:
+        if source:
+            LOGGER.warning("Ignoring invalid MusicBrainz identifier %r in %s", value, source)
+        else:
+            LOGGER.warning("Ignoring invalid MusicBrainz identifier %r", value)
+        return None
 
 
 def split_items(
@@ -450,10 +471,6 @@ class AudioTags:
     @property
     def musicbrainz_recordingid(self) -> str | None:
         """Return musicbrainz_recordingid tag if present."""
-        if tag := self.tags.get("UFID:http://musicbrainz.org"):
-            return tag
-        if tag := self.tags.get("musicbrainz.org"):
-            return tag
         if tag := self.tags.get("musicbrainzrecordingid"):
             return tag
         return self.tags.get("musicbrainztrackid")
@@ -948,7 +965,11 @@ def _parse_id3_tags(tags: dict[str, Any]) -> dict[str, Any]:
     if (frame := tags.get("TXXX:MusicBrainz Release Group Id")) and frame.text:
         result["musicbrainzreleasegroupid"] = frame.text[0]
     if frame := tags.get("UFID:http://musicbrainz.org"):
-        result["musicbrainzrecordingid"] = frame.data.decode()
+        # Strip NULs and whitespace from MusicBrainz UFID data (support #5906).
+        # UFID data is binary per the ID3 spec; a decode error here would discard all mutagen tags.
+        result["musicbrainzrecordingid"] = (
+            frame.data.decode("utf-8", errors="replace").replace("\x00", "").strip()
+        )
     if (frame := tags.get("TXXX:MusicBrainz Track Id")) and frame.text:
         result["musicbrainztrackid"] = frame.text[0]
 
