@@ -1008,7 +1008,10 @@ class TestProtocolOutputPlayPause:
         controller._players = {"player_1": player, "proto_1": protocol_player}
         mock_mass.players = controller
         mock_mass.player_queues = MagicMock()
-        mock_mass.player_queues.get = MagicMock(return_value=None)
+        # a non-empty queue, so the MA queue source advertises play/pause support
+        queue = MagicMock()
+        queue.items = [MagicMock()]
+        mock_mass.player_queues.get = MagicMock(return_value=queue)
         player.set_linked_output_protocols(
             [
                 OutputProtocol(
