@@ -8,7 +8,9 @@ import logging
 import os
 import pathlib
 import threading
-from collections.abc import AsyncGenerator, Awaitable, Callable, Coroutine
+from base64 import b64encode
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, Self, TypeGuard, TypeVar, cast, overload
 from uuid import uuid4
 
@@ -17,7 +19,13 @@ from aiofiles.os import wrap
 from music_assistant_models.api import ServerInfoMessage
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ProviderError
-from music_assistant_models.enums import CoreState, EventType, ProviderFeature, ProviderType
+from music_assistant_models.enums import (
+    CoreState,
+    EventType,
+    ProviderFeature,
+    ProviderIconVariant,
+    ProviderType,
+)
 from music_assistant_models.errors import (
     MusicAssistantError,
     SetupFailedError,
@@ -40,6 +48,7 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.cache import CacheController
 from music_assistant.controllers.config import ConfigController
+from music_assistant.controllers.dashboard import DashboardController
 from music_assistant.controllers.diagnostics import DiagnosticsController
 from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.controllers.metadata import MetaDataController
@@ -57,7 +66,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 from music_assistant.helpers.aiohttp_client import create_clientsession
 from music_assistant.helpers.api import APICommandHandler, api_command
 from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
-from music_assistant.helpers.images import get_icon_string
+from music_assistant.helpers.images import detect_provider_icons
 from music_assistant.helpers.util import (
     TaskManager,
     get_package_version,
@@ -94,6 +103,11 @@ LOGGER = logging.getLogger(MASS_LOGGER_NAME)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROVIDERS_PATH = os.path.join(BASE_DIR, "providers")
+PROVIDER_SETUP_TIMEOUT = 30
+# Generous enough for the slowest hosts to load their ML models, but bounded so a wedged
+# provider fails to load instead of holding up startup forever.
+PROVIDER_ASYNC_INIT_TIMEOUT = 300
+PROVIDER_LOAD_CONCURRENCY = 8
 
 _R = TypeVar("_R")
 _ProviderT = TypeVar("_ProviderT", bound=ProviderInstanceType)
@@ -130,6 +144,23 @@ def _provider_error_from_exc(exc: BaseException) -> ProviderError:
     return ProviderError(error_code=999, message=message)
 
 
+@asynccontextmanager
+async def _provider_load_step(domain: str, action: str, timeout: int) -> AsyncIterator[None]:
+    """
+    Bound a provider load step, surfacing a timeout as a regular setup failure.
+
+    :param domain: Domain of the provider being loaded, used in the error message.
+    :param action: Verb describing the step, used in the error message.
+    :param timeout: Seconds to allow the step before it is treated as failed.
+    """
+    try:
+        async with asyncio.timeout(timeout):
+            yield
+    except TimeoutError as err:
+        msg = f"Provider {domain} did not {action} within {timeout} seconds"
+        raise SetupFailedError(msg) from err
+
+
 class MusicAssistant:
     """Main MusicAssistant (Server) object."""
 
@@ -146,6 +177,7 @@ class MusicAssistant:
     streams: StreamsController
     translations: TranslationController
     diagnostics: DiagnosticsController
+    dashboard: DashboardController
 
     def __init__(self, storage_path: str, cache_path: str, safe_mode: bool = False) -> None:
         """Initialize the MusicAssistant Server."""
@@ -160,6 +192,7 @@ class MusicAssistant:
         self.command_handlers: dict[str, APICommandHandler] = {}
         self._subscribers: set[EventSubscriptionType] = set()
         self._provider_manifests: dict[str, ProviderManifest] = {}
+        self._provider_icons: dict[str, dict[ProviderIconVariant, tuple[str, bytes]]] = {}
         self._providers: dict[str, ProviderInstanceType] = {}
         self._tracked_tasks: dict[str, asyncio.Task[Any]] = {}
         self._tracked_timers: dict[str, asyncio.TimerHandle] = {}
@@ -202,20 +235,7 @@ class MusicAssistant:
         )
         await warn_if_missing_x86_64_v2(LOGGER)
         # setup other core controllers
-        self.cache = CacheController(self)
-        self.tasks = TasksController(self)
-        self.webserver = WebserverController(self)
-        self.metadata = MetaDataController(self)
-        self.music = MusicController(self)
-        self.players = PlayerController(self)
-        self.player_queues = PlayerQueuesController(self)
-        self.streams = StreamsController(self)
-        self.translations = TranslationController(self)
-        self.diagnostics = DiagnosticsController(self)
-        # add manifests for core controllers
-        for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
-            controller: CoreController = getattr(self, controller_name)
-            self._provider_manifests[controller.domain] = controller.manifest
+        await self._load_core_controllers()
 
         # setup all core controllers in parallel
         async def setup_controller(controller: CoreController) -> None:
@@ -238,6 +258,7 @@ class MusicAssistant:
             tg.create_task(setup_controller(self.players))
             tg.create_task(setup_controller(self.player_queues))
             tg.create_task(setup_controller(self.diagnostics))
+            tg.create_task(setup_controller(self.dashboard))
 
         for controller_name in (
             "cache",
@@ -291,6 +312,7 @@ class MusicAssistant:
         await self.players.close()
         await self.translations.close()
         await self.diagnostics.close()
+        await self.dashboard.close()
         # cleanup cache and config
         await self.config.close()
         await self.cache.close()
@@ -367,6 +389,46 @@ class MusicAssistant:
         if provider := self.get_provider(instance_id_or_domain, return_unavailable=True):
             return provider.manifest
         raise KeyError(f"Provider manifest not found for {instance_id_or_domain}")
+
+    @api_command("providers/icon", required_scope=Scope.PROVIDERS_READ)
+    def get_provider_icon_data(
+        self,
+        provider: str,
+        variant: ProviderIconVariant = ProviderIconVariant.DEFAULT,
+    ) -> str | None:
+        """
+        Return a provider icon variant as a base64 data URI.
+
+        :param provider: A provider domain or instance id.
+        :param variant: Which icon variant to return.
+        """
+        icon = self.get_provider_icon(provider, variant)
+        if icon is None:
+            return None
+        mime, data = icon
+        return f"data:{mime};base64,{b64encode(data).decode('ascii')}"
+
+    def get_provider_icon(
+        self,
+        provider: str,
+        variant: ProviderIconVariant = ProviderIconVariant.DEFAULT,
+    ) -> tuple[str, bytes] | None:
+        """
+        Return the (mime, bytes) for a provider icon variant.
+
+        :param provider: A provider domain or instance id.
+        :param variant: Which icon variant to return.
+        """
+        domain = provider
+        if domain not in self._provider_icons:
+            try:
+                domain = self.get_provider_manifest(provider).domain
+            except KeyError:
+                return None
+        icons = self._provider_icons.get(domain)
+        if not icons:
+            return None
+        return icons.get(variant)
 
     @api_command("providers", required_scope=Scope.PROVIDERS_READ)
     def get_providers(
@@ -949,6 +1011,7 @@ class MusicAssistant:
             self.webserver.auth,
             self.streams.audio_analysis,
             self.diagnostics,
+            self.dashboard,
         ):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):
@@ -971,6 +1034,29 @@ class MusicAssistant:
                     self.register_api_command(
                         obj.api_cmd, obj, authenticated, required_scope, allow_impersonation, alias
                     )
+
+    async def _load_core_controllers(self) -> None:
+        """Instantiate the core controllers and register their manifests and icons."""
+        self.cache = CacheController(self)
+        self.tasks = TasksController(self)
+        self.webserver = WebserverController(self)
+        self.metadata = MetaDataController(self)
+        self.music = MusicController(self)
+        self.players = PlayerController(self)
+        self.player_queues = PlayerQueuesController(self)
+        self.streams = StreamsController(self)
+        self.translations = TranslationController(self)
+        self.diagnostics = DiagnosticsController(self)
+        self.dashboard = DashboardController(self)
+        # add manifests for core controllers
+        for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
+            controller: CoreController = getattr(self, controller_name)
+            self._provider_manifests[controller.domain] = controller.manifest
+            # load icon image(s) shipped alongside the controller module
+            controller_dir = os.path.dirname(inspect.getfile(type(controller)))
+            if icons := await detect_provider_icons(controller_dir):
+                self._provider_icons[controller.domain] = icons
+                controller.manifest.icon_images = list(icons)
 
     async def _load_builtin_providers(self) -> None:
         """
@@ -1058,14 +1144,15 @@ class MusicAssistant:
                 or not manifest.builtin
             )
         ]
-        # load providers concurrently via tasks
-        async with TaskManager(self, 2) as tg:
+        # load providers concurrently via tasks, bounded so a host with many providers does
+        # not import every provider module at once (a torch-backed one costs hundreds of MB)
+        async with TaskManager(self, PROVIDER_LOAD_CONCURRENCY) as tg:
             for prov_conf in other_configs:
                 # Use a task so we can load multiple providers at once.
                 # If a provider fails, that will not block the loading of other providers.
                 # For providers just auto-set-up as a default, drop the config again if the
                 # host does not meet their requirements (rather than retry a broken provider).
-                tg.create_task(
+                await tg.create_task_with_limit(
                     self.load_provider(
                         prov_conf.instance_id,
                         allow_retry=True,
@@ -1082,12 +1169,9 @@ class MusicAssistant:
             msg = "Provider is disabled"
             raise SetupFailedError(msg)
 
-        # validate config
-        try:
-            conf.validate()
-        except (KeyError, ValueError, AttributeError, TypeError) as err:
-            msg = "Configuration is invalid"
-            raise SetupFailedError(msg) from err
+        # The config is validated after the instance is created and its config rehydrated
+        # (see below): the full options entries - and thus which values are required - are
+        # only known once the instance exists.
 
         domain = conf.domain
         prov_manifest = self._provider_manifests.get(domain)
@@ -1107,17 +1191,32 @@ class MusicAssistant:
             # automatically when the dependency is loaded
             return
 
+        # seed the config with its stored raw values so any construction-time option reads
+        # in setup()/__init__ see them (the fully-typed entries are only resolvable once the
+        # instance exists, and are applied by rehydrate_provider_config just below)
+        self.config.seed_stored_config_values(conf)
+
         # try to setup the module
         prov_mod = await load_provider_module(domain, prov_manifest.requirements)
+        async with _provider_load_step(domain, "load", PROVIDER_SETUP_TIMEOUT):
+            provider = await prov_mod.setup(self, prov_manifest, conf)
+
+        # The instance now exists, so its full (options) config entries can be resolved
+        # (get_config_entries is an instance method). Rehydrate the config values from
+        # storage against those entries and validate the complete config, before async
+        # init so get_config_value reads there see the stored values.
+        await self.config.rehydrate_provider_config(provider)
         try:
-            async with asyncio.timeout(30):
-                provider = await prov_mod.setup(self, prov_manifest, conf)
-        except TimeoutError as err:
-            msg = f"Provider {domain} did not load within 30 seconds"
+            provider.config.validate()
+        except (KeyError, ValueError, AttributeError, TypeError) as err:
+            # name the offending entry: the generic message alone gives no clue which
+            # value is missing or malformed when a provider refuses to load
+            msg = f"Configuration is invalid: {err}"
             raise SetupFailedError(msg) from err
 
         # run async setup
-        await provider.handle_async_init()
+        async with _provider_load_step(domain, "initialize", PROVIDER_ASYNC_INIT_TIMEOUT):
+            await provider.handle_async_init()
 
         # if we reach this point, the provider loaded successfully
         self._providers[provider.instance_id] = provider
@@ -1166,21 +1265,16 @@ class MusicAssistant:
                     continue
                 try:
                     provider_manifest: ProviderManifest = await ProviderManifest.parse(file_path)
-                    # check for icon.svg file
-                    if not provider_manifest.icon_svg:
-                        icon_path = os.path.join(provider_path, "icon.svg")
-                        if await isfile(icon_path):
-                            provider_manifest.icon_svg = await get_icon_string(icon_path)
-                    # check for dark_icon file
-                    if not provider_manifest.icon_svg_dark:
-                        icon_path = os.path.join(provider_path, "icon_dark.svg")
-                        if await isfile(icon_path):
-                            provider_manifest.icon_svg_dark = await get_icon_string(icon_path)
-                    # check for icon_monochrome file
-                    if not provider_manifest.icon_svg_monochrome:
-                        icon_path = os.path.join(provider_path, "icon_monochrome.svg")
-                        if await isfile(icon_path):
-                            provider_manifest.icon_svg_monochrome = await get_icon_string(icon_path)
+                    # detect provider icon image variants (svg preferred over png)
+                    icons = await detect_provider_icons(provider_path)
+                    if icons:
+                        self._provider_icons[provider_manifest.domain] = icons
+                        provider_manifest.icon_images = list(icons)
+                    # detect a setup_flow.py module by its mere presence: importing it
+                    # here would trigger installing the provider's requirements
+                    provider_manifest.has_setup_flow = await isfile(
+                        os.path.join(provider_path, "setup_flow.py")
+                    )
                     # override Home Assistant provider if we're running as add-on
                     if provider_manifest.domain == "hass" and self.running_as_hass_addon:
                         provider_manifest.builtin = True

@@ -4,8 +4,8 @@ ARG BASE_IMAGE_VERSION=latest
 FROM --platform=$BUILDPLATFORM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION AS cliairplay-download
 
 # Bump the version and checksum-manifest hash together.
-ARG CLIAIRPLAY_VERSION=v0.1.1
-ARG CLIAIRPLAY_CHECKSUMS_SHA256=444dc5d51ff3196bc1102b795a056e85a2ba391284a31b87809d05ce34f60787
+ARG CLIAIRPLAY_VERSION=v0.3.8
+ARG CLIAIRPLAY_CHECKSUMS_SHA256=b1b34e068e6420f90eb67cf9e9c48d9f4311dd041121b0fa700bc9e7f8d9a2dd
 ARG TARGETARCH
 
 # Download the cliairplay release asset for this image architecture.
@@ -36,9 +36,23 @@ COPY --from=cliairplay-download /cliairplay /cliairplay
 # Builder image. It builds the venv that will be copied to the final image
 #
 FROM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION AS builder
+ARG TARGETARCH
 
 ADD dist dist
 COPY requirements_all.txt .
+
+# miniaudio has no Linux arm64 wheels, so pyatv requires a source build there.
+# The compiler stays in this disposable builder stage and is not copied to the final image.
+# RUN if [ "$TARGETARCH" = "arm64" ]; then \
+#         apt-get update && \
+#         apt-get install -y --no-install-recommends gcc g++ && \
+#         rm -rf /var/lib/apt/lists/*; \
+#     fi
+
+# TODO: Remove git after aiodatalibchannel is installed from pypi
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git gcc g++ && \
+    rm -rf /var/lib/apt/lists/*
 
 # ensure UV is installed
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/

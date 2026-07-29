@@ -6,7 +6,8 @@ from collections.abc import AsyncGenerator, Sequence
 from typing import Any, cast
 
 import aiohttp
-from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, StreamType
 from music_assistant_models.errors import (
     InvalidDataError,
     LoginFailed,
@@ -45,10 +46,23 @@ class PodcastIndexProvider(MusicProvider):
     api_key: str = ""
     api_secret: str = ""
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_STORED_PODCASTS,
+                type=ConfigEntryType.STRING,
+                multi_value=True,
+                default_value=[],
+                required=False,
+                hidden=True,
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self.api_key = str(self.config.get_value(CONF_API_KEY))
-        self.api_secret = str(self.config.get_value(CONF_API_SECRET))
+        self.api_key = str(self.get_setup_value(CONF_API_KEY))
+        self.api_secret = str(self.get_setup_value(CONF_API_SECRET))
 
         if not self.api_key or not self.api_secret:
             raise LoginFailed("API key and secret are required")

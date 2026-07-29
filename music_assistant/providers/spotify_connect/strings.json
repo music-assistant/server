@@ -12,6 +12,12 @@
       "description": "How should this Spotify Connect device be named in the Spotify app?"
     }
   },
+  "setup_flow": {
+    "user": {
+      "title": "Configure Spotify Connect",
+      "description": "Choose the player that receives Spotify audio and the device name shown in the Spotify app."
+    }
+  },
   "errors": {
     "not_active_device": "'{0}' is not the active Spotify playback device. Open the Spotify app, select it as the playback device, and try again."
   },

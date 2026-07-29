@@ -29,6 +29,8 @@ from .constants import CONF_DEVICE_IDENTIFIERS, CONF_DEVICE_INFO, UNIVERSAL_PLAY
 from .player import UniversalPlayer
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ConfigEntry
+
     from music_assistant.models.player import Player
 
 
@@ -42,6 +44,11 @@ class UniversalPlayerProvider(PlayerProvider):
     are registered, providing a unified interface while delegating playback to the
     underlying protocol player(s).
     """
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        # Nothing to configure - universal players are auto-created
+        return ()
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -292,10 +299,10 @@ class UniversalPlayerProvider(PlayerProvider):
         all_player_configs = self.mass.config.get(CONF_PLAYERS, {})
         valid_protocol_ids = self._resolve_stored_protocol_ids(player_id, all_player_configs)
 
-        # Never delete the stored config of a universal player from the restore
-        # path - it holds user customizations. If nothing links to it (anymore),
-        # simply skip restoring it: the config is picked up again when protocol
-        # players return, as universal player ids are derived from the device.
+        # When nothing links to the stored universal player config (anymore),
+        # keep it - it holds user customizations - and simply skip restoring:
+        # the config is picked up again when protocol players return, as
+        # universal player ids are derived from the device.
         if not valid_protocol_ids:
             self.logger.debug(
                 "Not restoring universal player %s - no linked protocol players remain",
@@ -305,7 +312,8 @@ class UniversalPlayerProvider(PlayerProvider):
 
         # Protocols that (also) belong to a native player mean this universal
         # player is a leftover wrapper: repair the protocol links to point at
-        # the rightful native parent and skip restoring the wrapper.
+        # the rightful native parent and replace the wrapper by that native
+        # player instead of restoring it.
         native_claims: dict[str, str] = {}
         for protocol_id in valid_protocol_ids:
             for other_player_id, other_config in all_player_configs.items():
@@ -335,6 +343,22 @@ class UniversalPlayerProvider(PlayerProvider):
                     native_id,
                 )
                 await self._reparent_protocols_to_native(native_id, protocol_ids)
+            # Mirror the runtime replacement by a native player: carry the
+            # wrapper's user settings and group memberships over to the native
+            # player and delete the wrapper's now-obsolete config, so it doesn't
+            # linger as a permanently unavailable entry in the settings UI.
+            # Skipped while the wrapper is still registered - the runtime
+            # replacement flow owns that transition.
+            if not self.mass.players.get_player(player_id):
+                self.logger.info(
+                    "Removing stored config of universal player %s - replaced by %s",
+                    player_id,
+                    default_parent,
+                )
+                self.mass.players._migrate_universal_player_config(player_id, default_parent)
+                self.mass.players._repoint_group_memberships(player_id, default_parent)
+                self.mass.players.delete_player_config(player_id)
+                self.mass.player_queues.on_player_remove(player_id, permanent=True)
             return
 
         stored_protocol_ids = valid_protocol_ids

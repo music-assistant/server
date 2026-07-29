@@ -19,12 +19,19 @@ from music_assistant_models.enums import (
     MediaType,
     PlayerFeature,
 )
-from music_assistant_models.media_items import Audiobook, AudioFormat, PodcastEpisode, Radio, Track
+from music_assistant_models.media_items import (
+    Audiobook,
+    AudioFormat,
+    PodcastEpisode,
+    Radio,
+    SoundEffect,
+    Track,
+)
 
 APPLICATION_NAME: Final = "Music Assistant"
 
 # Type alias for items that can be added to playlists
-PlaylistPlayableItem = Track | Radio | PodcastEpisode | Audiobook
+PlaylistPlayableItem = Track | Radio | PodcastEpisode | Audiobook | SoundEffect
 
 # Default number of tracks a music provider may return as a preview sample for a dynamic playlist
 DYNAMIC_PLAYLIST_SAMPLE_SIZE: Final[int] = 25
@@ -35,11 +42,12 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
     MediaType.RADIO,
     MediaType.PODCAST_EPISODE,
     MediaType.AUDIOBOOK,
+    MediaType.SOUND_EFFECT,
 )
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 38
+API_SCHEMA_VERSION: Final[int] = 41
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -101,7 +109,6 @@ CONF_USERNAME: Final[str] = "username"
 CONF_PASSWORD: Final[str] = "password"
 CONF_VOLUME_NORMALIZATION: Final[str] = "volume_normalization"
 CONF_VOLUME_NORMALIZATION_TARGET: Final[str] = "volume_normalization_target"
-CONF_OUTPUT_LIMITER: Final[str] = "output_limiter"
 CONF_PLAYER_DSP: Final[str] = "player_dsp"
 CONF_PLAYER_DSP_PRESETS: Final[str] = "player_dsp_presets"
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
@@ -304,6 +311,7 @@ CONFIGURABLE_CORE_CONTROLLERS = (
     "cache",
     "music",
     "player_queues",
+    "tasks",
 )
 VERBOSE_LOG_LEVEL: Final[int] = 5
 PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz", "apple_music", "deezer")
@@ -327,8 +335,21 @@ CONF_ENTRY_LOG_LEVEL = ConfigEntry(
     requires_reload=False,  # applied dynamically via _set_logger()
 )
 
+CONF_MAX_CONCURRENT_TASKS = "max_concurrent_tasks"
+CONF_ENTRY_MAX_CONCURRENT_TASKS = ConfigEntry(
+    key=CONF_MAX_CONCURRENT_TASKS,
+    type=ConfigEntryType.INTEGER,
+    range=(1, 10),
+    default_value=2,
+    advanced=True,
+    requires_reload=False,
+)
+
 DEFAULT_PROVIDER_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
-DEFAULT_CORE_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
+DEFAULT_CORE_CONFIG_ENTRIES = (
+    CONF_ENTRY_LOG_LEVEL,
+    CONF_ENTRY_MAX_CONCURRENT_TASKS,
+)
 
 # some reusable player config entries
 
@@ -429,16 +450,6 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     advanced=True,
     requires_reload=True,
 )
-
-CONF_ENTRY_OUTPUT_LIMITER = ConfigEntry(
-    key=CONF_OUTPUT_LIMITER,
-    type=ConfigEntryType.BOOLEAN,
-    default_value=True,
-    category="playback",
-    advanced=True,
-    requires_reload=True,
-)
-
 
 # Note: the crossfade_mode select entry (standard/smart) is built dynamically in the config
 # controller because its options and default depend on smart fades availability.
@@ -1042,3 +1053,5 @@ EXTERNAL_SOURCES: Final[set[str]] = {
     # external (hass_players)
     "external",
 }
+
+COLLECTION_ITEM_ID_SEPARATOR = "___"

@@ -12,6 +12,7 @@ from music_assistant_models.media_items import (
     MediaItemMetadata,
     ProviderMapping,
     Radio,
+    SoundEffect,
     Track,
     UniqueList,
 )
@@ -21,6 +22,7 @@ from music_assistant.helpers.playlists import (
     ImageInfo,
     PlaylistItem,
     ProviderMappingInfo,
+    construct_media_item_from_playlist_item,
     generate_m3u,
     media_item_to_playlist_item,
     parse_extinf_title,
@@ -468,6 +470,129 @@ def test_round_trip_bare_uris() -> None:
     assert parsed[0].metadata is None
     assert parsed[0].providers == []
     assert parsed[1].path == "tidal://track/xyz789"
+
+
+def test_construct_media_item_from_playlist_item_sound_effect() -> None:
+    """Stored playlist metadata reconstructs a SoundEffect with mappings and artwork."""
+
+    class DummyProvider:
+        def __init__(self, domain: str, instance_id: str) -> None:
+            self.domain = domain
+            self.instance_id = instance_id
+
+    mass = MagicMock()
+    builtin_provider = DummyProvider("builtin", "builtin_1")
+    mass.get_provider.side_effect = lambda ref: {
+        "builtin": builtin_provider,
+        "builtin_1": builtin_provider,
+    }.get(ref)
+    item = PlaylistItem(
+        path="builtin://sound_effect/http://example.com/chime.mp3",
+        title="Chime",
+        length="12",
+        metadata={
+            "media_type": MediaType.SOUND_EFFECT.value,
+            "name": "Chime",
+            "mbid": "soundeffect-mbid",
+        },
+        providers=[
+            ProviderMappingInfo(
+                domain="builtin",
+                item_id="http://example.com/chime.mp3",
+                instance_id="builtin_1",
+                content_type="mp3",
+                sample_rate=44100,
+                bit_depth=16,
+                bit_rate=192,
+            )
+        ],
+        images=[
+            ImageInfo(
+                type="thumb",
+                path="https://example.com/chime.jpg",
+                provider="builtin",
+                remotely_accessible=True,
+            )
+        ],
+    )
+
+    result = construct_media_item_from_playlist_item(item, mass)
+
+    assert isinstance(result, SoundEffect)
+    assert result.name == "Chime"
+    assert result.duration == 12
+    assert result.get_external_id(ExternalID.MB_RECORDING) == "soundeffect-mbid"
+    assert result.provider_mappings
+    mapping = next(iter(result.provider_mappings))
+    assert mapping.provider_domain == "builtin"
+    assert mapping.provider_instance == "builtin_1"
+    assert mapping.item_id == "http://example.com/chime.mp3"
+    assert result.metadata.images
+    assert result.metadata.images[0].path == "https://example.com/chime.jpg"
+
+
+def test_media_item_to_playlist_item_sound_effect_round_trip() -> None:
+    """SoundEffect playlist items round-trip through M3U metadata without losing data."""
+
+    class DummyProvider:
+        def __init__(self, domain: str, instance_id: str) -> None:
+            self.domain = domain
+            self.instance_id = instance_id
+
+    mass = MagicMock()
+    builtin_provider = DummyProvider("builtin", "builtin_1")
+    mass.get_provider.side_effect = lambda ref: {
+        "builtin": builtin_provider,
+        "builtin_1": builtin_provider,
+    }.get(ref)
+    image = MediaItemImage(
+        type=ImageType.THUMB,
+        path="https://example.com/chime.jpg",
+        provider="builtin",
+        remotely_accessible=True,
+    )
+    sound_effect = SoundEffect(
+        item_id="http://example.com/chime.mp3",
+        provider="builtin",
+        name="Chime",
+        provider_mappings={
+            ProviderMapping(
+                item_id="http://example.com/chime.mp3",
+                provider_domain="builtin",
+                provider_instance="builtin_1",
+                audio_format=AudioFormat(
+                    content_type=ContentType.MP3,
+                    sample_rate=44100,
+                    bit_depth=16,
+                    bit_rate=192,
+                ),
+            )
+        },
+        external_ids={(ExternalID.MB_RECORDING, "soundeffect-mbid")},
+        metadata=MediaItemMetadata(images=UniqueList([image])),
+    )
+    sound_effect.duration = 12
+
+    playlist_item = media_item_to_playlist_item(sound_effect)
+    parsed = parse_m3u(generate_m3u("FX", [playlist_item]))
+    reconstructed = construct_media_item_from_playlist_item(parsed[0], mass)
+
+    assert playlist_item.path == "builtin://sound_effect/http://example.com/chime.mp3"
+    assert playlist_item.metadata == {
+        "media_type": MediaType.SOUND_EFFECT.value,
+        "name": "Chime",
+        "mbid": "soundeffect-mbid",
+    }
+    assert playlist_item.length == "12"
+    assert playlist_item.images[0].path == "https://example.com/chime.jpg"
+    assert isinstance(reconstructed, SoundEffect)
+    assert reconstructed.duration == 12
+    assert reconstructed.provider_mappings
+    mapping = next(iter(reconstructed.provider_mappings))
+    assert mapping.provider_instance == "builtin_1"
+    assert mapping.item_id == "http://example.com/chime.mp3"
+    assert reconstructed.metadata.images
+    assert reconstructed.metadata.images[0].path == "https://example.com/chime.jpg"
 
 
 # --------------------------------------------------------------------------- #

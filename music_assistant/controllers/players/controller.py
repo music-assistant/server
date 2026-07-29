@@ -123,10 +123,10 @@ if TYPE_CHECKING:
 
     from music_assistant_models.config_entries import (
         ConfigEntry,
-        ConfigValueType,
         CoreConfig,
         PlayerConfig,
     )
+    from music_assistant_models.player import OutputProtocol
     from music_assistant_models.player_queue import PlayerQueue
 
     from music_assistant import MusicAssistant
@@ -242,11 +242,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                         del self._task_held_locks[task]
                 lock.release()
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the Player Controller."""
         return ()
 
@@ -1079,6 +1075,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 announcement_url=url,
                 pre_announce=bool(pre_announce),
                 pre_announce_url=pre_announce_url,
+                announce_player_id=(announce_player.player_id if native_announce_support else None),
             )
             announcement = PlayerMedia(
                 uri=self.mass.streams.get_announcement_url(player_id, announce_data=announce_data),
@@ -2771,7 +2768,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
 
     # Protocol linking methods are provided by ProtocolLinkingMixin (protocol_linking.py)
 
-    async def _play_announcement(  # noqa: PLR0915
+    async def _play_announcement(
         self,
         player: Player,
         announcement: PlayerMedia,
@@ -2793,7 +2790,14 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         (provider) has no native support for the PLAY_ANNOUNCEMENT feature.
         """
         prev_state = player.state.playback_state
-        prev_power = player.state.powered or prev_state != PlaybackState.IDLE
+        # A player without power control has no power state to restore, so it counts as
+        # powered here - otherwise the restore below would be skipped altogether for it,
+        # leaving the player ungrouped from its (sync)group.
+        prev_power = (
+            player.state.power_control == PLAYER_CONTROL_NONE
+            or bool(player.state.powered)
+            or prev_state != PlaybackState.IDLE
+        )
         prev_synced_to = player.state.synced_to
         prev_group = (
             self.get_player(player.state.active_group) if player.state.active_group else None
@@ -2801,155 +2805,65 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         prev_source = player.state.active_source
         prev_media = player.state.current_media
         prev_media_name = prev_media.title or prev_media.uri if prev_media else None
-        if prev_synced_to:
-            # ungroup player if its currently synced
-            self.logger.debug(
-                "Announcement to player %s - ungrouping player from %s...",
-                player.state.name,
-                prev_synced_to,
-            )
-            await self.cmd_ungroup(player.player_id)
-        elif prev_group:
-            # if the player is part of a group player, we need to ungroup it
-            if PlayerFeature.SET_MEMBERS in prev_group.supported_features:
-                self.logger.debug(
-                    "Announcement to player %s - ungrouping from group player %s...",
-                    player.state.name,
-                    prev_group.display_name,
-                )
-                await prev_group.set_members(player_ids_to_remove=[player.player_id])
-            else:
-                # if the player is part of a group player that does not support ungrouping,
-                # we need to power off the groupplayer instead
-                self.logger.debug(
-                    "Announcement to player %s - turning off group player %s...",
-                    player.state.name,
-                    prev_group.display_name,
-                )
-                await self._handle_cmd_power(player.player_id, False)
-        elif prev_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
-            # normal/standalone player: stop player if its currently playing
-            self.logger.debug(
-                "Announcement to player %s - stop existing content (%s)...",
-                player.state.name,
-                prev_media_name,
-            )
-            await self._handle_cmd_stop(player.player_id)
-            # wait for the player to stop
-            await self._wait_for_playback_state(player, PlaybackState.IDLE, 10, 0.4)
-        # adjust volume if needed
-        # in case of a (sync) group, we need to do this for all child players
+        # An announcement is transient: a player that is still busy with an earlier
+        # announcement holds no user content, so there is nothing to restore for it.
+        # The raw media attribute is read here (instead of state.current_media, which
+        # reports the active queue item) since it tells what the device is playing.
+        restore_playback = prev_state == PlaybackState.PLAYING and not (
+            player.current_media is not None
+            and player.current_media.media_type == MediaType.ANNOUNCEMENT
+        )
+        # filled while the temporary announcement volume is applied below
         prev_volumes: dict[str, int] = {}
-        async with TaskManager(self.mass) as tg:
-            for volume_player_id in player.state.group_members or (player.player_id,):
-                if not (volume_player := self.get_player(volume_player_id)):
-                    continue
-                # catch any players that have a different source active
-                if (
-                    volume_player.state.active_source
-                    not in (
-                        player.state.active_source,
-                        volume_player.player_id,
-                        None,
-                    )
-                    and volume_player.state.playback_state == PlaybackState.PLAYING
-                ):
-                    self.logger.warning(
-                        "Detected announcement to playergroup %s while group member %s is playing "
-                        "other content, this may lead to unexpected behavior.",
-                        player.state.name,
-                        volume_player.state.name,
-                    )
-                    tg.create_task(self._handle_cmd_stop(volume_player.player_id))
-                if volume_player.state.volume_control == PLAYER_CONTROL_NONE:
-                    continue
-                if (prev_volume := volume_player.state.volume_level) is None:
-                    continue
-                announcement_volume = self.get_announcement_volume(volume_player_id, volume_level)
-                if announcement_volume is None:
-                    continue
-                temp_volume = announcement_volume or player.state.volume_level
-                if temp_volume != prev_volume:
-                    prev_volumes[volume_player_id] = prev_volume
-                    self.logger.debug(
-                        "Announcement to player %s - setting temporary volume (%s)...",
-                        volume_player.state.name,
-                        announcement_volume,
-                    )
-                    tg.create_task(
-                        self._handle_cmd_volume_set(volume_player.player_id, announcement_volume)
-                    )
-        # play the announcement
-        self.logger.debug(
-            "Announcement to player %s - playing the announcement on the player...",
-            player.state.name,
-        )
-        await self._handle_play_media(player.player_id, announcement)
-        # wait for the player(s) to play
-        await self._wait_for_playback_state(player, PlaybackState.PLAYING, 10, minimal_time=0.1)
-        # wait for the player to stop playing
-        if not announcement.duration:
-            if not announcement.custom_data:
-                raise ValueError("Announcement missing duration and custom_data")
-            media_info = await async_parse_tags(
-                announcement.custom_data["announcement_url"], require_duration=True
+        # everything from here on alters the player state, so the restore in the finally
+        # block must run even when the announcement itself fails halfway through
+        try:
+            await self._prepare_for_announcement(
+                player,
+                volume_level=volume_level,
+                prev_state=prev_state,
+                prev_synced_to=prev_synced_to,
+                prev_group=prev_group,
+                prev_media_name=prev_media_name,
+                prev_volumes=prev_volumes,
             )
-            announcement.duration = int(media_info.duration) if media_info.duration else None
-
-        if announcement.duration is None:
-            raise ValueError("Announcement duration could not be determined")
-
-        await self._wait_for_playback_state(
-            player,
-            PlaybackState.IDLE,
-            timeout=announcement.duration + 10,
-            minimal_time=float(announcement.duration) + 2,
-        )
-        self.logger.debug(
-            "Announcement to player %s - restore previous state...", player.state.name
-        )
-        # restore volume
-        async with TaskManager(self.mass) as tg:
-            for volume_player_id, prev_volume in prev_volumes.items():
-                tg.create_task(self._handle_cmd_volume_set(volume_player_id, prev_volume))
-        await asyncio.sleep(0.2)
-        # either power off the player or resume playing
-        if not prev_power:
-            if player.state.power_control != PLAYER_CONTROL_NONE:
-                self.logger.debug(
-                    "Announcement to player %s - turning player off again...", player.state.name
-                )
-                await self._handle_cmd_power(player.player_id, False)
-            # nothing to do anymore, player was not previously powered
-            # and does not support power control
-            return
-        if prev_synced_to:
+            # play the announcement
             self.logger.debug(
-                "Announcement to player %s - syncing back to %s...",
+                "Announcement to player %s - playing the announcement on the player...",
                 player.state.name,
-                prev_synced_to,
             )
-            await self.cmd_set_members(prev_synced_to, player_ids_to_add=[player.player_id])
-        elif prev_group:
-            if PlayerFeature.SET_MEMBERS in prev_group.supported_features:
-                self.logger.debug(
-                    "Announcement to player %s - grouping back to group player %s...",
-                    player.state.name,
-                    prev_group.display_name,
+            await self._handle_play_media(player.player_id, announcement)
+            # wait for the player(s) to play
+            await self._wait_for_playback_state(player, PlaybackState.PLAYING, 10, minimal_time=0.1)
+            # wait for the player to stop playing
+            if not announcement.duration:
+                if not announcement.custom_data:
+                    raise ValueError("Announcement missing duration and custom_data")
+                media_info = await async_parse_tags(
+                    announcement.custom_data["announcement_url"], require_duration=True
                 )
-                await prev_group.set_members(player_ids_to_add=[player.player_id])
-            elif prev_state == PlaybackState.PLAYING:
-                # if the player is part of a group player that does not support set_members,
-                # we need to restart the groupplayer
-                self.logger.debug(
-                    "Announcement to player %s - restarting playback on group player %s...",
-                    player.state.name,
-                    prev_group.display_name,
-                )
-                await self.cmd_play(prev_group.player_id)
-        elif prev_state == PlaybackState.PLAYING:
-            # player was playing something before the announcement - try to resume that here
-            await self._handle_cmd_resume(player.player_id, prev_source, prev_media)
+                announcement.duration = int(media_info.duration) if media_info.duration else None
+
+            if announcement.duration is None:
+                raise ValueError("Announcement duration could not be determined")
+
+            await self._wait_for_playback_state(
+                player,
+                PlaybackState.IDLE,
+                timeout=announcement.duration + 10,
+                minimal_time=float(announcement.duration) + 2,
+            )
+        finally:
+            await self._restore_after_announcement(
+                player,
+                prev_power=prev_power,
+                prev_volumes=prev_volumes,
+                prev_synced_to=prev_synced_to,
+                prev_group=prev_group,
+                prev_source=prev_source,
+                prev_media=prev_media,
+                restore_playback=restore_playback,
+            )
 
     def _repair_protocol_parent_links(self) -> None:
         """
@@ -3489,6 +3403,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 filtered_native_remove,
             )
             if filtered_native_add or filtered_native_remove:
+                if PlayerFeature.SET_MEMBERS not in parent_player.state.supported_features:
+                    return
                 self.logger.info(
                     "Calling set_members on native player %s with add=%s, remove=%s",
                     parent_player.state.name,
@@ -3888,12 +3804,18 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             player.set_active_mass_source(media.source_id)
 
         # Determine output protocol to use:
-        # If player already has an active protocol set, prefer that.
-        # Otherwise, select best protocol based on current state.
+        # While a session is active (playing/paused), keep using the already active
+        # protocol so mid-session commands stay on the same output.
+        # On a fresh start always (re)select: a leftover active protocol from a
+        # previous session must not overrule user preference, a grouped protocol
+        # or native playback (and it may point at a player that is gone by now).
+        target_player: Player | None = None
+        output_protocol: OutputProtocol | None = None
         if (
-            player.active_output_protocol
+            player.state.playback_state in (PlaybackState.PLAYING, PlaybackState.PAUSED)
+            and player.active_output_protocol
             and player.active_output_protocol != "native"
-            and (target_player := self.get_player(player.active_output_protocol))
+            and (protocol_player := self.get_player(player.active_output_protocol))
         ):
             # Use the already-set protocol directly
             output_protocol = next(
@@ -3904,7 +3826,9 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 ),
                 None,
             )
-        else:
+            if output_protocol is not None:
+                target_player = protocol_player
+        if target_player is None:
             target_player, output_protocol = self._select_best_output_protocol(player)
 
         if target_player.player_id != player.player_id:
@@ -4043,16 +3967,25 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
         """
         player = self.get_player(player_id, raise_unavailable=True)
         assert player is not None
+        protocol_player: Player | None = None
+        if player.active_output_protocol and player.active_output_protocol != "native":
+            protocol_player = self.get_player(player.active_output_protocol)
         if player.state.playback_state == PlaybackState.IDLE:
+            # The player already reports idle but an output protocol is still marked
+            # active: the protocol player may never have received a stop at all
+            # (e.g. the source stream ended on its own before this stop command
+            # arrived). Forward an (idempotent) stop and schedule the protocol clear
+            # so no stale session lingers on the device and the next playback
+            # (re)selects the output protocol.
+            if protocol_player is not None:
+                await protocol_player.stop()
+                if len(protocol_player.group_members) <= 1:
+                    self.schedule_active_output_protocol_clear(player)
             return
         player.mark_stop_called()
         # Delegate to active protocol player if one is active
         target_player = player
-        if (
-            player.active_output_protocol
-            and player.active_output_protocol != "native"
-            and (protocol_player := self.get_player(player.active_output_protocol))
-        ):
+        if protocol_player is not None:
             target_player = protocol_player
             if PlayerFeature.POWER in target_player.supported_features:
                 # if protocol player supports/requires power,
@@ -4189,3 +4122,188 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             player.state.name,
         )
         await self._handle_cmd_stop(player.player_id)
+
+    async def _prepare_for_announcement(
+        self,
+        player: Player,
+        *,
+        volume_level: int | None,
+        prev_state: PlaybackState,
+        prev_synced_to: str | None,
+        prev_group: Player | None,
+        prev_media_name: str | None,
+        prev_volumes: dict[str, int],
+    ) -> None:
+        """
+        Free up the player for an announcement and apply the temporary announcement volume.
+
+        :param player: The player the announcement will be played on.
+        :param volume_level: Optional volume level override for the announcement.
+        :param prev_state: The playback state the player had before the announcement.
+        :param prev_synced_to: Player ID of the sync leader the player is synced to (if any).
+        :param prev_group: The group player the player is a member of (if any).
+        :param prev_media_name: Name of the media the player was playing (for logging).
+        :param prev_volumes: Mapping that is filled in-place with the previous volume level
+            per player id, so the caller can restore the volumes even if this call fails.
+        """
+        if prev_synced_to:
+            # ungroup player if its currently synced
+            self.logger.debug(
+                "Announcement to player %s - ungrouping player from %s...",
+                player.state.name,
+                prev_synced_to,
+            )
+            await self.cmd_ungroup(player.player_id)
+        elif prev_group:
+            # if the player is part of a group player, we need to ungroup it
+            if PlayerFeature.SET_MEMBERS in prev_group.supported_features:
+                self.logger.debug(
+                    "Announcement to player %s - ungrouping from group player %s...",
+                    player.state.name,
+                    prev_group.display_name,
+                )
+                await prev_group.set_members(player_ids_to_remove=[player.player_id])
+            else:
+                # if the player is part of a group player that does not support ungrouping,
+                # we need to power off the groupplayer instead
+                self.logger.debug(
+                    "Announcement to player %s - turning off group player %s...",
+                    player.state.name,
+                    prev_group.display_name,
+                )
+                await self._handle_cmd_power(prev_group.player_id, False)
+        elif prev_state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
+            # normal/standalone player: stop player if its currently playing
+            self.logger.debug(
+                "Announcement to player %s - stop existing content (%s)...",
+                player.state.name,
+                prev_media_name,
+            )
+            await self._handle_cmd_stop(player.player_id)
+            # wait for the player to stop
+            await self._wait_for_playback_state(player, PlaybackState.IDLE, 10, 0.4)
+        # adjust volume if needed
+        # in case of a (sync) group, we need to do this for all child players
+        async with TaskManager(self.mass) as tg:
+            for volume_player_id in player.state.group_members or (player.player_id,):
+                if not (volume_player := self.get_player(volume_player_id)):
+                    continue
+                # catch any players that have a different source active
+                if (
+                    volume_player.state.active_source
+                    not in (
+                        player.state.active_source,
+                        volume_player.player_id,
+                        None,
+                    )
+                    and volume_player.state.playback_state == PlaybackState.PLAYING
+                ):
+                    self.logger.warning(
+                        "Detected announcement to playergroup %s while group member %s is playing "
+                        "other content, this may lead to unexpected behavior.",
+                        player.state.name,
+                        volume_player.state.name,
+                    )
+                    tg.create_task(self._handle_cmd_stop(volume_player.player_id))
+                if volume_player.state.volume_control == PLAYER_CONTROL_NONE:
+                    continue
+                if (prev_volume := volume_player.state.volume_level) is None:
+                    continue
+                announcement_volume = self.get_announcement_volume(volume_player_id, volume_level)
+                # get_announcement_volume already returns None when the volume must be left
+                # alone, so any number it does return is the volume to announce at - including
+                # 0, which must not be mistaken for 'no volume configured'
+                if announcement_volume is None:
+                    continue
+                if announcement_volume != prev_volume:
+                    prev_volumes[volume_player_id] = prev_volume
+                    self.logger.debug(
+                        "Announcement to player %s - setting temporary volume (%s)...",
+                        volume_player.state.name,
+                        announcement_volume,
+                    )
+                    tg.create_task(
+                        self._handle_cmd_volume_set(volume_player.player_id, announcement_volume)
+                    )
+
+    async def _restore_after_announcement(
+        self,
+        player: Player,
+        *,
+        prev_power: bool,
+        prev_volumes: dict[str, int],
+        prev_synced_to: str | None,
+        prev_group: Player | None,
+        prev_source: str | None,
+        prev_media: PlayerMedia | None,
+        restore_playback: bool,
+    ) -> None:
+        """
+        Restore the player state that was captured before an announcement was played.
+
+        This also runs when the announcement failed halfway through, so a failing restore
+        step is logged instead of raised: it may never mask the error that caused it.
+
+        :param player: The player the announcement was played on.
+        :param prev_power: Whether the player was powered before the announcement.
+        :param prev_volumes: The previous volume level per player id.
+        :param prev_synced_to: Player ID of the sync leader the player was synced to (if any).
+        :param prev_group: The group player the player was a member of (if any).
+        :param prev_source: The source that was active before the announcement.
+        :param prev_media: The media that was loaded before the announcement.
+        :param restore_playback: Whether playback needs to be resumed.
+        """
+        self.logger.debug(
+            "Announcement to player %s - restore previous state...", player.state.name
+        )
+        # restore volume
+        async with TaskManager(self.mass) as tg:
+            for volume_player_id, prev_volume in prev_volumes.items():
+                tg.create_task(self._handle_cmd_volume_set(volume_player_id, prev_volume))
+        await asyncio.sleep(0.2)
+        try:
+            # either power off the player or resume playing
+            if not prev_power:
+                # prev_power is always True for a player without power control,
+                # so there is an actual power control to switch off here
+                self.logger.debug(
+                    "Announcement to player %s - turning player off again...", player.state.name
+                )
+                await self._handle_cmd_power(player.player_id, False)
+                return
+            if prev_synced_to:
+                self.logger.debug(
+                    "Announcement to player %s - syncing back to %s...",
+                    player.state.name,
+                    prev_synced_to,
+                )
+                await self.cmd_set_members(prev_synced_to, player_ids_to_add=[player.player_id])
+            elif prev_group:
+                if PlayerFeature.SET_MEMBERS in prev_group.supported_features:
+                    self.logger.debug(
+                        "Announcement to player %s - grouping back to group player %s...",
+                        player.state.name,
+                        prev_group.display_name,
+                    )
+                    await prev_group.set_members(player_ids_to_add=[player.player_id])
+                elif restore_playback:
+                    # if the player is part of a group player that does not support set_members,
+                    # we need to restart the groupplayer
+                    self.logger.debug(
+                        "Announcement to player %s - restarting playback on group player %s...",
+                        player.state.name,
+                        prev_group.display_name,
+                    )
+                    await self.cmd_play(prev_group.player_id)
+            elif restore_playback:
+                # player was playing something before the announcement - try to resume that here
+                await self._handle_cmd_resume(player.player_id, prev_source, prev_media)
+        except Exception as err:
+            # deliberately broad: set_members is a raw provider call that is not wrapped
+            # into a MusicAssistantError, so it can surface anything its client library
+            # raises. CancelledError is a BaseException and still propagates.
+            self.logger.warning(
+                "Announcement to player %s - restoring the previous state failed: %s",
+                player.state.name,
+                err,
+            )

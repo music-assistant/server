@@ -50,6 +50,7 @@ from music_assistant_models.media_items import (
     Playlist,
     ProviderMapping,
     SearchResults,
+    UniqueList,
 )
 from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
@@ -57,7 +58,7 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.enums import SourceControl
     from music_assistant_models.event import MassEvent
     from music_assistant_models.media_items import (
@@ -102,29 +103,6 @@ async def setup(
     return MyDemoPluginprovider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    # Config Entries are used to configure the Provider if needed.
-    # See the models of ConfigEntry and ConfigValueType for more information what is supported.
-    # The ConfigEntry is a dataclass that represents a single configuration entry.
-    # The ConfigValueType is an Enum that represents the type of value that
-    # can be stored in a ConfigEntry.
-    # If your provider does not need any configuration, you can return an empty tuple.
-    return ()
-
-
 class MyDemoPluginprovider(PluginProvider):
     """
     Example/demo Plugin provider.
@@ -151,6 +129,17 @@ class MyDemoPluginprovider(PluginProvider):
     # without changing _in_use_by_queue, so stream loops and generator
     # finallys must guard their lock release on both still matching.
     _active_session_id: str | None = None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the (options) config entries for this (existing) provider instance.
+
+        Return an empty tuple when the provider has no options. Interactive setup
+        input (if any) is collected by a ``setup_flow.py`` module; one-shot buttons
+        are declared here as ``ConfigEntryType.ACTION`` entries and handled in
+        ``handle_config_action``.
+        """
+        return ()
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -397,14 +386,33 @@ class MyDemoPluginprovider(PluginProvider):
         # existing music providers so MA's playback path resolves normally.
         return []
 
-    async def recommendations(self) -> list[RecommendationFolder]:
-        """Retrieve a list of recommendation folders from this plugin."""
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get this plugin's available recommendation rows, without items."""
         # OPTIONAL
         # Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
-        # Folders may contain Playlist items pointing back to this plugin via
-        # their provider_mappings. Users can add such a Playlist to their
-        # library through the standard add-to-library flow.
+        # Return the recommendation rows this plugin offers as
+        # RecommendationFolder objects WITHOUT items (leave the default empty
+        # items list). This must be fast: hardcoded or locally cached row
+        # descriptors only, no backend calls — MA uses it to instantly render
+        # the row shells and the recommendations settings page.
+        # Keep each row's item_id stable across calls and restarts: the user's
+        # per-row preferences (enabled/hidden, order) are keyed on it.
         return []
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """Get the items for a single recommendation row."""
+        # OPTIONAL
+        # Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
+        # Called separately (possibly in parallel) for each enabled row
+        # returned by get_recommendations; any (slow) backend fetching belongs
+        # here, not in get_recommendations. Rows may contain Playlist items
+        # pointing back to this plugin via their provider_mappings; users can
+        # add such a Playlist to their library through the standard
+        # add-to-library flow.
+        # Return an empty UniqueList for an unknown item_id.
+        return UniqueList()
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """Browse this plugin's contents."""

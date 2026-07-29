@@ -366,6 +366,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 },
                 allow_retry=True,
                 allow_cancel=True,
+                priority=True,
             )
         return db_playlist
 

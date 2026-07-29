@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ProviderFeature
-from music_assistant_models.media_items import SearchResults
+from music_assistant_models.media_items import SearchResults, UniqueList
 
 from .provider import Provider
 
@@ -271,15 +271,34 @@ class PluginProvider(Provider):
             raise NotImplementedError
         return []
 
-    async def recommendations(self) -> list[RecommendationFolder]:
+    async def get_recommendations(self) -> list[RecommendationFolder]:
         """
-        Retrieve a list of recommendation folders from this plugin.
+        Get this plugin's available recommendation rows, without items.
+
+        Must be fast: return static or cached row descriptors only, without
+        live backend calls. The items for a row are fetched separately
+        through get_recommendation_items.
 
         Will only be called if ProviderFeature.RECOMMENDATIONS is declared.
         """
         if ProviderFeature.RECOMMENDATIONS in self.supported_features:
             raise NotImplementedError
         return []
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Get the items for a single recommendation row.
+
+        Live backend fetches belong here. Will only be called if
+        ProviderFeature.RECOMMENDATIONS is declared.
+
+        :param item_id: The item_id of the row, as returned by get_recommendations.
+        """
+        if ProviderFeature.RECOMMENDATIONS in self.supported_features:
+            raise NotImplementedError
+        return UniqueList()
 
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """

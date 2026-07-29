@@ -8,7 +8,7 @@ from time import time
 from typing import TYPE_CHECKING, cast
 
 from aiohttp import HttpVersion11, web
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.constants import PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -177,11 +177,7 @@ class UniversalGroupPlayer(Player):
         """Return if the player is a dynamic group player."""
         return bool(self.config.get_value(CONF_DYNAMIC_GROUP_MEMBERS, False))
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return [
             # add universal group specific entries
@@ -595,10 +591,11 @@ class UniversalGroupPlayer(Player):
         }
         resp = web.StreamResponse(status=200, reason="OK", headers=headers)
         http_profile = self.get_config_value(CONF_HTTP_PROFILE, "chunked")
-        # prefer the child (protocol) player configuration
-        # (child player_id may be stale/invalid; fall back to the group profile)
+        # prefer the configuration of the player that actually renders the audio
+        # (the member's active protocol player when it outputs via a protocol);
+        # child player_id may be stale/invalid, then fall back to the group profile
         if child_player_id and (child_player := self.mass.players.get_player(child_player_id)):
-            http_profile = child_player.get_config_value(CONF_HTTP_PROFILE, http_profile)
+            http_profile = child_player.get_output_config_value(CONF_HTTP_PROFILE, http_profile)
         if http_profile == "chunked" and request.version < HttpVersion11:
             # chunked encoding is not allowed on HTTP/1.0; fall back to
             # connection-close streaming to avoid raising in resp.prepare()

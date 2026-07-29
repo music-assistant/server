@@ -9,7 +9,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     IdentifierType,
@@ -202,11 +202,7 @@ class YandexStationPlayer(Player):
         self.glagol.update_handler = self._on_glagol_update
         await self.glagol.start()
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """
         Return player-specific config entries.
 

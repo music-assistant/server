@@ -249,8 +249,8 @@ class HueEntertainmentBridge:
         # stops any other active area on start (the bridge only allows one).
         session = EntertainmentSession(
             hue_api.host,
-            str(self.provider.config.get_value(CONF_USERNAME) or ""),
-            str(self.provider.config.get_value(CONF_CLIENTKEY) or ""),
+            str(self.provider.get_setup_value(CONF_USERNAME) or ""),
+            str(self.provider.get_setup_value(CONF_CLIENTKEY) or ""),
             idle_timeout=0,
         )
         # The session is only handed off to self._session once it is streaming;

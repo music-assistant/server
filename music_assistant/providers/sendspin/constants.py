@@ -14,13 +14,16 @@ CONF_ALLOW_UNENCRYPTED = "allow_unencrypted"
 CONF_MIN_PIN_LENGTH = "min_pin_length"
 DEFAULT_MIN_PIN_LENGTH = 4
 
+# Pairing method the initial-pairing setup flow lets the user pick between.
+CONF_PAIRING_METHOD = "pairing_method"
+PAIR_METHOD_PIN = "pin"
+PAIR_METHOD_STATIC_PIN = "static_pin"
+PAIR_METHOD_TOKEN = "token"
+
 CONF_PAIRING_TOKEN = "pairing_token"
 CONF_PAIRING_PIN = "pairing_pin"
-CONF_ACTION_PAIR_TOKEN = "pair_token"
-CONF_ACTION_PAIR_TOKEN_SUBMIT = "pair_token_submit"
-CONF_ACTION_PAIR_TOKEN_CANCEL = "pair_token_cancel"
-CONF_ACTION_PAIR_PIN_START = "pair_pin_start"
-CONF_ACTION_PAIR_STATIC_PIN_START = "pair_static_pin_start"
+# The initial pairing is driven by the interactive setup flow (run_setup_flow).
+# The remaining PIN actions serve the paired-view device-presence verification.
 CONF_ACTION_PAIR_PIN_SUBMIT = "pair_pin_submit"
 CONF_ACTION_PAIR_PIN_RETRY = "pair_pin_retry"
 CONF_ACTION_PAIR_PIN_CANCEL = "pair_pin_cancel"

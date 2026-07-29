@@ -36,7 +36,52 @@ class MusicBrainzRecommendationManager:
 
     async def get_recommendations(self) -> list[RecommendationFolder]:
         """
-        Return the birthday/in-memoriam recommendation folders.
+        Return the birthday/in-memoriam recommendation rows, without items.
+
+        Row ids and labels are derived against the current day, so the set of rows
+        changes as dates enter or leave the configured window.
+        """
+        return [
+            RecommendationFolder(
+                item_id=folder.item_id,
+                name=folder.name,
+                provider=folder.provider,
+                translation_key=folder.translation_key,
+                translation_params=folder.translation_params,
+                icon=folder.icon,
+                is_playable=folder.is_playable,
+            )
+            for folder in await self._current_folders()
+        ]
+
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Return the items for a single birthday/in-memoriam row.
+
+        :param item_id: The item_id of the row (empty result if unknown).
+        """
+        for folder in await self._current_folders():
+            if folder.item_id == item_id:
+                return folder.items
+        return UniqueList()
+
+    def schedule_refresh(self) -> None:
+        """Scan the library and refresh the cached matches in the background (deduplicated)."""
+        self.mass.create_task(self._refresh(), task_id=self._refresh_task_id)
+
+    def cancel(self) -> None:
+        """Cancel any pending background refresh (called on provider unload)."""
+        self.mass.cancel_task(self._refresh_task_id)
+
+    # ------------------------------------------------------------------
+    # cached read path
+    # ------------------------------------------------------------------
+
+    async def _current_folders(self) -> list[RecommendationFolder]:
+        """
+        Return the current birthday/in-memoriam folders, with items.
 
         Served from cache so the discover page is never blocked by the rate-limited
         MusicBrainz library scan. If the cache has expired, the last-known-good result
@@ -61,14 +106,6 @@ class MusicBrainzRecommendationManager:
         if stale is not None:
             return self._folders_from_matches(stale)
         return []
-
-    def schedule_refresh(self) -> None:
-        """Scan the library and refresh the cached matches in the background (deduplicated)."""
-        self.mass.create_task(self._refresh(), task_id=self._refresh_task_id)
-
-    def cancel(self) -> None:
-        """Cancel any pending background refresh (called on provider unload)."""
-        self.mass.cancel_task(self._refresh_task_id)
 
     # ------------------------------------------------------------------
     # background refresh

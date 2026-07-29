@@ -15,6 +15,7 @@ from mcp.shared.exceptions import McpError
 from music_assistant.providers.fastmcp_server.config import build_config_entries
 from music_assistant.providers.fastmcp_server.constants import (
     CONF_META_TOOL_DISCOVERY,
+    DEFAULT_MOUNT_PATH,
     HOT_SWAPPABLE_KEYS,
 )
 from music_assistant.providers.fastmcp_server.meta_discovery import register_meta_discovery
@@ -211,7 +212,7 @@ async def test_direct_call_still_works_in_meta_mode(mock_mass: MagicMock) -> Non
 
 async def test_config_entry_registered_default_off(mock_mass: MagicMock) -> None:
     """The meta toggle ships as a Server-category boolean, default off."""
-    entries = {e.key: e for e in build_config_entries(mock_mass, {})}
+    entries = {e.key: e for e in build_config_entries(mock_mass, DEFAULT_MOUNT_PATH)}
     entry = entries[CONF_META_TOOL_DISCOVERY]
     assert entry.default_value is False
     assert entry.category == "server"

@@ -12,12 +12,13 @@ import numpy as np
 import soxr
 import torch
 from beat_this.inference import Spect2Frames
-from music_assistant_models.enums import MediaType
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, MediaType
 from torchaudio.transforms import SpectralCentroid
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.datetime import utc
-from music_assistant.helpers.util import is_arm
+from music_assistant.helpers.util import is_arm, system_meets_requirements
 from music_assistant.models.audio_analysis import AudioAnalysisData, AudioAnalysisError
 from music_assistant.models.audio_analysis_provider import (
     ACCUMULATING_ANALYSIS_MAX_DURATION_SECONDS,
@@ -53,6 +54,10 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 ANALYSIS_SAMPLE_RATE = 22050
+# Below the recommended thresholds the provider still runs, but we surface an
+# informational notice (see get_config_entries) as it may be tight under load.
+RECOMMENDED_RAM_GB = 6.0
+RECOMMENDED_CPU_CORES = 4
 
 
 @dataclass
@@ -97,6 +102,20 @@ class SmartFadesProvider(AudioAnalysisProvider):
         super().__init__(mass, manifest, config, supported_features)
         self._data: dict[str, SmartFadesData] = {}
         self._device = "cpu"
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return config entries for this provider."""
+        return (
+            ConfigEntry(
+                key="resource_warning",
+                type=ConfigEntryType.ALERT,
+                required=False,
+                hidden=system_meets_requirements(
+                    min_memory_gb=RECOMMENDED_RAM_GB,
+                    min_cpu_cores=RECOMMENDED_CPU_CORES,
+                ),
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider; idle models are reloaded on demand."""

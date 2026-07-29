@@ -22,7 +22,7 @@ from zeroconf.asyncio import AsyncZeroconf
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.player import Player
-from tests.common import suppress_auto_loaded_providers
+from tests.common import suppress_auto_loaded_providers, use_ephemeral_server_ports
 
 NUM_DEMO_PLAYERS = 3
 
@@ -88,7 +88,10 @@ def _create_mock_zeroconf() -> MagicMock:
 
 
 @pytest.fixture
-async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
+async def e2e_mass(
+    tmp_path: pathlib.Path,
+    unused_tcp_port_factory: Callable[[], int],
+) -> AsyncGenerator[MusicAssistant]:
     """
     Boot a hermetic MusicAssistant with only the fake `test` + demo player providers.
 
@@ -108,6 +111,7 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
     mass_instance.dev_mode = True
 
     with (
+        use_ephemeral_server_ports(unused_tcp_port_factory),
         patch(
             "music_assistant.controllers.discovery.controller.AsyncZeroconf",
             return_value=_create_mock_zeroconf(),
@@ -130,8 +134,8 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
     ):
         await mass_instance.start()
         # configure the fake music + player providers
-        await mass_instance.config.save_provider_config("test", {})
-        await mass_instance.config.save_provider_config(
+        await mass_instance.config._create_provider_instance("test", {})
+        await mass_instance.config._create_provider_instance(
             "_demo_player_provider", {"number_of_players": NUM_DEMO_PLAYERS}
         )
         await wait_for(lambda: len(demo_players(mass_instance)) >= NUM_DEMO_PLAYERS)

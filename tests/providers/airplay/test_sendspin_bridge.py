@@ -1,22 +1,33 @@
 """
 Unit tests for the Sendspin -> AirPlay bridge timing.
 
-Cover three things, with the Sendspin clock mocked via ``ManualClock`` so the
+Cover five things, with the Sendspin clock mocked via ``ManualClock`` so the
 tests are deterministic and independent of the host wall-clock:
 
 * the clock-domain conversion turning a Sendspin audible instant (Sendspin's own
-  monotonic clock) into the unix epoch ms the binary expects (``--start-unix-ms``);
+  monotonic clock) into the unix epoch ms used by the START command;
 * the start anchor: byte 0 is anchored to the first chunk Sendspin delivers, so a
   fresh track keeps position 0 and a late joiner lands at the group's live position;
+* the timeline alignment that keeps every chunk at the byte offset its timestamp
+  claims, so a discontinuity in the Sendspin timeline does not shift the device
+  off the group's clock for the rest of the stream;
 * the write pacing that keeps the device buffered a bounded amount ahead of real
-  time so a late-join catch-up backlog is not dumped into the CLI.
+  time so a late-join catch-up backlog is not dumped into the CLI;
+* the warm handover: a running, connected stream is kept (not torn down) across
+  a new Sendspin stream and rides the persistent-stdin flush-refill (FLUSH +
+  re-anchoring START) instead of a cold reconnect -- with flush-timeout and
+  superseded-task fallback.
 """
 
+import asyncio
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from aiosendspin.clock import ManualClock
 from aiosendspin.server.roles import AudioChunk
 
+from music_assistant.providers.airplay.constants import StreamingProtocol
 from music_assistant.providers.airplay.sendspin_bridge import (
     MAX_DEVICE_BUFFER_SECONDS,
     SendspinAirPlayBridge,
@@ -149,7 +160,11 @@ def test_anchor_already_in_the_past_maps_to_a_past_unix_instant() -> None:
 # --- Start anchor: fresh keeps position 0, late join lands at live position ---
 
 
-def _make_bridge(clock_now_us: int, wait_start_ms: int = AP2_LEAD_MS) -> SendspinAirPlayBridge:
+def _make_bridge(
+    clock_now_us: int,
+    wait_start_ms: int = AP2_LEAD_MS,
+    protocol: StreamingProtocol = StreamingProtocol.AIRPLAY2,
+) -> SendspinAirPlayBridge:
     """Build a bridge with mocked provider/player/server and a ManualClock."""
     provider = MagicMock()
     provider.mass = MagicMock()
@@ -157,6 +172,7 @@ def _make_bridge(clock_now_us: int, wait_start_ms: int = AP2_LEAD_MS) -> Sendspi
     airplay_player.player_id = "apc43875e9e53a"
     airplay_player.display_name = "Test Player"
     airplay_player.wait_start = wait_start_ms
+    airplay_player.protocol = protocol
     sendspin_server = MagicMock()
     sendspin_server.clock = ManualClock(now_us_value=clock_now_us)
     bridge = SendspinAirPlayBridge(provider, airplay_player, sendspin_server)
@@ -191,7 +207,6 @@ def test_fresh_start_anchors_to_first_chunk_and_keeps_intro() -> None:
         bridge._on_audio_chunk(_pcm_chunk(first_chunk_ts))
 
     assert bridge._drop_until_us == first_chunk_ts
-    assert bridge._start_aligned is True
     assert not bridge._write_queue.empty()  # opening audio queued, not discarded
 
 
@@ -213,6 +228,126 @@ def test_late_join_anchors_to_catchup_target_live_position() -> None:
     assert bridge._drop_until_us == catchup_target_ts
     # The anchor tracks the advanced playhead, not a fresh now+wait_start-from-zero.
     assert bridge._drop_until_us > SENDSPIN_EPOCH_US + AP2_LEAD_MS * 1_000
+
+
+# --- Timeline alignment: a discontinuity must not shift the device off the group clock ---
+
+
+def _drain_queued_bytes(bridge: SendspinAirPlayBridge) -> int:
+    """Return the number of audio bytes handed to the CLI writer, emptying the queue."""
+    total = 0
+    while not bridge._write_queue.empty():
+        data = bridge._write_queue.get_nowait()
+        if data is not None:
+            total += len(data)
+    return total
+
+
+def _start_stream_at(bridge: SendspinAirPlayBridge, first_chunk_ts: int) -> None:
+    """Feed the anchoring first chunk so the bridge is aligned and streaming."""
+    with patch.object(bridge, "_start_protocol_from_chunk", MagicMock()):
+        bridge._on_audio_chunk(_pcm_chunk(first_chunk_ts))
+    # The mocked task reports done() truthy by default, which the chunk handler
+    # reads as a failed protocol start; model a start still in flight instead.
+    cast("MagicMock", bridge._airplay_stream_start_task).done.return_value = False
+
+
+def _expected_frames(bridge: SendspinAirPlayBridge, timeline_end_us: int) -> int:
+    """Frames the CLI stream must hold for its cursor to sit at a timeline instant."""
+    return round((timeline_end_us - bridge._drop_until_us) * BRIDGE_SAMPLE_RATE / 1_000_000)
+
+
+def test_timeline_gap_is_padded_with_silence() -> None:
+    """
+    A hole in the Sendspin timeline is filled so the device stays on the group clock.
+
+    Sendspin rebases the shared timeline forward when audio production stalls,
+    delivering no audio for the skipped span. The CLI plays its byte stream at a
+    fixed rate from an anchor that is never revised, so writing the next chunk
+    straight after the previous one would leave this device permanently ahead of
+    the group by the size of the hole.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    first_ts = SENDSPIN_EPOCH_US + 250_000
+    _start_stream_at(bridge, first_ts)
+    _drain_queued_bytes(bridge)
+
+    gap_us = 415_711
+    next_ts = first_ts + 100_000 + gap_us
+    bridge._on_audio_chunk(_pcm_chunk(next_ts))
+
+    expected = _expected_frames(bridge, next_ts + 100_000)
+    assert bridge._queued_frames == expected
+    assert (
+        _drain_queued_bytes(bridge)
+        == (expected - _expected_frames(bridge, first_ts + 100_000))
+        * BRIDGE_CHANNELS
+        * BRIDGE_BYTES_PER_SAMPLE
+    )
+
+
+def test_overlapping_chunk_head_is_trimmed() -> None:
+    """A chunk reaching back behind the write cursor keeps only its unwritten tail."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    first_ts = SENDSPIN_EPOCH_US + 250_000
+    _start_stream_at(bridge, first_ts)
+    _drain_queued_bytes(bridge)
+
+    overlap_us = 40_000
+    next_ts = first_ts + 100_000 - overlap_us
+    bridge._on_audio_chunk(_pcm_chunk(next_ts))
+
+    assert bridge._queued_frames == _expected_frames(bridge, next_ts + 100_000)
+
+
+def test_chunk_entirely_behind_the_cursor_is_dropped() -> None:
+    """Audio already written is not queued a second time."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    first_ts = SENDSPIN_EPOCH_US + 250_000
+    _start_stream_at(bridge, first_ts)
+    _drain_queued_bytes(bridge)
+    cursor_frames = bridge._queued_frames
+
+    bridge._on_audio_chunk(_pcm_chunk(first_ts + 10_000, duration_us=50_000))
+
+    assert bridge._queued_frames == cursor_frames
+    assert _drain_queued_bytes(bridge) == 0
+
+
+@pytest.mark.parametrize("server_side", [False, True])
+def test_stream_start_resets_the_write_cursor(server_side: bool) -> None:
+    """
+    Both stream-start entry points rewind the cursor so the next chunk re-anchors byte 0.
+
+    A cursor carried over from the previous stream would place the first chunk of
+    the new one far behind the write position and get it trimmed away as already
+    written.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    _start_stream_at(bridge, SENDSPIN_EPOCH_US + 250_000)
+    assert bridge._queued_frames > 0
+
+    if server_side:
+        bridge._on_stream_start(MagicMock())
+    else:
+        bridge._on_bridge_stream_start()
+
+    assert bridge._queued_frames == 0
+    assert bridge._drop_until_us == 0
+
+
+def test_contiguous_chunks_are_written_untouched() -> None:
+    """Normal playback queues exactly its own audio -- no padding, no trimming."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    first_ts = SENDSPIN_EPOCH_US + 250_000
+    _start_stream_at(bridge, first_ts)
+    _drain_queued_bytes(bridge)
+
+    for index in range(1, 20):
+        bridge._on_audio_chunk(_pcm_chunk(first_ts + index * 100_000))
+
+    assert bridge._queued_frames == _expected_frames(bridge, first_ts + 20 * 100_000)
+    assert _drain_queued_bytes(bridge) == 19 * 100_000 * BRIDGE_BYTES_PER_SECOND // 1_000_000
 
 
 # --- Write pacing: bound the device buffer so a catch-up backlog is not dumped ---
@@ -266,3 +401,231 @@ async def test_failed_cli_write_does_not_advance_pacing_cursor() -> None:
 
     assert [call.args[1] for call in buffer_ahead.call_args_list] == [0, 0]
     assert stream.write_audio.await_count == 2
+
+
+# --- Commanded cold start and warm handover ------------------------------------
+
+
+async def test_cold_start_connects_then_anchors_first_start() -> None:
+    """A fresh bridge stream anchors its first START only after the CLI connects."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + AP2_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    stream = MagicMock()
+    stream.connect = AsyncMock()
+    stream.wait_for_connection = AsyncMock()
+    stream.start = AsyncMock()
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=stream,
+        ),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            return_value=UNIX_NOW_S,
+        ),
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    stream.connect.assert_awaited_once_with()
+    stream.wait_for_connection.assert_awaited_once_with()
+    stream.start.assert_awaited_once_with(int(UNIX_NOW_S * 1000) + AP2_LEAD_MS)
+    assert bridge._airplay_stream is stream
+    assert bridge.airplay_player.stream is stream
+    assert bridge._started is True
+    assert bridge._airplay_stream_ready.is_set()
+
+
+async def test_cold_start_superseded_before_start_stops_transport() -> None:
+    """A cold bridge start that is superseded after connect stops its transport."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + AP2_LEAD_MS * 1_000
+    # a different task owns the bridge: this cold start is stale
+    bridge._airplay_stream_start_task = MagicMock()
+    stream = MagicMock()
+    stream.connect = AsyncMock()
+    stream.stop = AsyncMock()
+    stream.wait_for_connection = AsyncMock()
+    stream.start = AsyncMock()
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=stream,
+        ),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            return_value=UNIX_NOW_S,
+        ),
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    stream.start.assert_not_awaited()
+    stream.stop.assert_awaited_once_with(force=True)
+
+
+# --- Warm handover: a kept stream survives a new stream start and rides flush-refill ---
+
+
+def _make_kept_stream(*, running: bool = True, connected: bool = True) -> MagicMock:
+    """Build a mock AirPlayStream reporting the given running/connected state."""
+    stream = MagicMock()
+    stream.running = running
+    stream.connected = connected
+    return stream
+
+
+def test_on_bridge_stream_start_keeps_warm_eligible_stream() -> None:
+    """A running, connected AirPlay 2 stream survives a new Sendspin stream start."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    kept_stream = _make_kept_stream()
+    bridge._airplay_stream = kept_stream
+    bridge.airplay_player.stream = kept_stream
+    bridge._started = True
+
+    bridge._on_bridge_stream_start()
+
+    assert bridge._airplay_stream is kept_stream
+    assert bridge.airplay_player.stream is kept_stream
+    assert bridge._stream_is_warm_eligible()
+
+
+def test_on_bridge_stream_start_keeps_raop_stream() -> None:
+    """A started legacy RAOP stream is eligible for warm Sendspin flush-refill."""
+    bridge = _make_bridge(
+        clock_now_us=SENDSPIN_EPOCH_US,
+        wait_start_ms=RAOP_LEAD_MS,
+        protocol=StreamingProtocol.RAOP,
+    )
+    old_stream = _make_kept_stream()
+    bridge._airplay_stream = old_stream
+    bridge.airplay_player.stream = old_stream
+    bridge._started = True
+
+    bridge._on_bridge_stream_start()
+
+    assert bridge._airplay_stream is old_stream
+    assert bridge.airplay_player.stream is old_stream
+
+
+def test_sendspin_callbacks_keep_raop_stream_until_warm_handover() -> None:
+    """Both Sendspin start callbacks preserve a reusable legacy RAOP session."""
+    bridge = _make_bridge(
+        clock_now_us=SENDSPIN_EPOCH_US,
+        wait_start_ms=RAOP_LEAD_MS,
+        protocol=StreamingProtocol.RAOP,
+    )
+    kept_stream = _make_kept_stream()
+    bridge._airplay_stream = kept_stream
+    bridge.airplay_player.stream = kept_stream
+    bridge._started = True
+
+    bridge._on_stream_start(MagicMock())
+    bridge._on_bridge_stream_start()
+
+    assert bridge._airplay_stream is kept_stream
+    assert bridge.airplay_player.stream is kept_stream
+
+
+def test_on_bridge_stream_start_replaces_uncommitted_stream() -> None:
+    """A connected stream cannot be retained before its first START."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    old_stream = _make_kept_stream()
+    bridge._airplay_stream = old_stream
+    bridge.airplay_player.stream = old_stream
+
+    bridge._on_bridge_stream_start()
+
+    assert bridge._airplay_stream is None
+    assert bridge.airplay_player.stream is None  # type: ignore[unreachable]
+
+
+def test_on_stream_start_keeps_warm_eligible_stream() -> None:
+    """The Sendspin-server-side stream-start callback also keeps a warm-eligible stream."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    kept_stream = _make_kept_stream()
+    bridge._airplay_stream = kept_stream
+    bridge.airplay_player.stream = kept_stream
+    bridge._started = True
+
+    bridge._on_stream_start(MagicMock())
+
+    assert bridge._airplay_stream is kept_stream
+    assert bridge.airplay_player.stream is kept_stream
+
+
+async def test_warm_stream_flushes_and_reanchors_on_kept_instance() -> None:
+    """A warm handover flushes and re-anchors START on the same stream instance."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    kept_stream = MagicMock()
+    kept_stream.flush = AsyncMock(return_value=True)
+    kept_stream.start = AsyncMock()
+    bridge._airplay_stream = kept_stream
+    bridge._airplay_stream_start_task = asyncio.current_task()
+
+    committed = await bridge._start_warm_stream(kept_stream, 1_784_000_000_000)
+
+    assert committed is True
+    assert bridge._airplay_stream is kept_stream  # no new instance was built
+    kept_stream.flush.assert_awaited_once_with()
+    kept_stream.start.assert_awaited_once_with(1_784_000_000_000)
+    assert bridge._started is True
+    assert bridge._airplay_stream_ready.is_set()
+
+
+async def test_warm_stream_flush_timeout_falls_back_to_cold() -> None:
+    """A flush that is never acknowledged never re-anchors and falls back to cold."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    kept_stream = MagicMock()
+    kept_stream.flush = AsyncMock(return_value=False)
+    kept_stream.start = AsyncMock()
+    bridge._airplay_stream = kept_stream
+    bridge._airplay_stream_start_task = asyncio.current_task()
+
+    committed = await bridge._start_warm_stream(kept_stream, 1_784_000_000_000)
+
+    assert committed is False
+    kept_stream.start.assert_not_awaited()
+    assert bridge._started is False
+
+
+async def test_warm_stream_superseded_before_start_does_not_anchor() -> None:
+    """If a newer stream start already owns the bridge, the stale flush never re-anchors."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    kept_stream = MagicMock()
+    kept_stream.flush = AsyncMock(return_value=True)
+    kept_stream.start = AsyncMock()
+    bridge._airplay_stream = kept_stream
+    # Simulate a newer stream start having already replaced the tracked task.
+    bridge._airplay_stream_start_task = MagicMock()
+
+    committed = await bridge._start_warm_stream(kept_stream, 1_784_000_000_000)
+
+    assert committed is False
+    kept_stream.start.assert_not_awaited()
+
+
+async def test_warm_stream_cancellation_propagates() -> None:
+    """Cancellation while flushing propagates without re-anchoring."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    kept_stream = MagicMock()
+    flush_waiting = asyncio.Event()
+
+    async def flush(*_args: object, **_kwargs: object) -> bool:
+        bridge._airplay_stream_start_task = asyncio.current_task()
+        flush_waiting.set()
+        await asyncio.Event().wait()
+        return True
+
+    kept_stream.flush = AsyncMock(side_effect=flush)
+    kept_stream.start = AsyncMock()
+    bridge._airplay_stream = kept_stream
+
+    warm_task = asyncio.create_task(bridge._start_warm_stream(kept_stream, 1_784_000_000_000))
+    await flush_waiting.wait()
+    warm_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await warm_task
+
+    kept_stream.start.assert_not_awaited()

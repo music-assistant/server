@@ -137,6 +137,65 @@ def test_audio_processing_manager_attaches_grouped_chain() -> None:
     )
 
 
+def test_lossy_source_can_have_bit_perfect_lossless_output() -> None:
+    """Lossy source quality does not prevent preserving its decoded PCM samples."""
+    manager, _mass, _queue_data, streamdetails, lossless_plan, lossy_plan = _manager_context()
+    streamdetails.audio_format = AudioFormat(
+        content_type=ContentType.OGG,
+        codec_type=ContentType.VORBIS,
+        sample_rate=44100,
+        bit_depth=16,
+        channels=2,
+        bit_rate=320,
+    )
+    pcm_format = _format(ContentType.PCM_S16LE)
+    manager.update_item_runtime(
+        "queue-1",
+        "session-1",
+        "item-1",
+        input_format=pcm_format,
+        pcm_format=pcm_format,
+        normalization=None,
+        playback_speed=1.0,
+    )
+    lossless_plan.input_format = pcm_format
+    lossless_plan.output_details.output_format = _format(ContentType.FLAC)
+    lossy_plan.input_format = pcm_format
+    lossy_plan.output_details.output_format = _format(ContentType.MP3, bit_rate=320)
+
+    manager.update_output(
+        "lossless-player",
+        lossless_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+    manager.update_output(
+        "lossy-player",
+        lossy_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    chain = cast("AudioProcessingChain", streamdetails.audio_processing)
+    outputs = {output.player_ids[0]: output for output in chain.outputs}
+    assert chain.input_fidelity.quality == AudioQuality.STANDARD
+    assert outputs["lossless-player"].fidelity == AudioFidelity(
+        quality=AudioQuality.STANDARD,
+        bit_perfect=True,
+    )
+    assert outputs["lossy-player"].fidelity == AudioFidelity(
+        quality=AudioQuality.STANDARD,
+        bit_perfect=False,
+    )
+    serialized = streamdetails.to_dict()
+    serialized_outputs = {
+        output["player_ids"][0]: output for output in serialized["audio_processing"]["outputs"]
+    }
+    assert serialized_outputs["lossless-player"]["fidelity"]["bit_perfect"] is True
+
+
 def test_shared_output_destinations_are_registered_atomically() -> None:
     """One shared output publishes all destinations in a single queue update."""
     manager, mass, _queue_data, streamdetails, output_plan, _lossy_plan = _manager_context()
@@ -470,14 +529,12 @@ def test_player_output_plan_matches_ffmpeg_filters() -> None:
     )
 
     assert plan.filter_params[0] == "volume=-1.0dB"
-    assert "pan=mono|c0=FL" in plan.filter_params
-    assert plan.filter_params[-1] == "alimiter=limit=-2dB:level=false:asc=true"
+    assert plan.filter_params[-1] == "pan=mono|c0=FL"
     assert plan.output_details.dsp == AudioDSPDetails(
         state=DSPState.ENABLED,
         input_gain=-1.0,
         filters=[ToneControlFilter(enabled=True, bass_level=2.0)],
         output_gain=-0.5,
-        output_limiter=True,
         preset_id="night",
     )
     assert plan.dsp_config_id == "player-1"
@@ -516,6 +573,51 @@ def test_player_output_plan_excludes_neutral_filters() -> None:
 
     assert plan.output_details.dsp.filters == []
     assert not any(param.startswith("equalizer=") for param in plan.filter_params)
+
+
+def test_player_output_plan_prefers_rendering_player_channels() -> None:
+    """Output channels stored on the rendering player win over the parent's value."""
+    mass = MagicMock()
+    player = MagicMock(player_id="child-1", protocol_parent_id="parent-1")
+    player.state.active_group = None
+    player.state.synced_to = None
+    mass.players.get_player.return_value = player
+    mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
+    mass.config.get_raw_player_config_value.side_effect = lambda player_id, _key, default: (
+        "left" if player_id == "child-1" else default
+    )
+    audio = StreamsAudio(cast("Any", mass))
+    audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
+
+    plan = audio.get_player_output_plan(
+        "child-1",
+        audio_format,
+        audio_format,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    assert plan.output_details.source_channel == AudioChannel.FL
+    assert "pan=mono|c0=FL" in plan.filter_params
+    # processing attribution still points at the visible parent player
+    assert mass.streams.audio_processing.update_output.call_args.args[0] == "parent-1"
+
+
+@pytest.mark.asyncio
+async def test_output_format_prefers_rendering_player_channels() -> None:
+    """The output format channel count follows the rendering player's own stored value."""
+    mass = MagicMock()
+    player = MagicMock(player_id="child-1", protocol_parent_id="parent-1")
+    player.get_supported_sample_rates.return_value = [(48000, 24)]
+    mass.config.get_raw_player_config_value.side_effect = lambda player_id, _key, default: (
+        "left" if player_id == "child-1" else default
+    )
+    audio = StreamsAudio(cast("Any", mass))
+
+    fmt = await audio.get_output_format("flac", player, 48000, 24, MediaType.TRACK)
+
+    assert fmt.channels == 1
 
 
 @pytest.mark.asyncio
@@ -584,9 +686,11 @@ def test_protocol_output_uses_parent_settings(monkeypatch: pytest.MonkeyPatch) -
     assert plan.output_details.dsp.preset_id == "parent-preset"
     assert plan.dsp_config_id == "player-1"
     assert plan.output_details.source_channel == AudioChannel.FR
-    assert not plan.output_details.dsp.output_limiter
+    # the output channels are looked up on the rendering player first (no value
+    # stored there in this scenario), then resolved from the user-facing parent
     assert {call.args[0] for call in mass.config.get_raw_player_config_value.call_args_list} == {
-        "player-1"
+        "player-1",
+        "protocol-1",
     }
     mass.streams.audio_processing.update_output.assert_called_once_with(
         "player-1",

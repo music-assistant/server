@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import logging
 import pathlib
-from collections.abc import AsyncGenerator, Iterator
+from collections.abc import AsyncGenerator, Callable, Iterator
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
@@ -63,6 +63,23 @@ async def wait_for_sync_completion(mass: MusicAssistant) -> AsyncGenerator[None]
 SUPPRESSED_BUILTIN_PROVIDERS = {"local_audio"}
 
 _orig_create_builtin_provider_config = ProviderConfigMixin.create_builtin_provider_config
+
+
+@contextlib.contextmanager
+def use_ephemeral_server_ports(port_factory: Callable[[], int]) -> Iterator[None]:
+    """
+    Give a full-server test fixture unused web and stream server ports.
+
+    :param port_factory: Callable returning an unused TCP port.
+    """
+    with (
+        patch(
+            "music_assistant.controllers.webserver.controller.DEFAULT_SERVER_PORT",
+            port_factory(),
+        ),
+        patch("music_assistant.controllers.streams.controller.DEFAULT_PORT", port_factory()),
+    ):
+        yield
 
 
 @contextlib.contextmanager

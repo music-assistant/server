@@ -9,13 +9,13 @@ from typing import TYPE_CHECKING, Any, TypeVar, final, overload
 
 from music_assistant_models.config_entries import ConfigValueType
 from music_assistant_models.enums import ConfigEntryType, EventType
-from music_assistant_models.errors import UnsupportedFeaturedException
+from music_assistant_models.errors import ActionUnavailable, UnsupportedFeaturedException
 
-from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
+from music_assistant.constants import CONF_LOG_LEVEL, CONF_PROVIDERS, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
     from async_upnp_client.utils import CaseInsensitiveDict
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.enums import ProviderFeature, ProviderStage, ProviderType
     from music_assistant_models.provider import ProviderManifest
     from zeroconf import ServiceStateChange
@@ -57,6 +57,29 @@ class Provider:
         """Return the features supported by this Provider."""
         # should not be overridden in normal circumstances
         return self._supported_features
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the (options) config entries to configure this provider instance.
+
+        Called only for an existing (loaded) instance: read the current values via
+        ``self.config``/``self.get_config_value`` and the capabilities via
+        ``self.supported_features``. One-time setup input is collected by the setup flow
+        (see ``setup_flow.py``), not here. Include ``ConfigEntryType.ACTION`` entries for
+        one-shot buttons and handle their presses in ``handle_config_action``.
+        """
+        return ()
+
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+        """
+        Handle a one-shot action button press from this provider's options and re-render.
+
+        Override to run the side effect for each ``ConfigEntryType.ACTION`` entry this
+        provider declares, then return the (possibly refreshed) config entries to display.
+
+        :param action: The action id of the pressed button (an entry's ``action`` key).
+        """
+        raise ActionUnavailable(f"Unknown action: {action}")
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -171,7 +194,7 @@ class Provider:
             # default implementation - simply use the instance number/index
             instance_name_postfix = str(instances.index(self.instance_id) + 1)
         # append instance name to provider name
-        return f"{self.manifest.name} [{self.instance_name_postfix}]"
+        return f"{self.manifest.name} [{instance_name_postfix}]"
 
     @property
     def instance_name_postfix(self) -> str | None:
@@ -275,6 +298,45 @@ class Provider:
             assert isinstance(value, str)
             return self.mass.config.decrypt_string(value)
         return value
+
+    def get_setup_value(self, key: str, default: ConfigValueType = None) -> ConfigValueType:
+        """
+        Return a value collected by this provider's setup flow (from setup_data).
+
+        Encrypted (string) values are decrypted transparently. When the key is not
+        present in setup_data, the active config entry value or the given default is
+        returned.
+
+        :param key: The setup data key to retrieve.
+        :param default: Value to return when the key is not present anywhere.
+        """
+        setup_data = self.mass.config.get(f"{CONF_PROVIDERS}/{self.instance_id}/setup_data") or {}
+        if key in setup_data:
+            value = setup_data[key]
+            return self.mass.config.decrypt_string(value) if isinstance(value, str) else value
+        return self.get_config_value(key, default)
+
+    def _update_setup_data(self, key: str, value: ConfigValueType, immediate: bool = True) -> None:
+        """
+        Update a single setup_data value for this provider (e.g. a rotated auth token).
+
+        :param key: The setup data key to update.
+        :param value: The new value; strings are encrypted at rest.
+        :param immediate: Persist to disk right away (the default) instead of on the
+            debounced save timer, so a critical value survives a crash.
+        """
+        if not self.mass.config.get(f"{CONF_PROVIDERS}/{self.instance_id}"):
+            # only allow setting setup data if the main config entry exists
+            msg = f"Invalid provider instance: {self.instance_id}"
+            raise KeyError(msg)
+        stored_value = self.mass.config.encrypt_string(value) if isinstance(value, str) else value
+        self.mass.config.set(
+            f"{CONF_PROVIDERS}/{self.instance_id}/setup_data/{key}",
+            stored_value,
+            immediate=immediate,
+        )
+        # keep the in-memory config copy in sync with storage
+        self.config.setup_data[key] = stored_value
 
     def _update_config_value(
         self, key: str, value: ConfigValueType, encrypted: bool = False, immediate: bool = False

@@ -14,17 +14,15 @@ Note:
 
 from __future__ import annotations
 
-import asyncio
 import time
 from collections.abc import AsyncGenerator
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
-    EventType,
     MediaType,
     ProviderFeature,
     StreamType,
@@ -42,6 +40,7 @@ from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
     get_podcastparser_dict,
     get_stream_url_and_guid_from_episode,
+    get_stream_url_from_episode,
     parse_podcast,
     parse_podcast_episode,
 )
@@ -60,10 +59,8 @@ CONF_URL = "url"
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
 CONF_DEVICE_ID = "device_id"
-CONF_USING_GPODDER = "using_gpodder"  # hidden, bool, true if not nextcloud used
 
 # Config for nextcloud
-CONF_ACTION_AUTH_NC = "authenticate_nc"
 CONF_TOKEN_NC = "token"
 CONF_URL_NC = "url_nc"
 
@@ -92,162 +89,34 @@ async def setup(
     return GPodder(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    if values is None:
-        values = {}
-
-    verify_ssl = True
-    if _verify_ssl := values.get(CONF_VERIFY_SSL):
-        verify_ssl = bool(_verify_ssl)
-
-    if action == CONF_ACTION_AUTH_NC:
-        session = mass.http_session
-        response = await session.post(
-            str(values[CONF_URL_NC]).rstrip("/") + "/index.php/login/v2",
-            headers={"User-Agent": "Music Assistant"},
-            ssl=verify_ssl,
-        )
-        data = await response.json()
-        poll_endpoint = data["poll"]["endpoint"]
-        poll_token = data["poll"]["token"]
-        login_url = data["login"]
-        session_id = str(values["session_id"])
-        mass.signal_event(EventType.AUTH_SESSION, session_id, login_url)
-        while True:
-            response = await session.post(poll_endpoint, data={"token": poll_token}, ssl=verify_ssl)
-            if response.status not in [200, 404]:
-                raise LoginFailed("The specified url seems not to belong to a nextcloud instance.")
-            if response.status == 200:
-                data = await response.json()
-                values[CONF_TOKEN_NC] = data["appPassword"]
-                break
-            await asyncio.sleep(1)
-
-    authenticated_nc = True
-    if values.get(CONF_TOKEN_NC) is None:
-        authenticated_nc = False
-
-    using_gpodder = bool(values.get(CONF_USING_GPODDER, False))
-
-    return (
-        ConfigEntry(
-            key="label_text",
-            type=ConfigEntryType.LABEL,
-            hidden=not authenticated_nc,
-        ),
-        ConfigEntry(
-            key="label_gpodder",
-            type=ConfigEntryType.LABEL,
-            hidden=authenticated_nc,
-        ),
-        ConfigEntry(
-            key=CONF_URL,
-            type=ConfigEntryType.STRING,
-            required=False,
-            value=values.get(CONF_URL),
-            hidden=authenticated_nc,
-        ),
-        ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            required=False,
-            hidden=authenticated_nc,
-            value=values.get(CONF_USERNAME),
-        ),
-        ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            required=False,
-            hidden=authenticated_nc,
-            value=values.get(CONF_PASSWORD),
-        ),
-        ConfigEntry(
-            key=CONF_DEVICE_ID,
-            type=ConfigEntryType.STRING,
-            required=False,
-            hidden=authenticated_nc,
-            value=values.get(CONF_DEVICE_ID),
-        ),
-        ConfigEntry(
-            key="label_nextcloud",
-            type=ConfigEntryType.LABEL,
-            hidden=authenticated_nc or using_gpodder,
-        ),
-        ConfigEntry(
-            key=CONF_URL_NC,
-            type=ConfigEntryType.STRING,
-            required=False,
-            value=values.get(CONF_URL_NC),
-            hidden=using_gpodder,
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_AUTH_NC,
-            type=ConfigEntryType.ACTION,
-            action=CONF_ACTION_AUTH_NC,
-            required=False,
-            hidden=using_gpodder,
-        ),
-        ConfigEntry(
-            key="label_general",
-            type=ConfigEntryType.LABEL,
-        ),
-        ConfigEntry(
-            key=CONF_MAX_NUM_EPISODES,
-            type=ConfigEntryType.INTEGER,
-            required=False,
-            default_value=0,
-            value=values.get(CONF_MAX_NUM_EPISODES),
-        ),
-        ConfigEntry(
-            key=CONF_VERIFY_SSL,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            advanced=True,
-            default_value=True,
-            value=values.get(CONF_VERIFY_SSL),
-        ),
-        ConfigEntry(
-            key=CONF_TOKEN_NC,
-            type=ConfigEntryType.SECURE_STRING,
-            hidden=True,
-            required=False,
-            value=values.get(CONF_TOKEN_NC),
-        ),
-        ConfigEntry(
-            key=CONF_USING_GPODDER,
-            type=ConfigEntryType.BOOLEAN,
-            hidden=True,
-            required=False,
-            value=values.get(CONF_USING_GPODDER),
-        ),
-    )
-
-
 class GPodder(MusicProvider):
     """gPodder MusicProvider."""
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the (options) config entries for the gPodder provider.
+
+        The server/account connection (gpodder API or Nextcloud) is set up by the interactive
+        setup flow (see ``setup_flow.py``); only the max-episodes limit is configured here.
+        """
+        return (
+            ConfigEntry(
+                key=CONF_MAX_NUM_EPISODES,
+                type=ConfigEntryType.INTEGER,
+                required=False,
+                default_value=0,
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Pass config values to client and initialize."""
-        base_url = str(self.config.get_value(CONF_URL))
-        _username = self.config.get_value(CONF_USERNAME)
-        _password = self.config.get_value(CONF_PASSWORD)
-        _device_id = self.config.get_value(CONF_DEVICE_ID)
-        nc_url = str(self.config.get_value(CONF_URL_NC))
-        nc_token = self.config.get_value(CONF_TOKEN_NC)
-        verify_ssl = bool(self.config.get_value(CONF_VERIFY_SSL))
+        base_url = str(self.get_setup_value(CONF_URL))
+        _username = self.get_setup_value(CONF_USERNAME)
+        _password = self.get_setup_value(CONF_PASSWORD)
+        _device_id = self.get_setup_value(CONF_DEVICE_ID)
+        nc_url = str(self.get_setup_value(CONF_URL_NC))
+        nc_token = self.get_setup_value(CONF_TOKEN_NC)
+        verify_ssl = bool(self.get_setup_value(CONF_VERIFY_SSL, True))
 
         self.max_episodes = int(float(str(self.config.get_value(CONF_MAX_NUM_EPISODES))))
 
@@ -259,7 +128,6 @@ class GPodder(MusicProvider):
             assert nc_url is not None
             self._client.init_nc(base_url=nc_url, nc_token=str(nc_token))
         else:
-            self._update_config_value(CONF_USING_GPODDER, True)
             if _username is None or _password is None or _device_id is None:
                 raise LoginFailed("Must provide username, password and device_id.")
             username = str(_username)
@@ -612,12 +480,11 @@ class GPodder(MusicProvider):
         podcast = await self._cache_get_podcast(podcast_id)
         episodes = podcast.get("episodes", [])
         for episode in episodes:
-            episode_enclosures = episode.get("enclosures", [])
-            if len(episode_enclosures) < 1:
-                # episode without an enclosure carries no stream; skip it instead of
+            stream_url = get_stream_url_from_episode(episode=episode)
+            if stream_url is None:
+                # episode without a playable enclosure carries no stream; skip it instead of
                 # aborting the lookup for the (potentially later) requested episode
                 continue
-            stream_url: str | None = episode_enclosures[0].get("url", None)
             guid = episode.get("guid")
             if guid is not None and len(guid.split(" ")) == 1:
                 _guid_or_stream_url_compare = guid
