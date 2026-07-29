@@ -38,7 +38,6 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.json import SerializableType
-from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.util import try_parse_int
 from music_assistant.models.plugin import PluginProvider
 
@@ -50,6 +49,7 @@ if TYPE_CHECKING:
     from aiohttp import ClientSession
     from hass_client.models import CompressedState, Device, EntityStateEvent, State
     from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.player import PlayerMedia
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -575,7 +575,7 @@ class HomeAssistantProvider(PluginProvider):
             raise MusicAssistantError(msg)
         return str(data)
 
-    async def play_announcement_on_entity(self, entity_id: str, announcement_url: str) -> None:
+    async def play_announcement_on_entity(self, entity_id: str, announcement: PlayerMedia) -> None:
         """
         Play an announcement on a Home Assistant media_player entity.
 
@@ -584,13 +584,13 @@ class HomeAssistantProvider(PluginProvider):
         announcement has finished playing (approximated by its duration).
 
         :param entity_id: The media_player entity to play the announcement on.
-        :param announcement_url: URL of the announcement audio to play.
+        :param announcement: The announcement to play.
         """
         await self.hass.call_service(
             domain="media_player",
             service="play_media",
             service_data={
-                "media_content_id": announcement_url,
+                "media_content_id": announcement.uri,
                 "media_content_type": "music",
                 "announce": True,
             },
@@ -598,8 +598,8 @@ class HomeAssistantProvider(PluginProvider):
         )
         # Wait until the announcement is finished playing so callers can play
         # announcements in a sequence; HA gives no completion signal for announcements.
-        media_info = await async_parse_tags(announcement_url, require_duration=True)
-        await asyncio.sleep(media_info.duration or 5)
+        duration = await self.mass.streams.get_announcement_duration(announcement)
+        await asyncio.sleep(duration or 5)
 
     async def get_tts_message(self, message: str, language: str | None = None) -> StreamDetails:
         """Handle text-to-speech via Home Assistant's REST API."""
