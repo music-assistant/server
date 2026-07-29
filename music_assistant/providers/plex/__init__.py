@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import random
 import warnings
@@ -65,7 +64,7 @@ from plexapi.server import PlexServer
 
 from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS, UNKNOWN_ARTIST
 from music_assistant.controllers.cache import use_cache
-from music_assistant.helpers.tags import async_parse_tags
+from music_assistant.helpers.tags import async_parse_tags, clean_mbid
 from music_assistant.helpers.util import parse_title_and_version
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
@@ -1239,9 +1238,8 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             album.metadata.release_date = plex_album.originallyAvailableAt
         if (explicit := get_explicit(plex_album)) is not None:
             album.metadata.explicit = explicit
-        if mbid := get_musicbrainz_id(plex_album):
-            with contextlib.suppress(InvalidDataError):
-                album.mbid = mbid
+        if mbid := clean_mbid(get_musicbrainz_id(plex_album), f"album {plex_album.title}"):
+            album.mbid = mbid
 
         album.artists.append(
             self._get_item_mapping(
@@ -1282,9 +1280,8 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             artist.metadata.style = next(
                 (style.tag for style in plex_artist.styles if style.tag), None
             )
-        if mbid := get_musicbrainz_id(plex_artist):
-            with contextlib.suppress(InvalidDataError):
-                artist.mbid = mbid
+        if mbid := clean_mbid(get_musicbrainz_id(plex_artist), f"artist {plex_artist.title}"):
+            artist.mbid = mbid
         return artist
 
     async def _parse_playlist(self, plex_playlist: PlexPlaylist) -> Playlist:
@@ -1479,9 +1476,8 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             track.metadata.mood = next((mood.tag for mood in plex_track.moods if mood.tag), None)
         if (explicit := get_explicit(plex_track)) is not None:
             track.metadata.explicit = explicit
-        if mbid := get_musicbrainz_id(plex_track):
-            with contextlib.suppress(InvalidDataError):
-                track.mbid = mbid
+        if mbid := clean_mbid(get_musicbrainz_id(plex_track), f"track {plex_track.title}"):
+            track.mbid = mbid
         if plex_track.parentKey:
             track.album = self._get_item_mapping(
                 MediaType.ALBUM, plex_track.parentKey, plex_track.parentTitle
