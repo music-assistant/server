@@ -172,7 +172,6 @@ class StreamsController(CoreController):
             "streaming audio to players on the local network."
         )
         self.manifest.icon = "cast-audio"
-        self.announcements: dict[str, AnnounceData] = {}
         self.announcement_renderer = AnnouncementRenderer()
         self._bind_ip: str = "0.0.0.0"
         self.audio = StreamsAudio(mass)
@@ -198,7 +197,7 @@ class StreamsController(CoreController):
             "ffmpeg_version": get_global_cache_value(CACHE_ATTR_FFMPEG_VERSION),
             "libsoxr_support": get_global_cache_value(CACHE_ATTR_LIBSOXR_PRESENT),
             "active_output_streams": self._active_output_streams,
-            "active_announcements": len(self.announcements),
+            "active_announcements": self.announcement_renderer.active_announcements,
             "active_announcement_renders": self.announcement_renderer.active_renders,
         }
 
@@ -1086,7 +1085,7 @@ class StreamsController(CoreController):
         player_id = request.match_info["player_id"]
         if not (player := self.mass.players.get_player(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
-        if not (announce_data := self.announcements.get(player_id)):
+        if not (announce_data := self.announcement_renderer.get_for_player(player_id)):
             raise web.HTTPNotFound(reason=f"No pending announcements for Player: {player_id}")
 
         # work out output format/details
@@ -1164,11 +1163,14 @@ class StreamsController(CoreController):
     def get_announcement_url(
         self,
         player_id: str,
-        announce_data: AnnounceData,
         content_type: ContentType = ContentType.MP3,
     ) -> str:
-        """Get the url for the special announcement stream."""
-        self.announcements[player_id] = announce_data
+        """
+        Get the url that serves the announcement registered for the given player.
+
+        :param player_id: The player the announcement is played on.
+        :param content_type: The format to serve the announcement in.
+        """
         # use stream server to host announcement on local network
         # this ensures playback on all players, including ones that do not
         # like https hosts and it also offers the pre-announce 'bell'

@@ -1314,7 +1314,7 @@ class TestPlayAnnouncementCleanup:
 
     def _make_player(
         self, mock_mass: MagicMock, announcements: dict[str, object]
-    ) -> tuple[PlayerController, MockPlayer]:
+    ) -> tuple[PlayerController, MockPlayer, MagicMock]:
         """Create a controller and a player with native announcement support."""
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
@@ -1323,26 +1323,31 @@ class TestPlayAnnouncementCleanup:
         player._cache.clear()
         controller._players = {"player_1": player}
         mock_mass.players = controller
-
-        # mimic the real streams controller: register announce data on url request
-        def _get_announcement_url(player_id: str, announce_data: object, **_kwargs: object) -> str:
-            announcements[player_id] = announce_data
-            return f"http://ma/announcement/{player_id}.mp3"
-
-        mock_mass.streams.announcements = announcements
-        mock_mass.streams.get_announcement_url = MagicMock(side_effect=_get_announcement_url)
         render = MagicMock()
         render.wait_ready = AsyncMock(return_value=True)
         render.wait_finished = AsyncMock(return_value=3.0)
-        mock_mass.streams.announcement_renderer.acquire = MagicMock(return_value=render)
-        mock_mass.streams.announcement_renderer.release = AsyncMock()
+
+        # mimic the real renderer: it owns which announcement each player is playing
+        def _register(player_id: str, announce_data: object) -> MagicMock:
+            announcements[player_id] = announce_data
+            return render
+
+        async def _unregister(player_id: str, _render: object) -> None:
+            announcements.pop(player_id, None)
+
+        renderer = mock_mass.streams.announcement_renderer
+        renderer.register = MagicMock(side_effect=_register)
+        renderer.unregister = AsyncMock(side_effect=_unregister)
+        mock_mass.streams.get_announcement_url = MagicMock(
+            side_effect=lambda player_id, **_kwargs: f"http://ma/announcement/{player_id}.mp3"
+        )
         player.update_state(signal_event=False)
-        return controller, player
+        return controller, player, render
 
     async def test_announcement_data_removed_after_playback(self, mock_mass: MagicMock) -> None:
         """The registered announcement data is released once playback finished."""
         announcements: dict[str, object] = {}
-        controller, player = self._make_player(mock_mass, announcements)
+        controller, player, _render = self._make_player(mock_mass, announcements)
 
         async def _play_announcement(*_args: object, **_kwargs: object) -> None:
             # entry must exist while the announcement is being played/served
@@ -1354,25 +1359,24 @@ class TestPlayAnnouncementCleanup:
 
         player.play_announcement.assert_awaited_once()
         assert announcements == {}
-        mock_mass.streams.announcement_renderer.release.assert_awaited_once()
+        mock_mass.streams.announcement_renderer.unregister.assert_awaited_once()
 
     async def test_announcement_data_removed_on_error(self, mock_mass: MagicMock) -> None:
         """The registered announcement data is released even when playback fails."""
         announcements: dict[str, object] = {}
-        controller, player = self._make_player(mock_mass, announcements)
+        controller, player, _render = self._make_player(mock_mass, announcements)
         player.play_announcement = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
 
         with pytest.raises(PlayerCommandFailed):
             await controller.play_announcement("player_1", "http://test/announcement.mp3")
 
         assert announcements == {}
-        mock_mass.streams.announcement_renderer.release.assert_awaited_once()
+        mock_mass.streams.announcement_renderer.unregister.assert_awaited_once()
 
     async def test_native_announcement_starts_on_first_audio(self, mock_mass: MagicMock) -> None:
         """A native implementation is handed the url as soon as there is audio to serve."""
         announcements: dict[str, object] = {}
-        controller, player = self._make_player(mock_mass, announcements)
-        render = mock_mass.streams.announcement_renderer.acquire.return_value
+        controller, player, render = self._make_player(mock_mass, announcements)
         player.play_announcement = AsyncMock()  # type: ignore[method-assign]
 
         await controller.play_announcement("player_1", "http://test/announcement.mp3")
