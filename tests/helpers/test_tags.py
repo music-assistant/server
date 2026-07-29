@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 import mutagen
 import pytest
 from music_assistant_models.errors import InvalidDataError
-from mutagen.id3 import UFID
+from mutagen.id3 import ID3, UFID
 
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.helpers import tags
@@ -17,6 +17,7 @@ from music_assistant.helpers.tags import (
     _parse_id3_tags,
     _parse_mp4_tags,
     _parse_vorbis_tags,
+    clean_mbid,
     parse_tags_mutagen,
     split_artists,
     write_replaygain_track_gain,
@@ -859,3 +860,61 @@ async def test_write_replaygain_track_gain_read_only(tmp_path: pathlib.Path) -> 
     finally:
         # restore permissions so tmp_path cleanup can remove the file
         dest.chmod(0o644)
+
+
+VALID_MBID = "73c69a4b-1f9e-4c8c-b8bb-3ba903af1c3f"
+
+
+def test_clean_mbid() -> None:
+    """Test cleaning/canonicalizing MusicBrainz identifiers from file tags."""
+    assert clean_mbid(VALID_MBID) == VALID_MBID
+    # uppercase hex digits are canonicalized to lowercase
+    assert clean_mbid(VALID_MBID.upper()) == VALID_MBID
+    # trailing NUL bytes and surrounding whitespace are stripped
+    assert clean_mbid(f"{VALID_MBID}\x00") == VALID_MBID
+    assert clean_mbid(f"  {VALID_MBID} \n") == VALID_MBID
+    # non-UUID values are rejected
+    assert clean_mbid("CAAE0466 1G4B0N3 07800NE1") is None
+    assert clean_mbid("abcdefg") is None
+    assert clean_mbid("") is None
+    assert clean_mbid(None) is None
+    # non-string values (e.g. repeated NFO elements parsed as a list) are rejected
+    assert clean_mbid([VALID_MBID, VALID_MBID]) is None  # type: ignore[arg-type]
+
+
+def test_parse_id3_ufid_frame_binary_data() -> None:
+    """A UFID frame with non-UTF-8 binary data must not break parsing of other tags."""
+    ufid = UFID(  # type: ignore[no-untyped-call]
+        owner="http://musicbrainz.org",
+        data=bytes.fromhex("73c69a4b1f9e4c8cb8bb3ba903af1c3f"),
+    )
+    title_frame = MagicMock()
+    title_frame.text = ["MyTitle"]
+    frames = {"UFID:http://musicbrainz.org": ufid, "TIT2": title_frame}
+
+    mock_tags = MagicMock()
+    mock_tags.get = frames.get
+    result = _parse_id3_tags(mock_tags)
+
+    assert result.get("title") == "MyTitle"
+    # the garbled identifier is rejected downstream by clean_mbid
+    assert clean_mbid(result.get("musicbrainzrecordingid")) is None
+
+
+async def test_parse_ufid_frame_with_dirty_payload(tmp_path: pathlib.Path) -> None:
+    """
+    A UFID payload with a NUL terminator must still yield a usable recording id.
+
+    Regression test for https://github.com/music-assistant/support/issues/5906
+    where such files failed to import with "Invalid MusicBrainz identifier".
+    """
+    dest = tmp_path / "ufid.mp3"
+    shutil.copy(FILE_MP3, dest)
+    id3 = ID3(str(dest))  # type: ignore[no-untyped-call]
+    id3.add(  # type: ignore[no-untyped-call]
+        UFID(owner="http://musicbrainz.org", data=f"{VALID_MBID}\x00".encode("ascii"))  # type: ignore[no-untyped-call]
+    )
+    id3.save()
+
+    _tags = await tags.async_parse_tags(str(dest))
+    assert clean_mbid(_tags.musicbrainz_recordingid) == VALID_MBID
