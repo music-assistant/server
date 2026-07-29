@@ -8,6 +8,7 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import LoginFailed
+from ya_passport_auth.ma import DevicePageConfig, run_oauth_device_flow
 
 from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_CONTENT_TYPE,
@@ -21,15 +22,16 @@ from music_assistant.providers.filesystem_local.constants import (
     CONF_ENTRY_PROPAGATE_GENRES,
 )
 
-from . import auth
 from .constants import (
     CONF_ACTION_AUTH,
-    CONF_AUTH_CODE,
+    CONF_AUTH_STATUS_CONNECTED,
+    CONF_AUTH_STATUS_NOT_CONNECTED,
     CONF_CLIENT_ID,
     CONF_CLIENT_SECRET,
     CONF_REFRESH_TOKEN,
     CONF_ROOT_PATH,
     DISK_ROOT,
+    OAUTH_SCOPE,
 )
 from .provider import YandexDiskFileSystemProvider
 
@@ -39,6 +41,19 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.models import ProviderInstanceType
+
+
+_DEVICE_PAGE = DevicePageConfig(
+    domain="filesystem_yandex_disk",
+    title={
+        "en": "Authorize Yandex Disk",
+        "ru": "Авторизация Яндекс Диска",
+    },
+    context_text={
+        "en": "Confirm read-only access for the OAuth application you configured.",
+        "ru": "Подтвердите доступ только для чтения для настроенного OAuth-приложения.",
+    },
+)
 
 
 async def setup(
@@ -77,7 +92,7 @@ async def get_config_entries(
 
     await _handle_auth_action(mass, instance_id, action, values)
 
-    client_id = str(values.get(CONF_CLIENT_ID) or "")
+    authenticated = bool(values.get(CONF_REFRESH_TOKEN))
     base_entries = (
         ConfigEntry(
             key=CONF_CLIENT_ID,
@@ -91,13 +106,9 @@ async def get_config_entries(
             required=True,
             value=values.get(CONF_CLIENT_SECRET),
         ),
-        # paste the confirmation code shown by Yandex — no redirect URI needed
         ConfigEntry(
-            key=CONF_AUTH_CODE,
-            type=ConfigEntryType.STRING,
-            required=False,
-            help_link=auth.manual_authorize_url(client_id) if client_id else None,
-            value=values.get(CONF_AUTH_CODE),
+            key=(CONF_AUTH_STATUS_CONNECTED if authenticated else CONF_AUTH_STATUS_NOT_CONNECTED),
+            type=ConfigEntryType.LABEL,
         ),
         ConfigEntry(
             key=CONF_ACTION_AUTH,
@@ -108,7 +119,7 @@ async def get_config_entries(
             key=CONF_REFRESH_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
             required=True,
-            # filled by the authorize action above; hidden from the user
+            # filled by the Device Flow action above; hidden from the user
             hidden=True,
             value=values.get(CONF_REFRESH_TOKEN),
         ),
@@ -141,7 +152,7 @@ async def _handle_auth_action(
     values: dict[str, ConfigValueType],
 ) -> None:
     """
-    Exchange the pasted code for a refresh token, writing it in place.
+    Run Device Flow and write the resulting refresh token in place.
 
     :param mass: The MusicAssistant instance.
     :param instance_id: Existing instance id (for re-fetching a masked secret).
@@ -160,8 +171,17 @@ async def _handle_auth_action(
     if not client_id or not client_secret:
         raise LoginFailed("Enter the Yandex OAuth Client ID and Client Secret first")
 
-    values[CONF_REFRESH_TOKEN] = await auth.exchange_manual_code(
-        mass, str(values.get(CONF_AUTH_CODE) or ""), client_id, client_secret
+    session_id = str(values.get("session_id") or "")
+    if not session_id:
+        raise LoginFailed("Authentication session is missing; close the dialog and try again")
+
+    tokens = await run_oauth_device_flow(
+        mass,
+        session_id,
+        _DEVICE_PAGE,
+        client_id=client_id,
+        client_secret=client_secret,
+        scope=OAUTH_SCOPE,
+        device_name="Music Assistant - Yandex Disk",
     )
-    # the one-time code must not be persisted
-    values[CONF_AUTH_CODE] = None
+    values[CONF_REFRESH_TOKEN] = tokens.refresh_token.get_secret()

@@ -1,127 +1,99 @@
-"""Tests for the Yandex Disk OAuth code flow and token refresh."""
+"""Tests for Yandex Disk access-token caching and shared OAuth refresh."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Self, cast
-from urllib.parse import parse_qs, urlparse
+from typing import TYPE_CHECKING, cast
 
-import aiohttp
 import pytest
-from music_assistant_models.errors import LoginFailed, ProviderUnavailableError
+from music_assistant_models.errors import LoginFailed, ResourceTemporarilyUnavailable
+from ya_passport_auth import OAuthTokens, SecretStr
 
 from music_assistant.providers.filesystem_yandex_disk import auth
-from music_assistant.providers.filesystem_yandex_disk.constants import (
-    OAUTH_AUTHORIZE_URL,
-    VERIFICATION_CODE_REDIRECT,
-)
 
 if TYPE_CHECKING:
     from music_assistant import MusicAssistant
 
 
-class _FakeResp:
-    """Async-context-manager stand-in for an aiohttp response."""
-
-    def __init__(self, status: int, payload: dict[str, Any]) -> None:
-        self.status = status
-        self._payload = payload
-
-    async def __aenter__(self) -> Self:
-        return self
-
-    async def __aexit__(self, *exc: object) -> bool:
-        return False
-
-    async def json(self) -> dict[str, Any]:
-        return self._payload
-
-    async def text(self) -> str:
-        return str(self._payload)
-
-    def raise_for_status(self) -> None:
-        if self.status >= 400:
-            raise aiohttp.ClientError(f"HTTP {self.status}")
-
-
-class _FakeSession:
-    def __init__(self, resp: _FakeResp) -> None:
-        self._resp = resp
-        self.posts: list[tuple[str, Any]] = []
-
-    def post(self, url: str, data: Any = None) -> _FakeResp:
-        self.posts.append((url, data))
-        return self._resp
-
-
 class _MassStub:
-    def __init__(self, resp: _FakeResp | None = None) -> None:
-        self.http_session = _FakeSession(resp if resp is not None else _FakeResp(200, {}))
+    def __init__(self) -> None:
+        self.http_session = object()
 
 
-def _mass(resp: _FakeResp | None = None) -> MusicAssistant:
-    """Return a stand-in MusicAssistant wrapping a fake http session."""
-    return cast("MusicAssistant", _MassStub(resp))
+def _mass() -> MusicAssistant:
+    return cast("MusicAssistant", _MassStub())
 
 
-def test_manual_authorize_url_contains_client_scope_and_redirect() -> None:
-    """The manual authorize URL carries the client, scope and OOB redirect."""
-    url = auth.manual_authorize_url("cid123")
-    assert url.startswith(OAUTH_AUTHORIZE_URL)
-    params = parse_qs(urlparse(url).query)
-    assert params["client_id"] == ["cid123"]
-    assert params["response_type"] == ["code"]
-    assert params["scope"] == ["cloud_api:disk.read"]
-    assert params["redirect_uri"] == [VERIFICATION_CODE_REDIRECT]
-
-
-@pytest.mark.asyncio
-async def test_exchange_manual_code_empty_raises() -> None:
-    """An empty confirmation code is a terminal auth failure."""
-    with pytest.raises(LoginFailed):
-        await auth.exchange_manual_code(_mass(), "", "cid", "secret")
-
-
-@pytest.mark.asyncio
-async def test_exchange_manual_code_returns_refresh_token() -> None:
-    """A successful code exchange returns the refresh token."""
-    mass = _mass(_FakeResp(200, {"access_token": "at", "refresh_token": "rt"}))
-    rt = await auth.exchange_manual_code(mass, "the-code", "cid", "secret")
-    assert rt == "rt"
-
-
-@pytest.mark.asyncio
-async def test_exchange_missing_refresh_token_raises() -> None:
-    """A token response without a refresh token is an error."""
-    mass = _mass(_FakeResp(200, {"access_token": "at"}))
-    with pytest.raises(LoginFailed):
-        await auth.exchange_manual_code(mass, "the-code", "cid", "secret")
-
-
-@pytest.mark.asyncio
-async def test_auth_refresh_returns_and_caches_access_token() -> None:
-    """MAYandexDiskAuth exchanges the refresh token and caches the access token."""
-    stub = _MassStub(_FakeResp(200, {"access_token": "at1", "expires_in": 3600}))
-    helper = auth.MAYandexDiskAuth(cast("MusicAssistant", stub), "cid", "secret", "rt")
-    assert await helper.async_get_access_token() == "at1"
-    assert await helper.async_get_access_token() == "at1"  # cached, no 2nd POST
-    assert len(stub.http_session.posts) == 1
-
-
-@pytest.mark.asyncio
-async def test_auth_refresh_rejected_raises_login_failed() -> None:
-    """A rejected refresh token surfaces as LoginFailed."""
-    helper = auth.MAYandexDiskAuth(
-        _mass(_FakeResp(400, {"error": "invalid_grant"})), "cid", "secret", "rt"
+def _tokens(access: str = "access-token", refresh: str = "rotated-refresh") -> OAuthTokens:
+    return OAuthTokens(
+        access_token=SecretStr(access),
+        refresh_token=SecretStr(refresh),
+        expires_in=3600,
     )
-    with pytest.raises(LoginFailed):
-        await helper.async_get_access_token()
 
 
 @pytest.mark.asyncio
-async def test_auth_refresh_server_error_is_transient() -> None:
-    """A 5xx during refresh is transient, not a credential failure."""
-    helper = auth.MAYandexDiskAuth(_mass(_FakeResp(503, {})), "cid", "secret", "rt")
-    with pytest.raises(ProviderUnavailableError):
+async def test_auth_refresh_uses_shared_helper_and_caches_access_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The first request rotates tokens; the second uses the access-token cache."""
+    calls: list[dict[str, object]] = []
+
+    async def refresh_oauth_tokens(**kwargs: object) -> OAuthTokens:
+        calls.append(kwargs)
+        return _tokens()
+
+    monkeypatch.setattr(auth, "refresh_oauth_tokens", refresh_oauth_tokens)
+    mass = _mass()
+    helper = auth.MAYandexDiskAuth(mass, "cid", "secret", "initial-refresh")
+
+    assert await helper.async_get_access_token() == "access-token"
+    assert await helper.async_get_access_token() == "access-token"
+    assert calls == [
+        {
+            "client_id": "cid",
+            "client_secret": "secret",
+            "refresh_token": "initial-refresh",
+            "scope": "cloud_api:disk.read",
+            "session": mass.http_session,
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_auth_keeps_rotated_refresh_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A later refresh uses the most recently rotated refresh token."""
+    seen: list[str] = []
+
+    async def refresh_oauth_tokens(**kwargs: object) -> OAuthTokens:
+        seen.append(str(kwargs["refresh_token"]))
+        return _tokens(access=f"access-{len(seen)}", refresh=f"refresh-{len(seen)}")
+
+    monkeypatch.setattr(auth, "refresh_oauth_tokens", refresh_oauth_tokens)
+    persisted: list[str] = []
+    helper = auth.MAYandexDiskAuth(_mass(), "cid", "secret", "refresh-0", persisted.append)
+
+    assert await helper._refresh() == "access-1"
+    assert await helper._refresh() == "access-2"
+    assert seen == ["refresh-0", "refresh-1"]
+    assert persisted == ["refresh-1", "refresh-2"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [LoginFailed("rejected"), ResourceTemporarilyUnavailable("temporary")],
+)
+async def test_auth_refresh_propagates_mapped_error(
+    monkeypatch: pytest.MonkeyPatch, error: Exception
+) -> None:
+    """The shared library's terminal/transient distinction is preserved."""
+
+    async def refresh_oauth_tokens(**_kwargs: object) -> OAuthTokens:
+        raise error
+
+    monkeypatch.setattr(auth, "refresh_oauth_tokens", refresh_oauth_tokens)
+    helper = auth.MAYandexDiskAuth(_mass(), "cid", "secret", "refresh")
+    with pytest.raises(type(error)):
         await helper.async_get_access_token()
 
 

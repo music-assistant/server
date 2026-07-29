@@ -7,13 +7,18 @@
     "client_secret": {
       "label": "Yandex OAuth Client Secret"
     },
-    "auth_code": {
-      "label": "Confirmation code",
-      "description": "Open the link, allow access, then paste the confirmation code Yandex shows and press Authorize."
+    "auth_status_connected": {
+      "label": "Authentication status: connected",
+      "description": "Yandex Disk access has been authorized. Save the provider configuration to continue."
+    },
+    "auth_status_not_connected": {
+      "label": "Authentication status: not connected",
+      "description": "Enter the OAuth application credentials, then sign in with Yandex."
     },
     "auth": {
-      "label": "Authorize with the pasted code",
-      "action_label": "Authorize"
+      "label": "Authorize Yandex Disk",
+      "description": "Opens a Music Assistant page with a short code and a link to Yandex. No code needs to be pasted back into this form.",
+      "action_label": "Sign in with Yandex"
     },
     "refresh_token": {
       "label": "Refresh token"

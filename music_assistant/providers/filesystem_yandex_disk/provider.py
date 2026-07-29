@@ -57,6 +57,12 @@ class YandexDiskFileSystemProvider(CloudFileSystemProvider):
             cast("str", config.get_value(CONF_CLIENT_ID) or ""),
             cast("str", config.get_value(CONF_CLIENT_SECRET) or ""),
             cast("str", config.get_value(CONF_REFRESH_TOKEN) or ""),
+            lambda token: self._update_config_value(
+                CONF_REFRESH_TOKEN,
+                token,
+                encrypted=True,
+                immediate=True,
+            ),
         )
         self.api = YandexDiskApi(mass, auth)
 
