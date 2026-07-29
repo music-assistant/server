@@ -1139,7 +1139,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     active=False,
                     display_name=player.state.name,
                     available=player.state.available,
-                    autoplay_enabled=False,
+                    # Autoplay starts out on for a brand new queue; the player's own Autoplay
+                    # switch owns it from here on (and is restored above for a queue we know)
+                    autoplay_enabled=True,
                     items=0,
                 )
             )
