@@ -133,6 +133,11 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
             except LoginFailed:
                 await self.api.revalidate_account()
                 return await method(*args, **kwargs)
+            except ExceptionGroup as err:
+                if err.subgroup(LoginFailed):
+                    await self.api.revalidate_account()
+                    return await method(*args, **kwargs)
+                raise
 
         return cast("F", wrapper)
 
@@ -156,6 +161,13 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
                 await self.api.revalidate_account()
                 async for item in method(*args, **kwargs):
                     yield item
+            except ExceptionGroup as err:
+                if err.subgroup(LoginFailed):
+                    await self.api.revalidate_account()
+                    async for item in method(*args, **kwargs):
+                        yield item
+                    return
+                raise
 
         return cast("F", wrapper)
 

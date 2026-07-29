@@ -8,7 +8,7 @@ interacting with Storytel API endpoints.
 from __future__ import annotations
 
 import logging
-from asyncio import Task, TaskGroup
+from asyncio import Lock, Task, TaskGroup
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -127,6 +127,7 @@ class StorytelHelper:
         self._kids_mode = kids_mode
         self._languages = languages or {}
         self._resource_version: str | None = None
+        self._revalidate_lock = Lock()
         self.logger = logger or logging.getLogger("storytel_helper")
 
     @property
@@ -212,16 +213,18 @@ class StorytelHelper:
         """Revalidate the Storytel account using the single sign token."""
         if not self._auth or not self._auth.single_sign_token:
             raise LoginFailed("No single sign token")
-        try:
-            async with self.session.post(
-                URL_REVALIDATE, json={"token": self._auth.single_sign_token}
-            ) as resp:
-                await self.raise_for_status(resp)
-                data: dict[str, Any] = await resp.json()
-        except LoginFailed:
-            raise ProviderUnavailableError(
-                "Storytel account revalidation failed, token may be expired. Please login again."
-            )
+        current_token = self._auth.single_sign_token
+        async with self._revalidate_lock:
+            if not self._auth or self._auth.single_sign_token != current_token:
+                return self._auth
+            try:
+                async with self.session.post(URL_REVALIDATE, json={"token": current_token}) as resp:
+                    await self.raise_for_status(resp)
+                    data: dict[str, Any] = await resp.json()
+            except LoginFailed:
+                raise ProviderUnavailableError(
+                    "Storytel account revalidation failed, token may be expired. Please login again."
+                )
         acc = data.get("accountInfo") or {}
         jwt = acc.get("jwt")
         sst = acc.get("singleSignToken")
