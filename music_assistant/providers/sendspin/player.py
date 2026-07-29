@@ -1334,8 +1334,16 @@ class SendspinPlayer(SendspinBasePlayer):
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         self.update_state()
-        await self.playback_session.cancel("stop command")
+        # Order matters: group.stop() snapshots the live playback position into the
+        # metadata role before stopping transport, and can only extrapolate it while
+        # the group still has an active stream. Cancelling the session first stops the
+        # push stream, degrading that snapshot into a re-emit of the last pushed anchor
+        # - so progress jumps backwards on pause, which for Sendspin falls back to STOP.
         await self.api.group.stop()
+        # Keep adjacent to the call above: the STOPPED event it emits already cancels
+        # this session inline (create_task is eager-start), so an await in between would
+        # let that cancel interleave with this one and abort pipeline teardown mid-way.
+        await self.playback_session.cancel("stop command")
 
     def _get_cast_bridge_manager(self) -> SendspinBridgeManager | None:
         """Return the Chromecast provider's Sendspin bridge manager, if loaded."""
