@@ -40,6 +40,8 @@ LOGGER = logging.getLogger(__name__)
 
 _T = TypeVar("_T")
 
+_FORM_CONTENT_TYPES = ("application/x-www-form-urlencoded", "multipart/form-data")
+
 FlowKind = Literal["setup", "reconfigure"]
 FlowReason = Literal["user", "auth", "error"]
 
@@ -393,7 +395,11 @@ class SetupSession:
         params: dict[str, str] = dict(request.query)
         if request.method == "POST" and request.can_read_body:
             try:
-                if request.content_type == "application/json":
+                if request.content_type in _FORM_CONTENT_TYPES:
+                    params.update({key: str(val) for key, val in (await request.post()).items()})
+                else:
+                    # a browser XHR posting a JSON string labels it text/plain unless the
+                    # page sets the header, so anything not form encoded is parsed as JSON
                     body = json_loads(await request.read())
                     if isinstance(body, dict):
                         # coerce to str so the declared params contract holds for
@@ -401,8 +407,6 @@ class SetupSession:
                         params.update({str(key): str(val) for key, val in body.items()})
                     else:
                         LOGGER.error("Ignoring non-object JSON setup flow callback body")
-                else:
-                    params.update({key: str(val) for key, val in (await request.post()).items()})
             except Exception as err:
                 LOGGER.error("Failed to parse setup flow callback body: %s", err)
         if self._callback_future is not None and not self._callback_future.done():

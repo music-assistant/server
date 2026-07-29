@@ -473,6 +473,36 @@ async def test_external_callback_json_body_coerced(flow_mass: MusicAssistant) ->
     assert received == {"state": "xyz", "code": "123", "granted": "True"}
 
 
+async def test_external_callback_json_body_without_content_type(
+    flow_mass: MusicAssistant,
+) -> None:
+    """A JSON body a browser labelled text/plain still resolves the external step."""
+    received: dict[str, str] = {}
+
+    async def run_setup(session: SetupSession) -> None:
+        received.update(await session.external("https://example.com/authorize"))
+        await session.finish({})
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        session = flow_mass.config._setup_flows[step.flow_id].session
+        # XMLHttpRequest.send(<string>) defaults to this content type
+        request = SimpleNamespace(
+            query={},
+            method="POST",
+            can_read_body=True,
+            content_type="text/plain",
+            read=AsyncMock(return_value=b'{"music-user-token": "abc", "timestamp": 1}'),
+        )
+        response = await session.handle_callback(cast("Any", request))
+        assert response.status == 200
+        await _wait_for(lambda: session.finished)
+    assert received == {"music-user-token": "abc", "timestamp": "1"}
+
+
 async def test_form_expiry_aborts_flow(
     flow_mass: MusicAssistant, flow_events: list[MassEvent]
 ) -> None:
