@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 from collections.abc import AsyncIterator, Callable, Coroutine
 from types import SimpleNamespace
 from typing import Any, cast
@@ -12,9 +13,10 @@ from urllib.parse import urlparse
 
 import aiohttp
 import pytest
-from aiolibdatachannel import DataChannel, IceServer, PeerConnection, RTCConfiguration
+from aiolibdatachannel import DataChannel, IceServer, LogLevel, PeerConnection, RTCConfiguration
 from cryptography.hazmat.primitives import serialization
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.controllers.webserver.remote_access import (
     STARTUP_DELAY,
     TASK_ID_START_GATEWAY,
@@ -300,6 +302,41 @@ async def test_webrtc_gateway_start_stop(cert_pems: tuple[str, str]) -> None:
 
         await gateway.stop()
         assert gateway.is_running is False
+
+
+@pytest.mark.parametrize(
+    ("logger_level", "expected_rtc_level"),
+    [
+        (VERBOSE_LOG_LEVEL, LogLevel.VERBOSE),
+        (logging.DEBUG, LogLevel.DEBUG),
+        (logging.INFO, LogLevel.ERROR),
+        (logging.WARNING, LogLevel.ERROR),
+    ],
+)
+async def test_webrtc_gateway_native_log_level(
+    cert_pems: tuple[str, str], logger_level: int, expected_rtc_level: LogLevel
+) -> None:
+    """Test native libdatachannel logging is capped at ERROR unless debugging."""
+    cert_pem, key_pem = cert_pems
+    gateway = WebRTCGateway(
+        http_session=Mock(),
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+    )
+    gateway.logger = logging.getLogger("test_webrtc_native_log_level")
+    gateway.logger.setLevel(logger_level)
+
+    with (
+        patch.object(gateway, "_run", new_callable=AsyncMock),
+        patch(
+            "music_assistant.controllers.webserver.remote_access.gateway.install_python_logger"
+        ) as install_logger,
+    ):
+        await gateway.start()
+        await gateway.stop()
+
+    install_logger.assert_called_once_with(gateway.logger, level=expected_rtc_level)
 
 
 async def test_webrtc_gateway_handle_registration_message(cert_pems: tuple[str, str]) -> None:
