@@ -29,13 +29,17 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import (
     Audiobook,
+    BrowseFolder,
+    ItemMapping,
     Podcast,
     PodcastEpisode,
     RecommendationFolder,
     SearchResults,
+    UniqueList,
 )
 
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.recommendation_payload import RecommendationPayloadMixin
 
 from .constants import (
     ALL_LANGUAGES,
@@ -85,7 +89,7 @@ async def setup(
 # -------------------------------
 
 
-class Storytel(MusicProvider):
+class Storytel(RecommendationPayloadMixin, MusicProvider):
     """Storytel provider."""
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -356,10 +360,6 @@ class Storytel(MusicProvider):
                 raise
             self.logger.debug("Failed to update Storytel bookmark: %s", err)
 
-    # -------------------
-    # Podcasts
-    # -------------------
-
     @handle_login_failed
     async def get_podcast(self, prov_podcast_id: str, use_cache: bool = True) -> Podcast:
         """
@@ -521,32 +521,20 @@ class Storytel(MusicProvider):
         return result
 
     @handle_login_failed
-    async def recommendations(self) -> list[RecommendationFolder]:
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Return personalized recommendation folders without items."""
+        return await self._recommendation_rows_from_payload()
+
+    @handle_login_failed
+    async def get_recommendation_items(
+        self, item_id: str
+    ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
         """
-        Return personalized recommendations.
+        Return the items for a single recommendation folder.
 
-        :return: A list of recommendation folders.
+        :param item_id: the item id of the recommendation row.
         """
-        recommendations_folders: list[RecommendationFolder] = []
-
-        # Get list of recommendations:
-        # https://api.storytel.net/explore/frontpage/chips?categoryIds=&configVariant=voice-switcher-enabled&includeFormats=ebook%2Cabook%2Cpodcast&includeLanguages=da%2Cen&kidsMode=false&onboarding=false&version=2
-        # This recommendation is in above link
-        # https://api.storytel.net/explore/pages/frontpage-sthp-dk?categoryIds=&configVariant=voice-switcher-enabled&includeFormats=ebook%2Cabook%2Cpodcast&includeLanguages=da%2Cen&kidsMode=false&onboarding=false&version=2
-        # The above link should be modified to get different recommendation types.
-        # In the link there is an item with id "personal-recommendations_*"
-        # This contains personal recommendations for the user.
-        # It may also be empty
-        # accept = "application/vnd.storytel.explore-v21+json"
-        try:
-            recommendations = await self.api.get_recommendations()
-        except ProviderUnavailableError as err:
-            self.logger.debug("Unable to fetch Storytel recommendations: %s", err)
-            return []
-        if recommendations:
-            recommendations_folders.append(recommendations)
-
-        return recommendations_folders
+        return await self._recommendation_items_from_payload(item_id)
 
     @handle_login_failed
     async def library_add(self, item: MediaItemType) -> bool:
@@ -578,3 +566,8 @@ class Storytel(MusicProvider):
                 "Only audiobooks and podcasts are supported for library management"
             )
         return await self.api.remove_from_bookshelf(prov_item_id, media_type)
+
+    async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
+        """Fetch the full Storytel recommendation payload with items."""
+        recommendations = await self.api.get_recommendations()
+        return recommendations or []

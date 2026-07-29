@@ -80,11 +80,6 @@ if TYPE_CHECKING:
 T = TypeVar("T")
 
 
-# -------------------------------
-# Lightweight API client (async)
-# -------------------------------
-
-
 @dataclass
 class StorytelAuth:
     """
@@ -742,20 +737,9 @@ class StorytelHelper:
 
         return audiobooks
 
-    async def get_recommendations(self) -> RecommendationFolder | None:
-        """Get audiobook recommendations for the user."""
-        folder = RecommendationFolder(
-            item_id=f"{self.provider_id}_recommendations",
-            provider=self.provider_id,
-            icon="mdi-star-circle-outline",
-            name="Recommendations",
-            translation_key="common.media.folder.recommendations.name",
-        )
-
+    async def get_recommendations(self) -> list[RecommendationFolder]:
+        """Get audiobook and podcast recommendations for the user."""
         chip_url = URL_FRONTPAGE
-
-        headers = self.headers_api()
-        headers["Accept"] = API_HEADER_CONTENT_TYPE_EXPLORE
         chip_url += (
             "?includeFormats=abook%2Cpodcast"
             f"&includeLanguages={quote(self.languages_query, safe='')}"
@@ -763,80 +747,57 @@ class StorytelHelper:
             "&onboarding=false&version=2"
         )
 
-        async with self.session.get(chip_url, headers=headers) as resp:
-            await self.raise_for_status(resp)
-            chip_response: dict[str, Any] = await resp.json()
+        chip_response = await self._fetch_explore_page(chip_url)
         chips = chip_response.get("chips") or []
 
+        folders: list[RecommendationFolder] = []
+
         frontpage_chip = next(
-            (chip for chip in chips if chip.get("id", "").startswith("frontpage")),
+            (chip for chip in chips if str(chip.get("id") or "").startswith("frontpage")),
             None,
         )
-        if frontpage_chip:
-            frontpage_url = frontpage_chip.get("url", "")
-        else:
-            return None
+        if frontpage_chip and (frontpage_url := str(frontpage_chip.get("url") or "").strip()):
+            frontpage_url += (
+                "?categoryIds="
+                "&configVariant=voice-switcher-enabled"
+                "&includeFormats=abook%2Cpodcast"
+                f"&includeLanguages={quote(self.languages_query, safe='')}"
+                f"&kidsMode={quote(str(self._kids_mode), safe='')}"
+                "&onboarding=false&version=2"
+            )
+            if folder := await self._recommendation_folder_from_block_url(
+                frontpage_url,
+                block_id_prefixes=("personal-recommendations_",),
+                folder_item_id=f"{self.provider_id}_recommendations",
+                folder_name="Recommended for You",
+                translation_key="storytel.recommendations.recommended_for_you.name",
+            ):
+                folders.append(folder)
 
-        frontpage_url += (
-            "?categoryIds="
-            "&configVariant=voice-switcher-enabled"
-            "&includeFormats=abook%2Cpodcast"
-            f"&includeLanguages={quote(self.languages_query, safe='')}"
-            f"&kidsMode={quote(str(self._kids_mode), safe='')}"
-            "&onboarding=false&version=2"
-        )
-
-        async with self.session.get(frontpage_url, headers=headers) as resp:
-            await self.raise_for_status(resp)
-            frontpage_response: dict[str, Any] = await resp.json()
-        content_blocks = frontpage_response.get("contentBlocks") or []
-
-        personal_recommendations_block = next(
+        podcast_chip = next(
             (
-                block
-                for block in content_blocks
-                if block.get("id", "").startswith("personal-recommendations_")
+                chip
+                for chip in chips
+                if "podcast" in str(chip.get("id") or "").lower()
+                and not str(chip.get("id") or "").startswith("frontpage")
             ),
             None,
         )
-        if personal_recommendations_block:
-            personal_recommendations_url = personal_recommendations_block.get("itemsUrl", "")
-        else:
-            return None
+        if podcast_chip and (podcast_url := str(podcast_chip.get("url") or "").strip()):
+            if folder := await self._recommendation_folder_from_block_url(
+                podcast_url,
+                block_id_prefixes=("algorithmic-podcasts-for-you",),
+                folder_item_id=f"{self.provider_id}_podcast_recommendations",
+                folder_name="Recommended Podcasts",
+                translation_key="storytel.recommendations.recommended_podcasts.name",
+            ):
+                folders.append(folder)
 
-        async with self.session.get(personal_recommendations_url, headers=headers) as resp:
-            await self.raise_for_status(resp)
-            recommendations_response: dict[str, Any] = await resp.json()
-        items = recommendations_response.get("items") or []
+        self.logger.debug(
+            "Storytel recommendation folders resolved: %d (chips=%d)", len(folders), len(chips)
+        )
 
-        task_results: list[Task[Audiobook]] = []
-
-        # TODO: Currently doesn't handle podcast recommendations
-        async with TaskGroup() as tg:
-            for item in items:
-                if item.get("resultType") != "book":
-                    continue
-                item_id = str(item.get("id") or "").strip()
-                if not item_id:
-                    self.logger.debug("Skipping recommendation item with missing id")
-                    continue
-                task_results.append(tg.create_task(self._parse_search_audiobook_item(item)))
-
-        for task in task_results:
-            folder.items.append(task.result())
-
-        # for item in items:
-        #     # TODO: Currently doesn't handle podcast recommendations
-        #     if item.get("resultType") == "book":
-        #         folder.items.append(await self.provider_instance.get_audiobook(item.get("id")))
-        #     else:
-        #         self.logger.debug("Skipping non-audiobook recommendation item: %s", item.get("id"))
-        #         self.logger.debug("Item type: %s", item.get("resultType"))
-
-        if len(folder.items) == 0:
-            return None
-
-        return folder
+        return folders
 
     async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Resolve Storytel stream information for an audiobook or podcast episode."""
@@ -915,6 +876,98 @@ class StorytelHelper:
             allow_seek=True,
             duration=content_duration_seconds,
         )
+
+    async def _fetch_explore_page(self, page_url: str) -> dict[str, Any]:
+        """Fetch a Storytel explore page or list-resource payload."""
+        headers = self.headers_api()
+        headers["Accept"] = API_HEADER_CONTENT_TYPE_EXPLORE
+        async with self.session.get(page_url, headers=headers) as resp:
+            await self.raise_for_status(resp)
+            return cast("dict[str, Any]", await resp.json())
+
+    async def _recommendation_folder_from_block_url(
+        self,
+        block_url: str,
+        *,
+        block_id_prefixes: tuple[str, ...],
+        folder_item_id: str,
+        folder_name: str | None = None,
+        translation_key: str | None = None,
+    ) -> RecommendationFolder | None:
+        """Build a recommendation folder from a Storytel explore page URL."""
+        page_response = await self._fetch_explore_page(block_url)
+        content_blocks = page_response.get("contentBlocks") or []
+
+        block = next(
+            (
+                content_block
+                for content_block in content_blocks
+                if any(
+                    str(content_block.get("id") or "").startswith(prefix)
+                    for prefix in block_id_prefixes
+                )
+            ),
+            None,
+        )
+        if not block:
+            self.logger.debug(
+                "No Storytel recommendation block matched prefixes %s",
+                ",".join(block_id_prefixes),
+            )
+            return None
+
+        items = block.get("items") or []
+        if not items:
+            items_url = str(block.get("itemsUrl") or "").strip()
+            if items_url:
+                self.logger.debug(
+                    "Storytel recommendation block %s has no inline items; fetching itemsUrl",
+                    block.get("id") or "<missing>",
+                )
+                items_response = await self._fetch_explore_page(items_url)
+                items = items_response.get("items") or []
+            else:
+                self.logger.debug(
+                    "Storytel recommendation block %s did not include items or itemsUrl",
+                    block.get("id") or "<missing>",
+                )
+        parsed_items = await self._parse_recommendation_items(items)
+        if not parsed_items:
+            self.logger.debug(
+                "Storytel recommendation block %s produced no parsable items",
+                block.get("id") or "<missing>",
+            )
+            return None
+
+        folder = RecommendationFolder(
+            item_id=folder_item_id,
+            provider=self.provider_id,
+            icon="mdi-star-circle-outline",
+            name=(folder_name or str(block.get("title") or "Recommendations")).strip(),
+            translation_key=translation_key,
+        )
+        folder.items.extend(parsed_items)
+        return folder
+
+    async def _parse_recommendation_items(
+        self, items: list[dict[str, Any]]
+    ) -> list[Audiobook | Podcast]:
+        """Parse Storytel recommendation payload items into media items."""
+        task_results: list[Task[Audiobook | Podcast]] = []
+
+        async with TaskGroup() as tg:
+            for item in items:
+                item_type = str(item.get("resultType") or "").strip().lower()
+                if item_type not in {"book", "podcast"}:
+                    continue
+                item_id = str(item.get("id") or "").strip()
+                if not item_id:
+                    continue
+                if item_type == "book":
+                    task_results.append(tg.create_task(self._parse_search_audiobook_item(item)))
+                else:
+                    task_results.append(tg.create_task(self._parse_search_podcast_item(item)))
+        return [task.result() for task in task_results]
 
     def _encrypt_password_hex(self, password: str) -> str:
         """Encrypt password for Storytel API."""
@@ -1131,10 +1184,12 @@ class StorytelHelper:
         """Build a lightweight podcast item from a search result payload."""
         podcast_id = item_data.get("id") or ""
         title = item_data.get("title") or item_data.get("name") or "Unknown"
+        total_episodes = int(item_data.get("numberOfEpisodes") or 0)
         podcast = Podcast(
             item_id=podcast_id,
             provider=self.provider_id,
             name=title,
+            total_episodes=total_episodes,
             provider_mappings={
                 ProviderMapping(
                     item_id=podcast_id,
