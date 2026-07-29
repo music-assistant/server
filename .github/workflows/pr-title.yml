@@ -1,0 +1,46 @@
+---
+name: PR Title
+
+# Release notes are generated verbatim from PR titles
+# (.github/release-notes-config.yml), so a title has to read as a
+# user-facing description of the change: "Fix Sonos hanging after
+# reconnect", not "fix: sonos reconnect".
+
+# yamllint disable-line rule:truthy
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - reopened
+      - ready_for_review
+    branches:
+      - dev
+
+permissions: {}
+
+jobs:
+  check_title:
+    name: Verify
+    runs-on: ubuntu-latest
+    # GitHub-typed bots (Dependabot, musicassistant-bot[bot], etc.)
+    # generate their own titles, so failing here would only block
+    # their auto-merge.
+    if: github.event.pull_request.user.type != 'Bot'
+    steps:
+      - name: 📝 Reject conventional-commit title prefixes
+        env:
+          # Passed via env, never inlined into the script: the title
+          # is untrusted input.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          types='build|chore|ci|deps|docs|feat|feature|fix|perf|refactor|revert|style|tests?'
+          prefix=$(printf '%s' "$PR_TITLE" |
+            grep -oiE "^[[:space:]]*($types)(\([^)]*\))?!?[[:space:]]*:" || true)
+
+          if [ -n "$prefix" ]; then
+            echo "::error title=PR title uses a conventional-commit prefix::Drop the '$(printf '%s' "$prefix" | tr -d '[:space:]')' prefix. Release notes are generated straight from PR titles, so write the title as the user-facing change instead, for example 'Fix Sonos hanging after reconnect'."
+            exit 1
+          fi
+
+          echo "Title OK: $PR_TITLE"
