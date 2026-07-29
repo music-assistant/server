@@ -40,6 +40,7 @@ from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.helpers.podcast_parsers import (
     get_podcastparser_dict,
     get_stream_url_and_guid_from_episode,
+    get_stream_url_from_episode,
     parse_podcast,
     parse_podcast_episode,
 )
@@ -604,12 +605,11 @@ class GPodder(MusicProvider):
         podcast = await self._cache_get_podcast(podcast_id)
         episodes = podcast.get("episodes", [])
         for episode in episodes:
-            episode_enclosures = episode.get("enclosures", [])
-            if len(episode_enclosures) < 1:
-                # episode without an enclosure carries no stream; skip it instead of
+            stream_url = get_stream_url_from_episode(episode=episode)
+            if stream_url is None:
+                # episode without a playable enclosure carries no stream; skip it instead of
                 # aborting the lookup for the (potentially later) requested episode
                 continue
-            stream_url: str | None = episode_enclosures[0].get("url", None)
             guid = episode.get("guid")
             if guid is not None and len(guid.split(" ")) == 1:
                 _guid_or_stream_url_compare = guid

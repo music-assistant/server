@@ -113,22 +113,43 @@ def parse_podcast(
     return mass_podcast
 
 
+def get_stream_url_from_episode(*, episode: dict[str, Any]) -> str | None:
+    """
+    Give the url of the episode's playable enclosure, or None if the episode has none.
+
+    Prefers the first audio or video enclosure, falling back to any non-image one.
+
+    :param episode: A single episode dict as returned by podcastparser.
+    """
+    fallback: str | None = None
+    for enclosure in episode.get("enclosures", []):
+        url = enclosure.get("url")
+        if not url:
+            continue
+        mime_type = str(enclosure.get("mime_type") or "")
+        if mime_type.startswith(("audio/", "video/")):
+            return str(url)
+        # feeds do declare bogus mime types (e.g. type="file") for real audio, so anything
+        # that is not an image stays a candidate in case no audio enclosure is declared
+        if fallback is None and not mime_type.startswith("image/"):
+            fallback = str(url)
+    return fallback
+
+
 def get_stream_url_and_guid_from_episode(*, episode: dict[str, Any]) -> tuple[str, str | None]:
     """Give episode's stream url and guid, if it exists."""
-    episode_enclosures = episode.get("enclosures", [])
-    if len(episode_enclosures) < 1:
-        raise ValueError("Episode enclosure is missing")
-    if stream_url := episode_enclosures[0].get("url"):
-        guid = episode.get("guid")
-        if guid is not None:
-            # The media's item_id is {prov_podcast_id} {guid_or_stream_url}
-            # see parse_podcast_episode.
-            # However, the guid must not contain a space, otherwise it is invalid.
-            # We cannot check, if it is a proper guid (uuid.UUID4(...)), as some podcast feeds
-            # do not follow the standard.
-            guid = None if len(guid.split(" ")) > 1 else guid
-        return stream_url, guid
-    raise ValueError("Stream URL is missing.")
+    stream_url = get_stream_url_from_episode(episode=episode)
+    if stream_url is None:
+        raise ValueError("Episode has no playable enclosure")
+    guid = episode.get("guid")
+    if guid is not None:
+        # The media's item_id is {prov_podcast_id} {guid_or_stream_url}
+        # see parse_podcast_episode.
+        # However, the guid must not contain a space, otherwise it is invalid.
+        # We cannot check, if it is a proper guid (uuid.UUID4(...)), as some podcast feeds
+        # do not follow the standard.
+        guid = None if len(guid.split(" ")) > 1 else guid
+    return stream_url, guid
 
 
 def parse_podcast_episode(
