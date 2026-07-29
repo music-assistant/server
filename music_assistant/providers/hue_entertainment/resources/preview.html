@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Capability token injected per-provider; sent on state-changing requests. -->
+<meta name="hue-tok" content="__HUE_PREVIEW_TOKEN__">
+<title>Hue Lights Sync - Live Preview</title>
+<style>
+  /* Styling mirrors the Music Assistant dark theme (Figtree, surface cards, azure
+     primary, on-surface text at 70% for secondary) so the preview feels native. */
+  @import url('https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&display=swap');
+  :root {
+    color-scheme: dark;
+    --bg: #111418;
+    --surface: #1b1e24;
+    --surface-2: #23272e;
+    --text: #e9eaef;
+    --dim: rgba(233, 234, 239, 0.66);
+    --faint: rgba(233, 234, 239, 0.42);
+    --primary: #3d9bfa;
+    --border: rgba(255, 255, 255, 0.09);
+    --ok: #41c98a;
+    --danger: #ff6b81;
+    --radius: 14px;
+    --font: "Figtree", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 var(--font); }
+  header { border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 5;
+           background: rgba(17, 20, 24, 0.92);
+           -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+  .hdr-inner { max-width: 1200px; margin: 0 auto; padding: 16px 20px;
+               display: flex; align-items: center; gap: 14px; }
+  header h1 { font-size: 1rem; margin: 0; font-weight: 600; letter-spacing: .2px; }
+  #status { font-size: .75rem; font-weight: 600; padding: 3px 10px; border-radius: 999px;
+            background: var(--surface-2); color: var(--dim); }
+  #status.ok { background: rgba(65, 201, 138, 0.16); color: var(--ok); }
+  #status.off { background: rgba(255, 107, 129, 0.16); color: var(--danger); }
+  main { padding: 20px; max-width: 1200px; margin: 0 auto; }
+  .area { margin-bottom: 22px; }
+  .area h2 { font-size: .875rem; margin: 0 0 10px; color: var(--dim); font-weight: 600;
+             display: flex; gap: 10px; align-items: baseline; }
+  .area .fps { font-size: .75rem; color: var(--faint); font-weight: 400; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; }
+  .cell { width: 92px; }
+  .swatch { height: 64px; border-radius: 10px; background: #000; border: 1px solid var(--border);
+            box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.04);
+            transition: background-color .04s linear; }
+  .label { margin-top: 6px; font-size: .75rem; color: var(--dim); white-space: nowrap;
+           overflow: hidden; text-overflow: ellipsis; }
+  .dim { width: 92px; margin-top: 6px; height: 14px; accent-color: var(--primary); cursor: pointer; }
+  .id { color: var(--faint); }
+  .hint { color: var(--dim); font-size: .875rem; line-height: 1.5; margin: 0 0 18px; }
+  .palrow { margin: 0 0 18px; }
+  .palrow > label { color: var(--text); font-size: .9375rem; font-weight: 600;
+             display: block; margin-bottom: 10px; }
+  .palgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px;
+             max-height: 260px; overflow-y: auto; padding: 8px; border: 1px solid var(--border);
+             border-radius: var(--radius); background: var(--surface); }
+  .palcard { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border-radius: 10px;
+             border: 1px solid var(--border); cursor: pointer; background: var(--surface-2);
+             transition: border-color .15s, transform .15s; }
+  .palcard:hover { border-color: rgba(61, 155, 250, 0.45); transform: translateY(-1px); }
+  .palcard.sel { border-color: var(--primary); box-shadow: 0 0 0 1px var(--primary) inset; }
+  .palcard .pname { font-size: .8125rem; color: var(--text); white-space: nowrap; overflow: hidden;
+             text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; }
+  .palcard .sws { display: flex; height: 16px; border-radius: 5px; overflow: hidden; }
+  .palcard .sws span { flex: 1; }
+  .palcard .rotchk { accent-color: var(--primary); cursor: pointer; flex: none; }
+  /* Rotation on: the single base-palette pick is overridden by the cycle, so grey it
+     out and block the click-to-select. The rotation checkboxes stay usable. */
+  .palgrid.rot-on .palcard { opacity: .5; cursor: not-allowed; }
+  .palgrid.rot-on .palcard:hover { border-color: var(--border); transform: none; }
+  .palgrid.rot-on .palcard .rotchk { opacity: 1; cursor: pointer; }
+  .rotrow { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap;
+            color: var(--dim); font-size: .8125rem; }
+  .rotrow input[type=number] { width: 64px; background: var(--surface-2); color: var(--text);
+            border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; font: inherit; }
+  .rotrow #rotInfo { color: var(--faint); }
+  .calib { border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px;
+           margin: 0 0 20px; background: var(--surface); display: flex; gap: 16px;
+           align-items: center; flex-wrap: wrap; }
+  .calib h2 { font-size: .9375rem; margin: 0 0 4px; color: var(--text); font-weight: 600; }
+  .calib select, .calib input { background: var(--surface-2); color: var(--text);
+           border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font: inherit; }
+  .calib button { background: var(--primary); color: #fff; border: 1px solid transparent;
+           border-radius: 8px; padding: 8px 14px; font: inherit; font-weight: 600; cursor: pointer;
+           transition: filter .15s, background .15s; }
+  .calib button:hover { filter: brightness(1.1); }
+  .calib button.stop { background: transparent; color: var(--danger);
+           border-color: rgba(255, 107, 129, 0.4); }
+  .calib button.stop:hover { background: rgba(255, 107, 129, 0.1); filter: none; }
+  .calib .ctl-hint { color: var(--dim); font-size: .8125rem; line-height: 1.5; max-width: 300px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="hdr-inner">
+    <h1>Hue Lights Sync &mdash; Live Preview</h1>
+    <span id="status" class="off">connecting&hellip;</span>
+  </div>
+</header>
+<main>
+  <p class="hint">Mirrors the exact frames sent to the bridge (~30&nbsp;fps). Play music to a
+  Hue area and tune latency / coverage / sensitivity in Music Assistant while watching here.</p>
+  <p class="hint">The slider under each light sets that light's base brightness (0&ndash;100%),
+  so you can balance bright and dim spots in the room. It scales the base effect only &mdash;
+  never the strobe &mdash; and saves automatically as you drag.</p>
+  <div class="palrow">
+    <label>Base palette &mdash; click a swatch set to use it; tick boxes to add to the rotation</label>
+    <div id="paletteGrid" class="palgrid"></div>
+    <div class="rotrow">
+      <label><input type="checkbox" id="rotEnable"> Rotate palettes</label>
+      <span>every</span>
+      <input type="number" id="rotBeats" min="4" max="64" step="4" value="16">
+      <span>beats (4 = 1 bar of 4/4, aligned to bar starts)</span>
+      <span id="rotInfo"></span>
+    </div>
+  </div>
+  <div class="calib">
+    <div>
+      <h2>Latency calibration</h2>
+      <div class="ctl-hint">Play a metronome to the speaker your Hue area is grouped with, then
+      adjust &ldquo;Light latency (ms)&rdquo; until the strobe flashes land on the beat you hear.</div>
+    </div>
+    <select id="calibPlayer" aria-label="Calibration speaker"><option value="">&mdash; pick a speaker &mdash;</option></select>
+    <button id="calibPlay" type="button">Play metronome</button>
+    <button id="calibStop" type="button" class="stop">Stop</button>
+  </div>
+  <div id="areas"></div>
+</main>
+<script>
+(function () {
+  // Capability token (from the injected meta) authorising state-changing calls.
+  const TOK = (document.querySelector('meta[name="hue-tok"]') || {}).content || '';
+  const areasEl = document.getElementById('areas');
+  const statusEl = document.getElementById('status');
+  const meta = {};            // area_id -> {name, channels:[[id,name]]}
+  let cells = {};             // area_id -> {id -> swatchEl}
+  let sliders = {};           // area_id -> {id -> per-light brightness slider}
+  let perlightMap = {};       // "area:id" -> base brightness percent
+  const dirty = {};           // area_id -> latest ch array
+  const frameCount = {};      // area_id -> count (for fps)
+  let order = [];
+
+  function setStatus(txt, cls) { statusEl.textContent = txt; statusEl.className = cls; }
+
+  function buildAreas() {
+    areasEl.innerHTML = '';
+    cells = {};
+    sliders = {};
+    order = Object.keys(meta);
+    for (const aid of order) {
+      const a = meta[aid];
+      const sec = document.createElement('section');
+      sec.className = 'area';
+      const h = document.createElement('h2');
+      h.innerHTML = '<span>' + escapeHtml(a.name) + '</span>' +
+                    '<span class="fps" id="fps-' + cssId(aid) + '">0 fps</span>';
+      sec.appendChild(h);
+      const row = document.createElement('div');
+      row.className = 'row';
+      cells[aid] = {};
+      sliders[aid] = {};
+      for (const [cid, cname] of a.channels) {
+        const cell = document.createElement('div');
+        cell.className = 'cell';
+        const sw = document.createElement('div');
+        sw.className = 'swatch';
+        const lbl = document.createElement('div');
+        lbl.className = 'label';
+        lbl.innerHTML = '<span class="id">#' + cid + '</span> ' + escapeHtml(cname);
+        const sl = document.createElement('input');
+        sl.type = 'range'; sl.min = '0'; sl.max = '100'; sl.step = '5';
+        sl.value = (perlightMap[aid + ':' + cid] != null) ? perlightMap[aid + ':' + cid] : 100;
+        sl.className = 'dim';
+        sl.title = 'Base brightness for this light (scales the base effect only, never the strobe)';
+        sl.oninput = () => setPerlight(aid, cid, sl.value);
+        cell.appendChild(sw); cell.appendChild(lbl); cell.appendChild(sl);
+        row.appendChild(cell);
+        cells[aid][cid] = sw;
+        sliders[aid][cid] = sl;
+      }
+      sec.appendChild(row);
+      areasEl.appendChild(sec);
+    }
+  }
+
+  function paint() {
+    for (const aid in dirty) {
+      const ch = dirty[aid];
+      const map = cells[aid];
+      if (map) for (const c of ch) {
+        const sw = map[c[0]];
+        if (sw) sw.style.backgroundColor = 'rgb(' + c[1] + ',' + c[2] + ',' + c[3] + ')';
+      }
+      delete dirty[aid];
+    }
+    requestAnimationFrame(paint);
+  }
+  requestAnimationFrame(paint);
+
+  setInterval(function () {
+    for (const aid of order) {
+      const el = document.getElementById('fps-' + cssId(aid));
+      if (el) { el.textContent = (frameCount[aid] || 0) + ' fps'; frameCount[aid] = 0; }
+    }
+  }, 1000);
+
+  function connect() {
+    const url = location.pathname.replace(/\/$/, '') + '/stream';
+    const es = new EventSource(url);
+    es.onopen = function () { setStatus('live', 'ok'); };
+    es.onerror = function () { setStatus('reconnecting…', 'off'); };
+    es.onmessage = function (e) {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'meta') {
+          Object.assign(meta, msg.areas);
+          setStatus('live · ' + Object.keys(meta).length + ' areas', 'ok');
+          buildAreas();
+        } else if (msg.type === 'frame') {
+          dirty[msg.area] = msg.ch;
+          frameCount[msg.area] = (frameCount[msg.area] || 0) + 1;
+        }
+      } catch (err) { console.error('preview message error', err, e.data); }
+    };
+  }
+
+  function escapeHtml(s) { return String(s).replace(/[&<>"]/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+  function cssId(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, '_'); }
+
+  // -- latency calibration --
+  function ctl(body) {
+    return fetch(location.pathname.replace(/\/$/, '') + '/control', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-hue-preview-token': TOK }, body: JSON.stringify(body),
+    }).then(r => r.json()).catch(() => ({}));
+  }
+  function loadPlayers() {
+    ctl({ action: 'players' }).then(d => {
+      const sel = document.getElementById('calibPlayer');
+      if (!d || !d.players) return;
+      for (const p of d.players) {
+        const o = document.createElement('option');
+        o.value = p.id; o.textContent = p.name; sel.appendChild(o);
+      }
+    });
+  }
+  const player = () => document.getElementById('calibPlayer').value;
+  document.getElementById('calibPlay').onclick = () => ctl({ action: 'play', player: player() });
+  document.getElementById('calibStop').onclick = () => ctl({ action: 'stop' });
+  loadPlayers();
+
+  // -- per-light base brightness --
+  function applyPerlight() {
+    for (const aid in sliders) {
+      for (const cid in sliders[aid]) {
+        const key = aid + ':' + cid;
+        sliders[aid][cid].value = (perlightMap[key] != null) ? perlightMap[key] : 100;
+      }
+    }
+  }
+  function loadPerlight() {
+    fetch(location.pathname.replace(/\/$/, '') + '/perlight', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-hue-preview-token': TOK }, body: '{}',
+    }).then(r => r.json()).then(d => { perlightMap = d.perlight || {}; applyPerlight(); }).catch(() => {});
+  }
+  let plTimer = null;
+  function setPerlight(aid, cid, pct) {
+    perlightMap[aid + ':' + cid] = Number(pct);
+    clearTimeout(plTimer);
+    plTimer = setTimeout(() => fetch(location.pathname.replace(/\/$/, '') + '/perlight', {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-hue-preview-token': TOK },
+      body: JSON.stringify({ action: 'set', area: aid, channel: Number(cid), pct: Number(pct) }),
+    }).catch(() => {}), 200);
+  }
+  loadPerlight();
+
+  // -- base palette picker (visual swatch cards) + bar-aligned rotation --
+  function loadPalettes() {
+    const url = location.pathname.replace(/\/$/, '') + '/palette';
+    const post = (body) => fetch(url, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-hue-preview-token': TOK }, body: JSON.stringify(body),
+    }).catch(() => {});
+    const grid = document.getElementById('paletteGrid');
+    const rotEnable = document.getElementById('rotEnable');
+    const rotBeats = document.getElementById('rotBeats');
+    const rotInfo = document.getElementById('rotInfo');
+    const checks = {};
+    let order = [];
+    function postRotate() {
+      const list = order.filter(n => checks[n] && checks[n].checked);
+      let beats = parseInt(rotBeats.value, 10) || 16;
+      beats = Math.max(4, Math.round(beats / 4) * 4);   // snap to multiples of 4
+      rotBeats.value = beats;
+      rotInfo.textContent = list.length ? (list.length + ' palettes in rotation') : '(tick palettes to rotate)';
+      grid.classList.toggle('rot-on', rotEnable.checked);
+      post({ action: 'rotate', enabled: rotEnable.checked, list: list, beats: beats });
+    }
+    rotEnable.onchange = postRotate;
+    rotBeats.onchange = postRotate;
+    fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', 'x-hue-preview-token': TOK }, body: '{}' })
+      .then(r => r.json()).then(d => {
+        grid.innerHTML = '';
+        order = [];
+        const rot = d.rotate || { enabled: false, list: [], beats: 16 };
+        rotEnable.checked = !!rot.enabled;
+        grid.classList.toggle('rot-on', rotEnable.checked);
+        rotBeats.value = rot.beats || 16;
+        const items = [{ name: 'album_colors', label: 'Music / album colours', colors: ['#1f2430', '#3a4358', '#5b6680'] }]
+          .concat((d.palettes || []).map(p => ({ name: p.name, label: p.name, colors: p.colors })));
+        const cards = {};
+        const selected = d.selected || '';
+        for (const it of items) {
+          const card = document.createElement('div');
+          card.className = 'palcard' + (it.name === selected ? ' sel' : '');
+          const sws = document.createElement('div');
+          sws.className = 'sws';
+          for (const c of it.colors) {
+            const s = document.createElement('span');
+            s.style.background = c;
+            sws.appendChild(s);
+          }
+          const nm = document.createElement('div');
+          nm.className = 'pname';
+          if (it.name && it.name !== 'album_colors') {   // album colours can't be rotated
+            const chk = document.createElement('input');
+            chk.type = 'checkbox'; chk.className = 'rotchk';
+            chk.checked = (rot.list || []).indexOf(it.name) >= 0;
+            chk.onclick = (e) => e.stopPropagation();
+            chk.onchange = postRotate;
+            nm.appendChild(chk);
+            checks[it.name] = chk;
+            order.push(it.name);
+          }
+          const txt = document.createElement('span');
+          txt.textContent = it.label;
+          nm.appendChild(txt);
+          card.appendChild(sws);
+          card.appendChild(nm);
+          card.onclick = () => {
+            if (rotEnable.checked) return;   // rotation drives the colour; single-pick is disabled
+            for (const k in cards) cards[k].classList.remove('sel');
+            card.classList.add('sel');
+            post({ action: 'set', palette: it.name });
+          };
+          grid.appendChild(card);
+          cards[it.name] = card;
+        }
+        const n = (rot.list || []).length;
+        rotInfo.textContent = n ? (n + ' palettes in rotation') : '(tick palettes to rotate)';
+      }).catch(() => {});
+  }
+  loadPalettes();
+
+  connect();
+})();
+</script>
+</body>
+</html>
