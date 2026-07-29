@@ -24,13 +24,14 @@ from zeroconf import ServiceStateChange
 from music_assistant.models.plugin import PluginProvider
 
 from .analyzer import PulseSettings
-from .bridge import HueEntertainmentBridgeManager
+from .bridge import ColorMode, HueEntertainmentBridgeManager
 from .calibration import Calibrator
 from .constants import (
     COLOR_MODES,
     CONF_BRIDGE_HOST,
     CONF_BRIDGE_ID,
     CONF_BRIGHTNESS,
+    CONF_COLOR_BOOST,
     CONF_COLOR_MODE,
     CONF_HUE_LATENCY_MS,
     CONF_PALETTE,
@@ -57,6 +58,7 @@ from .constants import (
     CONF_STROBE_RELEASE_MS,
     CONF_STROBE_SENSITIVITY,
     CONF_USERNAME,
+    DEFAULT_COLOR_BOOST,
     DEFAULT_COLOR_MODE,
     DEFAULT_HUE_LATENCY_MS,
     DEFAULT_PALETTE,
@@ -216,6 +218,16 @@ class HueEntertainmentProvider(PluginProvider):
                 options=[ConfigValueOption(mode, title=mode.capitalize()) for mode in COLOR_MODES],
                 immediate_apply=True,
                 category="settings",
+            ),
+            ConfigEntry(
+                key=CONF_COLOR_BOOST,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=DEFAULT_COLOR_BOOST,
+                immediate_apply=True,
+                category="settings",
+                # Only meaningful when the streaming library supports ColorMode; without it
+                # the stream is plain RGB and there is nothing to boost.
+                hidden=ColorMode is None,
             ),
             ConfigEntry(
                 key=CONF_PALETTE,

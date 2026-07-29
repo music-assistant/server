@@ -133,6 +133,10 @@
     },
     "live_preview": {
       "label": "Live preview - click the (?) button to open the preview panel."
+    },
+    "color_boost": {
+      "label": "Boost colours",
+      "description": "Send accurate Hue colours (CIE xy), the same on every model. On (default): saturated colours are pushed to the light's gamut edge, for more punch. Off: colour-accurate and steadier."
     }
   },
   "setup_flow": {

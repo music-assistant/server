@@ -16,6 +16,7 @@ import logging
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
+import hue_entertainment
 from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.types import UndefinedField
@@ -37,6 +38,7 @@ from .analyzer import HueAudioAnalyzer, PulseSettings
 from .constants import (
     CONF_BRIGHTNESS,
     CONF_CLIENTKEY,
+    CONF_COLOR_BOOST,
     CONF_COLOR_MODE,
     CONF_HUE_LATENCY_MS,
     CONF_PALETTE,
@@ -47,6 +49,7 @@ from .constants import (
     CONF_PERLIGHT_BRIGHTNESS_DATA,
     CONF_STROBE_LIGHTS,
     CONF_USERNAME,
+    DEFAULT_COLOR_BOOST,
     DEFAULT_HUE_LATENCY_MS,
     DEFAULT_PALETTE_ROTATE_BEATS,
     DEFAULT_PALETTE_ROTATE_SMOOTH,
@@ -72,6 +75,11 @@ if TYPE_CHECKING:
     from music_assistant.providers.sendspin.provider import SendspinProvider
 
     from .provider import HueEntertainmentProvider
+
+# Colour output uses the ColorMode enum added in hue-entertainment PR #2. Older releases
+# (such as the pinned one) do not have it, so resolve it optionally: when it is absent the
+# feature stays dormant and the stream simply falls back to RGB until the pin is bumped.
+ColorMode = getattr(hue_entertainment, "ColorMode", None)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -308,11 +316,19 @@ class HueEntertainmentBridge:
         # idle_timeout=0: teardown is driven by the Sendspin stream start/end
         # events below, not by the session's own inactivity monitor. The session
         # stops any other active area on start (the bridge only allows one).
+        # Only pass color_mode when the library supports it; with an older library the
+        # session keeps its default (RGB), which is the legacy path. The "Boost colours"
+        # toggle picks vivid (on) or colour-accurate xy (off).
+        session_kwargs: dict[str, object] = {"idle_timeout": 0}
+        if ColorMode is not None:
+            boost = self.provider.config.get_value(CONF_COLOR_BOOST)
+            boost = DEFAULT_COLOR_BOOST if boost is None else bool(boost)
+            session_kwargs["color_mode"] = ColorMode("vivid" if boost else "xy")
         session = EntertainmentSession(
             hue_api.host,
             str(self.provider.get_setup_value(CONF_USERNAME) or ""),
             str(self.provider.get_setup_value(CONF_CLIENTKEY) or ""),
-            idle_timeout=0,
+            **session_kwargs,  # type: ignore[arg-type]
         )
         # The session is only handed off to self._session once it is streaming;
         # until then it is closed in the finally so a failed - or cancelled -

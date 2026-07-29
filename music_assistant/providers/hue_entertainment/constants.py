@@ -83,6 +83,13 @@ COLOR_MODES: Final[tuple[str, ...]] = (
 )
 DEFAULT_COLOR_MODE: Final[str] = COLOR_MODES[0]
 
+# Colour output. Streaming plain RGB is the legacy path: it is what the bridge gets
+# automatically when the library predates ColorMode. When ColorMode is available the
+# stream carries CIE xy instead, and this single toggle decides whether saturated
+# colours are pushed out to the light's gamut edge (on) or kept colour-accurate (off).
+CONF_COLOR_BOOST: Final[str] = "color_boost"
+DEFAULT_COLOR_BOOST: Final[bool] = True
+
 # Pulse / Club-groove fire engine knobs (apply to the "pulse" mode and the club
 # groove). floor/decay are stored as whole percents; select picks which light fires.
 CONF_PULSE_FLOOR: Final[str] = "pulse_floor"

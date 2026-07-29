@@ -1315,6 +1315,8 @@
   "provider.hue_entertainment.config_entries.bridge_host.label": "Bridge IP Address",
   "provider.hue_entertainment.config_entries.brightness.description": "Master brightness for the base light effects, 0-100.\nScales the base Mode only - the strobe has its own brightness limit.\nApplies live while music plays.",
   "provider.hue_entertainment.config_entries.brightness.label": "Overall brightness",
+  "provider.hue_entertainment.config_entries.color_boost.description": "Send accurate Hue colours (CIE xy), the same on every model. On (default): saturated colours are pushed to the light's gamut edge, for more punch. Off: colour-accurate and steadier.",
+  "provider.hue_entertainment.config_entries.color_boost.label": "Boost colours",
   "provider.hue_entertainment.config_entries.color_mode.description": "Base visual style on every light.\nSmooth: brightness follows the spectrum, palette drifts. Ambient: colour cycle, no pulse. Flashing: pulse every beat, harder on downbeats. Energetic: big swings on hits + fast palette. Club: structure-aware (groove -> build -> white drop -> breakdown blackout). Pulse: one light fires per beat, chasing the room, full bloom on the downbeat.\nHouse/techno: pick Club or Pulse.",
   "provider.hue_entertainment.config_entries.color_mode.label": "Mode (base effect)",
   "provider.hue_entertainment.config_entries.divider_base.label": "Base effects",
