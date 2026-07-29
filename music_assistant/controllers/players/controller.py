@@ -22,6 +22,7 @@ import time
 import weakref
 from collections.abc import AsyncIterator
 from contextlib import suppress
+from math import ceil
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
@@ -95,6 +96,7 @@ from music_assistant.constants import (
     CONF_REPORTED_MAC,
     VERBOSE_LOG_LEVEL,
 )
+from music_assistant.controllers.streams.announcements import MAX_CLIP_SECONDS
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     get_sendspin_player_id,
@@ -102,7 +104,6 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.colors import get_palette_for_url
-from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.util import (
     TaskManager,
     enrich_device_mac_address,
@@ -1010,27 +1011,38 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             and not validate_announcement_chime_url(pre_announce_url)
         ):
             raise PlayerCommandFailed("Invalid pre-announce chime URL specified.")
+        # determine pre-announce from (group)player config
+        if pre_announce is None and "tts" in url:
+            conf_pre_announce = self.mass.config.get_raw_player_config_value(
+                player_id,
+                CONF_ENTRY_TTS_PRE_ANNOUNCE.key,
+                CONF_ENTRY_TTS_PRE_ANNOUNCE.default_value,
+            )
+            pre_announce = cast("bool", conf_pre_announce)
+        if pre_announce_url is None:
+            if conf_pre_announce_url := self.mass.config.get_raw_player_config_value(
+                player_id,
+                CONF_PRE_ANNOUNCE_CHIME_URL,
+            ):
+                # player default custom chime url
+                pre_announce_url = cast("str", conf_pre_announce_url)
+            else:
+                # use global default chime url
+                pre_announce_url = ANNOUNCE_ALERT_FILE
+        announce_data = AnnounceData(
+            announcement_url=url,
+            pre_announce=bool(pre_announce),
+            pre_announce_url=pre_announce_url,
+            # filled in below, once we know which player fetches the stream
+            announce_player_id=None,
+        )
+        # Start rendering the audio right away, so it is (nearly always fully) buffered
+        # by the time the player is ready for it. The render is shared by everything
+        # that consumes this announcement, including all members of a group.
+        render = self.mass.streams.announcement_renderer.acquire(announce_data)
         try:
             # mark announcement_in_progress on player
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = True
-            # determine pre-announce from (group)player config
-            if pre_announce is None and "tts" in url:
-                conf_pre_announce = self.mass.config.get_raw_player_config_value(
-                    player_id,
-                    CONF_ENTRY_TTS_PRE_ANNOUNCE.key,
-                    CONF_ENTRY_TTS_PRE_ANNOUNCE.default_value,
-                )
-                pre_announce = cast("bool", conf_pre_announce)
-            if pre_announce_url is None:
-                if conf_pre_announce_url := self.mass.config.get_raw_player_config_value(
-                    player_id,
-                    CONF_PRE_ANNOUNCE_CHIME_URL,
-                ):
-                    # player default custom chime url
-                    pre_announce_url = cast("str", conf_pre_announce_url)
-                else:
-                    # use global default chime url
-                    pre_announce_url = ANNOUNCE_ALERT_FILE
             # if player type is group with all members supporting announcements,
             # we forward the request to each individual player
             if player.state.type == PlayerType.GROUP and (
@@ -1071,11 +1083,8 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 announce_player = player
             # create a PlayerMedia object for the announcement so
             # we can send a regular play-media call downstream
-            announce_data = AnnounceData(
-                announcement_url=url,
-                pre_announce=bool(pre_announce),
-                pre_announce_url=pre_announce_url,
-                announce_player_id=(announce_player.player_id if native_announce_support else None),
+            announce_data["announce_player_id"] = (
+                announce_player.player_id if native_announce_support else None
             )
             announcement = PlayerMedia(
                 uri=self.mass.streams.get_announcement_url(player_id, announce_data=announce_data),
@@ -1085,6 +1094,14 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             )
             # handle native announce support (player or linked protocol)
             if native_announce_support:
+                # hand the url to the player as soon as there is audio to serve from;
+                # its exact length is resolved further downstream, while it plays
+                if not await render.wait_ready():
+                    self.logger.warning(
+                        "Announcement to player %s - no audio available for %s",
+                        player.state.name,
+                        url,
+                    )
                 announcement_volume = self.get_announcement_volume(player_id, volume_level)
                 await announce_player.play_announcement(announcement, announcement_volume)
                 return
@@ -1094,6 +1111,7 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
             player.extra_data[ATTR_ANNOUNCEMENT_IN_PROGRESS] = False
             # release the announcement data registered by get_announcement_url
             self.mass.streams.announcements.pop(player_id, None)
+            await self.mass.streams.announcement_renderer.release(render)
 
     @handle_player_command
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
@@ -2832,27 +2850,47 @@ class PlayerController(ProtocolLinkingMixin, CoreController):
                 "Announcement to player %s - playing the announcement on the player...",
                 player.state.name,
             )
+            render = (
+                self.mass.streams.announcement_renderer.get(
+                    cast("AnnounceData", announcement.custom_data)
+                )
+                if announcement.custom_data
+                else None
+            )
+            if render is not None and not await render.wait_ready():
+                # the render has been filling while the player was prepared above; play on
+                # regardless when it came up empty, so the restore still runs
+                self.logger.warning(
+                    "Announcement to player %s - no audio available for %s",
+                    player.state.name,
+                    announcement.uri,
+                )
             await self._handle_play_media(player.player_id, announcement)
             # wait for the player(s) to play
             await self._wait_for_playback_state(player, PlaybackState.PLAYING, 10, minimal_time=0.1)
+            playback_started = time.time()
             # wait for the player to stop playing
-            if not announcement.duration:
-                if not announcement.custom_data:
-                    raise ValueError("Announcement missing duration and custom_data")
-                media_info = await async_parse_tags(
-                    announcement.custom_data["announcement_url"], require_duration=True
+            duration = float(announcement.duration) if announcement.duration else None
+            if duration is None and render is not None:
+                # the render knows the exact length of the audio it produced
+                duration = await render.wait_finished()
+                if duration:
+                    announcement.duration = ceil(duration)
+            if duration is None:
+                # length unknown (e.g. the source stalled): wait for the player to report it
+                # finished, bounded by the longest clip an announcement can produce
+                await self._wait_for_playback_state(
+                    player, PlaybackState.IDLE, timeout=MAX_CLIP_SECONDS + 10
                 )
-                announcement.duration = int(media_info.duration) if media_info.duration else None
-
-            if announcement.duration is None:
-                raise ValueError("Announcement duration could not be determined")
-
-            await self._wait_for_playback_state(
-                player,
-                PlaybackState.IDLE,
-                timeout=announcement.duration + 10,
-                minimal_time=float(announcement.duration) + 2,
-            )
+            else:
+                # waiting for the length above already consumed part of the announcement
+                elapsed = time.time() - playback_started
+                await self._wait_for_playback_state(
+                    player,
+                    PlaybackState.IDLE,
+                    timeout=max(duration + 10 - elapsed, 1),
+                    minimal_time=max(duration + 2 - elapsed, 0),
+                )
         finally:
             await self._restore_after_announcement(
                 player,
