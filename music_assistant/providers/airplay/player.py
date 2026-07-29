@@ -1002,6 +1002,13 @@ class AirPlayPlayer(Player):
                 # Native parent volume is on the receiver/amplifier scale.
                 # Keep the AirPlay child volume learned from DACP feedback instead.
                 return
+            if parent_player.state.volume_level == 0:
+                # A parent volume of 0 usually means the (idle) sibling interface
+                # feeding the parent doesn't know the real device volume, e.g. the
+                # cast side of the same device reports 0 while in standby. Adopting
+                # it would start the stream hard muted, so keep our own last known
+                # volume instead.
+                return
             if self._attr_volume_level == parent_player.state.volume_level:
                 return
             self._attr_volume_level = parent_player.state.volume_level

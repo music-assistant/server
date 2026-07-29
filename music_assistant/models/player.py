@@ -1702,10 +1702,23 @@ class Player(ABC):
             return None
         # handle protocol player as volume control
         if control := self.mass.players.get_player(volume_control):
-            if control.volume_level is not None:
-                return self.mass.players.scale_volume_from_device(
-                    self.player_id, control.volume_level
+            control_volume = control.volume_level
+            if (
+                control_volume == 0
+                and control.player_id != self.active_output_protocol
+                and any(
+                    linked.output_protocol_id == control.player_id
+                    for linked in self.linked_output_protocols
                 )
+            ):
+                # A linked protocol interface that is not actively rendering audio
+                # may report volume 0 while the device is in standby (e.g. the cast
+                # side of some devices), which doesn't reflect the real device volume.
+                # Treat it as unknown so we fall back to other sources instead of
+                # propagating a spurious hard mute.
+                control_volume = None
+            if control_volume is not None:
+                return self.mass.players.scale_volume_from_device(self.player_id, control_volume)
         # handle player control for volume if set
         if player_control := self.mass.players.get_player_control(volume_control):
             if player_control.volume_level is not None:
