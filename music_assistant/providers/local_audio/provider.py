@@ -16,6 +16,7 @@ from .constants import (
     AUDIO_BACKEND_AUTO,
     AUDIO_BACKEND_PULSEAUDIO,
     CONF_AUDIO_BACKEND,
+    CONF_PREWARM_STREAMS,
 )
 from .sendspin_bridge import LocalAudioBridgeManager
 
@@ -40,6 +41,13 @@ class LocalAudioProvider(PlayerProvider):
                         ConfigValueOption(AUDIO_BACKEND_ALSA),
                     ],
                     default_value=AUDIO_BACKEND_AUTO,
+                )
+            )
+            entries.append(
+                ConfigEntry(
+                    key=CONF_PREWARM_STREAMS,
+                    type=ConfigEntryType.BOOLEAN,
+                    default_value=True,
                 )
             )
 
