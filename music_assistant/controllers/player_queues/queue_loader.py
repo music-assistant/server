@@ -27,11 +27,13 @@ from music_assistant_models.errors import (
 )
 from music_assistant_models.media_items import (
     Album,
+    Audiobook,
     BrowseFolder,
     ItemMapping,
     MediaItemType,
     PlayableMediaItemType,
     Playlist,
+    PodcastEpisode,
     Track,
     UniqueList,
     media_from_dict,
@@ -39,6 +41,8 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import ATTR_ANNOUNCEMENT_IN_PROGRESS
 from music_assistant.controllers.player_queues.autoplay import (
+    AUTOPLAY_EXCLUDED_MEDIA_TYPES,
+    AUTOPLAY_SERIES_MEDIA_TYPES,
     AutoplayMode,
 )
 from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
@@ -61,7 +65,6 @@ from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 
 if TYPE_CHECKING:
     from music_assistant_models.media_items.metadata import MediaItemImage
-    from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
 
     from music_assistant.providers.radio_playlist import RadioPlaylistProvider
@@ -87,6 +90,15 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             must keep its position when the batch is shuffled instead of being moved at random.
         """
         queue = self._queue_data[queue_id].queue
+        # A queue that played to its end is finished, so anything enqueued onto it starts a fresh
+        # queue rather than stacking onto the items that already played. Only an explicit ADD keeps
+        # them: there the added items continue the queue from where it ended, and the index is moved
+        # onto the first of them below so pressing play starts there instead of replaying the last
+        # item. ADD never starts playback by itself.
+        continues_ended_queue = queue.ended and option == QueueOption.ADD
+        items_before_add = len(self._queue_data[queue_id].items)
+        if queue.ended and not continues_ended_queue:
+            self.clear(queue_id, skip_stop=True)
         if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             cur_index = (
                 queue.index_in_buffer
@@ -188,6 +200,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 insert_at_index=add_at_index,
                 shuffle=queue.shuffle_enabled,
             )
+            if continues_ended_queue:
+                self._continue_ended_queue(queue_id, items_before_add)
+                return
             self._ensure_current_index(queue_id)
 
     async def _load_pinned_first(
@@ -236,6 +251,28 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             return
         queue.current_index = 0
         queue.current_item = self.get_item(queue_id, 0)
+        self.signal_update(queue_id)
+
+    def _continue_ended_queue(self, queue_id: str, first_added_index: int) -> None:
+        """
+        Point a finished queue at the first item just added to it, without starting playback.
+
+        The items that already played are kept, so the queue is no longer finished but its position
+        still sits on its old last item. Moving it onto the added items is what makes a play press
+        start there rather than replay the item the queue ended on.
+
+        :param queue_id: The queue that was added to.
+        :param first_added_index: Index of the first of the added items.
+        """
+        queue = self._queue_data[queue_id].queue
+        queue.ended = False
+        if (current_item := self.get_item(queue_id, first_added_index)) is None:
+            return
+        queue.current_index = first_added_index
+        queue.current_item = current_item
+        # ending the queue cleared the next item; refresh it so a batch of added items reports
+        # what follows instead of looking like there is nothing after the first one
+        queue.next_item = self.get_next_item(queue_id, first_added_index)
         self.signal_update(queue_id)
 
     async def _load_item(
@@ -424,23 +461,91 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         )
 
     async def _fill_autoplay_tracks(self, queue_id: str) -> None:
-        """Fill a Queue with additional tracks based on the configured Autoplay mode."""
+        """
+        Append more items to a queue that is running low, based on what is ending.
+
+        Autoplay is a single "keep going" switch; what it appends is decided by the media type
+        of the queue's last item, since that is the item the appended items follow.
+        """
         queue = self.get(queue_id)
         if queue is None or not queue.autoplay_enabled:
             return
         queue_data = self._queue_data[queue_id]
-        mode = self._autoplay.resolve_mode(queue_id)
-        self.logger.debug(
-            "Filling autoplay tracks (mode: %s) for queue %s", mode.value, queue.display_name
-        )
-        # Restore the queue owner's user context so provider filters and library access
-        # are respected during this background refill, mirroring _fill_dynamic_tracks.
+        if not queue_data.items:
+            return
+        last_item = queue_data.items[-1]
+        if last_item.media_type in AUTOPLAY_EXCLUDED_MEDIA_TYPES:
+            return
+        # Restore the queue owner's user context so provider filters, library access and
+        # resume positions are respected during this background refill, mirroring
+        # _fill_dynamic_tracks.
         playback_user = (
             await self.mass.webserver.auth.get_user(queue_data.userid)
             if queue_data.userid
             else None
         )
         set_current_user(playback_user)
+        if last_item.media_type in AUTOPLAY_SERIES_MEDIA_TYPES:
+            await self._fill_autoplay_next_in_series(queue_id, last_item)
+            return
+        await self._fill_autoplay_music_tracks(queue_id)
+
+    async def _fill_autoplay_next_in_series(self, queue_id: str, last_item: QueueItem) -> None:
+        """
+        Append the episode/book that follows the queue's last item, if there is one.
+
+        Nothing is appended for the last episode of a podcast or a book without a next one in
+        its collection, so the queue simply ends there.
+
+        :param queue_id: The queue to append to.
+        :param last_item: The queue's last item, an audiobook or podcast episode.
+        """
+        queue_data = self._queue_data[queue_id]
+        media_item = last_item.media_item
+        next_item: PodcastEpisode | Audiobook | None
+        try:
+            if isinstance(media_item, PodcastEpisode):
+                next_item = await self._media_resolver.get_next_podcast_episode(
+                    media_item, userid=queue_data.userid
+                )
+            elif isinstance(media_item, Audiobook):
+                next_item = await self._media_resolver.get_next_audiobook(
+                    media_item, userid=queue_data.userid
+                )
+            else:
+                return
+        except MusicAssistantError as err:
+            self.logger.warning(
+                "Autoplay failed to fetch the item following %s: %s", last_item.name, err
+            )
+            return
+        if next_item is None or not next_item.available:
+            self.logger.debug("Autoplay found nothing to play after %s", last_item.name)
+            return
+        if any(
+            item.media_item and item.media_item.uri == next_item.uri for item in queue_data.items
+        ):
+            # already queued (e.g. the user added it themselves), so there is nothing to do
+            return
+        await self.load(
+            queue_id,
+            [build_queue_item(queue_id, next_item)],
+            insert_at_index=len(queue_data.items) + 1,
+        )
+
+    async def _fill_autoplay_music_tracks(self, queue_id: str) -> None:
+        """Fill a Queue with additional tracks based on the configured Autoplay mode."""
+        queue = self.get(queue_id)
+        if queue is None:
+            return
+        queue_data = self._queue_data[queue_id]
+        if not queue_data.enqueued_media_items:
+            # the music refill needs what the user enqueued as its seed
+            return
+        mode = self._autoplay.resolve_mode(queue_id)
+        self.logger.debug(
+            "Filling autoplay tracks (mode: %s) for queue %s", mode.value, queue.display_name
+        )
         existing_tracks = {
             item.media_item
             for item in self._queue_data[queue_id].items
@@ -487,52 +592,6 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             queue_items,
             insert_at_index=len(self._queue_data[queue_id].items) + 1,
         )
-
-    async def _try_resume_from_playlog(self, queue: PlayerQueue) -> bool:
-        """
-        Try to resume playback from playlog when queue is empty.
-
-        Attempts to find user-initiated recently played items in the following order:
-        1. By userid AND queue_id
-        2. By queue_id only
-        3. By userid only (if available)
-        4. Any recently played item
-
-        :param queue: The queue to resume playback on.
-        :return: True if playback was started, False otherwise.
-        """
-        # Try different filter combinations in order of specificity
-        queue_data = self._queue_data[queue.queue_id]
-        filter_attempts: list[tuple[str | None, str | None, str]] = []
-        if queue_data.userid:
-            filter_attempts.append((queue_data.userid, queue.queue_id, "userid + queue_id match"))
-        filter_attempts.append((None, queue.queue_id, "queue_id match"))
-        if queue_data.userid:
-            filter_attempts.append((queue_data.userid, None, "userid match"))
-        filter_attempts.append((None, None, "any recent item"))
-
-        for userid, queue_id, match_type in filter_attempts:
-            items = await self.mass.music.recently_played(
-                limit=5,
-                fully_played_only=False,
-                user_initiated_only=True,
-                userid=userid,
-                queue_id=queue_id,
-            )
-            for item in items:
-                if not item.uri:
-                    continue
-                try:
-                    await self._handle_play_media(queue.queue_id, item)
-                    self.logger.info(
-                        "Resumed queue %s from playlog (%s)", queue.display_name, match_type
-                    )
-                    return True
-                except MusicAssistantError as err:
-                    self.logger.debug("Failed to resume with item %s: %s", item.name, err)
-                    continue
-
-        return False
 
     @handle_play_action
     async def _handle_play_media(
@@ -636,8 +695,10 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                             media_item.provider,
                         )
 
-                # Save requested media item to play on the queue so we can use it as a source
-                # for Autoplay. Use FIFO list to keep track of the last 10 played items
+                # Save requested media item to play on the queue so we can use it as a seed
+                # for Autoplay's music refill (the podcast/audiobook continuations resolve
+                # their successor from the queue's last item instead).
+                # Use FIFO list to keep track of the last 10 played items
                 # Skip ItemMapping and BrowseFolder - only queue full MediaItemType objects
                 if not isinstance(
                     media_item, (ItemMapping, BrowseFolder)

@@ -40,10 +40,11 @@ class WiimProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        # the sdk logs routine keep-alive chatter at INFO
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             logging.getLogger("wiim").setLevel(logging.DEBUG)
         else:
-            logging.getLogger("wiim").setLevel(self.logger.level + 10)
+            logging.getLogger("wiim").setLevel(max(self.logger.level + 10, logging.WARNING))
 
         self.wiim_controller = WiimController(self.mass.http_session_no_ssl)
 

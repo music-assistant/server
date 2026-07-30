@@ -11,6 +11,7 @@ import pytest
 from music_assistant.helpers import util
 from music_assistant.helpers.util import (
     get_source_ip_for_target,
+    import_module_in_thread,
     is_port_in_use,
     load_provider_module,
     sanitize_http_header_value,
@@ -121,6 +122,64 @@ class TestIsPortInUse:
             await is_port_in_use(38800, host=host)
         socket_mock.assert_called_once_with(family, socket.SOCK_STREAM)
         socket_mock.return_value.__enter__.return_value.bind.assert_called_once_with((host, 38800))
+
+
+class TestImportModuleInThread:
+    """import_module_in_thread imports off the event loop, one import at a time."""
+
+    @pytest.mark.asyncio
+    async def test_module_is_returned(self) -> None:
+        """A relative module name is resolved against the given package."""
+        assert await import_module_in_thread(".util", "music_assistant.helpers") is util
+
+    @pytest.mark.asyncio
+    async def test_concurrent_imports_are_serialized(self) -> None:
+        """Concurrent calls never have two imports in flight (which can deadlock)."""
+        in_flight = 0
+        max_in_flight = 0
+
+        def _slow_import(*_args: object) -> MagicMock:
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            time.sleep(0.05)
+            in_flight -= 1
+            return MagicMock()
+
+        with patch("music_assistant.helpers.util.importlib.import_module", _slow_import):
+            await asyncio.gather(*(import_module_in_thread(f"module_{idx}") for idx in range(5)))
+
+        assert max_in_flight == 1
+
+    @pytest.mark.asyncio
+    async def test_module_lock_collision_is_retried_once(self) -> None:
+        """A deadlock reported by the import machinery is retried, not passed on."""
+        module = MagicMock()
+        attempts = 0
+
+        def _import(*_args: object) -> MagicMock:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("deadlock detected by _ModuleLock('requests.structures')")
+            return module
+
+        with patch("music_assistant.helpers.util.importlib.import_module", _import):
+            assert await import_module_in_thread("some_module") is module
+        assert attempts == 2
+
+    @pytest.mark.asyncio
+    async def test_other_runtime_errors_are_not_retried(self) -> None:
+        """An unrelated RuntimeError from the module body is passed on as-is."""
+        with (
+            patch(
+                "music_assistant.helpers.util.importlib.import_module",
+                side_effect=RuntimeError("boom"),
+            ) as import_mock,
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            await import_module_in_thread("some_module")
+        assert import_mock.call_count == 1
 
 
 class TestLoadProviderModule:

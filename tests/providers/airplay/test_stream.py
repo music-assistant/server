@@ -18,11 +18,13 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter, open_named_pipe_writer
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
+    CONF_AIRPLAY_CREDENTIALS,
     CONF_ENCRYPTION,
+    CONF_PASSWORD,
     AirPlayRemoteCommand,
     StreamingProtocol,
 )
-from music_assistant.providers.airplay.stream import AirPlayStream
+from music_assistant.providers.airplay.stream import AirPlayStream, ConnectError
 
 START_UNIX_MS = 1_750_000_000_000
 AP2_FEATURES = "0x4A7FDFD5,0x3C177FDE"
@@ -41,6 +43,7 @@ def _make_player() -> MagicMock:
     player.device_info.ip_address = "192.168.1.50"
     player.logger = logging.getLogger("test.airplay.player")
     player.config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
+    player.state.active_group = None
 
     airplay_info = MagicMock()
     airplay_info.port = 7000
@@ -1232,6 +1235,101 @@ async def test_process_eof_cleans_up_command_pipe() -> None:
 
     assert stream._stopped is True
     remove_pipe.assert_awaited_once()
+    player.schedule_group_rejoin.assert_not_called()
+
+
+async def _run_unexpected_process_death(player: MagicMock) -> AirPlayStream:
+    """Drive the stderr reader through an unexpected process exit."""
+    stream = AirPlayStream(player)
+    process = MagicMock()
+    stream._cli_proc = process
+
+    async def _stderr_lines() -> AsyncGenerator[str]:
+        yield "some final log line"
+
+    with (
+        patch.object(process, "iter_stderr", return_value=_stderr_lines()),
+        patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock),
+    ):
+        await stream._stderr_reader()
+    return stream
+
+
+@pytest.mark.asyncio
+async def test_unexpected_death_of_synced_child_schedules_rejoin() -> None:
+    """A grouped member whose process dies unexpectedly gets a re-join scheduled."""
+    player = _make_player()
+    player.synced_to = "leader"
+    player.group_members = []
+    # the leader's other members are captured as fallback candidates in case
+    # leadership transfers while the re-join backoff runs
+    leader = MagicMock()
+    leader.group_members = ["leader", player.player_id, "sibling"]
+    player.provider.mass.players.get_player.return_value = leader
+
+    stream = await _run_unexpected_process_death(player)
+
+    player.schedule_group_rejoin.assert_called_once_with(["leader", "sibling"])
+    player.set_state_from_stream.assert_called_once_with(
+        state=PlaybackState.IDLE, elapsed_time=0, stream=stream
+    )
+
+
+@pytest.mark.asyncio
+async def test_unexpected_death_of_leader_schedules_rejoin_to_members() -> None:
+    """A dying leader re-joins towards its surviving members (leadership transfers)."""
+    player = _make_player()
+    player.synced_to = None
+    player.group_members = [player.player_id, "child1", "child2"]
+
+    await _run_unexpected_process_death(player)
+
+    player.schedule_group_rejoin.assert_called_once_with(["child1", "child2"])
+    # the controller sets the leader's final state (transfer or dissolve)
+    player.set_state_from_stream.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_unexpected_death_of_solo_player_schedules_no_rejoin() -> None:
+    """An ungrouped player's process death only marks the player idle."""
+    player = _make_player()
+    player.synced_to = None
+    player.group_members = []
+
+    stream = await _run_unexpected_process_death(player)
+
+    player.schedule_group_rejoin.assert_not_called()
+    player.set_state_from_stream.assert_called_once_with(
+        state=PlaybackState.IDLE, elapsed_time=0, stream=stream
+    )
+
+
+@pytest.mark.asyncio
+async def test_unexpected_death_of_static_group_member_drops_member_only() -> None:
+    """A static group member's death drops just that member, never the whole group."""
+    player = _make_player()
+    player.synced_to = "leader"
+    player.group_members = []
+    # the player is a static member of an actively playing group player, for
+    # which cmd_ungroup would release (stop) the WHOLE group
+    player.state.active_group = "syncgroup1"
+    group_player = MagicMock()
+    group_player.static_group_members = ["leader", player.player_id]
+    leader = MagicMock()
+    leader.group_members = ["leader", player.player_id]
+    player.provider.mass.players.get_player.side_effect = lambda player_id: {
+        "syncgroup1": group_player,
+        "leader": leader,
+    }.get(player_id)
+
+    await _run_unexpected_process_death(player)
+
+    players_controller = player.provider.mass.players
+    players_controller.cmd_set_members.assert_called_once_with(
+        "leader", player_ids_to_remove=[player.player_id]
+    )
+    players_controller.cmd_ungroup.assert_not_called()
+    player.schedule_group_rejoin.assert_called_once_with(["leader"])
 
 
 @pytest.mark.asyncio
@@ -1515,3 +1613,189 @@ async def test_failed_artwork_delivery_is_retried() -> None:
         f"ARTWORK={artwork_path}"
     ) == 2
     assert stream._metadata_checksum == metadata_checksum
+
+
+# --- Structured connect failures reported by the binary ---
+
+
+@pytest.mark.asyncio
+async def test_connect_error_status_line_is_parsed() -> None:
+    """The machine-readable failure line is captured with all of its fields."""
+    stream = AirPlayStream(_make_player())
+
+    stream._handle_status_line(
+        '[STATUS] error code=auth_required http=401 detail="RTSP setup rejected"'
+    )
+
+    assert stream._connect_error == ConnectError("auth_required", 401, "RTSP setup rejected")
+
+
+@pytest.mark.asyncio
+async def test_connect_error_status_line_tolerates_missing_fields() -> None:
+    """A failure line without http/detail still yields the reported code."""
+    stream = AirPlayStream(_make_player())
+
+    stream._handle_status_line("[STATUS] error code=connect_failed")
+
+    assert stream._connect_error == ConnectError("connect_failed", 0, "")
+
+
+@pytest.mark.asyncio
+async def test_auth_required_surfaces_password_required_error() -> None:
+    """A device asking for a password produces an actionable, translated error."""
+    stream = AirPlayStream(_make_player())
+    stream._handle_status_line('[STATUS] error code=auth_required http=401 detail="no password"')
+    stream._process_ended.set()
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),
+        pytest.raises(PlayerCommandFailed) as err,
+    ):
+        await stream.wait_for_connection()
+
+    assert err.value.translation_key == "password_required"
+
+
+@pytest.mark.asyncio
+async def test_auth_failed_surfaces_authentication_failed_error() -> None:
+    """A rejected password is reported as an authentication failure, not a timeout."""
+    stream = AirPlayStream(_make_player())
+    stream._handle_status_line('[STATUS] error code=auth_failed http=401 detail="bad password"')
+    stream._process_ended.set()
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),
+        pytest.raises(PlayerCommandFailed) as err,
+    ):
+        await stream.wait_for_connection()
+
+    assert err.value.translation_key == "authentication_failed"
+
+
+@pytest.mark.asyncio
+async def test_generic_connect_failure_keeps_the_timeout_semantics() -> None:
+    """A non-auth failure keeps raising the plain timeout its callers already handle."""
+    stream = AirPlayStream(_make_player())
+    stream._handle_status_line('[STATUS] error code=connect_failed http=0 detail="no route"')
+    stream._process_ended.set()
+
+    with patch.object(stream, "_cli_proc", MagicMock()), pytest.raises(TimeoutError):
+        await stream.wait_for_connection()
+
+
+@pytest.mark.asyncio
+async def test_dead_process_fails_the_connect_wait_immediately() -> None:
+    """
+    An older binary reports no reason at all, so the wait keeps its timeout error.
+
+    It must still end the moment the process is gone instead of running out the
+    full connect timeout.
+    """
+    stream = AirPlayStream(_make_player())
+    stream._process_ended.set()  # process died without emitting a [STATUS] error line
+
+    started = asyncio.get_running_loop().time()
+    with patch.object(stream, "_cli_proc", MagicMock()), pytest.raises(TimeoutError):
+        await stream.wait_for_connection()
+
+    assert asyncio.get_running_loop().time() - started < 1
+
+
+@pytest.mark.asyncio
+async def test_auth_failed_marks_the_stored_password_invalid() -> None:
+    """A rejected password is persisted so the player keeps offering its setup action."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    stream._handle_status_line('[STATUS] error code=auth_failed http=401 detail="bad password"')
+
+    player.set_password_invalid.assert_called_once_with(True)
+
+
+@pytest.mark.asyncio
+async def test_auth_required_also_marks_the_password_as_needed() -> None:
+    """
+    A device that demanded a password we could not supply flips into setup.
+
+    Devices can enforce a password without announcing it (stale TXT records), so
+    the runtime signal must set the marker too - it is the only reliable one.
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    stream._handle_status_line('[STATUS] error code=auth_required http=401 detail="no password"')
+
+    player.set_password_invalid.assert_called_once_with(True)
+
+
+@pytest.mark.asyncio
+async def test_plain_connect_failures_leave_the_password_marker_alone() -> None:
+    """A non-authentication failure says nothing about the stored password."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    stream._handle_status_line('[STATUS] error code=connect_failed http=0 detail="no route"')
+
+    player.set_password_invalid.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_successful_connect_clears_the_password_marker() -> None:
+    """Whatever the device accepted is a working password."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    stream._handle_status_line("[STATUS] connected")
+
+    assert stream.connected is True
+    player.set_password_invalid.assert_called_once_with(False)
+
+
+# --- Password preflight ---
+
+
+@pytest.mark.asyncio
+async def test_connect_refuses_password_device_without_password_or_credentials() -> None:
+    """A password-protected AirPlay 2 device with nothing to authenticate never spawns a process."""
+    player = _make_player()
+    player.password_required = True
+    player.get_setup_value = MagicMock(return_value=None)
+    stream = AirPlayStream(player)
+
+    with pytest.raises(PlayerCommandFailed) as err:
+        await stream.connect()
+
+    assert err.value.translation_key == "password_required"
+    assert stream._cli_proc is None
+
+
+@pytest.mark.asyncio
+async def test_password_preflight_passes_with_password_or_credentials() -> None:
+    """Either a configured password or stored credentials let the connect proceed."""
+    player = _make_player()
+    player.password_required = True
+    player.get_setup_value = MagicMock(return_value=None)
+    player.config.get_value = MagicMock(
+        side_effect=lambda key, default=None: "s3cret" if key == CONF_PASSWORD else default
+    )
+    AirPlayStream(player)._check_password_preflight()
+
+    # credentials alone are enough: the binary's pair-verify leg may still succeed
+    player.config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
+    player.get_setup_value = MagicMock(
+        side_effect=lambda key, default=None: (
+            "ab" * 96 if key == CONF_AIRPLAY_CREDENTIALS else default
+        )
+    )
+    AirPlayStream(player)._check_password_preflight()
+
+
+@pytest.mark.asyncio
+async def test_password_preflight_skipped_for_raop() -> None:
+    """The preflight only guards the native AirPlay 2 flow; RAOP carries its own password."""
+    player = _make_player()
+    player.protocol = StreamingProtocol.RAOP
+    player.password_required = True
+    player.get_setup_value = MagicMock(return_value=None)
+
+    AirPlayStream(player)._check_password_preflight()

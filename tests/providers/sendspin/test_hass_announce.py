@@ -128,11 +128,9 @@ async def test_play_announcement_relays_via_hass() -> None:
     player = _player()
     player.mass = cast("MusicAssistant", SimpleNamespace(get_provider=lambda _domain: hass))
     player.set_hass_announce_entity(ENTITY_ID)
-    announcement = PlayerMedia(uri="http://mass.local/announcement.mp3")
+    announcement = PlayerMedia(uri="http://mass.local/announcement.mp3", duration=4)
     await player.play_announcement(announcement, volume_level=50)
-    hass.play_announcement_on_entity.assert_awaited_once_with(
-        ENTITY_ID, "http://mass.local/announcement.mp3"
-    )
+    hass.play_announcement_on_entity.assert_awaited_once_with(ENTITY_ID, announcement)
 
 
 @pytest.mark.parametrize("hass_provider", [None, SimpleNamespace(available=False)])

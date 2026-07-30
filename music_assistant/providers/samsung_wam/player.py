@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -11,7 +10,6 @@ from music_assistant_models.enums import IdentifierType, PlaybackState
 from music_assistant_models.player import DeviceInfo, PlayerMedia
 
 from music_assistant.constants import CONF_ENTRY_ENABLE_ICY_METADATA_HIDDEN
-from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import Player
 
@@ -187,20 +185,15 @@ class WamPlayer(Player):
         if volume_level is not None and prev_volume is not None and volume_level != prev_volume:
             await self.volume.set_volume(volume_level)
 
-        # Samsung speakers auto-resume after a URL stream ends rather than going idle,
-        # so we stop the stream manually at the expected end of the announcement
-        duration: float | None = None
-        with contextlib.suppress(Exception):
-            media_info = await async_parse_tags(announcement.uri, require_duration=True)
-            if media_info.duration:
-                duration = float(media_info.duration)
-
         await self.playback.play_media(announcement)
         await self.await_state_change(
             lambda: self.playback_state == PlaybackState.PLAYING,
             timeout=10.0,
         )
 
+        # Samsung speakers auto-resume after a URL stream ends rather than going idle,
+        # so we stop the stream manually at the expected end of the announcement
+        duration = await self.mass.streams.get_announcement_duration(announcement)
         if duration is not None:
             await asyncio.sleep(duration + 1.0)
         else:
