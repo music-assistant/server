@@ -51,13 +51,16 @@ def _provider_status(conf: ProviderConfig, is_loaded: bool) -> ProviderStatus:
     """Derive the (lifecycle) status of a provider from its config and load state."""
     if not conf.enabled:
         return ProviderStatus.DISABLED
-    if is_loaded:
-        # runtime (un)availability of a loaded provider is conveyed via ProviderInstance.available
-        return ProviderStatus.LOADED
+    # a recorded error wins over being loaded: a provider that hit a problem the user has to
+    # act on (e.g. one unloading itself after an auth failure) must not read as healthy, or
+    # the UI has no way to point at it - the status is what flags it in the providers list
     if conf.last_error is not None:
         if conf.last_error.error_code in _AUTH_ERROR_CODES:
             return ProviderStatus.AUTH_REQUIRED
         if conf.last_error.error_code == UnsupportedSystemError.error_code:
             return ProviderStatus.INCOMPATIBLE
         return ProviderStatus.ERROR
+    if is_loaded:
+        # runtime (un)availability of a loaded provider is conveyed via ProviderInstance.available
+        return ProviderStatus.LOADED
     return ProviderStatus.LOADING

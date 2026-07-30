@@ -20,12 +20,13 @@ import urllib.error
 import urllib.request
 import weakref
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from pathlib import Path
-from types import TracebackType
+from types import ModuleType, TracebackType
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Protocol, Self, TypeVar, cast
 from urllib.parse import urlparse
 
@@ -1308,17 +1309,45 @@ async def is_hass_supervisor() -> bool:
     return await asyncio.to_thread(_check)
 
 
+# CPython holds a lock per module while importing it, so two threads importing modules with
+# overlapping dependency graphs (e.g. two providers that both pull in `requests`) can end up
+# waiting on each other's module locks. The import machinery then bails out at one of them with
+# a _DeadlockError ("deadlock detected by _ModuleLock(...)") instead of hanging, which surfaces
+# as a provider that failed to load and stays broken until it is reloaded by hand.
+# A single-worker executor keeps imports serialized without parking a thread from the default
+# pool while waiting; only the import itself is serialized, providers still load concurrently.
+_IMPORT_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="module_import")
+
 # requirements verified this session, so repeated (config) loads skip the version check
 _checked_requirements: set[str] = set()
+
+
+async def import_module_in_thread(name: str, package: str | None = None) -> ModuleType:
+    """
+    Import a module in a thread, serialized against all other imports done this way.
+
+    :param name: Name of the module to import, may be relative to the given package.
+    :param package: Package to resolve the name against, required for a relative name.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(_IMPORT_EXECUTOR, importlib.import_module, name, package)
+    except RuntimeError as err:
+        # threads we do not control (a library importing lazily in its own thread) can still
+        # cross a module lock with ours; the import machinery reports that as a deadlock at
+        # whoever detects it. The other import has finished by now, so a single retry sticks.
+        if "deadlock detected" not in str(err):
+            raise
+        LOGGER.warning("Retrying import of %s after a module lock collision: %s", name, err)
+        return await loop.run_in_executor(_IMPORT_EXECUTOR, importlib.import_module, name, package)
 
 
 async def load_provider_module(domain: str, requirements: list[str]) -> ProviderModuleType:
     """Return module for given provider domain and make sure the requirements are met."""
 
-    def _get_provider_module(domain: str) -> ProviderModuleType:
-        return cast(
-            "ProviderModuleType", importlib.import_module(f".{domain}", "music_assistant.providers")
-        )
+    async def _get_provider_module() -> ProviderModuleType:
+        module = await import_module_in_thread(f".{domain}", "music_assistant.providers")
+        return cast("ProviderModuleType", module)
 
     # ensure module requirements are met
     for requirement in requirements:
@@ -1341,14 +1370,14 @@ async def load_provider_module(domain: str, requirements: list[str]) -> Provider
 
     # try to load the module
     try:
-        return await asyncio.to_thread(_get_provider_module, domain)
+        return await _get_provider_module()
     except ImportError:
         # (re)install ALL requirements
         for requirement in requirements:
             await install_package(requirement)
     # try loading the provider again to be safe
     # this will fail if something else is wrong (as it should)
-    return await asyncio.to_thread(_get_provider_module, domain)
+    return await _get_provider_module()
 
 
 async def has_tmpfs_mount() -> bool:
