@@ -154,12 +154,12 @@ class WebRTCGateway:
         if self._running:
             self.logger.warning("WebRTC Gateway already running, skipping start")
             return
-        # Failing candidates, paths and permissions is how ICE converges, so below DEBUG
-        # we only take errors from libdatachannel's native logging.
+        # Failing candidates and permissions is how ICE converges: full chatter only at VERBOSE
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             rtc_log_level = LogLevel.VERBOSE
         elif self.logger.isEnabledFor(logging.DEBUG):
-            rtc_log_level = LogLevel.DEBUG
+            rtc_log_level = LogLevel.WARNING
+            self.logger.addFilter(_drop_benign_native_noise)
         else:
             rtc_log_level = LogLevel.ERROR
         install_python_logger(self.logger, level=rtc_log_level)
@@ -173,6 +173,7 @@ class WebRTCGateway:
     async def stop(self) -> None:
         """Stop the WebRTC Gateway."""
         self.logger.info("Stopping WebRTC Gateway")
+        self.logger.removeFilter(_drop_benign_native_noise)
         self._running = False
 
         # Close all sessions
@@ -831,6 +832,12 @@ class WebRTCGateway:
                     self._set_sendspin_player_callback(session.session_id, client_id)
         except json.JSONDecodeError, TypeError:
             pass  # Not valid JSON, ignore
+
+
+def _drop_benign_native_noise(record: logging.LogRecord) -> bool:
+    """Return whether this native libdatachannel log record is worth keeping."""
+    # Cloudflare omits the ERROR-CODE attribute, so libjuice warns on a benign refusal
+    return "TURN CreatePermission error response, code=0" not in record.getMessage()
 
 
 def _is_usable_ice_url(url: str) -> bool:
