@@ -57,6 +57,12 @@ if TYPE_CHECKING:
     from music_assistant.controllers.player_queues.state import PlayerQueueData
 
 
+# media types that never put a queue in the ended state: a live source has no natural end, so it
+# going idle means the source stopped and not that the queue ran out (marking it ended would strand
+# a later resume), and a sound effect is a one-off that leaves the queue as it found it.
+UNENDABLE_MEDIA_TYPES = (MediaType.RADIO, MediaType.AUDIO_SOURCE, MediaType.SOUND_EFFECT)
+
+
 class PlaybackTrackerMixin(_PlayerQueuesBase):
     """Reconcile a queue's state against its player and drive playback-progress reporting."""
 
@@ -415,20 +421,14 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         if prev_state["current_item_id"] is None:
             return
 
-        # retrieve prev_item here so it's available in the _clear_or_resume_delayed closure
+        # retrieve prev_item here so it's available in the _settle_or_resume_delayed closure
         # regardless of which code path (flow mode or non-flow mode) creates the task
         prev_item = prev_state["current_item"]
 
-        # Live sources (radio / AudioSource) have no natural end — stopping
-        # means the source stopped, not that the queue is exhausted. Clearing
-        # would strand a later resume, so leave the queue intact.
-        if prev_item is not None and prev_item.media_type in (
-            MediaType.RADIO,
-            MediaType.AUDIO_SOURCE,
-        ):
+        if prev_item is not None and prev_item.media_type in UNENDABLE_MEDIA_TYPES:
             return
 
-        async def _clear_or_resume_delayed() -> None:
+        async def _settle_or_resume_delayed() -> None:
             for _ in range(5):
                 await asyncio.sleep(1)
                 if queue.state != PlaybackState.IDLE:
@@ -514,11 +514,10 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                         queue.display_name,
                         err,
                     )
-            self.logger.info("End of queue reached, clearing items")
-            self.clear(queue.queue_id)
+            self._finish_queue(queue, prev_item)
 
         # all checks passed, we stopped playback at the last (or single) track of the queue
-        # now determine if the item was fully played before clearing/resuming
+        # now determine if the item was fully played before settling/resuming
 
         # For flow mode, check if the last track was fully streamed using the stream log
         # This is more reliable than elapsed_time which can be reset/incorrect
@@ -528,13 +527,13 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 # Guard: if a next item (e.g. a radio that caused the flow stream to break
                 # out early) is already queued, the queue_buffer_completed path
                 # (_resume_on_idle) is responsible for starting it. Creating
-                # _clear_or_resume_delayed here would race with that restart and could
-                # incorrectly clear the queue or trigger a double play_index call.
+                # _settle_or_resume_delayed here would race with that restart and could
+                # incorrectly settle the queue or trigger a double play_index call.
                 if queue.current_index is not None and self.get_next_item(
                     queue.queue_id, queue.current_index
                 ):
                     return
-                self.mass.create_task(_clear_or_resume_delayed())
+                self.mass.create_task(_settle_or_resume_delayed())
             return
 
         # For non-flow mode, use prev_state values since queue state may have been updated/reset
@@ -544,7 +543,7 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             duration = prev_item.duration or 24 * 3600
         else:
             # No current item means player has already cleared it, safe to clear queue
-            self.mass.create_task(_clear_or_resume_delayed())
+            self.mass.create_task(_settle_or_resume_delayed())
             return
 
         # use last_playing_elapsed_time which preserves the elapsed time from when the player
@@ -553,7 +552,26 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         # debounce this a bit to make sure we're not clearing the queue by accident
         # only clear if the last track was played to near completion (within 5 seconds of end)
         if seconds_played >= (duration or 3600) - 5:
-            self.mass.create_task(_clear_or_resume_delayed())
+            self.mass.create_task(_settle_or_resume_delayed())
+
+    def _finish_queue(self, queue: PlayerQueue, prev_item: QueueItem | None) -> None:
+        """
+        Settle a queue that has nothing left to play, based on the item it ended on.
+
+        :param queue: The queue that ran out of items.
+        :param prev_item: The item the queue was playing when it went idle, if it is still known.
+        """
+        queue_data = self._queue_data.get(queue.queue_id)
+        # prev_item is gone when the player dropped its current item before we got here; the
+        # queue's last item is the one that finished, so fall back to that
+        ending_item = prev_item or (
+            queue_data.items[-1] if queue_data and queue_data.items else None
+        )
+        if ending_item is not None and ending_item.media_type in UNENDABLE_MEDIA_TYPES:
+            # normally caught before the debounce; reachable only when prev_item was lost
+            return
+        self.logger.info("End of queue reached for %s, marking it as ended", queue.display_name)
+        self.mark_ended(queue.queue_id)
 
     def _handle_playback_progress_report(
         self, queue: PlayerQueue, prev_state: CompareState, new_state: CompareState
