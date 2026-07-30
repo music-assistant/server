@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import functools
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
 from uuid import UUID
 
 import pychromecast
@@ -11,22 +12,39 @@ from music_assistant_models.dashboard import DashboardDevice
 from music_assistant_models.enums import DashboardType
 from music_assistant_models.errors import PlayerUnavailableError
 from pychromecast.const import CAST_TYPE_CHROMECAST
+from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_LOST
 
+from .constants import MASS_APP_ID
 from .helpers import send_hide_dashboard, send_show_dashboard
 from .player import ChromecastPlayer
 
 if TYPE_CHECKING:
+    import asyncio
     from collections.abc import Callable
 
+    from pychromecast.controllers.receiver import CastStatus
+    from pychromecast.controllers.receiver import CastStatusListener as ReceiverStatusListener
     from pychromecast.models import CastInfo
+    from pychromecast.socket_client import ConnectionStatus, ConnectionStatusListener
 
     from .provider import ChromecastProvider
 
 # Seconds to wait for an on-demand dashboard cast connection before giving up.
 DASHBOARD_CONNECT_TIMEOUT = 10.0
 
+# Seconds a lost connection is allowed to recover before we consider the dashboard gone.
+DASHBOARD_CONNECTION_LOSS_GRACE = 60.0
+
 # Dashboard types the chromecast receiver app has routes for.
 SUPPORTED_DASHBOARD_TYPES = {DashboardType.PARTY, DashboardType.NOW_PLAYING}
+
+
+@dataclass
+class _ActiveDashboardCast:
+    """Tracks a dashboard currently showing on a Cast device, to detect it dying externally."""
+
+    cast_session_id: str | None
+    loss_timer: asyncio.TimerHandle | None = None
 
 
 class ChromecastDashboards:
@@ -44,6 +62,9 @@ class ChromecastDashboards:
         self._unregister_callbacks: dict[str, Callable[[], None]] = {}
         # Cast connections opened on-demand for dashboard casting (not registered players)
         self._dashboard_connections: dict[str, pychromecast.Chromecast] = {}
+        self._active_casts: dict[str, _ActiveDashboardCast] = {}
+        # device_id -> id(chromecast) already carrying our status/connection listener
+        self._listened_ccs: dict[str, int] = {}
         self._unloaded = False
 
     def register(self, uuid: UUID, cast_info: CastInfo) -> None:
@@ -72,6 +93,9 @@ class ChromecastDashboards:
         if chromecast := self._dashboard_connections.pop(device_id, None):
             # non-blocking: close the socket, the daemon thread exits on its own
             chromecast.disconnect(0)
+        self._cancel_loss_timer(device_id)
+        self._active_casts.pop(device_id, None)
+        self._listened_ccs.pop(device_id, None)
 
     async def unload(self) -> None:
         """Unregister all dashboard endpoints and disconnect cached on-demand connections."""
@@ -79,6 +103,11 @@ class ChromecastDashboards:
         for unregister_callback in list(self._unregister_callbacks.values()):
             unregister_callback()
         self._unregister_callbacks.clear()
+
+        for device_id in list(self._active_casts):
+            self._cancel_loss_timer(device_id)
+        self._active_casts.clear()
+        self._listened_ccs.clear()
 
         dashboard_connections = list(self._dashboard_connections.values())
         self._dashboard_connections.clear()
@@ -127,12 +156,24 @@ class ChromecastDashboards:
                 translation_args=[chromecast.name],
             ) from err
 
+        self._cancel_loss_timer(device_id)
+        session_id = chromecast.status.session_id if chromecast.status else None
+        self._active_casts[device_id] = _ActiveDashboardCast(cast_session_id=session_id)
+        if self._listened_ccs.get(device_id) != id(chromecast):
+            listener = _DashboardCastListener(self, device_id)
+            chromecast.register_status_listener(cast("ReceiverStatusListener", listener))
+            chromecast.register_connection_listener(cast("ConnectionStatusListener", listener))
+            self._listened_ccs[device_id] = id(chromecast)
+
     async def _on_hide(self, device_id: str) -> None:
         """
         Hide a Music Assistant dashboard from a Cast display device.
 
         :param device_id: Cast device uuid (as string) to hide the dashboard from.
         """
+        self._cancel_loss_timer(device_id)
+        self._active_casts.pop(device_id, None)
+
         chromecast = self._get_existing_chromecast(device_id)
         if chromecast is None:
             # nothing connected to this device: it can't be showing a dashboard
@@ -193,3 +234,74 @@ class ChromecastDashboards:
             del self._dashboard_connections[device_id]
 
         return None
+
+    def _handle_cast_status(self, device_id: str, status: CastStatus) -> None:
+        """Detect the dashboard receiver app being replaced or restarted, on the event loop."""
+        entry = self._active_casts.get(device_id)
+        if entry is None:
+            return
+        if status.app_id != MASS_APP_ID or status.session_id != entry.cast_session_id:
+            reason = f"the receiver app was closed (active app: {status.display_name or status.app_id or 'none'})"
+            self._session_lost(device_id, reason)
+
+    def _handle_connection_status(self, device_id: str, status: ConnectionStatus) -> None:
+        """Arm/disarm the connection-loss grace timer, on the event loop."""
+        entry = self._active_casts.get(device_id)
+        if entry is None:
+            return
+        if status.status == CONNECTION_STATUS_LOST:
+            if entry.loss_timer is None:
+                entry.loss_timer = self.mass.loop.call_later(
+                    DASHBOARD_CONNECTION_LOSS_GRACE,
+                    self._session_lost,
+                    device_id,
+                    "connection to the device was lost",
+                )
+        elif status.status == CONNECTION_STATUS_CONNECTED:
+            # the receiver status that follows reconnection re-verifies the app itself
+            self._cancel_loss_timer(device_id)
+
+    def _session_lost(self, device_id: str, reason: str) -> None:
+        """Report a dashboard session as lost and drop the on-demand connection, if any."""
+        entry = self._active_casts.pop(device_id, None)
+        if entry is None:
+            return
+        if entry.loss_timer is not None:
+            entry.loss_timer.cancel()
+        self.mass.dashboard.end_session(f"chromecast_{device_id}", reason)
+
+        if chromecast := self._dashboard_connections.pop(device_id, None):
+            # non-blocking: close the socket, the daemon thread exits on its own
+            chromecast.disconnect(0)
+
+    def _cancel_loss_timer(self, device_id: str) -> None:
+        """Cancel the pending connection-loss timer for device_id, if any."""
+        entry = self._active_casts.get(device_id)
+        if entry is not None and entry.loss_timer is not None:
+            entry.loss_timer.cancel()
+            entry.loss_timer = None
+
+
+class _DashboardCastListener:
+    """Watches a Cast device to detect its dashboard receiver dying externally."""
+
+    def __init__(self, dashboards: ChromecastDashboards, device_id: str) -> None:
+        """Bind this listener to the dashboards owner and the Cast device it watches."""
+        self.dashboards = dashboards
+        self.device_id = device_id
+
+    def new_cast_status(self, status: CastStatus) -> None:
+        """Handle updated CastStatus (called from the pychromecast socket thread)."""
+        if self.dashboards.mass.closing:
+            return
+        self.dashboards.mass.loop.call_soon_threadsafe(
+            self.dashboards._handle_cast_status, self.device_id, status
+        )
+
+    def new_connection_status(self, status: ConnectionStatus) -> None:
+        """Handle updated ConnectionStatus (called from the pychromecast socket thread)."""
+        if self.dashboards.mass.closing:
+            return
+        self.dashboards.mass.loop.call_soon_threadsafe(
+            self.dashboards._handle_connection_status, self.device_id, status
+        )
