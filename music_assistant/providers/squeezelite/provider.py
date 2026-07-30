@@ -9,14 +9,21 @@ from aiohttp import web
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import SlimEvent
 from aioslimproto.server import SlimServer
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, MediaType
 from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.constants import CONF_PORT, CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
-from music_assistant.helpers.audio import get_player_filter_params
+from music_assistant.helpers.audio import get_mime_type
 from music_assistant.helpers.util import is_port_in_use
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import CONF_CLI_JSON_PORT, CONF_CLI_TELNET_PORT
+from .constants import (
+    CONF_CLI_JSON_PORT,
+    CONF_CLI_TELNET_PORT,
+    CONF_DISCOVERY,
+    DEFAULT_SLIMPROTO_PORT,
+)
 from .player import SqueezelitePlayer
 
 if TYPE_CHECKING:
@@ -27,6 +34,34 @@ class SqueezelitePlayerProvider(PlayerProvider):
     """Player provider for players using slimproto (like Squeezelite)."""
 
     slimproto: SlimServer | None = None
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to setup this provider."""
+        return (
+            ConfigEntry(
+                key=CONF_CLI_TELNET_PORT,
+                type=ConfigEntryType.INTEGER,
+                default_value=9090,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_CLI_JSON_PORT,
+                type=ConfigEntryType.INTEGER,
+                default_value=9000,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_DISCOVERY,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_PORT,
+                type=ConfigEntryType.INTEGER,
+                default_value=DEFAULT_SLIMPROTO_PORT,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -59,6 +94,36 @@ class SqueezelitePlayerProvider(PlayerProvider):
             # Ensure cleanup on any initialization failure
             await self._cleanup_server()
             raise SetupFailedError(f"Failed to start SlimProto server: {err}") from err
+
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        await super().loaded_in_mass()
+        assert self.slimproto is not None  # for type checker
+        self.slimproto.subscribe(self._handle_slimproto_event)
+        self.mass.streams.register_dynamic_route(
+            "/slimproto/multi", self._serve_multi_client_stream
+        )
+        # it seems that WiiM devices do not use the json rpc port that is broadcasted
+        # in the discovery info but instead they just assume that the jsonrpc endpoint
+        # lives on the same server as stream URL. So we need to provide a jsonrpc.js
+        # endpoint that just redirects to the jsonrpc handler within the slimproto package.
+        self.mass.streams.register_dynamic_route(
+            "/jsonrpc.js", self.slimproto.cli._handle_jsonrpc_client
+        )
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Handle unload/close of the provider."""
+        # Ensure complete cleanup
+        await self._cleanup_server()
+        self.mass.streams.unregister_dynamic_route("/slimproto/multi")
+        self.mass.streams.unregister_dynamic_route("/jsonrpc.js")
+
+    def get_corrected_elapsed_milliseconds(self, slimplayer: SlimClient) -> int:
+        """Return corrected elapsed milliseconds for a slimplayer."""
+        sync_delay = self.mass.config.get_raw_player_config_value(
+            slimplayer.player_id, CONF_SYNC_ADJUST, 0
+        )
+        return int(slimplayer.elapsed_milliseconds - sync_delay)
 
     async def _validate_all_ports(
         self, control_port: int, telnet_port: int | None, json_port: int | None
@@ -96,36 +161,6 @@ class SqueezelitePlayerProvider(PlayerProvider):
             finally:
                 self.slimproto = None
 
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
-        await super().loaded_in_mass()
-        assert self.slimproto is not None  # for type checker
-        self.slimproto.subscribe(self._handle_slimproto_event)
-        self.mass.streams.register_dynamic_route(
-            "/slimproto/multi", self._serve_multi_client_stream
-        )
-        # it seems that WiiM devices do not use the json rpc port that is broadcasted
-        # in the discovery info but instead they just assume that the jsonrpc endpoint
-        # lives on the same server as stream URL. So we need to provide a jsonrpc.js
-        # endpoint that just redirects to the jsonrpc handler within the slimproto package.
-        self.mass.streams.register_dynamic_route(
-            "/jsonrpc.js", self.slimproto.cli._handle_jsonrpc_client
-        )
-
-    async def unload(self, is_removed: bool = False) -> None:
-        """Handle unload/close of the provider."""
-        # Ensure complete cleanup
-        await self._cleanup_server()
-        self.mass.streams.unregister_dynamic_route("/slimproto/multi")
-        self.mass.streams.unregister_dynamic_route("/jsonrpc.js")
-
-    def get_corrected_elapsed_milliseconds(self, slimplayer: SlimClient) -> int:
-        """Return corrected elapsed milliseconds for a slimplayer."""
-        sync_delay = self.mass.config.get_raw_player_config_value(
-            slimplayer.player_id, CONF_SYNC_ADJUST, 0
-        )
-        return int(slimplayer.elapsed_milliseconds - sync_delay)
-
     def _handle_slimproto_event(
         self,
         event: SlimEvent,
@@ -144,7 +179,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
             self.mass.create_task(player.setup())
             return
 
-        if not (mass_player := self.mass.players.get(event.player_id)):
+        if not (mass_player := self.mass.players.get_player(event.player_id)):
             return  # guard for unknown player
         player = cast("SqueezelitePlayer", mass_player)
 
@@ -169,11 +204,11 @@ class SqueezelitePlayerProvider(PlayerProvider):
         if not child_player_id:
             raise web.HTTPNotFound(reason="Missing child_player_id parameter")
 
-        if not (sync_parent := self.mass.players.get(player_id)):
+        if not (sync_parent := self.mass.players.get_player(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown player: {player_id}")
         sync_parent = cast("SqueezelitePlayer", sync_parent)
 
-        if not (child_player := self.mass.players.get(child_player_id)):
+        if not (child_player := self.mass.players.get_player(child_player_id)):
             raise web.HTTPNotFound(reason=f"Unknown player: {child_player_id}")
 
         if not (stream := sync_parent.multi_client_stream) or stream.done:
@@ -183,7 +218,7 @@ class SqueezelitePlayerProvider(PlayerProvider):
             status=200,
             reason="OK",
             headers={
-                "Content-Type": f"audio/{fmt}",
+                "Content-Type": get_mime_type(fmt),
             },
         )
         await resp.prepare(request)
@@ -198,24 +233,28 @@ class SqueezelitePlayerProvider(PlayerProvider):
             child_player.display_name,
         )
 
-        output_format = await self.mass.streams.get_output_format(
+        output_format = await self.mass.streams.audio.get_output_format(
             output_format_str=fmt,
             player=child_player,
             content_sample_rate=stream.audio_format.sample_rate,  # Flow PCM sample rate
             content_bit_depth=stream.audio_format.bit_depth,  # Flow PCM bit depth (32)
+            media_type=MediaType.FLOW_STREAM,
+        )
+        output_plan = self.mass.streams.audio.get_player_output_plan(
+            child_player_id,
+            stream.audio_format,
+            output_format,
+            queue_id=stream.queue_id,
+            session_id=stream.session_id,
         )
 
         async for chunk in stream.get_stream(
             output_format=output_format,
-            filter_params=get_player_filter_params(
-                self.mass, child_player_id, stream.audio_format, output_format
-            )
-            if child_player_id
-            else None,
+            filter_params=output_plan.filter_params,
         ):
             try:
                 await resp.write(chunk)
-            except (BrokenPipeError, ConnectionResetError, ConnectionError):
+            except BrokenPipeError, ConnectionResetError, ConnectionError:
                 # race condition
                 break
         return resp

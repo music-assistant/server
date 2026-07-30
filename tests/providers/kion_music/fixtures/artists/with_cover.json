@@ -1,0 +1,8 @@
+{
+  "id": 200,
+  "name": "Artist With Cover",
+  "cover": {
+    "type": "from-og-image",
+    "uri": "avatars.yandex.net/get-music-content/xxx/yyy/%%"
+  }
+}

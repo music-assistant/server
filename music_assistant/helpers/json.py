@@ -15,6 +15,10 @@ JSON_DECODE_EXCEPTIONS = (orjson.JSONDecodeError,)
 
 DO_NOT_SERIALIZE_TYPES = (MethodType, asyncio.Task)
 
+# Type alias for plain, JSON-serializable data.
+# Note: tuples are accepted but will be returned as lists after a JSON round-trip.
+SerializableType = str | int | float | bool | None | list[Any] | tuple[Any, ...] | dict[str, Any]
+
 
 def get_serializable_value(obj: Any, raise_unhandled: bool = False) -> Any:
     """Parse the value to its serializable equivalent."""
@@ -81,3 +85,20 @@ async def load_json_file[TargetT: DataClassORJSONMixin](
     async with aiofiles.open(path) as _file:
         content = await _file.read()
         return target_class.from_json(content)
+
+
+async def load_json_dict(path: str) -> dict[str, Any]:
+    """
+    Load a plain JSON object from file as a dict.
+
+    For JSON files that are not backed by a dataclass (e.g. translation strings files).
+
+    :param path: Absolute path to the JSON file.
+    """
+    async with aiofiles.open(path, "rb") as _file:
+        content = await _file.read()
+    data = orjson.loads(content)
+    if not isinstance(data, dict):
+        msg = f"Expected a JSON object in {path}, got {type(data).__name__}"
+        raise TypeError(msg)
+    return data

@@ -1,0 +1,37 @@
+"""Small shared helpers for OAuth setup flows that use the MA hosted callback bounce."""
+
+from __future__ import annotations
+
+from music_assistant.models.setup_flow import SetupFlowError
+
+# Fixed https redirect URI that OAuth providers which only allow pre-registered
+# redirect URIs (Spotify, Google, Microsoft, ...) have on file. The page hosted
+# there forwards the browser to the local (session specific) callback URL that we
+# smuggle along in the OAuth `state` parameter.
+HOSTED_CALLBACK_URL = "https://music-assistant.io/callback"
+
+
+def hosted_bounce_redirect(callback_url: str) -> tuple[str, str]:
+    """
+    Return the (redirect_uri, state) pair for a hosted-bounce OAuth authorize URL.
+
+    The redirect_uri is the fixed MA callback page the provider has pre-registered;
+    it forwards the browser to the flow's local callback URL, carried in `state`.
+
+    :param callback_url: The setup session's local callback URL (session.callback_url).
+    """
+    return HOSTED_CALLBACK_URL, callback_url
+
+
+def authorization_code_from_params(params: dict[str, str]) -> str:
+    """
+    Return the authorization code from OAuth callback params, or raise SetupFlowError.
+
+    :param params: The merged callback query/body params returned by session.external().
+    """
+    code = params.get("code")
+    # the hosted relay page forwards a literal "null" code when consent was denied
+    if not code or code == "null":
+        error = params.get("error") or "no authorization code returned"
+        raise SetupFlowError(f"Authorization failed: {error}")
+    return code

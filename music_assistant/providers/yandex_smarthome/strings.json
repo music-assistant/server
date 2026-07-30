@@ -1,0 +1,102 @@
+{
+  "config_entries": {
+    "instance_name": {
+      "label": "Instance Name",
+      "description": "Display name for this MA instance in Yandex Smart Home. Alice will use this name for voice commands like \"Алиса, поставь паузу на [имя]\"."
+    },
+    "connection_type": {
+      "label": "Connection Type",
+      "description": "\"cloud\" — public Yaha Cloud skill (simple setup). \"cloud_plus\" — private skill via cloud relay (for multi-platform setups). \"direct\" — Yandex calls your MA server directly (requires public HTTPS URL).",
+      "options": {
+        "cloud": "Cloud (public Yaha Cloud skill)",
+        "cloud_plus": "Cloud Plus (private skill)",
+        "direct": "Direct (no relay, requires public URL)"
+      }
+    },
+    "ym_instance": {
+      "label": "Yandex account source",
+      "description": "Borrow the Yandex account of a configured Yandex Music provider for skill auto-create (single sign-in, no Device Flow popup) or use this provider's own sign-in. When borrowing, nothing is stored or rotated by this provider."
+    },
+    "external_base_url": {
+      "label": "External Base URL (HTTPS)",
+      "description": "Public HTTPS URL of this MA instance (e.g. https://ma.example.com), used for Yandex callbacks and webhooks. Set this if you reach MA via Home Assistant Ingress and don't want to change MA's global Base URL. Leave empty to use MA's Base URL."
+    },
+    "skill_method": {
+      "label": "Skill setup method",
+      "description": "Provision the private Yandex Dialogs skill automatically, or paste the ID of a skill you created yourself.",
+      "options": {
+        "auto": "Create the skill for me (recommended)",
+        "manual": "I already have a skill — let me paste its ID"
+      }
+    },
+    "skill_id": {
+      "label": "Skill ID",
+      "description": "UUID from the dev console URL (https://dialogs.yandex.ru/developer/skills/<this>) of a skill you created yourself."
+    },
+    "skill_token": {
+      "label": "Skill OAuth token",
+      "description": "Click the link icon next to this field to open the Yandex OAuth page; approve access for 'Yandex.Dialogs', then copy the access_token value from the resulting URL fragment (after #access_token=) and paste it here. The token is used to push state callbacks back to Yandex when MA players change state."
+    },
+    "exposed_players": {
+      "label": "Exposed Players",
+      "description": "Select which MA players to expose to Yandex Smart Home. Leave empty to expose all players."
+    },
+    "exposed_playlists": {
+      "label": "Exposed Playlists (max 10)",
+      "description": "Pick up to 10 playlists from your MA library — they fill the input_source mode slots after each player's native sources. Alice triggers slots by ordinal only (\"switch source to five\"); remember the order you picked. If the list is empty, save the form and reopen it once your music providers have finished loading their library."
+    },
+    "label_otp_confirm": {
+      "label": "Enter this one-time code in the Yandex app: {0}"
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Choose how to connect",
+      "description": "Select a connection mode and the Yandex account to use. Cloud is the simplest; Cloud Plus and Direct set up a private skill."
+    },
+    "registering": {
+      "progress_text": "Registering a cloud relay for this instance..."
+    },
+    "skill_method": {
+      "title": "How should the skill be set up?",
+      "description": "Create the Yandex Dialogs skill automatically, or use the ID of a skill you already created."
+    },
+    "skill_id": {
+      "title": "Enter your skill ID",
+      "description": "Paste the ID of the Yandex Dialogs skill you created."
+    },
+    "creating_skill": {
+      "progress_text": "Creating the Yandex Dialogs skill..."
+    },
+    "device_login": {
+      "title": "Sign in to Yandex",
+      "description": "Open the verification URL and enter the code shown to sign in with Yandex.",
+      "progress_text": "Waiting for you to enter the code and confirm in the Yandex app..."
+    },
+    "skill_token": {
+      "title": "Enter the skill OAuth token",
+      "description": "Paste the OAuth token for your Yandex Dialogs skill. Use the link next to the field to obtain it."
+    },
+    "fetching_otp": {
+      "progress_text": "Fetching the one-time linking code..."
+    },
+    "cloud_otp": {
+      "progress_text": "Enter this one-time code in the Yandex app to link your account."
+    },
+    "cloud_confirm": {
+      "title": "Confirm in the Yandex app",
+      "description": "Enter the one-time code shown in the Yandex app, then continue once your account is linked."
+    },
+    "abort": {
+      "device_login_denied": "Sign-in was denied in the Yandex app."
+    }
+  },
+  "errors": {
+    "direct_requires_https": "Direct mode needs Music Assistant to be reachable over HTTPS. Set an external HTTPS URL and try again.",
+    "skill_token_required": "Enter the skill's OAuth token to continue.",
+    "no_borrowed_token": "The linked Yandex Music account has no session token. Authenticate the Yandex Music provider (with Remember session enabled) and retry."
+  },
+  "manifest": {
+    "description": "Expose Music Assistant players to Yandex Alice via Yandex Smart Home API."
+  }
+}

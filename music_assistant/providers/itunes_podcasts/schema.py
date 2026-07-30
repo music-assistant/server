@@ -1,4 +1,5 @@
-"""Schema for iTunes Podcast Search.
+"""
+Schema for iTunes Podcast Search.
 
 Only what is needed.
 """
@@ -104,7 +105,8 @@ class TopPodcastsResponse(_BaseModel):
 # HELPER
 @dataclass(kw_only=True)
 class TopPodcastsHelper(_BaseModel):
-    """TopPodcastsHelper.
+    """
+    TopPodcastsHelper.
 
     This is used to cache the recommendations.
     """

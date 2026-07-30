@@ -1,0 +1,16 @@
+{
+  "type": "player",
+  "domain": "yandex_station",
+  "name": "Yandex Station",
+  "description": "Play music on Yandex Station smart speakers via local Glagol protocol.",
+  "codeowners": ["@trudenboy"],
+  "credits": [
+    "[AlexxIT/YandexStation](https://github.com/AlexxIT/YandexStation)"
+  ],
+  "requirements": ["ya-passport-auth[ma]==1.7.0", "segno==1.6.6"],
+  "documentation": "https://www.music-assistant.io/player-support/yandex-station/",
+  "stage": "beta",
+  "multi_instance": false,
+  "builtin": false,
+  "mdns_discovery": ["_yandexio._tcp.local."]
+}

@@ -27,7 +27,8 @@ class NicovideoConverterHelper(NicovideoConverterBase):
         mylist_count: int | None = None,
         like_count: int | None = None,
     ) -> int:
-        """Calculate popularity score using standard formula.
+        """
+        Calculate popularity score using standard formula.
 
         Returns:
             Popularity score (0-100).

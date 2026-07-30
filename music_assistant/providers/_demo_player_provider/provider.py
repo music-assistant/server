@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, cast
 
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
 from zeroconf import ServiceStateChange
 
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf
@@ -33,6 +35,26 @@ class DemoPlayerprovider(PlayerProvider):
     implement the abc methods with your actual implementation.
     """
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """
+        Return the (options) config entries for this (existing) provider instance.
+
+        Return an empty tuple when the provider has no options. Interactive setup input
+        (if any) is collected by a ``setup_flow.py`` module; one-shot buttons are declared
+        here as ``ConfigEntryType.ACTION`` entries and handled in ``handle_config_action``.
+        """
+        return (
+            # example of a ConfigEntry for the number of players to create
+            ConfigEntry(
+                key=CONF_NUMBER_OF_PLAYERS,
+                type=ConfigEntryType.INTEGER,
+                label="Number of Players",
+                required=True,
+                default_value=2,
+                description="Number of demo players to create.",
+            ),
+        )
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         # OPTIONAL
@@ -49,10 +71,7 @@ class DemoPlayerprovider(PlayerProvider):
         # this is an optional method that you can implement if
         # relevant or leave out completely if not needed.
         # it will be called after the provider has been fully loaded into Music Assistant.
-        # you can use this for instance to trigger custom (non-mdns) discovery of players
-        # or any other logic that needs to run after the provider is fully loaded.
         self.logger.info("DemoPlayerProvider loaded")
-        await self.discover_players()
 
     async def unload(self, is_removed: bool = False) -> None:
         """
@@ -77,6 +96,7 @@ class DemoPlayerprovider(PlayerProvider):
         # OPTIONAL
         # this is an optional method that you can implement if
         # you want to do something special when a player is enabled.
+        super().on_player_enabled(player_id)
 
     def on_player_disabled(self, player_id: str) -> None:
         """Call (by config manager) when a player gets disabled."""
@@ -84,6 +104,7 @@ class DemoPlayerprovider(PlayerProvider):
         # this is an optional method that you can implement if
         # you want to do something special when a player is disabled.
         # e.g. you can stop polling the player or disconnect from it.
+        super().on_player_disabled(player_id)
 
     async def remove_player(self, player_id: str) -> None:
         """Remove a player from this provider."""
@@ -118,7 +139,7 @@ class DemoPlayerprovider(PlayerProvider):
         # handle removed player
         if state_change == ServiceStateChange.Removed:
             # check if the player manager has an existing entry for this player
-            if mass_player := self.mass.players.get(player_id):
+            if mass_player := self.mass.players.get_player(player_id):
                 # the player has become unavailable
                 self.logger.debug("Player offline: %s", mass_player.display_name)
                 await self.mass.players.unregister(player_id)
@@ -128,7 +149,7 @@ class DemoPlayerprovider(PlayerProvider):
         # check if we have an existing player in the player manager
         # note that you can use this point to update the player connection info
         # if that changed (e.g. ip address)
-        if mass_player := self.mass.players.get(player_id):
+        if mass_player := self.mass.players.get_player(player_id):
             # existing player found in the player manager,
             # this is an existing player that has been updated/reconnected
             # or simply a re-announcement on mdns.

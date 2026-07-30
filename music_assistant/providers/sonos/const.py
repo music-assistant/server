@@ -31,8 +31,6 @@ SOURCE_UNKNOWN = "unknown"
 SOURCE_TV = "tv"
 SOURCE_RADIO = "radio"
 
-CONF_AIRPLAY_MODE = "airplay_mode"
-
 PLAYER_SOURCE_MAP = {
     SOURCE_LINE_IN: PlayerSource(
         id=SOURCE_LINE_IN,
@@ -76,4 +74,10 @@ PLAYER_SOURCE_MAP = {
     ),
 }
 
-UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS = ("Play:1",)
+UNSUPPORTED_MODELS_NATIVE_ANNOUNCEMENTS = ("Play:1", "Play:3")
+NON_HIRES_MODELS = (
+    "Play:1",
+    "Play:3",
+    "Connect",
+    "Connect:Amp",
+)

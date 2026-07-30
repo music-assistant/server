@@ -1,0 +1,1 @@
+"""QQ Music provider tests."""

@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   width="200mm"
+   height="200mm"
+   enable-background="new"
+   version="1.1"
+   viewBox="0 0 200 200"
+   id="svg8"
+   sodipodi:docname="EmbyLogo_Outset_15_mono.svg"
+   inkscape:version="1.2.2 (732a01da63, 2022-12-09)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <defs
+     id="defs12" />
+  <sodipodi:namedview
+     id="namedview10"
+     pagecolor="#ffffff"
+     bordercolor="#999999"
+     borderopacity="1"
+     inkscape:showpageshadow="0"
+     inkscape:pageopacity="0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:document-units="mm"
+     showgrid="false"
+     inkscape:zoom="0.44152926"
+     inkscape:cx="387.2903"
+     inkscape:cy="382.76059"
+     inkscape:window-width="1920"
+     inkscape:window-height="1129"
+     inkscape:window-x="1592"
+     inkscape:window-y="-8"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg8" />
+  <g
+     transform="translate(0,-97)"
+     id="g4">
+    <path
+       id="path2"
+       d="M 89.710803 97.547253 L 38.270015 148.99011 L 48.55776 159.27785 L 0.54518636 207.29094 L 51.987008 258.73276 L 62.274752 248.44502 L 110.28681 296.45708 L 165.15891 241.58497 L 154.87117 231.29723 L 199.45398 186.7139 L 148.01215 135.27208 L 137.72389 145.55983 L 89.710803 97.547253 z M 76.999951 158.99777 L 142.7241 196.4978 L 109.86203 215.24808 L 76.999951 233.99784 L 76.999951 196.4978 L 76.999951 158.99777 z " />
+  </g>
+</svg>

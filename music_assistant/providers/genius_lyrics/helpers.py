@@ -1,8 +1,10 @@
 """Helpers for the Genius Lyrics provider."""
 
 import re
+from typing import TYPE_CHECKING
 
-from lyricsgenius.types import Song
+if TYPE_CHECKING:
+    from lyricsgenius.types import Song
 
 
 def clean_song_title(song_title: str) -> str:

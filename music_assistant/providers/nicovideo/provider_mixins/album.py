@@ -33,7 +33,7 @@ class NicovideoMusicProviderAlbumMixin(NicovideoMusicProviderMixinBase):
         return album_with_tracks.album
 
     @override
-    @use_cache(3600 * 24 * 7)  # Cache for 7 days
+    @use_cache(3600 * 24 * 7, allow_expired_cache=True)  # Cache for 7 days
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id (series tracks)."""
         album_with_tracks = await self.service_manager.series.get_series_or_own_series(

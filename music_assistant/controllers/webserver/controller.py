@@ -10,29 +10,36 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import html
+import inspect
 import os
 import urllib.parse
 from collections.abc import Awaitable, Callable
 from concurrent import futures
+from contextlib import aclosing
 from functools import partial
 from typing import TYPE_CHECKING, Any, Final, cast
-from urllib.parse import quote
 
 import aiofiles
-from aiohttp import ClientTimeout, web
+from aiohttp import web
 from mashumaro.exceptions import MissingField
 from music_assistant_frontend import where as locate_frontend
 from music_assistant_models.api import CommandMessage
 from music_assistant_models.auth import UserRole
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
+from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
+from music_assistant_models.translations import TRANSLATION_RESOLVER
 
 from music_assistant.constants import (
     CONF_AUTH_ALLOW_SELF_REGISTRATION,
     CONF_BIND_IP,
     CONF_BIND_PORT,
+    CONF_VALUE_AUTO,
+    INGRESS_SERVER_PORT,
     RESOURCES_DIR,
     VERBOSE_LOG_LEVEL,
+    WILDCARD_BIND_IPS,
 )
 from music_assistant.controllers.webserver.helpers.ssl import (
     create_server_ssl_context,
@@ -40,10 +47,12 @@ from music_assistant.controllers.webserver.helpers.ssl import (
     verify_ssl_certificate,
 )
 from music_assistant.helpers.api import parse_arguments
-from music_assistant.helpers.audio import get_preview_stream
 from music_assistant.helpers.json import json_dumps, json_loads
-from music_assistant.helpers.redirect_validation import is_allowed_redirect_url
-from music_assistant.helpers.util import get_ip_addresses
+from music_assistant.helpers.redirect_validation import (
+    build_code_redirect_url,
+    is_allowed_redirect_url,
+)
+from music_assistant.helpers.util import format_ip_for_url, get_ip_addresses
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 
@@ -51,8 +60,12 @@ from .api_docs import generate_commands_json, generate_openapi_spec, generate_sc
 from .auth import AuthenticationManager
 from .helpers.auth_middleware import (
     get_authenticated_user,
+    has_scope,
     is_request_from_ingress,
+    resolve_command_impersonation,
+    set_current_token,
     set_current_user,
+    set_impersonated_user,
 )
 from .helpers.auth_providers import BuiltinLoginProvider, get_ha_user_role
 from .remote_access import RemoteAccessManager
@@ -60,12 +73,12 @@ from .sendspin_proxy import SendspinProxyHandler
 from .websocket_client import WebsocketClientHandler
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, CoreConfig
+    from music_assistant_models.config_entries import CoreConfig
 
     from music_assistant import MusicAssistant
+    from music_assistant.helpers.api import APICommandHandler
 
 DEFAULT_SERVER_PORT = 8095
-INGRESS_SERVER_PORT = 8094
 CONF_BASE_URL = "base_url"
 CONF_ENABLE_SSL = "enable_ssl"
 CONF_SSL_CERTIFICATE = "ssl_certificate"
@@ -73,6 +86,45 @@ CONF_SSL_PRIVATE_KEY = "ssl_private_key"
 CONF_ACTION_VERIFY_SSL = "verify_ssl"
 MAX_PENDING_MSG = 512
 CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
+
+
+def _get_publish_addresses(
+    bind_ip: str | None, publish_ip: str, all_ip_addresses: tuple[str, ...]
+) -> list[str]:
+    """
+    Return the IP addresses the webserver should publish/advertise.
+
+    :param bind_ip: The configured bind IP (None or a wildcard means all interfaces).
+    :param publish_ip: The resolved primary publish IP.
+    :param all_ip_addresses: All detected host IP addresses, in ranked order.
+    """
+    addresses = [publish_ip]
+    if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
+        return addresses
+    # bound to all interfaces: also publish the primary address of the other
+    # IP family (if any) so both IPv4-only and IPv6-only clients can connect
+    publish_is_ipv6 = ":" in publish_ip
+    for ip in all_ip_addresses:
+        if (":" in ip) != publish_is_ipv6:
+            addresses.append(ip)
+            break
+    return addresses
+
+
+def _locale_from_request(request: web.Request) -> str | None:
+    """
+    Determine the UI locale for an HTTP request from the standard ``Accept-Language`` header.
+
+    Returns None when the header is absent, so the server falls back to the English source.
+
+    :param request: The aiohttp request.
+    """
+    header = request.headers.get("Accept-Language")
+    if not header:
+        return None
+    # take the first/highest-priority tag, dropping any quality factor ("nl-NL,nl;q=0.9" -> "nl-NL")
+    locale = header.split(",", 1)[0].split(";", 1)[0].strip()
+    return locale or None
 
 
 class WebserverController(CoreController):
@@ -87,6 +139,10 @@ class WebserverController(CoreController):
         self.register_dynamic_route = self._server.register_dynamic_route
         self.unregister_dynamic_route = self._server.unregister_dynamic_route
         self.clients: set[WebsocketClientHandler] = set()
+        # the URL that the "auto" base_url setting resolves to, detected at setup
+        self._auto_base_url: str = ""
+        self.bind_ip: str | None = None
+        self.publish_addresses: list[str] = []
         self.manifest.name = "Web Server (frontend and api)"
         self.manifest.description = (
             "The built-in webserver that hosts the Music Assistant Websockets API and frontend"
@@ -98,137 +154,30 @@ class WebserverController(CoreController):
 
     @property
     def base_url(self) -> str:
-        """Return the base_url for the streamserver."""
-        return self._server.base_url
+        """Return the base_url for the webserver."""
+        config = getattr(self, "config", None)
+        if config is None:
+            return ""
+        base_url = str(config.get_value(CONF_BASE_URL) or CONF_VALUE_AUTO)
+        if base_url == CONF_VALUE_AUTO:
+            return self._auto_base_url
+        return base_url.removesuffix("/")
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        ip_addresses = await get_ip_addresses()
-        default_publish_ip = ip_addresses[0]
+        return await self._build_config_entries()
 
-        # Handle verify SSL action
-        ssl_verify_result = ""
-        if action == CONF_ACTION_VERIFY_SSL and values:
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+        """Handle a one-shot action button press and re-render the config entries."""
+        if action == CONF_ACTION_VERIFY_SSL:
+            # the certificate/key are read from the stored config, so they must be saved
+            # before verifying - the action no longer receives the (unsaved) form values
             cert_info = await verify_ssl_certificate(
-                str(values.get(CONF_SSL_CERTIFICATE, "")),
-                str(values.get(CONF_SSL_PRIVATE_KEY, "")),
+                str(self.get_config_value(CONF_SSL_CERTIFICATE, "")),
+                str(self.get_config_value(CONF_SSL_PRIVATE_KEY, "")),
             )
-            ssl_verify_result = format_certificate_info(cert_info)
-
-        # Determine if SSL is enabled from values
-        ssl_enabled = values.get(CONF_ENABLE_SSL, False) if values else False
-        protocol = "https" if ssl_enabled else "http"
-        default_base_url = f"{protocol}://{default_publish_ip}:{DEFAULT_SERVER_PORT}"
-        return (
-            ConfigEntry(
-                key=CONF_AUTH_ALLOW_SELF_REGISTRATION,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=True,
-                label="Allow User Self-Registration",
-                description="Allow users to create accounts via Home Assistant OAuth.",
-                hidden=not any(provider.domain == "hass" for provider in self.mass.providers),
-            ),
-            ConfigEntry(
-                key=CONF_BASE_URL,
-                type=ConfigEntryType.STRING,
-                default_value=default_base_url,
-                label="Base URL",
-                description="The (base) URL to reach this webserver in the network. \n"
-                "Override this in advanced scenarios where for example you're running "
-                "the webserver behind a reverse proxy.",
-            ),
-            ConfigEntry(
-                key=CONF_BIND_PORT,
-                type=ConfigEntryType.INTEGER,
-                default_value=DEFAULT_SERVER_PORT,
-                label="TCP Port",
-                description="The TCP port to run the webserver.",
-            ),
-            ConfigEntry(
-                key="webserver_warn",
-                type=ConfigEntryType.ALERT,
-                label="Please note that the webserver is by default unencrypted. "
-                "Never ever expose the webserver directly to the internet! \n\n"
-                "Enable SSL below or use a reverse proxy or VPN to secure access. \n\n"
-                "As an alternative, consider using the Remote Access feature which "
-                "secures access to your Music Assistant instance without the need to "
-                "expose your webserver directly.",
-                required=False,
-                depends_on=CONF_ENABLE_SSL,
-                depends_on_value=False,
-                hidden=bool(values.get(CONF_ENABLE_SSL, False)) if values else False,
-            ),
-            ConfigEntry(
-                key=CONF_ENABLE_SSL,
-                type=ConfigEntryType.BOOLEAN,
-                default_value=False,
-                label="Enable SSL/TLS",
-                description="Enable HTTPS by providing an SSL certificate and private key. \n"
-                "This encrypts all communication with the webserver.",
-            ),
-            ConfigEntry(
-                key=CONF_SSL_CERTIFICATE,
-                type=ConfigEntryType.STRING,
-                label="SSL Certificate",
-                description="Provide your SSL certificate in PEM format. You can either:\n"
-                "- Paste the full contents of your certificate file, or\n"
-                "- Enter an absolute file path (e.g., /ssl/fullchain.pem)\n\n"
-                "This should include the full certificate chain if applicable.\n"
-                "Both RSA and ECDSA certificates are supported.",
-                required=False,
-                depends_on=CONF_ENABLE_SSL,
-            ),
-            ConfigEntry(
-                key=CONF_SSL_PRIVATE_KEY,
-                type=ConfigEntryType.SECURE_STRING,
-                label="SSL Private Key",
-                description="Provide your SSL private key in PEM format. You can either:\n"
-                "- Paste the full contents of your private key file, or\n"
-                "- Enter an absolute file path (e.g., /ssl/privkey.pem)\n\n"
-                "Both RSA and ECDSA keys are supported. The key must be unencrypted.\n"
-                "This is securely encrypted and stored.",
-                required=False,
-                depends_on=CONF_ENABLE_SSL,
-            ),
-            ConfigEntry(
-                key=CONF_ACTION_VERIFY_SSL,
-                type=ConfigEntryType.ACTION,
-                label="Verify SSL Certificate",
-                description="Test your certificate and private key to verify they are valid "
-                "and match each other.",
-                action=CONF_ACTION_VERIFY_SSL,
-                action_label="Verify",
-                depends_on=CONF_ENABLE_SSL,
-                required=False,
-            ),
-            ConfigEntry(
-                key="ssl_verify_result",
-                type=ConfigEntryType.LABEL,
-                label=ssl_verify_result,
-                hidden=not ssl_verify_result,
-                depends_on=CONF_ENABLE_SSL,
-                required=False,
-            ),
-            ConfigEntry(
-                key=CONF_BIND_IP,
-                type=ConfigEntryType.STRING,
-                default_value="0.0.0.0",
-                options=[ConfigValueOption(x, x) for x in {"0.0.0.0", *ip_addresses}],
-                label="Bind to IP/interface",
-                description="Bind the (web)server to this specific interface. \n"
-                "Use 0.0.0.0 to bind to all interfaces. \n"
-                "Set this address for example to a docker-internal network, "
-                "when you are running a reverse proxy to enhance security and "
-                "protect outside access to the webinterface and API. \n\n"
-                "This is an advanced setting that should normally "
-                "not be adjusted in regular setups.",
-                category="advanced",
-            ),
-        )
+            return await self._build_config_entries(format_certificate_info(cert_info))
+        return await super().handle_config_action(action)
 
     async def setup(self, config: CoreConfig) -> None:  # noqa: PLR0915
         """Async initialize of module."""
@@ -246,6 +195,7 @@ class WebserverController(CoreController):
         # add index (with onboarding check)
         self._index_path = os.path.join(frontend_dir, "index.html")
         routes.append(("GET", "/", self._handle_index))
+        routes.append(("HEAD", "/", self._handle_index))
         # add logo
         logo_path = str(RESOURCES_DIR.joinpath("logo.png"))
         handler = partial(self._server.serve_static, logo_path)
@@ -259,8 +209,8 @@ class WebserverController(CoreController):
         routes.append(("OPTIONS", "/info", self._handle_cors_preflight))
         # add websocket api
         routes.append(("GET", "/ws", self._handle_ws_client))
-        # also host the image proxy on the webserver
-        routes.append(("GET", "/imageproxy", self.mass.metadata.handle_imageproxy))
+        # the canonical /imageproxy/<image_id> form is registered as a dynamic
+        # route on the webserver by MetaDataController.post_setup()
         # also host the audio preview service
         routes.append(("GET", "/preview", self.serve_preview_stream))
         # add jsonrpc api
@@ -294,7 +244,7 @@ class WebserverController(CoreController):
         routes.append(("GET", "/sendspin", self._sendspin_proxy.handle_sendspin_proxy))
         await self.auth.setup()
         # start the webserver
-        all_ip_addresses = await get_ip_addresses()
+        all_ip_addresses = await get_ip_addresses(include_ipv6=True)
         default_publish_ip = all_ip_addresses[0]
         if self.mass.running_as_hass_addon:
             # if we're running on the HA supervisor we start an additional TCP site
@@ -305,12 +255,23 @@ class WebserverController(CoreController):
             ingress_tcp_site_params = (ingress_host, INGRESS_SERVER_PORT)
         else:
             ingress_tcp_site_params = None
-        base_url = str(config.get_value(CONF_BASE_URL))
         port_value = config.get_value(CONF_BIND_PORT)
         assert isinstance(port_value, int)
         self.publish_port = port_value
-        self.publish_ip = default_publish_ip
         bind_ip = cast("str | None", config.get_value(CONF_BIND_IP))
+        self.bind_ip = bind_ip
+        if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
+            self.publish_ip = bind_ip
+        else:
+            self.publish_ip = default_publish_ip
+        self.publish_addresses = _get_publish_addresses(bind_ip, self.publish_ip, all_ip_addresses)
+        ssl_enabled = config.get_value(CONF_ENABLE_SSL, False)
+        # resolve the URL that the "auto" base_url default (or an unset value) translates to
+        protocol = "https" if ssl_enabled else "http"
+        self._auto_base_url = (
+            f"{protocol}://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
+        )
+        base_url = self.base_url
         # print a big fat message in the log where the webserver is running
         # because this is a common source of issues for people with more complex setups
         if not self.auth.has_users:
@@ -335,7 +296,7 @@ class WebserverController(CoreController):
                 "Webserver available on: %s\n"
                 "\n"
                 "If this address is incorrect, see the documentation on how to configure\n"
-                "the Webserver in Settings --> Core modules --> Webserver\n"
+                "the Webserver in Settings --> System --> Webserver\n"
                 "\n"
                 "################################################################################\n",
                 base_url,
@@ -343,7 +304,6 @@ class WebserverController(CoreController):
 
         # Create SSL context if SSL is enabled
         ssl_context = None
-        ssl_enabled = config.get_value(CONF_ENABLE_SSL, False)
         if ssl_enabled:
             ssl_context = await create_server_ssl_context(
                 str(config.get_value(CONF_SSL_CERTIFICATE) or ""),
@@ -363,9 +323,6 @@ class WebserverController(CoreController):
             app_state={"mass": self.mass},
             ssl_context=ssl_context,
         )
-        if self.mass.running_as_hass_addon:
-            # (re)announce to HA supervisor to make sure that HA picks it up
-            await self._announce_to_homeassistant()
 
         # Setup remote access after webserver is running
         await self.remote_access.setup()
@@ -413,15 +370,143 @@ class WebserverController(CoreController):
                 )
                 client._cancel()
 
+    def set_sendspin_player_for_user(self, user_id: str, player_id: str) -> None:
+        """
+        Set the sendspin player_id on websocket clients for a specific user.
+
+        This is called by the sendspin proxy when a client connects, allowing
+        the player controller to auto-whitelist the player for that user's session.
+
+        :param user_id: The user ID to set the sendspin player for.
+        :param player_id: The sendspin player ID to set.
+        """
+        for client in list(self.clients):
+            if client._authenticated_user and client._authenticated_user.user_id == user_id:
+                client._sendspin_player_id = player_id
+                self.logger.debug(
+                    "Set sendspin player %s for websocket client of user %s",
+                    player_id,
+                    client._authenticated_user.username,
+                )
+
+    def set_sendspin_player_for_webrtc_session(self, session_id: str, player_id: str) -> None:
+        """
+        Set the sendspin player_id on a websocket client for a WebRTC session.
+
+        This is called by the WebRTC gateway when it extracts the client_id from
+        the sendspin auth message, allowing auto-whitelisting of the player.
+
+        :param session_id: The WebRTC session ID.
+        :param player_id: The sendspin player ID to set.
+        """
+        for client in list(self.clients):
+            if client._webrtc_session_id == session_id:
+                client._sendspin_player_id = player_id
+                username = (
+                    client._authenticated_user.username
+                    if client._authenticated_user
+                    else "unauthenticated"
+                )
+                self.logger.debug(
+                    "Set sendspin player %s for WebRTC session %s (user: %s)",
+                    player_id,
+                    session_id,
+                    username,
+                )
+                return
+
     async def serve_preview_stream(self, request: web.Request) -> web.StreamResponse:
         """Serve short preview sample."""
         provider_instance_id_or_domain = request.query["provider"]
         item_id = urllib.parse.unquote(request.query["item_id"])
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/aac"})
         await resp.prepare(request)
-        async for chunk in get_preview_stream(self.mass, provider_instance_id_or_domain, item_id):
-            await resp.write(chunk)
+        preview_stream = self.mass.streams.get_preview_stream(
+            provider_instance_id_or_domain, item_id
+        )
+        # aclosing guarantees the preview stream (and the ffmpeg process behind it)
+        # is torn down immediately when the client disconnects, instead of lingering
+        # until garbage collection finalizes the abandoned generator.
+        async with aclosing(preview_stream):
+            async for chunk in preview_stream:
+                await resp.write(chunk)
         return resp
+
+    async def _build_config_entries(self, ssl_verify_result: str = "") -> tuple[ConfigEntry, ...]:
+        """Build this module's config entries, optionally carrying an SSL verify result."""
+        ip_addresses = await get_ip_addresses(include_ipv6=True)
+        return (
+            ConfigEntry(
+                key=CONF_AUTH_ALLOW_SELF_REGISTRATION,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                hidden=not any(provider.domain == "hass" for provider in self.mass.providers),
+                requires_reload=False,
+            ),
+            ConfigEntry(
+                key=CONF_BASE_URL,
+                type=ConfigEntryType.STRING,
+                default_value=CONF_VALUE_AUTO,
+                requires_reload=False,
+            ),
+            ConfigEntry(
+                key=CONF_BIND_PORT,
+                type=ConfigEntryType.INTEGER,
+                default_value=DEFAULT_SERVER_PORT,
+                requires_reload=True,
+            ),
+            ConfigEntry(
+                key="webserver_warn",
+                type=ConfigEntryType.ALERT,
+                required=False,
+                depends_on=CONF_ENABLE_SSL,
+                depends_on_value=False,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_SSL,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                requires_reload=True,
+            ),
+            ConfigEntry(
+                key=CONF_SSL_CERTIFICATE,
+                type=ConfigEntryType.STRING,
+                required=False,
+                depends_on=CONF_ENABLE_SSL,
+                requires_reload=True,
+            ),
+            ConfigEntry(
+                key=CONF_SSL_PRIVATE_KEY,
+                type=ConfigEntryType.SECURE_STRING,
+                required=False,
+                depends_on=CONF_ENABLE_SSL,
+                requires_reload=True,
+            ),
+            ConfigEntry(
+                key=CONF_ACTION_VERIFY_SSL,
+                type=ConfigEntryType.ACTION,
+                action=CONF_ACTION_VERIFY_SSL,
+                depends_on=CONF_ENABLE_SSL,
+                required=False,
+            ),
+            ConfigEntry(
+                key="ssl_verify_result",
+                type=ConfigEntryType.LABEL,
+                label=ssl_verify_result,
+                hidden=not ssl_verify_result,
+                depends_on=CONF_ENABLE_SSL,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_BIND_IP,
+                type=ConfigEntryType.STRING,
+                default_value="0.0.0.0",
+                options=[ConfigValueOption(x, title=x) for x in {"0.0.0.0", *ip_addresses}],
+                category="generic",
+                advanced=True,
+                requires_reload=True,
+            ),
+        )
 
     async def _handle_cors_preflight(self, request: web.Request) -> web.Response:
         """Handle CORS preflight OPTIONS request."""
@@ -492,41 +577,32 @@ class WebserverController(CoreController):
             return web.Response(status=400, text=error)
 
         # Check authentication if required
-        if handler.authenticated or handler.required_role:
-            try:
-                user = await get_authenticated_user(request)
-            except Exception as e:
-                self.logger.exception("Authentication error: %s", e)
-                return web.Response(
-                    status=401,
-                    text="Authentication failed",
-                    headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
-                )
-
-            if not user:
-                return web.Response(
-                    status=401,
-                    text="Authentication required",
-                    headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
-                )
-
-            # Set user in context and check role
-            set_current_user(user)
-            if handler.required_role == "admin" and user.role != UserRole.ADMIN:
-                return web.Response(
-                    status=403,
-                    text="Admin access required",
-                )
+        if error_response := await self._authenticate_api_command(request, handler):
+            return error_response
 
         try:
+            # handle the optional impersonation argument for impersonation-enabled commands
+            if handler.allow_impersonation and command_msg.args:
+                if impersonation_user := await resolve_command_impersonation(
+                    self.mass, command_msg.args
+                ):
+                    set_impersonated_user(impersonation_user)
             args = parse_arguments(handler.signature, handler.type_hints, command_msg.args)
             result: Any = handler.target(**args)
             if hasattr(result, "__anext__"):
                 # handle async generator (for really large listings)
                 result = [item async for item in result]
-            elif asyncio.iscoroutine(result):
+            elif inspect.iscoroutine(result):
                 result = await result
-            return web.json_response(result, dumps=json_dumps)
+            # Determine the UI locale for this request from the HTTP headers and warm it up
+            # so localized strings can be injected during dict serialization without disk I/O.
+            locale = _locale_from_request(request)
+            await self.mass.translations.ensure_locale_loaded(locale)
+            return self._localized_json_response(result, locale)
+        except InsufficientPermissions as e:
+            return web.Response(status=403, text=str(e))
+        except InvalidDataError as e:
+            return web.Response(status=400, text=str(e))
         except Exception as e:
             # Return clean error message without stacktrace
             error_type = type(e).__name__
@@ -534,6 +610,64 @@ class WebserverController(CoreController):
             error = f"{error_type}: {error_msg}"
             self.logger.exception("Error executing command %s: %s", command_msg.command, error)
             return web.Response(status=500, text="Internal server error")
+
+    async def _authenticate_api_command(
+        self, request: web.Request, handler: APICommandHandler
+    ) -> web.Response | None:
+        """
+        Authenticate the request and check the handler's required scope.
+
+        Sets the authenticated user in context and returns an error response
+        if authentication or the scope check failed, None otherwise.
+        """
+        if not (handler.authenticated or handler.required_scope):
+            return None
+        try:
+            user = await get_authenticated_user(request)
+        except Exception as e:
+            self.logger.exception("Authentication error: %s", e)
+            return web.Response(
+                status=401,
+                text="Authentication failed",
+                headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
+            )
+
+        if not user:
+            return web.Response(
+                status=401,
+                text="Authentication required",
+                headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
+            )
+
+        # Set user and token in context and check the required scope
+        set_current_user(user)
+        auth_header = request.headers.get("Authorization", "")
+        if auth_header.lower().startswith("bearer "):
+            set_current_token(auth_header[7:])
+        if handler.required_scope and not has_scope(user, handler.required_scope):
+            return web.Response(
+                status=403,
+                text=f"This command requires the {handler.required_scope} scope",
+            )
+        return None
+
+    def _localized_json_response(self, result: Any, locale: str | None) -> web.Response:
+        """
+        Serialize a command result to a JSON response with the per-request resolvers bound.
+
+        Sets the image-proxy resolver (for ``proxy_id`` injection) and the translation
+        resolver (to localize human-readable fields) for the given locale during dict
+        serialization, then resets them.
+        """
+        token = IMAGE_PROXY_ID_RESOLVER.set(self.mass.metadata.compute_image_id)
+        token_loc = TRANSLATION_RESOLVER.set(
+            partial(self.mass.translations.get_translation, locale=locale)
+        )
+        try:
+            return web.json_response(result, dumps=json_dumps)
+        finally:
+            IMAGE_PROXY_ID_RESOLVER.reset(token)
+            TRANSLATION_RESOLVER.reset(token_loc)
 
     async def _handle_api_intro(self, request: web.Request) -> web.Response:
         """Handle request for API introduction/documentation page."""
@@ -582,7 +716,8 @@ class WebserverController(CoreController):
         return await self._server.serve_static(swagger_html_path, request)
 
     async def _render_error_page(self, error_message: str, status: int = 403) -> web.Response:
-        """Render a user-friendly error page with the given message.
+        """
+        Render a user-friendly error page with the given message.
 
         :param error_message: The error message to display to the user.
         :param status: HTTP status code for the response.
@@ -689,18 +824,16 @@ class WebserverController(CoreController):
 
             # If return_url provided, append code parameter and return as redirect_to
             if return_url:
-                # Insert code parameter before any hash fragment
-                code_param = f"code={quote(token, safe='')}"
-                if "#" in return_url:
-                    url_parts = return_url.split("#", 1)
-                    base_part = url_parts[0]
-                    hash_part = url_parts[1]
-                    separator = "&" if "?" in base_part else "?"
-                    redirect_url = f"{base_part}{separator}{code_param}#{hash_part}"
-                elif "?" in return_url:
-                    redirect_url = f"{return_url}&{code_param}"
-                else:
-                    redirect_url = f"{return_url}?{code_param}"
+                # SECURITY FIX (GHSA-j369-4c4w-7qmq): only forward the token to trusted
+                # destinations. is_allowed_redirect_url returns (True, "external") for any
+                # unknown external URL, so checking is_valid alone would still leak the JWT.
+                # Unlike _handle_auth_authorize/_handle_auth_callback, this endpoint appends
+                # the token immediately with no consent step, so "external" must be rejected.
+                _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+                if category != "trusted":
+                    return web.Response(status=400, text="Invalid return_url")
+
+                redirect_url = build_code_redirect_url(return_url, token)
 
                 response_data["redirect_to"] = redirect_url
                 self.logger.debug(
@@ -871,37 +1004,20 @@ class WebserverController(CoreController):
                 elif category == "external":
                     # External domain - require user consent
                     requires_consent = True
-            # Add code parameter to redirect URL (the token URL-encoded)
-            # Important: Insert code BEFORE any hash fragment (e.g., #/) to ensure
-            # it's in query params, not inside the hash where Vue Router can't access it
-            code_param = f"code={quote(token, safe='')}"
-
-            # Split URL by hash to insert code in the right place
-            if "#" in final_redirect_url:
-                # URL has a hash fragment (e.g., http://example.com/#/ or http://example.com/path#section)
-                url_parts = final_redirect_url.split("#", 1)
-                base_url = url_parts[0]
-                hash_part = url_parts[1]
-
-                # Add code to base URL (before hash)
-                separator = "&" if "?" in base_url else "?"
-                final_redirect_url = f"{base_url}{separator}{code_param}#{hash_part}"
-            # No hash fragment, simple case
-            elif "?" in final_redirect_url:
-                final_redirect_url = f"{final_redirect_url}&{code_param}"
-            else:
-                final_redirect_url = f"{final_redirect_url}?{code_param}"
+            final_redirect_url = build_code_redirect_url(final_redirect_url, token)
 
             # Load OAuth callback success page template and inject token and redirect URL
             oauth_callback_html_path = str(RESOURCES_DIR.joinpath("oauth_callback.html"))
             async with aiofiles.open(oauth_callback_html_path) as f:
                 success_html = await f.read()
 
-            # Replace template placeholders
-            success_html = success_html.replace("{TOKEN}", token)
-            success_html = success_html.replace("{REDIRECT_URL}", final_redirect_url)
+            # Replace the redirect last so its untrusted contents cannot match another placeholder.
             success_html = success_html.replace(
                 "{REQUIRES_CONSENT}", "true" if requires_consent else "false"
+            )
+            success_html = success_html.replace("{TOKEN}", _serialize_script_value(token))
+            success_html = success_html.replace(
+                "{REDIRECT_URL}", _serialize_script_value(final_redirect_url)
             )
 
             return web.Response(text=success_html, content_type="text/html")
@@ -920,14 +1036,12 @@ class WebserverController(CoreController):
 
     async def _handle_setup_page(self, request: web.Request) -> web.Response:
         """Handle request for first-time setup page."""
-        # Validate return_url if provided
+        # Setup forwards the admin token here with no consent step, so require a trusted destination.
         return_url = request.query.get("return_url")
         if return_url:
-            is_valid, _ = is_allowed_redirect_url(return_url, request, self.base_url)
-            if not is_valid:
+            _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+            if category != "trusted":
                 return web.Response(status=400, text="Invalid return_url")
-        else:
-            return_url = "/"
 
         if self.auth.has_users:
             # this should not happen, but guard anyways
@@ -992,13 +1106,24 @@ class WebserverController(CoreController):
             self.logger.info("First admin user created: %s", username)
 
             # Return token - frontend will complete onboarding via config/onboard_complete
-            return web.json_response(
-                {
-                    "success": True,
-                    "token": token,
-                    "user": user.to_dict(),
-                }
-            )
+            response_data: dict[str, Any] = {
+                "success": True,
+                "token": token,
+                "user": user.to_dict(),
+            }
+
+            # Only forward the token to a trusted destination (no consent step here).
+            return_url = body.get("return_url")
+            if return_url and isinstance(return_url, str):
+                _, category = is_allowed_redirect_url(return_url, request, self.base_url)
+                if category == "trusted":
+                    response_data["redirect_to"] = build_code_redirect_url(
+                        return_url, token, {"onboard": "true"}
+                    )
+                else:
+                    self.logger.warning("Ignoring untrusted setup return_url: %s", return_url)
+
+            return web.json_response(response_data)
 
         except Exception as e:
             self.logger.exception("Error during setup")
@@ -1006,32 +1131,14 @@ class WebserverController(CoreController):
                 {"success": False, "error": f"Setup failed: {e!s}"}, status=500
             )
 
-    async def _announce_to_homeassistant(self) -> None:
-        """Announce Music Assistant Ingress server to Home Assistant via Supervisor API."""
-        supervisor_token = os.environ["SUPERVISOR_TOKEN"]
-        addon_hostname = os.environ["HOSTNAME"]
-        # Get or create auth token for the HA system user
-        ha_integration_token = await self.auth.get_homeassistant_system_user_token()
-        discovery_payload = {
-            "service": "music_assistant",
-            "config": {
-                "host": addon_hostname,
-                "port": INGRESS_SERVER_PORT,
-                "auth_token": ha_integration_token,
-            },
-        }
-        try:
-            async with self.mass.http_session_no_ssl.post(
-                "http://supervisor/discovery",
-                headers={"Authorization": f"Bearer {supervisor_token}"},
-                json=discovery_payload,
-                timeout=ClientTimeout(total=10),
-            ) as response:
-                response.raise_for_status()
-                result = await response.json()
-                self.logger.debug(
-                    "Successfully announced to Home Assistant. Discovery UUID: %s",
-                    result.get("uuid"),
-                )
-        except Exception as err:
-            self.logger.warning("Failed to announce to Home Assistant: %s", err)
+
+def _serialize_script_value(value: str) -> str:
+    """Serialize a string for use inside an HTML script element."""
+    return (
+        json_dumps(value)
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )

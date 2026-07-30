@@ -1,0 +1,5 @@
+{
+  "manifest": {
+    "description": "Scrobbles tracks played in Music Assistant to your local Subsonic server for history and stats."
+  }
+}

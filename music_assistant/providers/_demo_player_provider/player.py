@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature, PlayerType
-from music_assistant_models.player import PlayerSource
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, PlaybackState, PlayerFeature
+from music_assistant_models.player import PlayerOptionValueType, PlayerSource
 
 from music_assistant.models.player import Player, PlayerMedia
 
@@ -22,17 +22,20 @@ class DemoPlayer(Player):
         super().__init__(provider, player_id)
         # init some static variables
         self._attr_name = f"Demo Player {player_id}"
-        self._attr_type = PlayerType.PLAYER
         self._attr_supported_features = {
+            PlayerFeature.PLAY_MEDIA,
             PlayerFeature.POWER,
             PlayerFeature.VOLUME_SET,
             PlayerFeature.VOLUME_MUTE,
             PlayerFeature.PLAY_ANNOUNCEMENT,
+            PlayerFeature.SET_MEMBERS,
         }
+        # demo players can be (sync) grouped with other players of this provider
+        self._attr_can_group_with = {provider.instance_id}
         self._set_attributes()
 
     async def on_config_updated(self) -> None:
-        """Handle logic when the player is loaded or updated."""
+        """Handle logic when the PlayerConfig is first loaded or updated."""
         # OPTIONAL
         # This method is optional and should be implemented if you need to handle
         # any initialization logic after the config was initially loaded or updated.
@@ -54,10 +57,10 @@ class DemoPlayer(Player):
         # OPTIONAL
         # used in conjunction with the needs_poll property.
         # this should return the interval in seconds to poll the player for state updates.
-        return 5 if self.playback_state == PlaybackState.PLAYING else 30
+        return 5 if self._attr_playback_state == PlaybackState.PLAYING else 30
 
     @property
-    def _source_list(self) -> list[PlayerSource]:
+    def source_list(self) -> list[PlayerSource]:
         """Return list of available (native) sources for this player."""
         # OPTIONAL - required only if you specified PlayerFeature.SELECT_SOURCE
         # this is an optional property that you can implement if your
@@ -84,20 +87,15 @@ class DemoPlayer(Player):
             ),
         ]
 
-    async def get_config_entries(
-        self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
-    ) -> list[ConfigEntry]:
+    async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         # OPTIONAL
         # this method is optional and should be implemented if you need player specific
         # configuration entries. If you do not need player specific configuration entries,
-        # you can leave this method out completely to accept the default implementation.
-        # Please note that you need to call the super() method to get the default entries.
-        default_entries = await super().get_config_entries(action=action, values=values)
+        # you can leave this method out completely.
+        # note that the config controller will always add a set of default config entries
+        # if you want, you can override those by specifying the same key as a default entry.
         return [
-            *default_entries,
             # example of a player specific config entry
             # you can also override a default entry by specifying the same key
             # as a default entry, but with a different type or default value.
@@ -268,10 +266,9 @@ class DemoPlayer(Player):
         # In this demo implementation we just optimistically set the state.
         # In a real implementation you actually send a command to the player
         # wait for the player to report a new state before updating the playback state.
+        url = await self.provider.mass.streams.resolve_stream_url(self.player_id, media)
         logger = self.provider.logger.getChild(self.player_id)
-        logger.info(
-            "Received PLAY_MEDIA command on player %s with uri %s", self.display_name, media.uri
-        )
+        logger.info("Received PLAY_MEDIA command on player %s with url %s", self.display_name, url)
         self._attr_current_media = media
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
@@ -307,6 +304,14 @@ class DemoPlayer(Player):
         # The source is the source ID to select on the player.
         # available sources are specified in the Player.source_list property
 
+    async def select_sound_mode(self, sound_mode: str) -> None:
+        """Handle SELECT SOUND MODE command on the player."""
+        # OPTIONAL - required only if you specified PlayerFeature.SELECT_SOUND_MODE.
+        # This method is optional and should be implemented if the player supports
+        # selecting a native sound mode (e.g. stereo, 5.1, classic...).
+        # The sound_mode is the sound mode's id, and available sound modes
+        # are specified in the Player.sound_mode_list property.
+
     async def set_members(
         self,
         player_ids_to_add: list[str] | None = None,
@@ -316,6 +321,56 @@ class DemoPlayer(Player):
         # OPTIONAL - required only if you specified PlayerFeature.SET_MEMBERS
         # This method is optional and should be implemented if the player supports
         # syncing/grouping with other players.
+        # This demo keeps a simple in-memory member list: the leader tracks its
+        # group_members and each member's synced_to is then derived automatically by
+        # the base Player from the leader's list. A real provider would also issue the
+        # native sync command to the device here.
+        members = dict.fromkeys(self._attr_group_members)
+        for member_id in player_ids_to_add or []:
+            members[member_id] = None
+        for member_id in player_ids_to_remove or []:
+            members.pop(member_id, None)
+        other_member_ids = [pid for pid in members if pid != self.player_id]
+        # the leader is always the first member while the group is non-empty
+        self._attr_group_members = [self.player_id, *other_member_ids] if other_member_ids else []
+        self.update_state()
+        # refresh affected members so their derived synced_to / can_group_with recompute
+        for member_id in [*(player_ids_to_add or []), *(player_ids_to_remove or [])]:
+            if (member := self.mass.players.get_player(member_id)) is not None:
+                member.update_state()
+
+    async def set_option(self, option_key: str, option_value: PlayerOptionValueType) -> None:
+        """Handle SET_OPTION command on the player."""
+        # OPTIONAL - required only if you specified PlayerFeature.OPTIONS.
+        # PlayerOptions are native settings of the player adjustable on the fly,
+        # e.g. a treble value, toggable settings etc. In the ui they are accessible
+        # on the player menu, or via
+        # player settings -> players -> <select player> -> player options.
+        #
+        # The options are mapped to respective Home Assistant entities, if the integration
+        # is used. The mapping for non read-only option is:
+        # PlayerOptionType.BOOLEAN (w and w/o options) -> SwitchEntity
+        # PlayerOptionType.FLOAT or PlayerOptionType.INTEGER (w/o options) -> NumberEntity
+        # PlayerOptionType.STRING (w/o options) -> TextEntity
+        # PlayerOptionType.FLOAT/ INTEGER/ STRING with options -> SelectEntity.
+        # Read-only options will be mapped to SensorEntities once a provider using them exists.
+        #
+        # The translation key of the respective option must be present in the HA integration,
+        # otherwise, the option is ignored. Currently available keys are listed in the following
+        # dictionaries right at the top of the respective entity type:
+        #
+        # PLAYER_OPTIONS_SWITCH in
+        #   https://github.com/home-assistant/core/blob/dev/homeassistant/components/music_assistant/switch.py
+        # PLAYER_OPTIONS_SELECT in
+        #   https://github.com/home-assistant/core/blob/dev/homeassistant/components/music_assistant/select.py
+        # PLAYER_OPTIONS_NUMBER in
+        #   https://github.com/home-assistant/core/blob/dev/homeassistant/components/music_assistant/number.py
+        # PLAYER_OPTIONS_TEXT in
+        #   https://github.com/home-assistant/core/blob/dev/homeassistant/components/music_assistant/text.py
+        #
+        # Before creating a PR to HA core to support new translation keys, complete the review process in MA.
+        # We are also happy to create the HA PR for you after the review process.
+        # The MusicCast provider can serve as an example for player options.
 
     async def poll(self) -> None:
         """Poll player for state updates."""

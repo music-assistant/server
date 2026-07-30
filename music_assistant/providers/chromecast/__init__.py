@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 from pychromecast.controllers.media import MediaController
-
-from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
 
 from .provider import ChromecastProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.enums import ProviderFeature
     from music_assistant_models.provider import ProviderManifest
 
@@ -26,17 +24,17 @@ SUPPORTED_FEATURES: set[ProviderFeature] = (
 _patched_process_media_status_org = MediaController._process_media_status
 
 
-def _patched_process_media_status(self: MediaController, data: dict) -> None:
+def _patched_process_media_status(self: MediaController, data: dict[str, object]) -> None:
     """Process STATUS message(s) of the media controller."""
     _patched_process_media_status_org(self, data)
-    for status_msg in data.get("status", []):
+    for status_msg in cast("list[dict[str, Any]]", data.get("status", [])):
         if items := status_msg.get("items"):
-            self.status.current_item_id = status_msg.get("currentItemId", 0)
-            self.status.items = items
+            self.status.current_item_id = status_msg.get("currentItemId", 0)  # type: ignore[attr-defined]
+            self.status.items = items  # type: ignore[attr-defined]
 
 
 # Apply the monkey patch
-MediaController._process_media_status = _patched_process_media_status
+MediaController._process_media_status = _patched_process_media_status  # type: ignore[method-assign]
 
 
 async def setup(
@@ -44,20 +42,3 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return ChromecastProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    return (CONF_ENTRY_MANUAL_DISCOVERY_IPS,)

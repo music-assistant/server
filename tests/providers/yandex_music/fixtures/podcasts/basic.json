@@ -1,0 +1,25 @@
+{
+  "id": 700,
+  "title": "Sample Podcast",
+  "available": true,
+  "artists": [
+    {
+      "id": 71,
+      "name": "Podcast Author"
+    }
+  ],
+  "labels": [
+    {
+      "id": 1,
+      "name": "Podcast Studio"
+    }
+  ],
+  "type": "podcast",
+  "meta_type": "podcast",
+  "track_count": 42,
+  "description": "A sample podcast description.",
+  "short_description": "Short desc",
+  "content_warning": "explicit",
+  "cover_uri": "avatars.yandex.net/get-music-content/pod/cover/%%",
+  "release_date": "2024-03-15T00:00:00+00:00"
+}

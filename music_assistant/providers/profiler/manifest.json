@@ -1,0 +1,13 @@
+{
+  "type": "plugin",
+  "stage": "alpha",
+  "domain": "profiler",
+  "name": "Profiler",
+  "description": "Records CPU, memory and event-loop diagnostics of the running server and turns them into a shareable report. Only install this provider temporarily to debug performance issues (or when asked to in a support request) and uninstall it when done - it is not meant for day-to-day use.",
+  "codeowners": ["@music-assistant"],
+  "requirements": ["yappi==1.7.6", "psutil==7.2.2"],
+  "documentation": "https://music-assistant.io/plugins/profiler",
+  "multi_instance": false,
+  "builtin": false,
+  "icon": "speedometer"
+}

@@ -1,0 +1,14 @@
+{
+  "media": {
+    "recommendations": {
+      "nicovideo_following_activities": { "name": "New Tracks from Followed Users" }
+    }
+  },
+  "manifest": {
+    "description": "Support for niconico video(nicovideo) in Music Assistant"
+  },
+  "errors": {
+    "create_playlist_failed": "Failed to create playlist '{0}' on NicoVideo.",
+    "retrieve_created_playlist_failed": "Failed to retrieve the created playlist '{0}' from NicoVideo."
+  }
+}

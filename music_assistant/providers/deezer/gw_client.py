@@ -1,19 +1,24 @@
-"""A minimal client for the unofficial gw-API, which deezer is using on their website and app.
+"""
+A minimal client for the unofficial gw-API, which deezer is using on their website and app.
 
 Credits go out to RemixDev (https://gitlab.com/RemixDev) for figuring out, how to get the arl
 cookie based on the api_token.
 """
 
-import datetime
+from __future__ import annotations
+
 from collections.abc import Mapping
 from http.cookies import BaseCookie, Morsel
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from aiohttp import ClientSession, ClientTimeout
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.errors import MediaNotFoundError
 from yarl import URL
 
-from music_assistant.helpers.datetime import utc_timestamp
+from music_assistant.helpers.datetime import future_timestamp, utc_timestamp
+
+if TYPE_CHECKING:
+    from music_assistant_models.streamdetails import StreamDetails
 
 USER_AGENT_HEADER = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -23,7 +28,7 @@ USER_AGENT_HEADER = (
 GW_LIGHT_URL = "https://www.deezer.com/ajax/gw-light.php"
 
 
-class DeezerGWError(BaseException):
+class DeezerGWError(Exception):
     """Exception type for GWClient related exceptions."""
 
 
@@ -31,19 +36,18 @@ class GWClient:
     """The GWClient class can be used to perform actions not being of the official API."""
 
     _arl_token: str
-    _api_token: str
     _gw_csrf_token: str | None
     _license: str | None
     _license_expiration_timestamp: int
+    _user_id: int
     session: ClientSession
-    formats: list[dict[str, str]] = [
+    formats: ClassVar[list[dict[str, str]]] = [
         {"cipher": "BF_CBC_STRIPE", "format": "MP3_128"},
     ]
     user_country: str
 
-    def __init__(self, session: ClientSession, api_token: str, arl_token: str) -> None:
-        """Provide an aiohttp ClientSession and the deezer api_token."""
-        self._api_token = api_token
+    def __init__(self, session: ClientSession, arl_token: str) -> None:
+        """Provide an aiohttp ClientSession and the deezer ARL token."""
         self._arl_token = arl_token
         self.session = session
 
@@ -66,6 +70,7 @@ class GWClient:
             raise DeezerGWError(msg)
 
         self._gw_csrf_token = user_data["results"]["checkForm"]
+        self._user_id = int(user_data["results"]["USER"]["USER_ID"])
         self._license = user_data["results"]["USER"]["OPTIONS"]["license_token"]
         self._license_expiration_timestamp = user_data["results"]["USER"]["OPTIONS"][
             "expiration_timestamp"
@@ -85,10 +90,7 @@ class GWClient:
         await self._update_user_data()
 
     async def _get_license(self) -> str | None:
-        if (
-            self._license_expiration_timestamp
-            < (datetime.datetime.now() + datetime.timedelta(days=1)).timestamp()
-        ):
+        if self._license_expiration_timestamp < future_timestamp(days=1):
             await self._update_user_data()
         return self._license
 
@@ -126,15 +128,41 @@ class GWClient:
             raise DeezerGWError(msg, result_json["error"])
         return cast("dict[str, Any]", result_json)
 
-    async def get_song_data(self, track_id: str) -> dict[str, Any]:
-        """Get data such as the track token for a given track."""
-        return await self._gw_api_call("song.getData", args={"SNG_ID": track_id})
+    # Content support descriptor for page.get — tells the API which module types to return
+    _PAGE_SUPPORT: ClassVar[dict[str, Any]] = {
+        "grid": ["channel", "album", "playlist", "artist"],
+        "horizontal-grid": ["channel", "album", "playlist", "artist"],
+        "slideshow": ["album", "playlist"],
+        "grid-preview-one": ["album", "playlist"],
+        "grid-preview-two": ["album", "playlist"],
+        "filterable-grid": ["album", "playlist"],
+        "large-card": ["album", "playlist"],
+    }
+
+    async def get_page(self, page: str, language: str = "en") -> dict[str, Any]:
+        """
+        Fetch a content page from the Deezer page.get GW API.
+
+        :param page: The page path (e.g., 'channels/audiobooks').
+        :param language: Language code for localized content.
+        """
+        result = await self._gw_api_call(
+            "page.get",
+            args={
+                "PAGE": page,
+                "VERSION": "2.5",
+                "SUPPORT": self._PAGE_SUPPORT,
+                "LANG": language,
+                "OPTIONS": [],
+            },
+        )
+        return cast("dict[str, Any]", result["results"])
 
     async def get_deezer_track_urls(self, track_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
         """Get the URL for a given track id."""
         dz_license = await self._get_license()
 
-        song_results = await self.get_song_data(track_id)
+        song_results = await self._gw_api_call("song.getData", args={"SNG_ID": track_id})
 
         song_data = song_results["results"]
         # If the song has been replaced by a newer version, the old track will
@@ -145,12 +173,17 @@ class GWClient:
             song_data = song_data["FALLBACK"]
 
         track_token = song_data["TRACK_TOKEN"]
+        # Personal songs (user uploads) only support MP3_MISC format
+        is_personal = int(track_id) < 0
+        formats = (
+            [{"cipher": "BF_CBC_STRIPE", "format": "MP3_MISC"}] if is_personal else self.formats
+        )
         url_data = {
             "license_token": dz_license,
             "media": [
                 {
                     "type": "FULL",
-                    "formats": self.formats,
+                    "formats": formats,
                 }
             ],
             "track_tokens": [track_token],
@@ -163,10 +196,18 @@ class GWClient:
         result_json = await url_response.json()
 
         if error := result_json["data"][0].get("errors"):
-            msg = "Received an error from API"
+            error_code = error[0].get("code") if isinstance(error, list) and error else None
+            if error_code == 2002:
+                msg = f"Track {track_id} not available: insufficient streaming rights"
+            else:
+                msg = "Received an error from API"
             raise DeezerGWError(msg, error)
 
-        return result_json["data"][0]["media"][0], song_data
+        media_list = result_json["data"][0].get("media", [])
+        if not media_list:
+            raise MediaNotFoundError(f"No media available for track {track_id}")
+
+        return media_list[0], song_data
 
     async def log_listen(
         self, next_track: str | None = None, last_track: StreamDetails | None = None
@@ -182,9 +223,11 @@ class GWClient:
             payload["next_media"] = {"media": {"id": next_track, "type": "song"}}
 
         if last_track:
-            seconds_streamed = min(
-                utc_timestamp() - last_track.data["start_ts"],
-                last_track.seconds_streamed,
+            elapsed = utc_timestamp() - last_track.data["start_ts"]
+            seconds_streamed = (
+                min(elapsed, last_track.seconds_streamed)
+                if last_track.seconds_streamed is not None
+                else elapsed
             )
 
             payload["params"] = {
@@ -210,3 +253,16 @@ class GWClient:
             }
 
         await self._gw_api_call("log.listen", args=payload)
+
+    async def get_personal_songs(self, start: int = 0, nb: int = 500) -> dict[str, Any]:
+        """
+        Get user-uploaded personal songs via the GW API.
+
+        :param start: Offset for pagination.
+        :param nb: Number of songs to fetch per page.
+        """
+        result = await self._gw_api_call(
+            "personal_song.getList",
+            args={"start": start, "nb": nb},
+        )
+        return cast("dict[str, Any]", result["results"])

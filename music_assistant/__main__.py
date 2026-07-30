@@ -6,20 +6,24 @@ import argparse
 import asyncio
 import logging
 import os
+import resource
+import signal
 import subprocess
 import sys
 import threading
 import traceback
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
 from logging.handlers import RotatingFileHandler
 from typing import Any, Final
 
-from aiorun import run
 from colorlog import ColoredFormatter
 
 from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.helpers.diagnostics import install_diagnostics_log_handler
 from music_assistant.helpers.json import json_loads
 from music_assistant.helpers.logging import activate_log_queue_handler
+from music_assistant.helpers.util import cap_native_thread_pools
 from music_assistant.mass import MusicAssistant
 
 FORMAT_DATE: Final = "%Y-%m-%d"
@@ -106,6 +110,10 @@ def setup_logger(data_path: str, level: str = "DEBUG") -> logging.Logger:
     # This way they're where other messages are, and can be filtered as usual.
     logging.captureWarnings(True)
 
+    # install the always-on diagnostics capture handler as early as possible
+    # so boot-time warnings/errors end up in the diagnostics report
+    install_diagnostics_log_handler()
+
     # setup file handler
     log_filename = os.path.join(data_path, "musicassistant.log")
     file_handler = RotatingFileHandler(log_filename, maxBytes=MAX_LOG_FILESIZE, backupCount=1)
@@ -132,6 +140,9 @@ def setup_logger(data_path: str, level: str = "DEBUG") -> logging.Logger:
     logging.getLogger("charset_normalizer").setLevel(logging.WARNING)
     logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
     logging.getLogger("numba").setLevel(logging.WARNING)
+    logging.getLogger("torio._extension.utils").setLevel(logging.WARNING)
+    logging.getLogger("quic").setLevel(logging.WARNING)
+    logging.getLogger("http3").setLevel(logging.WARNING)
 
     # Add a filter to suppress slow callback warnings from buffered audio streaming
     # These warnings are expected when audio buffers fill up and producers wait for consumers
@@ -229,33 +240,56 @@ def main() -> None:
 
     # setup logger
     logger = setup_logger(data_dir, log_level)
+
+    # Size the native BLAS/OpenMP pools before any provider imports a math library,
+    # because those pools read the environment once at load time.
+    blas_budget = cap_native_thread_pools()
+    LOGGER.debug("Native BLAS/OpenMP thread pools capped to %d thread(s)", blas_budget)
+
+    # Raise the open-file soft limit to the hard limit so the concurrent provider
+    # imports at startup can't exhaust it (default soft=1024 in HAOS add-on containers).
+    # Skip when the hard limit is unlimited (e.g. macOS), which setrlimit won't apply.
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    if hard != resource.RLIM_INFINITY and soft < hard:
+        try:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+        except (ValueError, OSError) as err:
+            LOGGER.warning("Could not raise open-file limit: %s", err)
+
     mass = MusicAssistant(data_dir, cache_dir, safe_mode)
 
     # enable alpine subprocess workaround
     _enable_posix_spawn()
 
-    def on_shutdown(loop: asyncio.AbstractEventLoop) -> None:
-        logger.info("shutdown requested!")
-        loop.run_until_complete(mass.stop())
-
-    async def start_mass() -> None:
+    async def run_mass() -> None:
         loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=32))
         activate_log_queue_handler()
         if dev_mode or log_level == "DEBUG":
             loop.set_debug(True)
+            loop.slow_callback_duration = 0.2
         loop.set_exception_handler(_global_loop_exception_handler)
-        try:
-            await mass.start()
-        except Exception:
-            # exit immediately if startup fails
-            loop.stop()
-            raise
 
-    run(
-        start_mass(),
-        shutdown_callback=on_shutdown,
-        executor_workers=16,
-    )
+        stop_event = asyncio.Event()
+
+        def _set_stop() -> None:
+            stop_event.set()
+
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            with suppress(NotImplementedError):
+                loop.add_signal_handler(sig, _set_stop)
+
+        await mass.start()
+        try:
+            await stop_event.wait()
+        finally:
+            logger.info("shutdown requested!")
+            await mass.stop()
+
+    try:
+        asyncio.run(run_mass())
+    except KeyboardInterrupt:
+        logger.info("shutdown requested by keyboard interrupt")
 
 
 if __name__ == "__main__":

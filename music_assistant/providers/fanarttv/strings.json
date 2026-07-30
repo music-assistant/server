@@ -1,0 +1,17 @@
+{
+  "config_entries": {
+    "enable_artist_images": {
+      "label": "Enable retrieval of artist images."
+    },
+    "enable_album_images": {
+      "label": "Enable retrieval of album image(s)."
+    },
+    "client_key": {
+      "label": "VIP Member Personal API Key (optional)",
+      "description": "Support this metadata provider by becoming a VIP Member, resulting in higher rate limits and faster response times among other benefits. See https://wiki.fanart.tv/General/personal%20api/ for more information."
+    }
+  },
+  "manifest": {
+    "description": "Provides high-quality artist and album artwork from Fanart.tv, used throughout the Music Assistant UI."
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "config_entries": {
+    "quality": {
+      "label": "Quality setting for Tidal:",
+      "description": "The maximum streaming quality to request from Tidal.",
+      "options": {
+        "LOSSLESS": "High",
+        "HI_RES_LOSSLESS": "Max"
+      },
+      "option_descriptions": {
+        "LOSSLESS": "16-bit / 44.1 kHz — CD quality, plays on any device.",
+        "HI_RES_LOSSLESS": "Up to 24-bit / 192 kHz — hi-res; needs a player/DAC that supports it."
+      }
+    },
+    "oops_url": {
+      "label": "Redirect URL from Tidal"
+    },
+    "auth_instructions": {
+      "label": "Use the link icon to open Tidal and sign in. Afterwards you land on a page that says 'Page Not Found' - that is expected. Copy the full URL from your browser's address bar and paste it below."
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Link your Tidal account",
+      "description": "Open the Tidal sign-in page with the link icon. After signing in you land on a 'Page Not Found' page — copy that URL from the address bar and paste it below."
+    }
+  },
+  "media": {
+    "playlist": {
+      "favorite_tracks": {
+        "name": "Favorite Tracks"
+      }
+    }
+  },
+  "manifest": {
+    "description": "Stream music, playlists, and exclusives in lossless FLAC quality."
+  }
+}

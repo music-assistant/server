@@ -8,10 +8,7 @@ import pytest
 from aiohttp import ClientSession
 from music_assistant_models.errors import LoginFailed
 
-from music_assistant.providers.tidal.auth_manager import (
-    ManualAuthenticationHelper,
-    TidalAuthManager,
-)
+from music_assistant.providers.tidal.auth_manager import TidalAuthManager
 
 
 @pytest.fixture
@@ -101,23 +98,43 @@ async def test_refresh_token_failure(
     assert await auth_manager.refresh_token() is False
 
 
+async def test_refresh_token_cooldown(
+    auth_manager: TidalAuthManager, http_session: AsyncMock
+) -> None:
+    """Test a refresh right after a successful one skips the token endpoint."""
+    auth_manager._auth_info = {
+        "refresh_token": "refresh",
+        "client_id": "client_id",
+    }
+
+    response = AsyncMock()
+    response.status = 200
+    response.json.return_value = {
+        "access_token": "new_token",
+        "expires_in": 3600,
+    }
+    http_session.post.return_value.__aenter__.return_value = response
+
+    assert await auth_manager.refresh_token() is True
+    assert await auth_manager.refresh_token() is True
+    assert http_session.post.call_count == 1
+
+
 @patch("music_assistant.providers.tidal.auth_manager.pkce")
 @patch("music_assistant.providers.tidal.auth_manager.app_var")
-@pytest.mark.usefixtures("auth_manager")
-async def test_generate_auth_url(mock_app_var: Mock, mock_pkce: Mock) -> None:
-    """Test generate_auth_url."""
+async def test_build_pkce_login(mock_app_var: Mock, mock_pkce: Mock) -> None:
+    """The authorize URL carries the PKCE challenge and the params keep the verifier."""
     mock_pkce.generate_pkce_pair.return_value = ("verifier", "challenge")
     mock_app_var.side_effect = ["client_id", "client_secret"]
 
-    mass = Mock()
-    mass.loop.call_soon_threadsafe = Mock()
-    auth_helper = ManualAuthenticationHelper(mass, "session_id")
+    authorize_url, auth_params = TidalAuthManager.build_pkce_login("HIGH")
 
-    result = await TidalAuthManager.generate_auth_url(auth_helper, "HIGH")
-
-    assert "code_verifier" in result
-    assert "client_unique_key" in result
-    mass.loop.call_soon_threadsafe.assert_called_once()
+    assert authorize_url.startswith("https://login.tidal.com/authorize?")
+    assert "code_challenge=challenge" in authorize_url
+    assert "code_challenge_method=S256" in authorize_url
+    assert auth_params["code_verifier"] == "verifier"
+    assert auth_params["client_unique_key"]
+    assert auth_params["quality"] == "HIGH"
 
 
 async def test_process_pkce_login_success(http_session: AsyncMock) -> None:

@@ -1,0 +1,62 @@
+{
+  "config_entries": {
+    "label": {
+      "label": "Please provide the address of your Audiobookshelf instance. To authenticate you have two options: a) Provide username AND password. Leave the API key empty. b) Provide ONLY an API key."
+    },
+    "url": {
+      "label": "Server",
+      "description": "The URL of the Audiobookshelf server to connect to. For example https://abs.domain.tld/ or http://192.168.1.4:13378/"
+    },
+    "username": {
+      "label": "[%key:common::config_entries::username::label%]",
+      "description": "[%key:common::config_entries::username::description%]"
+    },
+    "password": {
+      "label": "[%key:common::config_entries::password::label%]",
+      "description": "[%key:common::config_entries::password::description%]"
+    },
+    "api_token": {
+      "label": "API key _instead_ of user/ password. (ABS version >= 2.26)",
+      "description": "Instead of using a username and password, you may provide an API key (ABS version >= 2.26). Please consult the docs."
+    },
+    "token": {
+      "label": "old token"
+    },
+    "verify_ssl": {
+      "label": "[%key:common::config_entries::verify_ssl::label%]",
+      "description": "[%key:common::config_entries::verify_ssl::description%]"
+    },
+    "hide_empty_podcasts": {
+      "label": "Hide empty podcasts.",
+      "description": "This will skip podcasts with no episodes associated."
+    }
+  },
+  "media": {
+    "folder": {
+      "authors": { "name": "Authors" },
+      "narrators": { "name": "Narrators" },
+      "series_plural": { "name": "Series" },
+      "series_singular": { "name": "Series" },
+      "series_entry": { "name": "{} (Series)" },
+      "collections": { "name": "Collections" },
+      "audiobooks_library": { "name": "{} (Audiobooks library)" },
+      "podcasts_library": { "name": "{} (Podcasts library)" }
+    },
+    "recommendations": {
+      "listen_again": { "name": "Listen again" },
+      "in_progress_series": { "name": "Continue series..." },
+      "recommended": { "name": "Recommended" },
+      "recently_added": { "name": "Recently added" },
+      "recent_series": { "name": "Recent series" },
+      "newest_authors": { "name": "Newest authors" },
+      "newest_episodes": { "name": "Newest episodes" },
+      "discover": { "name": "Discover" }
+    }
+  },
+  "manifest": {
+    "description": "Stream audiobooks and podcasts from your personal Audiobookshelf server."
+  },
+  "errors": {
+    "login_failed": "Login to the Audiobookshelf server at {0} failed."
+  }
+}

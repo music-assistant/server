@@ -7,20 +7,13 @@ import os
 import platform
 import time
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlencode
 
-import pkce
 from music_assistant_models.errors import LoginFailed
 
-from music_assistant.helpers.auth import AuthenticationHelper
 from music_assistant.helpers.process import check_output
-
-from .constants import CALLBACK_REDIRECT_URL, SCOPE
 
 if TYPE_CHECKING:
     import aiohttp
-
-    from music_assistant import MusicAssistant
 
 
 async def get_librespot_binary() -> str:
@@ -54,7 +47,8 @@ async def get_spotify_token(
     refresh_token: str,
     session_name: str = "spotify",
 ) -> dict[str, Any]:
-    """Refresh Spotify access token using refresh token.
+    """
+    Refresh Spotify access token using refresh token.
 
     :param http_session: aiohttp client session.
     :param client_id: Spotify client ID.
@@ -75,63 +69,24 @@ async def get_spotify_token(
         ) as response:
             if response.status != 200:
                 err = await response.text()
-                if "revoked" in err:
-                    raise LoginFailed(f"Token revoked for {session_name}: {err}")
+                # invalid_grant means the refresh token is revoked or expired (Spotify
+                # enforces a 6-month lifetime); retrying won't recover it, so fail now and
+                # let the caller clear the stored token and prompt re-authentication.
+                if "invalid_grant" in err or "revoked" in err:
+                    raise LoginFailed(
+                        f"Refresh token no longer valid for {session_name}: {err}",
+                        translation_key="refresh_token_invalid",
+                        translation_owner="provider.spotify",
+                    )
                 # the token failed to refresh, we allow one retry
                 await asyncio.sleep(2)
                 continue
             # if we reached this point, the token has been successfully refreshed
             auth_info: dict[str, Any] = await response.json()
             auth_info["expires_at"] = int(auth_info["expires_in"] + time.time())
+            # Spotify only returns a refresh_token when it rotates one; when the response
+            # omits it, keep using the existing token (per Spotify's refresh-token docs).
+            auth_info.setdefault("refresh_token", refresh_token)
             return auth_info
 
     raise LoginFailed(f"Failed to refresh {session_name} access token: {err}")
-
-
-async def pkce_auth_flow(
-    mass: MusicAssistant,
-    session_id: str,
-    client_id: str,
-) -> str:
-    """Perform Spotify PKCE auth flow and return refresh token.
-
-    :param mass: MusicAssistant instance.
-    :param session_id: Session ID for the authentication helper.
-    :param client_id: The client ID to use for authentication.
-    :return: Refresh token string.
-    """
-    # spotify PKCE auth flow
-    # https://developer.spotify.com/documentation/web-api/tutorials/code-pkce-flow
-    code_verifier, code_challenge = pkce.generate_pkce_pair()
-    async with AuthenticationHelper(mass, session_id) as auth_helper:
-        params = {
-            "response_type": "code",
-            "client_id": client_id,
-            "scope": " ".join(SCOPE),
-            "code_challenge_method": "S256",
-            "code_challenge": code_challenge,
-            "redirect_uri": CALLBACK_REDIRECT_URL,
-            "state": auth_helper.callback_url,
-        }
-        query_string = urlencode(params)
-        url = f"https://accounts.spotify.com/authorize?{query_string}"
-        result = await auth_helper.authenticate(url)
-        authorization_code = result["code"]
-
-    # now get the access token
-    token_params = {
-        "grant_type": "authorization_code",
-        "code": authorization_code,
-        "redirect_uri": CALLBACK_REDIRECT_URL,
-        "client_id": client_id,
-        "code_verifier": code_verifier,
-    }
-    async with mass.http_session.post(
-        "https://accounts.spotify.com/api/token", data=token_params
-    ) as response:
-        if response.status != 200:
-            error_text = await response.text()
-            raise LoginFailed(f"Failed to get access token: {error_text}")
-        token_result = await response.json()
-
-    return str(token_result["refresh_token"])

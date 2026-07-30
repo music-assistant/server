@@ -1,0 +1,24 @@
+{
+  "id": 900,
+  "title": "Episode One",
+  "available": true,
+  "duration_ms": 1800000,
+  "artists": [
+    {
+      "id": 71,
+      "name": "Podcast Author"
+    }
+  ],
+  "albums": [
+    {
+      "id": 700,
+      "title": "Sample Podcast",
+      "type": "podcast",
+      "meta_type": "podcast",
+      "cover_uri": "avatars.yandex.net/get-music-content/pod/cover/%%"
+    }
+  ],
+  "short_description": "Episode summary goes here.",
+  "content_warning": "explicit",
+  "cover_uri": "avatars.yandex.net/get-music-content/pod/ep1/%%"
+}

@@ -1,0 +1,25 @@
+{
+  "id": 800,
+  "title": "Sample Audiobook",
+  "available": true,
+  "artists": [
+    {
+      "id": 81,
+      "name": "Book Author"
+    },
+    {
+      "id": 82,
+      "name": "Co-Author"
+    }
+  ],
+  "labels": [
+    {
+      "id": 2,
+      "name": "Audio Publisher"
+    }
+  ],
+  "type": "audiobook",
+  "meta_type": "podcast",
+  "description": "A sample audiobook description.",
+  "cover_uri": "avatars.yandex.net/get-music-content/ab/cover/%%"
+}

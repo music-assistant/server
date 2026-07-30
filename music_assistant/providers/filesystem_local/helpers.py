@@ -2,23 +2,40 @@
 
 from __future__ import annotations
 
+import errno
+import logging
 import os
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass
+from pathlib import Path
+
+from music_assistant_models.errors import MediaNotFoundError
 
 from music_assistant.helpers.compare import compare_strings
+from music_assistant.helpers.security import is_safe_path
 
-IGNORE_DIRS = ("recycle", "Recently-Snaphot", "#recycle", "System Volume Information", "lost+found")
+logger = logging.getLogger(__name__)
+
+IGNORE_DIRS = (
+    "recycle",
+    "Recently-Snaphot",
+    "Recently-Snapshot",
+    "#recycle",
+    "System Volume Information",
+    "lost+found",
+    "@eaDir",
+)
 
 
 @dataclass
 class FileSystemItem:
-    """Representation of an item (file or directory) on the filesystem.
+    """
+    Representation of an item (file or directory) on the filesystem.
 
     - filename: Name (not path) of the file (or directory).
     - relative_path: Relative path to the item on this filesystem provider.
     - absolute_path: Absolute path to this item.
-    - parent_path: Absolute path to the parent directory.
     - is_dir: Boolean if item is directory (not file).
     - checksum: Checksum for this path (usually last modified time) None for dir.
     - file_size : File size in number of bytes or None if unknown (or not a file).
@@ -48,14 +65,11 @@ class FileSystemItem:
         return self.filename.rsplit(".", 1)[0]
 
     @property
-    def parent_path(self) -> str:
-        """Return parent path of this item."""
-        return os.path.dirname(self.absolute_path)
-
-    @property
     def parent_name(self) -> str:
-        """Return parent name of this item."""
-        return os.path.basename(self.parent_path)
+        """Return the name of this item's parent directory."""
+        # derived from the relative path: the absolute path may be a URL on
+        # network/cloud providers (webdav, cloud filesystems)
+        return Path(self.relative_parent_path).name
 
     @property
     def relative_parent_path(self) -> str:
@@ -64,7 +78,8 @@ class FileSystemItem:
 
     @classmethod
     def from_dir_entry(cls, entry: os.DirEntry[str], base_path: str) -> FileSystemItem:
-        """Create FileSystemItem from os.DirEntry. NOT Async friendly.
+        """
+        Create FileSystemItem from os.DirEntry. NOT Async friendly.
 
         :raises OSError: If the file cannot be stat'd (e.g., invalid filename encoding).
         """
@@ -122,7 +137,8 @@ def tokenize(input_str: str, delimiters: str) -> list[str]:
 
 
 def _dir_contains_album_name(id3_album_name: str, directory_name: str) -> bool:
-    """Check if a directory name contains an album name.
+    """
+    Check if a directory name contains an album name.
 
     This function tokenizes both input strings using different delimiters and
     checks if the album name is a substring of the directory name.
@@ -186,10 +202,10 @@ def get_album_dir(track_dir: str, album_name: str) -> str | None:
             if _dir_contains_album_name(album_name, dirname):
                 return parentdir
 
-        if compare_strings(album_name.split("(")[0], dirname, False):
+        if compare_strings(album_name.split("(", maxsplit=1)[0], dirname, False):
             # account for AlbumName (Version) format in the album name
             return parentdir
-        if compare_strings(album_name.split("(")[0], dirname.split(" - ")[-1], False):
+        if compare_strings(album_name.split("(", maxsplit=1)[0], dirname.split(" - ")[-1], False):
             # account for ArtistName - AlbumName (Version) format
             return parentdir
         if len(album_name) > 8 and album_name in dirname:
@@ -211,10 +227,104 @@ def get_relative_path(base_path: str, path: str) -> str:
 
 
 def get_absolute_path(base_path: str, path: str) -> str:
-    """Return the absolute path string for a path."""
-    if path.startswith(base_path):
-        return path
-    return os.path.join(base_path, path)
+    """
+    Return the absolute path for a path, constrained to base_path.
+
+    :raises MediaNotFoundError: If the resolved path escapes base_path
+        (e.g. via ``../`` traversal or an absolute path outside the base).
+    """
+    absolute_path = path if path.startswith(base_path) else os.path.join(base_path, path)
+    if not is_safe_path(absolute_path, base_path):
+        msg = f"Path is outside the configured base directory: {path}"
+        raise MediaNotFoundError(msg)
+    return absolute_path
+
+
+def recursive_iter(
+    path: str,
+    base_path: str,
+    supported_extensions: set[str],
+    log: logging.Logger,
+    scan_errors: list[OSError] | None = None,
+) -> Iterator[FileSystemItem]:
+    """
+    Recursively traverse directory entries yielding supported files.
+
+    :param path: The directory path to scan.
+    :param base_path: The root base path for constructing relative paths.
+    :param supported_extensions: Set of file extensions to include (lowercase, no dot).
+    :param log: Logger instance to use for warnings/debug messages.
+    :param scan_errors: Optional list populated with OSErrors raised while scanning
+        the provider's root base path. Callers treat a non-empty list as "provider
+        unreachable" and abort the sync.
+    """
+    is_root = path == base_path
+    try:
+        scan_iter = os.scandir(path)
+    except OSError as err:
+        if err.errno == errno.EINVAL:
+            log.warning(
+                "Skipping directory '%s' - unsupported characters in path",
+                path,
+            )
+            return
+        log.warning("Unable to scan directory %s: %s", path, err)
+        if is_root and scan_errors is not None:
+            scan_errors.append(err)
+        return
+    with scan_iter:
+        while True:
+            try:
+                item = next(scan_iter)
+            except StopIteration:
+                break
+            except OSError as err:
+                log.warning("Error while scanning directory %s: %s", path, err)
+                if is_root and scan_errors is not None:
+                    scan_errors.append(err)
+                return
+            if item.name in IGNORE_DIRS or item.name.startswith((".", "_")):
+                continue
+            try:
+                is_dir = item.is_dir(follow_symlinks=False)
+                is_file = item.is_file(follow_symlinks=False)
+            except OSError as err:
+                if err.errno == errno.EINVAL:
+                    log.warning(
+                        "Skipping '%s' - unsupported characters in name",
+                        item.name,
+                    )
+                else:
+                    log.debug("Skipping entry %s due to OS error: %s", item.path, err)
+                continue
+            if is_dir:
+                yield from recursive_iter(
+                    item.path,
+                    base_path,
+                    supported_extensions,
+                    log,
+                    scan_errors,
+                )
+            elif is_file:
+                if "." not in item.name:
+                    continue
+                ext = item.name.rsplit(".", 1)[1].lower()
+                if ext not in supported_extensions:
+                    continue
+                try:
+                    yield FileSystemItem.from_dir_entry(item, base_path)
+                except OSError as err:
+                    if err.errno == errno.EINVAL:
+                        log.warning(
+                            "Skipping '%s' - unsupported characters in name",
+                            item.name,
+                        )
+                    else:
+                        log.debug(
+                            "Skipping file %s due to OS error: %s",
+                            item.path,
+                            str(err),
+                        )
 
 
 def sorted_scandir(base_path: str, sub_path: str, sort: bool = False) -> list[FileSystemItem]:
@@ -225,24 +335,49 @@ def sorted_scandir(base_path: str, sub_path: str, sort: bool = False) -> list[Fi
     """
 
     def nat_key(name: str) -> tuple[int | str, ...]:
-        """Sort key for natural sorting."""
-        return tuple(int(s) if s.isdigit() else s for s in re.split(r"(\d+)", name))
+        """Sort key for natural sorting, case insensitive to match the frontend sorting."""
+        return tuple(int(s) if s.isdigit() else s.casefold() for s in re.split(r"(\d+)", name))
 
     if base_path not in sub_path:
         sub_path = os.path.join(base_path, sub_path)
-    items = []
-    for entry in os.scandir(sub_path):
-        # filter out invalid dirs and hidden files
-        if not (entry.is_dir(follow_symlinks=False) or entry.is_file(follow_symlinks=False)):
-            continue
-        if entry.name in IGNORE_DIRS or entry.name.startswith("."):
-            continue
-        try:
-            items.append(FileSystemItem.from_dir_entry(entry, base_path))
-        except OSError:
-            # Skip files that cannot be stat'd (e.g., invalid encoding on SMB mounts)
-            # This typically happens with emoji or special unicode characters
-            continue
+    items: list[FileSystemItem] = []
+    try:
+        entries = os.scandir(sub_path)
+    except OSError as err:
+        if err.errno == errno.EINVAL:
+            logger.warning(
+                "Skipping directory '%s' - unsupported characters in path",
+                sub_path,
+            )
+            return items
+        raise
+    with entries:
+        for entry in entries:
+            try:
+                is_dir = entry.is_dir(follow_symlinks=False)
+                is_file = entry.is_file(follow_symlinks=False)
+            except OSError as err:
+                if err.errno == errno.EINVAL:
+                    logger.warning(
+                        "Skipping '%s' - unsupported characters in name",
+                        entry.name,
+                    )
+                continue
+            if not (is_dir or is_file):
+                continue
+            if entry.name in IGNORE_DIRS or entry.name.startswith("."):
+                continue
+            try:
+                items.append(FileSystemItem.from_dir_entry(entry, base_path))
+            except OSError as err:
+                if err.errno == errno.EINVAL:
+                    logger.warning(
+                        "Skipping '%s' - unsupported characters in name",
+                        entry.name,
+                    )
+                else:
+                    logger.debug("Skipping '%s' due to OS error: %s", entry.name, err)
+                continue
 
     if sort:
         return sorted(

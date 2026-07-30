@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 512 512"
+   version="1.1"
+   id="svg6"
+   sodipodi:docname="itunes_icon_under5kb_taller_note.svg"
+   inkscape:version="1.3.2 (091e20e, 2023-11-25, custom)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview6"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:zoom="1"
+     inkscape:cx="255.5"
+     inkscape:cy="255.5"
+     inkscape:window-width="1920"
+     inkscape:window-height="1129"
+     inkscape:window-x="-8"
+     inkscape:window-y="-8"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg6" />
+  <defs
+     id="defs5">
+    <linearGradient
+       id="r"
+       x1="0"
+       y1="0"
+       x2="1"
+       y2="1">
+      <stop
+         offset="0"
+         stop-color="#ff5b57"
+         id="stop1" />
+      <stop
+         offset=".5"
+         stop-color="#a04cff"
+         id="stop2" />
+      <stop
+         offset="1"
+         stop-color="#17c9ff"
+         id="stop3" />
+    </linearGradient>
+    <linearGradient
+       id="n"
+       x1="122.22866"
+       y1="117.51744"
+       x2="373.11908"
+       y2="368.40786"
+       gradientTransform="matrix(0.93267812,0,0,1.1957412,0,-45.520446)"
+       gradientUnits="userSpaceOnUse">
+      <stop
+         offset="0"
+         stop-color="#ff4f63"
+         id="stop4" />
+      <stop
+         offset="1"
+         stop-color="#2da8ff"
+         id="stop5" />
+    </linearGradient>
+  </defs>
+  <circle
+     cx="256"
+     cy="256"
+     r="210"
+     fill="url(#r)"
+     id="circle5" />
+  <circle
+     cx="256"
+     cy="256"
+     r="195"
+     fill="#e5e3e3"
+     id="circle6" />
+  <path
+     fill="url(#n)"
+     d="m 343,95 c -4,0 -10,1.115242 -17,3.345725 l -99,20.074345 c -14,3.34573 -20,11.15242 -20,24.53532 v 161.71004 c -10,-6.69145 -23,-10.03718 -37,-10.03718 -31,0 -56,22.30484 -56,50.18588 C 114,372.69517 139,395 170,395 c 31,0 56,-22.30483 56,-50.18587 v -160.5948 l 103,-21.18959 v 101.48699 c -10,-6.69145 -23,-10.03718 -37,-10.03718 -31,0 -56,22.30484 -56,50.18588 0,27.88104 25,50.18587 56,50.18587 31,0 56,-22.30483 56,-50.18587 V 116.18959 C 348,102.80669 341,95 333,95 Z"
+     id="path6"
+     style="fill:url(#n);stroke-width:1.05605" />
+</svg>

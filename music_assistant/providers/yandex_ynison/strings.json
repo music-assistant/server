@@ -1,0 +1,69 @@
+{
+  "config_entries": {
+    "ym_instance": {
+      "label": "Yandex Music source",
+      "description": "Borrow OAuth credentials from a linked Yandex Music provider instance, or use your own credentials (QR-scan login or manual token paste). Per-instance own credentials let you bind separate players to separate Yandex accounts without sharing tokens with a Yandex Music provider.",
+      "options": {
+        "__own__": "Use own credentials (QR or token)"
+      }
+    },
+    "remember_session": {
+      "label": "Remember session (auto-refresh token)",
+      "description": "Store a long-lived session token (x_token) alongside the music token so this plugin can refresh on its own when the token expires. Disable to keep only the short-lived music token (re-QR required on expiry)."
+    },
+    "mass_player_id": {
+      "label": "[%key:common::config_entries::mass_player_id::label%]",
+      "description": "The Music Assistant player connected to this Ynison plugin. When playback is directed to this device in the Yandex Music app, the audio will play on the selected player. Set to 'Auto' to automatically select a currently playing player.",
+      "options": {
+        "__auto__": "[%key:common::config_entries::mass_player_id::options::__auto__%]"
+      }
+    },
+    "allow_player_switch": {
+      "label": "Allow manual player switching",
+      "description": "When enabled, you can select this plugin as a source on any player to switch playback to that player. When disabled, playback is fixed to the configured default player."
+    },
+    "output_sample_rate": {
+      "label": "Output sample rate",
+      "description": "Sample rate for PCM output to the player. 'Auto' selects 44.1 kHz for lossy or 48 kHz for lossless sources.",
+      "options": {
+        "auto": "Auto (from source quality)",
+        "44100": "44100 Hz (CD)",
+        "48000": "48000 Hz",
+        "96000": "96000 Hz (Hi-Res)"
+      }
+    },
+    "output_bit_depth": {
+      "label": "Output bit depth",
+      "description": "Bit depth for PCM output to the player. 'Auto' selects 16-bit for lossy or 24-bit for lossless sources.",
+      "options": {
+        "auto": "Auto (from source quality)",
+        "16": "16-bit",
+        "24": "24-bit"
+      }
+    },
+    "publish_name": {
+      "label": "Device name in Yandex Music",
+      "description": "How this device appears in the Yandex Music app."
+    },
+    "device_id": {
+      "label": "Device ID"
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Yandex Music account",
+      "description": "Choose the Yandex Music account, target player and device name."
+    },
+    "scan_qr": {
+      "title": "Scan to sign in",
+      "description": "Scan the QR code with the Yandex app and confirm the login. A fresh code is shown automatically if it expires.",
+      "progress_text": "Waiting for you to scan and confirm in the Yandex app..."
+    }
+  },
+  "errors": {
+    "no_music_token": "Login succeeded but Yandex returned no music token. Please try again."
+  },
+  "manifest": {
+    "description": "Makes a Music Assistant player appear as a device in the Yandex Music app via the Ynison protocol."
+  }
+}

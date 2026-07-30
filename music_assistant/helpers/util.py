@@ -4,28 +4,37 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import html
 import importlib
 import logging
 import os
+import platform
 import re
 import shutil
+import signal
 import socket
+import sys
+import time
+import unicodedata
 import urllib.error
 import urllib.request
+import weakref
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import suppress
-from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
+from ipaddress import IPv4Address, IPv6Address, ip_address
 from pathlib import Path
-from types import TracebackType
-from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Self, TypeVar, cast
+from types import ModuleType, TracebackType
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Protocol, Self, TypeVar, cast
 from urllib.parse import urlparse
 
-import chardet
 import ifaddr
-from music_assistant_models.enums import AlbumType
-from zeroconf import IPVersion
+from markdownify import markdownify
+from music_assistant_models.enums import AlbumType, IdentifierType
+from music_assistant_models.errors import UnsupportedSystemError
+from zeroconf import InterfaceChoice, IPVersion
 
 from music_assistant.constants import (
     ANNOUNCE_ALERT_FILE,
@@ -39,33 +48,448 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from chardet.resultdict import ResultDict
+    from music_assistant_models.player import DeviceInfo
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderModuleType
-    from music_assistant.models.core_controller import CoreController
-    from music_assistant.models.provider import Provider
 
-from dataclasses import fields, is_dataclass
 
 LOGGER = logging.getLogger(__name__)
 
-HA_WHEELS = "https://wheels.home-assistant.io/musllinux/"
-
-T = TypeVar("T")
 CALLBACK_TYPE = Callable[[], None]
 
 
+async def warn_if_missing_x86_64_v2(logger: logging.Logger) -> None:
+    """
+    Log a deprecation warning if the CPU lacks x86-64-v2 support.
+
+    :param logger: Logger instance to write the warning to.
+    """
+    if platform.machine() not in ("x86_64", "AMD64"):
+        return
+
+    def _check() -> bool | None:
+        try:
+            cpuinfo = Path("/proc/cpuinfo").read_text()
+        except FileNotFoundError, PermissionError:
+            return None
+
+        flags: set[str] = set()
+        for line in cpuinfo.splitlines():
+            if line.startswith("flags"):
+                flags.update(line.split())
+                break
+
+        if not flags:
+            return None
+
+        # x86-64-v2 requires: CMPXCHG16B, LAHF/SAHF, POPCNT, SSE3, SSSE3, SSE4.1, SSE4.2
+        # SSE3 may appear as "pni" (Prescott New Instructions) on older kernels
+        required = {"cx16", "lahf_lm", "popcnt", "sse4_1", "sse4_2", "ssse3"}
+        has_sse3 = bool({"sse3", "pni"} & flags)
+        return required.issubset(flags) and has_sse3
+
+    if await asyncio.to_thread(_check) is False:
+        logger.warning(
+            "\n\n"
+            "########################################################"
+            "########################\n"
+            "###               CPU DEPRECATION WARNING"
+            "                                    ###\n"
+            "########################################################"
+            "########################\n"
+            "\n"
+            "Your CPU does not support the x86-64-v2 instruction "
+            "set, which will be\n"
+            "required starting with Music Assistant 2.9.\n"
+            "\n"
+            "If you are running in a virtual machine (e.g. Proxmox),"
+            " change the CPU type\n"
+            "to 'host' or select a more modern CPU type preset "
+            "(e.g. x86-64-v2 or newer).\n"
+            "\n"
+            "If your physical CPU predates 2009, you will likely "
+            "need to upgrade\n"
+            "your hardware before updating Music Assistant to 2.9.\n"
+            "\n"
+            "########################################################"
+            "########################\n"
+        )
+
+
 def get_total_system_memory() -> float:
-    """Get total system memory in GB."""
-    try:
-        # Works on Linux and macOS
-        total_memory_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
-        return total_memory_bytes / (1024**3)  # Convert to GB
-    except (AttributeError, ValueError):
-        # Fallback if sysconf is not available (e.g., Windows)
-        # Return a conservative default to disable buffering by default
+    """
+    Return the memory available to this process in GB (0.0 when unknown).
+
+    On Linux this is min(physical RAM, cgroup memory limit), so a container's
+    --memory limit is honored when sizing buffers and gating heavy features.
+    Returns 0.0 when the platform cannot report memory (e.g. Windows), which
+    callers treat as "unknown" and fail open.
+    """
+    host_gb = _get_host_memory_gb()
+    if host_gb <= 0.0:
         return 0.0
+    if sys.platform != "linux":
+        return host_gb
+    cgroup_gb = _get_cgroup_memory_limit_gb()
+    if cgroup_gb is None or cgroup_gb <= 0.0:
+        return host_gb
+    return min(host_gb, cgroup_gb)
+
+
+def _get_host_memory_gb() -> float:
+    """Return host physical RAM in GB via sysconf, or 0.0 when unavailable."""
+    try:
+        total_memory_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
+        return total_memory_bytes / (1024**3)
+    except AttributeError, ValueError, OSError:
+        # sysconf is unavailable on some platforms (e.g. Windows); treat as unknown.
+        return 0.0
+
+
+def _get_cgroup_memory_limit_gb(
+    cgroup_root: str = "/sys/fs/cgroup", proc_cgroup: str = "/proc/self/cgroup"
+) -> float | None:
+    """
+    Return this process's cgroup memory limit in GB, or None if unlimited/unavailable.
+
+    cgroup v2 (memory.max) is tried first, then v1 (memory/memory.limit_in_bytes).
+
+    :param cgroup_root: Mount point of the cgroup filesystem (overridable for tests).
+    :param proc_cgroup: Path to the process cgroup file (overridable for tests).
+    """
+    limit = _read_cgroup_v2_limit(cgroup_root, proc_cgroup)
+    if limit is not None:
+        return limit
+    return _read_cgroup_v1_limit(cgroup_root, proc_cgroup)
+
+
+def _read_cgroup_v2_limit(cgroup_root: str, proc_cgroup: str) -> float | None:
+    """Read the effective cgroup v2 memory limit in GB, or None."""
+    rel = _read_self_cgroup_path(proc_cgroup, controller=None)
+    return _min_hierarchical_limit(cgroup_root, rel, "memory.max")
+
+
+def _read_cgroup_v1_limit(cgroup_root: str, proc_cgroup: str) -> float | None:
+    """Read the effective cgroup v1 memory limit in GB, or None."""
+    # On v1 the memory controller is conventionally mounted at <root>/memory.
+    rel = _read_self_cgroup_path(proc_cgroup, controller="memory")
+    return _min_hierarchical_limit(
+        os.path.join(cgroup_root, "memory"), rel, "memory.limit_in_bytes"
+    )
+
+
+def _min_hierarchical_limit(base: str, rel: str | None, filename: str) -> float | None:
+    """
+    Return the smallest bounded memory limit (GB) across the cgroup and its ancestors, or None.
+
+    The effective limit is the minimum imposed anywhere from the process's own cgroup
+    up to the mount root, since a parent slice can cap memory even when the leaf cgroup
+    itself is unlimited (e.g. systemd slices or nested k8s cgroups).
+
+    :param base: Base of the hierarchy (the cgroup mount, or <mount>/memory on v1).
+    :param rel: The process's cgroup path relative to base (from /proc/self/cgroup).
+    :param filename: Limit file to read at each level (memory.max or memory.limit_in_bytes).
+    """
+    parts = [p for p in (rel or "").split("/") if p]
+    limits: list[float] = []
+    # Walk from the process's own cgroup up to the mount root.
+    while True:
+        directory = os.path.join(base, *parts) if parts else base
+        limit = _read_cgroup_limit_file(os.path.join(directory, filename))
+        if limit is not None:
+            limits.append(limit)
+        if not parts:
+            break
+        parts.pop()
+    return min(limits) if limits else None
+
+
+def _read_cgroup_limit_file(path: str) -> float | None:
+    """
+    Parse a cgroup memory-limit file into GB, or None if missing/unlimited/invalid.
+
+    :param path: Path to a cgroup memory.max (v2) or memory.limit_in_bytes (v1) file.
+    """
+    try:
+        with open(path) as fh:
+            raw = fh.read().strip()
+    except OSError:
+        # File absent or unreadable (covers FileNotFoundError/PermissionError/etc.).
+        return None
+    # "max" (v2) or a near-INT64_MAX sentinel (v1) both mean "no limit set".
+    if not raw or raw == "max":
+        return None
+    try:
+        limit_bytes = int(raw)
+    except ValueError:
+        return None
+    if limit_bytes <= 0 or limit_bytes >= _CGROUP_UNLIMITED_THRESHOLD:
+        return None
+    return limit_bytes / (1024**3)
+
+
+def _read_self_cgroup_path(proc_cgroup: str, *, controller: str | None) -> str | None:
+    """
+    Return the process's cgroup path from /proc/self/cgroup, or None.
+
+    :param proc_cgroup: Path to the process cgroup file.
+    :param controller: For cgroup v1, the controller name (e.g. "memory") whose path
+        to return. None selects the cgroup v2 unified hierarchy line ("0::<path>").
+    """
+    try:
+        with open(proc_cgroup) as fh:
+            for line in fh:
+                parts = line.strip().split(":", 2)
+                if len(parts) != 3:
+                    continue
+                hierarchy_id, controllers, path = parts
+                if controller is None:
+                    if hierarchy_id == "0" and controllers == "":
+                        return path or "/"
+                elif controller in controllers.split(","):
+                    return path or "/"
+    except OSError:
+        return None
+    return None
+
+
+# cgroup v1 writes a near-INT64_MAX value (PAGE_SIZE * LONG_MAX on most kernels) to
+# memory.limit_in_bytes when no limit is set; treat anything this large as unlimited.
+_CGROUP_UNLIMITED_THRESHOLD: int = 1 << 62
+
+
+def is_arm() -> bool:
+    """Return whether the host CPU is ARM-based (32- or 64-bit)."""
+    return platform.machine().lower() in ("arm64", "aarch64", "armv8l", "armv7l")
+
+
+def inference_thread_budget() -> int:
+    """
+    Return the native thread budget for on-device inference.
+
+    Defaults to ~25% of the available cores, or to an operator-supplied OMP_NUM_THREADS
+    when that is set, so the torch and native pool budgets stay in agreement.
+    """
+    override = os.environ.get("OMP_NUM_THREADS", "")
+    if override.isdigit() and (threads := int(override)) > 0:
+        return threads
+    return max(1, (os.process_cpu_count() or os.cpu_count() or 4) // 4)
+
+
+def cap_native_thread_pools() -> int:
+    """
+    Cap the native BLAS/OpenMP thread pools process-wide and return the applied budget.
+
+    Left uncapped, every one of these pools sizes itself to the full core count per worker
+    and, across concurrent analysis sessions, saturates the box and starves playback.
+
+    Must be called before any native math library is loaded, because these pools read their
+    size from the environment once, at library load time. Capping them after the fact means
+    walking the dynamic linker's loaded-library list (what threadpoolctl does), which
+    deadlocks against a concurrent import: the walk holds the loader lock while it needs the
+    GIL back for each callback, and an importing thread holds the GIL while it waits in
+    dlopen() for that same loader lock.
+    """
+    budget = inference_thread_budget()
+    for env_var in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ):
+        # setdefault so an operator-supplied value always wins
+        os.environ.setdefault(env_var, str(budget))
+    return budget
+
+
+async def verify_system_meets_requirements(
+    *,
+    feature_name: str,
+    min_memory_gb: float = 0.0,
+    min_cpu_cores: int = 0,
+    require_ml_inference: bool = False,
+) -> None:
+    """
+    Verify the host meets the minimum CPU/RAM requirements for a heavy provider.
+
+    :param feature_name: Human-readable provider name used in the error message.
+    :param min_memory_gb: Minimum total system RAM in GB (0 disables the check).
+    :param min_cpu_cores: Minimum CPU core count (0 disables the check).
+    :param require_ml_inference: When True, also verify the CPU can run on-device
+        torch inference. Checked last, as it spawns a probe subprocess.
+    :raises UnsupportedSystemError: If the system does not meet the requirements.
+    """
+    if shortfall := _resource_shortfall(min_memory_gb=min_memory_gb, min_cpu_cores=min_cpu_cores):
+        message, translation_key, translation_args = shortfall
+        raise UnsupportedSystemError(
+            f"This system does not meet the minimal requirements for {feature_name}: {message}",
+            translation_key=translation_key,
+            translation_args=[feature_name, *translation_args],
+        )
+    if require_ml_inference:
+        await verify_cpu_supports_ml_inference()
+
+
+def system_meets_requirements(
+    *,
+    min_memory_gb: float = 0.0,
+    min_cpu_cores: int = 0,
+) -> bool:
+    """
+    Return whether the host meets the given RAM/CPU thresholds.
+
+    A non-raising companion to verify_system_meets_requirements for soft UI hints
+    (e.g. hiding a recommended-hardware notice) rather than gating setup. The
+    ML-inference capability is not considered here.
+
+    :param min_memory_gb: Minimum total system RAM in GB (0 disables the check).
+    :param min_cpu_cores: Minimum CPU core count (0 disables the check).
+    """
+    return _resource_shortfall(min_memory_gb=min_memory_gb, min_cpu_cores=min_cpu_cores) is None
+
+
+# The kernel reports MemTotal — installed RAM minus firmware/reserved pages — so a host
+# always shows a little under its nominal size (a "4GB" box reports ~3.8GB). Allow this
+# fraction of slack when checking a RAM target, in one place rather than per call site, so
+# nominal requirements (4, 8 GB) match the hardware they describe without ad-hoc thresholds.
+MEMORY_REPORTING_TOLERANCE: float = 0.08
+
+
+def meets_memory_target(total_memory_gb: float, target_gb: float) -> bool:
+    """
+    Return whether reported RAM satisfies a nominal target within the reporting tolerance.
+
+    Fails open (True) when the target is 0 (no requirement) or memory is unknown
+    (0.0, e.g. Windows), so callers never block on a guess.
+
+    :param total_memory_gb: RAM reported by get_total_system_memory() in GB.
+    :param target_gb: Nominal RAM target in GB (e.g. 4 or 8).
+    """
+    if not target_gb or not total_memory_gb:
+        return True
+    return total_memory_gb >= target_gb * (1.0 - MEMORY_REPORTING_TOLERANCE)
+
+
+def _resource_shortfall(
+    *, min_memory_gb: float, min_cpu_cores: int
+) -> tuple[str, str, list[Any]] | None:
+    """
+    Return an unmet RAM/CPU threshold as (message, translation_key, translation_args), or None.
+
+    translation_args exclude the feature name, which the caller prepends.
+
+    :param min_memory_gb: Minimum total system RAM in GB (0 disables the check).
+    :param min_cpu_cores: Minimum CPU core count (0 disables the check).
+    """
+    cpu_cores = os.process_cpu_count() or os.cpu_count() or 1
+    if min_cpu_cores and cpu_cores < min_cpu_cores:
+        return (
+            f"at least {min_cpu_cores} CPU cores are required ({cpu_cores} detected).",
+            "unsupported_system_cpu_cores",
+            [min_cpu_cores, cpu_cores],
+        )
+    total_memory_gb = get_total_system_memory()
+    # meets_memory_target() fails open on unknown memory (0.0, e.g. Windows) and absorbs
+    # the kernel's MemTotal under-report, so min_memory_gb stays a clean nominal figure.
+    if min_memory_gb and not meets_memory_target(total_memory_gb, min_memory_gb):
+        return (
+            f"at least {min_memory_gb:.0f}GB of RAM is required ({total_memory_gb:.1f}GB detected).",
+            "unsupported_system_memory",
+            [f"{min_memory_gb:.0f}", f"{total_memory_gb:.1f}"],
+        )
+    return None
+
+
+# How long to wait for the out-of-process inference probe before treating it as
+# inconclusive. The probe only imports torch and runs a few tiny tensors, but a cold,
+# heavily loaded VM can be slow to start the interpreter, so keep this generous.
+_ML_INFERENCE_PROBE_TIMEOUT = 60.0
+# POSIX signals that mean the CPU could not execute the inference (the probe exits with the
+# negated signal number). Any of these disables the feature; other exits fail open.
+_ML_INFERENCE_FAULT_SIGNALS = frozenset(
+    {signal.SIGILL, signal.SIGSEGV, signal.SIGABRT, signal.SIGFPE}
+)
+
+
+async def verify_cpu_supports_ml_inference() -> None:
+    """
+    Verify the CPU can actually execute on-device ML (torch) inference.
+
+    Runs a representative inference in a throwaway subprocess, so a CPU that reports a
+    capability it cannot actually execute (common on virtual machines without host CPU
+    passthrough) crashes the probe instead of the server. Inconclusive probe results fail
+    open, so a probe malfunction never blocks a capable host.
+
+    :raises UnsupportedSystemError: If the CPU lacks AVX2, or reports it but cannot execute
+        the required instructions.
+    """
+    if platform.machine().lower() not in ("x86_64", "amd64", "i386", "i686", "x86"):
+        # non-x86 (ARM) machines run quantized inference via QNNPACK instead of FBGEMM
+        return
+    from music_assistant.helpers import _ml_inference_probe  # noqa: PLC0415
+
+    returncode = await _run_ml_inference_probe()
+    if returncode == _ml_inference_probe.PROBE_CAPABLE:
+        return
+    if returncode == _ml_inference_probe.PROBE_NO_AVX2:
+        raise UnsupportedSystemError(
+            "On-device audio analysis requires a CPU with AVX2 support "
+            "(Intel Haswell / AMD Zen or newer). This CPU does not support AVX2. "
+            "If you are running in a virtual machine (e.g. Proxmox), changing the "
+            "CPU type to 'host' may expose AVX2 to the guest.",
+            translation_key="unsupported_system_avx2",
+        )
+    if returncode is not None and returncode < 0 and -returncode in _ML_INFERENCE_FAULT_SIGNALS:
+        raise UnsupportedSystemError(
+            "On-device audio analysis cannot run on this CPU: it reports AVX2 support but "
+            "fails to execute the required instructions. This is common on virtual machines "
+            "without host CPU passthrough -- if you are running in a VM (e.g. Proxmox or "
+            "TrueNAS), set the CPU type to 'host'.",
+            translation_key="unsupported_system_ml_inference_failed",
+        )
+    # Inconclusive: the probe could not be spawned, timed out, was OOM-killed, or exited for
+    # an unexpected reason. Assume the host is capable rather than block a working setup.
+    LOGGER.warning(
+        "On-device ML inference capability probe was inconclusive (exit code %s); "
+        "assuming this CPU is capable",
+        returncode,
+    )
+
+
+async def _run_ml_inference_probe() -> int | None:
+    """
+    Run the inference probe subprocess and return its exit code.
+
+    Returns None when the probe could not be started or did not finish in time; otherwise
+    the process return code (negative if a signal killed it).
+    """
+    from music_assistant.helpers import _ml_inference_probe  # noqa: PLC0415
+
+    try:
+        # Run with -m, not by file path: a path run puts the probe's own directory on
+        # sys.path, which would shadow the stdlib (e.g. helpers/logging.py over logging).
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-m",
+            _ml_inference_probe.__name__,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except OSError as err:
+        LOGGER.warning("Could not start the ML inference capability probe: %s", err)
+        return None
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=_ML_INFERENCE_PROBE_TIMEOUT)
+    except TimeoutError:
+        proc.kill()
+        with suppress(ProcessLookupError):
+            await proc.wait()
+        LOGGER.warning("The ML inference capability probe timed out")
+        return None
+    return proc.returncode
 
 
 keyword_pattern = re.compile("title=|artist=")
@@ -74,8 +498,38 @@ artist_pattern = re.compile(r"artist=\"(?P<artist>.*?)\"")
 dot_com_pattern = re.compile(r"(?P<netloc>\(?\w+\.(?:\w+\.)?(\w{2,3})\)?)")
 ad_pattern = re.compile(r"((ad|advertisement)_)|^AD\s\d+$|ADBREAK", flags=re.IGNORECASE)
 title_artist_order_pattern = re.compile(r"(?P<title>.+)\sBy:\s(?P<artist>.+)", flags=re.IGNORECASE)
+# German format used by some stations: "Track" von Artist
+german_von_pattern = re.compile(r'^"(?P<title>[^"]+)"\s+von\s+(?P<artist>.+)$', flags=re.IGNORECASE)
+# English format used by some stations: "Track" by Artist from "Album" (album optional).
+# Title and album are quote-delimited, so the non-greedy artist plus the anchored,
+# quoted album group keep "by"/"from" inside the artist name from being mis-split.
+english_by_pattern = re.compile(
+    r'^"(?P<title>[^"]+)"\s+by\s+(?P<artist>.+?)(?:\s+from\s+"(?P<album>[^"]*)")?$',
+    flags=re.IGNORECASE,
+)
 multi_space_pattern = re.compile(r"\s{2,}")
 end_junk_pattern = re.compile(r"(.+?)(\s\W+)$")
+
+# HTML tags worth preserving as markdown; any other tag is stripped (text kept)
+MARKDOWN_SAFE_TAGS = [
+    "a",
+    "b",
+    "blockquote",
+    "br",
+    "em",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
+    "i",
+    "li",
+    "ol",
+    "p",
+    "strong",
+    "ul",
+]
 
 VERSION_PARTS = (
     # list of common version strings
@@ -88,11 +542,22 @@ VERSION_PARTS = (
     "instrumental",
     "karaoke",
     "remaster",
+    "remastered",
     "versie",
     "unplugged",
     "disco",
     "akoestisch",
     "deluxe",
+    "video",
+    "radio",
+    "extended",
+    "single",
+    "edition",
+    "anniversary",
+    "stereo",
+    "album",
+    "bonus",
+    "release",
 )
 IGNORE_TITLE_PARTS = (
     # strings that may be stripped off a title part
@@ -113,6 +578,37 @@ WITH_TITLE_WORDS = (
     "no",
 )
 
+# Keywords for aggressive search cleaning (includes featuring).
+_VERSION_PATTERN = "|".join(re.escape(v) for v in VERSION_PARTS)
+_FEAT_PATTERN = r"feat(?:uring)?|ft"
+_SEARCH_PATTERN = rf"{_VERSION_PATTERN}|{_FEAT_PATTERN}"
+
+_SEARCH_PAREN_PATTERN = re.compile(
+    rf"[\(\[][^\)\]]*\b({_SEARCH_PATTERN})\b[^\)\]]*[\)\]]",
+    re.IGNORECASE,
+)
+_SEARCH_HYPHEN_PATTERN = re.compile(
+    rf"(\s*-\s*(\d{{4}}|{_SEARCH_PATTERN}).*)$",
+    re.IGNORECASE,
+)
+
+# Superfluous suffixes to strip for display (video/audio markers, etc.)
+_DISPLAY_STRIP_PATTERN = re.compile(
+    r"\s*[\(\[]"
+    r"(official\s+)?(lyric\s+|music\s+)?(video|audio|visualizer|clip)"
+    r"[\)\]]$",
+    re.IGNORECASE,
+)
+
+# Featuring patterns for stripping from titles (not in parentheses).
+_FEATURING_PATTERNS = (
+    " featuring ",
+    " feat. ",
+    " feat ",
+    " ft. ",
+    " ft ",
+)
+
 
 def filename_from_string(string: str) -> str:
     """Create filename from unsafe string."""
@@ -120,11 +616,21 @@ def filename_from_string(string: str) -> str:
     return "".join(c for c in string if c.isalnum() or c in keepcharacters).rstrip()
 
 
+# aiohttp rejects the full C0 control character range plus DEL in response headers
+# to prevent header injection attacks (see aiohttp http_writer._FORBIDDEN_HEADER_CHARS_RE)
+_FORBIDDEN_HEADER_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def sanitize_http_header_value(value: str) -> str:
+    """Replace control characters that are not allowed in HTTP header values."""
+    return _FORBIDDEN_HEADER_CHARS_RE.sub(" ", value).strip()
+
+
 def try_parse_int(possible_int: Any, default: int | None = 0) -> int | None:
     """Try to parse an int."""
     try:
         return int(float(possible_int))
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -132,7 +638,7 @@ def try_parse_float(possible_float: Any, default: float | None = 0.0) -> float |
     """Try to parse a float."""
     try:
         return float(possible_float)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return default
 
 
@@ -145,8 +651,10 @@ def try_parse_bool(possible_bool: Any) -> bool:
 
 def try_parse_duration(duration_str: str) -> float:
     """Try to parse a duration in seconds from a duration (HH:MM:SS) string."""
-    milliseconds = float("0." + duration_str.split(".")[-1]) if "." in duration_str else 0.0
-    duration_parts = duration_str.split(".")[0].split(",")[0].split(":")
+    milliseconds = (
+        float("0." + duration_str.rsplit(".", maxsplit=1)[-1]) if "." in duration_str else 0.0
+    )
+    duration_parts = duration_str.split(".", maxsplit=1)[0].split(",", maxsplit=1)[0].split(":")
     if len(duration_parts) == 3:
         seconds = sum(x * int(t) for x, t in zip([3600, 60, 1], duration_parts, strict=False))
     elif len(duration_parts) == 2:
@@ -156,11 +664,65 @@ def try_parse_duration(duration_str: str) -> float:
     return seconds + milliseconds
 
 
-def parse_title_and_version(title: str, track_version: str | None = None) -> tuple[str, str]:
-    """Try to parse version from the title."""
+def normalize_unicode(value: str | None) -> str | None:
+    """
+    Normalize Unicode strings to NFC form for consistent handling.
+
+    This ensures that Unicode characters like "é" are stored as single
+    codepoints rather than "e" + combining accent mark, which prevents
+    issues with string comparisons and memory bloat.
+
+    :param value: String to normalize, or None.
+    """
+    if value is None:
+        return None
+    return unicodedata.normalize("NFC", value)
+
+
+def parse_title_and_version(
+    title: str,
+    track_version: str | None = None,
+    strip_for_search: bool = False,
+    strip_for_display: bool = False,
+) -> tuple[str, str]:
+    """
+    Parse version from the title and optionally clean for search or display.
+
+    :param title: The title to parse.
+    :param track_version: Optional existing version string.
+    :param strip_for_search: Aggressively strip for search matching.
+    :param strip_for_display: Strip superfluous suffixes for display.
+    """
     version = track_version or ""
-    for regex in (r"\(.*?\)", r"\[.*?\]", r" - .*"):
-        for title_part in re.findall(regex, title):
+
+    # Strip featuring, bracketed version info, and hyphen suffixes (e.g. "- Remastered 2019")
+    if strip_for_search:
+        title = _SEARCH_PAREN_PATTERN.sub("", title)
+        title = _SEARCH_HYPHEN_PATTERN.sub("", title)
+        # Strip bare featuring credits (not in parentheses)
+        title_lower = title.lower()
+        for pattern in _FEATURING_PATTERNS:
+            if pattern in title_lower:
+                idx = title_lower.find(pattern)
+                title = title[:idx]
+                break
+        # Clean up dangling hyphens and extra spaces
+        title = re.sub(r"\s*-\s*$", "", title)
+        title = re.sub(r"\s+", " ", title).strip()
+        return title, version
+
+    # Strip video/audio suffixes like "(Official Video)"
+    if strip_for_display:
+        title = _DISPLAY_STRIP_PATTERN.sub("", title).strip()
+        return title, version
+
+    # Standard version parsing
+    for parts in (
+        _balanced_bracket_groups(title, "(", ")"),
+        _balanced_bracket_groups(title, "[", "]"),
+        re.findall(r" - .*", title),
+    ):
+        for title_part in parts:
             # Extract the content without brackets/dashes for checking
             clean_part = title_part.translate(str.maketrans("", "", "()[]-")).strip().lower()
 
@@ -190,11 +752,47 @@ def parse_title_and_version(title: str, track_version: str | None = None) -> tup
             # Check if this part is a version
             for version_str in VERSION_PARTS:
                 if version_str in clean_part:
-                    # Preserve original casing for output
-                    version = title_part.strip("()[]- ").strip()
+                    # Preserve original casing (and any nested brackets) for output
+                    version = _strip_outer_markers(title_part)
                     title = title.replace(title_part, "").strip()
                     return title, version
     return title, version
+
+
+def _balanced_bracket_groups(text: str, open_char: str, close_char: str) -> list[str]:
+    """
+    Return the top-level balanced bracketed substrings, including the outer brackets.
+
+    :param text: The text to scan.
+    :param open_char: The opening bracket character.
+    :param close_char: The closing bracket character.
+    """
+    groups: list[str] = []
+    depth = 0
+    start = -1
+    for idx, char in enumerate(text):
+        if char == open_char:
+            if depth == 0:
+                start = idx
+            depth += 1
+        elif char == close_char and depth > 0:
+            depth -= 1
+            if depth == 0:
+                groups.append(text[start : idx + 1])
+    return groups
+
+
+def _strip_outer_markers(part: str) -> str:
+    """
+    Strip the outer brackets or leading hyphen from a parsed title part.
+
+    :param part: The raw title part as matched from the title.
+    """
+    part = part.strip()
+    # only strip a single outer bracket pair so nested brackets stay intact
+    if part[:1] in "([" and part[-1:] in ")]":
+        return part[1:-1].strip()
+    return part.lstrip("- ").strip()
 
 
 def infer_album_type(title: str, version: str) -> AlbumType:
@@ -243,11 +841,50 @@ def strip_multi_space(line: str) -> str:
     return multi_space_pattern.sub(" ", line)
 
 
+def html_to_markdown(line: str) -> str:
+    """Convert the safe subset of HTML in a string to markdown, stripping other tags."""
+    # unescape first so entity-encoded markup (e.g. "&lt;p&gt;") is handled too
+    return markdownify(
+        html.unescape(line),
+        convert=MARKDOWN_SAFE_TAGS,
+        escape_asterisks=False,
+        escape_underscores=False,
+        escape_misc=False,
+    ).strip()
+
+
 def multi_strip(line: str) -> str:
     """Strip assorted junk from line."""
     return strip_multi_space(
         swap_title_artist_order(strip_end_junk(strip_dotcom(strip_url(strip_ads(line)))))
     ).rstrip()
+
+
+def parse_quoted_stream_title(line: str) -> tuple[str, str, str | None] | None:
+    """
+    Parse stream titles that name the track in natural language with a quoted title.
+
+    Recognises '"Track" by Artist from "Album"' (album optional) and the German
+    '"Track" von Artist'.
+
+    :param line: Raw (uncleaned) stream title.
+    :returns: Tuple of (title, artist, album), or None when the line is not in one of
+        these formats. ``album`` is None when the station omits it.
+    """
+    stripped = line.strip()
+    if match := english_by_pattern.match(stripped):
+        title = multi_strip(match.group("title"))
+        artist = multi_strip(match.group("artist")).strip('"')
+        album_raw = match.group("album")
+        album = multi_strip(album_raw).strip('"') if album_raw else None
+        if title and artist:
+            return title, artist, album or None
+    if match := german_von_pattern.match(stripped):
+        title = multi_strip(match.group("title"))
+        artist = multi_strip(match.group("artist")).strip('"')
+        if title and artist:
+            return title, artist, None
+    return None
 
 
 def clean_stream_title(line: str) -> str:
@@ -256,6 +893,9 @@ def clean_stream_title(line: str) -> str:
     artist: str = ""
 
     if not keyword_pattern.search(line):
+        if parsed := parse_quoted_stream_title(line):
+            track_name, artist_name, _ = parsed
+            return f"{artist_name} - {track_name}"
         return multi_strip(line)
 
     if match := title_pattern.search(line):
@@ -281,81 +921,199 @@ def clean_stream_title(line: str) -> str:
     return line
 
 
-async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
-    """Return all IP-adresses of all network interfaces."""
+# cache for get_ip_addresses: enumerating the network adapters involves a thread hop,
+# socket probes and a full adapter walk, while the result rarely (if ever) changes
+IP_ADDRESSES_CACHE_TTL = 30
+_ip_addresses_cache: dict[bool, tuple[float, tuple[str, ...]]] = {}
+_ip_addresses_pending: dict[bool, asyncio.Task[tuple[str, ...]]] = {}
 
-    def call() -> tuple[str, ...]:
-        result: list[tuple[int, str]] = []
-        # try to get the primary IP address
-        # this is the IP address of the default route
-        _sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        _sock.settimeout(0)
+
+async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
+    """
+    Return all IP addresses of all network interfaces.
+
+    Always returns at least one address: when no routable address is found
+    (e.g. offline host), the loopback address is returned as fallback.
+    Results are cached for a short while, so an IP/interface change may take up to
+    IP_ADDRESSES_CACHE_TTL seconds to be reflected.
+
+    :param include_ipv6: Whether to include IPv6 addresses in the result.
+    """
+    if cached := _ip_addresses_cache.get(include_ipv6):
+        cached_at, addresses = cached
+        if (time.monotonic() - cached_at) < IP_ADDRESSES_CACHE_TTL:
+            return addresses
+
+    async def _probe() -> tuple[str, ...]:
         try:
-            # doesn't even have to be reachable
-            _sock.connect(("10.254.254.254", 1))
-            primary_ip = _sock.getsockname()[0]
+            addresses = await asyncio.to_thread(_enumerate_ip_addresses, include_ipv6)
+            _ip_addresses_cache[include_ipv6] = (time.monotonic(), addresses)
+            return addresses
+        finally:
+            _ip_addresses_pending.pop(include_ipv6, None)
+
+    # single-flight: no await between the pending-check and storing the task,
+    # so concurrent callers always end up awaiting the same probe
+    if not (pending := _ip_addresses_pending.get(include_ipv6)):
+        pending = asyncio.create_task(_probe())
+        _ip_addresses_pending[include_ipv6] = pending
+    # shield the shared probe: a caller awaiting a task holds it as its fut_waiter,
+    # so cancelling that caller would otherwise cancel the probe for all other callers
+    return await asyncio.shield(pending)
+
+
+def _enumerate_ip_addresses(include_ipv6: bool) -> tuple[str, ...]:
+    """Enumerate all IP addresses of all network interfaces (blocking)."""
+    result: list[tuple[int, str]] = []
+    # try to get the primary IP address
+    # this is the IP address of the default route
+    primary_ip = ""
+    # try IPv4 first
+    _sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    _sock.settimeout(0)
+    try:
+        # doesn't even have to be reachable
+        _sock.connect(("10.254.254.254", 1))
+        primary_ip = _sock.getsockname()[0]
+    except Exception:
+        primary_ip = ""
+    finally:
+        _sock.close()
+    # fall back to IPv6 if no IPv4 primary found (e.g. IPv6-only networks)
+    if not primary_ip:
+        _sock6 = socket.socket(socket.AF_INET6, socket.SOCK_DGRAM)
+        _sock6.settimeout(0)
+        try:
+            _sock6.connect(("2001:db8::1", 1))
+            primary_ip = _sock6.getsockname()[0]
         except Exception:
             primary_ip = ""
         finally:
-            _sock.close()
-        # get all IP addresses of all network interfaces
-        adapters = ifaddr.get_adapters()
-        for adapter in adapters:
-            for ip in adapter.ips:
-                if ip.is_IPv6 and not include_ipv6:
-                    continue
-                ip_str = str(ip.ip)
-                if ip_str.startswith(("127", "169.254")):
-                    # filter out IPv4 loopback/APIPA address
-                    continue
-                if ip_str.startswith(("::1", "::ffff:", "fe80")):
-                    # filter out IPv6 loopback/link-local address
-                    continue
-                if ip_str == primary_ip:
-                    score = 10
-                elif ip_str.startswith(("192.168.",)):
-                    # we rank the 192.168 range a bit higher as its most
-                    # often used as the private network subnet
-                    score = 2
-                elif ip_str.startswith(("172.", "10.", "192.")):
-                    # we rank the 172 range a bit lower as its most
-                    # often used as the private docker network
-                    score = 1
-                else:
-                    score = 0
-                result.append((score, ip_str))
-        result.sort(key=lambda x: x[0], reverse=True)
-        return tuple(ip[1] for ip in result)
+            _sock6.close()
+    # get all IP addresses of all network interfaces
+    adapters = ifaddr.get_adapters()
+    for adapter in adapters:
+        for ip in adapter.ips:
+            if ip.is_IPv6 and not include_ipv6:
+                continue
+            # ifaddr returns IPv6 addresses as (address, flowinfo, scope_id) tuples
+            ip_str = ip.ip[0] if isinstance(ip.ip, tuple) else ip.ip
+            if ip_str.startswith(("127", "169.254")):
+                # filter out IPv4 loopback/APIPA address
+                continue
+            if ip_str.startswith(("::1", "::ffff:", "fe80")):
+                # filter out IPv6 loopback/link-local address
+                continue
+            if ip_str == primary_ip:
+                score = 10
+            elif ip_str.startswith(("192.168.",)):
+                # we rank the 192.168 range a bit higher as its most
+                # often used as the private network subnet
+                score = 2
+            elif ip_str.startswith(("172.", "10.", "192.")):
+                # we rank the 172 range a bit lower as its most
+                # often used as the private docker network
+                score = 1
+            else:
+                score = 0
+            result.append((score, ip_str))
+    result.sort(key=lambda x: x[0], reverse=True)
+    if not result:
+        # no routable addresses found (e.g. offline host with only loopback/link-local):
+        # fall back to loopback so callers that rely on at least one address keep working
+        return ("127.0.0.1",)
+    return tuple(ip[1] for ip in result)
 
-    return await asyncio.to_thread(call)
+
+def interface_name_for_ip(ip: str) -> str | None:
+    """
+    Return the name of the network interface that holds the given IP, or None.
+
+    Used to map a bind/publish IP to its interface name for components that select
+    their mDNS/zeroconf advertisement interface by name (e.g. shairport-sync and
+    go-librespot), so the advertisement stays on the intended network.
+
+    :param ip: The IPv4/IPv6 address to look up.
+    """
+    for adapter in ifaddr.get_adapters():
+        for ip_config in adapter.ips:
+            addr = ip_config.ip if isinstance(ip_config.ip, str) else ip_config.ip[0]
+            if addr == ip:
+                return adapter.name
+    return None
 
 
 async def get_primary_ip_address() -> str | None:
     """Return the primary IP address of the system."""
 
 
-async def is_port_in_use(port: int) -> bool:
-    """Check if port is in use."""
+async def is_port_in_use(port: int, host: str | None = None) -> bool:
+    """
+    Check if a port is in use.
+
+    :param port: Port number to check.
+    :param host: Optional bind address to probe. When omitted, both IPv4 and IPv6
+        wildcard addresses are checked.
+    """
 
     def _is_port_in_use() -> bool:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
-            # Set SO_REUSEADDR to match asyncio.start_server behavior
-            # This allows binding to ports in TIME_WAIT state
-            _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        candidates: tuple[tuple[socket.AddressFamily, str], ...]
+        if host is not None:
+            candidates = ((socket.AF_INET6 if ":" in host else socket.AF_INET, host),)
+        else:
+            # Try both IPv4 and IPv6 to support single-stack and dual-stack systems.
+            # A port is considered free if it can be bound on at least one address family.
+            candidates = ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::"))
+        for family, addr in candidates:
             try:
-                _sock.bind(("0.0.0.0", port))
+                with socket.socket(family, socket.SOCK_STREAM) as _sock:
+                    # Set SO_REUSEADDR to match asyncio.start_server behavior
+                    # This allows binding to ports in TIME_WAIT state
+                    _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    _sock.bind((addr, port))
+                    return False
             except OSError:
-                return True
-        return False
+                continue
+        return True
 
     return await asyncio.to_thread(_is_port_in_use)
 
 
-async def select_free_port(range_start: int, range_end: int) -> int:
-    """Automatically find available port within range."""
-    for port in range(range_start, range_end):
-        if not await is_port_in_use(port):
-            return port
+# In-process reservations for ports handed out by select_free_port. Provider
+# instances (and reloads) frequently call select_free_port at nearly the same
+# moment and only bind the returned port asynchronously afterwards, so a port
+# that was just handed out is not yet detectable as "in use". Keeping a
+# short-lived reservation per returned port stops concurrent/successive callers
+# from picking the same one. Reservations expire automatically after the grace
+# period so the range is never permanently exhausted across reloads.
+_PORT_RESERVATION_TTL = 60.0
+_reserved_ports: dict[int, float] = {}
+_select_free_port_lock = asyncio.Lock()
+
+
+async def select_free_port(range_start: int, range_end: int, host: str | None = None) -> int:
+    """
+    Find and reserve a free port within the given range.
+
+    The returned port is reserved so concurrent or successive callers are not
+    handed the same port.
+
+    :param range_start: First port (inclusive) of the range to search.
+    :param range_end: Port to stop before (exclusive) when searching the range.
+    :param host: Optional bind address to probe for availability.
+    """
+    async with _select_free_port_lock:
+        now = time.monotonic()
+        # drop expired reservations so their ports become reusable again
+        for reserved_port, deadline in list(_reserved_ports.items()):
+            if deadline <= now:
+                del _reserved_ports[reserved_port]
+        for port in range(range_start, range_end):
+            if port in _reserved_ports:
+                continue
+            if not await is_port_in_use(port, host=host):
+                _reserved_ports[port] = now + _PORT_RESERVATION_TTL
+                return port
     msg = "No free port available"
     raise OSError(msg)
 
@@ -365,12 +1123,66 @@ async def get_ip_from_host(dns_name: str) -> str | None:
 
     def _resolve() -> str | None:
         try:
-            return socket.gethostbyname(dns_name)
+            # use getaddrinfo to support both IPv4 and IPv6 resolution
+            results = socket.getaddrinfo(dns_name, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+            if results:
+                return str(results[0][4][0])
         except Exception:
             # fail gracefully!
             return None
+        return None
 
     return await asyncio.to_thread(_resolve)
+
+
+async def get_source_ip_for_target(
+    target_ip: str,
+    *,
+    bind_ip: str | None = None,
+    publish_ip: str | None = None,
+) -> str:
+    """
+    Resolve a local, bindable source IP that routes to ``target_ip``.
+
+    For providers that must bind a socket to, or advertise a callback URL
+    reachable by, one specific device. ``publish_ip`` (the server's advertised
+    address) is not necessarily a locally bindable interface address — e.g. a
+    container behind a published IP, or a multi-homed host — so binding to it
+    directly can fail with ``EADDRNOTAVAIL``.
+
+    Resolution order:
+      1. an explicitly configured, concrete (non-wildcard) ``bind_ip``;
+      2. a routing-table lookup to ``target_ip`` (the interface that would
+         actually egress to it);
+      3. ``publish_ip`` as a concrete fallback;
+      4. ``bind_ip`` (even if a wildcard) as a last resort.
+    """
+    if bind_ip and bind_ip not in ("0.0.0.0", "::"):
+        return bind_ip
+
+    def _routing_lookup() -> str:
+        try:
+            is_ipv6_target = ip_address(target_ip).version == 6
+        except ValueError:
+            is_ipv6_target = False
+        route_family = socket.AF_INET6 if is_ipv6_target else socket.AF_INET
+        route_target: tuple[str, int] | tuple[str, int, int, int] = (
+            (target_ip, 80, 0, 0) if is_ipv6_target else (target_ip, 80)
+        )
+        with socket.socket(route_family, socket.SOCK_DGRAM) as _sock:
+            try:
+                _sock.settimeout(1.0)
+                _sock.connect(route_target)
+                routed_ip = str(_sock.getsockname()[0])
+                if routed_ip and routed_ip not in ("0.0.0.0", "::", ""):
+                    return routed_ip
+            except OSError:
+                pass
+        return ""
+
+    if routed := await asyncio.to_thread(_routing_lookup):
+        return routed
+    return str(publish_ip or "") or str(bind_ip or "")
 
 
 async def get_ip_pton(ip_string: str) -> bytes:
@@ -379,6 +1191,13 @@ async def get_ip_pton(ip_string: str) -> bytes:
         return await asyncio.to_thread(socket.inet_pton, socket.AF_INET, ip_string)
     except OSError:
         return await asyncio.to_thread(socket.inet_pton, socket.AF_INET6, ip_string)
+
+
+def format_ip_for_url(ip_address: str) -> str:
+    """Wrap IPv6 addresses in brackets for use in URLs (RFC 2732)."""
+    if ":" in ip_address:
+        return f"[{ip_address}]"
+    return ip_address
 
 
 async def get_folder_size(folderpath: str) -> float:
@@ -437,52 +1256,20 @@ def get_changed_dict_values(
     return changed_values
 
 
-def get_changed_dataclass_values(
-    obj1: T,
-    obj2: T,
-    recursive: bool = False,
-) -> dict[str, tuple[Any, Any]]:
-    """
-    Compare 2 dataclass instances of the same type and return dict of changed field values.
-
-    dict key is the changed field name, value is tuple of old and new values.
-    """
-    if not (is_dataclass(obj1) and is_dataclass(obj2)):
-        raise ValueError("Both objects must be dataclass instances")
-
-    changed_values: dict[str, tuple[Any, Any]] = {}
-    for field in fields(obj1):
-        val1 = getattr(obj1, field.name, None)
-        val2 = getattr(obj2, field.name, None)
-        if recursive and is_dataclass(val1) and is_dataclass(val2):
-            sub_changes = get_changed_dataclass_values(val1, val2, recursive)
-            for sub_field, sub_value in sub_changes.items():
-                changed_values[f"{field.name}.{sub_field}"] = sub_value
-            continue
-        if recursive and isinstance(val1, dict) and isinstance(val2, dict):
-            sub_changes = get_changed_dict_values(val1, val2, recursive=recursive)
-            for sub_field, sub_value in sub_changes.items():
-                changed_values[f"{field.name}.{sub_field}"] = sub_value
-            continue
-        if val1 != val2:
-            changed_values[field.name] = (val1, val2)
-    return changed_values
-
-
 def empty_queue[T](q: asyncio.Queue[T]) -> None:
     """Empty an asyncio Queue."""
     for _ in range(q.qsize()):
         try:
             q.get_nowait()
             q.task_done()
-        except (asyncio.QueueEmpty, ValueError):
+        except asyncio.QueueEmpty, ValueError:
             pass
 
 
 async def install_package(package: str) -> None:
     """Install package with pip, raise when install failed."""
     LOGGER.debug("Installing python package %s", package)
-    args = ["uv", "pip", "install", "--no-cache", "--find-links", HA_WHEELS, package]
+    args = ["uv", "pip", "install", "--no-cache", package]
     return_code, output = await check_output(*args)
     if return_code != 0:
         msg = f"Failed to install package {package}\n{output.decode()}"
@@ -503,7 +1290,12 @@ async def get_package_version(pkg_name: str) -> str | None:
 
 async def is_hass_supervisor() -> bool:
     """Return if we're running inside the HA Supervisor (e.g. HAOS)."""
+    # Fast path: check for HA supervisor token environment variable
+    # This is always set when running inside the HA supervisor
+    if not os.environ.get("SUPERVISOR_TOKEN"):
+        return False
 
+    # Token exists, verify the supervisor is actually reachable
     def _check() -> bool:
         try:
             urllib.request.urlopen("http://supervisor/core", timeout=1)
@@ -517,38 +1309,75 @@ async def is_hass_supervisor() -> bool:
     return await asyncio.to_thread(_check)
 
 
+# CPython holds a lock per module while importing it, so two threads importing modules with
+# overlapping dependency graphs (e.g. two providers that both pull in `requests`) can end up
+# waiting on each other's module locks. The import machinery then bails out at one of them with
+# a _DeadlockError ("deadlock detected by _ModuleLock(...)") instead of hanging, which surfaces
+# as a provider that failed to load and stays broken until it is reloaded by hand.
+# A single-worker executor keeps imports serialized without parking a thread from the default
+# pool while waiting; only the import itself is serialized, providers still load concurrently.
+_IMPORT_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="module_import")
+
+# requirements verified this session, so repeated (config) loads skip the version check
+_checked_requirements: set[str] = set()
+
+
+async def import_module_in_thread(name: str, package: str | None = None) -> ModuleType:
+    """
+    Import a module in a thread, serialized against all other imports done this way.
+
+    :param name: Name of the module to import, may be relative to the given package.
+    :param package: Package to resolve the name against, required for a relative name.
+    """
+    loop = asyncio.get_running_loop()
+    try:
+        return await loop.run_in_executor(_IMPORT_EXECUTOR, importlib.import_module, name, package)
+    except RuntimeError as err:
+        # threads we do not control (a library importing lazily in its own thread) can still
+        # cross a module lock with ours; the import machinery reports that as a deadlock at
+        # whoever detects it. The other import has finished by now, so a single retry sticks.
+        if "deadlock detected" not in str(err):
+            raise
+        LOGGER.warning("Retrying import of %s after a module lock collision: %s", name, err)
+        return await loop.run_in_executor(_IMPORT_EXECUTOR, importlib.import_module, name, package)
+
+
 async def load_provider_module(domain: str, requirements: list[str]) -> ProviderModuleType:
     """Return module for given provider domain and make sure the requirements are met."""
 
-    @lru_cache
-    def _get_provider_module(domain: str) -> ProviderModuleType:
-        return cast(
-            "ProviderModuleType", importlib.import_module(f".{domain}", "music_assistant.providers")
-        )
+    async def _get_provider_module() -> ProviderModuleType:
+        module = await import_module_in_thread(f".{domain}", "music_assistant.providers")
+        return cast("ProviderModuleType", module)
 
     # ensure module requirements are met
     for requirement in requirements:
+        if requirement in _checked_requirements:
+            continue
         if "==" not in requirement:
             # we should really get rid of unpinned requirements
             continue
         package_name, version = requirement.split("==", 1)
+        # importlib.metadata can't resolve extras (e.g. aiosendspin[server]), so strip them
+        package_name = package_name.split("[", 1)[0]
         installed_version = await get_package_version(package_name)
         if installed_version == "0.0.0":
             # ignore editable installs
+            _checked_requirements.add(requirement)
             continue
         if installed_version != version:
             await install_package(requirement)
+        _checked_requirements.add(requirement)
 
     # try to load the module
     try:
-        return await asyncio.to_thread(_get_provider_module, domain)
+        return await _get_provider_module()
     except ImportError:
         # (re)install ALL requirements
         for requirement in requirements:
             await install_package(requirement)
     # try loading the provider again to be safe
     # this will fail if something else is wrong (as it should)
-    return await asyncio.to_thread(_get_provider_module, domain)
+    return await _get_provider_module()
 
 
 async def has_tmpfs_mount() -> bool:
@@ -561,7 +1390,7 @@ async def has_tmpfs_mount() -> bool:
                 for line in file:
                     if "tmpfs /tmp tmpfs rw" in line:
                         return True
-        except (FileNotFoundError, OSError, PermissionError):
+        except FileNotFoundError, OSError, PermissionError:
             pass
         return False
 
@@ -576,7 +1405,7 @@ async def get_free_space(folder: str) -> float:
         try:
             res = shutil.disk_usage(folder)
             return res.free / float(1 << 30)
-        except (FileNotFoundError, OSError, PermissionError):
+        except FileNotFoundError, OSError, PermissionError:
             return 0.0
 
     return await asyncio.to_thread(_get_free_space, folder)
@@ -590,7 +1419,7 @@ async def get_free_space_percentage(folder: str) -> float:
         try:
             res = shutil.disk_usage(folder)
             return res.free / res.total * 100
-        except (FileNotFoundError, OSError, PermissionError):
+        except FileNotFoundError, OSError, PermissionError:
             return 0.0
 
     return await asyncio.to_thread(_get_free_space, folder)
@@ -615,16 +1444,25 @@ async def remove_file(file_path: str) -> None:
     LOGGER.log(VERBOSE_LOG_LEVEL, "Removed file: %s", file_path)
 
 
-def get_primary_ip_address_from_zeroconf(discovery_info: AsyncServiceInfo) -> str | None:
-    """Get primary IP address from zeroconf discovery info."""
-    for address in discovery_info.parsed_addresses(IPVersion.V4Only):
-        if address.startswith("127"):
-            # filter out loopback address
-            continue
-        if address.startswith("169.254"):
-            # filter out APIPA address
-            continue
-        return address
+def get_primary_ip_address_from_zeroconf(
+    discovery_info: AsyncServiceInfo,
+    prefer_ipv6: bool = False,
+) -> str | None:
+    """
+    Get primary IP address from zeroconf discovery info.
+
+    :param discovery_info: The zeroconf service info to extract the address from.
+    :param prefer_ipv6: If True, prefer IPv6 addresses over IPv4.
+    """
+    if prefer_ipv6:
+        order = [IPVersion.V6Only, IPVersion.V4Only]
+    else:
+        order = [IPVersion.V4Only, IPVersion.V6Only]
+    for version in order:
+        for addr in discovery_info.ip_addresses_by_version(version):
+            if addr.is_loopback or addr.is_link_local or addr.is_unspecified:
+                continue
+            return str(addr)
     return None
 
 
@@ -633,7 +1471,72 @@ def get_port_from_zeroconf(discovery_info: AsyncServiceInfo) -> int | None:
     return discovery_info.port
 
 
-async def close_async_generator(agen: AsyncGenerator[Any, None]) -> None:
+def get_zeroconf_args(
+    use_all_interfaces: bool = False,
+) -> dict[str, Any]:
+    """
+    Determine optimal zeroconf IPVersion and interfaces from system adapters.
+
+    Inspects available network adapters to determine the correct IP version
+    and interface configuration, similar to Home Assistant's approach.
+
+    :param use_all_interfaces: If True, use all interfaces (user override).
+    """
+    adapters = ifaddr.get_adapters()
+    has_ipv4 = False
+    has_ipv6 = False
+    interface_ips: list[str] = []
+    for adapter in adapters:
+        for ip_config in adapter.ips:
+            if ip_config.is_IPv6:
+                ip_tuple = cast("tuple[str, int, int]", ip_config.ip)
+                addr = ip_address(ip_tuple[0])
+                if (
+                    isinstance(addr, IPv6Address)
+                    and not addr.is_loopback
+                    and not addr.is_link_local
+                ):
+                    has_ipv6 = True
+                    if not addr.is_global:
+                        interface_ips.append(f"{ip_tuple[0]}%{ip_tuple[2]}")
+            else:
+                ip_str = cast("str", ip_config.ip)
+                addr = ip_address(ip_str)
+                if isinstance(addr, IPv4Address) and not addr.is_loopback:
+                    has_ipv4 = True
+                    interface_ips.append(ip_str)
+
+    # Determine IP version based on available addresses.
+    # On macOS/FreeBSD, zeroconf's IPVersion.All creates an AF_INET6 listen socket
+    # that cannot join IPv4 multicast groups, silently breaking discovery of
+    # IPv4-only devices. Fall back to V4Only on those platforms.
+    has_functional_dual_stack = not sys.platform.startswith(("freebsd", "darwin"))
+    if has_ipv4 and has_ipv6 and has_functional_dual_stack:
+        ip_version = IPVersion.All
+    elif has_ipv4:
+        ip_version = IPVersion.V4Only
+    elif has_ipv6:
+        ip_version = IPVersion.V6Only
+    else:
+        ip_version = IPVersion.V4Only
+
+    if use_all_interfaces:
+        # User explicitly requested all interfaces — pass explicit IP list
+        # to avoid issues with InterfaceChoice.Default on multi-interface hosts.
+        if interface_ips:
+            return {"ip_version": ip_version, "interfaces": interface_ips}
+        return {"ip_version": ip_version, "interfaces": InterfaceChoice.All}
+
+    # Default mode: use InterfaceChoice.Default for IPv4-only single-interface,
+    # otherwise pass explicit interface list for reliability.
+    if ip_version == IPVersion.V4Only:
+        return {"ip_version": ip_version, "interfaces": InterfaceChoice.Default}
+    if interface_ips:
+        return {"ip_version": ip_version, "interfaces": interface_ips}
+    return {"ip_version": ip_version, "interfaces": InterfaceChoice.All}
+
+
+async def close_async_generator(agen: AsyncGenerator[Any]) -> None:
     """Force close an async generator."""
     task = asyncio.create_task(agen.__anext__())
     task.cancel()
@@ -644,6 +1547,10 @@ async def close_async_generator(agen: AsyncGenerator[Any, None]) -> None:
 
 async def detect_charset(data: bytes, fallback: str = "utf-8") -> str:
     """Detect charset of raw data."""
+    # imported here to keep chardet (~18MB) out of the idle import footprint:
+    # it is only needed on the rarely-hit playlist/radio charset fallback path
+    import chardet  # noqa: PLC0415
+
     try:
         detected: ResultDict = await asyncio.to_thread(chardet.detect, data)
         if detected and detected["encoding"] and detected["confidence"] > 0.75:
@@ -652,6 +1559,23 @@ async def detect_charset(data: bytes, fallback: str = "utf-8") -> str:
     except Exception as err:
         LOGGER.debug("Failed to detect charset: %s", err)
     return fallback
+
+
+def parse_optional_bool(value: Any) -> bool | None:
+    """Parse an optional boolean value from various input types."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        value_lower = value.strip().lower()
+        if value_lower in ("true", "1", "yes", "on"):
+            return True
+        if value_lower in ("false", "0", "no", "off"):
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return None
 
 
 def merge_dict(
@@ -715,10 +1639,219 @@ def validate_announcement_chime_url(url: str) -> bool:
 
 
 async def get_mac_address(ip_address: str) -> str | None:
-    """Get MAC address for given IP address."""
-    from getmac import get_mac_address  # noqa: PLC0415
+    """Get MAC address for given IP address via ARP lookup."""
+    try:
+        from getmac import get_mac_address as getmac_lookup  # noqa: PLC0415
 
-    return await asyncio.to_thread(get_mac_address, ip=ip_address)
+        return await asyncio.to_thread(getmac_lookup, ip=ip_address)
+    except ImportError:
+        LOGGER.debug("getmac module not available, cannot resolve MAC from IP")
+        return None
+    except Exception as err:
+        LOGGER.debug("Failed to resolve MAC address for %s: %s", ip_address, err)
+        return None
+
+
+def is_locally_administered_mac(mac_address: str) -> bool:
+    """
+    Check if a MAC address is locally administered (virtual/randomized).
+
+    Locally administered addresses have bit 1 of the first octet set to 1.
+    These are often used by devices for virtual interfaces or protocol-specific
+    addresses (e.g., AirPlay, DLNA may use different virtual MACs than the real hardware MAC).
+
+    :param mac_address: MAC address in any common format (with :, -, or no separator).
+    :return: True if locally administered, False if globally unique (real hardware MAC).
+    """
+    # Normalize MAC address
+    mac_clean = mac_address.upper().replace(":", "").replace("-", "")
+    if len(mac_clean) < 2:
+        return False
+
+    # Get first octet and check bit 1 (second bit from right)
+    try:
+        first_octet = int(mac_clean[:2], 16)
+        return bool(first_octet & 0x02)
+    except ValueError:
+        return False
+
+
+def normalize_mac_for_matching(mac_address: str) -> str:
+    """
+    Normalize a MAC address for device matching by masking out the locally-administered bit.
+
+    Some protocols (like AirPlay) report a locally-administered MAC address variant where
+    bit 1 of the first octet is set. For example:
+    - Real hardware MAC: 54:78:C9:E6:0D:A0 (first byte 0x54 = 01010100)
+    - AirPlay reports:   56:78:C9:E6:0D:A0 (first byte 0x56 = 01010110)
+
+    These represent the same device but differ only in the locally-administered bit.
+    This function normalizes the MAC by clearing bit 1 of the first octet, allowing
+    both variants to match the same device.
+
+    :param mac_address: MAC address in any common format (with :, -, or no separator).
+    :return: Normalized MAC address in lowercase without separators, with the
+             locally-administered bit cleared.
+    """
+    # Normalize MAC address (remove separators, lowercase)
+    mac_clean = mac_address.lower().replace(":", "").replace("-", "")
+    if len(mac_clean) != 12:
+        # Invalid MAC length, return as-is
+        return mac_clean
+
+    try:
+        # Parse first octet and clear bit 1 (the locally-administered bit)
+        first_octet = int(mac_clean[:2], 16)
+        first_octet_normalized = first_octet & ~0x02  # Clear bit 1
+        # Reconstruct the MAC with the normalized first octet
+        return f"{first_octet_normalized:02x}{mac_clean[2:]}"
+    except ValueError:
+        # Invalid hex, return as-is
+        return mac_clean
+
+
+def is_valid_mac_address(mac_address: str | None) -> bool:
+    """
+    Check if a MAC address is valid and usable for device identification.
+
+    Invalid MAC addresses include:
+    - None or empty strings
+    - Null MAC: 00:00:00:00:00:00
+    - Broadcast MAC: ff:ff:ff:ff:ff:ff
+    - Any MAC that doesn't follow the expected pattern
+
+    :param mac_address: MAC address to validate.
+    :return: True if valid and usable, False otherwise.
+    """
+    if not mac_address:
+        return False
+
+    # Normalize MAC address (remove separators and convert to lowercase)
+    normalized = mac_address.lower().replace(":", "").replace("-", "")
+
+    # Check for invalid/reserved MAC addresses
+    if normalized in ("000000000000", "ffffffffffff"):
+        return False
+
+    # Check length and hex validity
+    if len(normalized) != 12:
+        return False
+
+    try:
+        int(normalized, 16)
+        return True
+    except ValueError:
+        return False
+
+
+def normalize_ip_address(ip_address: str | None) -> str | None:
+    """
+    Normalize IP address for comparison.
+
+    Handles IPv6-mapped IPv4 addresses (e.g., ::ffff:192.168.1.64 -> 192.168.1.64).
+
+    :param ip_address: IP address to normalize.
+    :return: Normalized IP address or None if invalid.
+    """
+    if not ip_address:
+        return None
+
+    # Handle IPv6-mapped IPv4 addresses
+    if ip_address.startswith("::ffff:"):
+        # Extract the IPv4 part
+        return ip_address[7:]
+
+    return ip_address
+
+
+async def resolve_real_mac_address(reported_mac: str | None, ip_address: str | None) -> str | None:
+    """
+    Resolve the real MAC address for a device.
+
+    Some devices report different virtual MAC addresses per protocol (AirPlay, DLNA,
+    Chromecast). This function tries to resolve the actual hardware MAC via ARP
+    when the reported MAC appears to be locally administered (virtual).
+
+    :param reported_mac: The MAC address reported by the protocol.
+    :param ip_address: The IP address of the device (for ARP lookup).
+    :return: The real MAC address if found, or None if it couldn't be resolved.
+    """
+    if not ip_address:
+        return None
+
+    # If no MAC reported or it's a locally administered one, try ARP lookup
+    if not reported_mac or is_locally_administered_mac(reported_mac):
+        real_mac = await get_mac_address(ip_address)
+        if real_mac and is_valid_mac_address(real_mac):
+            return real_mac.upper()
+
+    return None
+
+
+async def enrich_device_mac_address(
+    device_info: DeviceInfo,
+    logger: logging.Logger | None = None,
+) -> None:
+    """
+    Enrich a player's device_info with a real MAC address via ARP.
+
+    Called automatically during player registration. It validates the existing MAC,
+    normalizes IPv6-mapped IPv4 addresses, and always performs an ARP lookup when
+    an IP is available. The ARP result replaces the reported MAC because it reflects
+    the true hardware address and reliably unifies protocols on the same device -
+    even when different protocols report different valid MACs (e.g., Yamaha devices
+    where DLNA and AirPlay MACs differ by 1 in the last octet).
+
+    :param device_info: The player's DeviceInfo to enrich in-place.
+    :param logger: Optional logger for debug messages.
+    """
+    identifiers = device_info.identifiers
+    reported_mac = identifiers.get(IdentifierType.MAC_ADDRESS)
+    ip_address = identifiers.get(IdentifierType.IP_ADDRESS)
+
+    # Blank out invalid MAC addresses (00:00:00:00:00:00, ff:ff:ff:ff:ff:ff, etc.)
+    # so they can't cause false matches in protocol linking.
+    if reported_mac and not is_valid_mac_address(reported_mac):
+        if logger:
+            logger.debug("Removing invalid MAC address: %s", reported_mac)
+        device_info.add_identifier(IdentifierType.MAC_ADDRESS, None)
+        reported_mac = None
+
+    # Normalize IP address (handle IPv6-mapped IPv4 like ::ffff:192.168.1.64)
+    if ip_address:
+        normalized_ip = normalize_ip_address(ip_address)
+        if normalized_ip and normalized_ip != ip_address:
+            device_info.add_identifier(IdentifierType.IP_ADDRESS, normalized_ip)
+            if logger:
+                logger.debug(
+                    "Normalized IP address: %s -> %s",
+                    ip_address,
+                    normalized_ip,
+                )
+            ip_address = normalized_ip
+
+    # Skip ARP enrichment if no IP available (can't do ARP lookup)
+    if not ip_address:
+        return
+
+    # Always attempt ARP lookup when we have an IP address.
+    # Some devices (e.g., Yamaha MusicCast) report different valid globally-unique
+    # MACs per protocol (DLNA vs AirPlay differ by 1 in the last octet).
+    # ARP resolves the true hardware MAC which reliably unifies all protocols.
+    # The result is cached in player config so subsequent restarts are fast.
+    real_mac = await resolve_real_mac_address(reported_mac, ip_address)
+    if real_mac and real_mac.upper() != (reported_mac or "").upper():
+        device_info.add_identifier(IdentifierType.MAC_ADDRESS, real_mac)
+        if logger:
+            logger.debug(
+                "Resolved MAC via ARP: %s -> %s",
+                reported_mac or "none",
+                real_mac,
+            )
+    elif not reported_mac:
+        # ARP failed and no reported MAC - nothing we can do
+        if logger:
+            logger.debug("ARP lookup failed for %s and no reported MAC", ip_address)
 
 
 class TaskManager:
@@ -736,13 +1869,13 @@ class TaskManager:
         self._tasks: list[asyncio.Task[None]] = []
         self._semaphore = asyncio.Semaphore(limit) if limit else None
 
-    def create_task(self, coro: Coroutine[Any, Any, None]) -> asyncio.Task[None]:
+    def create_task(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[None]:
         """Create a new task and add it to the manager."""
         task = self.mass.create_task(coro)
         self._tasks.append(task)
         return task
 
-    async def create_task_with_limit(self, coro: Coroutine[Any, Any, None]) -> None:
+    async def create_task_with_limit(self, coro: Coroutine[Any, Any, Any]) -> None:
         """Create a new task with semaphore limit."""
         assert self._semaphore is not None
 
@@ -779,14 +1912,34 @@ _P = ParamSpec("_P")
 def lock[**P, R](  # type: ignore[valid-type]
     func: Callable[_P, Awaitable[_R]],
 ) -> Callable[_P, Coroutine[Any, Any, _R]]:
-    """Call async function using a Lock."""
+    """
+    Call async function using a per-instance Lock.
+
+    Each instance gets its own lock so that e.g. SyncGroupPlayer A
+    does not block SyncGroupPlayer B when both call set_members().
+    """
+    # Per-instance lock storage (weak refs so locks are GC'd with their instance)
+    instance_locks: weakref.WeakKeyDictionary[Any, asyncio.Lock] = weakref.WeakKeyDictionary()
+    # Fallback lock for non-method (no self) usage
+    fallback_lock: asyncio.Lock | None = None
 
     @functools.wraps(func)
     async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
-        """Call async function using the throttler with retries."""
-        if not (func_lock := getattr(func, "lock", None)):
-            func_lock = asyncio.Lock()
-            func.lock = func_lock  # type: ignore[attr-defined]
+        """Call async function using a per-instance Lock."""
+        nonlocal fallback_lock
+        instance = args[0] if args else None
+        if instance is not None:
+            try:
+                func_lock = instance_locks.setdefault(instance, asyncio.Lock())
+            except TypeError:
+                # instance is not weakly referenceable, use fallback
+                if fallback_lock is None:
+                    fallback_lock = asyncio.Lock()
+                func_lock = fallback_lock
+        else:
+            if fallback_lock is None:
+                fallback_lock = asyncio.Lock()
+            func_lock = fallback_lock
         async with func_lock:
             return await func(*args, **kwargs)
 
@@ -826,13 +1979,22 @@ class TimedAsyncGenerator:
         return self._factory()
 
 
-def guard_single_request[ProviderT: "Provider | CoreController", **P, R](
-    func: Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]],
-) -> Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]]:
+# Bound for guard_single_request: it only needs ``.mass``, so a structural protocol
+# lets it decorate providers, core controllers and media controllers alike without
+# coupling to their concrete base classes.
+class _SupportsMass(Protocol):
+    """Structural type for objects exposing a MusicAssistant reference."""
+
+    mass: MusicAssistant
+
+
+def guard_single_request[SelfT: _SupportsMass, **P, R](
+    func: Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]],
+) -> Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]]:
     """Guard single request to a function."""
 
     @functools.wraps(func)
-    async def wrapper(self: ProviderT, *args: P.args, **kwargs: P.kwargs) -> R:
+    async def wrapper(self: SelfT, *args: P.args, **kwargs: P.kwargs) -> R:
         mass = self.mass
         # create a task_id dynamically based on the function and args/kwargs
         cache_key_parts = [func.__class__.__name__, func.__name__, *args]
@@ -845,6 +2007,7 @@ def guard_single_request[ProviderT: "Provider | CoreController", **P, R](
             *args,
             task_id=task_id,
             abort_existing=False,
+            eager_start=True,
             **kwargs,
         )
         return await task

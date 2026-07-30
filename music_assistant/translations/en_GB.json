@@ -1,0 +1,17 @@
+{
+  "common.config_categories.advanced": "Advanced settings",
+  "common.config_categories.announcements": "Announcements configuration",
+  "common.config_categories.builtin_playlists": "Builtin Playlist Settings",
+  "common.config_categories.generic": "Generic settings",
+  "common.config_categories.protocol_generic": "Generic settings",
+  "common.config_entries.announce_volume.description": "The perceptual, relative or absolute volume level, used with the strategy for announcements.",
+  "common.config_entries.default_enqueue_select_artist.options.all_tracks": "All (top) tracks from (all) provider(s)",
+  "common.config_entries.default_enqueue_select_artist.options.library_tracks": "Only in-library tracks",
+  "common.config_entries.flow_mode.description": "Enable \"flow\" mode where all queue tracks are sent as a continuous audio stream. \nUse for players that do not natively support gapless and\/or crossfading or if the player has trouble transitioning between tracks.",
+  "common.config_entries.icon.description": "Material design icon for this player. \n\nSee https:\/\/pictogrammers.com\/library\/mdi\/.",
+  "common.config_entries.volume_normalization.description": "Enable volume normalisation based on the EBU-R128 standard without affecting dynamic range",
+  "common.config_entries.volume_normalization.label": "Enable volume normalisation (EBU-R128 based)",
+  "common.config_entries.volume_normalization_target.description": "Adjust average (perceived) loudness to this target level, default is -14 LUFS \n\n **WARNING:** Setting the level too high may result in clipping!",
+  "common.media.favorite_playlists.name": "Favourite playlists",
+  "common.media.recent_favorite_tracks.name": "Recently favourited tracks"
+}

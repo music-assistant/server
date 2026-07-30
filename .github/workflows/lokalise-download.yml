@@ -1,0 +1,65 @@
+name: Download Lokalise translations
+
+# Pulls the translated languages from the Lokalise server project back into the repo as
+# music_assistant/translations/<lang>.json (the flat layout the TranslationController reads at
+# runtime) and opens a PR. The English source is pushed to Lokalise by the companion
+# lokalise-upload.yml workflow, so the whole sync is driven by GitHub Actions (no reliance on
+# Lokalise's GitHub integration).
+#
+# Uses the org/repo secrets LOKALISE_RO_API_TOKEN (read-only token for download) and
+# LOKALISE_SERVER_PROJECT_ID (the Lokalise server project id). All languages present in the
+# Lokalise project are pulled; languages with no translations are skipped (--export-empty-as skip).
+
+on:
+  schedule:
+    - cron: "0 3 * * 2" # every Tuesday at 03:00 UTC
+  workflow_dispatch:
+
+# Pushes a branch and opens the translations PR, so it needs write + PR scope.
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  download:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Lokalise CLI
+        # pin the installer and CLI to a tagged release (don't run a script off a moving branch)
+        run: curl -sfL https://raw.githubusercontent.com/lokalise/lokalise-cli-2-go/v3.1.4/install.sh | sh -s -- -b ./bin v3.1.4
+      - name: Download translations
+        env:
+          VAR_LOKALISE_API_TOKEN: ${{ secrets.LOKALISE_RO_API_TOKEN }}
+          VAR_LOKALISE_PROJECT_ID: ${{ secrets.LOKALISE_SERVER_PROJECT_ID }}
+        run: |
+          ./bin/lokalise2 \
+            --token "${VAR_LOKALISE_API_TOKEN}" \
+            --project-id "${VAR_LOKALISE_PROJECT_ID}" \
+            file download \
+            --format json \
+            --export-empty-as skip \
+            --export-sort first_added \
+            --placeholder-format raw \
+            --original-filenames=false \
+            --bundle-structure "music_assistant/translations/%LANG_ISO%.json" \
+            --indentation 2sp \
+            --replace-breaks=false \
+            --async
+      - name: Create Pull Request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_NEW_BRANCH_NAME: Lokalise-${{ github.run_id }}${{ github.run_attempt }}
+        run: |
+          git checkout -b "${GITHUB_NEW_BRANCH_NAME}"
+          git config --global user.name "${GITHUB_ACTOR}"
+          git config --global user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+          git add music_assistant/translations/\*.json
+          git reset -- music_assistant/translations/en.json
+          if [[ -z $(git status --untracked-files=no --porcelain) ]]; then
+            echo "No translation changes"
+          else
+            git commit -m 'Translations update'
+            git push --set-upstream origin "${GITHUB_NEW_BRANCH_NAME}"
+            gh pr create --base dev --head "${GITHUB_NEW_BRANCH_NAME}" --title "Lokalise translations update" --body ""
+          fi

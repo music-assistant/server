@@ -1,0 +1,11 @@
+{
+  "type": "music",
+  "domain": "nts",
+  "stage": "stable",
+  "name": "NTS Radio",
+  "description": "Stream NTS Radio's live channels and Infinite Mixtapes — independent, eclectic radio broadcast from over 50 cities around the globe, live 24/7.",
+  "codeowners": ["@mike-sheppard"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/nts/",
+  "multi_instance": false
+}

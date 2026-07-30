@@ -1,0 +1,12 @@
+{
+  "config_entries": {
+    "upnp_network_scan": {
+      "label": "Allow network scan for UPnP discovery",
+      "description": "Enable additional broadcast-based SSDP discovery. Use this if some UPnP/DLNA devices do not answer regular discovery."
+    }
+  },
+  "manifest": {
+    "name": "Discovery",
+    "description": "Handles mDNS/Zeroconf, SSDP/UPnP discovery and Music Assistant network broadcast."
+  }
+}

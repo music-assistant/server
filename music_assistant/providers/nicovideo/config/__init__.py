@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from .categories import AuthConfigCategory
-from .factory import get_config_entries_impl
+from .factory import build_config_entries
 
 if TYPE_CHECKING:
     from music_assistant.models.provider import Provider
@@ -21,5 +21,5 @@ class NicovideoConfig:
 
 __all__ = [
     "NicovideoConfig",
-    "get_config_entries_impl",
+    "build_config_entries",
 ]

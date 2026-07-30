@@ -6,36 +6,46 @@ from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import (
-    CONF_ENTRY_HTTP_PROFILE,
+    CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
     CONF_ENTRY_OUTPUT_CODEC,
     create_sample_rates_config_entry,
 )
 
 MASS_APP_ID = "C35B0678"
 APP_MEDIA_RECEIVER = "CC1AD845"
-SENDSPIN_CAST_APP_ID = "938CBF87"
+SENDSPIN_CAST_APP_ID = "DD107DDB"
 SENDSPIN_CAST_NAMESPACE = "urn:x-cast:sendspin"
 CONF_USE_MASS_APP = "use_mass_app"
-CONF_USE_SENDSPIN_MODE = "use_sendspin_mode"
-CONF_SENDSPIN_SYNC_DELAY = "sendspin_sync_delay"
-CONF_SENDSPIN_CODEC = "sendspin_codec"
-DEFAULT_SENDSPIN_SYNC_DELAY = -300
-DEFAULT_SENDSPIN_CODEC = "flac"
+DASHBOARD_NAMESPACE = "urn:x-cast:io.music-assistant.cast"
+
+# keepalive media the cast receiver plays while showing a dashboard
+DASHBOARD_KEEPALIVE_SUFFIXES = ("/dashboard-keepalive.mp4", "/keepalive.png")
+
+# Interval (seconds) before an unavailable player is re-evaluated as a possible
+# passive multichannel endpoint that should be removed from the setup.
+MULTICHANNEL_RECHECK_INTERVAL = 600
+
+# Devices known to not work with the Sendspin Cast bridge.
+# Tuple of (manufacturer, model) where "*" is a wildcard.
+# These devices will not get a Sendspin bridge, allowing other protocols
+# (e.g. AirPlay bridge) to handle them instead.
+SENDSPIN_CAST_BLOCKLIST: set[tuple[str, str]] = {
+    ("Harman Luxury Audio", "*"),
+    ("*", "HK OMNI ADAPT+AMP"),
+}
 
 CAST_PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_OUTPUT_CODEC,
-    CONF_ENTRY_HTTP_PROFILE,
+    CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
+    # enable flow mode by default as cast devices handle a continuous
+    # flow stream more reliably than enqueueing individual tracks
+    ConfigEntry.from_dict({**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": True}),
     ConfigEntry(
         key=CONF_USE_MASS_APP,
         type=ConfigEntryType.BOOLEAN,
-        label="Use Music Assistant Cast App",
         default_value=True,
-        description="By default, Music Assistant will use a special Music Assistant "
-        "Cast Receiver app to play media on cast devices. It is tweaked to provide "
-        "better metadata and future expansion. \\n\\n"
-        "If you want to use the official Google Cast Receiver app instead, disable this option, "
-        "for example if your device has issues with the Music Assistant app.",
-        category="advanced",
+        advanced=True,
     ),
 )
 
@@ -54,3 +64,22 @@ CONF_ENTRY_SAMPLE_RATES_CAST_GROUP = create_sample_rates_config_entry(
     safe_max_sample_rate=48000,
     safe_max_bit_depth=16,
 )
+
+# Measured defaults for known Cast models.
+CAST_MODEL_STATIC_DELAY: dict[tuple[str, str], int] = {
+    ("Google Inc.", "Google Home Mini"): 330,
+    ("Google Inc.", "Google Nest Mini"): 427,
+    ("Google Inc.", "Chromecast Audio"): 335,
+    ("Google Inc.", "Google Nest Hub"): 188,
+}
+CAST_FALLBACK_STATIC_DELAY = 330
+
+
+def get_cast_model_static_delay(manufacturer: str, model: str) -> int:
+    """
+    Look up the default static delay for a Cast device model.
+
+    :param manufacturer: Device manufacturer (e.g., "Google Inc.").
+    :param model: Device model name (e.g., "Google Nest Mini").
+    """
+    return CAST_MODEL_STATIC_DELAY.get((manufacturer, model), CAST_FALLBACK_STATIC_DELAY)

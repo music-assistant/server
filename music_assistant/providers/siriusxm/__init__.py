@@ -5,9 +5,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.enums import (
-    ConfigEntryType,
     ContentType,
     ImageType,
     LinkType,
@@ -25,18 +23,20 @@ from music_assistant_models.media_items import (
     MediaItemType,
     ProviderMapping,
     Radio,
+    SearchResults,
     UniqueList,
 )
-from music_assistant_models.streamdetails import StreamDetails
+from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from tenacity import RetryError
 
+from music_assistant.constants import CONF_ENTRY_UNOFFICIAL_PROVIDER
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.util import select_free_port
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant import MusicAssistant
@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 
 import sxm.http
 from sxm import SXMClientAsync
-from sxm.models import QualitySize, RegionChoice, XMChannel, XMLiveChannel
+from sxm.models import QualitySize, RegionChoice, XMChannel, XMLiveChannel, XMSong
 
 CONF_SXM_USERNAME = "sxm_email_address"
 CONF_SXM_PASSWORD = "sxm_password"
@@ -53,6 +53,7 @@ CONF_SXM_REGION = "sxm_region"
 SUPPORTED_FEATURES = {
     ProviderFeature.BROWSE,
     ProviderFeature.LIBRARY_RADIOS,
+    ProviderFeature.SEARCH,
 }
 
 
@@ -61,47 +62,6 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     return SiriusXMProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to setup this provider.
-
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
-    # ruff: noqa: ARG001
-    return (
-        ConfigEntry(
-            key=CONF_SXM_USERNAME,
-            type=ConfigEntryType.STRING,
-            label="Username",
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_SXM_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            label="Password",
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_SXM_REGION,
-            type=ConfigEntryType.STRING,
-            default_value="US",
-            options=[
-                ConfigValueOption(title="United States", value="US"),
-                ConfigValueOption(title="Canada", value="CA"),
-            ],
-            label="Region",
-            required=True,
-        ),
-    )
 
 
 class SiriusXMProvider(MusicProvider):
@@ -119,15 +79,19 @@ class SiriusXMProvider(MusicProvider):
 
     _current_stream_details: StreamDetails | None = None
 
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return Config entries to configure this provider."""
+        return (CONF_ENTRY_UNOFFICIAL_PROVIDER,)
+
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        username = self.config.get_value(CONF_SXM_USERNAME)
+        username = self.get_setup_value(CONF_SXM_USERNAME)
         assert isinstance(username, str)  # for type checker
-        password = self.config.get_value(CONF_SXM_PASSWORD)
+        password = self.get_setup_value(CONF_SXM_PASSWORD)
         assert isinstance(password, str)  # for type checker
 
         region: RegionChoice = (
-            RegionChoice.US if self.config.get_value(CONF_SXM_REGION) == "US" else RegionChoice.CA
+            RegionChoice.US if self.get_setup_value(CONF_SXM_REGION) == "US" else RegionChoice.CA
         )
 
         self._client = SXMClientAsync(
@@ -200,11 +164,33 @@ class SiriusXMProvider(MusicProvider):
         """
         return True
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
         """Retrieve library/subscribed radio stations from the provider."""
         for channel in self._channels_by_id.values():
             if channel.is_favorite:
                 yield self._parse_radio(channel)
+
+    async def search(
+        self,
+        search_query: str,
+        media_types: list[MediaType],
+        limit: int = 5,
+    ) -> SearchResults:
+        """Perform search on SiriusXM channels."""
+        results = SearchResults()
+        if MediaType.RADIO not in media_types:
+            return results
+        search_query_lower = search_query.lower().strip()
+        if not search_query_lower:
+            return results
+        radios: list[Radio] = []
+        for channel in self._channels:
+            if search_query_lower in channel.name.lower():
+                radios.append(self._parse_radio(channel))
+                if len(radios) >= limit:
+                    break
+        results.radio = radios
+        return results
 
     @use_cache(3600 * 24 * 14)  # Cache for 14 days
     async def get_radio(self, prov_radio_id: str) -> Radio:
@@ -248,7 +234,8 @@ class SiriusXMProvider(MusicProvider):
 
     @use_cache(3600 * 3)  # Cache for 3 hours
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
-        """Browse this provider's items.
+        """
+        Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
         """
@@ -278,7 +265,23 @@ class SiriusXMProvider(MusicProvider):
             latest_cut = latest_cut_marker.cut
             title = latest_cut.title
             artist = ", ".join([a.name for a in latest_cut.artists])
-            self._current_stream_details.stream_title = f"{artist} - {title}"
+            # prefer the album art of the current song, fall back to the channel logo
+            image_url: str | None = None
+            if isinstance(latest_cut, XMSong) and latest_cut.album:
+                image_url = next((art.url for art in latest_cut.album.arts), None)
+            if image_url is None and (channel := self._channels_by_id.get(current_channel)):
+                image_url = next(
+                    (i.url for i in channel.images if i.width == 300 and i.height == 300), None
+                )
+            if image_url and image_url.startswith("http://"):
+                # SiriusXM returns http image urls, upgrade to https to prevent
+                # mixed content blocking when the UI is served over https
+                image_url = "https://" + image_url.removeprefix("http://")
+            self._current_stream_details.stream_metadata = StreamMetadata(
+                title=title,
+                artist=artist,
+                image_url=image_url,
+            )
 
     async def _refresh_channels(self) -> bool:
         self._channels = await self._client.channels

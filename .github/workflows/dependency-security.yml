@@ -1,0 +1,291 @@
+# Dependency Security Check Workflow
+# Checks Python dependencies for security vulnerabilities and supply chain risks.
+#
+# SECURITY: This workflow runs on `pull_request` (NOT `pull_request_target`), so
+# for PRs from forks it gets a read-only GITHUB_TOKEN and no access to repository
+# secrets. That makes it safe to check out and execute untrusted PR code here.
+# It cannot comment on the PR or change labels; that is handled by the companion
+# `dependency-security-report.yml` workflow, which runs with write permissions
+# but never checks out untrusted code.
+
+name: Dependency Security Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled]
+    paths:
+      - "requirements_all.txt"
+      - "**/manifest.json"
+      - "pyproject.toml"
+    branches:
+      - stable
+      - dev
+
+permissions:
+  contents: read
+
+# Keep urllib3-future from hijacking the urllib3 namespace (see pyproject.toml).
+env:
+  URLLIB3_NO_OVERRIDE: "1"
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out code from GitHub
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0 # Need full history for diff
+
+      - name: Set up Python
+        uses: actions/setup-python@v7.0.0
+        with:
+          python-version-file: ".python-version"
+          check-latest: true
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install requirements for audit
+        # https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
+        run: |
+          uv venv
+          uv pip install --index-strategy unsafe-best-match -r requirements_all.txt pip-audit
+
+      # Step 1: Verify requirements_all.txt is in sync
+      - name: Check requirements_all.txt sync
+        id: req_sync
+        run: |
+          # Save current requirements_all.txt
+          cp requirements_all.txt requirements_all.txt.original
+
+          # Regenerate requirements_all.txt
+          python3 scripts/gen_requirements_all.py
+
+          # Check if it changed
+          if ! diff -q requirements_all.txt.original requirements_all.txt > /dev/null; then
+            echo "status=out_of_sync" >> $GITHUB_OUTPUT
+            echo "⚠️  **requirements_all.txt is out of sync**" > sync_report.md
+            echo "" >> sync_report.md
+            echo "The \`requirements_all.txt\` file should be auto-generated from \`pyproject.toml\` and provider manifests." >> sync_report.md
+            echo "" >> sync_report.md
+            echo "**Action required:** Run \`python scripts/gen_requirements_all.py\` and commit the changes." >> sync_report.md
+            # Restore original
+            mv requirements_all.txt.original requirements_all.txt
+          else
+            echo "status=synced" >> $GITHUB_OUTPUT
+            echo "✅ requirements_all.txt is properly synchronized" > sync_report.md
+            rm requirements_all.txt.original
+          fi
+
+      # Step 2: Run pip-audit for known vulnerabilities
+      - name: Run pip-audit on installed environment
+        id: pip_audit
+        continue-on-error: true
+        run: |
+          echo "## 🔍 Vulnerability Scan Results" > audit_report.md
+          echo "" >> audit_report.md
+
+          if .venv/bin/pip-audit --desc --format=markdown >> audit_report.md 2>&1; then
+            echo "status=pass" >> $GITHUB_OUTPUT
+            echo "✅ No known vulnerabilities found" >> audit_report.md
+          else
+            echo "status=fail" >> $GITHUB_OUTPUT
+            echo "" >> audit_report.md
+            echo "⚠️  **Vulnerabilities detected! Please review the findings above.**" >> audit_report.md
+          fi
+
+          cat audit_report.md
+
+      # Step 2: Detect new or changed dependencies
+      - name: Detect dependency changes
+        id: deps_check
+        run: |
+          # Get base branch (dev or stable)
+          BASE_BRANCH="${{ github.base_ref }}"
+
+          # Check for changes in requirements_all.txt
+          if git diff origin/$BASE_BRANCH...HEAD -- requirements_all.txt > /dev/null 2>&1; then
+            # Extract added lines (new or modified dependencies)
+            git diff origin/$BASE_BRANCH...HEAD -- requirements_all.txt | \
+              grep "^+" | grep -v "^+++" | sed 's/^+//' > new_deps_raw.txt || true
+
+            # Also check for version changes (lines that were modified)
+            git diff origin/$BASE_BRANCH...HEAD -- requirements_all.txt | \
+              grep "^-" | grep -v "^---" | sed 's/^-//' > old_deps_raw.txt || true
+
+            if [ -s new_deps_raw.txt ]; then
+              echo "has_changes=true" >> $GITHUB_OUTPUT
+              echo "## 📦 Dependency Changes Detected" > deps_report.md
+              echo "" >> deps_report.md
+              echo "The following dependencies were added or modified:" >> deps_report.md
+              echo "" >> deps_report.md
+              echo '```diff' >> deps_report.md
+              git diff origin/$BASE_BRANCH...HEAD -- requirements_all.txt >> deps_report.md
+              echo '```' >> deps_report.md
+              echo "" >> deps_report.md
+
+              # Extract just package names for safety check
+              cat new_deps_raw.txt | grep -v "^#" | grep -v "^$" > new_deps.txt || true
+
+              if [ -s new_deps.txt ]; then
+                echo "New/modified packages to review:" >> deps_report.md
+                cat new_deps.txt | while read line; do
+                  echo "- \`$line\`" >> deps_report.md
+                done
+              fi
+            else
+              echo "has_changes=false" >> $GITHUB_OUTPUT
+              echo "No dependency changes detected in requirements_all.txt" > deps_report.md
+            fi
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No dependency changes detected" > deps_report.md
+          fi
+
+          cat deps_report.md
+
+      # Step 3: Check manifest.json changes
+      - name: Check provider manifest changes
+        id: manifest_check
+        run: |
+          BASE_BRANCH="${{ github.base_ref }}"
+
+          # Find all changed manifest.json files
+          CHANGED_MANIFESTS=$(git diff --name-only origin/$BASE_BRANCH...HEAD | grep "manifest.json" || true)
+
+          if [ -n "$CHANGED_MANIFESTS" ]; then
+            echo "## 📋 Provider Manifest Changes" > manifest_report.md
+            echo "" >> manifest_report.md
+
+            HAS_REQ_CHANGES=false
+
+            for manifest in $CHANGED_MANIFESTS; do
+              # Check if requirements actually changed
+              OLD_REQS=$(git show origin/$BASE_BRANCH:$manifest 2>/dev/null | python3 -c "import sys, json; data=json.load(sys.stdin); print(' '.join(data.get('requirements', [])))" 2>/dev/null || echo "")
+              NEW_REQS=$(cat $manifest | python3 -c "import sys, json; data=json.load(sys.stdin); print(' '.join(data.get('requirements', [])))" 2>/dev/null || echo "")
+
+              if [ "$OLD_REQS" != "$NEW_REQS" ]; then
+                HAS_REQ_CHANGES=true
+                echo "### \`$manifest\`" >> manifest_report.md
+                echo "" >> manifest_report.md
+
+                # Save old and new versions for comparison
+                git show origin/$BASE_BRANCH:$manifest > /tmp/old_manifest.json 2>/dev/null || echo '{"requirements":[]}' > /tmp/old_manifest.json
+                cp $manifest /tmp/new_manifest.json
+
+                # Use Python script to parse dependency changes
+                python3 scripts/parse_manifest_deps.py /tmp/old_manifest.json /tmp/new_manifest.json >> manifest_report.md
+                echo "" >> manifest_report.md
+              fi
+            done
+
+            if [ "$HAS_REQ_CHANGES" = "true" ]; then
+              echo "has_changes=true" >> $GITHUB_OUTPUT
+            else
+              echo "has_changes=false" >> $GITHUB_OUTPUT
+              echo "Manifest files changed but no dependency changes detected" > manifest_report.md
+            fi
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No provider manifest changes detected" > manifest_report.md
+          fi
+
+          cat manifest_report.md
+
+      # Step 4: Run package safety check on new dependencies
+      - name: Check new package safety
+        id: safety_check
+        if: steps.deps_check.outputs.has_changes == 'true'
+        continue-on-error: true
+        run: |
+          echo "## 🛡️ Supply Chain Security Check" > safety_report.md
+          echo "" >> safety_report.md
+
+          if [ -f new_deps.txt ] && [ -s new_deps.txt ]; then
+            # Run our custom safety check script
+            python scripts/check_package_safety.py new_deps.txt > safety_output.txt 2>&1
+            SAFETY_EXIT=$?
+
+            cat safety_output.txt >> safety_report.md
+            echo "" >> safety_report.md
+
+            # Parse automated check results
+            if grep -q "✅.*Trusted Sources.*All packages" safety_output.txt; then
+              echo "trusted_sources=pass" >> $GITHUB_OUTPUT
+            else
+              echo "trusted_sources=fail" >> $GITHUB_OUTPUT
+            fi
+
+            if grep -q "✅.*Typosquatting.*No suspicious" safety_output.txt; then
+              echo "typosquatting=pass" >> $GITHUB_OUTPUT
+            else
+              echo "typosquatting=fail" >> $GITHUB_OUTPUT
+            fi
+
+            if grep -q "✅.*License.*All licenses" safety_output.txt; then
+              echo "license=pass" >> $GITHUB_OUTPUT
+            else
+              echo "license=fail" >> $GITHUB_OUTPUT
+            fi
+
+            if [ $SAFETY_EXIT -eq 2 ]; then
+              echo "status=high_risk" >> $GITHUB_OUTPUT
+              echo "" >> safety_report.md
+              echo "⚠️  **HIGH RISK PACKAGES DETECTED**" >> safety_report.md
+              echo "Manual security review is **required** before merging this PR." >> safety_report.md
+            elif [ $SAFETY_EXIT -eq 1 ]; then
+              echo "status=medium_risk" >> $GITHUB_OUTPUT
+              echo "" >> safety_report.md
+              echo "⚠️  **MEDIUM RISK PACKAGES DETECTED**" >> safety_report.md
+              echo "Please review the warnings above before merging." >> safety_report.md
+            else
+              echo "status=pass" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "No new dependencies to check" >> safety_report.md
+            echo "status=pass" >> $GITHUB_OUTPUT
+            echo "trusted_sources=pass" >> $GITHUB_OUTPUT
+            echo "typosquatting=pass" >> $GITHUB_OUTPUT
+            echo "license=pass" >> $GITHUB_OUTPUT
+          fi
+
+          cat safety_report.md
+
+      # Step 5: Persist analysis results for the reporting workflow.
+      # The report runs via workflow_run and cannot see this job's outputs, so
+      # the result strings are passed via the artifact. This data is UNTRUSTED
+      # (produced by fork code); the reporting workflow validates it and derives
+      # all PR identity/labels from the GitHub API, never from this artifact.
+      - name: Persist analysis results
+        if: always()
+        run: |
+          {
+            echo "REQ_SYNC=${{ steps.req_sync.outputs.status }}"
+            echo "PIP_AUDIT=${{ steps.pip_audit.outputs.status }}"
+            echo "DEPS_CHANGES=${{ steps.deps_check.outputs.has_changes }}"
+            echo "MANIFEST_CHANGES=${{ steps.manifest_check.outputs.has_changes }}"
+            echo "SAFETY_STATUS=${{ steps.safety_check.outputs.status }}"
+            echo "TRUSTED_SOURCES=${{ steps.safety_check.outputs.trusted_sources }}"
+            echo "TYPOSQUATTING=${{ steps.safety_check.outputs.typosquatting }}"
+            echo "LICENSE=${{ steps.safety_check.outputs.license }}"
+          } > status.env
+
+      # Step 6: Hand off report fragments and results to the reporting workflow
+      - name: Upload security reports
+        if: always()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: security-reports
+          path: |
+            sync_report.md
+            audit_report.md
+            deps_report.md
+            manifest_report.md
+            safety_report.md
+            status.env
+          if-no-files-found: ignore
+          retention-days: 1

@@ -1,0 +1,6 @@
+{
+  "manifest": {
+    "name": "Players",
+    "description": "Configuration of the core player management module"
+  }
+}

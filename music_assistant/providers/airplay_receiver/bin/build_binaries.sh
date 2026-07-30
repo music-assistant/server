@@ -5,9 +5,23 @@ set -e
 # This script uses Docker to build binaries in isolated environments
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SHAIRPORT_VERSION="${SHAIRPORT_VERSION:-4.3.7}"
 
-echo "Building shairport-sync ${SHAIRPORT_VERSION} binaries..."
+# Single source of truth: read the pinned version and commit SHA from Dockerfile.base,
+# so the local build always matches what the base image ships.
+DOCKERFILE_BASE="${SCRIPT_DIR}/../../../../Dockerfile.base"
+read_docker_arg() {
+    local name="$1" value
+    value="$(sed -n -E "s/^ARG[[:space:]]+${name}=([^[:space:]]+).*/\1/p" "${DOCKERFILE_BASE}" | head -n1)"
+    if [[ -z "${value}" ]]; then
+        echo "Error: ${name} not found in ${DOCKERFILE_BASE}" >&2
+        exit 1
+    fi
+    printf '%s' "${value}"
+}
+SHAIRPORT_VERSION="$(read_docker_arg SHAIRPORT_VERSION)"
+SHAIRPORT_SHA="$(read_docker_arg SHAIRPORT_SHA)"
+
+echo "Building shairport-sync ${SHAIRPORT_VERSION} (${SHAIRPORT_SHA}) binaries..."
 
 # Function to build Linux binaries using Docker
 build_linux() {
@@ -39,10 +53,14 @@ build_linux() {
                 libglib2.0-dev \
                 ca-certificates
 
-            # Clone and checkout specific version
+            # Fetch the pinned tag and verify it against the commit SHA from Dockerfile.base
             cd /tmp
-            git clone --depth 1 --branch ${SHAIRPORT_VERSION} https://github.com/mikebrady/shairport-sync.git
+            git init shairport-sync
             cd shairport-sync
+            git remote add origin https://github.com/mikebrady/shairport-sync.git
+            git fetch --depth 1 origin refs/tags/${SHAIRPORT_VERSION}
+            git checkout FETCH_HEAD
+            test \"\$(git rev-parse HEAD)\" = \"${SHAIRPORT_SHA}\"
 
             # Configure and build
             # Build with tinysvcmdns (lightweight embedded mDNS, no external daemon needed)
@@ -103,9 +121,13 @@ build_macos() {
     TEMP_DIR=$(mktemp -d)
     cd "${TEMP_DIR}"
 
-    # Clone and build
-    git clone --depth 1 --branch "${SHAIRPORT_VERSION}" https://github.com/mikebrady/shairport-sync.git
+    # Fetch the pinned tag and verify it against the commit SHA from Dockerfile.base
+    git init shairport-sync
     cd shairport-sync
+    git remote add origin https://github.com/mikebrady/shairport-sync.git
+    git fetch --depth 1 origin "refs/tags/${SHAIRPORT_VERSION}"
+    git checkout FETCH_HEAD
+    test "$(git rev-parse HEAD)" = "${SHAIRPORT_SHA}"
 
     autoreconf -fi
 
@@ -165,8 +187,8 @@ case "${1:-all}" in
     *)
         echo "Usage: $0 {linux-x86_64|linux-aarch64|macos|all}"
         echo
-        echo "Environment variables:"
-        echo "  SHAIRPORT_VERSION  - Version to build (default: 4.3.7)"
+        echo "The version and commit are pinned in Dockerfile.base"
+        echo "(SHAIRPORT_VERSION / SHAIRPORT_SHA) and read from there."
         exit 1
         ;;
 esac

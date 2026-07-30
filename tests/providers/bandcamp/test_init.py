@@ -1,18 +1,21 @@
 """Integration tests for the Bandcamp provider."""
 
 from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING
 from unittest import mock
 
 import pytest
-from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import MediaType, StreamType
 
 from music_assistant.mass import MusicAssistant
 from tests.common import wait_for_sync_completion
 
+if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ProviderConfig
+
 
 @pytest.fixture
-async def bandcamp_provider(mass: MusicAssistant) -> AsyncGenerator[ProviderConfig, None]:
+async def bandcamp_provider(mass: MusicAssistant) -> AsyncGenerator[ProviderConfig]:
     """Configure a Bandcamp test fixture, and add a provider to mass that uses it."""
     # Mock the BandcampAPIClient to avoid real API calls
     with mock.patch("music_assistant.providers.bandcamp.BandcampAPIClient") as mock_client_class:
@@ -20,7 +23,7 @@ async def bandcamp_provider(mass: MusicAssistant) -> AsyncGenerator[ProviderConf
         mock_client_class.return_value = mock_client
 
         # Configure mock client for collection access
-        mock_collection = mock.AsyncMock()
+        mock_collection = mock.AsyncMock(has_more=False, last_token=None)
         mock_collection.items = []
 
         # Mock collection items for library tests
@@ -74,13 +77,11 @@ async def bandcamp_provider(mass: MusicAssistant) -> AsyncGenerator[ProviderConf
         mock_client.get_track.return_value = mock_track
 
         async with wait_for_sync_completion(mass):
-            config = await mass.config.save_provider_config(
+            config = await mass.config._create_provider_instance(
                 "bandcamp",
-                {
-                    "identity": "mock_identity_token",
-                    "search_limit": 10,
-                    "top_tracks_limit": 50,
-                },
+                {"search_limit": 10, "top_tracks_limit": 50},
+                # the identity cookie is collected by the setup flow and lives in setup_data
+                setup_data=mass.config._encrypt_values({"identity": "mock_identity_token"}),
             )
             await mass.music.start_sync()
 

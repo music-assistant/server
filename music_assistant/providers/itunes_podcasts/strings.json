@@ -1,0 +1,18 @@
+{
+  "config_entries": {
+    "locale": {
+      "label": "Country"
+    },
+    "num_episodes": {
+      "label": "Maximum number of episodes. 0 for unlimited.",
+      "description": "Maximum number of episodes. 0 for unlimited."
+    },
+    "explicit": {
+      "label": "Include explicit results",
+      "description": "Whether or not to include explicit content results in search."
+    }
+  },
+  "manifest": {
+    "description": "Search and play podcasts indexed via Apple’s iTunes feed / podcast directory."
+  }
+}

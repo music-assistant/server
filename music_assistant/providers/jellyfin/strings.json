@@ -1,0 +1,23 @@
+{
+  "config_entries": {
+    "url": {
+      "label": "Server",
+      "description": "The url of the Jellyfin server to connect to."
+    },
+    "username": {
+      "label": "[%key:common::config_entries::username::label%]",
+      "description": "The username to authenticate to the remote server. For example 'media'."
+    },
+    "password": {
+      "label": "[%key:common::config_entries::password::label%]",
+      "description": "[%key:common::config_entries::password::description%]"
+    },
+    "verify_ssl": {
+      "label": "[%key:common::config_entries::verify_ssl::label%]",
+      "description": "[%key:common::config_entries::verify_ssl::description%]"
+    }
+  },
+  "manifest": {
+    "description": "Stream music from your self-hosted Jellyfin server."
+  }
+}

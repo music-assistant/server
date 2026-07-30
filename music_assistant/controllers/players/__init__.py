@@ -16,6 +16,6 @@ The playerstate is the object that is exposed to the outside world (via the API)
 
 from __future__ import annotations
 
-from .player_controller import PlayerController
+from .controller import PlayerController
 
 __all__ = ["PlayerController"]

@@ -8,8 +8,8 @@
   "credits": [
     "[Fully Kiosk library for Python](https://github.com/cgarwood/python-fullykiosk)"
   ],
-  "requirements": ["python-fullykiosk==0.0.14"],
+  "requirements": ["python-fullykiosk==0.0.15"],
   "documentation": "https://music-assistant.io/player-support/fully-kiosk/",
-  "multi_instance": true,
+  "multi_instance": false,
   "builtin": false
 }

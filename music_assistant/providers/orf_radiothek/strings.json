@@ -1,0 +1,27 @@
+{
+  "config_entries": {
+    "stream_proto": {
+      "label": "Preferred ORF protocol",
+      "description": "Used for ORF stations (template-based). Privates use explicit URLs from bundle.json."
+    },
+    "stream_quality": {
+      "label": "ORF quality",
+      "description": "For ORF HLS: q1a/q2a/q3a/q4a/qxa. For shoutcast: q1a/q2a."
+    },
+    "include_hidden": {
+      "label": "Include hidden stations",
+      "description": "Include stations with hideFromStations=true."
+    },
+    "catchup_proto": {
+      "label": "Catch-up stream type",
+      "description": "Use 'progressive' (mp3) or 'hls' (m3u8) URLs from the broadcast detail."
+    },
+    "catchup_stations": {
+      "label": "Catch-up stations (optional)",
+      "description": "Comma-separated station ids (e.g. 'stm,wie,oe1'). Empty = all ORF stations from bundle."
+    }
+  },
+  "manifest": {
+    "description": "Stream live radio and on-demand content from ORF Radiothek (Austrian public service broadcaster). Supports live streams from Ö1, Ö3, FM4, and regional stations, plus on-demand broadcasts and podcasts."
+  }
+}

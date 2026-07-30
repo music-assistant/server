@@ -41,23 +41,18 @@ CONF_ENTRY_DISPLAY = ConfigEntry(
     type=ConfigEntryType.BOOLEAN,
     default_value=False,
     required=False,
-    label="Enable display support",
-    description="Enable/disable native display support on squeezebox or squeezelite32 hardware.",
-    category="advanced",
+    advanced=True,
 )
 CONF_ENTRY_VISUALIZATION = ConfigEntry(
     key=CONF_VISUALIZATION,
     type=ConfigEntryType.STRING,
     default_value=DEFAULT_VISUALIZATION,
     options=[
-        ConfigValueOption(title=x.name.replace("_", " ").title(), value=x.value)
+        ConfigValueOption(x.value, title=x.name.replace("_", " ").title())
         for x in SlimVisualisationType
     ],
     required=False,
-    label="Visualization type",
-    description="The type of visualization to show on the display "
-    "during playback if the device supports this.",
-    category="advanced",
+    advanced=True,
     depends_on=CONF_DISPLAY,
 )
 

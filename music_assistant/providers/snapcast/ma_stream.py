@@ -1,0 +1,712 @@
+"""
+Music Assistant Snapcast source stream.
+
+This module implements a Music Assistant-managed Snapcast stream that is exposed to the
+Snapcast server as a TCP source. The stream is produced by running an FFmpeg pipeline
+which pulls audio from Music Assistant and pushes it to the Snapcast source URI.
+
+Optionally, a Unix socket server can be started to provide a control channel for a
+Snapcast control script (used by the built-in Snapcast server integration).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import random
+import time
+import urllib.parse
+from contextlib import suppress
+from typing import TYPE_CHECKING, cast
+
+from music_assistant_models.enums import ContentType
+from music_assistant_models.media_items import AudioFormat
+
+from music_assistant.controllers.streams.audio_processing import (
+    AudioOutputPlan,
+    get_media_session_id,
+)
+from music_assistant.helpers.ffmpeg import FFMpeg
+from music_assistant.providers.snapcast.socket_server import SnapcastSocketServer
+
+from .constants import (
+    CONTROL_SOCKET_PATH_TEMPLATE,
+    DEFAULT_SNAPCAST_FORMAT,
+)
+
+if TYPE_CHECKING:
+    from music_assistant_models.player import PlayerMedia
+
+    from .provider import SnapCastProvider
+    from .snap_cntrl_proto import SnapstreamProto
+
+
+class SnapcastMAStream:
+    """
+    A Music Assistant-managed Snapcast stream.
+
+    The stream lifecycle is:
+    - setup: ensure required server resources exist (Snapcast source, optional socket server)
+    - start_stream: start the FFmpeg streaming task
+    - request_stop_stream / wait_for_stopped: stop streaming and await termination
+    - destroy: stop streaming, remove Snapcast source, and stop ancillary services
+
+    If `cntrl_queue_id` is provided, a Unix socket server is started to allow a Snapcast
+    control script to communicate with Music Assistant.
+    """
+
+    def __init__(
+        self,
+        provider: SnapCastProvider,
+        media: PlayerMedia,
+        stream_name: str,
+        source_id: str | None = None,
+        filter_settings_owner: str | None = None,
+        use_cntrl_script: bool = False,
+        destroy_on_stop: bool = False,
+    ) -> None:
+        """
+        Initialize the stream.
+
+        Args:
+            provider: The Snapcast provider instance.
+            media: The media item to stream.
+            stream_name: Name used to register the stream on the Snapcast server.
+            cntrl_queue_id: If set, enables the control socket server used by the control script.
+            filter_settings_owner: Player/entity id used to fetch DSP/filter parameters.
+            destroy_on_stop: If true, delete this MA stream once streaming stops.
+        """
+        self.media = media
+        self.stream_name = stream_name
+        self.snap_stream: SnapstreamProto | None = None
+
+        self._provider = provider
+        self._logger = provider.logger
+        self._mass = provider.mass
+        self._source_id = source_id
+        self._use_cntrl_script = use_cntrl_script
+        self._cntrl_queue_id = source_id if use_cntrl_script else None
+        self._filter_settings_owner = filter_settings_owner
+        self._destroy_on_stop = destroy_on_stop
+
+        self._lifecycle_lock = asyncio.Lock()
+        self._destroyed = False
+        self._setup_done = False
+        self._is_streaming = False
+        self._restart_requested: bool = False
+        self._stop_requested: bool = False
+        self._streaming_started_at: float | None = None
+        self._output_plan: AudioOutputPlan | None = None
+
+        self._socket_server: SnapcastSocketServer | None = None
+        self._socket_path: str | None = None
+        self._streamer_task: asyncio.Task[None] | None = None
+        self._stop_streamer_evt = asyncio.Event()
+        self._streamer_started_evt = asyncio.Event()
+        self._stop_timer: asyncio.Handle | None = None
+        self._stop_timer_started_at: float | None = None
+        self._filter_settings: list[str] | None = None
+
+    @property
+    def source_id(self) -> str | None:
+        """Return the source id this stream was created for."""
+        return self._source_id
+
+    @property
+    def stream_id(self) -> str | None:
+        """Return the Snapcast stream identifier, if registered."""
+        if self.snap_stream:
+            return self.snap_stream.identifier
+        return None
+
+    @property
+    def is_streaming(self) -> bool:
+        """Return True if the FFmpeg streaming task is currently running."""
+        return self._is_streaming
+
+    @property
+    def playback_started_at(self) -> float | None:
+        """
+        Return when the playback started at the clients.
+
+        return The (UTC) timestamp when the playback was started on the client
+        or None if not started yet or not streaming.
+        """
+        if self._streaming_started_at is None:
+            return None
+        if self._provider._use_builtin_server:
+            buffer_ms = self._provider._snapcast_server_buffer_size
+            if time.time() - self._streaming_started_at < buffer_ms / 1000.0:
+                return None
+            return self._streaming_started_at + buffer_ms / 1000.0
+        return self._streaming_started_at
+
+    async def setup(self) -> None:
+        """
+        Prepare the Snapcast stream resources.
+
+        Ensures a Snapcast source exists on the server. If `cntrl_queue_id` is set,
+        also starts the Unix socket server used by the control script.
+        """
+        async with self._lifecycle_lock:
+            if self._destroyed:
+                raise RuntimeError("Session is destroyed")
+            if self._setup_done:
+                return
+            if self._provider._snapserver is None:
+                raise RuntimeError("Snapserver needs to be setup first")
+
+            if self._cntrl_queue_id:
+                await self._start_socket_server()
+
+            await self._register_tcp_server_source()
+            self._setup_done = True
+
+    async def destroy(self) -> None:
+        """
+        Stop streaming and tear down all resources.
+
+        This stops the streamer task (if running), removes the Snapcast source,
+        and stops the optional control socket server.
+        """
+        async with self._lifecycle_lock:
+            if self._destroyed:
+                return
+            self._destroyed = True
+
+        self.request_stop_stream()
+        await self.wait_for_stopped()
+        await self._remove_snap_source()
+        await self._stop_socket_server()
+
+    async def start_stream(self, allow_restart: bool = False) -> None:
+        """
+        Start streaming the configured media to the Snapcast source.
+
+        Raises:
+            RuntimeError: If the streamer task is already running.
+        """
+        await self.setup()
+        async with self._lifecycle_lock:
+            if self._streamer_task and not self._streamer_task.done():
+                if not allow_restart:
+                    raise RuntimeError("streamer already running")
+                if self._stop_requested or self._stop_streamer_evt.is_set():
+                    # stop in flight; _on_streamer_done will start the fresh run
+                    self._restart_requested = True
+                else:
+                    self._restart_if_running()
+                return
+
+            self._stop_requested = False
+            self._restart_requested = False
+            self._stop_streamer_evt.clear()
+            self._streamer_started_evt.clear()
+            self._streamer_task = self._mass.create_task(self._streamer_task_impl())
+            self._streamer_task.add_done_callback(self._on_streamer_done)
+
+    async def wait_for_started(self, timeout_sec: float | None = None) -> None:
+        """
+        Wait until the streamer task signals it has started.
+
+        Args:
+            timeout_sec: Optional timeout in seconds.
+        """
+        try:
+            await asyncio.wait_for(self._streamer_started_evt.wait(), timeout_sec)
+        except TimeoutError:
+            self._logger.warning(
+                "Timeout waiting for stream %s to start; Canceling...",
+                self.stream_name,
+            )
+
+    def update_media(self, media: PlayerMedia) -> None:
+        """Update the media to play and restart the stream if required."""
+        if media != self.media:
+            self.media = media
+            self._restart_if_running()
+
+    def update_filter_settings(self, from_player: str | None = None) -> None:
+        """Update the filter setting."""
+        take_from = from_player or self._filter_settings_owner
+        if not take_from:
+            raise RuntimeError("No player provided to read filter settings from.")
+        output_format = self._get_transport_format()
+        self._output_plan = self._mass.streams.audio.get_player_output_plan(
+            take_from,
+            DEFAULT_SNAPCAST_FORMAT,
+            output_format,
+            handoff_format=DEFAULT_SNAPCAST_FORMAT,
+        )
+        self._register_output_plan()
+        new_settings = self._output_plan.filter_params
+        if from_player:
+            self._filter_settings_owner = from_player
+        if new_settings != self._filter_settings:
+            self._restart_if_running()
+
+    def request_stop_stream(self) -> None:
+        """
+        Request the streamer task to stop.
+
+        This is cooperative: the streamer task will stop when it observes the stop event.
+        Any pending inactivity stop timer is canceled.
+        """
+        self._stop_requested = True
+        self._restart_requested = False  # explicit stop cancels any pending restart
+        self._stop_streamer_evt.set()
+
+        self._stop_timer_started_at = None
+        if self._stop_timer:
+            self._stop_timer.cancel()
+
+    def set_in_use(self, in_use: bool) -> None:
+        """
+        Mark the stream as in-use or idle.
+
+        When marked idle, a delayed stop is scheduled. When marked in-use, any pending
+        delayed stop is canceled.
+        """
+        if in_use:
+            self._stop_timer_started_at = None
+            if self._stop_timer:
+                self._stop_timer.cancel()
+        elif self._stop_timer_started_at is None and not self._stop_requested:
+            self._stop_timer_started_at = self._mass.loop.time()
+            self._stop_timer = self._mass.loop.call_later(3.0, self.request_stop_stream)
+
+    async def wait_for_stopped(self, timeout_sec: float | None = None) -> None:
+        """
+        Wait for the streamer task to finish.
+
+        If the task does not finish within the timeout, it is canceled and awaited.
+
+        Args:
+            timeout_sec: Optional timeout in seconds.
+        """
+        curr_task = self._streamer_task
+        if not curr_task:
+            return
+        try:
+            await asyncio.wait_for(curr_task, timeout_sec)
+        except asyncio.CancelledError:
+            self._logger.warning("Streamer task got canceled")
+        except TimeoutError:
+            self._logger.warning(
+                "Timeout waiting for stream %s to finish; Canceling...",
+                self.stream_name,
+            )
+            curr_task.cancel()
+            await asyncio.gather(curr_task, return_exceptions=True)
+
+    async def _streamer_task_impl(self) -> None:
+        """
+        Streamer task implementation.
+
+        Runs FFmpeg to push audio to the Snapcast TCP source until FFmpeg exits or a stop
+        request is received. After exit, waits briefly for the Snapcast stream to report
+        an idle state.
+        """
+        stream_path = self._snap_get_stream_path()
+        if stream_path is None:
+            raise RuntimeError("The path to stream to is not set")
+
+        self._logger.debug("Start streaming to %s", stream_path)
+        self._stop_streamer_evt.clear()
+        self._streamer_started_evt.clear()
+        if self._filter_settings_owner:
+            output_format = self._get_transport_format()
+            self._output_plan = self._mass.streams.audio.get_player_output_plan(
+                self._filter_settings_owner,
+                DEFAULT_SNAPCAST_FORMAT,
+                output_format,
+                handoff_format=DEFAULT_SNAPCAST_FORMAT,
+            )
+            self._register_output_plan()
+            self._filter_settings = self._output_plan.filter_params
+        audio_source = self._mass.streams.get_stream(
+            self.media,
+            DEFAULT_SNAPCAST_FORMAT,
+            self._filter_settings_owner,
+            use_flow_stream_buffering=True,
+        )
+        try:
+            async with FFMpeg(
+                audio_input=audio_source,
+                input_format=DEFAULT_SNAPCAST_FORMAT,
+                output_format=DEFAULT_SNAPCAST_FORMAT,
+                filter_params=self._filter_settings or [],
+                audio_output=stream_path,
+                extra_input_args=["-y", "-re"],
+            ) as ffmpeg_proc:
+                wait_ffmpeg = self._mass.create_task(ffmpeg_proc.wait())
+                wait_stop = self._mass.create_task(self._stop_streamer_evt.wait())
+                self._streaming_started_at = time.time()
+                self._streamer_started_evt.set()
+                self._is_streaming = True
+
+                done, pending = await asyncio.wait(
+                    {wait_ffmpeg, wait_stop},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+
+                if wait_stop in done and wait_ffmpeg not in done:
+                    self._logger.debug("Stopping stream %s requested.", self.stream_name)
+                    wait_ffmpeg.cancel()
+                    await asyncio.gather(wait_ffmpeg, return_exceptions=True)
+                    return
+
+                await wait_ffmpeg
+                for t in pending:
+                    t.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
+        except asyncio.CancelledError:
+            self._logger.debug("Snapcast stream %s cancelled", self.stream_name)
+            raise
+        except Exception as err:
+            self._logger.error("Snapcast stream %s error: %s", self.stream_name, err, exc_info=err)
+            raise
+        finally:
+            self._is_streaming = False
+            self._logger.debug("Finished streaming to %s", stream_path)
+            await self._wait_stream_idle()
+
+    async def _wait_stream_idle(self) -> None:
+        """Wait for the Snapcast stream to become idle after streaming ends."""
+        try:
+
+            async def wait_until_idle() -> None:
+                while True:
+                    stream_is_idle = False
+                    with suppress(KeyError):
+                        snap_stream = self._provider._snapserver.stream(self.stream_name)
+                        stream_is_idle = snap_stream.status == "idle"
+                    if self._mass.closing or stream_is_idle:
+                        break
+                    await asyncio.sleep(0.25)
+
+            await asyncio.wait_for(wait_until_idle(), timeout=10.0)
+        except TimeoutError:
+            self._logger.warning(
+                "Timeout waiting for stream %s to become idle",
+                self.stream_name,
+            )
+        finally:
+            self._streaming_started_at = None
+
+    def _on_streamer_done(self, t: asyncio.Task[None]) -> None:
+        """Handle streamer task completion and optional cleanup."""
+        restart = False
+        try:
+            t.result()
+        except asyncio.CancelledError:
+            self._logger.debug("Streamer task cancelled: %s", self.stream_name)
+        except Exception:
+            self._logger.exception("Streamer task failed")
+        finally:
+            restart = self._restart_requested and not self._destroyed
+
+            if self._streamer_task is t:
+                self._streamer_task = None
+
+            # reset per-run state
+            self._restart_requested = False
+            self._stop_requested = False
+            self._stop_streamer_evt.clear()
+            self._streamer_started_evt.clear()
+
+        if restart:
+            self._mass.create_task(self._restart_stream_locked())
+        elif self._destroy_on_stop:
+            self._mass.create_task(self._provider.delete_ma_stream(self.stream_name))
+
+    def _restart_if_running(self) -> None:
+        """Request a running stream to restart."""
+        t = self._streamer_task
+        if not t or t.done():
+            return
+
+        if self._stop_requested or self._stop_streamer_evt.is_set():
+            return
+
+        self._restart_requested = True
+        self._stop_requested = True
+        self._stop_streamer_evt.set()
+
+        self._stop_timer_started_at = None
+        if self._stop_timer:
+            self._stop_timer.cancel()
+
+    async def _restart_stream_locked(self) -> None:
+        """Restart the streamer under the lifecycle lock."""
+        async with self._lifecycle_lock:
+            if self._destroyed:
+                return
+            if self._streamer_task and not self._streamer_task.done():
+                return
+
+            # reset state and start a fresh run
+            self._stop_requested = False
+            self._restart_requested = False
+            self._stop_streamer_evt.clear()
+            self._streamer_started_evt.clear()
+
+            self._streamer_task = self._mass.create_task(self._streamer_task_impl())
+            self._streamer_task.add_done_callback(self._on_streamer_done)
+
+    def _get_transport_format(self) -> AudioFormat:
+        """Return the format Snapserver sends to its clients."""
+        if self._provider._use_builtin_server:
+            codec_name = str(self._provider._snapcast_server_transport_codec)
+        else:
+            stream_data = self.snap_stream._stream if self.snap_stream else {}
+            uri_data = stream_data.get("uri", {})
+            query_data = uri_data.get("query", {}) if isinstance(uri_data, dict) else {}
+            codec_name = str(query_data.get("codec", "") if isinstance(query_data, dict) else "")
+        codec_name = codec_name.partition(":")[0].lower()
+        content_type, codec_type = {
+            "flac": (ContentType.FLAC, ContentType.FLAC),
+            "ogg": (ContentType.OGG, ContentType.VORBIS),
+            "opus": (ContentType.OPUS, ContentType.OPUS),
+            "pcm": (ContentType.PCM_S16LE, ContentType.PCM_S16LE),
+        }.get(codec_name, (ContentType.UNKNOWN, ContentType.UNKNOWN))
+        return AudioFormat(
+            content_type=content_type,
+            codec_type=codec_type,
+            sample_rate=DEFAULT_SNAPCAST_FORMAT.sample_rate,
+            bit_depth=DEFAULT_SNAPCAST_FORMAT.bit_depth,
+            channels=DEFAULT_SNAPCAST_FORMAT.channels,
+        )
+
+    def _register_output_plan(self) -> None:
+        """Register the shared Snapcast path for every connected group member."""
+        queue_id = self.media.source_id
+        session_id = get_media_session_id(self.media)
+        if self._output_plan is None or queue_id is None or session_id is None:
+            return
+        player_ids = set(self._output_plan.output_details.player_ids)
+        if self.snap_stream:
+            for group in self._provider._snapserver.groups:
+                if group.stream != self.snap_stream.identifier:
+                    continue
+                for client_id in group.clients:
+                    if player_id := self._provider._get_ma_id(client_id):
+                        player_ids.add(player_id)
+        for player_id in player_ids:
+            self._mass.streams.audio_processing.update_output(
+                player_id,
+                self._output_plan,
+                queue_id=queue_id,
+                session_id=session_id,
+            )
+
+    def _find_local_stream_by_name(self, name: str) -> SnapstreamProto | None:
+        """
+        Look up a snapserver stream by its name (not id) in the local cache.
+
+        :param name: Stream name to look up.
+        :return: The matching SnapstreamProto, or None if not found.
+        """
+        for s in self._provider._snapserver.streams:
+            if getattr(s, "name", None) == name:
+                return s
+        return None
+
+    @staticmethod
+    def _is_name_collision_error(result: object) -> bool:
+        """
+        Detect snapserver's 'Stream with name X already exists' error.
+
+        :param result: Result returned by snapserver.stream_add_stream.
+        :return: True if the result indicates a stream-name collision.
+        """
+        if not isinstance(result, dict):
+            return False
+        data = result.get("data", "")
+        return (
+            isinstance(data, str)
+            and data.startswith("Stream with name")
+            and "already exists" in data
+        )
+
+    def _pick_port_avoiding(self, used: set[int]) -> int | None:
+        """
+        Pick a random TCP source port within the unchanged upstream range.
+
+        Avoids ports already tried in the current retry loop.
+
+        :param used: Set of ports that should not be returned again.
+        :return: A port in [4953, 5153] not in `used`, or None if none could be
+            found within 20 attempts (extremely rare; the range has 201 values).
+        """
+        for _ in range(20):
+            port = random.randint(4953, 4953 + 200)
+            if port not in used:
+                return port
+        return None
+
+    async def _register_tcp_server_source(self) -> None:
+        """Create a Snapcast TCP source for this stream (or reuse an existing one)."""
+        # This runs under the per-stream `_lifecycle_lock` (acquired in setup()), not the
+        # provider-wide `_snapcast_ma_streams_lock`. Adoption is safe because each MA-managed
+        # stream has at most one outstanding setup() call at a time.
+
+        # prefer to reuse existing stream if possible
+        if self.snap_stream:
+            return
+
+        # The control script is used only for music streams in the builtin server
+        extra_args = ""
+        if (cntrl_queue_id := self._cntrl_queue_id) is not None:
+            # Create socket server for control script communication
+            socket_path = self._socket_path
+            if socket_path is None:
+                raise RuntimeError("socket_path needs to be set if cntrl_queue_id is set")
+            extra_args = (
+                f"&controlscript={urllib.parse.quote_plus('control.py')}"
+                f"&controlscriptparams=--queueid={urllib.parse.quote_plus(cntrl_queue_id)}%20"
+                f"--socket={urllib.parse.quote_plus(socket_path)}%20"
+                f"--streamserver-ip={self._mass.streams.publish_ip}%20"
+                f"--streamserver-port={self._mass.streams.publish_port}"
+            )
+
+        tried_ports: set[int] = set()
+        attempts = 50
+        loop_succeeded = False
+        try:
+            while attempts:
+                attempts -= 1
+                port = self._pick_port_avoiding(tried_ports)
+                if port is None:
+                    break
+                tried_ports.add(port)
+                result = await self._provider._snapserver.stream_add_stream(
+                    # NOTE: setting the sampleformat to something else
+                    # (like 24 bits bit depth) does not seem to work at all!
+                    f"tcp://0.0.0.0:{port}?sampleformat=48000:16:2"
+                    f"&idle_threshold={self._provider._snapcast_stream_idle_threshold}"
+                    f"{extra_args}&name={self.stream_name}"
+                )
+                if isinstance(result, dict) and "id" in result:
+                    self.snap_stream = self._provider._snapserver.stream(result["id"])
+                    self.snap_stream.set_callback(self._snap_on_stream_update)
+                    loop_succeeded = True
+                    return
+
+                if self._is_name_collision_error(result):
+                    adopted = self._find_local_stream_by_name(self.stream_name)
+                    if adopted is None:
+                        # Local cache may be stale (e.g. after an MA restart). Resync.
+                        status, _ = await self._provider._snapserver.status()
+                        if isinstance(status, dict):
+                            self._provider._snapserver.synchronize(status)
+                        adopted = self._find_local_stream_by_name(self.stream_name)
+                    if adopted is not None:
+                        self._logger.info(
+                            "Adopted orphaned snapserver stream %s (name=%s)",
+                            adopted.identifier,
+                            self.stream_name,
+                        )
+                        self.snap_stream = adopted
+                        self.snap_stream.set_callback(self._snap_on_stream_update)
+                        loop_succeeded = True
+                        return
+                elif isinstance(result, dict) and result.get("code") == -32603:
+                    # Forward-compat hint: snapserver may rephrase the name-collision
+                    # error in a future release; surface mismatches in debug logs.
+                    self._logger.debug(
+                        "snapserver returned internal error not matching "
+                        "name-collision pattern: %s",
+                        result,
+                    )
+
+                # if the port is already taken, the result will be an error
+                self._logger.warning("stream_add_stream failed: %s", result)
+                continue
+        finally:
+            # Invariant: if we leave _register_tcp_server_source without setting
+            # self.snap_stream (retries exhausted OR exception during a retry),
+            # any socket_server we started must be stopped.
+            if not loop_succeeded and self._socket_server:
+                await self._stop_socket_server()
+
+        msg = f"Unable to register snapserver stream {self.stream_name!r} after 50 attempts"
+        raise RuntimeError(msg)
+
+    async def _remove_snap_source(self) -> None:
+        """Remove the Snapcast source created for this stream and detach groups."""
+        if self._mass.closing or self.snap_stream is None:
+            return
+
+        for snap_group in self._provider._snapserver.groups:
+            if snap_group.stream != self.snap_stream.identifier:
+                continue
+            self._logger.debug(f"Set stream of group {snap_group.name} to default.")
+            await snap_group.set_stream("default")
+
+        with suppress(KeyError, AttributeError):
+            snap_stream = self._provider._snapserver.stream(self.stream_name)
+            await self._provider._snapserver.stream_remove_stream(snap_stream.identifier)
+
+        if self._socket_server:
+            await self._stop_socket_server()
+        self._snap_on_stream_update()
+
+        return
+
+    def _snap_get_stream_path(self) -> str | None:
+        """Return the Snapcast TCP URI to stream to."""
+        if self.snap_stream is None:
+            return None
+
+        uri = self.snap_stream._stream.get("uri", {})
+        uri_host = uri.get("host", "")
+        stream_path = self.snap_stream.path or f"tcp://{uri_host}"
+        return stream_path.replace("0.0.0.0", self._provider._snapcast_server_host)
+
+    def _snap_on_stream_update(self, stream: SnapstreamProto | None = None) -> None:
+        """Handle Snapcast stream updates and trigger group member refresh."""
+        if self.snap_stream is None:
+            return
+
+        for snap_group in self._provider._snapserver.groups:
+            if snap_group.stream != self.snap_stream.identifier:
+                continue
+            self._provider.poke_group_members(snap_group)
+        self._register_output_plan()
+
+    async def _start_socket_server(self) -> str:
+        """
+        Get or create a socket server for the given queue.
+
+        :return: The path to the Unix socket.
+        """
+        if self._socket_server:
+            return self._socket_server.socket_path
+
+        if self._cntrl_queue_id is None:
+            raise RuntimeError("Socket server require _cntrl_queue_id to be set")
+
+        socket_path = CONTROL_SOCKET_PATH_TEMPLATE.format(queue_id=self._cntrl_queue_id)
+        socket_server = SnapcastSocketServer(
+            mass=self._mass,
+            queue_id=self._cntrl_queue_id,
+            socket_path=socket_path,
+            streamserver_ip=str(self._mass.streams.publish_ip),
+            streamserver_port=cast("int", self._mass.streams.publish_port),
+        )
+        await socket_server.start()
+        self._socket_server = socket_server
+        self._socket_path = socket_path
+        self._logger.debug(
+            "Created socket server for queue %s at %s", self._cntrl_queue_id, socket_path
+        )
+        return socket_path
+
+    async def _stop_socket_server(self) -> None:
+        """Stop and remove the socket server for the given queue."""
+        if not self._socket_server:
+            return
+
+        await self._socket_server.stop()
+        self._socket_server = None
+        self._logger.debug("Stopped socket server for queue %s", self._cntrl_queue_id)

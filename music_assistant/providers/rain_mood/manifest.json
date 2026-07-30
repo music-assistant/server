@@ -1,0 +1,11 @@
+{
+  "type": "music",
+  "domain": "rain_mood",
+  "stage": "experimental",
+  "name": "Rainy Mood",
+  "description": "Looping rain ambience from rainymood.com to play directly or use as audio overlay on a queue.",
+  "codeowners": ["@jlpouffier"],
+  "requirements": [],
+  "multi_instance": false,
+  "icon": "weather-rainy"
+}

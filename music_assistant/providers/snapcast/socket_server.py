@@ -1,4 +1,5 @@
-"""Unix socket server for Snapcast control script communication.
+"""
+Unix socket server for Snapcast control script communication.
 
 This module provides a secure communication channel between the Snapcast control script
 and Music Assistant, avoiding the need to expose the WebSocket API to the control script.
@@ -7,6 +8,7 @@ and Music Assistant, avoiding the need to expose the WebSocket API to the contro
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 from contextlib import suppress
@@ -14,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import EventType
+from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
 
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
@@ -29,7 +32,8 @@ LOOP_STATUS_MAP_REVERSE = {v: k for k, v in LOOP_STATUS_MAP.items()}
 
 
 class SnapcastSocketServer:
-    """Unix socket server for a single Snapcast control script connection.
+    """
+    Unix socket server for a single Snapcast control script connection.
 
     Each stream gets its own socket server instance to handle control script communication.
     The socket provides a secure IPC channel that doesn't require authentication since
@@ -44,7 +48,8 @@ class SnapcastSocketServer:
         streamserver_ip: str,
         streamserver_port: int,
     ) -> None:
-        """Initialize the socket server.
+        """
+        Initialize the socket server.
 
         :param mass: The MusicAssistant instance.
         :param queue_id: The queue ID this socket serves.
@@ -60,6 +65,7 @@ class SnapcastSocketServer:
         self._server: asyncio.AbstractServer | None = None
         self._client_writer: asyncio.StreamWriter | None = None
         self._unsub_callback: Any = None
+        self._background_tasks: set[asyncio.Task[None]] = set()
         self._logger = LOGGER.getChild(queue_id)
 
     async def start(self) -> None:
@@ -91,6 +97,8 @@ class SnapcastSocketServer:
             self._unsub_callback = None
 
         if self._client_writer:
+            with suppress(Exception):
+                await self.notify_shutdown()
             self._client_writer.close()
             with suppress(Exception):
                 await self._client_writer.wait_closed()
@@ -104,6 +112,15 @@ class SnapcastSocketServer:
         # Clean up socket file
         Path(self.socket_path).unlink(missing_ok=True)
         self._logger.debug("Stopped Unix socket server")
+
+    async def notify_shutdown(self) -> None:
+        """Tell the control script to exit."""
+        await self._send_message(
+            {
+                "event": "shutdown",
+                "object_id": self.queue_id,
+            }
+        )
 
     async def _handle_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -137,7 +154,8 @@ class SnapcastSocketServer:
             self._logger.debug("Control script disconnected")
 
     async def _handle_message(self, message: dict[str, Any]) -> None:
-        """Handle a message from the control script.
+        """
+        Handle a message from the control script.
 
         :param message: The JSON message from the control script.
         """
@@ -157,7 +175,8 @@ class SnapcastSocketServer:
             await self._send_error(msg_id, str(err))
 
     async def _execute_command(self, command: str, args: dict[str, Any]) -> Any:
-        """Execute a Music Assistant API command.
+        """
+        Execute a Music Assistant API command.
 
         :param command: The API command to execute.
         :param args: The arguments for the command.
@@ -169,12 +188,13 @@ class SnapcastSocketServer:
 
         # Execute the handler
         result = handler.target(**args)
-        if asyncio.iscoroutine(result):
+        if inspect.iscoroutine(result):
             result = await result
         return result
 
     async def _send_result(self, msg_id: str | None, result: Any) -> None:
-        """Send a success result to the control script.
+        """
+        Send a success result to the control script.
 
         :param msg_id: The message ID from the request.
         :param result: The result data.
@@ -184,16 +204,13 @@ class SnapcastSocketServer:
 
         response: dict[str, Any] = {"message_id": msg_id}
         if result is not None:
-            # Convert result to dict if it has to_dict method
-            if hasattr(result, "to_dict"):
-                response["result"] = result.to_dict()
-            else:
-                response["result"] = result
+            response["result"] = self._serialize(result)
 
         await self._send_message(response)
 
     async def _send_error(self, msg_id: str | None, error: str) -> None:
-        """Send an error result to the control script.
+        """
+        Send an error result to the control script.
 
         :param msg_id: The message ID from the request.
         :param error: The error message.
@@ -207,8 +224,27 @@ class SnapcastSocketServer:
         }
         await self._send_message(response)
 
+    def _serialize(self, obj: Any) -> Any:
+        """
+        Serialize a result or event payload for the control script.
+
+        Sets the imageproxy resolver on the current context so nested
+        MediaItemImage serialization fills the `proxy_id` field, letting the
+        control script build canonical ``/imageproxy/<proxy_id>`` URLs.
+
+        :param obj: The value to serialize (a model with `to_dict`, or plain data).
+        """
+        if not hasattr(obj, "to_dict"):
+            return obj
+        token = IMAGE_PROXY_ID_RESOLVER.set(self.mass.metadata.compute_image_id)
+        try:
+            return obj.to_dict()
+        finally:
+            IMAGE_PROXY_ID_RESOLVER.reset(token)
+
     async def _send_message(self, message: dict[str, Any]) -> None:
-        """Send a message to the control script.
+        """
+        Send a message to the control script.
 
         :param message: The message to send.
         """
@@ -219,12 +255,13 @@ class SnapcastSocketServer:
             data = json.dumps(message) + "\n"
             self._client_writer.write(data.encode())
             await self._client_writer.drain()
-        except (ConnectionResetError, BrokenPipeError):
+        except ConnectionResetError, BrokenPipeError:
             self._logger.debug("Failed to send message - connection closed")
             self._client_writer = None
 
     def _handle_mass_event(self, event: Any) -> None:
-        """Handle Music Assistant events and forward to control script.
+        """
+        Handle Music Assistant events and forward to control script.
 
         :param event: The Music Assistant event.
         """
@@ -236,7 +273,15 @@ class SnapcastSocketServer:
             event_msg = {
                 "event": "queue_updated",
                 "object_id": event.object_id,
-                "data": event.data.to_dict() if hasattr(event.data, "to_dict") else event.data,
+                "data": self._serialize(event.data),
             }
             # Schedule the send in the event loop
-            asyncio.create_task(self._send_message(event_msg))
+            task = asyncio.create_task(self._send_message(event_msg))
+            self._background_tasks.add(task)
+
+            def _on_task_done(t: asyncio.Task[None]) -> None:
+                self._background_tasks.discard(t)
+                if not t.cancelled() and (exc := t.exception()):
+                    self._logger.debug("Background task failed", exc_info=exc)
+
+            task.add_done_callback(_on_task_done)

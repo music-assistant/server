@@ -1,0 +1,125 @@
+{
+  "config_entries": {
+    "local_server_ip": {
+      "label": "Local server IP",
+      "description": "The local server IP (e.g. 192.168.1.77)"
+    },
+    "local_server_port": {
+      "label": "Local server port",
+      "description": "The local server port (e.g. 32400)"
+    },
+    "local_server_ssl": {
+      "label": "SSL (HTTPS)",
+      "description": "Connect to the local server using SSL (HTTPS)"
+    },
+    "local_server_verify_cert": {
+      "label": "Verify certificate",
+      "description": "Verify local server SSL certificate"
+    },
+    "library_id": {
+      "label": "Library",
+      "description": "The library to connect to (e.g. Music)",
+      "action_label": "Select Plex Music Library"
+    },
+    "library_type": {
+      "label": "Library Type",
+      "description": "Select whether this Plex library should be treated as Music, Audiobooks, or Podcasts.",
+      "options": {
+        "music": "Music",
+        "audiobooks": "Audiobooks",
+        "podcasts": "Podcasts"
+      }
+    },
+    "import_collections": {
+      "label": "Import Collections",
+      "description": "Import collections (tracks, albums, or artists) as playlists"
+    },
+    "collection_prefix": {
+      "label": "Collection Prefix",
+      "description": "Prefix to add to collection names when imported as playlists"
+    },
+    "plex_like_rating": {
+      "label": "Plex rating when liking in Music Assistant",
+      "description": "When you like a track or album in Music Assistant, set this rating value in Plex (0.0 = unrated, 10.0 = 5 stars)."
+    },
+    "plex_favorite_threshold": {
+      "label": "Minimum Plex rating to import as favorite",
+      "description": "Tracks and albums with a Plex rating at or above this threshold will be imported as favorites in Music Assistant (0.0 = unrated, 10.0 = 5 stars)."
+    },
+    "plex_unlike_rating": {
+      "label": "Plex rating when unliking in Music Assistant",
+      "description": "When you unlike a track or album in Music Assistant, set this rating value in Plex (0.0 = unrated/clear rating, 10.0 = 5 stars)."
+    },
+    "hub_items_limit": {
+      "label": "Items per hub",
+      "description": "Maximum number of items to load from each hub (default: 10)"
+    },
+    "extended_recommendations": {
+      "label": "Extended recommendations",
+      "description": "Show additional recommendation hubs in the dashboard, including 'Mixes For You', recent library playlists, and 'On This Day' releases. Matches the hub set Plex's own clients surface. Changes take effect on the next recommendations refresh."
+    },
+    "gdm": {
+      "label": "Use Plex GDM to discover local servers",
+      "description": "Enable \"GDM\" to discover local Plex servers automatically.",
+      "action_label": "Use Plex GDM to discover local servers"
+    },
+    "auth_myplex": {
+      "label": "Authenticate with MyPlex",
+      "description": "Authenticate with MyPlex to access your library.",
+      "action_label": "Authenticate with MyPlex"
+    },
+    "auth_local": {
+      "label": "Authenticate locally",
+      "description": "Authenticate locally to access your library.",
+      "action_label": "Authenticate locally"
+    },
+    "auth": {
+      "label": "Clear authentication",
+      "description": "Clear the current authentication details.",
+      "action_label": "Clear authentication"
+    },
+    "auth_method": {
+      "label": "How do you want to sign in?",
+      "options": {
+        "myplex": "Plex account (recommended)",
+        "local": "Local username and password"
+      }
+    }
+  },
+  "setup_flow": {
+    "discovering": {
+      "progress_text": "Searching for Plex servers on your network..."
+    },
+    "server": {
+      "title": "Plex server details",
+      "description": "Enter the address of your Plex Media Server, or confirm the discovered one."
+    },
+    "auth_method": {
+      "title": "Choose how to connect",
+      "description": "Sign in with your Plex account, or connect directly to a server that allows access without an account."
+    },
+    "myplex_auth": {
+      "title": "Sign in to Plex",
+      "description": "Sign in with your Plex account in the window that opens to authorize Music Assistant."
+    },
+    "finalizing_auth": {
+      "progress_text": "Completing sign-in with Plex..."
+    },
+    "loading_libraries": {
+      "progress_text": "Loading libraries from your Plex server..."
+    },
+    "library": {
+      "title": "Choose a library",
+      "description": "Pick the Plex library to use and whether it holds music, audiobooks, or podcasts."
+    },
+    "abort": {
+      "myplex_auth_failed": "Could not complete sign-in with your Plex account. Please try again."
+    }
+  },
+  "errors": {
+    "no_libraries": "No compatible libraries were found on this Plex server."
+  },
+  "manifest": {
+    "description": "Stream your personal music, podcasts, and radio via your Plex media server."
+  }
+}

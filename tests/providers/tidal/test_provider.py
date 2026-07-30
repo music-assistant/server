@@ -19,6 +19,7 @@ def mass_mock() -> Mock:
     mass.http_session = AsyncMock()
     mass.metadata.locale = "en_US"
     mass.cache.get = AsyncMock(return_value=None)
+    mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
     mass.cache.delete = AsyncMock()
     return mass
@@ -70,16 +71,29 @@ async def test_provider_initialization(
     assert provider.streaming is not None
 
 
+_SETUP_VALUES = {
+    "auth_token": "mock_access_token",
+    "refresh_token": "mock_refresh_token",
+    "expiry_time": 1234567890,
+    "user_id": "12345",
+}
+
+
 async def test_handle_async_init_success(provider: TidalProvider) -> None:
     """Test successful async initialization."""
     with (
+        patch.object(
+            provider,
+            "get_setup_value",
+            side_effect=lambda key, default=None: _SETUP_VALUES.get(key, default),
+        ),
         patch.object(provider.auth, "initialize", new_callable=AsyncMock) as mock_init,
         patch.object(provider.api, "get", new_callable=AsyncMock) as mock_get,
         patch.object(provider, "get_user", new_callable=AsyncMock) as mock_get_user,
         patch.object(provider.auth, "update_user_info", new_callable=AsyncMock),
     ):
         mock_init.return_value = True
-        mock_get.return_value = ({"userId": "12345", "sessionId": "session_123"}, None)
+        mock_get.return_value = {"userId": "12345", "sessionId": "session_123"}
         mock_get_user.return_value = {"id": "12345", "username": "testuser"}
 
         await provider.handle_async_init()
@@ -105,13 +119,23 @@ async def test_handle_async_init_missing_auth() -> None:
 
     provider = TidalProvider(mass, manifest, config)
 
-    with pytest.raises(LoginFailed, match="Missing authentication data"):
+    with (
+        patch.object(provider, "get_setup_value", return_value=None),
+        pytest.raises(LoginFailed, match="Missing authentication data"),
+    ):
         await provider.handle_async_init()
 
 
 async def test_handle_async_init_auth_failed(provider: TidalProvider) -> None:
     """Test async initialization fails when auth initialize fails."""
-    with patch.object(provider.auth, "initialize", new_callable=AsyncMock) as mock_init:
+    with (
+        patch.object(
+            provider,
+            "get_setup_value",
+            side_effect=lambda key, default=None: _SETUP_VALUES.get(key, default),
+        ),
+        patch.object(provider.auth, "initialize", new_callable=AsyncMock) as mock_init,
+    ):
         mock_init.return_value = False
 
         with pytest.raises(LoginFailed, match="Failed to authenticate with Tidal"):
@@ -249,7 +273,7 @@ async def test_get_item_mapping(provider: TidalProvider) -> None:
 async def test_get_library_artists_delegates_to_library(provider: TidalProvider) -> None:
     """Test get_library_artists delegates to library manager."""
 
-    async def mock_generator() -> AsyncGenerator[Any, None]:
+    async def mock_generator() -> AsyncGenerator[Any]:
         yield Mock(spec=Artist)
         yield Mock(spec=Artist)
 
@@ -264,7 +288,7 @@ async def test_get_library_artists_delegates_to_library(provider: TidalProvider)
 async def test_get_library_albums_delegates_to_library(provider: TidalProvider) -> None:
     """Test get_library_albums delegates to library manager."""
 
-    async def mock_generator() -> AsyncGenerator[Any, None]:
+    async def mock_generator() -> AsyncGenerator[Any]:
         yield Mock(spec=Album)
 
     with patch.object(provider.library, "get_albums", return_value=mock_generator()):
@@ -278,7 +302,7 @@ async def test_get_library_albums_delegates_to_library(provider: TidalProvider) 
 async def test_get_library_tracks_delegates_to_library(provider: TidalProvider) -> None:
     """Test get_library_tracks delegates to library manager."""
 
-    async def mock_generator() -> AsyncGenerator[Any, None]:
+    async def mock_generator() -> AsyncGenerator[Any]:
         yield Mock(spec=Track)
         yield Mock(spec=Track)
         yield Mock(spec=Track)
@@ -294,7 +318,7 @@ async def test_get_library_tracks_delegates_to_library(provider: TidalProvider) 
 async def test_get_library_playlists_delegates_to_library(provider: TidalProvider) -> None:
     """Test get_library_playlists delegates to library manager."""
 
-    async def mock_generator() -> AsyncGenerator[Any, None]:
+    async def mock_generator() -> AsyncGenerator[Any]:
         yield Mock(spec=Playlist)
 
     with patch.object(provider.library, "get_playlists", return_value=mock_generator()):
@@ -333,7 +357,7 @@ async def test_create_playlist_delegates_to_playlists(provider: TidalProvider) -
     with patch.object(provider.playlists, "create", new_callable=AsyncMock) as mock_create:
         mock_create.return_value = Mock(spec=Playlist)
 
-        await provider.create_playlist("New Playlist")
+        await provider.create_playlist("New Playlist", media_types={MediaType.TRACK})
 
         mock_create.assert_called_with("New Playlist")
 
@@ -354,23 +378,9 @@ async def test_remove_playlist_tracks_delegates_to_playlists(provider: TidalProv
         mock_remove.assert_called_with("123", (1, 2, 3))
 
 
-async def test_recommendations_delegates_to_recommendations_manager(
-    provider: TidalProvider,
-) -> None:
-    """Test recommendations delegates to recommendations manager."""
-    with patch.object(
-        provider.recommendations_manager, "get_recommendations", new_callable=AsyncMock
-    ) as mock_get:
-        mock_get.return_value = []
-
-        await provider.recommendations()
-
-        mock_get.assert_called_once()
-
-
 async def test_get_user(provider: TidalProvider) -> None:
     """Test get_user fetches user data."""
-    with patch.object(provider.api, "get_data", new_callable=AsyncMock) as mock_get:
+    with patch.object(provider.api, "get", new_callable=AsyncMock) as mock_get:
         mock_get.return_value = {"id": "123", "username": "testuser"}
 
         user = await provider.get_user("123")

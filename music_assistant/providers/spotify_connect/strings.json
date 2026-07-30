@@ -1,0 +1,27 @@
+{
+  "config_entries": {
+    "mass_player_id": {
+      "label": "[%key:common::config_entries::mass_player_id::label%]",
+      "description": "The Music Assistant player connected to this Spotify Connect plugin. When you start playback in the Spotify app to this virtual speaker, the audio will play on the selected player. Set to 'Auto' to automatically select a currently playing player, or the first available player if none is playing.",
+      "options": {
+        "__auto__": "[%key:common::config_entries::mass_player_id::options::__auto__%]"
+      }
+    },
+    "publish_name": {
+      "label": "Name to display in the Spotify app",
+      "description": "How should this Spotify Connect device be named in the Spotify app?"
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Configure Spotify Connect",
+      "description": "Choose the player that receives Spotify audio and the device name shown in the Spotify app."
+    }
+  },
+  "errors": {
+    "not_active_device": "'{0}' is not the active Spotify playback device. Open the Spotify app, select it as the playback device, and try again."
+  },
+  "manifest": {
+    "description": "Makes a Music Assistant player appear as a device in the official Spotify app via Spotify Connect."
+  }
+}

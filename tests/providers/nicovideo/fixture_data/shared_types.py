@@ -1,4 +1,5 @@
-"""Manually managed shared types for fixture system.
+"""
+Manually managed shared types for fixture system.
 
 This file contains type definitions that are shared between the fixture
 repository and the server repository. Unlike generated files, these are
@@ -13,7 +14,8 @@ from pydantic import BaseModel
 
 
 class StreamFixtureData(BaseModel):
-    """Fixture data for stream conversion tests.
+    """
+    Fixture data for stream conversion tests.
 
     This type is stored in fixtures and reconstructed into StreamConversionData
     during test execution with stub values for unstable fields (hls_url, domand_bid,

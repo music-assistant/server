@@ -1,0 +1,22 @@
+{
+  "media": {
+    "sound_effect": {
+      "white_noise": {
+        "name": "White noise",
+        "description": "Bright, steady hiss with equal energy across all frequencies."
+      },
+      "pink_noise": {
+        "name": "Pink noise",
+        "description": "Softer noise with reduced high frequencies, similar to steady rainfall."
+      },
+      "brown_noise": {
+        "name": "Brown noise",
+        "description": "Deep, low rumble similar to a distant waterfall or heavy surf."
+      },
+      "ocean_waves": {
+        "name": "Ocean waves",
+        "description": "Deep rolling noise with a slow, wave-like swell."
+      }
+    }
+  }
+}

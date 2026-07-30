@@ -1,0 +1,12 @@
+{
+  "type": "music",
+  "domain": "teddycloud",
+  "stage": "experimental",
+  "name": "TeddyCloud",
+  "description": "Browse and stream the audiobooks from your self-hosted TeddyCloud (Toniebox) library.",
+  "codeowners": ["@yoyixms"],
+  "credits": ["[TeddyCloud](https://github.com/toniebox-reverse-engineering/teddycloud)"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/teddycloud/",
+  "multi_instance": true
+}

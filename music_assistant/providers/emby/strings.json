@@ -1,0 +1,19 @@
+{
+  "config_entries": {
+    "ip_address": {
+      "label": "Server",
+      "description": "The url of the Emby server to connect to."
+    },
+    "username": {
+      "label": "[%key:common::config_entries::username::label%]",
+      "description": "[%key:common::config_entries::username::description%]"
+    },
+    "password": {
+      "label": "[%key:common::config_entries::password::label%]",
+      "description": "[%key:common::config_entries::password::description%]"
+    }
+  },
+  "manifest": {
+    "description": "Stream music from your self-hosted Emby server."
+  }
+}

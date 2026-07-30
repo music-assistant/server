@@ -1,0 +1,17 @@
+{
+  "config_entries": {
+    "label": {
+      "label": "Connect Music Assistant to your self-hosted TeddyCloud server to browse and stream the audio from your own Tonies as audiobooks."
+    },
+    "url": {
+      "label": "Server",
+      "description": "The base URL of your TeddyCloud server, for example http://teddycloud.local or http://192.168.1.50"
+    }
+  },
+  "manifest": {
+    "description": "Browse and stream the audiobooks from your self-hosted TeddyCloud (Toniebox) library."
+  },
+  "errors": {
+    "login_failed": "Could not connect to TeddyCloud at {0}. Check that the server URL includes the correct scheme (http:// or https://) and port."
+  }
+}

@@ -24,10 +24,19 @@ fi
 echo "Activating virtual environment..."
 source "$env_name/bin/activate"
 
+echo "Preparing AirPlay development binary..."
+if ! python -m scripts.fetch_airplay_cli; then
+  echo "⚠️ AirPlay binary unavailable; continuing without local AirPlay support." >&2
+fi
+
 echo "Installing development dependencies..."
 uv pip install -e "."
 uv pip install -e ".[test]"
-[[ -f requirements_all.txt ]] && uv pip install -r requirements_all.txt
+# --index-strategy: allow PyPI packages when also using the PyTorch extra index
+# https://docs.astral.sh/uv/pip/compatibility/#packages-that-exist-on-multiple-indexes
+# Keep urllib3-future from hijacking the urllib3 namespace (see pyproject.toml).
+export URLLIB3_NO_OVERRIDE=1
+[[ -f requirements_all.txt ]] && uv pip install --index-strategy unsafe-best-match -r requirements_all.txt
 
 
 # Install pre-commit hooks if pre-commit is available

@@ -7,7 +7,7 @@ In this section, "Mylist" on niconico is treated as a playlist.
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
-from typing import override
+from typing import TYPE_CHECKING, override
 
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import Playlist, Track  # noqa: TC002 - used in @use_cache
@@ -16,6 +16,9 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.providers.nicovideo.provider_mixins.base import (
     NicovideoMusicProviderMixinBase,
 )
+
+if TYPE_CHECKING:
+    from music_assistant_models.enums import MediaType
 
 
 class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
@@ -33,7 +36,7 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
         return playlist_with_tracks.playlist
 
     @override
-    @use_cache(3600 * 3)  # Cache for 3 hours
+    @use_cache(3600 * 3, allow_expired_cache=True)  # Cache for 3 hours
     async def get_playlist_tracks(
         self,
         prov_playlist_id: str,
@@ -49,7 +52,7 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
     @override
     async def get_library_playlists(
         self,
-    ) -> AsyncGenerator[Playlist, None]:
+    ) -> AsyncGenerator[Playlist]:
         """Retrieve library playlists from the provider."""
         # Get own mylists (editable playlists)
         own_mylists = await self.service_manager.mylist.get_own_mylists()
@@ -112,7 +115,7 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
             self.logger.warning("Failed to remove tracks from playlist %s", prov_playlist_id)
 
     @override
-    async def create_playlist(self, name: str) -> Playlist:
+    async def create_playlist(self, name: str, media_types: set[MediaType]) -> Playlist:
         """Create a new playlist on provider with given name."""
         # Create a new mylist using niconico.py
         create_result = await self.service_manager.mylist.create_mylist(
@@ -120,7 +123,12 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
         )
 
         if not create_result:
-            raise MediaNotFoundError(f"Failed to create playlist '{name}' on nicovideo.")
+            raise MediaNotFoundError(
+                f"Failed to create playlist '{name}' on nicovideo.",
+                translation_key="create_playlist_failed",
+                translation_owner=self.translation_owner,
+                translation_args=[name],
+            )
 
         # Get the created mylist details
         mylist_id = str(create_result.mylist.id_)
@@ -130,7 +138,10 @@ class NicovideoMusicProviderPlaylistMixin(NicovideoMusicProviderMixinBase):
 
         if not playlist_with_tracks:
             raise MediaNotFoundError(
-                f"Failed to retrieve created playlist '{name}' from nicovideo."
+                f"Failed to retrieve created playlist '{name}' from nicovideo.",
+                translation_key="retrieve_created_playlist_failed",
+                translation_owner=self.translation_owner,
+                translation_args=[name],
             )
 
         self.logger.info("Successfully created playlist '%s' with ID %s", name, mylist_id)

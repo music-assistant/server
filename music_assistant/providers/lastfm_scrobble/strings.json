@@ -1,0 +1,48 @@
+{
+  "config_entries": {
+    "_provider": {
+      "label": "Provider",
+      "description": "The endpoint to use, defaults to Last.fm",
+      "options": {
+        "lastfm": "Last.FM",
+        "librefm": "LibreFM"
+      }
+    },
+    "_api_key": {
+      "label": "API Key",
+      "description": "Override the built-in Last.fm API key. Required for Libre.fm."
+    },
+    "_api_secret": {
+      "label": "Shared secret",
+      "description": "Override the built-in Last.fm shared secret. Required for Libre.fm."
+    },
+    "_username": {
+      "label": "Logged in user"
+    },
+    "_api_session_key": {
+      "label": "Session key"
+    },
+    "save_reminder": {
+      "label": "Successfully logged in as {0}, don't forget to hit save to complete the setup"
+    },
+    "authorize": {
+      "label": "Authorize with {0}"
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Choose the scrobbling network",
+      "description": "Select Last.fm or Libre.fm. Advanced users can supply their own API key and secret; leave them blank to use the built-in Last.fm app."
+    },
+    "auth": {
+      "title": "Authorize scrobbling",
+      "description": "Sign in and grant access in the window that opens, then return here to finish."
+    }
+  },
+  "errors": {
+    "auth_failed": "Authorization was not completed. Please try again."
+  },
+  "manifest": {
+    "description": "Scrobbles your listening history to Last.fm (and others with a compatible API like Libre.fm), building rich listening stats and recommendations."
+  }
+}

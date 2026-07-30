@@ -1,4 +1,5 @@
-"""ORF Radiothek / ORF Sound provider for Music Assistant.
+"""
+ORF Radiothek / ORF Sound provider for Music Assistant.
 
 Features:
 - Live radios (ORF stations + privates) from ORF bundle.json
@@ -22,8 +23,8 @@ Endpoints:
 from __future__ import annotations
 
 import re
-from collections.abc import AsyncGenerator
-from datetime import UTC, datetime, timedelta
+from collections.abc import AsyncGenerator, Sequence
+from datetime import timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -37,11 +38,18 @@ from music_assistant_models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant_models.errors import MediaNotFoundError, UnplayableMediaError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    UnplayableMediaError,
+)
 from music_assistant_models.media_items import (
     AudioFormat,
+    BrowseFolder,
     ItemMapping,
     MediaItemImage,
+    MediaItemType,
     Podcast,
     PodcastEpisode,
     ProviderMapping,
@@ -51,6 +59,7 @@ from music_assistant_models.media_items import (
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.datetime import utc
 from music_assistant.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -65,7 +74,7 @@ from .helpers import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -99,8 +108,7 @@ CATCHUP_DAYS = 30
 
 SUPPORTED_FEATURES = {
     ProviderFeature.SEARCH,
-    ProviderFeature.LIBRARY_RADIOS,
-    ProviderFeature.LIBRARY_PODCASTS,
+    ProviderFeature.BROWSE,
 }
 
 
@@ -109,74 +117,6 @@ async def setup(
 ) -> ProviderInstanceType:
     """Set up the ORF Radiothek provider."""
     return RadiothekProvider(mass, manifest, config, SUPPORTED_FEATURES)
-
-
-async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
-) -> tuple[ConfigEntry, ...]:
-    """Return provider configuration entries."""
-    # ruff: noqa: ARG001
-    values = values or {}
-
-    return (
-        ConfigEntry(
-            key=CONF_STREAM_PROTO,
-            type=ConfigEntryType.STRING,
-            label="Preferred ORF protocol",
-            required=False,
-            default_value="hls",
-            description=(
-                "Used for ORF stations (template-based). "
-                "Privates use explicit URLs from bundle.json."
-            ),
-            value=values.get(CONF_STREAM_PROTO),
-            category="advanced",
-        ),
-        ConfigEntry(
-            key=CONF_STREAM_QUALITY,
-            type=ConfigEntryType.STRING,
-            label="ORF quality",
-            required=False,
-            default_value="qxa",
-            description="For ORF HLS: q1a/q2a/q3a/q4a/qxa. For shoutcast: q1a/q2a.",
-            value=values.get(CONF_STREAM_QUALITY),
-            category="advanced",
-        ),
-        ConfigEntry(
-            key=CONF_INCLUDE_HIDDEN,
-            type=ConfigEntryType.BOOLEAN,
-            label="Include hidden stations",
-            required=False,
-            default_value=False,
-            description="Include stations with hideFromStations=true.",
-            value=values.get(CONF_INCLUDE_HIDDEN),
-            category="advanced",
-        ),
-        ConfigEntry(
-            key=CONF_CATCHUP_PROTO,
-            type=ConfigEntryType.STRING,
-            label="Catch-up stream type",
-            required=False,
-            default_value="progressive",
-            description="Use 'progressive' (mp3) or 'hls' (m3u8) URLs from the broadcast detail.",
-            value=values.get(CONF_CATCHUP_PROTO),
-        ),
-        ConfigEntry(
-            key=CONF_CATCHUP_STATIONS,
-            type=ConfigEntryType.STRING,
-            label="Catch-up stations (optional)",
-            required=False,
-            default_value="",
-            description=(
-                "Comma-separated station ids (e.g. 'stm,wie,oe1'). "
-                "Empty = all ORF stations from bundle."
-            ),
-            value=values.get(CONF_CATCHUP_STATIONS),
-        ),
-    )
 
 
 class RadiothekProvider(MusicProvider):
@@ -194,6 +134,44 @@ class RadiothekProvider(MusicProvider):
 
         self.catchup_proto = "progressive"
         self.catchup_stations = ""
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return provider configuration entries."""
+        return (
+            ConfigEntry(
+                key=CONF_STREAM_PROTO,
+                type=ConfigEntryType.STRING,
+                required=False,
+                default_value="hls",
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_STREAM_QUALITY,
+                type=ConfigEntryType.STRING,
+                required=False,
+                default_value="qxa",
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_INCLUDE_HIDDEN,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=False,
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_CATCHUP_PROTO,
+                type=ConfigEntryType.STRING,
+                required=False,
+                default_value="progressive",
+            ),
+            ConfigEntry(
+                key=CONF_CATCHUP_STATIONS,
+                type=ConfigEntryType.STRING,
+                required=False,
+                default_value="",
+            ),
+        )
 
     @property
     def is_streaming_provider(self) -> bool:
@@ -221,7 +199,10 @@ class RadiothekProvider(MusicProvider):
         if self.catchup_proto not in ("progressive", "hls"):
             self.catchup_proto = "progressive"
 
-        await self._get_bundle(force=True)
+        try:
+            await self._get_bundle(force=True)
+        except (ClientError, TimeoutError, ValueError, InvalidDataError) as err:
+            raise ProviderUnavailableError(f"Unable to fetch ORF station bundle: {err}") from err
 
     # ----------------------------
     # HTTP / caching helpers
@@ -236,7 +217,7 @@ class RadiothekProvider(MusicProvider):
             resp.raise_for_status()
             data = await resp.json()
             if not isinstance(data, dict):
-                raise TypeError("Expected JSON object")
+                raise InvalidDataError("Expected JSON object")
             return data
 
     async def _get_bundle(self, force: bool = False) -> dict[str, Any]:
@@ -245,7 +226,7 @@ class RadiothekProvider(MusicProvider):
         try:
             self._bundle = await self._http_get_json(API_BUNDLE)
             return self._bundle
-        except (ClientError, TimeoutError, ValueError) as err:
+        except (ClientError, TimeoutError, ValueError, InvalidDataError) as err:
             self.logger.warning("Failed to fetch bundle.json: %s", err)
             if self._bundle is not None:
                 return self._bundle
@@ -619,19 +600,49 @@ class RadiothekProvider(MusicProvider):
     # MA API: Radios
     # ----------------------------
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
-        """Yield all radios exposed by this provider."""
-        bundle = await self._get_bundle()
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        """
+        Browse this provider's radio stations and podcasts.
 
-        # ORF stations (local icons)
+        :param path: The path to browse, (e.g. provider_id://artists).
+        """
+        subpath = path.split("://", 1)[1] if "://" in path else ""
+
+        if subpath == "radios":
+            return await self._browse_radios()
+        if subpath == "podcasts":
+            return await self._browse_podcasts()
+
+        # top-level: show category folders
+        return [
+            BrowseFolder(
+                item_id="radios",
+                provider=self.instance_id,
+                path=f"{self.instance_id}://radios",
+                name="Radio Stations",
+                translation_key="radio_stations",
+            ),
+            BrowseFolder(
+                item_id="podcasts",
+                provider=self.instance_id,
+                path=f"{self.instance_id}://podcasts",
+                name="Podcasts",
+                translation_key="podcasts",
+            ),
+        ]
+
+    async def _browse_radios(self) -> list[Radio]:
+        """Return all radio stations for browsing."""
+        bundle = await self._get_bundle()
+        radios: list[Radio] = []
+
         for st in self._iter_orf_stations(bundle):
             r = self._radio_item(st.id, st.name or st.id)
             img = self._orf_local_icon_image(st.id)
             if img:
                 r.metadata.add_image(img)
-            yield r
+            radios.append(r)
 
-        # privates (remote icons)
         for pst in self._iter_privates(bundle):
             r = self._radio_item(pst.id, pst.name or pst.id)
             for url in pst.image_urls:
@@ -643,23 +654,28 @@ class RadiothekProvider(MusicProvider):
                         remotely_accessible=True,
                     )
                 )
-            yield r
+            radios.append(r)
 
-    async def get_library_podcasts(self) -> AsyncGenerator[Podcast, None]:
-        """Yield all podcasts exposed by this provider."""
+        return radios
+
+    async def _browse_podcasts(self) -> list[Podcast]:
+        """Return all podcasts for browsing."""
         bundle = await self._get_bundle()
+        podcasts: list[Podcast] = []
 
-        # A) catch-up “podcasts” (one per station, filtered)
+        # catch-up station podcasts
         stations = {s.id: s for s in self._iter_orf_stations(bundle)}
         for station_id in self._catchup_station_ids(bundle):
             st = stations.get(station_id)
             if st:
-                yield self._podcast_from_station(st)
+                podcasts.append(self._podcast_from_station(st))
 
-        # B) actual ORF podcasts
+        # actual ORF podcasts
         pods = await self._get_orf_podcasts_index()
         for pod in pods:
-            yield self._podcast_from_orf_podcast_obj(pod)
+            podcasts.append(self._podcast_from_orf_podcast_obj(pod))
+
+        return podcasts
 
     @use_cache(3600 * 24)
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
@@ -695,9 +711,7 @@ class RadiothekProvider(MusicProvider):
 
         raise MediaNotFoundError("Podcast not found.")
 
-    async def get_podcast_episodes(
-        self, prov_podcast_id: str
-    ) -> AsyncGenerator[PodcastEpisode, None]:
+    async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get episodes of a specific podcast."""
         bundle = await self._get_bundle()
 
@@ -746,7 +760,7 @@ class RadiothekProvider(MusicProvider):
             raise MediaNotFoundError("Podcast not found.")
         podcast_title = st.name or station_id
 
-        today = datetime.now(UTC).date()
+        today = utc().date()
         for day_offset in range(CATCHUP_DAYS):
             d = today - timedelta(days=day_offset)
             yyyymmdd = f"{d.year:04d}{d.month:02d}{d.day:02d}"
@@ -821,7 +835,7 @@ class RadiothekProvider(MusicProvider):
     # MA API: Search
     # ----------------------------
 
-    @use_cache(3600 * 6)
+    @use_cache(3600 * 24)
     async def search(
         self,
         search_query: str,

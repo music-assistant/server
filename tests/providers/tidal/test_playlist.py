@@ -47,11 +47,11 @@ async def test_add_playlist_tracks(
 ) -> None:
     """Test add_playlist_tracks."""
     # Mock get response with ETag
-    provider_mock.api.get.return_value = ({"numberOfTracks": 5}, "etag_123")
+    provider_mock.api.get_with_etag.return_value = ({"numberOfTracks": 5}, "etag_123")
 
     await playlist_manager.add_tracks("1", ["track_1", "track_2"])
 
-    provider_mock.api.get.assert_called_with("playlists/1", return_etag=True)
+    provider_mock.api.get_with_etag.assert_called_with("playlists/1")
     provider_mock.api.post.assert_called_with(
         "playlists/1/items",
         data={
@@ -70,12 +70,12 @@ async def test_remove_playlist_tracks(
 ) -> None:
     """Test remove_playlist_tracks."""
     # Mock get response with ETag
-    provider_mock.api.get.return_value = ({}, "etag_123")
+    provider_mock.api.get_with_etag.return_value = ({}, "etag_123")
 
     # Positions are 1-based in MA, converted to 0-based for Tidal
     await playlist_manager.remove_tracks("1", (1, 3))
 
-    provider_mock.api.get.assert_called_with("playlists/1", return_etag=True)
+    provider_mock.api.get_with_etag.assert_called_with("playlists/1")
     provider_mock.api.delete.assert_called_with(
         "playlists/1/items/0,2",
         headers={"If-None-Match": "etag_123"},
