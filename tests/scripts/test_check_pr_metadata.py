@@ -1,4 +1,4 @@
-"""Tests for the pull request description template check."""
+"""Tests for the pull request title and description checks."""
 
 from __future__ import annotations
 
@@ -7,9 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from scripts.check_pr_description import (
+from scripts.check_pr_metadata import (
     REQUIRED_CHECKLIST_ITEMS,
     check_description,
+    check_pull_request,
+    check_title,
     checklist_items,
     main,
     template_headings,
@@ -187,28 +189,89 @@ def test_required_items_exist_in_the_real_template() -> None:
         assert len(matched) == 1, f"{required!r} matched {len(matched)} template items"
 
 
-def test_main_passes_on_a_complete_body(
+@pytest.mark.parametrize(
+    "title",
+    [
+        "Fix Sonos hanging after reconnect",
+        "Apple Music: signing in a second account no longer breaks the first",
+        'Revert "Play the track you selected when shuffle is on"',
+        "Don't show the dashboard keepalive as active playback on cast players",
+        "⬆️ Update music-assistant-models to 1.1.175",
+        "Bump docker/login-action from 4.5.1 to 4.5.2",
+        "Add tests for Open Subsonic provider",
+    ],
+)
+def test_user_facing_titles_pass(title: str) -> None:
+    """Titles that read as the change itself are accepted, colons and all."""
+    assert check_title(title) == []
+
+
+@pytest.mark.parametrize(
+    ("title", "prefix"),
+    [
+        ("fix: sonos reconnect", "fix:"),
+        ("Fix: Sonos reconnect", "Fix:"),
+        ("FIX:uppercase no space", "FIX:"),
+        ("feat(airplay): add thing", "feat(airplay):"),
+        ("chore(deps): bump docker/login-action", "chore(deps):"),
+        ("refactor!: drop legacy api", "refactor!:"),
+        ("docs : spaced colon", "docs :"),
+        ("tests: add coverage", "tests:"),
+        ("deps: bump x", "deps:"),
+    ],
+)
+def test_conventional_commit_titles_are_rejected(title: str, prefix: str) -> None:
+    """The report names the offending prefix so the author knows what to drop."""
+    problems = check_title(title)
+    assert len(problems) == 1
+    assert f"`{prefix}`" in problems[0]
+
+
+def test_empty_title_is_reported() -> None:
+    """A missing title is reported as a single, clear problem."""
+    assert check_title("  ") == ["The pull request title is empty."]
+
+
+def test_title_and_description_problems_are_reported_together() -> None:
+    """
+    Both checks feed one list.
+
+    The workflow turns that list into a single comment, so a pull request with a bad title and a
+    replaced description must not produce two separate reports.
+    """
+    problems = check_pull_request("fix: a thing", "just prose", TEMPLATE)
+    assert "conventional-commit prefix" in problems[0]
+    assert any("Missing template section" in problem for problem in problems)
+    assert len(problems) == len(check_title("fix: a thing")) + len(
+        check_description("just prose", TEMPLATE)
+    )
+
+
+def test_main_passes_on_a_good_title_and_body(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The CLI exits 0 and stays quiet about problems when the description is complete."""
+    """The CLI exits 0 and stays quiet about problems when both are complete."""
     template_file = tmp_path / "PULL_REQUEST_TEMPLATE.md"
     template_file.write_text(TEMPLATE, encoding="utf-8")
     monkeypatch.setattr("sys.stdin", io.StringIO(COMPLETE_BODY))
 
-    assert main([str(template_file)]) == 0
+    argv = ["--template", str(template_file), "--title", "Fix Sonos hanging after reconnect"]
+    assert main(argv) == 0
     assert "::error" not in capsys.readouterr().out
 
 
 def test_main_reports_problems_as_markdown_and_annotations(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The CLI exits 1, prints a markdown report on stdout and an annotation on stderr."""
+    """The CLI exits 1, prints one markdown report on stdout and an annotation on stderr."""
     template_file = tmp_path / "PULL_REQUEST_TEMPLATE.md"
     template_file.write_text(TEMPLATE, encoding="utf-8")
     monkeypatch.setattr("sys.stdin", io.StringIO("no template here"))
 
-    assert main([str(template_file)]) == 1
+    argv = ["--template", str(template_file), "--title", "fix: sonos reconnect"]
+    assert main(argv) == 1
     captured = capsys.readouterr()
+    assert captured.out.lstrip().startswith("The title or description")
+    assert "`fix:`" in captured.out
     assert "## Types of changes" in captured.out
-    assert captured.out.lstrip().startswith("The pull request description")
     assert "::error" in captured.err
