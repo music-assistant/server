@@ -9,7 +9,7 @@ import logging
 import os
 import re
 from collections import defaultdict
-from ipaddress import IPv4Address
+from ipaddress import AddressValueError, IPv4Address
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientTimeout
@@ -385,15 +385,39 @@ class DiscoveryController(CoreController):
                             seen_results,
                             target=UPNP_DISCOVERY_BROADCAST_TARGET,
                         )
-                    # directed unicast searches for manually configured device addresses
+                    # Directed unicast searches for manually configured device addresses.
+                    # Like multicast/broadcast above, responses dispatch to every provider
+                    # subscribed to this search target, not just the address's owner.
+                    valid_addresses: list[str] = []
                     for provider in providers:
                         for address in provider.upnp_manual_discovery_addresses:
-                            await self._run_upnp_search(
-                                search_target,
-                                providers,
-                                seen_results,
-                                target=(address, SSDP_PORT),
+                            try:
+                                stripped = address.strip()
+                                IPv4Address(stripped)
+                            except AddressValueError, AttributeError:
+                                self.logger.warning(
+                                    "Ignoring invalid manual discovery address for %s: %s "
+                                    "(only IPv4 addresses are supported)",
+                                    provider.name,
+                                    address,
+                                )
+                                continue
+                            valid_addresses.append(stripped)
+                    if valid_addresses:
+                        # Deduplicate (order-preserving) so a repeated address is searched once,
+                        # and run the searches concurrently instead of serially (each search
+                        # blocks for the full SSDP MX timeout).
+                        await asyncio.gather(
+                            *(
+                                self._run_upnp_search(
+                                    search_target,
+                                    providers,
+                                    seen_results,
+                                    target=(address, SSDP_PORT),
+                                )
+                                for address in dict.fromkeys(valid_addresses)
                             )
+                        )
         finally:
             self._schedule_periodic_upnp_discovery()
 
@@ -425,7 +449,7 @@ class DiscoveryController(CoreController):
                 await async_upnp_search(on_response, search_target=search_target)
             else:
                 await async_upnp_search(on_response, search_target=search_target, target=target)
-        except OSError as err:
+        except (OSError, ValueError) as err:
             target_label = f" via {target[0]}" if target else ""
             self.logger.warning(
                 "UPnP discovery for %s failed%s: %s",

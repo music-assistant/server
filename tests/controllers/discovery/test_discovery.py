@@ -254,3 +254,33 @@ async def test_manual_discovery_result_deduped_against_multicast(mass: MusicAssi
     provider.on_upnp_service_discovered.assert_awaited_once()
     mass._providers.pop(provider.instance_id, None)
     mass.discovery.on_provider_unload(provider.instance_id)
+
+
+async def test_manual_discovery_invalid_address_is_skipped_not_fatal(mass: MusicAssistant) -> None:
+    """An invalid manual address must be skipped with a warning, not abort the cycle."""
+    provider = StubUpnpProvider()
+    provider.upnp_manual_discovery_addresses = ["not-a-hostname.local", "192.168.50.10"]
+    mass._providers[provider.instance_id] = provider  # type: ignore[assignment]
+
+    async def fake_async_search(callback: Any, search_target: str, target: Any = None) -> None:
+        await callback(
+            {
+                "st": search_target,
+                "usn": f"uuid:roku-{target}::roku:ecp",
+                "_host": str(target[0]) if target else "192.168.1.25",
+            }
+        )
+
+    with patch(
+        "music_assistant.controllers.discovery.controller.async_upnp_search",
+        new=AsyncMock(side_effect=fake_async_search),
+    ) as mock_async_search:
+        await mass.discovery.run_provider_discovery(provider)  # type: ignore[arg-type]
+
+    targets = [call.kwargs.get("target") for call in mock_async_search.await_args_list]
+    # one multicast search plus one unicast search for the valid address only
+    assert targets.count(None) == 1
+    assert ("192.168.50.10", 1900) in targets
+    assert mock_async_search.await_count == 2
+    mass._providers.pop(provider.instance_id, None)
+    mass.discovery.on_provider_unload(provider.instance_id)
