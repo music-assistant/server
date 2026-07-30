@@ -678,6 +678,7 @@ def _create_controller_for_filter_tests() -> Mock:
     ctrl.media_type = MediaType.ALBUM
     ctrl.db_table = "albums"
     ctrl._apply_filters = MediaControllerBase._apply_filters.__get__(ctrl)
+    ctrl._provider_filter_clause = MediaControllerBase._provider_filter_clause.__get__(ctrl)
     return ctrl
 
 
@@ -703,9 +704,15 @@ async def test_apply_filters_in_library_only_without_provider_filter() -> None:
     )
 
     assert len(query_parts) == 1
-    assert query_parts[0].startswith("EXISTS(")
-    assert "provider_mappings.in_library = 1" in query_parts[0]
     assert "provider_media_type" in query_params
+    # pin the exact clause: the counting paths share this builder, so a change here
+    # silently changes what library_count() counts
+    assert query_parts[0] == (
+        "EXISTS(SELECT 1 FROM provider_mappings "
+        "WHERE provider_mappings.item_id = albums.item_id "
+        "AND provider_mappings.media_type = :provider_media_type "
+        "AND provider_mappings.in_library = 1)"
+    )
 
 
 async def test_apply_filters_in_library_only_with_provider_filter() -> None:
@@ -730,10 +737,16 @@ async def test_apply_filters_in_library_only_with_provider_filter() -> None:
     )
 
     assert len(query_parts) == 1
-    assert query_parts[0].startswith("EXISTS(")
-    assert "provider_mappings.in_library = 1" in query_parts[0]
-    assert "provider_filter_0" in query_params
     assert query_params["provider_filter_0"] == "spotify_1"
+    # pin the exact clause: the counting paths share this builder, so a change here
+    # silently changes what library_count() counts
+    assert query_parts[0] == (
+        "EXISTS(SELECT 1 FROM provider_mappings "
+        "WHERE provider_mappings.item_id = albums.item_id "
+        "AND provider_mappings.media_type = :provider_media_type "
+        "AND provider_mappings.in_library = 1 "
+        "AND (provider_mappings.provider_instance = :provider_filter_0))"
+    )
 
 
 async def test_apply_filters_no_in_library_filter_by_default() -> None:
@@ -782,9 +795,15 @@ async def test_apply_filters_provider_filter_without_in_library() -> None:
     )
 
     assert len(query_parts) == 1
-    assert query_parts[0].startswith("EXISTS(")
-    assert "in_library" not in query_parts[0]
-    assert "provider_filter_0" in query_params
+    assert query_params["provider_filter_0"] == "spotify_1"
+    # pin the exact clause: the counting paths share this builder, so a change here
+    # silently changes what library_count() counts
+    assert query_parts[0] == (
+        "EXISTS(SELECT 1 FROM provider_mappings "
+        "WHERE provider_mappings.item_id = albums.item_id "
+        "AND provider_mappings.media_type = :provider_media_type "
+        "AND (provider_mappings.provider_instance = :provider_filter_0))"
+    )
 
 
 # --- Group 5: set_provider_mappings behavior ---
