@@ -280,8 +280,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
                 # a dynamic queue tops up its bounded managed pool from its (dynamic + finite) sources
                 task_id = f"fill_dynamic_tracks_{queue_id}"
                 self.mass.call_later(5, self._fill_dynamic_tracks, queue_id, task_id=task_id)
-            elif queue.autoplay_enabled and queue_data.enqueued_media_items and running_low:
-                # autoplay refills using the per-queue configured Autoplay mode
+            elif queue.autoplay_enabled and running_low:
+                # autoplay appends whatever continues the queue's last item (more music, the
+                # next podcast episode/audiobook, or nothing at all)
                 task_id = f"fill_autoplay_tracks_{queue_id}"
                 self.mass.call_later(5, self._fill_autoplay_tracks, queue_id, task_id=task_id)
 

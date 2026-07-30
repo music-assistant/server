@@ -33,6 +33,10 @@ class AirPlayRemoteCommand(StrEnum):
 
 CONF_VOLUME_START: Final[str] = "volume_start"
 CONF_PASSWORD: Final[str] = "password"
+# Storage-only marker (no config entry) set when the device rejected the stored
+# password, so the player keeps asking for setup across restarts until a working
+# password is entered.
+CONF_PASSWORD_INVALID: Final[str] = "password_invalid"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_ENCRYPTION: Final[str] = "encryption"
 # Advanced per-device escape hatch: force the legacy RAOP protocol on an
@@ -138,3 +142,7 @@ BASE_PLAYER_FEATURES: Final[set[PlayerFeature]] = {
 PIN_REQUIRED = 0x8
 PASSWORD_BIT = 0x80
 LEGACY_PAIRING_BIT = 0x200
+# Observed on tvOS when an AirPlay password is set. Apple TVs keep PASSWORD_BIT
+# raised at all times (it marks their onscreen-code capability, not a password),
+# so this is the only flags-based password signal they give.
+ATV_PASSWORD_BIT = 0x1000

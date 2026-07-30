@@ -944,7 +944,11 @@ class SendspinPlaybackSession:
                     # and let the new playback handle the transition.
                     producer_stopped_cleanly = False
             with suppress(Exception):
-                self._stop_push_stream()
+                # Same condition as the group.stop() below, so we snapshot on exactly the
+                # paths where a group STOP - and therefore a freeze - is already emitted.
+                self._stop_push_stream(
+                    snapshot_progress=producer_stopped_cleanly and not self._cancel_requested
+                )
             await self._clear_join_catchup()
             await self._clear_member_pipelines()
             async with self._state_lock:
@@ -1436,11 +1440,21 @@ class SendspinPlaybackSession:
                 break
         self.player.logger.debug("Client buffer drain complete")
 
-    def _stop_push_stream(self) -> None:
-        """Stop the active PushStream."""
+    def _stop_push_stream(self, *, snapshot_progress: bool = False) -> None:
+        """
+        Stop the active PushStream.
+
+        :param snapshot_progress: Freeze the group's playback progress first. Pass this
+            only for a natural end of stream, never for one being superseded.
+        """
         ps = self._push_stream
-        if ps is not None and not ps.is_stopped:
-            ps.stop()
+        if ps is None or ps.is_stopped:
+            return
+        if snapshot_progress and (metadata_role := self.player._metadata_role) is not None:
+            # The group can only resolve the live position while the stream is up; once
+            # it is down the freeze can just re-emit the last anchor that was pushed.
+            metadata_role.freeze_progress()
+        ps.stop()
 
     def _resolve_channel_for_player(self, player_id: str) -> UUID:
         """Channel resolver callback for per-player routing."""

@@ -2423,10 +2423,23 @@ class Player(ABC):
             return None
         # handle protocol player as volume control
         if control := self.mass.players.get_player(volume_control):
-            if control.volume_level is not None:
-                return self.mass.players.scale_volume_from_device(
-                    self.player_id, control.volume_level
+            control_volume = control.volume_level
+            if (
+                control_volume == 0
+                and control.player_id != self.active_output_protocol
+                and any(
+                    linked.output_protocol_id == control.player_id
+                    for linked in self.linked_output_protocols
                 )
+            ):
+                # A linked protocol interface that is not actively rendering audio
+                # may report volume 0 while the device is in standby (e.g. the cast
+                # side of some devices), which doesn't reflect the real device volume.
+                # Treat it as unknown so we fall back to other sources instead of
+                # propagating a spurious hard mute.
+                control_volume = None
+            if control_volume is not None:
+                return self.mass.players.scale_volume_from_device(self.player_id, control_volume)
         # handle player control for volume if set
         if player_control := self.mass.players.get_player_control(volume_control):
             if player_control.volume_level is not None:
@@ -2634,15 +2647,19 @@ class Player(ABC):
         # always ensure the Music Assistant Queue is in the source list
         mass_source = next((x for x in sources if x.id == self.player_id), None)
         if mass_source is None:
-            # if the MA queue is not in the source list, add it
+            # if the MA queue is not in the source list, add it.
+            # The capability flags reflect what the queue can actually do right now: with an
+            # empty queue there is nothing to play, seek or skip through, so clients can grey
+            # out those controls instead of issuing commands that can only fail.
+            queue = self.mass.player_queues.get(self.player_id)
+            queue_has_items = bool(queue and queue.items)
             mass_source = PlayerSource(
                 id=self.player_id,
                 name="Music Assistant Queue",
                 passive=False,
-                # TODO: Do we want to dynamically set these based on the queue state ?
-                can_play_pause=True,
-                can_seek=True,
-                can_next_previous=True,
+                can_play_pause=queue_has_items,
+                can_seek=queue_has_items,
+                can_next_previous=queue_has_items,
             )
             sources.append(mass_source)
         return sources
