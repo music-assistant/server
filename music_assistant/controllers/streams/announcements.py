@@ -226,16 +226,58 @@ class AnnouncementRender:
 
 
 class AnnouncementRenderer:
-    """Registry of the announcement renders that are currently in use."""
+    """
+    Owner of the announcements that are currently in progress.
+
+    Tracks both which announcement each player is playing - the http route only knows
+    the player it serves - and the renders that produce the audio for them. Players
+    that announce the same audio share a single render.
+    """
 
     def __init__(self) -> None:
         """Initialize the renderer."""
         self._renders: dict[str, AnnouncementRender] = {}
+        self._by_player: dict[str, AnnounceData] = {}
+
+    @property
+    def active_announcements(self) -> int:
+        """Return the number of announcements currently in progress."""
+        return len(self._by_player)
 
     @property
     def active_renders(self) -> int:
         """Return the number of announcement renders currently in use."""
         return len(self._renders)
+
+    def register(self, player_id: str, announce_data: AnnounceData) -> AnnouncementRender:
+        """
+        Register an announcement for a player and start rendering its audio.
+
+        Every register must be paired with an unregister.
+
+        :param player_id: The player the announcement is played on.
+        :param announce_data: The announcement to play.
+        """
+        self._by_player[player_id] = announce_data
+        return self.acquire(announce_data)
+
+    async def unregister(self, player_id: str, render: AnnouncementRender) -> None:
+        """
+        Release an announcement that was registered for a player.
+
+        :param player_id: The player the announcement was registered for.
+        :param render: The render previously returned by register().
+        """
+        self._by_player.pop(player_id, None)
+        await self.release(render)
+
+    def get_for_player(self, player_id: str) -> AnnounceData | None:
+        """
+        Return the announcement registered for the given player, if any.
+
+        :param player_id: The player to look up.
+        """
+        return self._by_player.get(player_id)
 
     def acquire(self, announce_data: AnnounceData) -> AnnouncementRender:
         """

@@ -9,7 +9,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import PlaybackState
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import MusicAssistantError, PlayerCommandFailed
 
 from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
@@ -143,6 +143,12 @@ class AirPlayStreamSession:
         except Exception as err:
             # playback failed to start, cleanup
             await self.stop()
+            # A member can fail for a specific, user-actionable reason (a device
+            # that needs its password configured, for example). That error must
+            # reach the caller intact instead of being flattened into the generic
+            # message; the TaskGroup above nests it inside an exception group.
+            if (specific := _first_music_assistant_error(err)) is not None:
+                raise specific from err
             raise PlayerCommandFailed("Playback failed to start") from err
 
     def can_replace(self, sync_clients: list[AirPlayPlayer], pcm_format: AudioFormat) -> bool:
@@ -801,3 +807,18 @@ class AirPlayStreamSession:
         )
         await ffmpeg.start()
         self._player_ffmpeg[player.player_id] = ffmpeg
+
+
+def _first_music_assistant_error(err: BaseException) -> MusicAssistantError | None:
+    """
+    Return the first MusicAssistantError inside an error or (nested) exception group.
+
+    :param err: The error to inspect.
+    """
+    if isinstance(err, MusicAssistantError):
+        return err
+    if isinstance(err, BaseExceptionGroup):
+        for nested in err.exceptions:
+            if (found := _first_music_assistant_error(nested)) is not None:
+                return found
+    return None

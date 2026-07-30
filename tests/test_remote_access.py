@@ -308,7 +308,7 @@ async def test_webrtc_gateway_start_stop(cert_pems: tuple[str, str]) -> None:
     ("logger_level", "expected_rtc_level"),
     [
         (VERBOSE_LOG_LEVEL, LogLevel.VERBOSE),
-        (logging.DEBUG, LogLevel.DEBUG),
+        (logging.DEBUG, LogLevel.WARNING),
         (logging.INFO, LogLevel.ERROR),
         (logging.WARNING, LogLevel.ERROR),
     ],
@@ -337,6 +337,40 @@ async def test_webrtc_gateway_native_log_level(
         await gateway.stop()
 
     install_logger.assert_called_once_with(gateway.logger, level=expected_rtc_level)
+    assert not gateway.logger.filters
+
+
+async def test_webrtc_gateway_drops_benign_turn_warning_at_debug(
+    cert_pems: tuple[str, str], caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test the benign Cloudflare CreatePermission warning is dropped at DEBUG level."""
+    cert_pem, key_pem = cert_pems
+    gateway = WebRTCGateway(
+        http_session=Mock(),
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+    )
+    gateway.logger = logging.getLogger("test_webrtc_benign_turn_warning")
+    gateway.logger.setLevel(logging.DEBUG)
+
+    with (
+        patch.object(gateway, "_run", new_callable=AsyncMock),
+        patch("music_assistant.controllers.webserver.remote_access.gateway.install_python_logger"),
+    ):
+        await gateway.start()
+        with caplog.at_level(logging.DEBUG, logger="test_webrtc_benign_turn_warning"):
+            gateway.logger.warning(
+                "rtc::impl::IceTransport::LogCallback@390: "
+                "juice: Got TURN CreatePermission error response, code=0"
+            )
+            gateway.logger.warning("juice: Lost connectivity")
+        await gateway.stop()
+
+    messages = [record.getMessage() for record in caplog.records if "juice" in record.getMessage()]
+    assert messages == ["juice: Lost connectivity"]
+    # stop() must remove the filter again
+    assert not gateway.logger.filters
 
 
 async def test_webrtc_gateway_handle_registration_message(cert_pems: tuple[str, str]) -> None:
