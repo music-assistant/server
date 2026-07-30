@@ -43,12 +43,6 @@ jobs:
       - name: ⤵️ Check out the base branch
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          # The branch, not base.sha. base.sha is the base tip as of the last time the pull
-          # request was synchronised, which for an open pull request can be weeks old — so the
-          # checks that ran were whichever version existed when the contributor last rebased,
-          # and a check added since then is simply absent. Checking out the branch keeps the
-          # same guarantee (only ever the base, never the contributor's code) while making the
-          # current rules apply to every pull request.
           ref: ${{ github.event.pull_request.base.ref }}
           persist-credentials: false
 
