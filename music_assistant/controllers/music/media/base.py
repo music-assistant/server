@@ -1685,7 +1685,6 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         """
         Return the SQL clause that restricts items by their provider mappings.
 
-        Shared by the listing and the counting paths so the two cannot drift apart.
         At least one of provider_filter/in_library_only must be set, otherwise the
         returned clause only asserts that the item has any mapping at all.
 

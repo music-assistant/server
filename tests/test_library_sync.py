@@ -705,8 +705,7 @@ async def test_apply_filters_in_library_only_without_provider_filter() -> None:
 
     assert len(query_parts) == 1
     assert "provider_media_type" in query_params
-    # pin the exact clause: the counting paths share this builder, so a change here
-    # silently changes what library_count() counts
+    # pin the exact clause: library_count() shares this builder
     assert query_parts[0] == (
         "EXISTS(SELECT 1 FROM provider_mappings "
         "WHERE provider_mappings.item_id = albums.item_id "
@@ -738,8 +737,7 @@ async def test_apply_filters_in_library_only_with_provider_filter() -> None:
 
     assert len(query_parts) == 1
     assert query_params["provider_filter_0"] == "spotify_1"
-    # pin the exact clause: the counting paths share this builder, so a change here
-    # silently changes what library_count() counts
+    # pin the exact clause: library_count() shares this builder
     assert query_parts[0] == (
         "EXISTS(SELECT 1 FROM provider_mappings "
         "WHERE provider_mappings.item_id = albums.item_id "
@@ -796,8 +794,7 @@ async def test_apply_filters_provider_filter_without_in_library() -> None:
 
     assert len(query_parts) == 1
     assert query_params["provider_filter_0"] == "spotify_1"
-    # pin the exact clause: the counting paths share this builder, so a change here
-    # silently changes what library_count() counts
+    # pin the exact clause: library_count() shares this builder
     assert query_parts[0] == (
         "EXISTS(SELECT 1 FROM provider_mappings "
         "WHERE provider_mappings.item_id = albums.item_id "

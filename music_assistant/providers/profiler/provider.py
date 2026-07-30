@@ -290,8 +290,8 @@ class ProfilerProvider(PluginProvider):
             self.mass.music.audiobooks,
             self.mass.music.podcasts,
         ):
-            # count the raw table sizes: a profiler report needs the true library totals,
-            # not the subset visible to the (admin) user requesting the report
+            # raw table sizes: a profiler report needs true totals, not the filtered
+            # subset visible to the (admin) user who requested it
             counts[controller.media_type.value] = await self.mass.music.database.get_count(
                 controller.db_table
             )

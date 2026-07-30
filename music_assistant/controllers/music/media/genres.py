@@ -285,12 +285,12 @@ class GenreController(MediaControllerBase[Genre]):
         """
         Return the total number of genres in the library.
 
-        Genres are library-only items without provider_mappings, so - just like
-        library_items below - this is never restricted by the current user's
-        provider filter.
+        Never restricted by the current user's provider filter.
 
         :param favorite_only: Only count genres marked as favorite.
         """
+        # Genres are library-only items without provider_mappings, so - just like
+        # library_items below - the user's provider filter does not apply here.
         if favorite_only:
             sql_query = f"SELECT item_id FROM {self.db_table} WHERE favorite = 1"
             return await self.mass.music.database.get_count_from_query(sql_query)
