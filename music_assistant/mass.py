@@ -147,6 +147,16 @@ def _provider_error_from_exc(exc: BaseException) -> ProviderError:
     return ProviderError(error_code=999, message=message)
 
 
+def _provider_error_traceback(exc: BaseException) -> BaseException | None:
+    """Return the exception to log a traceback for, or None when its message says enough."""
+    # a handled condition (auth required, unsupported system, ...) explains itself, but anything
+    # unexpected - or a setup failure wrapping an underlying error - can only be diagnosed from a
+    # traceback, and by the time it is reported the user rarely still has verbose logging on
+    if not isinstance(exc, MusicAssistantError) or exc.__cause__ is not None:
+        return exc
+    return exc if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else None
+
+
 @asynccontextmanager
 async def _provider_load_step(
     domain: str, action: str, timeout: int | None = None
@@ -869,7 +879,7 @@ class MusicAssistant:
                     "Error loading provider(instance) %s: %s",
                     dep_prov_conf.name or dep_prov_conf.instance_id,
                     str(exc) or exc.__class__.__name__,
-                    exc_info=exc if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else None,
+                    exc_info=_provider_error_traceback(exc),
                 )
 
     async def load_provider(
@@ -942,8 +952,7 @@ class MusicAssistant:
                 prov_conf.name or prov_conf.instance_id,
                 str(exc) or exc.__class__.__name__,
                 " (will be retried later)" if will_retry else "",
-                # log full stack trace if verbose logging is enabled
-                exc_info=exc if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else None,
+                exc_info=_provider_error_traceback(exc),
             )
             return
 

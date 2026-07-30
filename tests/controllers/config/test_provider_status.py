@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import patch
 
 import pytest
 from music_assistant_models.config_entries import ProviderConfig, ProviderError
@@ -15,7 +16,11 @@ from music_assistant_models.errors import (
 )
 
 from music_assistant.controllers.config.helpers import _provider_status
-from music_assistant.mass import _provider_error_from_exc, _provider_load_step
+from music_assistant.mass import (
+    _provider_error_from_exc,
+    _provider_error_traceback,
+    _provider_load_step,
+)
 
 
 def _conf(*, enabled: bool = True, last_error: ProviderError | None = None) -> ProviderConfig:
@@ -66,6 +71,17 @@ def test_provider_error_from_exc() -> None:
     assert generic.error_code == 999
     assert generic.message == "oops"
     assert generic.translation_key is None
+
+
+def test_traceback_logged_for_unexpected_errors_only() -> None:
+    """Without verbose logging, only unexpected errors are worth a traceback."""
+    with patch("music_assistant.mass.LOGGER.isEnabledFor", return_value=False):
+        assert _provider_error_traceback(LoginFailed("bad creds")) is None
+        unexpected = ValueError("oops")
+        assert _provider_error_traceback(unexpected) is unexpected
+        wrapped = SetupFailedError("timed out while trying to load")
+        wrapped.__cause__ = TimeoutError()
+        assert _provider_error_traceback(wrapped) is wrapped
 
 
 async def test_load_step_names_the_step_that_timed_out() -> None:
