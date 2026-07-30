@@ -43,7 +43,8 @@ RAOP_MAC_PREFIX = re.compile(r"^[0-9a-f]{12}@")
 
 CONF_UPNP_NETWORK_SCAN = "upnp_network_scan"
 UPNP_DISCOVERY_INTERVAL = 300
-UPNP_DISCOVERY_BROADCAST_TARGET = (str(IPv4Address("255.255.255.255")), 1900)
+SSDP_PORT = 1900
+UPNP_DISCOVERY_BROADCAST_TARGET = (str(IPv4Address("255.255.255.255")), SSDP_PORT)
 UPNP_DISCOVERY_TASK_ID = "discovery_upnp_cycle"
 UPNP_DISCOVERY_TIMER_ID = "discovery_upnp_timer"
 
@@ -384,6 +385,15 @@ class DiscoveryController(CoreController):
                             seen_results,
                             target=UPNP_DISCOVERY_BROADCAST_TARGET,
                         )
+                    # directed unicast searches for manually configured device addresses
+                    for provider in providers:
+                        for address in provider.upnp_manual_discovery_addresses:
+                            await self._run_upnp_search(
+                                search_target,
+                                providers,
+                                seen_results,
+                                target=(address, SSDP_PORT),
+                            )
         finally:
             self._schedule_periodic_upnp_discovery()
 
