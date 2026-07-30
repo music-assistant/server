@@ -29,6 +29,7 @@ permissions:
 env:
   EXPECTED_APP_SLUG: musicassistant-bot
   EXPECTED_APP_INSTALLATION_ID: "146062122"
+  EXPECTED_APP_BOT_LOGIN: musicassistant-bot[bot]
   STICKY_MARKER: "<!-- pr-checks -->"
 
 jobs:
@@ -97,11 +98,14 @@ jobs:
             const issue_number = context.payload.pull_request.number;
 
             // One sticky comment, edited in place: an "edited" event fires on every title or
-            // description change, and a fresh comment each time would be spam.
+            // description change, and a fresh comment each time would be spam. Matched on author
+            // as well as marker — "Quote reply" copies the marker into someone else's comment,
+            // and the token is allowed to edit those.
             const comments = await github.paginate(
               github.rest.issues.listComments, { owner, repo, issue_number },
             );
-            const sticky = comments.find(c => c.body?.includes(marker));
+            const sticky = comments.find(c =>
+              c.body?.includes(marker) && c.user?.login === process.env.EXPECTED_APP_BOT_LOGIN);
 
             const report = fs.readFileSync('report.md', 'utf8').trim();
             const body = failed

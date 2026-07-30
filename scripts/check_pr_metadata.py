@@ -72,15 +72,7 @@ def template_headings(template: str) -> list[str]:
 
 def checklist_items(template: str) -> list[str]:
     """Return the task list item texts under the template's "Checklist" heading."""
-    items: list[str] = []
-    in_checklist = False
-    for line in _strip_comments(template).splitlines():
-        if heading := HEADING_RE.match(line):
-            in_checklist = _normalize(heading["text"]) == "checklist"
-            continue
-        if in_checklist and (item := TASK_ITEM_RE.match(line)):
-            items.append(item["text"])
-    return items
+    return [text for _, text in _checklist_entries(template)]
 
 
 def check_title(title: str) -> list[str]:
@@ -179,14 +171,25 @@ def _has_heading(body: str, heading: str) -> bool:
     )
 
 
+def _checklist_entries(text: str) -> list[tuple[bool, str]]:
+    """Return ``(ticked, text)`` for each task list item under the "Checklist" heading."""
+    entries: list[tuple[bool, str]] = []
+    in_checklist = False
+    for line in _strip_comments(text).splitlines():
+        if heading := HEADING_RE.match(line):
+            in_checklist = _normalize(heading["text"]) == "checklist"
+            continue
+        if in_checklist and (item := TASK_ITEM_RE.match(line)):
+            entries.append((item["tick"] in "xX", item["text"]))
+    return entries
+
+
 def _is_ticked(body: str, required: str) -> bool:
-    """Return whether the body's task list ticks the item matching a required text."""
+    """Return whether the body's checklist section ticks the item matching a required text."""
     wanted = _normalize(required)
-    return any(
-        item["tick"] in "xX" and wanted in _normalize(item["text"])
-        for line in _strip_comments(body).splitlines()
-        if (item := TASK_ITEM_RE.match(line))
-    )
+    # Scoped to the checklist section on purpose: a ticked line elsewhere in the body must not
+    # satisfy a requirement the checklist itself leaves open.
+    return any(ticked and wanted in _normalize(text) for ticked, text in _checklist_entries(body))
 
 
 def _label(required: str, items: list[str]) -> str:

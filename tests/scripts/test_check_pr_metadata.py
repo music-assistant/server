@@ -168,6 +168,32 @@ def test_ticked_item_inside_a_comment_does_not_count() -> None:
     assert "pre-commit" in problems[0]
 
 
+def test_ticks_outside_the_checklist_section_do_not_count() -> None:
+    """
+    Only ticks inside the "Checklist" section satisfy a required item.
+
+    Otherwise a ticked line anywhere else in the body — a quoted checklist, or a deliberate
+    copy — satisfies the requirement while the checklist itself stays untouched.
+    """
+    planted = "- [x] `pre-commit run --all-files` passes.\n"
+    body = COMPLETE_BODY.replace(
+        "- [x] `pre-commit run --all-files` passes.", "- [ ] `pre-commit run --all-files` passes."
+    )
+    problems = check_description(f"{body}\n## Notes\n\n{planted}", TEMPLATE)
+    assert len(problems) == 1
+    assert "pre-commit" in problems[0]
+
+
+def test_checklist_section_ends_at_the_next_heading() -> None:
+    """A tick that follows the checklist under a later heading belongs to that section."""
+    body = COMPLETE_BODY.replace(
+        "- [x] The code change is tested and works locally.",
+        "- [ ] The code change is tested and works locally.",
+    )
+    body += "\n## Notes\n\n- [x] The code change is tested and works locally.\n"
+    assert len(check_description(body, TEMPLATE)) == 1
+
+
 def test_empty_body_is_reported() -> None:
     """A missing description is reported as a single, clear problem."""
     assert check_description("", TEMPLATE) == ["The pull request description is empty."]
