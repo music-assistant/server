@@ -207,7 +207,7 @@ async def test_manual_discovery_addresses_trigger_unicast_search(mass: MusicAssi
             {
                 "st": search_target,
                 "usn": f"uuid:roku-{target}::roku:ecp",
-                "_host": str(target[0]) if target else "192.168.1.25",
+                "_host": str(target[0]) if target else "192.0.2.25",
             }
         )
 
@@ -267,7 +267,7 @@ async def test_manual_discovery_invalid_address_is_skipped_not_fatal(mass: Music
             {
                 "st": search_target,
                 "usn": f"uuid:roku-{target}::roku:ecp",
-                "_host": str(target[0]) if target else "192.168.1.25",
+                "_host": str(target[0]) if target else "192.0.2.25",
             }
         )
 

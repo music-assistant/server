@@ -45,8 +45,8 @@ def test_manual_discovery_addresses_reads_config() -> None:
     """The hook must return the manually configured IP addresses."""
     provider = _bare_provider()
     get_value_mock = cast("MagicMock", provider.config.get_value)
-    get_value_mock.return_value = ["192.168.50.10", "192.168.50.11"]
-    assert provider.upnp_manual_discovery_addresses == ["192.168.50.10", "192.168.50.11"]
+    get_value_mock.return_value = ["192.0.2.10", "192.0.2.11"]
+    assert provider.upnp_manual_discovery_addresses == ["192.0.2.10", "192.0.2.11"]
     get_value_mock.assert_called_once_with(CONF_ENTRY_MANUAL_DISCOVERY_IPS.key)
 
 
