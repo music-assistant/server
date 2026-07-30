@@ -9,8 +9,8 @@ import pytest
 
 from scripts.check_pr_description import (
     REQUIRED_CHECKLIST_ITEMS,
-    checklist_items,
     check_description,
+    checklist_items,
     main,
     template_headings,
 )
