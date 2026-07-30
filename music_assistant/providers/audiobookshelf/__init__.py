@@ -297,7 +297,8 @@ for more details.
             self.libraries = LibrariesHelper.from_dict(cached_libraries)
 
         libraries = await self._client.get_all_libraries()
-        self._sync_library_keys(libraries)
+        if libraries:
+            self._sync_library_keys(libraries)
 
         # cache username
         self.abs_username = (await self._client.get_my_user()).username
