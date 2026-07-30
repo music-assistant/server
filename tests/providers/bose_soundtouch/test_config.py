@@ -165,6 +165,8 @@ async def test_search_refreshes_shared_results_once() -> None:
         *[str(value) for value in range(1, 7)],
     ]
     assert target.options[0].disabled
+    assert target.options[0].translation_key == "select"
+    assert all(option.title is None for option in target.options)
     assert target.value == ""
     assert entries["preset_do_assign"].hidden
 

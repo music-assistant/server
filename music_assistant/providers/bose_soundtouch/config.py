@@ -67,18 +67,16 @@ SEARCHABLE_MEDIA_TYPES = (
 )
 DEFAULT_MEDIA_TYPE = MediaType.PLAYLIST
 MEDIA_TYPE_OPTIONS = [
-    ConfigValueOption(title=media_type.value.replace("_", " ").title(), value=media_type.value)
+    ConfigValueOption(value=media_type.value)
     for media_type in SEARCHABLE_MEDIA_TYPES
 ]
 PRESET_TARGET_OPTIONS = [
     ConfigValueOption(
         value="",
         disabled=True,
+        translation_key="select",
     ),
-    *[
-        ConfigValueOption(title=f"Preset {preset_id}", value=str(preset_id))
-        for preset_id in PRESET_IDS
-    ],
+    *[ConfigValueOption(value=str(preset_id)) for preset_id in PRESET_IDS],
 ]
 
 
