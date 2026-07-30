@@ -27,7 +27,11 @@ from music_assistant.controllers.config.constants import DEFAULT_SAVE_DELAY
 from music_assistant.controllers.config.core import CoreConfigMixin
 from music_assistant.controllers.config.dsp import DSPConfigMixin
 from music_assistant.controllers.config.flows import SetupFlowMixin
-from music_assistant.controllers.config.migrations import migrate, migrate_provider_setup_data
+from music_assistant.controllers.config.migrations import (
+    migrate,
+    migrate_nfs_subfolder_into_export_path,
+    migrate_provider_setup_data,
+)
 from music_assistant.controllers.config.players import PlayerConfigMixin
 from music_assistant.controllers.config.providers import ProviderConfigMixin
 from music_assistant.controllers.config.queues import PlayerQueueConfigMixin
@@ -77,7 +81,15 @@ class ConfigController(
         # one-off: move pre-setup-flow provider values into (encrypted) setup_data.
         # runs here, after encryption is initialized, so string values are encrypted
         # at rest (the migrate() pass in _load() runs before encryption is available).
-        if migrate_provider_setup_data(self._data, self.encrypt_string):
+        setup_data_migrated = migrate_provider_setup_data(self._data, self.encrypt_string)
+        # one-off: fold a stored NFS subfolder into its export path. Runs here for the same
+        # reason (both keys are encrypted setup_data), and after the move above so a legacy
+        # install's values have landed in setup_data by now.
+        # TODO: remove after 2.13 release
+        nfs_subfolder_migrated = migrate_nfs_subfolder_into_export_path(
+            self._data, self.encrypt_string, self.decrypt_string
+        )
+        if setup_data_migrated or nfs_subfolder_migrated:
             self.save(immediate=True)
         if not self.onboard_done:
             self.mass.register_api_command(

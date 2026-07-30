@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import logging
+from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_NONE
 from music_assistant_models.enums import CrossfadeMode
+from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
     CONF_CORE,
     CONF_CROSSFADE_DURATION,
     CONF_CROSSFADE_MODE,
     CONF_LINKED_PROTOCOL_IDS,
+    CONF_NFS_SUBFOLDER_MIGRATED,
     CONF_PLAYER_DSP,
     CONF_PLAYER_QUEUES,
     CONF_PLAYERS,
@@ -376,6 +379,77 @@ def migrate_provider_setup_data(data: dict[str, Any], encrypt: Callable[[str], s
     if changed:
         LOGGER.info("Migrated provider setup values into setup_data")
     return changed
+
+
+# TODO: remove after 2.13 release
+def migrate_nfs_subfolder_into_export_path(
+    data: dict[str, Any],
+    encrypt: Callable[[str], str],
+    decrypt: Callable[[str], str],
+) -> bool:
+    """
+    Fold a stored NFS `subfolder` into the `export_path` it used to be joined onto, once.
+
+    The NFS provider used to mount `<export_path>/<subfolder>` and now mounts the export
+    exactly as configured, treating the subfolder as a path inside the mount. Folding the
+    two keys into one reproduces the mount source that instance used before, so an install
+    whose subfolder happened to be a separate export of its own keeps working untouched.
+    Like migrate_provider_setup_data this runs after encryption is initialized, because both
+    keys live encrypted in `setup_data`.
+
+    Runs exactly once, guarded by CONF_NFS_SUBFOLDER_MIGRATED. Every other migration in this
+    file is safe to re-run because it recognises its own output; this one cannot - a subfolder
+    stored after the fix means "scan this path inside the mount" and is indistinguishable from
+    a legacy one, so folding it again would reintroduce the bug it migrates away from.
+    Returns True when the settings were modified, which on the first run includes claiming
+    that marker even if no instance needed folding.
+
+    :param data: The persistent settings data to migrate in-place.
+    :param encrypt: Callback that encrypts a string value at rest.
+    :param decrypt: Callback that decrypts a stored string value (a no-op for plain values).
+    """
+    if data.get(CONF_NFS_SUBFOLDER_MIGRATED):
+        return False
+    all_provider_configs = data.get(CONF_PROVIDERS, {})
+    if not isinstance(all_provider_configs, dict):
+        return False
+    changed = False
+    for instance_id, provider_cfg in all_provider_configs.items():
+        if not isinstance(provider_cfg, dict) or provider_cfg.get("domain") != "filesystem_nfs":
+            continue
+        setup_data = provider_cfg.get("setup_data")
+        if not isinstance(setup_data, dict):
+            continue
+        stored_subfolder = setup_data.get("subfolder")
+        stored_export_path = setup_data.get("export_path")
+        if not isinstance(stored_subfolder, str) or not isinstance(stored_export_path, str):
+            continue
+        try:
+            subfolder = decrypt(stored_subfolder).strip()
+            export_path = decrypt(stored_export_path)
+        except InvalidDataError:
+            # an undecryptable value (e.g. the encryption key was regenerated) must not take
+            # the whole config controller - and with it the server - down over one instance;
+            # that provider still fails visibly at its own setup. Never log the values.
+            LOGGER.warning(
+                "Could not read the stored NFS paths of %s; skipping its subfolder migration",
+                instance_id,
+            )
+            continue
+        if not subfolder or not export_path:
+            # nothing was joined onto the export path, so there is nothing to fold; an
+            # empty export path is broken either way and must not be turned into a path
+            continue
+        # mirrors the join the provider used to do, so the mount source stays byte-identical
+        setup_data["export_path"] = encrypt(str(PurePosixPath(export_path) / subfolder.lstrip("/")))
+        del setup_data["subfolder"]
+        changed = True
+    if changed:
+        LOGGER.info("Migrated NFS provider subfolder into the export path")
+    # claim the marker even when nothing needed folding, so an NFS subfolder configured
+    # later - with the new, fixed meaning - is never mistaken for a legacy one
+    data[CONF_NFS_SUBFOLDER_MIGRATED] = True
+    return True
 
 
 def _migrate_player_queue_settings(data: dict[str, Any]) -> bool:
