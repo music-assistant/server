@@ -1285,7 +1285,16 @@ class MusicAssistant:
             # a provider that did not finish loading must not stay registered: it would
             # report status LOADED while an error is recorded against it, which leaves the
             # user with a warning they can only find by opening the provider's own settings
-            await self.unload_provider(provider.instance_id)
+            try:
+                await self.unload_provider(provider.instance_id)
+            except Exception as unload_err:
+                # the load failure is the one worth reporting, so keep it as the raised error
+                LOGGER.warning(
+                    "Error unloading provider %s: %s",
+                    provider.name,
+                    unload_err,
+                    exc_info=unload_err,
+                )
             raise
 
         # if we reach this point, the provider loaded successfully
