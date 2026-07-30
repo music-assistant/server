@@ -165,7 +165,10 @@ async def test_enqueued_item_mapping_counts_as_user_initiated() -> None:
     ctrl.mass = Mock()
     ctrl.mass.music.get_item_by_uri = AsyncMock(return_value=track)
     ctrl.mass.players.get_player = Mock(return_value=Mock(extra_data={}))
-    ctrl.mass.players.get_player_lock = Mock(return_value=MagicMock())
+    lock_cm = MagicMock()
+    lock_cm.__aenter__ = AsyncMock(return_value=None)
+    lock_cm.__aexit__ = AsyncMock(return_value=None)
+    ctrl.mass.players.get_player_lock = Mock(return_value=lock_cm)
     ctrl._set_transitioning = Mock()  # type: ignore[method-assign]
     ctrl.signal_update = Mock()  # type: ignore[method-assign]
     ctrl.on_player_update = Mock()  # type: ignore[method-assign]
