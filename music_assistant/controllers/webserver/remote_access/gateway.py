@@ -159,7 +159,7 @@ class WebRTCGateway:
             rtc_log_level = LogLevel.VERBOSE
         elif self.logger.isEnabledFor(logging.DEBUG):
             rtc_log_level = LogLevel.WARNING
-            self.logger.addFilter(_drop_benign_native_noise)
+            self.logger.addFilter(_BENIGN_NATIVE_NOISE_FILTER)
         else:
             rtc_log_level = LogLevel.ERROR
         install_python_logger(self.logger, level=rtc_log_level)
@@ -173,7 +173,7 @@ class WebRTCGateway:
     async def stop(self) -> None:
         """Stop the WebRTC Gateway."""
         self.logger.info("Stopping WebRTC Gateway")
-        self.logger.removeFilter(_drop_benign_native_noise)
+        self.logger.removeFilter(_BENIGN_NATIVE_NOISE_FILTER)
         self._running = False
 
         # Close all sessions
@@ -834,10 +834,16 @@ class WebRTCGateway:
             pass  # Not valid JSON, ignore
 
 
-def _drop_benign_native_noise(record: logging.LogRecord) -> bool:
-    """Return whether this native libdatachannel log record is worth keeping."""
-    # Cloudflare omits the ERROR-CODE attribute, so libjuice warns on a benign refusal
-    return "TURN CreatePermission error response, code=0" not in record.getMessage()
+class _BenignNativeNoiseFilter(logging.Filter):
+    """Drops known-benign native libdatachannel log lines."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Return whether this log record is worth keeping."""
+        # Cloudflare omits the ERROR-CODE attribute, so libjuice warns on a benign refusal
+        return "TURN CreatePermission error response, code=0" not in record.getMessage()
+
+
+_BENIGN_NATIVE_NOISE_FILTER = _BenignNativeNoiseFilter()
 
 
 def _is_usable_ice_url(url: str) -> bool:

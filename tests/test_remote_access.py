@@ -341,7 +341,7 @@ async def test_webrtc_gateway_native_log_level(
 
 
 async def test_webrtc_gateway_drops_benign_turn_warning_at_debug(
-    cert_pems: tuple[str, str],
+    cert_pems: tuple[str, str], caplog: pytest.LogCaptureFixture
 ) -> None:
     """Test the benign Cloudflare CreatePermission warning is dropped at DEBUG level."""
     cert_pem, key_pem = cert_pems
@@ -353,25 +353,21 @@ async def test_webrtc_gateway_drops_benign_turn_warning_at_debug(
     )
     gateway.logger = logging.getLogger("test_webrtc_benign_turn_warning")
     gateway.logger.setLevel(logging.DEBUG)
-    records: list[logging.LogRecord] = []
-    handler = logging.Handler()
-    handler.emit = records.append  # type: ignore[method-assign]
-    gateway.logger.addHandler(handler)
 
     with (
         patch.object(gateway, "_run", new_callable=AsyncMock),
         patch("music_assistant.controllers.webserver.remote_access.gateway.install_python_logger"),
     ):
         await gateway.start()
-        gateway.logger.warning(
-            "rtc::impl::IceTransport::LogCallback@390: "
-            "juice: Got TURN CreatePermission error response, code=0"
-        )
-        gateway.logger.warning("juice: Lost connectivity")
+        with caplog.at_level(logging.DEBUG, logger="test_webrtc_benign_turn_warning"):
+            gateway.logger.warning(
+                "rtc::impl::IceTransport::LogCallback@390: "
+                "juice: Got TURN CreatePermission error response, code=0"
+            )
+            gateway.logger.warning("juice: Lost connectivity")
         await gateway.stop()
 
-    gateway.logger.removeHandler(handler)
-    messages = [record.getMessage() for record in records if "juice" in record.getMessage()]
+    messages = [record.getMessage() for record in caplog.records if "juice" in record.getMessage()]
     assert messages == ["juice: Lost connectivity"]
     # stop() must remove the filter again
     assert not gateway.logger.filters
