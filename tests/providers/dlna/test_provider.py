@@ -16,8 +16,7 @@ def _bare_provider() -> DLNAPlayerProvider:
 
 async def test_on_upnp_service_discovered_handles_media_renderer() -> None:
     """SSDP discovery should only forward valid MediaRenderer devices."""
-    provider = cast("Any", DLNAPlayerProvider.__new__(DLNAPlayerProvider))
-    provider.config = MagicMock()
+    provider = cast("Any", _bare_provider())
     provider.config.get_value.return_value = False
     provider._device_discovered = AsyncMock()
 
