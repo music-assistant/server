@@ -1,0 +1,126 @@
+---
+name: PR Description
+
+# The pull request template carries what reviewers and the release notes depend on: the change
+# description, the "Types of changes" box pr-labels.yaml derives the release-notes label from,
+# and the author's own verification checklist. A body that replaced the template drops all of
+# that silently, so this check reports what went missing and asks the author to fix it.
+#
+# Deliberately not a merge blocker — add it to branch protection only if that changes. It runs
+# on pull_request_target so the musicassistant-bot comment also works on pull requests from
+# forks; only the base branch is ever checked out, never the contributor's code.
+
+# yamllint disable-line rule:truthy
+on:
+  pull_request_target:
+    types:
+      - opened
+      - edited
+      - reopened
+      - ready_for_review
+    branches:
+      - dev
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_APP_SLUG: musicassistant-bot
+  EXPECTED_APP_INSTALLATION_ID: "146062122"
+  STICKY_MARKER: "<!-- pr-description-check -->"
+
+jobs:
+  check_description:
+    name: Verify
+    runs-on: ubuntu-latest
+    # GitHub-typed bots (Dependabot, musicassistant-bot[bot], etc.) don't use the template.
+    if: github.event.pull_request.user.type != 'Bot'
+    steps:
+      - name: ⤵️ Check out the base branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - name: 📝 Check the description against the template
+        id: check
+        continue-on-error: true
+        env:
+          # Passed via env, never inlined into the script: the body is untrusted input.
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s' "$PR_BODY" > body.md
+          # The status is captured rather than piped through tee: the next step needs the
+          # report file even when the check fails, and a pipeline would swallow the exit code.
+          status=0
+          python3 -m scripts.check_pr_description < body.md > report.md || status=$?
+          cat report.md
+          exit "$status"
+
+      - name: 🔑 Create musicassistant-bot token
+        id: bot_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-pull-requests: write
+
+      - name: 🤖 Verify GitHub App identity
+        env:
+          APP_SLUG: ${{ steps.bot_token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.bot_token.outputs.installation-id }}
+        run: |
+          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
+             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
+            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
+            exit 1
+          fi
+
+      - name: 💬 Tell the author what's missing
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          CHECK_OUTCOME: ${{ steps.check.outcome }}
+        with:
+          github-token: ${{ steps.bot_token.outputs.token }}
+          script: |
+            const fs = require('fs');
+            const marker = process.env.STICKY_MARKER;
+            const failed = process.env.CHECK_OUTCOME === 'failure';
+            const author = context.payload.pull_request.user.login;
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+
+            // One sticky comment, edited in place: an "edited" event fires on every
+            // description change, and a fresh comment each time would be spam.
+            const comments = await github.paginate(
+              github.rest.issues.listComments, { owner, repo, issue_number },
+            );
+            const sticky = comments.find(c => c.body?.includes(marker));
+
+            const report = fs.readFileSync('report.md', 'utf8').trim();
+            const body = failed
+              ? `${marker}\n@${author} ${report}`
+              : `${marker}\n✅ The description follows the pull request template. Thanks!`;
+
+            if (sticky) {
+              // Leave a resolved sticky untouched so a passing re-run doesn't renotify.
+              if (sticky.body.trim() !== body.trim()) {
+                await github.rest.issues.updateComment({
+                  owner, repo, comment_id: sticky.id, body,
+                });
+              }
+              return;
+            }
+            if (failed) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number, body,
+              });
+            }
+
+      - name: 🚦 Report the check result
+        if: steps.check.outcome == 'failure'
+        run: |
+          echo "The pull request description doesn't follow the template — see the comment." >&2
+          exit 1
