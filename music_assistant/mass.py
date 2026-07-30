@@ -103,7 +103,10 @@ LOGGER = logging.getLogger(MASS_LOGGER_NAME)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROVIDERS_PATH = os.path.join(BASE_DIR, "providers")
-PROVIDER_SETUP_TIMEOUT = 30
+# These bounds guard against a wedged provider, they are not a performance budget: several
+# providers load at once on a busy event loop, so a step can take much longer in wall clock
+# time than it takes on its own. Keep them generous enough that a slow host never trips them.
+PROVIDER_SETUP_TIMEOUT = 120
 # Generous enough for the slowest hosts to load their ML models, but bounded so a wedged
 # provider fails to load instead of holding up startup forever.
 PROVIDER_ASYNC_INIT_TIMEOUT = 300
@@ -145,19 +148,40 @@ def _provider_error_from_exc(exc: BaseException) -> ProviderError:
 
 
 @asynccontextmanager
-async def _provider_load_step(domain: str, action: str, timeout: int) -> AsyncIterator[None]:
+async def _provider_load_step(
+    domain: str, action: str, timeout: int | None = None
+) -> AsyncIterator[None]:
     """
-    Bound a provider load step, surfacing a timeout as a regular setup failure.
+    Name a provider load step, so any failure in it surfaces as a usable setup failure.
 
     :param domain: Domain of the provider being loaded, used in the error message.
     :param action: Verb describing the step, used in the error message.
-    :param timeout: Seconds to allow the step before it is treated as failed.
+    :param timeout: Seconds to allow the step before it is treated as failed, if bounded.
     """
+    timeout_cm: asyncio.Timeout | None = None
     try:
-        async with asyncio.timeout(timeout):
+        if timeout is None:
             yield
+        else:
+            async with asyncio.timeout(timeout) as timeout_cm:
+                yield
     except TimeoutError as err:
-        msg = f"Provider {domain} did not {action} within {timeout} seconds"
+        if timeout_cm is not None and timeout_cm.expired():
+            msg = f"Provider {domain} did not {action} within {timeout} seconds"
+        else:
+            # a timeout from the provider's own code (an http call, say) carries no message
+            # of its own: name the step it happened in instead of blaming our own bound
+            msg = f"Provider {domain} timed out while trying to {action}"
+        raise SetupFailedError(msg) from err
+    except MusicAssistantError:
+        # already carries a message (and a translation key) meant for the user
+        raise
+    except Exception as err:
+        if str(err):
+            raise
+        # an exception without a message (a bare TimeoutError from an http call, say) would
+        # otherwise reach the user as nothing but its class name, with no hint of what failed
+        msg = f"Provider {domain} failed to {action}: {type(err).__name__}"
         raise SetupFailedError(msg) from err
 
 
@@ -831,8 +855,22 @@ class MusicAssistant:
             manifest = self.get_provider_manifest(dep_prov_conf.domain)
             if not manifest.depends_on:
                 continue
-            if manifest.depends_on == prov_conf.domain:
+            if manifest.depends_on != prov_conf.domain:
+                continue
+            try:
                 await self._load_provider(dep_prov_conf)
+            except Exception as exc:
+                # record the failure against the provider that hit it: attributing it to the
+                # provider we just loaded (which is fine) flags the wrong one in the UI
+                self.config.update_provider_last_error(
+                    dep_prov_conf.instance_id, _provider_error_from_exc(exc)
+                )
+                LOGGER.warning(
+                    "Error loading provider(instance) %s: %s",
+                    dep_prov_conf.name or dep_prov_conf.instance_id,
+                    str(exc) or exc.__class__.__name__,
+                    exc_info=exc if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else None,
+                )
 
     async def load_provider(
         self,
@@ -1197,7 +1235,9 @@ class MusicAssistant:
         self.config.seed_stored_config_values(conf)
 
         # try to setup the module
-        prov_mod = await load_provider_module(domain, prov_manifest.requirements)
+        # (unbounded: this may still have to install the provider's requirements)
+        async with _provider_load_step(domain, "import its module"):
+            prov_mod = await load_provider_module(domain, prov_manifest.requirements)
         async with _provider_load_step(domain, "load", PROVIDER_SETUP_TIMEOUT):
             provider = await prov_mod.setup(self, prov_manifest, conf)
 
@@ -1205,7 +1245,8 @@ class MusicAssistant:
         # (get_config_entries is an instance method). Rehydrate the config values from
         # storage against those entries and validate the complete config, before async
         # init so get_config_value reads there see the stored values.
-        await self.config.rehydrate_provider_config(provider)
+        async with _provider_load_step(domain, "resolve its configuration", PROVIDER_SETUP_TIMEOUT):
+            await self.config.rehydrate_provider_config(provider)
         try:
             provider.config.validate()
         except (KeyError, ValueError, AttributeError, TypeError) as err:
@@ -1218,17 +1259,41 @@ class MusicAssistant:
         async with _provider_load_step(domain, "initialize", PROVIDER_ASYNC_INIT_TIMEOUT):
             await provider.handle_async_init()
 
-        # if we reach this point, the provider loaded successfully
+        await self._register_loaded_provider(provider, conf)
+
+    async def _register_loaded_provider(
+        self, provider: ProviderInstanceType, conf: ProviderConfig
+    ) -> None:
+        """Register a provider that finished its setup and run its post-load steps."""
+        # the instance is now live: register it so the post-load steps below can resolve it
         self._providers[provider.instance_id] = provider
+        provider.available = True
+
+        # adapt logging name if needed
+        provider._set_log_level_from_config(provider.config)
+
+        try:
+            async with _provider_load_step(
+                provider.domain, "finish loading", PROVIDER_SETUP_TIMEOUT
+            ):
+                await self._update_available_providers_cache()
+                if isinstance(provider, MusicProvider):
+                    await self.music.on_provider_loaded(provider)
+                if isinstance(provider, PlayerProvider):
+                    await self.players.on_provider_loaded(provider)
+        except Exception:
+            # a provider that did not finish loading must not stay registered: it would
+            # report status LOADED while an error is recorded against it, which leaves the
+            # user with a warning they can only find by opening the provider's own settings
+            await self.unload_provider(provider.instance_id)
+            raise
+
+        # if we reach this point, the provider loaded successfully
         LOGGER.info(
             "Loaded %s provider %s",
             provider.type.value,
             provider.name,
         )
-        provider.available = True
-
-        # adapt logging name if needed
-        provider._set_log_level_from_config(provider.config)
 
         # execute post load actions
         async def _on_provider_loaded() -> None:
@@ -1245,11 +1310,6 @@ class MusicAssistant:
         # clear any previous error in config and signal update
         self.config.set(f"{CONF_PROVIDERS}/{conf.instance_id}/last_error", None)
         self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
-        await self._update_available_providers_cache()
-        if isinstance(provider, MusicProvider):
-            await self.music.on_provider_loaded(provider)
-        if isinstance(provider, PlayerProvider):
-            await self.players.on_provider_loaded(provider)
 
     async def __load_provider_manifests(self) -> None:
         """Preload all available provider manifest files."""

@@ -1330,7 +1330,16 @@ async def import_module_in_thread(name: str, package: str | None = None) -> Modu
     :param package: Package to resolve the name against, required for a relative name.
     """
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_IMPORT_EXECUTOR, importlib.import_module, name, package)
+    try:
+        return await loop.run_in_executor(_IMPORT_EXECUTOR, importlib.import_module, name, package)
+    except RuntimeError as err:
+        # threads we do not control (a library importing lazily in its own thread) can still
+        # cross a module lock with ours; the import machinery reports that as a deadlock at
+        # whoever detects it. The other import has finished by now, so a single retry sticks.
+        if "deadlock detected" not in str(err):
+            raise
+        LOGGER.warning("Retrying import of %s after a module lock collision: %s", name, err)
+        return await loop.run_in_executor(_IMPORT_EXECUTOR, importlib.import_module, name, package)
 
 
 async def load_provider_module(domain: str, requirements: list[str]) -> ProviderModuleType:
