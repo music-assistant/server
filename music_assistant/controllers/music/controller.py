@@ -69,7 +69,10 @@ from music_assistant.controllers.music.constants import (
     SEARCH_PROVIDER_HARD_TIMEOUT,
     SEARCH_PROVIDER_SOFT_TIMEOUT,
 )
-from music_assistant.controllers.music.database import MusicDatabaseSetupMixin
+from music_assistant.controllers.music.database import (
+    PLAYLOG_CONFLICT_KEYS,
+    MusicDatabaseSetupMixin,
+)
 from music_assistant.controllers.music.helpers import filter_search_results, sort_search_result
 from music_assistant.controllers.music.media.albums import AlbumsController
 from music_assistant.controllers.music.media.artists import ArtistsController
@@ -1375,39 +1378,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             else:
                 # NOTE: if no user was found, we will alter the playlog for all users
                 user_ids = [user.user_id for user in await self.mass.webserver.auth.list_users()]
-            # only audiobooks/podcast episodes ever carry a non-default playback speed
-            preserve_speed = playback_speed is None and media_item.media_type in (
-                MediaType.AUDIOBOOK,
-                MediaType.PODCAST_EPISODE,
-            )
+            # Leaving the speed out keeps whatever is already stored for this item/user
+            # (a provider sync reporting progress has no speed to offer), and falls back to
+            # the column default of 1.0 for a brand new row.
+            if playback_speed is not None:
+                params["playback_speed"] = playback_speed
             for user_id in user_ids:
                 params["userid"] = user_id
-                # INSERT OR REPLACE rewrites the whole row, so the speed must be re-supplied
-                # or it reverts to the column default. When the caller has no speed (e.g. a
-                # provider sync), keep the value already stored for this item/user.
-                if playback_speed is not None:
-                    params["playback_speed"] = playback_speed
-                elif preserve_speed:
-                    existing = await self.database.get_row(
-                        DB_TABLE_PLAYLOG,
-                        {
-                            "item_id": params["item_id"],
-                            "provider": params["provider"],
-                            "media_type": params["media_type"],
-                            "userid": user_id,
-                        },
-                    )
-                    params["playback_speed"] = (
-                        existing["playback_speed"]
-                        if existing and existing["playback_speed"] is not None
-                        else 1.0
-                    )
-                # otherwise leave playback_speed out so the column default (1.0) applies
-                await self.database.insert(
-                    DB_TABLE_PLAYLOG,
-                    params,
-                    allow_replace=True,
-                )
+                await self._upsert_playlog(params)
 
         # Set seconds_played in accordance with fully_played, if the media_item has
         # a duration, before it is forwarded to music_providers
@@ -2611,6 +2589,38 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                     return user
         return None
 
+    async def _upsert_playlog(self, entry: dict[str, Any]) -> None:
+        """
+        Write a playlog row, updating the existing row for the item/user if there is one.
+
+        Columns left out of the entry keep whatever the existing row holds, and
+        `user_initiated` is sticky: once a play was explicitly user-initiated it stays that
+        way for the lifetime of the row, so a later side-effect credit (an autoplay replay,
+        or a track crediting its album/artist) can never demote it and drop the item out of
+        the "recently played" recommendations.
+
+        The generic `database.upsert()` cannot express either half of that: the sticky OR is
+        playlog-specific, and it needs an explicit conflict target because the playlog carries
+        more than one unique constraint.
+
+        :param entry: The playlog column values to write, including all of
+            `PLAYLOG_CONFLICT_KEYS`.
+        """
+        columns = list(entry)
+        updates = [
+            f"user_initiated = {DB_TABLE_PLAYLOG}.user_initiated OR excluded.user_initiated"
+            if column == "user_initiated"
+            else f"{column} = excluded.{column}"
+            for column in columns
+            if column not in PLAYLOG_CONFLICT_KEYS
+        ]
+        await self.database.execute_write(
+            f"INSERT INTO {DB_TABLE_PLAYLOG} ({', '.join(columns)}) "
+            f"VALUES ({', '.join(f':{column}' for column in columns)}) "
+            f"ON CONFLICT({', '.join(PLAYLOG_CONFLICT_KEYS)}) DO UPDATE SET {', '.join(updates)}",
+            entry,
+        )
+
     async def _credit_artist_plays(
         self,
         artists: Iterable[Artist | ItemMapping],
@@ -2621,20 +2631,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         skip_ids: set[str],
     ) -> None:
         """Credit each (library-resolvable) artist with a play, skipping skip_ids."""
-        # ON CONFLICT keeps an explicit user-initiated artist play sticky across the
-        # repeated side-effect credits its tracks generate.
-        upsert_query = (
-            f"INSERT INTO {DB_TABLE_PLAYLOG} "
-            "(item_id, provider, media_type, name, image, fully_played, "
-            "seconds_played, timestamp, queue_id, user_initiated, userid) "
-            "VALUES (:item_id, :provider, :media_type, :name, :image, :fully_played, "
-            ":seconds_played, :timestamp, :queue_id, :user_initiated, :userid) "
-            "ON CONFLICT(item_id, provider, media_type, userid) DO UPDATE SET "
-            "name = excluded.name, image = excluded.image, "
-            "fully_played = excluded.fully_played, seconds_played = excluded.seconds_played, "
-            "timestamp = excluded.timestamp, queue_id = excluded.queue_id, "
-            f"user_initiated = {DB_TABLE_PLAYLOG}.user_initiated OR excluded.user_initiated"
-        )
         for artist in artists:
             db_artist = await self.artists.get_library_item_by_prov_id(
                 artist.item_id, artist.provider
@@ -2663,7 +2659,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             }
             for user_id in user_ids:
                 playlog_entry["userid"] = user_id
-                await self.database.execute(upsert_query, playlog_entry)
+                await self._upsert_playlog(playlog_entry)
 
     async def _credit_podcast_play(
         self,
@@ -2674,20 +2670,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         queue_id: str | None,
     ) -> None:
         """Credit the parent podcast with a play so the show surfaces in recently played."""
-        # ON CONFLICT keeps an explicit user-initiated show play sticky across the
-        # repeated side-effect credits its episodes generate.
-        upsert_query = (
-            f"INSERT INTO {DB_TABLE_PLAYLOG} "
-            "(item_id, provider, media_type, name, image, fully_played, "
-            "seconds_played, timestamp, queue_id, user_initiated, userid) "
-            "VALUES (:item_id, :provider, :media_type, :name, :image, :fully_played, "
-            ":seconds_played, :timestamp, :queue_id, :user_initiated, :userid) "
-            "ON CONFLICT(item_id, provider, media_type, userid) DO UPDATE SET "
-            "name = excluded.name, image = excluded.image, "
-            "fully_played = excluded.fully_played, seconds_played = excluded.seconds_played, "
-            "timestamp = excluded.timestamp, queue_id = excluded.queue_id, "
-            f"user_initiated = {DB_TABLE_PLAYLOG}.user_initiated OR excluded.user_initiated"
-        )
         # Resolve to the library item first, like _credit_artist_plays does, so an episode's
         # parent-podcast credit lands on the same library-scoped row as an explicit play of the
         # library show, instead of creating a separate provider-scoped duplicate.
@@ -2711,7 +2693,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         }
         for user_id in user_ids:
             playlog_entry["userid"] = user_id
-            await self.database.execute(upsert_query, playlog_entry)
+            await self._upsert_playlog(playlog_entry)
 
     async def _get_item_by_name(
         self,

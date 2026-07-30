@@ -1977,6 +1977,7 @@ for more details.
                 mass_audiobook,
                 fully_played=progress.is_finished,
                 seconds_played=int(progress.current_time),
+                user_initiated=False,
             )
 
     async def _update_playlog_episode(self, progress: MediaProgress) -> None:
@@ -1998,6 +1999,7 @@ for more details.
                 mass_episode,
                 fully_played=progress.is_finished,
                 seconds_played=int(progress.current_time),
+                user_initiated=False,
             )
 
     async def _update_book_narrators(self, library_id: str) -> None:

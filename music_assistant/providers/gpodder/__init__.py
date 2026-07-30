@@ -253,6 +253,7 @@ class GPodder(MusicProvider):
                                 mass_episode,
                                 fully_played=_action.position >= _action.total,
                                 seconds_played=_action.position,
+                                user_initiated=False,
                             )
 
             # cache
@@ -340,6 +341,7 @@ class GPodder(MusicProvider):
                             mass_episode,
                             fully_played=fully_played,
                             seconds_played=resume_position_s,
+                            user_initiated=False,
                         )
                     elif isinstance(action, EpisodeActionDelete):
                         for mapping in mass_episode.provider_mappings:
