@@ -21,6 +21,7 @@ from music_assistant_models.enums import (
     RepeatMode,
 )
 from music_assistant_models.errors import (
+    InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
     PlayerUnavailableError,
@@ -649,26 +650,22 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     # item is MediaItemType | ItemMapping at this point
                     media_item = item
 
-                if (
-                    isinstance(media_item, ItemMapping)
-                    and media_item.media_type == MediaType.PLAYLIST
-                ):
-                    # Resolve ItemMapping for a playlist so the full Playlist object
-                    # so we have access to details such as 'is_dynamic'
-                    with suppress(MusicAssistantError):
-                        media_item = await self.mass.music.playlists.get(
-                            media_item.item_id,
-                            media_item.provider,
-                        )
+                if isinstance(media_item, ItemMapping):
+                    # Resolve any ItemMapping to its full media item, exactly as the str-uri
+                    # form above already does. Everything below needs the real object: the
+                    # enqueued/source bookkeeping only accepts full items (so a mapping would
+                    # otherwise never count as a user-initiated play), and the dynamic check
+                    # needs details such as a playlist's 'is_dynamic'.
+                    if media_item.uri is None:
+                        raise InvalidDataError("ItemMapping has no URI")
+                    media_item = await self.mass.music.get_item_by_uri(media_item.uri)
 
                 # Save requested media item to play on the queue so we can use it as a seed
                 # for Autoplay's music refill (the podcast/audiobook continuations resolve
                 # their successor from the queue's last item instead).
                 # Use FIFO list to keep track of the last 10 played items
                 # Skip ItemMapping and BrowseFolder - only queue full MediaItemType objects
-                if not isinstance(
-                    media_item, (ItemMapping, BrowseFolder)
-                ) and media_item.media_type in (
+                if not isinstance(media_item, BrowseFolder) and media_item.media_type in (
                     MediaType.TRACK,
                     MediaType.ALBUM,
                     MediaType.PLAYLIST,
@@ -710,15 +707,13 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     )
                 elif already_dynamic:
                     # feed the already-active pool: keep the finite item as a (materialized) source
-                    if not isinstance(media_item, (ItemMapping, BrowseFolder)):
+                    if not isinstance(media_item, BrowseFolder):
                         source_items.append(media_item)
                 else:
                     # not (yet) a managed pool: record the finite parent as a source (kept for a
                     # later dynamic transition and for similar/autoplay seeds) and expand it into
                     # the linear queue
-                    if not isinstance(
-                        media_item, (ItemMapping, BrowseFolder)
-                    ) and media_item.media_type in (
+                    if not isinstance(media_item, BrowseFolder) and media_item.media_type in (
                         MediaType.TRACK,
                         MediaType.ALBUM,
                         MediaType.PLAYLIST,
@@ -774,7 +769,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         ]
 
         if not queue_items:
-            raise MediaNotFoundError("No playable items found")
+            raise MediaNotFoundError("No playable items found", translation_key="no_playable_items")
 
         await self._enqueue_with_option(
             queue_id, queue_items, option, pin_first=start_item is not None
@@ -819,7 +814,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             build_queue_item(queue_id, track) for track in pool_tracks if track.available
         ]
         if not queue_items:
-            raise MediaNotFoundError("No playable items found")
+            raise MediaNotFoundError("No playable items found", translation_key="no_playable_items")
         # the managed pool already interleaved the sources in a recency-aware order; load as-is
         await self.load(queue_id, queue_items, insert_at_index=insert_at, keep_remaining=False)
         if start_playing:
