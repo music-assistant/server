@@ -2648,18 +2648,20 @@ class Player(ABC):
         mass_source = next((x for x in sources if x.id == self.player_id), None)
         if mass_source is None:
             # if the MA queue is not in the source list, add it.
-            # The capability flags reflect what the queue can actually do right now: with an
-            # empty queue there is nothing to play, seek or skip through, so clients can grey
-            # out those controls instead of issuing commands that can only fail.
+            # The capability flags reflect what the queue can actually do right now, so clients can
+            # grey out controls instead of issuing commands that can only fail: an empty queue has
+            # nothing to play, seek or skip through, and a queue that played to its end can only be
+            # started over, with nothing left to seek within or skip to.
             queue = self.mass.player_queues.get(self.player_id)
             queue_has_items = bool(queue and queue.items)
+            queue_running = queue_has_items and not (queue and queue.ended)
             mass_source = PlayerSource(
                 id=self.player_id,
                 name="Music Assistant Queue",
                 passive=False,
                 can_play_pause=queue_has_items,
-                can_seek=queue_has_items,
-                can_next_previous=queue_has_items,
+                can_seek=queue_running,
+                can_next_previous=queue_running,
             )
             sources.append(mass_source)
         return sources
