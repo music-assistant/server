@@ -36,7 +36,7 @@ from music_assistant_models.errors import (
     PlayerCommandFailed,
     UnsupportedFeaturedException,
 )
-from music_assistant_models.player import PlayerMedia, PlayerSource
+from music_assistant_models.player import OutputProtocol, PlayerMedia, PlayerSource
 
 from music_assistant.constants import ATTR_PREVIOUS_VOLUME, CONF_MUTE_CONTROL
 from music_assistant.controllers.players import PlayerController
@@ -981,6 +981,84 @@ class TestExternalSourcePlayPause:
 
         controller._handle_cmd_stop.assert_awaited_once()
         player.pause.assert_not_called()
+
+
+class TestProtocolOutputPlayPause:
+    """Play/pause on a player rendering through a linked output protocol."""
+
+    @staticmethod
+    def _make_player_on_protocol(
+        mock_mass: MagicMock,
+        controller: PlayerController,
+        *,
+        playback_state: PlaybackState,
+    ) -> MockPlayer:
+        """Build a player playing the MA queue through a protocol that cannot pause."""
+        native_provider = MockProvider("chromecast", mass=mock_mass)
+        player = MockPlayer(native_provider, "player_1", "Test Player")
+        player._attr_supported_features.add(PlayerFeature.PAUSE)
+        player._attr_playback_state = playback_state
+
+        protocol_provider = MockProvider("sendspin", mass=mock_mass)
+        protocol_player = MockPlayer(
+            protocol_provider, "proto_1", "Test Protocol", player_type=PlayerType.PROTOCOL
+        )
+        protocol_player._attr_playback_state = playback_state
+
+        controller._players = {"player_1": player, "proto_1": protocol_player}
+        mock_mass.players = controller
+        mock_mass.player_queues = MagicMock()
+        # a non-empty queue, so the MA queue source advertises play/pause support
+        queue = MagicMock()
+        queue.items = [MagicMock()]
+        mock_mass.player_queues.get = MagicMock(return_value=queue)
+        player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="proto_1",
+                    name="Sendspin",
+                    protocol_domain="sendspin",
+                    priority=40,
+                )
+            ]
+        )
+        player.set_active_output_protocol("proto_1")
+        player.set_active_mass_source("player_1")
+        protocol_player.update_state(signal_event=False)
+        player.refresh_state(signal_event=False)
+        return player
+
+    async def test_pause_on_protocol_without_pause_falls_back_to_stop(
+        self, mock_mass: MagicMock, controller: PlayerController
+    ) -> None:
+        """The native transport has no session to pause while a protocol renders the audio."""
+        player = self._make_player_on_protocol(
+            mock_mass, controller, playback_state=PlaybackState.PLAYING
+        )
+        player.pause = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._handle_cmd_pause("player_1")
+
+        player.pause.assert_not_called()
+        # STOP goes to the visible player, not the protocol player
+        controller._handle_cmd_stop.assert_awaited_once_with("player_1")
+
+    async def test_play_on_protocol_without_pause_does_not_unpause_natively(
+        self, mock_mass: MagicMock, controller: PlayerController
+    ) -> None:
+        """Unpausing must not hit the native transport either; the source is restarted."""
+        player = self._make_player_on_protocol(
+            mock_mass, controller, playback_state=PlaybackState.PAUSED
+        )
+        player.play = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_select_source = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._handle_cmd_play("player_1")
+
+        player.play.assert_not_called()
+        # the MA queue source is restarted, not some other source
+        controller._handle_select_source.assert_awaited_once_with("player_1", "player_1")
 
 
 class TestMirrorsParentMedia:

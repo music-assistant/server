@@ -298,7 +298,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # (an active dynamic source manages its own refills, so leave it be)
         if (
             queue.autoplay_enabled
-            and queue_data.enqueued_media_items
             and not queue.is_dynamic
             and queue.current_index is not None
             and (queue.items - queue.current_index) < 5
@@ -1140,7 +1139,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     active=False,
                     display_name=player.state.name,
                     available=player.state.available,
-                    autoplay_enabled=False,
+                    # Autoplay starts out on for a brand new queue; the player's own Autoplay
+                    # switch owns it from here on (and is restored above for a queue we know)
+                    autoplay_enabled=True,
                     items=0,
                 )
             )

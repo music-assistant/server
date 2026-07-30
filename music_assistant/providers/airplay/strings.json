@@ -45,6 +45,10 @@
       "title": "Enter the device password",
       "description": "This device is protected with a password. Enter it below to connect."
     },
+    "streaming_repair_offer": {
+      "title": "Pair again (optional)",
+      "description": "This device is already paired for streaming. Optionally pair again to replace the stored pairing, for example after the device was reset or its password was changed. You can skip this to keep the current pairing."
+    },
     "companion_offer": {
       "title": "Set up remote control (optional)",
       "description": "Optionally pair Companion controls to monitor power, wake the device before playback, and control native playback and volume. You can skip this and set it up later from the player settings."
@@ -66,12 +70,11 @@
     }
   },
   "errors": {
-    "invalid_pin": "Enter the numeric PIN shown on the screen of your device."
+    "invalid_pin": "Enter the numeric PIN shown on the screen of your device.",
+    "authentication_failed": "The device rejected the saved password. Run the setup for this player to enter it again.",
+    "show_dashboard_failed": "Failed to show the dashboard on {0}."
   },
   "manifest": {
     "description": "Stream to AirPlay-enabled devices on your local network."
-  },
-  "errors": {
-    "show_dashboard_failed": "Failed to show the dashboard on {0}."
   }
 }
