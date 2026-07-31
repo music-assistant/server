@@ -1534,24 +1534,12 @@ async def test_tidal_flow_device_login(
         patch.object(flow_mass, "load_provider_config", AsyncMock()),
     ):
         step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
-        # step 1: a form with the clickable "open Tidal" link (code pre-filled)
-        assert step.type == FlowStepType.FORM
-        assert step.step_id == "user"
-        instructions = next(x for x in step.entries if x.key == "auth_instructions")
-        assert instructions.help_link == "https://link.tidal.com/ABCDE"
-        # step 2: submitting advances to the polling progress step showing the code
+        # single external "Open URL" step (code pre-filled) completed by the poll
+        assert step.type == FlowStepType.EXTERNAL
+        assert step.step_id == "device_login"
+        assert step.url == "https://link.tidal.com/ABCDE"
         session = flow_mass.config._setup_flows[step.flow_id].session
-        await flow_mass.config.submit_setup_flow(step.flow_id, {})
-        progress = await _wait_for(
-            lambda: (
-                session.current_step
-                if session.current_step and session.current_step.type == FlowStepType.PROGRESS
-                else None
-            )
-        )
-        assert progress.step_id == "device_login"
-        assert progress.image is not None
-        assert progress.image.startswith("data:image/svg+xml;base64,")
+        # approval resolves the poll and the flow finishes on its own
         release.set()
         await _wait_for(lambda: session.finished)
     raw_conf = flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}")
@@ -1579,21 +1567,24 @@ async def test_tidal_flow_device_login_denied_aborts(
         "interval": 0,
         "expiresIn": 300,
     }
+    # hold the poll so the progress step is observable before it aborts
+    release = asyncio.Event()
+
+    async def _poll(_http_session: Any, _device: dict[str, Any]) -> dict[str, Any]:
+        await release.wait()
+        raise LoginFailed("access_denied")
+
     with (
         _use_flow(flow_mass, run_setup),
         patch.object(TidalAuthManager, "start_device_login", AsyncMock(return_value=device)),
-        patch.object(
-            TidalAuthManager,
-            "poll_device_login",
-            AsyncMock(side_effect=LoginFailed("access_denied")),
-        ),
+        patch.object(TidalAuthManager, "poll_device_login", _poll),
         patch.object(flow_mass, "load_provider_config", AsyncMock()),
     ):
         step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
-        # the flow blocks on the link form; submitting advances to the denied poll
-        assert step.type == FlowStepType.FORM
+        # single external step; a denied poll aborts the flow
+        assert step.type == FlowStepType.EXTERNAL
         session = flow_mass.config._setup_flows[step.flow_id].session
-        await flow_mass.config.submit_setup_flow(step.flow_id, {})
+        release.set()
         abort = await _wait_for(
             lambda: (
                 session.current_step

@@ -11,20 +11,12 @@
         "LOSSLESS": "16-bit / 44.1 kHz — CD quality, plays on any device.",
         "HI_RES_LOSSLESS": "Up to 24-bit / 192 kHz — hi-res; needs a player/DAC that supports it."
       }
-    },
-    "auth_instructions": {
-      "label": "Use the link icon to open Tidal and approve Music Assistant. The code is filled in for you. Then select Next to finish linking."
     }
   },
   "setup_flow": {
-    "user": {
-      "title": "Link your Tidal account",
-      "description": "Open Tidal with the link icon and approve Music Assistant, then select Next. On another device, go to link.tidal.com and enter the code shown on the next screen."
-    },
     "device_login": {
-      "title": "Waiting for Tidal",
-      "description": "Waiting for you to approve Music Assistant in Tidal. On another device, go to link.tidal.com and enter the code shown. A fresh code appears automatically if it expires.",
-      "progress_text": "Waiting for you to approve on Tidal..."
+      "title": "Link your Tidal account",
+      "description": "Open Tidal to approve Music Assistant, the code is filled in for you. This screen updates automatically once you approve. A fresh code appears if it expires."
     },
     "abort": {
       "login_failed": "Could not link your Tidal account. Please start the setup again."
