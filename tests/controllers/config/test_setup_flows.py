@@ -1685,3 +1685,64 @@ async def test_netease_qr_flow_expiry_then_confirm(
     assert flow_mass.config.decrypt_string(setup_data[CONF_COOKIE]) == "cookie-xyz"
     assert flow_mass.config.decrypt_string(setup_data[CONF_UID]) == "42"
     assert flow_mass.config.decrypt_string(setup_data[CONF_API_BASE_URL]) == "http://127.0.0.1:3000"
+
+
+async def test_external_until_completes_on_awaitable(flow_mass: MusicAssistant) -> None:
+    """external_until shows an external step and completes on the awaitable (no callback)."""
+    release = asyncio.Event()
+
+    async def _work() -> dict[str, str]:
+        await release.wait()
+        return {"token": "abc"}
+
+    async def run_setup(session: SetupSession) -> None:
+        result = await session.external_until(
+            _work(),
+            url="https://example.com/device",
+            step_id="device",
+            expires_in=300,
+        )
+        await session.finish({"token": result["token"]})
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        assert step.type == FlowStepType.EXTERNAL
+        assert step.step_id == "device"
+        assert step.url == "https://example.com/device"
+        session = flow_mass.config._setup_flows[step.flow_id].session
+        # completion is driven by the awaitable resolving, not a browser callback
+        release.set()
+        await _wait_for(lambda: session.finished)
+    setup_data = flow_mass.config.get(f"{CONF_PROVIDERS}/{FAKE_DOMAIN}")["setup_data"]
+    assert flow_mass.config.decrypt_string(setup_data["token"]) == "abc"
+
+
+async def test_external_until_raises_on_deadline(flow_mass: MusicAssistant) -> None:
+    """external_until raises StepExpiredError when the awaitable outlives expires_in."""
+    expired = asyncio.Event()
+
+    async def _never() -> None:
+        await asyncio.Event().wait()
+
+    async def run_setup(session: SetupSession) -> None:
+        try:
+            await session.external_until(
+                _never(),
+                url="https://example.com/device",
+                step_id="device",
+                expires_in=0.1,
+            )
+        except StepExpiredError:
+            expired.set()
+            raise
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        assert step.type == FlowStepType.EXTERNAL
+        await _wait_for(lambda: expired.is_set())
