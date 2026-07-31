@@ -1,0 +1,86 @@
+name: OHF Sage review (manual)
+
+# Reviews a PR against the OHF / Music Assistant leads' cited engineering principles and POSTS
+# the review to the PR, clearly labeled as an automated AI reviewer. Manual-only for now
+# (workflow_dispatch) so you can run it against existing PRs and see the output before turning it
+# on automatically. To make it automatic later, add a `pull_request:` trigger (see sage-cli-review.yml)
+# and disable Copilot's auto-review ruleset to replace it.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number to review"
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  copilot-requests: write   # org-billed Copilot inference via the built-in token (org-owned repos)
+
+jobs:
+  sage-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install GitHub Copilot CLI
+        run: npm install -g @github/copilot
+
+      # Mint a token that acts as musicassistant-bot[bot] — used BOTH to authenticate the Copilot
+      # CLI (the bot's model access) and to post the review as the bot. Pinned to the same SHA the
+      # repo already uses for this action (per the "pin GitHub Actions to a SHA" principle).
+      - name: Create Music Assistant Bot token
+        id: bot
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+
+      - name: Fetch Sage agent + corpus from the ohf-sage Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo chrisuthe/ohf-sage --pattern ohf-sage.md --output ohf-sage.md --clobber
+          gh release download --repo chrisuthe/ohf-sage --pattern ohf-sage-corpus.jsonl --output ohf-sage-corpus.jsonl --clobber
+
+      - name: Get PR diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh pr diff "${{ inputs.pr }}" --repo "${{ github.repository }}" > pr.diff
+
+      - name: Sage review via Copilot CLI
+        env:
+          # Model access: with `copilot-requests: write` (permissions above), the runner's built-in
+          # ephemeral token authenticates Copilot inference and billing flows to the ORG's Copilot
+          # plan — NO seat PAT, NOT the bot token. REQUIRES an ORG-OWNED repo (music-assistant/server)
+          # with the org's Copilot policy enabled + AI-credit budget.
+          # On a personal fork this won't bill the org — set a Copilot-SEATED PAT here instead:
+          #   COPILOT_GITHUB_TOKEN: ${{ secrets.COPILOT_GITHUB_TOKEN }}
+          COPILOT_GITHUB_TOKEN: ${{ github.token }}
+          # Set repo/org variable SAGE_MODEL to your exact Claude id (`copilot` -> /model to list).
+          SAGE_MODEL: ${{ vars.SAGE_MODEL || 'claude-opus-4.8' }}
+        run: |
+          cat > prompt.txt <<'EOF'
+          You are the OHF Sage reviewer. Read ./ohf-sage.md for your full instructions and cited
+          principles, then review the pull-request diff in ./pr.diff. Walk the WHOLE diff. When a
+          principle does not cover something you see, grep ./ohf-sage-corpus.jsonl (case-insensitive
+          keyword alternation) for a real precedent and cite its html_url. Output ONLY a JSON array
+          of findings; each element:
+          {"severity":"CRITICAL|PROBLEM|SUGGESTION","path":"file/path","line":<int or null>,"issue":"1-2 sentences","principle":"governing principle","citation_url":"source permalink"}
+          No prose outside the JSON array. Never invent a rule or citation.
+          EOF
+          copilot -p "$(cat prompt.txt)" -s --model "$SAGE_MODEL" \
+            --allow-tool 'shell(grep:*)' --allow-tool 'shell(cat:*)' --allow-tool 'read' \
+            --no-ask-user | tee findings.json
+
+      - name: Post the review as the bot
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr }}
+        run: python .github/scripts/sage_post_review.py findings.json
