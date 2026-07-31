@@ -17,13 +17,13 @@ from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, QueueOption
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import ProviderMapping
 
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueType, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.media_items import MediaItemType
     from music_assistant_models.provider import ProviderManifest
 
@@ -94,7 +94,7 @@ class TagPlayerProvider(PluginProvider):
         """
         self._validate_tag_id(tag_id)
 
-        media_type, library_id = self.(target)
+        media_type, library_id = self._parse_target(target)
         controller = self.mass.music.get_controller(media_type)
 
         # verify the library item exists
@@ -227,7 +227,7 @@ class TagPlayerProvider(PluginProvider):
         :param tag_id: The tag identifier to validate.
         """
         if not tag_id or not tag_id.strip():
-            raise ValueError("tag_id cannot be empty")
+            raise InvalidDataError("tag_id cannot be empty")
 
     @staticmethod
     def _parse_target(target: str) -> tuple[MediaType, int]:
