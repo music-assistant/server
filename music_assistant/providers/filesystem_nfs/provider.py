@@ -79,6 +79,7 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
             raise SetupFailedError(
                 msg,
                 translation_key="invalid_subfolder",
+                translation_owner=self.translation_owner,
                 translation_args=[self._subfolder],
             )
         self.base_path = os.path.normpath(os.path.join(self.mount_path, self._subfolder))
@@ -143,6 +144,7 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
             raise SetupFailedError(
                 msg,
                 translation_key="subfolder_not_found",
+                translation_owner=self.translation_owner,
                 translation_args=[self._subfolder],
             )
         await self.check_write_access()

@@ -174,6 +174,7 @@ def test_traversal_subfolder_is_rejected_before_mounting() -> None:
         _provider("../../etc")
 
     assert exc_info.value.translation_key == "invalid_subfolder"
+    assert exc_info.value.translation_owner == "provider.filesystem_nfs"
     assert MOUNT_PATH not in str(exc_info.value)
 
 
@@ -202,6 +203,7 @@ async def test_missing_subfolder_fails_setup_instead_of_an_empty_library() -> No
 
     err = exc_info.value
     assert err.translation_key == "subfolder_not_found"
+    assert err.translation_owner == "provider.filesystem_nfs"
     assert err.translation_args == ["Music"]
     # the internal mountpoint must not leak into user-facing text
     assert MOUNT_PATH not in str(err)
