@@ -1158,7 +1158,9 @@
     "rate_limited": "Rate limit reached. Please try again later.",
     "host_unresolvable": "Unable to resolve {0}, make sure the address is resolvable.",
     "connection_timeout": "Connection timed out: {0}.",
-    "connect_failed": "Failed to connect to {0}."
+    "connect_failed": "Failed to connect to {0}.",
+    "mount_failed": "Unable to connect to the remote location: {0}",
+    "unmount_failed": "The previous connection to the remote location could not be closed: {0}"
   },
   "setup_flow": {
     "select_child": {
