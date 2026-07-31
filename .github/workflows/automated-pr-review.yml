@@ -17,10 +17,6 @@ permissions:
   pull-requests: write
   copilot-requests: write
 
-env:
-  # Pin the release the standards + corpus are fetched from so runs are reproducible.
-  REVIEW_RELEASE: v0.1.0
-
 jobs:
   pr-review:
     runs-on: ubuntu-latest
@@ -42,14 +38,10 @@ jobs:
           client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
           private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
 
-      - name: Fetch the review standards + history (pinned release)
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release download "$REVIEW_RELEASE" --repo chrisuthe/ohf-sage \
-            --pattern music-assistant-review-bot.md --output review-bot.md --clobber
-          gh release download "$REVIEW_RELEASE" --repo chrisuthe/ohf-sage \
-            --pattern ohf-sage-corpus.jsonl --output review-corpus.jsonl --clobber
+      # The standards doc is read in place at .github/pr-review/standards.md. The corpus of past
+      # review discussions is committed gzipped (public PR/issue comments); decompress it for grep.
+      - name: Decompress the review corpus (bundled in-repo)
+        run: gunzip -c .github/pr-review/review-corpus.jsonl.gz > review-corpus.jsonl
 
       - name: Get PR diff
         env:
@@ -76,8 +68,8 @@ jobs:
           REVIEW_MODEL: ${{ vars.REVIEW_MODEL || 'claude-opus-4.8' }}
         run: |
           cat > prompt.txt <<'EOF'
-          You are an automated PR reviewer for this project. Read ./review-bot.md for the project's
-          coding standards and the review protocol, then review the pull-request diff in ./pr.diff.
+          You are an automated PR reviewer for this project. Read .github/pr-review/standards.md for
+          the project's coding standards and the review protocol, then review the diff in ./pr.diff.
           Walk the WHOLE diff. When a standard does not cover something you see, grep
           ./review-corpus.jsonl (case-insensitive keyword alternation) for a prior project decision
           and cite its link. Present every finding as a project standard — do NOT name individual
