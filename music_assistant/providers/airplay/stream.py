@@ -133,7 +133,7 @@ class AirPlayStream:
         self._metadata_generation = 0
         self._metadata_lock = asyncio.Lock()
         self._artwork_render_generations: set[int] = set()
-        self._last_progress_sent: int = -1
+        self._last_progress_sent: int | None = None
         # Media position (seconds) mapped to the first sample of the current
         # START anchor. The binary reports "playing elapsed_ms" relative to that
         # anchor (resetting to ~0 at each START), so elapsed is this base plus
@@ -404,13 +404,20 @@ class AirPlayStream:
                 raise PlayerCommandFailed(
                     f"Could not deliver START to AirPlay player {self.player.player_id}"
                 )
-            # A receiver may discard artwork sent before a new playback anchor.
-            # Start a fresh generation so an in-flight pre-transition render is
-            # superseded and the artwork is pushed again after START.
-            self._metadata_checksum = ""
+            # Supersede an in-flight pre-transition artwork render; the task
+            # below then sends only what actually changed (a track change's
+            # text/artwork). Unchanged title/artwork stay deduped — re-pushing
+            # identical metadata around every anchor makes an Apple TV
+            # re-render its Now Playing popup on each seek, and a re-anchor
+            # cannot lose artwork anyway now that the binary carries the
+            # artwork bytes in every now-playing push. The progress correction
+            # is deliberately NOT sent here: every now-playing push visibly
+            # refreshes the Apple TV screen, so the single settled correction
+            # from the post-anchor media-updated nudge (+1s) does the job with
+            # one refresh instead of two.
             self._metadata_generation += 1
         self.mass.create_task(
-            self._send_current_metadata,
+            self._send_current_metadata_without_progress,
             task_id=f"airplay_metadata_after_start_{self._stream_id}",
             abort_existing=True,
         )
@@ -443,16 +450,24 @@ class AirPlayStream:
         :param send_artwork: Whether artwork should be rendered and sent.
         """
         metadata_checksum: str | None = None
+        text_checksum: str | None = None
         duration = 0
         title = ""
         artist = ""
         album = ""
+        item_id = ""
         if metadata:
-            duration = min(metadata.duration or 0, 3600)
+            duration = self._full_media_duration(metadata)
             title = metadata.title or ""
             artist = metadata.artist or ""
             album = metadata.album or ""
-            metadata_checksum = f"{title}|{artist}|{album}|{duration}|{metadata.image_url}"
+            item_id = metadata.queue_item_id or ""
+            # The identity deliberately excludes duration and image url: a
+            # value that shifts per seek or per media-update would re-send the
+            # full metadata each time — which makes an Apple TV re-render its
+            # Now Playing popup.
+            text_checksum = f"{item_id}|{title}|{artist}|{album}"
+            metadata_checksum = f"{text_checksum}|{metadata.image_url}"
 
         artwork_url: str | None = None
         metadata_generation = 0
@@ -467,19 +482,27 @@ class AirPlayStream:
             if (
                 metadata
                 and metadata_checksum is not None
+                and text_checksum is not None
                 and (
                     metadata_checksum != self._metadata_checksum
-                    or metadata_checksum != self._metadata_text_checksum
+                    or text_checksum != self._metadata_text_checksum
                 )
             ):
                 needs_artwork = metadata_checksum != self._metadata_checksum
-                if metadata_checksum != self._metadata_text_checksum:
+                if text_checksum != self._metadata_text_checksum:
+                    # ITEMID gives the binary a stable per-track identity, so
+                    # a later tag refinement for the same queue item (library
+                    # enrichment can settle after playback starts) updates the
+                    # receiver's now-playing item in place instead of
+                    # presenting as a new track.
                     cmd = f"TITLE={title}\nARTIST={artist}\nALBUM={album}\n"
-                    cmd += f"DURATION={duration}\nPROGRESS=0\nACTION=SENDMETA\n"
+                    cmd += f"DURATION={duration}\nITEMID={item_id}\nACTION=SENDMETA\n"
                     if not await self.send_cli_command(cmd):
                         return
-                    self._metadata_text_checksum = metadata_checksum
-                    self._last_progress_sent = 0
+                    self._metadata_text_checksum = text_checksum
+                    # the metadata push carried the previous position; always
+                    # follow with a fresh progress correction
+                    self._last_progress_sent = None
                 if metadata_generation != self._metadata_generation:
                     return
                 if (
@@ -492,12 +515,43 @@ class AirPlayStream:
                     artwork_url = metadata.image_url
                 elif not metadata.image_url or not needs_artwork:
                     self._metadata_checksum = metadata_checksum
-            if progress is not None and abs(progress - self._last_progress_sent) >= 2:
-                if await self.send_cli_command(f"PROGRESS={progress}"):
+            if progress is not None and (
+                self._last_progress_sent is None or abs(progress - self._last_progress_sent) >= 2
+            ):
+                # duration rides along so the seek-rebased remaining time
+                # reaches the device without re-sending the metadata identity
+                duration_cmd = f"DURATION={duration}\n" if metadata else ""
+                if await self.send_cli_command(f"{duration_cmd}PROGRESS={progress}"):
                     self._last_progress_sent = progress
 
         if artwork_url is not None and metadata_checksum is not None:
             await self._render_and_send_artwork(artwork_url, metadata_checksum, metadata_generation)
+
+    def _full_media_duration(self, metadata: PlayerMedia) -> int:
+        """
+        Return the media's full track duration in seconds.
+
+        The queue rewrites ``PlayerMedia.duration`` to the REMAINING time on a
+        seek (the stream-restart convention for players whose position resets
+        to zero). The spliced AirPlay timeline reports absolute positions, so
+        the device needs the real total — and a total that changes on every
+        seek also makes an Apple TV re-lay-out its Now Playing screen each
+        time, which shows as a brief artwork/screen flash.
+
+        :param metadata: Media whose duration is resolved.
+        """
+        if metadata.source_id and metadata.queue_item_id:
+            queue_item = self.mass.player_queues.get_item(
+                metadata.source_id, metadata.queue_item_id
+            )
+            if queue_item:
+                streamdetails = queue_item.streamdetails
+                full_duration = (
+                    streamdetails.duration if streamdetails else None
+                ) or queue_item.duration
+                if full_duration:
+                    return min(int(full_duration), 3600)
+        return min(metadata.duration or 0, 3600)
 
     async def _render_and_send_artwork(
         self, artwork_url: str, metadata_checksum: str, metadata_generation: int
@@ -948,6 +1002,9 @@ class AirPlayStream:
                 requested = int(fields.get("requested_unix_ms", 0))
                 actual = int(fields.get("at_unix_ms", 0))
             except ValueError, IndexError:
+                # Malformed ack: leave _start_ack unset so the caller falls
+                # back to trusting the commanded instant, without waiting out
+                # the ack timeout.
                 pass
             else:
                 self._start_ack = (requested, actual)
@@ -963,7 +1020,7 @@ class AirPlayStream:
                         requested,
                         actual,
                     )
-                self._started.set()
+            self._started.set()
         elif "[STATUS] flushed" in line:
             # A splice-timeline member reports the audible instant of its
             # frozen delivery head; the warm START must anchor beyond it (a
@@ -1107,6 +1164,19 @@ class AirPlayStream:
             return
         progress = int(metadata.corrected_elapsed_time or 0)
         await self.send_metadata(progress, metadata, send_artwork=send_artwork)
+
+    async def _send_current_metadata_without_progress(self) -> None:
+        """
+        Send only the identity metadata for the active stream's media.
+
+        Used right after a commanded START: the anchor may still be settling,
+        so the position correction is left to the post-anchor media-updated
+        nudge — one settled now-playing refresh on the device instead of two.
+        """
+        metadata = self.session.media if self.session else self.player.current_media
+        if not metadata:
+            return
+        await self.send_metadata(None, metadata)
 
     async def _cleanup_failed_start(self) -> None:
         """Release all resources owned by a cliairplay process that failed to start."""
