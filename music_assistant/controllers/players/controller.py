@@ -2390,17 +2390,19 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
     def _enforce_volume_limits(self, player: Player) -> None:
         """Clamp device volume to min/max range when changed externally."""
-        if player.volume_level is None:
-            return
         player_id = player.player_id
         min_volume, max_volume = self._get_volume_limits(player_id)
         if min_volume == 0 and max_volume == 100:
             return
-        device_volume = player.volume_level
-        clamped = max(min_volume, min(max_volume, device_volume))
-        if clamped != device_volume:
-            # Device volume is outside allowed range, correct it
-            self.mass.create_task(player.volume_set(clamped))
+        # state.volume_level is the resolved logical volume, available for all
+        # volume control types; a device volume outside the configured range
+        # surfaces here as a value outside 0-100 (scaling does not clamp)
+        logical_volume = player.state.volume_level
+        if logical_volume is None or 0 <= logical_volume <= 100:
+            return
+        clamped = max(0, min(100, logical_volume))
+        # correct via the regular volume-set path so scaling and redirection apply
+        self.mass.create_task(self._handle_cmd_volume_set(player_id, clamped))
 
     def _forward_state_update(
         self, player: Player, changed_values: dict[str, tuple[Any, Any]]

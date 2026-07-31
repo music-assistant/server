@@ -63,9 +63,15 @@ DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 # RAOP because its pre-fill is paced.
 AIRPLAY_RAOP_SETUP_LEAD_MS: Final[int] = 1500
 AIRPLAY_AP2_SETUP_LEAD_MS: Final[int] = 2500
-# Late joiners keep a more conservative headroom: besides connecting, their
-# pipeline must also be primed from the session's history buffer.
-AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 2000
+# Late joiners keep a much more conservative headroom: besides connecting and
+# priming from the session's history buffer, the receiver must re-acquire the
+# shared PTP clock before it can render its anchor. Its Delay_Req exchange
+# only resumes ~0.7-1.5 s after the join's START is acked (measured on a
+# Sonos Era 100 pair, 2026-07-31) and the servo needs a further ~1.7-2.3 s to
+# lock — and a missed anchor is permanent on the splice timeline (the frozen
+# line is never re-announced), heard as a constant echo on the joined member.
+# The anchor therefore sits beyond exchange-resume plus lock plus margin.
+AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 4000
 # Anchor lead for a readiness-confirmed START (cold and warm alike): the
 # session only anchors after the binary confirmed the connection ([STATUS]
 # connected) and the new audio flowing ([STATUS] audio), so the lead no longer
@@ -75,6 +81,17 @@ AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 2000
 # shared instant out to every member.
 AIRPLAY_START_LEAD_MS: Final[int] = 250
 AIRPLAY_GROUP_START_LEAD_MS: Final[int] = 500
+# Cold GROUP starts anchor further out: a receiver on a brand-new session
+# still acquires its PTP slave lock (~1.7-2.3 s measured on Sonos) and cannot
+# render at an anchor inside that window - it starts late and the group opens
+# audibly out of sync. Warm re-anchors reuse a locked clock and keep the
+# short leads above; solo cold starts have no sync partner to miss.
+AIRPLAY_COLD_GROUP_START_LEAD_MS: Final[int] = 2500
+# Margin added on top of a member's reported warm lead (the splice-timeline
+# queue depth on Apple receivers) when anchoring a warm re-start: covers the
+# command round-trips between the flush acks and the shared START so every
+# member's skip target lands beyond its queued audio.
+AIRPLAY_SPLICE_LEAD_MARGIN_MS: Final[int] = 150
 
 # Delay (seconds) before automatically re-joining a group member whose
 # cliairplay process died unexpectedly mid-session (e.g. the device rode out a
@@ -146,3 +163,8 @@ LEGACY_PAIRING_BIT = 0x200
 # raised at all times (it marks their onscreen-code capability, not a password),
 # so this is the only flags-based password signal they give.
 ATV_PASSWORD_BIT = 0x1000
+
+# Provider setting: opt-in for the shared PTP daemon's per-packet timing trace
+# (Announce/Sync/Follow_Up) when verbose logging is active. Off by default —
+# the trace floods the log and only matters for clock-sync debugging.
+CONF_VERBOSE_PTP_LOGGING: Final[str] = "verbose_ptp_logging"
