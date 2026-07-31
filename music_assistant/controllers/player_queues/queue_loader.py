@@ -90,6 +90,15 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             must keep its position when the batch is shuffled instead of being moved at random.
         """
         queue = self._queue_data[queue_id].queue
+        # A queue that played to its end is finished, so anything enqueued onto it starts a fresh
+        # queue rather than stacking onto the items that already played. Only an explicit ADD keeps
+        # them: there the added items continue the queue from where it ended, and the index is moved
+        # onto the first of them below so pressing play starts there instead of replaying the last
+        # item. ADD never starts playback by itself.
+        continues_ended_queue = queue.ended and option == QueueOption.ADD
+        items_before_add = len(self._queue_data[queue_id].items)
+        if queue.ended and not continues_ended_queue:
+            self.clear(queue_id, skip_stop=True)
         if queue.state in (PlaybackState.PLAYING, PlaybackState.PAUSED):
             cur_index = (
                 queue.index_in_buffer
@@ -191,6 +200,9 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 insert_at_index=add_at_index,
                 shuffle=queue.shuffle_enabled,
             )
+            if continues_ended_queue:
+                self._continue_ended_queue(queue_id, items_before_add)
+                return
             self._ensure_current_index(queue_id)
 
     async def _load_pinned_first(
@@ -239,6 +251,28 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             return
         queue.current_index = 0
         queue.current_item = self.get_item(queue_id, 0)
+        self.signal_update(queue_id)
+
+    def _continue_ended_queue(self, queue_id: str, first_added_index: int) -> None:
+        """
+        Point a finished queue at the first item just added to it, without starting playback.
+
+        The items that already played are kept, so the queue is no longer finished but its position
+        still sits on its old last item. Moving it onto the added items is what makes a play press
+        start there rather than replay the item the queue ended on.
+
+        :param queue_id: The queue that was added to.
+        :param first_added_index: Index of the first of the added items.
+        """
+        queue = self._queue_data[queue_id].queue
+        queue.ended = False
+        if (current_item := self.get_item(queue_id, first_added_index)) is None:
+            return
+        queue.current_index = first_added_index
+        queue.current_item = current_item
+        # ending the queue cleared the next item; refresh it so a batch of added items reports
+        # what follows instead of looking like there is nothing after the first one
+        queue.next_item = self.get_next_item(queue_id, first_added_index)
         self.signal_update(queue_id)
 
     async def _load_item(
