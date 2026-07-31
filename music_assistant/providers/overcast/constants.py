@@ -18,10 +18,11 @@ CACHE_CATEGORY_OPML = 1
 # feed url -> ISO datetime of the newest progress applied for that feed
 CACHE_KEY_LAST_APPLIED = "last_applied_playback_ts"
 
-# The OPML export endpoint is rate limited by Overcast (roughly 10 requests/day),
-# so the export is cached to match the default 12h library sync interval and is
-# served stale while a background refresh runs.
-OPML_CACHE_EXPIRATION = 12 * 3600
+# Overcast rate limits this endpoint to roughly 10 requests a day, and we only
+# fetch when something needs the export (a library sync, browsing or playback),
+# so 4 hours works out at no more than 6 requests a day. The old export is still
+# used while the new one is on its way, so nothing has to wait for Overcast.
+OPML_CACHE_EXPIRATION = 4 * 3600
 RATE_LIMIT_FALLBACK_BACKOFF = 3600
 
 # Overcast answers a request carrying a rejected session cookie with a redirect to
