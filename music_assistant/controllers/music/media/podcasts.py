@@ -341,23 +341,40 @@ class PodcastsController(MediaControllerBase[Podcast]):
             # based on configured provider filter we can try to find a user
             user = provider_user
 
-        async def set_resume_position(episode: PodcastEpisode) -> None:
-            if episode.fully_played is not None or episode.resume_position_ms:
-                # provider supports resume info, we can skip
-                return
-            # for providers that do not natively support providing resume info,
-            # we fallback to the playlog db table
-            match = {
-                "item_id": episode.item_id,
+        # resume info for the whole listing is fetched in one query on first use, instead of
+        # one query per episode: a podcast can have thousands of episodes. The query is
+        # scoped to the provider rather than to this podcast, so it reads that provider's
+        # podcast episode rows within the playlog's 90 day retention window
+        resume_rows: dict[str, Mapping[str, Any]] | None = None
+
+        async def load_resume_rows() -> dict[str, Mapping[str, Any]]:
+            match: dict[str, Any] = {
                 "provider": prov.instance_id,
                 "media_type": MediaType.PODCAST_EPISODE,
             }
             if user is not None:
                 match["userid"] = user.user_id
-            resume_info_db_row = await self.mass.music.database.get_row(
-                DB_TABLE_PLAYLOG,
-                match=match,
+            # limit=0 disables get_rows' 500 row default. Combined with the ascending sort
+            # that cap would keep the oldest rows and drop the newest - exactly the
+            # part-played episodes this lookup exists to find. The same ordering also
+            # resolves duplicates: with no userid filter several users can hold a row for
+            # one item_id, and the newest then overwrites the others in the map built below.
+            # the single row lookup this replaced picked one of them arbitrarily
+            rows = await self.mass.music.database.get_rows(
+                DB_TABLE_PLAYLOG, match=match, order_by="timestamp", limit=0
             )
+            return {row["item_id"]: row for row in rows}
+
+        async def set_resume_position(episode: PodcastEpisode) -> None:
+            nonlocal resume_rows
+            if episode.fully_played is not None or episode.resume_position_ms:
+                # provider supports resume info, we can skip
+                return
+            # for providers that do not natively support providing resume info,
+            # we fallback to the playlog db table
+            if resume_rows is None:
+                resume_rows = await load_resume_rows()
+            resume_info_db_row = resume_rows.get(episode.item_id)
             if resume_info_db_row is None:
                 return
             if resume_info_db_row["seconds_played"]:
@@ -365,9 +382,10 @@ class PodcastsController(MediaControllerBase[Podcast]):
             if resume_info_db_row["fully_played"] is not None:
                 episode.fully_played = bool(resume_info_db_row["fully_played"])
 
-        # grab the episodes from the provider
-        # note that we do not cache any of this because its
-        # always a rather small list and we want fresh resume info
+        # grab the episodes from the provider. Providers cache their own listing where they
+        # can (filesystem_local on a folder signature, spotify on a TTL), so resume info is
+        # applied here rather than by the provider: that is what keeps per-user progress out
+        # of those caches
         async for item in prov.get_podcast_episodes(item_id):
             await set_resume_position(item)
             yield item

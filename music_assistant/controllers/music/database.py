@@ -682,6 +682,17 @@ class MusicDatabaseSetupMixin:
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAYLOG}_userid_timestamp_idx "
             f"on {DB_TABLE_PLAYLOG}(userid,timestamp);"
         )
+        # podcast episode listings read every resume position for a provider in one query,
+        # filtered on provider/media_type (plus userid when known), ordered by timestamp.
+        # playlog_unique_idx leads with item_id, which that query never filters on, so it
+        # cannot serve it. Column order favours the common case where userid is known: there
+        # the equality prefix reaches timestamp and the ORDER BY needs no sort at all. With
+        # no userid to filter on SQLite still uses this index for the lookup but sorts the
+        # matched rows, which is one provider's episodes rather than the whole playlog
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAYLOG}_provider_media_type_idx "
+            f"on {DB_TABLE_PLAYLOG}(provider,media_type,userid,timestamp);"
+        )
         await self.database.commit()
 
     async def __create_database_triggers(self) -> None:
