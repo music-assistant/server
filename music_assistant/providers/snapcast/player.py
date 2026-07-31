@@ -71,9 +71,7 @@ class SnapCastPlayer(Player):
 
         # Snapcast stream format is fixed for a provider instance (from advanced settings)
         stream_format = getattr(provider, "stream_audio_format", DEFAULT_SNAPCAST_FORMAT)
-        self._attr_supported_sample_rates = [
-            (stream_format.sample_rate, stream_format.bit_depth)
-        ]
+        self._attr_supported_sample_rates = [(stream_format.sample_rate, stream_format.bit_depth)]
 
         self._snap_ma_stream: SnapcastMAStream | None = None
 

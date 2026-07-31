@@ -477,9 +477,7 @@ class SnapcastMAStream:
             query_data = uri_data.get("query", {}) if isinstance(uri_data, dict) else {}
             codec_name = str(query_data.get("codec", "") if isinstance(query_data, dict) else "")
         codec_name = codec_name.partition(":")[0].lower()
-        pcm_type = (
-            ContentType.PCM_S24LE if stream_format.bit_depth == 24 else ContentType.PCM_S16LE
-        )
+        pcm_type = ContentType.PCM_S24LE if stream_format.bit_depth == 24 else ContentType.PCM_S16LE
         content_type, codec_type = {
             "flac": (ContentType.FLAC, ContentType.FLAC),
             "ogg": (ContentType.OGG, ContentType.VORBIS),
