@@ -64,3 +64,18 @@ async def test_verify_po_token_url_transient_failure(
         return_value=_ping_context_manager(exc=exc)
     )
     assert await provider._verify_po_token_url() is False
+
+
+def test_parse_owned_playlist_is_editable_without_privacy(
+    provider: YoutubeMusicProvider,
+) -> None:
+    """An owned playlist is editable even when the library response omits privacy."""
+    playlist = provider._parse_playlist(
+        {
+            "id": "PL_owned",
+            "title": "Owned playlist",
+            "owned": True,
+        }
+    )
+
+    assert playlist.is_editable is True
