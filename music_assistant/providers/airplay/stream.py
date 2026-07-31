@@ -112,6 +112,16 @@ class AirPlayStream:
         self._connect_error: ConnectError | None = None
         # Set when the binary acknowledges an in-place FLUSH ([STATUS] flushed).
         self._flushed = asyncio.Event()
+        # Set when the binary acks a START ([STATUS] started); carries the
+        # (requested, actual) unix-ms pair. The binary corrects an infeasible
+        # instant FORWARD and always reports the truth, so a mismatch here is
+        # the self-verification signal for the start contract.
+        self._started = asyncio.Event()
+        self._start_ack: tuple[int, int] | None = None
+        # Receiver storm guard state: last-honored monotonic time per remote
+        # transport command, plus a counter of suppressed repeats.
+        self._remote_command_last: dict[str, float] = {}
+        self._remote_commands_suppressed: int = 0
         # Set when the binary reports the first audio bytes of the current
         # start cycle arriving on its stdin ([STATUS] audio). Together with
         # `connected` this makes readiness fully event-driven, so START can
@@ -134,6 +144,15 @@ class AirPlayStream:
         self.latency_lead_ms: int = 0
         self.device_min_frames: int = 0
         self.device_max_frames: int = 0
+        # Minimum lead (ms) a warm commanded START needs for exact placement.
+        # Nonzero on the Apple splice timeline, where the receiver's queued
+        # audio plays out before the new content can begin; a warm group
+        # anchor must sit beyond the largest member value. 0 = no constraint.
+        self.warm_lead_ms: int = 0
+        # Audible instant (unix ms) of the delivery head frozen by the latest
+        # warm flush, from the flushed ack (0 = none/no constraint). The warm
+        # START anchor must land beyond it for the splice skip to engage.
+        self.flushed_head_unix_ms: int = 0
         # Route the binary resolved for this stream (empty until reported),
         # e.g. "AirPlay 2 (native, PTP)" or "RAOP"
         self.active_route: str = ""
@@ -345,7 +364,7 @@ class AirPlayStream:
             return False
         return True
 
-    async def start(self, start_unix_ms: int = 0, position_ms: int = 0) -> None:
+    async def start(self, start_unix_ms: int = 0, position_ms: int = 0) -> int | None:
         """
         Anchor playback so the first pending stdin sample is audible at an instant.
 
@@ -357,6 +376,11 @@ class AirPlayStream:
             clamps to its minimum lead).
         :param position_ms: Media position mapped to that first sample, used as
             the base for elapsed reporting.
+        :return: The true scheduled audible instant (unix ms) from the binary's
+            started ack — the commanded instant when it was feasible, the
+            corrected-forward one otherwise; None when no ack arrived (older
+            binary), in which case the commanded instant was applied under the
+            legacy clamp semantics.
         :raises PlayerCommandFailed: If the START command cannot be delivered.
         """
         if not self.running or not self.connected:
@@ -371,6 +395,8 @@ class AirPlayStream:
         # the binary's first status arrives, interpolation would otherwise keep
         # extending the previous anchor's clock, briefly mapping a bogus position.
         self.player.set_state_from_stream(elapsed_time=self._start_position, stream=self)
+        self._started.clear()
+        self._start_ack = None
         async with self._metadata_lock:
             if not await self._write_cli_command(f"START_UNIX_MS={start_unix_ms}\nACTION=START"):
                 # Surfacing the dropped delivery lets the session fall back to a
@@ -388,6 +414,15 @@ class AirPlayStream:
             task_id=f"airplay_metadata_after_start_{self._stream_id}",
             abort_existing=True,
         )
+        # The binary always acks with the TRUE scheduled instant (correcting an
+        # infeasible one forward), so the caller can verify the contract and
+        # re-align a group. No ack within the timeout means an older binary:
+        # fall back to trusting the commanded instant (legacy clamp semantics).
+        try:
+            await asyncio.wait_for(self._started.wait(), 2.0)
+        except TimeoutError:
+            return None
+        return self._start_ack[1] if self._start_ack else None
 
     def reset_reanchor_shift(self) -> None:
         """Clear the accumulated re-anchor shift and its status-line supersession flag."""
@@ -696,6 +731,34 @@ class AirPlayStream:
                 "Ignoring unknown cliairplay remote command: %s", command_value
             )
             return
+        # Receiver storm guard: MediaRemote re-sends an unfulfilled transport
+        # command at ~10 Hz (measured on tvOS: a next-track storm at end of
+        # item drowned the whole server in seeks until playback collapsed).
+        # No human intends repeats that fast, so only one command per window
+        # is honored; the suppressed repeats are counted and reported loudly
+        # as the support signal.
+        window = (
+            2.0
+            if command in (AirPlayRemoteCommand.NEXT, AirPlayRemoteCommand.PREVIOUS)
+            else 0.5
+        )
+        now = time.monotonic()
+        last = self._remote_command_last.get(command_value, 0.0)
+        if now - last < window:
+            self._remote_commands_suppressed += 1
+            suppressed = self._remote_commands_suppressed
+            if suppressed in (1, 10) or suppressed % 100 == 0:
+                self.player.logger.warning(
+                    "Storm guard: suppressed %d repeated remote '%s' "
+                    "command(s) from %s within %.1fs",
+                    suppressed,
+                    command_value,
+                    self.player.display_name,
+                    window,
+                )
+            return
+        self._remote_command_last[command_value] = now
+        self._remote_commands_suppressed = 0
         prov = cast("AirPlayProvider", self.prov)
         prov.handle_remote_command(self.player, command)
 
@@ -757,6 +820,7 @@ class AirPlayStream:
             self.latency_lead_ms = int(fields.get("lead_ms", 0))
             self.device_min_frames = int(fields.get("device_min_frames", 0))
             self.device_max_frames = int(fields.get("device_max_frames", 0))
+            self.warm_lead_ms = int(fields.get("warm_lead_ms", 0))
         except ValueError:
             return
         self.player.logger.debug(
@@ -880,7 +944,43 @@ class AirPlayStream:
                 self._update_elapsed(millis / 1000)
         elif "[STATUS] paused" in line:
             player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
+        elif "[STATUS] started " in line:
+            try:
+                fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+                requested = int(fields.get("requested_unix_ms", 0))
+                actual = int(fields.get("at_unix_ms", 0))
+            except ValueError, IndexError:
+                pass
+            else:
+                self._start_ack = (requested, actual)
+                if requested and actual and abs(actual - requested) > 2:
+                    # Loud on purpose: the commanded instant was infeasible and
+                    # the binary corrected it forward. The session re-aligns
+                    # the group from these acks; repeated corrections are the
+                    # support signal that leads/readiness need attention.
+                    player.logger.warning(
+                        "AirPlay start corrected by %+d ms on %s "
+                        "(requested %d, scheduled %d)",
+                        actual - requested,
+                        player.display_name,
+                        requested,
+                        actual,
+                    )
+                self._started.set()
         elif "[STATUS] flushed" in line:
+            # A splice-timeline member reports the audible instant of its
+            # frozen delivery head; the warm START must anchor beyond it (a
+            # commanded instant at or behind the head splices at the head,
+            # silently breaking the shared instant).
+            if "head_unix_ms=" in line:
+                try:
+                    self.flushed_head_unix_ms = int(
+                        line.split("head_unix_ms=")[1].split(maxsplit=1)[0]
+                    )
+                except ValueError, IndexError:
+                    self.flushed_head_unix_ms = 0
+            else:
+                self.flushed_head_unix_ms = 0
             self._flushed.set()
         elif "[STATUS] audio " in line:
             self._audio_present.set()
