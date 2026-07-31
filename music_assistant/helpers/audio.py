@@ -662,6 +662,52 @@ async def store_content_length_in_cache(
     )
 
 
+PROBED_DURATION_CACHE_CATEGORY = 51
+PROBED_DURATION_CACHE_PROVIDER = "audio"
+PROBED_DURATION_CACHE_EXPIRATION = 365 * 86400  # 1 year
+
+
+async def get_probed_duration(mass: MusicAssistant, uri: str) -> int | None:
+    """
+    Get the duration determined during an earlier playback of the given item, if any.
+
+    Use for items whose provider does not report a duration, such as podcast episodes
+    from a feed without itunes:duration.
+
+    :param mass: The MusicAssistant instance (for cache access).
+    :param uri: The media item URI (e.g. "overcast--1://podcast_episode/abc").
+    :return: The duration in seconds, or None if the item was never played.
+    """
+    duration: int | None = await mass.cache.get(
+        uri,
+        provider=PROBED_DURATION_CACHE_PROVIDER,
+        category=PROBED_DURATION_CACHE_CATEGORY,
+    )
+    return duration
+
+
+async def store_probed_duration(mass: MusicAssistant, uri: str, duration: int) -> None:
+    """
+    Store the duration of an item that was determined while streaming it.
+
+    A duration below a second is ignored.
+
+    :param mass: The MusicAssistant instance (for cache access).
+    :param uri: The media item URI (e.g. "overcast--1://podcast_episode/abc").
+    :param duration: The duration in seconds.
+    """
+    if duration < 1:
+        return
+    await mass.cache.set(
+        uri,
+        duration,
+        expiration=PROBED_DURATION_CACHE_EXPIRATION,
+        provider=PROBED_DURATION_CACHE_PROVIDER,
+        category=PROBED_DURATION_CACHE_CATEGORY,
+        persistent=True,
+    )
+
+
 def get_bit_rate(fmt: AudioFormat) -> int:
     """Get the (estimated) bit rate for a given AudioFormat, if known."""
     if fmt.bit_rate:
