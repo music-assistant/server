@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import subprocess
 import time
@@ -13,6 +14,9 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiohttp import ClientSession, web
+from aiohttp.client_exceptions import ClientError
+from aiohttp.test_utils import TestServer
 from music_assistant_models.enums import ImageType, ProviderIconVariant
 from music_assistant_models.media_items import MediaItemImage
 from PIL import Image
@@ -42,9 +46,11 @@ def _reset_image_caches() -> Iterator[None]:
     """Isolate the module-level image caches between tests."""
     images._thumb_memory_cache.clear()
     images._source_memory_cache.clear()
+    images._failed_sources.clear()
     yield
     images._thumb_memory_cache.clear()
     images._source_memory_cache.clear()
+    images._failed_sources.clear()
 
 
 @pytest.fixture
@@ -276,6 +282,106 @@ async def test_remote_disk_entry_expires_after_ttl(
     os.utime(src_file, (expired, expired))
     await get_image_data(mass_minimal, remote_url, "builtin")
     assert len(fetch_calls) == 2
+
+
+async def test_failing_source_fails_fast_with_single_warning(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    fetch_calls: list[tuple[str, str]],
+) -> None:
+    """A persistently failing source is fetched once, then fails fast without new logs."""
+    mass_minimal.webserver = MagicMock(base_url="http://127.0.0.1:8095")
+    mass_minimal.streams = MagicMock(base_url="http://127.0.0.1:8097")
+    remote_url = "http://sonos.example.com:1400/getaa?u=missing.flac"
+
+    async def failing_remote_fetch(_mass: MusicAssistant, url: str) -> bytes:
+        raise ClientError(f"404, message='Not Found', url='{url}'")
+
+    monkeypatch.setattr(images, "_fetch_remote_image", failing_remote_fetch)
+    caplog.set_level(logging.WARNING, logger="music_assistant.helpers.images")
+
+    with pytest.raises(FileNotFoundError, match="404"):
+        await get_image_data(mass_minimal, remote_url, "builtin")
+    # follow-up requests (next metadata push, a thumbnail, a palette) fail
+    # fast without a new origin fetch and without logging again
+    with pytest.raises(FileNotFoundError, match="404"):
+        await get_image_data(mass_minimal, remote_url, "builtin")
+    with pytest.raises(FileNotFoundError, match="404"):
+        await get_image_thumb(mass_minimal, remote_url, 256, "builtin")
+
+    assert len(fetch_calls) == 1
+    warnings = [rec for rec in caplog.records if rec.name == "music_assistant.helpers.images"]
+    assert len(warnings) == 1
+    assert "not retrying" in warnings[0].getMessage()
+
+
+async def test_failed_source_retried_after_ttl_or_invalidation(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    fetch_calls: list[tuple[str, str]],
+) -> None:
+    """A failed source is retried after the negative-cache TTL or invalidation."""
+    mass_minimal.webserver = MagicMock(base_url="http://127.0.0.1:8095")
+    mass_minimal.streams = MagicMock(base_url="http://127.0.0.1:8097")
+    remote_url = "http://cdn.example.com/broken.jpg"
+    cache_key = create_thumb_hash("builtin", remote_url)
+
+    async def failing_remote_fetch(_mass: MusicAssistant, _url: str) -> bytes:
+        raise ClientError("503, message='Service Unavailable'")
+
+    monkeypatch.setattr(images, "_fetch_remote_image", failing_remote_fetch)
+    with pytest.raises(FileNotFoundError):
+        await get_image_data(mass_minimal, remote_url, "builtin")
+    assert len(fetch_calls) == 1
+
+    # once the TTL has passed, the origin is tried again
+    _expires_at, message = images._failed_sources[cache_key]
+    images._failed_sources[cache_key] = (time.monotonic() - 1, message)
+    with pytest.raises(FileNotFoundError):
+        await get_image_data(mass_minimal, remote_url, "builtin")
+    assert len(fetch_calls) == 2
+
+    # invalidation drops the entry immediately; a recovered origin then serves
+    await invalidate_cached_image(mass_minimal, "builtin", remote_url)
+    assert cache_key not in images._failed_sources
+
+    async def ok_remote_fetch(_mass: MusicAssistant, _url: str) -> bytes:
+        return b"remote-image-bytes"
+
+    monkeypatch.setattr(images, "_fetch_remote_image", ok_remote_fetch)
+    assert await get_image_data(mass_minimal, remote_url, "builtin") == b"remote-image-bytes"
+    assert len(fetch_calls) == 3
+
+
+async def test_remote_http_404_yields_file_not_found(mass_minimal: MusicAssistant) -> None:
+    """A real HTTP 404 response converts into FileNotFoundError with one origin hit."""
+    hits = 0
+
+    async def handler(_request: web.Request) -> web.Response:
+        nonlocal hits
+        hits += 1
+        return web.Response(status=404)
+
+    app = web.Application()
+    app.router.add_get("/getaa", handler)
+    server = TestServer(app)
+    await server.start_server()
+    session = ClientSession()
+    try:
+        mass_minimal.webserver = MagicMock(base_url="http://127.0.0.1:8095")
+        mass_minimal.streams = MagicMock(base_url="http://127.0.0.1:8097")
+        mass_minimal._http_session_no_ssl = session
+        url = str(server.make_url("/getaa")) + "?u=track.flac"
+        with pytest.raises(FileNotFoundError, match="404"):
+            await get_image_data(mass_minimal, url, "builtin")
+        # the negative cache prevents a second hit on the origin
+        with pytest.raises(FileNotFoundError, match="404"):
+            await get_image_data(mass_minimal, url, "builtin")
+        assert hits == 1
+    finally:
+        await session.close()
+        await server.close()
 
 
 async def test_own_imageproxy_url_cached_under_resolved_key_only(
