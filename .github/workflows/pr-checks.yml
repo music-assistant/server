@@ -1,0 +1,146 @@
+---
+name: PR Checks
+
+# Release notes are generated verbatim from pull request titles, and the pull request template
+# carries the rest: the change description, the "Types of changes" box pr-labels.yaml derives the
+# release-notes label from, and the author's own verification checklist. A conventional-commit
+# title has to be rewritten at release time, and a body that replaced the template drops the rest
+# silently. Both are checked here, and reported to the author as one comment.
+#
+# Deliberately not a merge blocker — add it to branch protection only if that changes. It runs on
+# pull_request_target so the musicassistant-bot comment also works on pull requests from forks,
+# and so the checks themselves can't be weakened by the branch under review; only the base branch
+# is ever checked out, never the contributor's code.
+
+# yamllint disable-line rule:truthy
+on:
+  pull_request_target:
+    types:
+      - opened
+      - edited
+      - reopened
+      - ready_for_review
+    branches:
+      - dev
+
+permissions:
+  contents: read
+
+env:
+  EXPECTED_APP_SLUG: musicassistant-bot
+  EXPECTED_APP_INSTALLATION_ID: "146062122"
+  EXPECTED_APP_BOT_LOGIN: musicassistant-bot[bot]
+  STICKY_MARKER: "<!-- pr-checks -->"
+
+jobs:
+  check_pull_request:
+    name: Verify
+    runs-on: ubuntu-latest
+    # GitHub-typed bots (Dependabot, musicassistant-bot[bot], etc.) generate their own titles and
+    # don't use the template.
+    if: github.event.pull_request.user.type != 'Bot'
+    steps:
+      - name: ⤵️ Check out the base branch
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          persist-credentials: false
+
+      - name: 📝 Check the title and description
+        id: check
+        continue-on-error: true
+        env:
+          # Passed via env, never inlined into the script: both are untrusted input.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s' "$PR_BODY" > body.md
+          # The status is captured rather than piped through tee: the next step needs the
+          # report file even when the check fails, and a pipeline would swallow the exit code.
+          status=0
+          python3 -m scripts.check_pr_metadata --title "$PR_TITLE" < body.md > report.md || status=$?
+          cat report.md
+          exit "$status"
+
+      - name: 🔑 Create musicassistant-bot token
+        id: bot_token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-pull-requests: write
+
+      - name: 🤖 Verify GitHub App identity
+        env:
+          APP_SLUG: ${{ steps.bot_token.outputs.app-slug }}
+          INSTALLATION_ID: ${{ steps.bot_token.outputs.installation-id }}
+        run: |
+          if [ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ] || \
+             [ "$INSTALLATION_ID" != "$EXPECTED_APP_INSTALLATION_ID" ]; then
+            echo "Unexpected GitHub App installation: $APP_SLUG/$INSTALLATION_ID" >&2
+            exit 1
+          fi
+
+      - name: 💬 Tell the author what's missing
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          CHECK_OUTCOME: ${{ steps.check.outcome }}
+        with:
+          github-token: ${{ steps.bot_token.outputs.token }}
+          script: |
+            const fs = require('fs');
+            const marker = process.env.STICKY_MARKER;
+            const failed = process.env.CHECK_OUTCOME === 'failure';
+            const author = context.payload.pull_request.user.login;
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+
+            // One sticky comment, edited in place: an "edited" event fires on every title or
+            // description change, and a fresh comment each time would be spam. Matched on author
+            // as well as marker — "Quote reply" copies the marker into someone else's comment,
+            // and the token is allowed to edit those.
+            const comments = await github.paginate(
+              github.rest.issues.listComments, { owner, repo, issue_number },
+            );
+            const sticky = comments.find(c =>
+              c.body?.includes(marker) && c.user?.login === process.env.EXPECTED_APP_BOT_LOGIN);
+
+            const report = fs.existsSync('report.md')
+              ? fs.readFileSync('report.md', 'utf8').trim()
+              : '';
+
+            // A failure with nothing to report means the check step itself broke rather than
+            // finding problems with the pull request. "@author" and no message tells the author
+            // nothing and reads as a stray ping, so say nothing here and let the job failure
+            // carry it to whoever maintains the workflow.
+            if (failed && !report) {
+              core.setFailed('The check step produced no report; not commenting.');
+              return;
+            }
+
+            const body = failed
+              ? `${marker}\n@${author} ${report}`
+              : `${marker}\n✅ The title and description are good to go. Thanks!`;
+
+            if (sticky) {
+              // Leave a resolved sticky untouched so a passing re-run doesn't renotify.
+              if (sticky.body.trim() !== body.trim()) {
+                await github.rest.issues.updateComment({
+                  owner, repo, comment_id: sticky.id, body,
+                });
+              }
+              return;
+            }
+            if (failed) {
+              await github.rest.issues.createComment({
+                owner, repo, issue_number, body,
+              });
+            }
+
+      - name: 🚦 Report the check result
+        if: steps.check.outcome == 'failure'
+        run: |
+          echo "The title or description needs a fix — see the comment on the pull request." >&2
+          exit 1

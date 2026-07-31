@@ -40,7 +40,10 @@ from music_assistant.controllers.player_queues.constants import (
     ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
 )
 from music_assistant.controllers.player_queues.helpers import sort_tracks
-from music_assistant.helpers.collections import get_collection_item_media_type_from_item_id
+from music_assistant.helpers.collections import (
+    get_collection_item_id,
+    get_collection_item_media_type_from_item_id,
+)
 
 if TYPE_CHECKING:
     from music_assistant.controllers.player_queues.controller import PlayerQueuesController
@@ -151,9 +154,21 @@ class MediaResolver:
         return result
 
     async def get_album_tracks(
-        self, album: Album, start_item: str | None, sort_by: str | None = None
+        self,
+        album: Album,
+        start_item: str | None,
+        sort_by: str | None = None,
+        keep_preceding_items: bool = False,
     ) -> list[Track]:
-        """Return tracks for given album, based on user preference."""
+        """
+        Return tracks for given album, based on user preference.
+
+        :param album: The album to fetch the tracks for.
+        :param start_item: Optional item_id/uri of the track to start from.
+        :param sort_by: Optional sort key to order the tracks by before applying start_item.
+        :param keep_preceding_items: Move the tracks before start_item behind the rest instead
+            of dropping them, so the full album is returned with start_item first.
+        """
         album_items_conf = self.mass.config.get_raw_core_config_value(
             self.queues.domain,
             CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
@@ -177,7 +192,7 @@ class MediaResolver:
         if start_item is not None:
             for idx, track in enumerate(result):
                 if start_item in (track.item_id, track.uri):
-                    return result[idx:]
+                    return result[idx:] + (result[:idx] if keep_preceding_items else [])
             return []
         return result
 
@@ -226,8 +241,17 @@ class MediaResolver:
         playlist: Playlist,
         start_item: str | None,
         sort_by: str | None = None,
+        keep_preceding_items: bool = False,
     ) -> list[PlaylistPlayableItem]:
-        """Return tracks for given playlist, based on user preference."""
+        """
+        Return tracks for given playlist, based on user preference.
+
+        :param playlist: The playlist to fetch the tracks for.
+        :param start_item: Optional item_id/uri/name of the track to start from.
+        :param sort_by: Optional sort key to order the tracks by before applying start_item.
+        :param keep_preceding_items: Move the tracks before start_item behind the rest instead
+            of dropping them, so the full playlist is returned with start_item first.
+        """
         result: list[PlaylistPlayableItem] = []
         self.logger.info(
             "Fetching tracks to play for playlist %s",
@@ -235,9 +259,10 @@ class MediaResolver:
         )
         force_refresh = playlist.is_dynamic
         needs_sort = sort_by is not None and sort_by != "position"
-        # Fast path: no re-sort needed, skip-until-found in a single pass
-        # so we don't materialize huge playlists when starting near the end.
-        if not needs_sort:
+        # Fast path: no re-sort needed and the preceding tracks are dropped anyway, so
+        # skip-until-found in a single pass and never materialize huge playlists when
+        # starting near the end.
+        if not needs_sort and not keep_preceding_items:
             start_item_found = False
             async for playlist_track in self.mass.music.playlists.tracks(
                 playlist.item_id,
@@ -253,7 +278,7 @@ class MediaResolver:
                     continue
                 result.append(playlist_track)
             return result
-        # Sort path: must materialize all tracks before sorting, then slice.
+        # Sort/rotate path: must materialize all tracks before sorting or rotating, then slice.
         async for playlist_track in self.mass.music.playlists.tracks(
             playlist.item_id,
             playlist.provider,
@@ -263,11 +288,12 @@ class MediaResolver:
             if not playlist_track.available:
                 continue
             result.append(playlist_track)
-        result = sort_tracks(result, cast("str", sort_by))
+        if needs_sort:
+            result = sort_tracks(result, cast("str", sort_by))
         if start_item is not None:
             for idx, track in enumerate(result):
                 if _start_item_matches(start_item, track):
-                    return result[idx:]
+                    return result[idx:] + (result[:idx] if keep_preceding_items else [])
             return []
         return result
 
@@ -397,6 +423,76 @@ class MediaResolver:
         # return the (remaining) episode(s) to play
         return UniqueList(all_episodes[episode_index:])
 
+    async def get_next_podcast_episode(
+        self, episode: PodcastEpisode, userid: str | None = None
+    ) -> PodcastEpisode | None:
+        """
+        Return the episode to play after the given one, or None if there is none left.
+
+        Episodes are walked in the same order a full podcast enqueue produces, skipping the
+        ones that were already fully played.
+
+        :param episode: The episode that is being continued.
+        :param userid: User whose resume position should be applied.
+        """
+        podcast = episode.podcast
+        all_episodes = [
+            x async for x in self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider)
+        ]
+        all_episodes.sort(key=lambda x: x.position)
+        current_index = next(
+            (idx for idx, x in enumerate(all_episodes) if x.uri == episode.uri), None
+        )
+        if current_index is None:
+            # the episode is no longer part of the feed, so we have nothing to continue from
+            return None
+        for candidate in all_episodes[current_index + 1 :]:
+            if candidate.fully_played:
+                continue
+            # ensure we have accurate resume info
+            fully_played, resume_position_ms = await self.mass.music.get_resume_position(
+                candidate, userid=userid
+            )
+            if fully_played:
+                continue
+            candidate.resume_position_ms = resume_position_ms
+            return candidate
+        return None
+
+    async def get_next_audiobook(
+        self, audiobook: Audiobook, userid: str | None = None
+    ) -> Audiobook | None:
+        """
+        Return the next book in the collection(s) the given book belongs to, if there is one.
+
+        Returns None for a standalone book and for a book whose collection has no not-fully-played
+        book left after it.
+
+        :param audiobook: The audiobook that is being continued.
+        :param userid: User whose resume position should be applied.
+        """
+        # collections are built from the library metadata, so a book that is not in the
+        # library has no series to continue with
+        library_item = (
+            audiobook
+            if audiobook.provider == "library"
+            else await self.mass.music.audiobooks.get_library_item_by_prov_id(
+                audiobook.item_id, audiobook.provider
+            )
+        )
+        if library_item is None:
+            return None
+        for collection in library_item.metadata.collections or []:
+            try:
+                media_collection = await self.mass.music.audiobooks.get_collection(
+                    get_collection_item_id(collection.title, MediaType.AUDIOBOOK)
+                )
+            except MediaNotFoundError:
+                continue
+            if next_book := await self._next_unplayed_book(media_collection, library_item, userid):
+                return next_book
+        return None
+
     async def _set_episode_resume_point(
         self, episode: PodcastEpisode, userid: str | None, start_from_beginning: bool
     ) -> None:
@@ -415,6 +511,29 @@ class MediaResolver:
         )
         episode.fully_played = fully_played
         episode.resume_position_ms = 0 if fully_played else resume_position_ms
+
+    async def _next_unplayed_book(
+        self,
+        collection: MediaCollection[Audiobook],
+        current: Audiobook,
+        userid: str | None,
+    ) -> Audiobook | None:
+        """Return the first not fully played book after `current` in the given collection."""
+        books = [x for x in collection.items if isinstance(x, Audiobook)]
+        current_index = next(
+            (idx for idx, x in enumerate(books) if x.item_id == current.item_id), None
+        )
+        if current_index is None:
+            return None
+        for candidate in books[current_index + 1 :]:
+            fully_played, resume_position_ms = await self.mass.music.get_resume_position(
+                candidate, userid=userid
+            )
+            if fully_played:
+                continue
+            candidate.resume_position_ms = resume_position_ms
+            return candidate
+        return None
 
     async def _resolve_library_artist(self, artist: Artist) -> Artist | None:
         """
@@ -462,8 +581,22 @@ class MediaResolver:
         queue_id: str | None = None,
         sort_by: str | None = None,
         start_from_beginning: bool = False,
+        keep_preceding_items: bool = False,
     ) -> list[MediaItemType]:
-        """Resolve/unwrap media items to enqueue."""
+        """
+        Resolve/unwrap media items to enqueue.
+
+        :param media_item: The media item to resolve into playable items.
+        :param start_item: Optional item to start a playlist/album/genre from, or the chapter
+            to start an audiobook/podcast episode at.
+        :param userid: Optional user the playback is attributed to.
+        :param queue_id: Optional queue the playback is requested for.
+        :param sort_by: Optional sort key to order tracks by before applying start_item.
+        :param start_from_beginning: Ignore any saved resume position for a podcast episode.
+        :param keep_preceding_items: For a playlist/album, move the tracks before start_item
+            behind the rest instead of dropping them, so the full item is returned with
+            start_item first.
+        """
         # resolve Itemmapping to full media item
         if isinstance(media_item, ItemMapping):
             if media_item.uri is None:
@@ -476,7 +609,14 @@ class MediaResolver:
                     media_item, userid=userid, queue_id=queue_id, user_initiated=True
                 )
             )
-            return list(await self.get_playlist_tracks(media_item, start_item, sort_by=sort_by))
+            return list(
+                await self.get_playlist_tracks(
+                    media_item,
+                    start_item,
+                    sort_by=sort_by,
+                    keep_preceding_items=keep_preceding_items,
+                )
+            )
         if media_item.media_type == MediaType.ARTIST:
             media_item = cast("Artist", media_item)
             self.mass.create_task(
@@ -487,7 +627,14 @@ class MediaResolver:
             return list(await self.get_artist_tracks(media_item))
         if media_item.media_type == MediaType.ALBUM:
             media_item = cast("Album", media_item)
-            return list(await self.get_album_tracks(media_item, start_item, sort_by=sort_by))
+            return list(
+                await self.get_album_tracks(
+                    media_item,
+                    start_item,
+                    sort_by=sort_by,
+                    keep_preceding_items=keep_preceding_items,
+                )
+            )
         if media_item.media_type == MediaType.GENRE:
             media_item = cast("Genre", media_item)
             self.mass.create_task(

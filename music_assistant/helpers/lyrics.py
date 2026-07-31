@@ -45,6 +45,26 @@ def normalize_lrc_lyrics(lrc_lyrics: str | None) -> str | None:
     return "\n".join(entry[1] for entry in entries).strip("\n") or None
 
 
+def extract_lrc_lyrics(lyrics: str | None) -> str | None:
+    """
+    Return the given plain lyrics text if it is LRC formatted, None otherwise.
+
+    :param lyrics: The plain lyrics text to inspect, may be None.
+    """
+    if not lyrics:
+        return None
+    stripped_lines = (line.strip() for line in lyrics.splitlines())
+    content_lines = [line for line in stripped_lines if line and not _LRC_ID_TAG_RE.match(line)]
+    if not content_lines:
+        return None
+    timestamped = sum(1 for line in content_lines if _LRC_TIMESTAMP_BLOCK_RE.match(line))
+    # require most lines to carry a leading timestamp to avoid false positives on
+    # plain lyrics that merely mention something like [2:30] somewhere in the text
+    if timestamped * 2 < len(content_lines):
+        return None
+    return lyrics
+
+
 def _expand_line(line: str) -> list[tuple[float | None, str]]:
     """Expand a lyric line into (time, line) entries, one per leading timestamp."""
     block_match = _LRC_TIMESTAMP_BLOCK_RE.match(line)

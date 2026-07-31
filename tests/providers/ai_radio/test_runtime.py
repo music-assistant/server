@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any, cast
@@ -16,7 +17,6 @@ from music_assistant_models.enums import (
     PlaybackState,
     ProviderFeature,
     ProviderType,
-    QueueOption,
     TaskStatus,
 )
 from music_assistant_models.errors import MusicAssistantError
@@ -794,6 +794,9 @@ async def test_run_dynamic_mode_has_watchdog_for_stalled_playback(
         def clear(self, queue_id: str) -> None:
             return None
 
+        async def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
+            return None
+
         async def play_media(self, **kwargs: Any) -> None:
             return None
 
@@ -821,7 +824,6 @@ async def test_run_dynamic_mode_has_watchdog_for_stalled_playback(
         "dynamic_batch_size": 1,
         "dynamic_poll_seconds": 1,
         "dynamic_prefetch_remaining_tracks": 1,
-        "clear_queue_on_start": False,
         "general": {"timezone": "UTC"},
         "sections": [],
         "section_order": [],
@@ -964,6 +966,9 @@ def _make_watchdog_runtime_classes() -> tuple[type, type]:
         def clear(self, queue_id: str) -> None:
             return None
 
+        async def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
+            return None
+
         async def play_media(self, **kwargs: Any) -> None:
             return None
 
@@ -986,7 +991,6 @@ def _watchdog_station() -> dict[str, Any]:
         "dynamic_batch_size": 2,
         "dynamic_poll_seconds": 1,
         "dynamic_prefetch_remaining_tracks": 1,
-        "clear_queue_on_start": False,
         "general": {"timezone": "UTC"},
         "sections": [],
         "section_order": [],
@@ -1044,16 +1048,26 @@ class RecordingPlayerQueues:
         """Initialize recorder around one fake queue object."""
         self.queue = queue
         self.clear_calls: list[str] = []
+        self.set_shuffle_calls: list[tuple[str, bool]] = []
         self.play_media_calls: list[tuple[Any, int]] = []
         self.play_index_calls: list[tuple[str, int]] = []
+        # combined call order across the methods below, for ordering assertions
+        self.call_order: list[str] = []
 
     def clear(self, queue_id: str) -> None:
         """Record a queue clear call."""
         self.clear_calls.append(queue_id)
+        self.call_order.append("clear")
+
+    async def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
+        """Record a set_shuffle call."""
+        self.set_shuffle_calls.append((queue_id, shuffle_enabled))
+        self.call_order.append("set_shuffle")
 
     async def play_media(self, **kwargs: Any) -> None:
         """Record a play_media call with the poll count at call time."""
         self.play_media_calls.append((kwargs.get("option"), self.queue.polls))
+        self.call_order.append("play_media")
 
     async def play_index(self, queue_id: str, index: int) -> None:
         """Record a play_index call and mark the queue as started."""
@@ -1068,113 +1082,6 @@ class RecordingPlayerQueues:
         """Return the fake queue and count the poll."""
         self.queue.polls += 1
         return self.queue
-
-
-async def test_dynamic_mode_appends_to_playing_queue_when_clear_disabled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Append batches after the existing items when clear_queue_on_start is off."""
-    monkeypatch.setattr(
-        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
-        0.2,
-    )
-    watchdog_runtime_cls, _ = _make_watchdog_runtime_classes()
-
-    class BusyQueue:
-        """Queue already playing 3 pre-existing items."""
-
-        polls = 0
-        items = 3
-        state = PlaybackState.PLAYING
-        started = False
-
-        @property
-        def current_index(self) -> int:
-            # trigger for the first radio batch sits at global index 4
-            # (3 existing items + 1); stay on the old items for a few polls
-            return 2 if self.polls < 4 else 4
-
-        @property
-        def elapsed_time(self) -> float:
-            return float(self.polls * 10)
-
-    class DummyPlayers:
-        def get_player(self, player_id: str) -> Any:
-            return object()
-
-    player_queues = RecordingPlayerQueues(BusyQueue())
-
-    class DummyMass:
-        def __init__(self) -> None:
-            self.players = DummyPlayers()
-            self.player_queues = player_queues
-
-    mass = DummyMass()
-    runtime = watchdog_runtime_cls()
-    _set_runtime_mass(runtime, mass)
-    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
-    runtime._sessions[session.session_id] = session
-
-    result = await asyncio.wait_for(
-        runtime._run_dynamic_mode(session, _watchdog_station()), timeout=10.0
-    )
-
-    assert result["queued_tracks"] == 3
-    assert player_queues.clear_calls == []
-    options = [option for option, _ in player_queues.play_media_calls]
-    assert options == [QueueOption.ADD, QueueOption.ADD]
-    # second batch must wait for the trigger beyond the pre-existing items
-    assert player_queues.play_media_calls[1][1] >= 4
-    # queue was already playing: no forced playback start
-    assert player_queues.play_index_calls == []
-
-
-async def test_dynamic_mode_starts_playback_on_idle_queue_when_clear_disabled(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Start playback at the first appended entry when the target queue is idle."""
-    monkeypatch.setattr(
-        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
-        0.2,
-    )
-    watchdog_runtime_cls, _ = _make_watchdog_runtime_classes()
-
-    class IdleQueue:
-        """Idle queue with 3 leftover items and playback starting on demand."""
-
-        polls = 0
-        items = 3
-        state = PlaybackState.IDLE
-        elapsed_time = 0.0
-        started = False
-
-        @property
-        def current_index(self) -> int | None:
-            return 4 if self.started else None
-
-    class DummyPlayers:
-        def get_player(self, player_id: str) -> Any:
-            return object()
-
-    player_queues = RecordingPlayerQueues(IdleQueue())
-
-    class DummyMass:
-        def __init__(self) -> None:
-            self.players = DummyPlayers()
-            self.player_queues = player_queues
-
-    mass = DummyMass()
-    runtime = watchdog_runtime_cls()
-    _set_runtime_mass(runtime, mass)
-    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
-    runtime._sessions[session.session_id] = session
-
-    result = await asyncio.wait_for(
-        runtime._run_dynamic_mode(session, _watchdog_station()), timeout=10.0
-    )
-
-    assert result["queued_tracks"] == 3
-    assert player_queues.play_index_calls == [("living_room", 3)]
 
 
 async def test_dynamic_mode_targets_active_group_queue(
@@ -1211,6 +1118,10 @@ async def test_dynamic_mode_targets_active_group_queue(
             """Record a queue clear call."""
             self.clear_calls.append(queue_id)
 
+        async def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
+            """No-op shuffle toggle for the group queue."""
+            return
+
         async def play_media(self, **kwargs: Any) -> None:
             """Record the queue targeted by a play_media call."""
             self.play_media_queue_ids.append(kwargs.get("queue_id", ""))
@@ -1244,7 +1155,7 @@ async def test_dynamic_mode_targets_active_group_queue(
     _set_runtime_mass(runtime, mass)
     session = SessionState(session_id="s1", station_id="st", mode="dynamic")
     runtime._sessions[session.session_id] = session
-    station = {**_watchdog_station(), "clear_queue_on_start": True}
+    station = _watchdog_station()
 
     result = await asyncio.wait_for(runtime._run_dynamic_mode(session, station), timeout=10.0)
 
@@ -1370,3 +1281,271 @@ async def test_fetch_source_tracks_skips_tracks_with_no_resolvable_uri(caplog: A
     assert [track["item_id"] for track in tracks] == ["1", "3"]
     assert [track["index"] for track in tracks] == [0, 1]
     assert any("Track Two" in record.message for record in caplog.records)
+
+
+def test_apply_source_shuffle_returns_unchanged_when_disabled() -> None:
+    """Leave the source list untouched when the station does not request shuffling."""
+    runtime = DummyRuntime()
+    tracks = [{"index": 0, "uri": "a"}, {"index": 1, "uri": "b"}]
+    station = {"shuffle_source_tracks": False}
+
+    result = runtime._apply_source_shuffle(tracks, station)
+
+    assert result is tracks
+
+
+def test_apply_source_shuffle_reorders_and_records_source_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shuffle every track into a new order while keeping all of them and their origin."""
+    # capture the real class before patching it away: runtime.random is the same shared
+    # stdlib module object, so the lambda below would otherwise re-look-up itself
+    original_random_cls = random.Random
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.runtime.random.Random",
+        lambda: original_random_cls(1234),
+    )
+    runtime = DummyRuntime()
+    tracks = [{"uri": f"track/{i}"} for i in range(5)]
+    station = {"shuffle_source_tracks": True}
+
+    result = runtime._apply_source_shuffle(tracks, station)
+
+    assert [track["index"] for track in result] == list(range(len(tracks)))
+    assert {track["uri"] for track in result} == {track["uri"] for track in tracks}
+    for track in result:
+        assert tracks[track["source_index"]]["uri"] == track["uri"]
+    # a seeded shuffle must actually reorder, not silently pass through in place
+    assert [track["source_index"] for track in result] != list(range(len(tracks)))
+
+
+def test_apply_track_duration_limit_keeps_prefix_of_given_order() -> None:
+    """Truncate to the playtime cap by walking the given order, no shuffling."""
+    runtime = DummyRuntime()
+    tracks = [
+        {"uri": "a", "duration": 120},
+        {"uri": "b", "duration": 120},
+        {"uri": "c", "duration": 120},
+        {"uri": "d", "duration": 120},
+    ]
+    station = {"max_duration_minutes": 3}
+
+    result = runtime._apply_track_duration_limit(tracks, station)
+
+    assert [track["uri"] for track in result] == ["a", "b"]
+    assert [track["index"] for track in result] == [0, 1]
+    assert [track["source_index"] for track in result] == [0, 1]
+
+
+def test_apply_track_duration_limit_zero_cap_is_noop() -> None:
+    """A cap of 0 disables truncation entirely."""
+    runtime = DummyRuntime()
+    tracks = [{"uri": "a", "duration": 120}, {"uri": "b", "duration": 120}]
+    station = {"max_duration_minutes": 0}
+
+    result = runtime._apply_track_duration_limit(tracks, station)
+
+    assert result is tracks
+
+
+async def test_dynamic_mode_disables_shuffle_before_first_play_media(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Disable queue shuffle before the first batch is queued, so batches keep their order."""
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
+        0.2,
+    )
+    watchdog_runtime_cls, _ = _make_watchdog_runtime_classes()
+
+    class BusyQueue:
+        """Queue already playing 3 pre-existing items."""
+
+        polls = 0
+        items = 3
+        state = PlaybackState.PLAYING
+        started = False
+
+        @property
+        def current_index(self) -> int:
+            return 2 if self.polls < 4 else 4
+
+        @property
+        def elapsed_time(self) -> float:
+            return float(self.polls * 10)
+
+    class DummyPlayers:
+        def get_player(self, player_id: str) -> Any:
+            return object()
+
+    player_queues = RecordingPlayerQueues(BusyQueue())
+
+    class DummyMass:
+        def __init__(self) -> None:
+            self.players = DummyPlayers()
+            self.player_queues = player_queues
+
+    mass = DummyMass()
+    runtime = watchdog_runtime_cls()
+    _set_runtime_mass(runtime, mass)
+    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
+    runtime._sessions[session.session_id] = session
+
+    await asyncio.wait_for(runtime._run_dynamic_mode(session, _watchdog_station()), timeout=10.0)
+
+    assert player_queues.set_shuffle_calls == [("living_room", False)]
+    assert player_queues.call_order.index("set_shuffle") < player_queues.call_order.index(
+        "play_media"
+    )
+
+
+async def test_dynamic_mode_ends_run_when_user_stops_the_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """End the run right away when the target queue is stopped after playing."""
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
+        30.0,
+    )
+    watchdog_runtime_cls, stepping_queues_cls = _make_watchdog_runtime_classes()
+
+    class StoppedQueue:
+        """Queue that plays index 0 and is then stopped by the user."""
+
+        polls = 0
+        elapsed_time = 12.0
+
+        @property
+        def state(self) -> PlaybackState:
+            return PlaybackState.PLAYING if self.polls < 4 else PlaybackState.IDLE
+
+        @property
+        def current_index(self) -> int:
+            return 0
+
+    class DummyPlayers:
+        def get_player(self, player_id: str) -> Any:
+            return object()
+
+    class DummyMass:
+        players = DummyPlayers()
+        player_queues = stepping_queues_cls(StoppedQueue())
+
+    runtime = watchdog_runtime_cls()
+    _set_runtime_mass(runtime, DummyMass())
+    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
+    runtime._sessions[session.session_id] = session
+
+    result = await asyncio.wait_for(
+        runtime._run_dynamic_mode(session, _watchdog_station()), timeout=10.0
+    )
+
+    assert result["ended_reason"] == "queue_stopped"
+    # only the first batch was queued; the run did not wait out the stall timeout
+    assert result["queued_tracks"] == 2
+
+
+async def test_dynamic_mode_ignores_idle_queue_before_playback_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Do not treat a not-yet-started queue as a user stop."""
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
+        30.0,
+    )
+    watchdog_runtime_cls, _ = _make_watchdog_runtime_classes()
+
+    class SlowStartQueue:
+        """Queue that stays idle for a few polls before playback starts."""
+
+        polls = 0
+        elapsed_time = 0.0
+
+        @property
+        def state(self) -> PlaybackState:
+            return PlaybackState.IDLE if self.polls < 3 else PlaybackState.PLAYING
+
+        @property
+        def current_index(self) -> int | None:
+            return None if self.polls < 3 else 2
+
+    class DummyPlayers:
+        def get_player(self, player_id: str) -> Any:
+            return object()
+
+    class DummyMass:
+        players = DummyPlayers()
+        player_queues = RecordingPlayerQueues(SlowStartQueue())
+
+    runtime = watchdog_runtime_cls()
+    _set_runtime_mass(runtime, DummyMass())
+    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
+    runtime._sessions[session.session_id] = session
+
+    result = await asyncio.wait_for(
+        runtime._run_dynamic_mode(session, _watchdog_station()), timeout=10.0
+    )
+
+    assert result["queued_tracks"] == 3
+    assert result["ended_reason"] == "source_exhausted"
+
+
+async def test_dynamic_mode_binds_the_session_to_the_target_queue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Record the queue a dynamic run plays on so stopping the show can stop it."""
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.runtime.DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS",
+        30.0,
+    )
+    watchdog_runtime_cls, stepping_queues_cls = _make_watchdog_runtime_classes()
+
+    class PlayingQueue:
+        polls = 0
+        items = 4
+        elapsed_time = 1.0
+        state = PlaybackState.PLAYING
+
+        @property
+        def current_index(self) -> int:
+            return 9
+
+    class DummyPlayers:
+        def get_player(self, player_id: str) -> Any:
+            return object()
+
+    class DummyMass:
+        players = DummyPlayers()
+        player_queues = stepping_queues_cls(PlayingQueue())
+
+    runtime = watchdog_runtime_cls()
+    _set_runtime_mass(runtime, DummyMass())
+    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
+    runtime._sessions[session.session_id] = session
+
+    await asyncio.wait_for(runtime._run_dynamic_mode(session, _watchdog_station()), timeout=10.0)
+
+    assert session.queue_id == "living_room"
+
+
+async def test_run_session_reports_a_queue_stop_as_stopped() -> None:
+    """Report a run that ended because the queue was stopped as stopped, not completed."""
+
+    class QueueStoppedRuntime(AIRadioRuntimeMixin):
+        def __init__(self) -> None:
+            self.logger = logging.getLogger("tests.ai_radio.runtime.queue_stopped")
+            self._sessions: dict[str, SessionState] = {}
+
+        async def _run_dynamic_mode(
+            self, session: SessionState, station: dict[str, Any]
+        ) -> dict[str, Any]:
+            return {"mode": "dynamic", "ended_reason": "queue_stopped"}
+
+    runtime = QueueStoppedRuntime()
+    session = SessionState(session_id="s1", station_id="st", mode="dynamic")
+    runtime._sessions[session.session_id] = session
+
+    await runtime._run_session(session.session_id, {"id": "st"})
+
+    assert session.status == "stopped"
+    assert session.ended_at is not None

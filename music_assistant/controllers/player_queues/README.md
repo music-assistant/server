@@ -185,14 +185,19 @@ Two distinct refill paths share the same "running low" trigger:
   recently-heard artists back, then best-effort spaces the assembled batch so adjacent tracks avoid
   sharing an artist (seam-aware against the current tail). A "radio" is just a dynamic playlist from
   the `radio_playlist` provider.
-- **Autoplay** refills using the per-queue configured mode, owned by `autoplay.py`: similar tracks
-  (seeded from the enqueued items), an infinite library mix (genre-biased, least-played), a chosen
-  playlist, or an automatic mode that tries similar first and falls back to the library mix. The
-  mode is read from the per-queue config; the playlist for playlist-mode is a per-queue config value.
+- **Autoplay** is the single "keep going" switch; what it appends is dispatched on the media type of
+  the queue's last item, since that is the item the appended ones follow. Music continues with the
+  per-queue configured mode, owned by `autoplay.py`: similar tracks (seeded from the enqueued items),
+  an infinite library mix (genre-biased, least-played), a chosen playlist, or an automatic mode that
+  tries similar first and falls back to the library mix. The mode is read from the per-queue config;
+  the playlist for playlist-mode is a per-queue config value. A podcast episode or audiobook instead
+  continues with its own successor — the next episode of the podcast, the next book in the collection
+  — resolved by `media_resolver.py`, and simply ends the queue when there is none. Live sources
+  (radio, audio source) have no natural end, so Autoplay does not apply to them at all.
 
 Data flow: dynamic `sources` → managed pool (per-source fetch + weighted, recency-gated allocation)
-→ appended `QueueItem`s; autoplay flag → `Autoplay` (mode-based selection) → appended
-`QueueItem`s.
+→ appended `QueueItem`s; autoplay flag → media-type dispatch → `Autoplay` (mode-based selection) or
+the next episode/book → appended `QueueItem`s.
 
 ## Track Resolution
 
@@ -238,7 +243,8 @@ player_queues/
 ├── managed_pool.py # ManagedPool: bounded dynamic-source pool, topped up + recency-gated, with
 │                   #   finite sources materialized to play through once
 ├── media_resolver.py # MediaResolver: resolves source media items (artist/album/genre/playlist/
-│                   #   audiobook/podcast/browse folder) into the concrete tracks to enqueue
+│                   #   audiobook/podcast/browse folder) into the concrete tracks to enqueue, plus
+│                   #   the successor (next episode/book) of an item that finished playing
 ├── queue_loader.py # QueueLoaderMixin: applies the enqueue option, loads single items, resume-from-
 │                   #   playlog, next-index, and the dynamic/autoplay queue refills
 ├── playback_tracker.py # PlaybackTrackerMixin: reconciles queue state from player updates, end-of-

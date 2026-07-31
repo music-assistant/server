@@ -298,7 +298,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         # (an active dynamic source manages its own refills, so leave it be)
         if (
             queue.autoplay_enabled
-            and queue_data.enqueued_media_items
             and not queue.is_dynamic
             and queue.current_index is not None
             and (queue.items - queue.current_index) < 5
@@ -585,6 +584,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         self.mass.streams.audio_processing.clear(queue_id)
         self.store_sources(queue, [])
         queue.is_dynamic = False
+        queue.ended = False
         if queue.state != PlaybackState.IDLE and not skip_stop:
             self.mass.create_task(self.stop(queue_id))
         queue.current_index = None
@@ -594,6 +594,35 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         queue.index_in_buffer = None
         self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
         self.update_items(queue_id, [])
+
+    def mark_ended(self, queue_id: str) -> None:
+        """
+        Mark a queue as played to its end, keeping its items so it can be replayed.
+
+        The playback position is parked on the last item rather than cleared: a null index is
+        indistinguishable from a queue that was loaded but never started, and an index past the
+        end is silently misread by everything that does arithmetic on it. `ended` is what tells
+        clients the queue finished, and pressing play starts it over from the first item.
+
+        :param queue_id: The queue_id of the queue that reached its end.
+        """
+        queue_data = self._queue_data[queue_id]
+        queue = queue_data.queue
+        if not queue_data.items:
+            # nothing to replay, so there is nothing to advertise as finished either
+            self.clear(queue_id)
+            return
+        self.mass.streams.audio_processing.clear(queue_id)
+        queue.ended = True
+        queue.current_index = len(queue_data.items) - 1
+        queue.current_item = queue_data.items[-1]
+        queue.next_item = None
+        queue.elapsed_time = 0
+        queue.elapsed_time_last_updated = time.time()
+        queue.index_in_buffer = None
+        queue.resume_pos = 0
+        self.mass.create_task(self._cleanup_queue_audio_data(queue_id))
+        self.signal_update(queue_id)
 
     @api_command("player_queues/save_as_playlist", required_scope=Scope.LIBRARY_WRITE)
     async def save_as_playlist(self, queue_id: str, name: str) -> BackgroundTask:
@@ -855,7 +884,12 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         else:
             resume_pos = queue.resume_pos or queue.elapsed_time
 
-        if not resume_item and queue.current_index is not None and len(queue_items) > 0:
+        if queue.ended and len(queue_items) > 0:
+            # the queue played to its end and is parked on its last item,
+            # so pressing play starts it over from the beginning
+            resume_item = queue_items[0]
+            resume_pos = 0
+        elif not resume_item and queue.current_index is not None and len(queue_items) > 0:
             resume_item = self.get_item(queue_id, queue.current_index)
             resume_pos = 0
         elif not resume_item and queue.current_index is None and len(queue_items) > 0:
@@ -881,9 +915,6 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 queue_id, resume_item.queue_item_id, int(resume_pos), fade_in or False
             )
         else:
-            # Queue is empty, try to resume from playlog
-            if await self._try_resume_from_playlog(queue):
-                return
             msg = f"Resume queue requested but queue {queue.display_name} is empty"
             raise QueueEmpty(msg)
 
@@ -906,6 +937,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             queue_data = self._queue_data[queue_id]
             queue = queue_data.queue
             queue.resume_pos = 0
+            # A queue picked up from its end plays its items over from the start, so a resume point
+            # left on an audiobook/episode must not pull it back to where it was left off. The flag
+            # itself is only cleared once an item actually loaded below, so a start that never got
+            # off the ground leaves the queue finished instead of stranding it without a position.
+            restarting_ended_queue = queue.ended
             if isinstance(index, str):
                 temp_index = self.index_by_id(queue_id, index)
                 if temp_index is None:
@@ -928,6 +964,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # handle resume point of audiobook(chapter) or podcast(episode)
             if (
                 not seek_position
+                and not restarting_ended_queue
                 and (queue_item := self.get_item(queue_id, index))
                 and (resume_position_ms := getattr(queue_item.media_item, "resume_position_ms", 0))
             ):
@@ -964,6 +1001,8 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     # if we reach this point, loading the item succeeded, break the loop
                     queue.current_index = index
                     queue.current_item = queue_item
+                    # playback is under way, so the queue is no longer sitting at its end
+                    queue.ended = False
                     # reset the elapsed clock together with the item switch (like
                     # next/previous do), so queue updates signaled before the player
                     # reports position don't carry the previous item's elapsed_time
@@ -1143,7 +1182,9 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                     active=False,
                     display_name=player.state.name,
                     available=player.state.available,
-                    autoplay_enabled=False,
+                    # Autoplay starts out on for a brand new queue; the player's own Autoplay
+                    # switch owns it from here on (and is restored above for a queue we know)
+                    autoplay_enabled=True,
                     items=0,
                 )
             )
