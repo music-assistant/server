@@ -755,7 +755,6 @@ class Adaptor:
         """Create new adaptor."""
         self.provider = provider
         self.logger = self.provider.logger
-        self._converters: list[BaseConverter] = []
 
     def _create_context(
         self,
