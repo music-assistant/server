@@ -14,7 +14,8 @@ import logging
 import re
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING, cast
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Final, cast
 from uuid import uuid4
 
 from music_assistant_models.enums import PlaybackState
@@ -48,6 +49,25 @@ if TYPE_CHECKING:
     from music_assistant.providers.airplay.player import AirPlayPlayer
     from music_assistant.providers.airplay.provider import AirPlayProvider
     from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
+
+# Slugs of the machine-readable failure line the binary emits right before it
+# gives up on a connect:
+#   [STATUS] error code=<slug> http=<int> detail="<short text>"
+CONNECT_ERROR_AUTH_REQUIRED: Final[str] = "auth_required"
+CONNECT_ERROR_AUTH_FAILED: Final[str] = "auth_failed"
+
+_CONNECT_ERROR_CODE_RE = re.compile(r"\bcode=(\S+)")
+_CONNECT_ERROR_HTTP_RE = re.compile(r"\bhttp=(\d+)")
+_CONNECT_ERROR_DETAIL_RE = re.compile(r'\bdetail="([^"]*)"')
+
+
+@dataclass
+class ConnectError:
+    """Fatal connect failure as reported by the cliairplay binary."""
+
+    code: str
+    http_status: int = 0
+    detail: str = ""
 
 
 class AirPlayStream:
@@ -83,8 +103,25 @@ class AirPlayStream:
         self._cleanup_complete = False
         self._stop_lock = asyncio.Lock()
         self._connected = asyncio.Event()
+        # Set when the stderr reader ends, i.e. the binary is gone. A connect
+        # wait watches it so a process that died (for example on a rejected
+        # password) fails right away instead of running out its timeout.
+        self._process_ended = asyncio.Event()
+        # Structured fatal failure the binary reported before exiting; stays
+        # None with an older binary that does not emit the line.
+        self._connect_error: ConnectError | None = None
         # Set when the binary acknowledges an in-place FLUSH ([STATUS] flushed).
         self._flushed = asyncio.Event()
+        # Set when the binary acks a START ([STATUS] started); carries the
+        # (requested, actual) unix-ms pair. The binary corrects an infeasible
+        # instant FORWARD and always reports the truth, so a mismatch here is
+        # the self-verification signal for the start contract.
+        self._started = asyncio.Event()
+        self._start_ack: tuple[int, int] | None = None
+        # Receiver storm guard state: last-honored monotonic time per remote
+        # transport command, plus a counter of suppressed repeats.
+        self._remote_command_last: dict[str, float] = {}
+        self._remote_commands_suppressed: int = 0
         # Set when the binary reports the first audio bytes of the current
         # start cycle arriving on its stdin ([STATUS] audio). Together with
         # `connected` this makes readiness fully event-driven, so START can
@@ -107,6 +144,15 @@ class AirPlayStream:
         self.latency_lead_ms: int = 0
         self.device_min_frames: int = 0
         self.device_max_frames: int = 0
+        # Minimum lead (ms) a warm commanded START needs for exact placement.
+        # Nonzero on the Apple splice timeline, where the receiver's queued
+        # audio plays out before the new content can begin; a warm group
+        # anchor must sit beyond the largest member value. 0 = no constraint.
+        self.warm_lead_ms: int = 0
+        # Audible instant (unix ms) of the delivery head frozen by the latest
+        # warm flush, from the flushed ack (0 = none/no constraint). The warm
+        # START anchor must land beyond it for the splice skip to engage.
+        self.flushed_head_unix_ms: int = 0
         # Route the binary resolved for this stream (empty until reported),
         # e.g. "AirPlay 2 (native, PTP)" or "RAOP"
         self.active_route: str = ""
@@ -153,6 +199,7 @@ class AirPlayStream:
             NTP timing. None (single-stream callers) falls back to the daemon's
             live state.
         """
+        self._check_password_preflight()
         # A fresh cliairplay process re-anchors from scratch, so drop any shift
         # (and its status-line supersession flag) carried on this stream object.
         self.reset_reanchor_shift()
@@ -173,10 +220,17 @@ class AirPlayStream:
             raise
 
     async def wait_for_connection(self) -> None:
-        """Wait for device connection to be established."""
+        """
+        Wait for device connection to be established.
+
+        :raises PlayerCommandFailed: If the binary reported that the device needs
+            a password, or rejected the configured one.
+        :raises TimeoutError: If the connection was not established for any other
+            reason (including a binary too old to report one).
+        """
         if not self._cli_proc:
             raise RuntimeError("cliairplay process is not running")
-        await asyncio.wait_for(self._connected.wait(), timeout=10)
+        await self._await_connected()
         # Send the mute-aware volume right away — audio can start within a
         # second now that metadata goes out immediately — and repeat it after
         # 2 seconds because some players ignore the first volume command
@@ -310,7 +364,7 @@ class AirPlayStream:
             return False
         return True
 
-    async def start(self, start_unix_ms: int = 0, position_ms: int = 0) -> None:
+    async def start(self, start_unix_ms: int = 0, position_ms: int = 0) -> int | None:
         """
         Anchor playback so the first pending stdin sample is audible at an instant.
 
@@ -322,6 +376,11 @@ class AirPlayStream:
             clamps to its minimum lead).
         :param position_ms: Media position mapped to that first sample, used as
             the base for elapsed reporting.
+        :return: The true scheduled audible instant (unix ms) from the binary's
+            started ack — the commanded instant when it was feasible, the
+            corrected-forward one otherwise; None when no ack arrived (older
+            binary), in which case the commanded instant was applied under the
+            legacy clamp semantics.
         :raises PlayerCommandFailed: If the START command cannot be delivered.
         """
         if not self.running or not self.connected:
@@ -336,6 +395,8 @@ class AirPlayStream:
         # the binary's first status arrives, interpolation would otherwise keep
         # extending the previous anchor's clock, briefly mapping a bogus position.
         self.player.set_state_from_stream(elapsed_time=self._start_position, stream=self)
+        self._started.clear()
+        self._start_ack = None
         async with self._metadata_lock:
             if not await self._write_cli_command(f"START_UNIX_MS={start_unix_ms}\nACTION=START"):
                 # Surfacing the dropped delivery lets the session fall back to a
@@ -353,6 +414,15 @@ class AirPlayStream:
             task_id=f"airplay_metadata_after_start_{self._stream_id}",
             abort_existing=True,
         )
+        # The binary always acks with the TRUE scheduled instant (correcting an
+        # infeasible one forward), so the caller can verify the contract and
+        # re-align a group. No ack within the timeout means an older binary:
+        # fall back to trusting the commanded instant (legacy clamp semantics).
+        try:
+            await asyncio.wait_for(self._started.wait(), 2.0)
+        except TimeoutError:
+            return None
+        return self._start_ack[1] if self._start_ack else None
 
     def reset_reanchor_shift(self) -> None:
         """Clear the accumulated re-anchor shift and its status-line supersession flag."""
@@ -661,6 +731,32 @@ class AirPlayStream:
                 "Ignoring unknown cliairplay remote command: %s", command_value
             )
             return
+        # Receiver storm guard: MediaRemote re-sends an unfulfilled transport
+        # command at ~10 Hz (measured on tvOS: a next-track storm at end of
+        # item drowned the whole server in seeks until playback collapsed).
+        # No human intends repeats that fast, so only one command per window
+        # is honored; the suppressed repeats are counted and reported loudly
+        # as the support signal.
+        window = (
+            2.0 if command in (AirPlayRemoteCommand.NEXT, AirPlayRemoteCommand.PREVIOUS) else 0.5
+        )
+        now = time.monotonic()
+        last = self._remote_command_last.get(command_value, 0.0)
+        if now - last < window:
+            self._remote_commands_suppressed += 1
+            suppressed = self._remote_commands_suppressed
+            if suppressed in (1, 10) or suppressed % 100 == 0:
+                self.player.logger.warning(
+                    "Storm guard: suppressed %d repeated remote '%s' "
+                    "command(s) from %s within %.1fs",
+                    suppressed,
+                    command_value,
+                    self.player.display_name,
+                    window,
+                )
+            return
+        self._remote_command_last[command_value] = now
+        self._remote_commands_suppressed = 0
         prov = cast("AirPlayProvider", self.prov)
         prov.handle_remote_command(self.player, command)
 
@@ -722,6 +818,7 @@ class AirPlayStream:
             self.latency_lead_ms = int(fields.get("lead_ms", 0))
             self.device_min_frames = int(fields.get("device_min_frames", 0))
             self.device_max_frames = int(fields.get("device_max_frames", 0))
+            self.warm_lead_ms = int(fields.get("warm_lead_ms", 0))
         except ValueError:
             return
         self.player.logger.debug(
@@ -741,6 +838,7 @@ class AirPlayStream:
           [STATUS] playing elapsed_ms=<ms>
           [STATUS] paused
           [STATUS] eof
+          [STATUS] error code=<slug> http=<int> detail="<short text>"
           [ERROR] <message>
         """
         player = self.player
@@ -758,6 +856,7 @@ class AirPlayStream:
             await asyncio.sleep(0)
 
         logger.debug("cliairplay stderr reader ended")
+        self._process_ended.set()
         if not self._stopped and not self._stopping:
             self._stopped = True
             try:
@@ -832,6 +931,8 @@ class AirPlayStream:
         player = self.player
         if "[STATUS] connected" in line:
             self._connected.set()
+            # whatever the device accepted just now is a working password
+            player.set_password_invalid(False)
         elif "[STATUS] playing elapsed_ms=" in line:
             try:
                 millis = int(line.split("elapsed_ms=")[1])
@@ -841,7 +942,42 @@ class AirPlayStream:
                 self._update_elapsed(millis / 1000)
         elif "[STATUS] paused" in line:
             player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
+        elif "[STATUS] started " in line:
+            try:
+                fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+                requested = int(fields.get("requested_unix_ms", 0))
+                actual = int(fields.get("at_unix_ms", 0))
+            except ValueError, IndexError:
+                pass
+            else:
+                self._start_ack = (requested, actual)
+                if requested and actual and abs(actual - requested) > 2:
+                    # Loud on purpose: the commanded instant was infeasible and
+                    # the binary corrected it forward. The session re-aligns
+                    # the group from these acks; repeated corrections are the
+                    # support signal that leads/readiness need attention.
+                    player.logger.warning(
+                        "AirPlay start corrected by %+d ms on %s (requested %d, scheduled %d)",
+                        actual - requested,
+                        player.display_name,
+                        requested,
+                        actual,
+                    )
+                self._started.set()
         elif "[STATUS] flushed" in line:
+            # A splice-timeline member reports the audible instant of its
+            # frozen delivery head; the warm START must anchor beyond it (a
+            # commanded instant at or behind the head splices at the head,
+            # silently breaking the shared instant).
+            if "head_unix_ms=" in line:
+                try:
+                    self.flushed_head_unix_ms = int(
+                        line.split("head_unix_ms=")[1].split(maxsplit=1)[0]
+                    )
+                except ValueError, IndexError:
+                    self.flushed_head_unix_ms = 0
+            else:
+                self.flushed_head_unix_ms = 0
             self._flushed.set()
         elif "[STATUS] audio " in line:
             self._audio_present.set()
@@ -857,6 +993,8 @@ class AirPlayStream:
             self._parse_reanchor_status(line)
         elif "Re-anchored" in line and "shifted_frames=" in line:
             self._parse_reanchor_shift(line)
+        elif "[STATUS] error " in line:
+            self._parse_connect_error(line)
         elif "[ERROR]" in line:
             player.logger.error("cliairplay: %s", line.strip())
         return False
@@ -1001,3 +1139,104 @@ class AirPlayStream:
         if command_delivered:
             self.player.last_command_sent = time.time()
         return command_delivered
+
+    def _check_password_preflight(self) -> None:
+        """
+        Refuse a native AirPlay 2 connect that has nothing to authenticate with.
+
+        A password-protected receiver answers the RTSP setup with a 401 unless the
+        binary can present the device password or stored pairing credentials, so
+        without either there is no point in spawning the process at all. A player
+        in this state is already blocked from playback by ``needs_setup``, leaving
+        this as the backstop for a device that only announced its password
+        protection after the player was resolved as a playback target.
+
+        :raises PlayerCommandFailed: If the device password is missing.
+        """
+        target_protocol = self.player.protocol_override or self.player.protocol
+        if target_protocol != StreamingProtocol.AIRPLAY2 or not self.player.password_required:
+            return
+        if self.player.config.get_value(CONF_PASSWORD):
+            return
+        # stored credentials keep the binary's pair-verify leg viable, and its own
+        # failure report guides the user when that leg is rejected after all
+        if self.player.get_setup_value(CONF_AIRPLAY_CREDENTIALS) or self.player.get_setup_value(
+            CONF_RAOP_CREDENTIALS
+        ):
+            return
+        raise self._password_required_error()
+
+    async def _await_connected(self, timeout: float = 10) -> None:
+        """
+        Wait for the binary to confirm the device connection.
+
+        :param timeout: Seconds to wait for the confirmation.
+        """
+        waiters = [
+            asyncio.ensure_future(self._connected.wait()),
+            asyncio.ensure_future(self._process_ended.wait()),
+        ]
+        try:
+            await asyncio.wait(waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
+        if self._connected.is_set():
+            return
+        raise self._connect_failed_error()
+
+    def _connect_failed_error(self) -> Exception:
+        """
+        Return the error for a connection that was never established.
+
+        A binary that reported why it gave up produces a specific, actionable
+        error. Everything else - including an older binary that reports no reason
+        at all - keeps the plain timeout the callers already handle.
+        """
+        error = self._connect_error
+        if error and error.code == CONNECT_ERROR_AUTH_REQUIRED:
+            return self._password_required_error()
+        if error and error.code == CONNECT_ERROR_AUTH_FAILED:
+            return PlayerCommandFailed(
+                f"{self.player.display_name} rejected the saved password. "
+                "Run the setup for this player to enter it again.",
+                translation_key="authentication_failed",
+                translation_owner=self.player.translation_owner,
+            )
+        reason = f": {error.detail}" if error and error.detail else ""
+        return TimeoutError(f"cliairplay did not connect to {self.player.display_name}{reason}")
+
+    def _password_required_error(self) -> PlayerCommandFailed:
+        """Return the error that points the user at the player's setup flow."""
+        return PlayerCommandFailed(
+            f"{self.player.display_name} requires a password. "
+            "Run the setup for this player to enter it.",
+            translation_key="password_required",
+        )
+
+    def _parse_connect_error(self, line: str) -> None:
+        """Parse and store the structured failure the binary reports before it exits."""
+        payload = line.split("[STATUS] error ", 1)[-1]
+        code_match = _CONNECT_ERROR_CODE_RE.search(payload)
+        http_match = _CONNECT_ERROR_HTTP_RE.search(payload)
+        detail_match = _CONNECT_ERROR_DETAIL_RE.search(payload)
+        self._connect_error = ConnectError(
+            code=code_match.group(1) if code_match else "",
+            http_status=int(http_match.group(1)) if http_match else 0,
+            detail=detail_match.group(1) if detail_match else "",
+        )
+        self.player.logger.debug(
+            "cliairplay reported a fatal error for %s: code=%s http=%s detail=%s",
+            self.player.display_name,
+            self._connect_error.code,
+            self._connect_error.http_status,
+            self._connect_error.detail,
+        )
+        if self._connect_error.code in (CONNECT_ERROR_AUTH_FAILED, CONNECT_ERROR_AUTH_REQUIRED):
+            # The stored password is wrong, or the device demanded one we could
+            # not supply (devices can enforce a password without announcing it -
+            # e.g. an Apple TV with stale TXT records after the password was
+            # enabled). Persist that so the player keeps offering its setup
+            # action (across restarts) until a working password is entered,
+            # instead of only failing at the next play attempt.
+            self.player.set_password_invalid(True)

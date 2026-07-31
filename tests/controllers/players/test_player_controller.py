@@ -36,7 +36,7 @@ from music_assistant_models.errors import (
     PlayerCommandFailed,
     UnsupportedFeaturedException,
 )
-from music_assistant_models.player import PlayerMedia, PlayerSource
+from music_assistant_models.player import OutputProtocol, PlayerMedia, PlayerSource
 
 from music_assistant.constants import ATTR_PREVIOUS_VOLUME, CONF_MUTE_CONTROL
 from music_assistant.controllers.players import PlayerController
@@ -983,6 +983,84 @@ class TestExternalSourcePlayPause:
         player.pause.assert_not_called()
 
 
+class TestProtocolOutputPlayPause:
+    """Play/pause on a player rendering through a linked output protocol."""
+
+    @staticmethod
+    def _make_player_on_protocol(
+        mock_mass: MagicMock,
+        controller: PlayerController,
+        *,
+        playback_state: PlaybackState,
+    ) -> MockPlayer:
+        """Build a player playing the MA queue through a protocol that cannot pause."""
+        native_provider = MockProvider("chromecast", mass=mock_mass)
+        player = MockPlayer(native_provider, "player_1", "Test Player")
+        player._attr_supported_features.add(PlayerFeature.PAUSE)
+        player._attr_playback_state = playback_state
+
+        protocol_provider = MockProvider("sendspin", mass=mock_mass)
+        protocol_player = MockPlayer(
+            protocol_provider, "proto_1", "Test Protocol", player_type=PlayerType.PROTOCOL
+        )
+        protocol_player._attr_playback_state = playback_state
+
+        controller._players = {"player_1": player, "proto_1": protocol_player}
+        mock_mass.players = controller
+        mock_mass.player_queues = MagicMock()
+        # a non-empty queue, so the MA queue source advertises play/pause support
+        queue = MagicMock()
+        queue.items = [MagicMock()]
+        mock_mass.player_queues.get = MagicMock(return_value=queue)
+        player.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="proto_1",
+                    name="Sendspin",
+                    protocol_domain="sendspin",
+                    priority=40,
+                )
+            ]
+        )
+        player.set_active_output_protocol("proto_1")
+        player.set_active_mass_source("player_1")
+        protocol_player.update_state(signal_event=False)
+        player.refresh_state(signal_event=False)
+        return player
+
+    async def test_pause_on_protocol_without_pause_falls_back_to_stop(
+        self, mock_mass: MagicMock, controller: PlayerController
+    ) -> None:
+        """The native transport has no session to pause while a protocol renders the audio."""
+        player = self._make_player_on_protocol(
+            mock_mass, controller, playback_state=PlaybackState.PLAYING
+        )
+        player.pause = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_cmd_stop = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._handle_cmd_pause("player_1")
+
+        player.pause.assert_not_called()
+        # STOP goes to the visible player, not the protocol player
+        controller._handle_cmd_stop.assert_awaited_once_with("player_1")
+
+    async def test_play_on_protocol_without_pause_does_not_unpause_natively(
+        self, mock_mass: MagicMock, controller: PlayerController
+    ) -> None:
+        """Unpausing must not hit the native transport either; the source is restarted."""
+        player = self._make_player_on_protocol(
+            mock_mass, controller, playback_state=PlaybackState.PAUSED
+        )
+        player.play = AsyncMock()  # type: ignore[method-assign]
+        controller._handle_select_source = AsyncMock()  # type: ignore[method-assign]
+
+        await controller._handle_cmd_play("player_1")
+
+        player.play.assert_not_called()
+        # the MA queue source is restarted, not some other source
+        controller._handle_select_source.assert_awaited_once_with("player_1", "player_1")
+
+
 class TestMirrorsParentMedia:
     """Tests for _mirrors_parent_media (palette-fetch gating for grouped players)."""
 
@@ -1112,6 +1190,81 @@ class TestVolumeScalingOnRedirect:
             await controller._handle_cmd_volume_set("user_player", 100)
 
         control.volume_set.assert_awaited_once_with(50)
+
+
+class TestEnforceVolumeLimits:
+    """External volume changes outside the min/max range must be corrected."""
+
+    @staticmethod
+    def _set_limits(mock_mass: MagicMock, min_volume: int, max_volume: int) -> None:
+        def _conf(_player_id: str, key: str, default: object = None) -> object:
+            if key == "min_volume":
+                return min_volume
+            if key == "max_volume":
+                return max_volume
+            return default if default is not None else "auto"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+
+    @staticmethod
+    def _player(logical_volume: int | None) -> SimpleNamespace:
+        return SimpleNamespace(
+            player_id="user_player",
+            state=SimpleNamespace(volume_level=logical_volume),
+        )
+
+    def test_out_of_range_volume_is_corrected(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """A device volume above max_volume (logical > 100) is clamped back to logical 100."""
+        self._set_limits(mock_mass, 0, 80)
+        # device volume 100 with max 80 resolves to logical 125
+        player = self._player(125)
+        with patch.object(controller, "_handle_cmd_volume_set", MagicMock()) as cmd:
+            controller._enforce_volume_limits(cast("MockPlayer", player))
+        cmd.assert_called_once_with("user_player", 100)
+        mock_mass.create_task.assert_called_once()
+
+    def test_below_min_volume_is_corrected(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """A device volume below min_volume (logical < 0) is clamped back to logical 0."""
+        self._set_limits(mock_mass, 20, 100)
+        # device volume 10 with min 20 resolves to a negative logical volume
+        player = self._player(-13)
+        with patch.object(controller, "_handle_cmd_volume_set", MagicMock()) as cmd:
+            controller._enforce_volume_limits(cast("MockPlayer", player))
+        cmd.assert_called_once_with("user_player", 0)
+
+    def test_in_range_volume_is_untouched(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """A logical volume within 0-100 needs no correction."""
+        self._set_limits(mock_mass, 0, 80)
+        player = self._player(100)
+        with patch.object(controller, "_handle_cmd_volume_set", MagicMock()) as cmd:
+            controller._enforce_volume_limits(cast("MockPlayer", player))
+        cmd.assert_not_called()
+
+    def test_no_limits_configured_is_noop(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """Default 0-100 limits skip enforcement entirely."""
+        self._set_limits(mock_mass, 0, 100)
+        player = self._player(100)
+        with patch.object(controller, "_handle_cmd_volume_set", MagicMock()) as cmd:
+            controller._enforce_volume_limits(cast("MockPlayer", player))
+        cmd.assert_not_called()
+
+    def test_unknown_volume_is_noop(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """A player without a resolved volume level is left alone."""
+        self._set_limits(mock_mass, 0, 80)
+        player = self._player(None)
+        with patch.object(controller, "_handle_cmd_volume_set", MagicMock()) as cmd:
+            controller._enforce_volume_limits(cast("MockPlayer", player))
+        cmd.assert_not_called()
 
 
 class TestFakeMuteControl:
@@ -1314,7 +1467,7 @@ class TestPlayAnnouncementCleanup:
 
     def _make_player(
         self, mock_mass: MagicMock, announcements: dict[str, object]
-    ) -> tuple[PlayerController, MockPlayer]:
+    ) -> tuple[PlayerController, MockPlayer, MagicMock]:
         """Create a controller and a player with native announcement support."""
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
@@ -1323,26 +1476,31 @@ class TestPlayAnnouncementCleanup:
         player._cache.clear()
         controller._players = {"player_1": player}
         mock_mass.players = controller
-
-        # mimic the real streams controller: register announce data on url request
-        def _get_announcement_url(player_id: str, announce_data: object, **_kwargs: object) -> str:
-            announcements[player_id] = announce_data
-            return f"http://ma/announcement/{player_id}.mp3"
-
-        mock_mass.streams.announcements = announcements
-        mock_mass.streams.get_announcement_url = MagicMock(side_effect=_get_announcement_url)
         render = MagicMock()
         render.wait_ready = AsyncMock(return_value=True)
         render.wait_finished = AsyncMock(return_value=3.0)
-        mock_mass.streams.announcement_renderer.acquire = MagicMock(return_value=render)
-        mock_mass.streams.announcement_renderer.release = AsyncMock()
+
+        # mimic the real renderer: it owns which announcement each player is playing
+        def _register(player_id: str, announce_data: object) -> MagicMock:
+            announcements[player_id] = announce_data
+            return render
+
+        async def _unregister(player_id: str, _render: object) -> None:
+            announcements.pop(player_id, None)
+
+        renderer = mock_mass.streams.announcement_renderer
+        renderer.register = MagicMock(side_effect=_register)
+        renderer.unregister = AsyncMock(side_effect=_unregister)
+        mock_mass.streams.get_announcement_url = MagicMock(
+            side_effect=lambda player_id, **_kwargs: f"http://ma/announcement/{player_id}.mp3"
+        )
         player.update_state(signal_event=False)
-        return controller, player
+        return controller, player, render
 
     async def test_announcement_data_removed_after_playback(self, mock_mass: MagicMock) -> None:
         """The registered announcement data is released once playback finished."""
         announcements: dict[str, object] = {}
-        controller, player = self._make_player(mock_mass, announcements)
+        controller, player, _render = self._make_player(mock_mass, announcements)
 
         async def _play_announcement(*_args: object, **_kwargs: object) -> None:
             # entry must exist while the announcement is being played/served
@@ -1354,25 +1512,24 @@ class TestPlayAnnouncementCleanup:
 
         player.play_announcement.assert_awaited_once()
         assert announcements == {}
-        mock_mass.streams.announcement_renderer.release.assert_awaited_once()
+        mock_mass.streams.announcement_renderer.unregister.assert_awaited_once()
 
     async def test_announcement_data_removed_on_error(self, mock_mass: MagicMock) -> None:
         """The registered announcement data is released even when playback fails."""
         announcements: dict[str, object] = {}
-        controller, player = self._make_player(mock_mass, announcements)
+        controller, player, _render = self._make_player(mock_mass, announcements)
         player.play_announcement = AsyncMock(side_effect=RuntimeError("boom"))  # type: ignore[method-assign]
 
         with pytest.raises(PlayerCommandFailed):
             await controller.play_announcement("player_1", "http://test/announcement.mp3")
 
         assert announcements == {}
-        mock_mass.streams.announcement_renderer.release.assert_awaited_once()
+        mock_mass.streams.announcement_renderer.unregister.assert_awaited_once()
 
     async def test_native_announcement_starts_on_first_audio(self, mock_mass: MagicMock) -> None:
         """A native implementation is handed the url as soon as there is audio to serve."""
         announcements: dict[str, object] = {}
-        controller, player = self._make_player(mock_mass, announcements)
-        render = mock_mass.streams.announcement_renderer.acquire.return_value
+        controller, player, render = self._make_player(mock_mass, announcements)
         player.play_announcement = AsyncMock()  # type: ignore[method-assign]
 
         await controller.play_announcement("player_1", "http://test/announcement.mp3")

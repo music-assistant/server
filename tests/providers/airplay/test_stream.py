@@ -18,11 +18,13 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter, open_named_pipe_writer
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
+    CONF_AIRPLAY_CREDENTIALS,
     CONF_ENCRYPTION,
+    CONF_PASSWORD,
     AirPlayRemoteCommand,
     StreamingProtocol,
 )
-from music_assistant.providers.airplay.stream import AirPlayStream
+from music_assistant.providers.airplay.stream import AirPlayStream, ConnectError
 
 START_UNIX_MS = 1_750_000_000_000
 AP2_FEATURES = "0x4A7FDFD5,0x3C177FDE"
@@ -559,7 +561,7 @@ async def test_connect_queues_text_metadata_before_connection() -> None:
     metadata = MagicMock(corrected_elapsed_time=12.5)
     player.current_media = metadata
     process = MagicMock(closed=False)
-    process.start = AsyncMock()
+    process.start = AsyncMock(return_value=None)
     operation_order: list[str] = []
 
     async def create_pipe() -> None:
@@ -602,7 +604,7 @@ async def test_connect_failure_cleans_up_process_and_pipe() -> None:
     metadata = MagicMock(corrected_elapsed_time=0)
     player.current_media = metadata
     process = MagicMock(closed=False)
-    process.start = AsyncMock()
+    process.start = AsyncMock(return_value=None)
     process.kill = AsyncMock()
 
     def consume_task(awaitable: Any) -> MagicMock:
@@ -999,7 +1001,7 @@ async def test_connect_resets_accumulated_shift() -> None:
     stream._reanchor_status_seen = True
     player.current_media = MagicMock(corrected_elapsed_time=0)
     process = MagicMock(closed=False)
-    process.start = AsyncMock()
+    process.start = AsyncMock(return_value=None)
 
     def consume_task(awaitable: Any) -> MagicMock:
         awaitable.close()
@@ -1611,3 +1613,189 @@ async def test_failed_artwork_delivery_is_retried() -> None:
         f"ARTWORK={artwork_path}"
     ) == 2
     assert stream._metadata_checksum == metadata_checksum
+
+
+# --- Structured connect failures reported by the binary ---
+
+
+@pytest.mark.asyncio
+async def test_connect_error_status_line_is_parsed() -> None:
+    """The machine-readable failure line is captured with all of its fields."""
+    stream = AirPlayStream(_make_player())
+
+    stream._handle_status_line(
+        '[STATUS] error code=auth_required http=401 detail="RTSP setup rejected"'
+    )
+
+    assert stream._connect_error == ConnectError("auth_required", 401, "RTSP setup rejected")
+
+
+@pytest.mark.asyncio
+async def test_connect_error_status_line_tolerates_missing_fields() -> None:
+    """A failure line without http/detail still yields the reported code."""
+    stream = AirPlayStream(_make_player())
+
+    stream._handle_status_line("[STATUS] error code=connect_failed")
+
+    assert stream._connect_error == ConnectError("connect_failed", 0, "")
+
+
+@pytest.mark.asyncio
+async def test_auth_required_surfaces_password_required_error() -> None:
+    """A device asking for a password produces an actionable, translated error."""
+    stream = AirPlayStream(_make_player())
+    stream._handle_status_line('[STATUS] error code=auth_required http=401 detail="no password"')
+    stream._process_ended.set()
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),
+        pytest.raises(PlayerCommandFailed) as err,
+    ):
+        await stream.wait_for_connection()
+
+    assert err.value.translation_key == "password_required"
+
+
+@pytest.mark.asyncio
+async def test_auth_failed_surfaces_authentication_failed_error() -> None:
+    """A rejected password is reported as an authentication failure, not a timeout."""
+    stream = AirPlayStream(_make_player())
+    stream._handle_status_line('[STATUS] error code=auth_failed http=401 detail="bad password"')
+    stream._process_ended.set()
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),
+        pytest.raises(PlayerCommandFailed) as err,
+    ):
+        await stream.wait_for_connection()
+
+    assert err.value.translation_key == "authentication_failed"
+
+
+@pytest.mark.asyncio
+async def test_generic_connect_failure_keeps_the_timeout_semantics() -> None:
+    """A non-auth failure keeps raising the plain timeout its callers already handle."""
+    stream = AirPlayStream(_make_player())
+    stream._handle_status_line('[STATUS] error code=connect_failed http=0 detail="no route"')
+    stream._process_ended.set()
+
+    with patch.object(stream, "_cli_proc", MagicMock()), pytest.raises(TimeoutError):
+        await stream.wait_for_connection()
+
+
+@pytest.mark.asyncio
+async def test_dead_process_fails_the_connect_wait_immediately() -> None:
+    """
+    An older binary reports no reason at all, so the wait keeps its timeout error.
+
+    It must still end the moment the process is gone instead of running out the
+    full connect timeout.
+    """
+    stream = AirPlayStream(_make_player())
+    stream._process_ended.set()  # process died without emitting a [STATUS] error line
+
+    started = asyncio.get_running_loop().time()
+    with patch.object(stream, "_cli_proc", MagicMock()), pytest.raises(TimeoutError):
+        await stream.wait_for_connection()
+
+    assert asyncio.get_running_loop().time() - started < 1
+
+
+@pytest.mark.asyncio
+async def test_auth_failed_marks_the_stored_password_invalid() -> None:
+    """A rejected password is persisted so the player keeps offering its setup action."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    stream._handle_status_line('[STATUS] error code=auth_failed http=401 detail="bad password"')
+
+    player.set_password_invalid.assert_called_once_with(True)
+
+
+@pytest.mark.asyncio
+async def test_auth_required_also_marks_the_password_as_needed() -> None:
+    """
+    A device that demanded a password we could not supply flips into setup.
+
+    Devices can enforce a password without announcing it (stale TXT records), so
+    the runtime signal must set the marker too - it is the only reliable one.
+    """
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    stream._handle_status_line('[STATUS] error code=auth_required http=401 detail="no password"')
+
+    player.set_password_invalid.assert_called_once_with(True)
+
+
+@pytest.mark.asyncio
+async def test_plain_connect_failures_leave_the_password_marker_alone() -> None:
+    """A non-authentication failure says nothing about the stored password."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    stream._handle_status_line('[STATUS] error code=connect_failed http=0 detail="no route"')
+
+    player.set_password_invalid.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_successful_connect_clears_the_password_marker() -> None:
+    """Whatever the device accepted is a working password."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    stream._handle_status_line("[STATUS] connected")
+
+    assert stream.connected is True
+    player.set_password_invalid.assert_called_once_with(False)
+
+
+# --- Password preflight ---
+
+
+@pytest.mark.asyncio
+async def test_connect_refuses_password_device_without_password_or_credentials() -> None:
+    """A password-protected AirPlay 2 device with nothing to authenticate never spawns a process."""
+    player = _make_player()
+    player.password_required = True
+    player.get_setup_value = MagicMock(return_value=None)
+    stream = AirPlayStream(player)
+
+    with pytest.raises(PlayerCommandFailed) as err:
+        await stream.connect()
+
+    assert err.value.translation_key == "password_required"
+    assert stream._cli_proc is None
+
+
+@pytest.mark.asyncio
+async def test_password_preflight_passes_with_password_or_credentials() -> None:
+    """Either a configured password or stored credentials let the connect proceed."""
+    player = _make_player()
+    player.password_required = True
+    player.get_setup_value = MagicMock(return_value=None)
+    player.config.get_value = MagicMock(
+        side_effect=lambda key, default=None: "s3cret" if key == CONF_PASSWORD else default
+    )
+    AirPlayStream(player)._check_password_preflight()
+
+    # credentials alone are enough: the binary's pair-verify leg may still succeed
+    player.config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
+    player.get_setup_value = MagicMock(
+        side_effect=lambda key, default=None: (
+            "ab" * 96 if key == CONF_AIRPLAY_CREDENTIALS else default
+        )
+    )
+    AirPlayStream(player)._check_password_preflight()
+
+
+@pytest.mark.asyncio
+async def test_password_preflight_skipped_for_raop() -> None:
+    """The preflight only guards the native AirPlay 2 flow; RAOP carries its own password."""
+    player = _make_player()
+    player.protocol = StreamingProtocol.RAOP
+    player.password_required = True
+    player.get_setup_value = MagicMock(return_value=None)
+
+    AirPlayStream(player)._check_password_preflight()
