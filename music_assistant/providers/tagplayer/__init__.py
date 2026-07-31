@@ -165,10 +165,7 @@ class TagPlayerProvider(PluginProvider):
         tags: list[dict[str, Any]] = []
         for media_type in TAGGABLE_MEDIA_TYPES:
             controller = self.mass.music.get_controller(media_type)
-            items = await controller.get_library_items_by_prov_id(
-                provider_instance=self.instance_id
-            )
-            for item in items:
+            async for item in controller.iter_library_items_by_prov_id(self.instance_id):
                 for mapping in item.provider_mappings:
                     if mapping.provider_instance == self.instance_id:
                         tags.append(
