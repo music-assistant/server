@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType, QueueOption
-from music_assistant_models.errors import MediaNotFoundError
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import ProviderMapping
 
 from music_assistant.providers.tagplayer import TagPlayerProvider
@@ -203,17 +203,17 @@ class TestLinkTag:
         track_ctrl.add_provider_mapping.assert_called_once()
 
     async def test_link_empty_tag_id_raises(self, provider: TagPlayerProvider) -> None:
-        """Empty or whitespace-only tag_id should raise ValueError."""
-        with pytest.raises(ValueError, match="tag_id cannot be empty"):
+        """Empty or whitespace-only tag_id should raise InvalidDataError."""
+        with pytest.raises(InvalidDataError, match="tag_id cannot be empty"):
             await provider.link_tag("", "track/42")
-        with pytest.raises(ValueError, match="tag_id cannot be empty"):
+        with pytest.raises(InvalidDataError, match="tag_id cannot be empty"):
             await provider.link_tag("   ", "track/42")
 
     async def test_link_invalid_target_raises(self, provider: TagPlayerProvider) -> None:
-        """Invalid target format should raise ValueError."""
-        with pytest.raises(ValueError, match="Invalid target format"):
+        """Invalid target format should raise InvalidDataError."""
+        with pytest.raises(InvalidDataError, match="Invalid target format"):
             await provider.link_tag("nfc-001", "invalid")
-        with pytest.raises(ValueError, match="Invalid target format"):
+        with pytest.raises(InvalidDataError, match="Invalid target format"):
             await provider.link_tag("nfc-001", "track/not-a-number")
 
 
@@ -402,12 +402,12 @@ class TestFindTaggedItem:
 
     @pytest.mark.parametrize("tag_id", ["", "   "])
     async def test_empty_tag_id_raises(self, provider: TagPlayerProvider, tag_id: str) -> None:
-        """Empty or whitespace-only tag_id should raise ValueError for all tag commands."""
-        with pytest.raises(ValueError, match="tag_id cannot be empty"):
+        """Empty or whitespace-only tag_id should raise InvalidDataError for all tag commands."""
+        with pytest.raises(InvalidDataError, match="tag_id cannot be empty"):
             await provider.unlink_tag(tag_id)
-        with pytest.raises(ValueError, match="tag_id cannot be empty"):
+        with pytest.raises(InvalidDataError, match="tag_id cannot be empty"):
             await provider.get_tag(tag_id)
-        with pytest.raises(ValueError, match="tag_id cannot be empty"):
+        with pytest.raises(InvalidDataError, match="tag_id cannot be empty"):
             await provider.play_tag(tag_id, "player1")
 
 
@@ -433,16 +433,16 @@ class TestParseTarget:
         assert item_id == 10
 
     def test_invalid_format_raises(self) -> None:
-        """Should raise ValueError for invalid formats."""
-        with pytest.raises(ValueError, match="Invalid target format"):
+        """Should raise InvalidDataError for invalid formats."""
+        with pytest.raises(InvalidDataError, match="Invalid target format"):
             TagPlayerProvider._parse_target("invalid")
 
     def test_non_integer_id_raises(self) -> None:
-        """Should raise ValueError for non-integer IDs."""
-        with pytest.raises(ValueError, match="Invalid target format"):
+        """Should raise InvalidDataError for non-integer IDs."""
+        with pytest.raises(InvalidDataError, match="Invalid target format"):
             TagPlayerProvider._parse_target("track/abc")
 
     def test_invalid_media_type_raises(self) -> None:
-        """Should raise ValueError for unknown media types."""
-        with pytest.raises(ValueError, match="Invalid target format"):
+        """Should raise InvalidDataError for unknown media types."""
+        with pytest.raises(InvalidDataError, match="Invalid target format"):
             TagPlayerProvider._parse_target("widget/42")
