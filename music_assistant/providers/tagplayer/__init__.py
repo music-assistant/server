@@ -50,16 +50,6 @@ async def setup(
     return TagPlayerProvider(mass, manifest, config, set())
 
 
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    return ()
-
-
 class TagPlayerProvider(PluginProvider):
     """Tag Player plugin that links identifiers to existing library items."""
 
