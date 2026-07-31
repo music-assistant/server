@@ -524,9 +524,7 @@ class AirPlayStreamSession:
                         airplay_player.player_id,
                         (actual - adjust_ms) - start_unix_ms,
                     )
-                    start_at, fed_pos_due, prime, skip_bytes = map_to(
-                        (actual - adjust_ms) / 1000
-                    )
+                    start_at, fed_pos_due, prime, skip_bytes = map_to((actual - adjust_ms) / 1000)
                     self._client_skip_bytes[airplay_player.player_id] = skip_bytes
                 if prime:
                     await self._write_chunk_to_player(airplay_player, prime)
@@ -814,15 +812,11 @@ class AirPlayStreamSession:
                 continue
             sync_adjust = player.config.get_value(CONF_SYNC_ADJUST, 0)
             adjust_ms = sync_adjust if isinstance(sync_adjust, int) else 0
-            member_requirement = max(
-                member_requirement, stream.warm_lead_ms - min(0, adjust_ms)
-            )
+            member_requirement = max(member_requirement, stream.warm_lead_ms - min(0, adjust_ms))
         if member_requirement > 0:
             anchor = max(
                 anchor,
-                int(time.time() * 1000)
-                + member_requirement
-                + AIRPLAY_SPLICE_LEAD_MARGIN_MS,
+                int(time.time() * 1000) + member_requirement + AIRPLAY_SPLICE_LEAD_MARGIN_MS,
             )
         for player in self.sync_clients:
             stream = player.stream

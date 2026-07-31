@@ -684,9 +684,7 @@ class AirPlayPlayer(Player):
         # view while we stream. While MA streams, the stream is the sole
         # authority on this player's state.
         active_source = getattr(self, "_attr_active_source", None)
-        if active_source is not None and active_source in getattr(
-            self, "_external_source_ids", ()
-        ):
+        if active_source is not None and active_source in getattr(self, "_external_source_ids", ()):
             media = getattr(self, "_attr_current_media", None)
             if media is not None and media.source_id == active_source:
                 self._attr_current_media = None

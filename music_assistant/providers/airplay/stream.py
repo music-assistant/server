@@ -738,9 +738,7 @@ class AirPlayStream:
         # is honored; the suppressed repeats are counted and reported loudly
         # as the support signal.
         window = (
-            2.0
-            if command in (AirPlayRemoteCommand.NEXT, AirPlayRemoteCommand.PREVIOUS)
-            else 0.5
+            2.0 if command in (AirPlayRemoteCommand.NEXT, AirPlayRemoteCommand.PREVIOUS) else 0.5
         )
         now = time.monotonic()
         last = self._remote_command_last.get(command_value, 0.0)
@@ -959,8 +957,7 @@ class AirPlayStream:
                     # the group from these acks; repeated corrections are the
                     # support signal that leads/readiness need attention.
                     player.logger.warning(
-                        "AirPlay start corrected by %+d ms on %s "
-                        "(requested %d, scheduled %d)",
+                        "AirPlay start corrected by %+d ms on %s (requested %d, scheduled %d)",
                         actual - requested,
                         player.display_name,
                         requested,
