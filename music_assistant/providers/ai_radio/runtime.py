@@ -92,6 +92,7 @@ class AIRadioRuntimeMixin:
         config: ProviderConfig
         logger: logging.Logger
         _sessions: dict[str, SessionState]
+        _stations: dict[str, dict[str, Any]]
 
     def _set_session_progress(
         self,
@@ -343,6 +344,14 @@ class AIRadioRuntimeMixin:
         )
 
         while cursor < len(tracks):
+            # pick up station edits saved while this run is active, so prompts,
+            # character limits and section flow apply from the next batch onwards
+            if self._refresh_station_content(station, session.station_id):
+                self.logger.debug(
+                    "Station config refreshed for running session %s (station=%s)",
+                    session.session_id,
+                    session.station_id,
+                )
             batch_tracks = tracks[cursor : cursor + batch_size]
             is_first = cursor == 0
             is_last = (cursor + len(batch_tracks)) >= len(tracks)
@@ -1686,3 +1695,25 @@ class AIRadioRuntimeMixin:
                 "(for example Home Assistant with a TTS entity)."
             )
         return plugins[0]
+
+    def _refresh_station_content(self, station: dict[str, Any], station_id: str) -> bool:
+        """
+        Refresh the AI-content keys of a running session's station snapshot.
+
+        Returns True when the snapshot was updated with changed station settings.
+
+        :param station: The session's station snapshot to update in place.
+        :param station_id: The id of the station to read from the live store.
+        """
+        live_station = self._stations.get(station_id)
+        if live_station is None:
+            return False
+        changed = False
+        # only the AI-content keys are refreshed: run-time overrides (source playlist,
+        # player, playtime cap, batch size) are baked into the snapshot at start and
+        # must survive a refresh
+        for key in ("sections", "section_ids", "section_order", "merge_section_id", "general"):
+            if station.get(key) != live_station.get(key):
+                station[key] = deepcopy(live_station[key])
+                changed = True
+        return changed

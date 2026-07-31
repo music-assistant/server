@@ -48,6 +48,7 @@ class DummyRuntime(AIRadioRuntimeMixin):
         """Initialize minimal state for runtime tests."""
         self.logger = logging.getLogger("tests.ai_radio.runtime")
         self._sessions: dict[str, SessionState] = {}
+        self._stations: dict[str, dict[str, Any]] = {}
         self.config = cast("Any", StubConfig())
 
     async def _run_playlist_mode(
@@ -738,6 +739,7 @@ async def test_run_dynamic_mode_has_watchdog_for_stalled_playback(
         def __init__(self) -> None:
             self.logger = logging.getLogger("tests.ai_radio.runtime.p7")
             self._sessions: dict[str, SessionState] = {}
+            self._stations: dict[str, dict[str, Any]] = {}
 
         async def _fetch_source_tracks(
             self, station: dict[str, Any]
@@ -864,6 +866,7 @@ async def test_run_dynamic_mode_clamps_prefetch_to_batch_size(
         def __init__(self) -> None:
             self.logger = logging.getLogger("tests.ai_radio.runtime.clamp_probe")
             self._sessions: dict[str, SessionState] = {}
+            self._stations: dict[str, dict[str, Any]] = {}
 
         async def _fetch_source_tracks(
             self, station: dict[str, Any]
@@ -920,6 +923,7 @@ def _make_watchdog_runtime_classes() -> tuple[type, type]:
         def __init__(self) -> None:
             self.logger = logging.getLogger("tests.ai_radio.runtime.watchdog")
             self._sessions: dict[str, SessionState] = {}
+            self._stations: dict[str, dict[str, Any]] = {}
 
         async def _fetch_source_tracks(
             self, station: dict[str, Any]
@@ -1535,6 +1539,7 @@ async def test_run_session_reports_a_queue_stop_as_stopped() -> None:
         def __init__(self) -> None:
             self.logger = logging.getLogger("tests.ai_radio.runtime.queue_stopped")
             self._sessions: dict[str, SessionState] = {}
+            self._stations: dict[str, dict[str, Any]] = {}
 
         async def _run_dynamic_mode(
             self, session: SessionState, station: dict[str, Any]
@@ -1549,3 +1554,77 @@ async def test_run_session_reports_a_queue_stop_as_stopped() -> None:
 
     assert session.status == "stopped"
     assert session.ended_at is not None
+
+
+# -- live station content refresh for running sessions --
+
+
+def _make_station_snapshot() -> dict[str, Any]:
+    """Return a station dict as captured by start_run for a dynamic session."""
+    return {
+        "id": "station_a",
+        "name": "Station A",
+        "source_playlist_id": "orig_playlist",
+        "default_player_id": "orig_player",
+        "max_duration_minutes": 0.0,
+        "dynamic_batch_size": 3,
+        "merge_section_id": "merge_1",
+        "general": {"instructions": "old instructions"},
+        "section_ids": ["sec_1"],
+        "sections": [{"id": "sec_1", "constraints": {"max_chars": 650}}],
+        "section_order": [{"when": "between_songs", "flow": [{"MUST": "sec_1"}]}],
+    }
+
+
+def test_refresh_station_content_applies_edits_and_keeps_overrides() -> None:
+    """Content keys refresh from the live store while run-time overrides survive."""
+    runtime = DummyRuntime()
+    snapshot = _make_station_snapshot()
+    # simulate start_run overrides baked into the snapshot
+    snapshot["source_playlist_id"] = "override_playlist"
+    snapshot["dynamic_batch_size"] = 5
+    live = _make_station_snapshot()
+    live["sections"] = [{"id": "sec_1", "constraints": {"max_chars": 200}}]
+    live["general"] = {"instructions": "new instructions"}
+    runtime._stations = {"station_a": live}
+
+    assert runtime._refresh_station_content(snapshot, "station_a")
+
+    assert snapshot["sections"][0]["constraints"]["max_chars"] == 200
+    assert snapshot["general"]["instructions"] == "new instructions"
+    assert snapshot["source_playlist_id"] == "override_playlist"
+    assert snapshot["dynamic_batch_size"] == 5
+
+
+def test_refresh_station_content_unchanged_returns_false() -> None:
+    """An unchanged live store leaves the snapshot as-is and reports no change."""
+    runtime = DummyRuntime()
+    snapshot = _make_station_snapshot()
+    runtime._stations = {"station_a": _make_station_snapshot()}
+
+    assert not runtime._refresh_station_content(snapshot, "station_a")
+    assert snapshot == _make_station_snapshot()
+
+
+def test_refresh_station_content_deleted_station_keeps_snapshot() -> None:
+    """A station deleted mid-run leaves the running snapshot untouched."""
+    runtime = DummyRuntime()
+    snapshot = _make_station_snapshot()
+    runtime._stations = {}
+
+    assert not runtime._refresh_station_content(snapshot, "station_a")
+    assert snapshot == _make_station_snapshot()
+
+
+def test_refresh_station_content_copies_deeply() -> None:
+    """Refreshed values are deep copies, so the live store cannot be mutated."""
+    runtime = DummyRuntime()
+    snapshot = _make_station_snapshot()
+    live = _make_station_snapshot()
+    live["sections"] = [{"id": "sec_1", "constraints": {"max_chars": 200}}]
+    runtime._stations = {"station_a": live}
+
+    runtime._refresh_station_content(snapshot, "station_a")
+    snapshot["sections"][0]["constraints"]["max_chars"] = 999
+
+    assert live["sections"][0]["constraints"]["max_chars"] == 200
