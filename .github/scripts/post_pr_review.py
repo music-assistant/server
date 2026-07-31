@@ -1,12 +1,12 @@
 # ruff: noqa: INP001  # standalone CI helper, not part of a package
 """
-Post OHF Sage findings (the JSON array Copilot CLI printed to stdout) as a PR review.
+Post Automated PR Review findings (the JSON array the CLI printed to stdout) as a PR review.
 
-Clearly labeled as an automated AI review. Falls back: inline review -> summary-only review ->
-plain PR comment (so it also works on closed/merged PRs while testing).
+Falls back: inline review -> summary-only review -> plain PR comment (so it also works on
+closed/merged PRs while testing).
 
 Env: ``REPO=owner/name``, ``PR_NUMBER=<n>``, ``GH_TOKEN`` with pull-requests:write.
-Usage: ``python sage_post_review.py findings.json``
+Usage: ``python post_pr_review.py findings.json``
 """
 
 import json
@@ -15,14 +15,13 @@ import os
 import subprocess
 import sys
 
-logger = logging.getLogger("sage_post_review")
+logger = logging.getLogger("pr_review")
 
 SEV = {"CRITICAL": 0, "PROBLEM": 1, "SUGGESTION": 2}
 HEADER = (
-    "## 🤖 OHF Sage — automated principle review\n\n"
-    "_Automated review by **OHF Sage**, applying the project leads' engineering principles mined "
-    "from past PR reviews. AI-generated — a maintainer has the final say; treat findings as you "
-    "would any review comment. Each finding links the original PR discussion behind the rule._\n"
+    "## 🤖 Automated PR Review\n\n"
+    "Reviewed against the project's coding standards. Each note links where the standard "
+    "is documented.\n"
 )
 
 
@@ -95,9 +94,9 @@ def main():
         HEADER,
         "",
         (
-            f"**{len(findings)} finding(s)** against the cited principles."
+            f"**{len(findings)} finding(s)** against the project's coding standards."
             if findings
-            else "No principle violations found."
+            else "No standards violations found."
         ),
         "",
     ]
@@ -106,7 +105,7 @@ def main():
     for finding in findings:
         body = f"**[{finding.get('severity', 'SUGGESTION')}]** {finding.get('issue', '')}"
         if finding.get("citation_url"):
-            body += f"\n\n_Principle: {finding.get('principle', '')} — {finding['citation_url']}_"
+            body += f"\n\n_Standard: {finding.get('principle', '')} — {finding['citation_url']}_"
         if finding.get("path") and isinstance(finding.get("line"), int):
             comments.append(
                 {"path": finding["path"], "line": finding["line"], "side": "RIGHT", "body": body},
