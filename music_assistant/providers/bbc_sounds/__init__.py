@@ -588,6 +588,19 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             ]
         return []
 
+    @use_cache(expiration=_Constants.DEFAULT_EXPIRATION)
+    async def _get_playlist(self, pid: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
+        playlist_contents = await self.client.streaming.get_playlist_contents(pid=pid)
+        if playlist_contents and type(playlist_contents) is list:
+            return [
+                obj
+                for obj in [
+                    await self._render_browse_item(item) for item in playlist_contents if item
+                ]
+                if obj
+            ]
+        return []
+
     async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping | BrowseFolder]:
         """
         Browse this provider's items.
@@ -617,6 +630,8 @@ class BBCSoundsProvider(RecommendationPayloadMixin, MusicProvider):
             return await self._get_category(sub_sub_path)
         if sub_path == "collections" and sub_sub_path:
             return await self._get_collection(sub_sub_path)
+        if sub_path == "playlists" and sub_sub_path:
+            return await self._get_playlist(sub_sub_path)
         # The main menu fetch returns up to the schedule date folders, but no contents
         # so as not to show out of date information
         if sub_path == "stations" and sub_sub_path and sub_sub_sub_path:
