@@ -43,8 +43,6 @@ from music_assistant.providers.airplay.helpers import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.player import PlayerMedia
 
@@ -120,12 +118,6 @@ class AirPlayStream:
         # the self-verification signal for the start contract.
         self._started = asyncio.Event()
         self._start_ack: tuple[int, int] | None = None
-        # Invoked (if set) when a [STATUS] anchor_corrected line arrives, i.e. the
-        # binary verified a commit against a receiver clock exchange that only
-        # resumed after the START ack and found the audible instant later than
-        # what that ack reported. Lets the owning session re-join a grouped
-        # member whose commit landed before the receiver was truly ready.
-        self.on_anchor_corrected: Callable[[int, int, int], None] | None = None
         # Receiver storm guard state: last-honored monotonic time per remote
         # transport command, plus a counter of suppressed repeats.
         self._remote_command_last: dict[str, float] = {}
@@ -1331,37 +1323,43 @@ class AirPlayStream:
 
     def _parse_anchor_corrected(self, line: str) -> None:
         """
-        Parse a post-commit [STATUS] anchor_corrected line and notify any observer.
+        Parse a post-commit [STATUS] anchor_corrected line and re-base the position.
 
         The binary emits this at most once per START, when a receiver clock
-        exchange that only resumed after the START ack finally verifies the
-        commit and finds the audible instant later than what that ack reported.
+        exchange that only resumed after the START ack finds the committed
+        instant infeasible: it moves the anchor forward and advances the queued
+        content by the same amount (``content_cut_ms``), so the member still
+        lands on the group timeline — only the reported media position shifts.
 
         :param line: The status line, e.g. ``[STATUS] anchor_corrected
             requested_unix_ms=1750000000000 from_unix_ms=1750000000400
-            at_unix_ms=1750000000900``.
+            at_unix_ms=1750000000900 content_cut_ms=500``.
         """
         try:
             fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
             requested_unix_ms = int(fields.get("requested_unix_ms", 0))
             from_unix_ms = int(fields.get("from_unix_ms", 0))
             at_unix_ms = int(fields.get("at_unix_ms", 0))
+            content_cut_ms = int(fields.get("content_cut_ms", 0))
         except ValueError, IndexError:
             # Malformed line: drop it rather than react to bogus numbers.
             return
-        # Loud on purpose: the receiver's clock exchange only resumed after the
-        # START ack, so the earlier-reported instant was not actually verified;
-        # the session decides whether the resulting offset is worth a re-join.
+        if content_cut_ms > 0:
+            # The binary's elapsed counts only the retained content, so the
+            # position base moves by the cut to keep reported progress exact.
+            self._start_position += content_cut_ms / 1000
+        # Loud on purpose: the join raced the receiver's clock exchange and the
+        # commanded lead was too tight — recurring corrections mean the join
+        # headroom needs attention.
         self.player.logger.warning(
-            "AirPlay anchor for %s corrected %+d ms after commit (requested %d, from %d, at %d)",
+            "AirPlay anchor for %s corrected %+d ms after commit "
+            "(requested %d, at %d, content advanced %d ms to stay in sync)",
             self.player.display_name,
             at_unix_ms - from_unix_ms,
             requested_unix_ms,
-            from_unix_ms,
             at_unix_ms,
+            content_cut_ms,
         )
-        if self.on_anchor_corrected is not None:
-            self.on_anchor_corrected(requested_unix_ms, from_unix_ms, at_unix_ms)
 
     def _parse_clock_verified(self, line: str) -> None:
         """Debug-log a [STATUS] clock_verified line; no correction means no server action."""
