@@ -72,6 +72,11 @@ AIRPLAY_AP2_SETUP_LEAD_MS: Final[int] = 2500
 # line is never re-announced), heard as a constant echo on the joined member.
 # The anchor therefore sits beyond exchange-resume plus lock plus margin.
 AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 4000
+# Floor (ms) for a post-commit anchor correction to be worth an automatic
+# re-join: below this the audible offset a grouped member carries is small
+# enough that the re-join itself (a fresh connect, prime and START) costs more
+# than the drift it would fix.
+AIRPLAY_ANCHOR_RESYNC_MIN_MS: Final[int] = 150
 # Anchor lead for a readiness-confirmed START (cold and warm alike): the
 # session only anchors after the binary confirmed the connection ([STATUS]
 # connected) and the new audio flowing ([STATUS] audio), so the lead no longer
