@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import io
+from typing import TYPE_CHECKING
+from unittest.mock import MagicMock
 
+from aiohttp.client_exceptions import ClientError
 from PIL import Image, ImageDraw
 
+from music_assistant.helpers import images
 from music_assistant.helpers.colors import (
     _adjust_until_contrast,
     _contrast_ratio,
@@ -14,7 +18,14 @@ from music_assistant.helpers.colors import (
     _pick_on_color,
     _relative_luminance,
     extract_palette,
+    get_palette,
 )
+from music_assistant.helpers.images import invalidate_cached_image
+
+if TYPE_CHECKING:
+    import pytest
+
+    from music_assistant.mass import MusicAssistant
 
 _MIN_CONTRAST = 4.5
 
@@ -127,3 +138,38 @@ def test_extract_palette_end_to_end() -> None:
     assert palette.primary is not None
     if palette.background_dark is not None:
         assert _contrast_ratio(palette.background_dark, (255, 255, 255)) >= _MIN_CONTRAST
+
+
+async def test_get_palette_tolerates_unavailable_image(
+    mass_minimal: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unfetchable image yields an empty palette; extraction retries once it is back."""
+    mass_minimal.webserver = MagicMock(base_url="http://127.0.0.1:8095")
+    mass_minimal.streams = MagicMock(base_url="http://127.0.0.1:8097")
+    # mass_minimal constructs the cache controller without initializing it
+    cache_config = await mass_minimal.config.get_core_config(mass_minimal.cache.domain)
+    await mass_minimal.cache.setup(cache_config)
+    remote_url = "http://sonos.example.com:1400/getaa?u=gone.flac"
+
+    async def failing_remote_fetch(_mass: MusicAssistant, _url: str) -> bytes:
+        raise ClientError("404, message='Not Found'")
+
+    monkeypatch.setattr(images, "_fetch_remote_image", failing_remote_fetch)
+    try:
+        palette = await get_palette(mass_minimal, remote_url, "builtin")
+        assert palette is not None
+        assert palette.primary is None  # empty palette, but no exception raised
+
+        # nothing was cached for the failure, so once the artwork is reachable
+        # again the real palette is extracted
+        async def ok_remote_fetch(_mass: MusicAssistant, _url: str) -> bytes:
+            return _make_image_bytes([(200, 30, 30), (30, 30, 200)])
+
+        monkeypatch.setattr(images, "_fetch_remote_image", ok_remote_fetch)
+        await invalidate_cached_image(mass_minimal, "builtin", remote_url)
+        palette = await get_palette(mass_minimal, remote_url, "builtin")
+        assert palette is not None
+        assert palette.primary is not None
+    finally:
+        # drop the module-global image cache entries this test created
+        await invalidate_cached_image(mass_minimal, "builtin", remote_url)
