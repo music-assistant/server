@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
 
 LOGGER = logging.getLogger("ffmpeg")
-MINIMAL_FFMPEG_VERSION = 6
+MINIMAL_FFMPEG_VERSION = 7
 CACHE_ATTR_LIBSOXR_PRESENT: Final[str] = "libsoxr_present"
 CACHE_ATTR_FFMPEG_VERSION: Final[str] = "ffmpeg_version"
 DEFAULT_MP3_BIT_RATE: Final[int] = 320
