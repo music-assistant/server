@@ -35,7 +35,11 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.helpers.process import AsyncProcess
-from music_assistant.helpers.util import interface_name_for_ip, select_free_port
+from music_assistant.helpers.util import (
+    interface_name_for_ip,
+    is_port_in_use,
+    select_free_port,
+)
 from music_assistant.models.plugin import PluginProvider
 
 from .client import GoLibrespotClient
@@ -668,9 +672,20 @@ class SpotifyConnectProvider(PluginProvider):
     async def _daemon_runner(self) -> None:
         """Run and supervise the go-librespot daemon, restarting it if it exits."""
         assert self._binary
+        assert self._client
         # Loop forever; unload() cancels this task and the explicit stop-check below
         # handles a graceful exit without a restart.
         while True:
+            # If the API port was taken while the daemon was down, move to a
+            # fresh port instead of crash-looping on a bind error.
+            if await is_port_in_use(self._api_port, host="127.0.0.1"):
+                self._api_port = await select_free_port(
+                    API_PORT_RANGE_START, API_PORT_RANGE_END, host="127.0.0.1"
+                )
+                self._client.base_url = f"http://127.0.0.1:{self._api_port}"
+                self.logger.warning(
+                    "API port in use by another process; switching to port %s", self._api_port
+                )
             self._write_config()
             proc: AsyncProcess | None = None
             try:
