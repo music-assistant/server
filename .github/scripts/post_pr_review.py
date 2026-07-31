@@ -106,20 +106,34 @@ def main():
         anchored = bool(finding.get("path")) and isinstance(finding.get("line"), int)
         suggestion = finding.get("suggestion")
         if anchored and isinstance(suggestion, str) and suggestion.strip():
-            # A fenced ```suggestion block renders as a one-click change a maintainer can apply,
-            # replacing the anchored line; only the model's mechanical fixes carry one.
+            # A fenced ```suggestion block is a one-click change a maintainer can apply, replacing
+            # the anchored line; the model fills it for confident, self-contained in-diff fixes.
             block = suggestion.rstrip("\n")
             body += f"\n\n```suggestion\n{block}\n```"
+        scaffold = finding.get("scaffold")
+        scaffold_md = ""
+        if isinstance(scaffold, str) and scaffold.strip():
+            # A starter test can't be a one-click suggestion (its target file isn't in the diff),
+            # so offer it as a copy-paste block the author adapts and verifies.
+            fence = f"```python\n{scaffold.strip()}\n```"
+            summary = "Starter test — copy into tests/ and adapt"
+            scaffold_md = f"\n\n<details><summary>{summary}</summary>\n\n{fence}\n\n</details>"
         if anchored:
             comments.append(
-                {"path": finding["path"], "line": finding["line"], "side": "RIGHT", "body": body},
+                {
+                    "path": finding["path"],
+                    "line": finding["line"],
+                    "side": "RIGHT",
+                    "body": body + scaffold_md,
+                },
             )
         else:
-            overflow.append(summary_line(finding))
+            overflow.append(summary_line(finding) + scaffold_md)
 
-    review_body = "\n".join(
-        intro + (["### Notes (not anchored to diff lines)", *overflow] if overflow else []),
-    )
+    parts = list(intro)
+    if overflow:
+        parts += ["### Notes (not anchored to diff lines)", "", "\n\n".join(overflow)]
+    review_body = "\n".join(parts)
     summary_only = "\n".join(intro + [summary_line(f) for f in findings])
 
     payload = {"body": review_body, "event": "COMMENT"}

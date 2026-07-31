@@ -73,11 +73,17 @@ jobs:
           Walk the WHOLE diff. When a standard does not cover something you see, grep
           ./review-corpus.jsonl (case-insensitive keyword alternation) for a prior project decision
           and cite its link. Present every finding as a project standard — do NOT name individual
-          maintainers. For a concrete one-line fix, set "suggestion" to the exact replacement for
-          the line at "line" (keep its indentation, no diff +/- prefix); GitHub turns that into a
-          one-click change. Leave "suggestion" null for architectural or multi-line findings.
+          maintainers. When a finding's fix is small and self-contained — a correct edit to line(s)
+          already in the diff (a log call where a logger is in scope, wrapping a return,
+          `raise X from err`, a guard clause) — set "suggestion" to the exact replacement for the
+          line at "line" (keep indentation, no diff +/- prefix; may span multiple lines), and read
+          surrounding code so it is idiomatic. Leave "suggestion" null when unsure it is exactly
+          right, or when the fix needs a new file, a new import elsewhere, or edits in more than one
+          place. For a missing-tests finding you MAY set "scaffold" to a short pytest starter
+          (imports + 1-2 test functions with realistic names and assertions) — a copy-paste
+          starting point, NOT applied automatically — otherwise null.
           Output ONLY a JSON array of findings; each element:
-          {"severity":"CRITICAL|PROBLEM|SUGGESTION","path":"file/path","line":<int or null>,"issue":"1-2 sentences","principle":"the project standard","citation_url":"source link","suggestion":"<one-line replacement, or null>"}
+          {"severity":"CRITICAL|PROBLEM|SUGGESTION","path":"file/path","line":<int or null>,"issue":"1-2 sentences","principle":"the project standard","citation_url":"source link","suggestion":"<replacement, or null>","scaffold":"<pytest starter, or null>"}
           No prose outside the JSON array. Never invent a standard or citation.
           EOF
           # Minimal tools: read (diff + standards) and grep (history search) only — no write, no network.
