@@ -561,7 +561,7 @@ async def test_connect_queues_text_metadata_before_connection() -> None:
     metadata = MagicMock(corrected_elapsed_time=12.5)
     player.current_media = metadata
     process = MagicMock(closed=False)
-    process.start = AsyncMock()
+    process.start = AsyncMock(return_value=None)
     operation_order: list[str] = []
 
     async def create_pipe() -> None:
@@ -604,7 +604,7 @@ async def test_connect_failure_cleans_up_process_and_pipe() -> None:
     metadata = MagicMock(corrected_elapsed_time=0)
     player.current_media = metadata
     process = MagicMock(closed=False)
-    process.start = AsyncMock()
+    process.start = AsyncMock(return_value=None)
     process.kill = AsyncMock()
 
     def consume_task(awaitable: Any) -> MagicMock:
@@ -1001,7 +1001,7 @@ async def test_connect_resets_accumulated_shift() -> None:
     stream._reanchor_status_seen = True
     player.current_media = MagicMock(corrected_elapsed_time=0)
     process = MagicMock(closed=False)
-    process.start = AsyncMock()
+    process.start = AsyncMock(return_value=None)
 
     def consume_task(awaitable: Any) -> MagicMock:
         awaitable.close()

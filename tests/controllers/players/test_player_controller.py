@@ -1192,6 +1192,81 @@ class TestVolumeScalingOnRedirect:
         control.volume_set.assert_awaited_once_with(50)
 
 
+class TestEnforceVolumeLimits:
+    """External volume changes outside the min/max range must be corrected."""
+
+    @staticmethod
+    def _set_limits(mock_mass: MagicMock, min_volume: int, max_volume: int) -> None:
+        def _conf(_player_id: str, key: str, default: object = None) -> object:
+            if key == "min_volume":
+                return min_volume
+            if key == "max_volume":
+                return max_volume
+            return default if default is not None else "auto"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+
+    @staticmethod
+    def _player(logical_volume: int | None) -> SimpleNamespace:
+        return SimpleNamespace(
+            player_id="user_player",
+            state=SimpleNamespace(volume_level=logical_volume),
+        )
+
+    def test_out_of_range_volume_is_corrected(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """A device volume above max_volume (logical > 100) is clamped back to logical 100."""
+        self._set_limits(mock_mass, 0, 80)
+        # device volume 100 with max 80 resolves to logical 125
+        player = self._player(125)
+        with patch.object(controller, "_handle_cmd_volume_set", MagicMock()) as cmd:
+            controller._enforce_volume_limits(cast("MockPlayer", player))
+        cmd.assert_called_once_with("user_player", 100)
+        mock_mass.create_task.assert_called_once()
+
+    def test_below_min_volume_is_corrected(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """A device volume below min_volume (logical < 0) is clamped back to logical 0."""
+        self._set_limits(mock_mass, 20, 100)
+        # device volume 10 with min 20 resolves to a negative logical volume
+        player = self._player(-13)
+        with patch.object(controller, "_handle_cmd_volume_set", MagicMock()) as cmd:
+            controller._enforce_volume_limits(cast("MockPlayer", player))
+        cmd.assert_called_once_with("user_player", 0)
+
+    def test_in_range_volume_is_untouched(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """A logical volume within 0-100 needs no correction."""
+        self._set_limits(mock_mass, 0, 80)
+        player = self._player(100)
+        with patch.object(controller, "_handle_cmd_volume_set", MagicMock()) as cmd:
+            controller._enforce_volume_limits(cast("MockPlayer", player))
+        cmd.assert_not_called()
+
+    def test_no_limits_configured_is_noop(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """Default 0-100 limits skip enforcement entirely."""
+        self._set_limits(mock_mass, 0, 100)
+        player = self._player(100)
+        with patch.object(controller, "_handle_cmd_volume_set", MagicMock()) as cmd:
+            controller._enforce_volume_limits(cast("MockPlayer", player))
+        cmd.assert_not_called()
+
+    def test_unknown_volume_is_noop(
+        self, controller: PlayerController, mock_mass: MagicMock
+    ) -> None:
+        """A player without a resolved volume level is left alone."""
+        self._set_limits(mock_mass, 0, 80)
+        player = self._player(None)
+        with patch.object(controller, "_handle_cmd_volume_set", MagicMock()) as cmd:
+            controller._enforce_volume_limits(cast("MockPlayer", player))
+        cmd.assert_not_called()
+
+
 class TestFakeMuteControl:
     """Fake mute must report the muted state and restore the volume on unmute."""
 
