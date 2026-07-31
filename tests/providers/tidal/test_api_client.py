@@ -11,7 +11,7 @@ from music_assistant_models.errors import (
     RetriesExhausted,
 )
 
-from music_assistant.providers.tidal.api_client import TidalAPIClient
+from music_assistant.providers.tidal.api_client import MAX_PAGINATION_PAGES, TidalAPIClient
 from music_assistant.providers.tidal.constants import OPEN_API_URL
 
 
@@ -261,6 +261,13 @@ async def test_paginate_jsonapi_caps_pages(api_client: TidalAPIClient, provider_
 
     assert len(docs) == 2
     provider_mock.logger.warning.assert_called_once()
+
+
+def test_pagination_ceiling_covers_large_libraries() -> None:
+    """Test the default page cap is high enough to walk a full library without truncating."""
+    # The endpoints expose no page-size control, so this cap is the only guard
+    # against truncating real collections; it must stay generous.
+    assert MAX_PAGINATION_PAGES >= 1000
 
 
 async def test_delete_success(api_client: TidalAPIClient, provider_mock: Mock) -> None:

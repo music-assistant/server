@@ -25,6 +25,13 @@ if TYPE_CHECKING:
 
     from .provider import TidalProvider
 
+# Safety ceiling for cursor pagination. The JSON:API relationship endpoints only
+# expose page[cursor] (no page size control), so the server fixes a small page
+# size and this cap is the only guard against a runaway cursor. It must stay high
+# enough to walk an entire library/playlist without truncating; only a genuinely
+# broken cursor should ever reach it.
+MAX_PAGINATION_PAGES = 1000
+
 
 class TidalAPIClient:
     """Client for interacting with Tidal API."""
@@ -92,7 +99,7 @@ class TidalAPIClient:
         endpoint: str,
         include: Sequence[str] | None = None,
         params: dict[str, Any] | None = None,
-        max_pages: int = 50,
+        max_pages: int = MAX_PAGINATION_PAGES,
         **kwargs: Any,
     ) -> AsyncGenerator[JsonApiDocument]:
         """Yield successive JSON:API document pages, following the cursor links."""
