@@ -33,7 +33,7 @@ from music_assistant.controllers.tasks.context import (
 )
 from music_assistant.helpers.api import api_command
 from music_assistant.helpers.images import cleanup_thumb_cache
-from music_assistant.helpers.lyrics import normalize_lrc_lyrics
+from music_assistant.helpers.lyrics import extract_lrc_lyrics, normalize_lrc_lyrics
 from music_assistant.helpers.throttle_retry import Throttler
 from music_assistant.helpers.util import try_parse_int
 from music_assistant.models.core_controller import CoreController
@@ -317,7 +317,8 @@ class MetaDataController(
         """
         lyrics, lrc_lyrics = await self._get_track_lyrics(track)
         # on-demand lookups are not stored in the library db, so normalize on the way out
-        return lyrics, normalize_lrc_lyrics(lrc_lyrics)
+        # promoting LRC formatted text stored in the plain lyrics tag
+        return lyrics, normalize_lrc_lyrics(lrc_lyrics or extract_lrc_lyrics(lyrics))
 
     async def get_diagnostics(self) -> dict[str, SerializableType] | None:
         """Return diagnostics info for this controller to include in diagnostics reports."""

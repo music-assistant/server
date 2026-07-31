@@ -13,12 +13,14 @@ import pyatv
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant_models.enums import (
     ConfigEntryType,
+    ImageType,
     MediaType,
     PlaybackState,
     PlayerFeature,
     PlayerType,
 )
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.errors import MediaNotFoundError, PlayerCommandFailed
+from music_assistant_models.media_items import MediaItemImage
 from music_assistant_models.player import PlayerSource
 from pyatv import exceptions as pyatv_exceptions
 from pyatv.conf import AppleTV as AppleTVConfig
@@ -56,8 +58,8 @@ from .constants import (
     CONF_MRP_CREDENTIALS,
     CONF_MRP_PAIRING_PIN,
     CONF_NATIVE_MRP_CREDENTIALS,
-    CONF_PAIR_NOW,
     CONF_STORED_VOLUME,
+    EXTERNAL_ARTWORK_PATH_PREFIX,
     FALLBACK_VOLUME,
 )
 from .helpers import (
@@ -227,8 +229,8 @@ class AirPlayControlPlayer(AirPlayPlayer):
         The streaming pairing (if any) is the required "device code" that gates
         ``needs_setup``; the optional Companion (remote control) and MRP (playback
         monitoring) pairings are offered afterwards as sequential, skippable steps.
-        Re-launching from the player settings with streaming already paired goes
-        straight to those optional offers.
+        Re-launching from the player settings re-offers every pairing, so a stored
+        pairing can be redone (replaced) when it went stale.
 
         :param session: The setup flow session used to interact with the user.
         """
@@ -394,6 +396,35 @@ class AirPlayControlPlayer(AirPlayPlayer):
         if device is None:
             raise PlayerCommandFailed(f"App launching is unavailable for {self.display_name}")
         await self._run_control_command(device.apps.launch_app(bundle_id_or_url), "launch app")
+
+    async def async_get_external_artwork(self, artwork_id: str) -> bytes:
+        """
+        Return artwork bytes for the current externally playing item.
+
+        :param artwork_id: Identifier of the artwork requested by the image proxy.
+        :raises MediaNotFoundError: If the artwork is stale or unavailable.
+        """
+        device = self._mrp_device
+        if (
+            device is None
+            or self._stream_active
+            or not self._feature_available(device, FeatureName.Artwork)
+            or device.metadata.artwork_id != artwork_id
+        ):
+            raise MediaNotFoundError("External AirPlay artwork is unavailable")
+        try:
+            artwork = await device.metadata.artwork()
+        except _COMMAND_ERRORS as err:
+            raise MediaNotFoundError("Unable to retrieve external AirPlay artwork") from err
+        if (
+            artwork is None
+            or not artwork.bytes
+            or self._mrp_device is not device
+            or self._stream_active
+            or device.metadata.artwork_id != artwork_id
+        ):
+            raise MediaNotFoundError("External AirPlay artwork is no longer current")
+        return artwork.bytes
 
     def set_discovery_info(self, discovery_info: AsyncServiceInfo, display_name: str) -> None:
         """Update AirPlay discovery data and reconnect device control if needed."""
@@ -647,7 +678,26 @@ class AirPlayControlPlayer(AirPlayPlayer):
     @property
     def _stream_active(self) -> bool:
         """Return whether Music Assistant is actively streaming to this device."""
-        return bool((stream := getattr(self, "stream", None)) and stream.running)
+        active = bool((stream := getattr(self, "stream", None)) and stream.running)
+        if active:
+            self._stream_last_active = time.monotonic()
+        return active
+
+    @property
+    def _external_state_blocked(self) -> bool:
+        """
+        Return whether externally observed playback state must be ignored.
+
+        While Music Assistant streams to this device, the stream is the SOLE
+        authority on player state. The check extends a grace period past a
+        stream's end because a warm-to-cold fallback briefly tears the stream
+        down mid-playback: a Companion/MRP update slipping through that window
+        applies the device's view of our own dying session as an "external
+        source", freezing the UI on a stale snapshot.
+        """
+        if self._stream_active:
+            return True
+        return time.monotonic() - getattr(self, "_stream_last_active", 0.0) < 15.0
 
     @property
     def _mrp_endpoint(self) -> tuple[AsyncServiceInfo, Protocol] | None:
@@ -782,17 +832,17 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self, session: SetupSession, collected: dict[str, ConfigValueType]
     ) -> None:
         """
-        Offer optional Companion (remote control) pairing, when supported and unpaired.
+        Offer optional Companion (remote control) pairing, when supported.
 
         Shows a skippable choice; on "set up now" it drives the PIN pairing and adds
-        the resulting credentials to ``collected``.
+        the resulting credentials to ``collected`` (replacing any stored ones).
 
         :param session: The setup flow session used to interact with the user.
         :param collected: The values collected so far; updated in place.
         """
-        if self.get_setup_value(CONF_COMPANION_CREDENTIALS) or not self.companion_pairing_supported:
+        if not self.companion_pairing_supported:
             return
-        if not await self._offer_control_pairing(session, "companion_offer"):
+        if not await self._offer_optional_pairing(session, "companion_offer"):
             return
         errors: dict[str, str] | None = None
         while True:
@@ -827,19 +877,19 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self, session: SetupSession, collected: dict[str, ConfigValueType]
     ) -> None:
         """
-        Offer optional MRP (playback monitoring) pairing, when supported and unpaired.
+        Offer optional MRP (playback monitoring) pairing, when supported.
 
         :param session: The setup flow session used to interact with the user.
         :param collected: The values collected so far; updated in place.
         """
-        if self._mrp_credentials or not self.mrp_pairing_supported:
+        if not self.mrp_pairing_supported:
             return
         endpoint = self._mrp_endpoint
         if endpoint is None:
             return
         discovery_info, protocol = endpoint
         cred_key = self._mrp_credentials_key
-        if not await self._offer_control_pairing(session, "mrp_offer"):
+        if not await self._offer_optional_pairing(session, "mrp_offer"):
             return
         errors: dict[str, str] | None = None
         while True:
@@ -867,26 +917,6 @@ class AirPlayControlPlayer(AirPlayPlayer):
                 await pairing.close()
             collected[cred_key] = credentials
             return
-
-    async def _offer_control_pairing(self, session: SetupSession, step_id: str) -> bool:
-        """
-        Ask whether to set up this optional control pairing now.
-
-        :param session: The setup flow session used to interact with the user.
-        :param step_id: The (i18n) step id describing the offered pairing.
-        """
-        values = await session.form(
-            [
-                ConfigEntry(
-                    key=CONF_PAIR_NOW,
-                    type=ConfigEntryType.BOOLEAN,
-                    default_value=False,
-                    category="protocol_generic",
-                )
-            ],
-            step_id=step_id,
-        )
-        return bool(values[CONF_PAIR_NOW])
 
     async def _begin_pyatv_pairing(
         self, discovery_info: AsyncServiceInfo | None, protocol: Protocol
@@ -941,7 +971,9 @@ class AirPlayControlPlayer(AirPlayPlayer):
             pin_code = int(pin)
         except (TypeError, ValueError) as err:
             raise PlayerCommandFailed(
-                "Enter the numeric PIN shown on the device", translation_key="invalid_pin"
+                "Enter the numeric PIN shown on the device",
+                translation_key="invalid_pin",
+                translation_owner=self.translation_owner,
             ) from err
         try:
             pairing.pin(pin_code)
@@ -1039,7 +1071,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     def _handle_playing_update(self, playing: Playing) -> None:
         """Apply external playback state received over the MRP tunnel."""
-        if self._stream_active:
+        if self._external_state_blocked:
             return
         app = self._mrp_device.metadata.app if self._mrp_device else None
         playback_state = {
@@ -1071,6 +1103,14 @@ class AirPlayControlPlayer(AirPlayPlayer):
         self._ensure_source(source_id, source_name)
         self._attr_elapsed_time = float(playing.position or 0)
         self._attr_elapsed_time_last_updated = time.time()
+        image_url: str | None = None
+        if (
+            self._mrp_device
+            and self._feature_available(self._mrp_device, FeatureName.Artwork)
+            and isinstance(artwork_id := self._mrp_device.metadata.artwork_id, str)
+            and artwork_id
+        ):
+            image_url = self._get_external_artwork_url(artwork_id)
         media_type = (
             MediaType.TRACK if playing.media_type == PyatvMediaType.Music else MediaType.UNKNOWN
         )
@@ -1080,6 +1120,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
             title=playing.title or source_name,
             artist=playing.artist,
             album=playing.album,
+            image_url=image_url,
             duration=playing.total_time,
             source_id=source_id,
             elapsed_time=playing.position,
@@ -1089,24 +1130,46 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     def _ensure_source(self, source_id: str, source_name: str) -> None:
         """Add a passive source reported by MRP playback monitoring."""
-        if any(source.id == source_id for source in self._attr_source_list):
+        # Track external ids so the stream can reclaim the device state from a
+        # leaked external snapshot (see AirPlayPlayer.set_state_from_stream).
+        if not hasattr(self, "_external_source_ids"):
+            self._external_source_ids: set[str] = set()
+        self._external_source_ids.add(source_id)
+        can_play_pause = bool(
+            self._device_for_feature(FeatureName.Play)
+            or self._device_for_feature(FeatureName.Pause)
+        )
+        can_next_previous = bool(
+            self._device_for_feature(FeatureName.Next)
+            or self._device_for_feature(FeatureName.Previous)
+        )
+        for source in self._attr_source_list:
+            if source.id != source_id:
+                continue
+            source.name = source_name
+            source.can_play_pause = can_play_pause
+            source.can_next_previous = can_next_previous
             return
         self._attr_source_list.append(
             PlayerSource(
                 id=source_id,
                 name=source_name,
                 passive=True,
-                can_play_pause=bool(
-                    self._device_for_feature(FeatureName.Play)
-                    or self._device_for_feature(FeatureName.Pause)
-                ),
+                can_play_pause=can_play_pause,
                 can_seek=False,
-                can_next_previous=bool(
-                    self._device_for_feature(FeatureName.Next)
-                    or self._device_for_feature(FeatureName.Previous)
-                ),
+                can_next_previous=can_next_previous,
             )
         )
+
+    def _get_external_artwork_url(self, artwork_id: str) -> str:
+        """Return the image-proxy URL for external MRP artwork."""
+        image = MediaItemImage(
+            type=ImageType.THUMB,
+            path=f"{EXTERNAL_ARTWORK_PATH_PREFIX}/{self.player_id}/{artwork_id}",
+            provider=self.provider_id,
+            remotely_accessible=False,
+        )
+        return self.mass.metadata.get_image_url(image)
 
     def _handle_connection_closed(
         self,

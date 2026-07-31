@@ -68,6 +68,15 @@ class PlayerProvider(Provider):
         # For providers that support dynamic discovery of players via mdns,
         # there is no need to implement this method.
 
+    async def resolve_image(self, path: str) -> str | bytes:
+        """
+        Resolve an image from an image path.
+
+        :param path: Provider-specific image path.
+        :return: Raw image bytes or a URL/local path accessible from the server.
+        """
+        return path
+
     @property
     def players(self) -> list[Player]:
         """Return all players belonging to this provider."""

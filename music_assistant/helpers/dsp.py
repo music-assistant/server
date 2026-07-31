@@ -7,13 +7,16 @@ from typing import TYPE_CHECKING
 from music_assistant_models.dsp import (
     AudioChannel,
     BalanceFilter,
+    CrossfeedFilter,
     DSPFilter,
     GainFilter,
     HighLowPassFilter,
     HighLowPassMode,
     ParametricEQBandType,
     ParametricEQFilter,
+    StereoWidthFilter,
     ToneControlFilter,
+    TransposeFilter,
 )
 
 if TYPE_CHECKING:
@@ -174,6 +177,14 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
                 filter_params.append(f"pan=stereo|FL={attenuation}*FL|FR=FR")
             else:
                 filter_params.append(f"pan=stereo|FL=FL|FR={attenuation}*FR")
+    if isinstance(dsp_filter, TransposeFilter) and dsp_filter.semitones != 0:
+        # rubberband expects a frequency ratio rather than a number of semitones
+        pitch = 2 ** (dsp_filter.semitones / 12)
+        # preserving formants keeps voices natural instead of chipmunk-like; revisit
+        # these quality options if they prove too costly on low powered hardware
+        filter_params.append(
+            f"rubberband=pitch={pitch}:formant=preserved:pitchq=quality:window=long"
+        )
 
     if isinstance(dsp_filter, HighLowPassFilter):
         # A high/low-pass of a given slope is a cascade of second-order Butterworth
@@ -188,6 +199,25 @@ def filter_to_ffmpeg_params(dsp_filter: DSPFilter, input_format: AudioFormat) ->
             q = 1 / (2 * math.cos(math.pi * (2 * section + 1) / (2 * order)))
             alpha = sin_w0 / (2 * q)
             filter_params.append(_pass_biquad_params(high_pass=high_pass, w_0=w_0, alpha=alpha))
+
+    if isinstance(dsp_filter, StereoWidthFilter) and dsp_filter.width != 1.0:
+        # width scales the side (L-R) signal; a non-stereo source has no side
+        # component, so only apply it to stereo streams
+        if input_format.channels == 2:
+            # c=0 disables the internal hard clipping extrastereo applies by default,
+            # which would clamp a widened signal before any later filter or the output
+            # gain can bring it down. The float internal format exists for that headroom
+            filter_params.append(f"extrastereo=m={dsp_filter.width}:c=0")
+
+    if isinstance(dsp_filter, CrossfeedFilter):
+        # crossfeed blends the left and right channels for headphone listening
+        # and is only meaningful on stereo streams
+        if input_format.channels == 2:
+            # crossfeed is turned off by disabling the filter, never by a zero strength
+            # level_in defaults to 0.9, which would attenuate every crossfed stream
+            filter_params.append(
+                f"crossfeed=strength={dsp_filter.strength}:range={dsp_filter.soundstage}:level_in=1"
+            )
 
     return filter_params
 

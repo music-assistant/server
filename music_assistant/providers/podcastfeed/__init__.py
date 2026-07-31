@@ -35,6 +35,7 @@ from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
     get_podcastparser_dict,
+    get_stream_url_from_episode,
     parse_podcast,
     parse_podcast_episode,
 )
@@ -159,7 +160,9 @@ class PodcastMusicprovider(MusicProvider):
         """Get streamdetails for a track/radio."""
         for episode in self.parsed_podcast["episodes"]:
             if item_id == episode["guid"]:
-                stream_url = episode["enclosures"][0]["url"]
+                stream_url = get_stream_url_from_episode(episode=episode)
+                if stream_url is None:
+                    raise MediaNotFoundError(f"Episode {item_id} has no playable stream")
                 return StreamDetails(
                     provider=self.instance_id,
                     item_id=item_id,

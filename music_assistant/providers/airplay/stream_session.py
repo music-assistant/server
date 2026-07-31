@@ -8,16 +8,18 @@ from collections.abc import AsyncGenerator
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
-from music_assistant_models.enums import PlaybackState
-from music_assistant_models.errors import PlayerCommandFailed
+from music_assistant_models.enums import ContentType, PlaybackState
+from music_assistant_models.errors import MusicAssistantError, PlayerCommandFailed
 
 from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.helpers.ffmpeg import FFMpeg
 
 from .constants import (
+    AIRPLAY_COLD_GROUP_START_LEAD_MS,
     AIRPLAY_GROUP_START_LEAD_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
+    AIRPLAY_SPLICE_LEAD_MARGIN_MS,
     AIRPLAY_START_LEAD_MS,
     StreamingProtocol,
 )
@@ -78,7 +80,52 @@ class AirPlayStreamSession:
         # (the binary's ring cap of latency+2s plus the ~2s receiver buffer)
         # with enough slack left to prime the joiner.
         self._pcm_buffer = bytearray()
-        self._pcm_buffer_max = pcm_format.pcm_sample_size * 10  # 10 seconds
+        # Raw byte sizes of the PCM actually on the wire. At 24-bit the binary
+        # is fed s32le carriers (bit_depth stays 24 for the ALAC encode), so
+        # sizes MUST come from the content type: bit_depth-derived sizes are
+        # 6 bytes/frame while the wire frames are 8 — slicing or timing the
+        # feed on those boundaries cuts mid-sample (loud noise on a late
+        # joiner's prime) and inflates the position clock by 4/3.
+        bytes_per_sample = {
+            ContentType.PCM_S16LE: 2,
+            ContentType.PCM_S24LE: 3,
+            ContentType.PCM_S32LE: 4,
+            ContentType.PCM_F32LE: 4,
+        }.get(pcm_format.content_type, pcm_format.bit_depth // 8)
+        self._pcm_frame_size = bytes_per_sample * pcm_format.channels
+        self._pcm_byte_rate = self._pcm_frame_size * pcm_format.sample_rate
+        self._pcm_buffer_max = self._pcm_byte_rate * 10  # 10 seconds
+        # Bytes still to skip off the head of the live feed for a late joiner
+        # whose anchor lands ahead of the current write head, keyed by player id.
+        self._client_skip_bytes: dict[str, int] = {}
+        # Cumulative bytes fed to the members (absolute stream coordinate of
+        # the write head). Source chunking makes no frame-alignment promise,
+        # so any slice or skip of the live feed must be aligned against THIS
+        # counter — aligning lengths in isolation can still land mid-sample,
+        # which a joiner renders as pure static.
+        self._pcm_total_fed: int = 0
+
+    @property
+    def effective_start_time(self) -> float:
+        """
+        Return the session anchor adjusted for the reference member's clock shift.
+
+        ``start_time`` is the wall-clock anchor set at the last group (re)start.
+        A member's cliairplay can re-anchor its playout LATER after recovering
+        from a PCM starvation, shifting the group's real timeline; that shift is
+        tracked per member. The first sync client is taken as the reference and
+        its accumulated shift is added, so a late joiner maps its first sample to
+        where the group actually plays. Divergent per-member shifts make any
+        single reference imperfect; the current first client is the best
+        available choice and the reference transfers to the new first client when
+        the old one is removed.
+        """
+        if not self.sync_clients:
+            return self.start_time
+        reference_stream = self.sync_clients[0].stream
+        if reference_stream is None:
+            return self.start_time
+        return self.start_time + reference_stream.cumulative_shift_seconds
 
     async def start(self, audio_source: AsyncGenerator[bytes]) -> None:
         """
@@ -118,6 +165,12 @@ class AirPlayStreamSession:
         except Exception as err:
             # playback failed to start, cleanup
             await self.stop()
+            # A member can fail for a specific, user-actionable reason (a device
+            # that needs its password configured, for example). That error must
+            # reach the caller intact instead of being flattened into the generic
+            # message; the TaskGroup above nests it inside an exception group.
+            if (specific := _first_music_assistant_error(err)) is not None:
+                raise specific from err
             raise PlayerCommandFailed("Playback failed to start") from err
 
     def can_replace(self, sync_clients: list[AirPlayPlayer], pcm_format: AudioFormat) -> bool:
@@ -176,13 +229,19 @@ class AirPlayStreamSession:
             # The stream position counter and the late-join prime buffer both
             # describe the OLD timeline; restart them before the new source pumps.
             self.seconds_streamed = 0
+            self._pcm_total_fed = 0
             self._pcm_buffer.clear()
+            # The shared START below re-establishes start_time, so the per-client
+            # late-join skip counters and every member's accumulated starvation
+            # shift describe a timeline that no longer exists: reset them.
+            self._client_skip_bytes.clear()
+            self._reset_member_shifts()
             self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
             # Anchor only after every member confirms the new audio flowing;
             # the live connection and clock survive the flush, so a short
             # re-anchor lead replaces the full setup lead.
             await self._wait_members_audio_present()
-            await self._start_members(position_ms, self._anchor_start_unix_ms())
+            await self._start_members(position_ms, self._anchor_start_unix_ms(warm=True))
         except asyncio.CancelledError:
             raise
         except Exception as err:
@@ -232,7 +291,10 @@ class AirPlayStreamSession:
             player.set_state_from_stream(state=PlaybackState.PAUSED, stream=stream)
         # a parked session has no live timeline; the resume re-anchors it
         self.seconds_streamed = 0
+        self._pcm_total_fed = 0
         self._pcm_buffer.clear()
+        self._client_skip_bytes.clear()
+        self._reset_member_shifts()
         return True
 
     async def stop(self) -> None:
@@ -275,40 +337,35 @@ class AirPlayStreamSession:
             airplay_player.player_id,
             reason,
         )
+        self._client_skip_bytes.pop(airplay_player.player_id, None)
         ffmpeg = self._player_ffmpeg.pop(airplay_player.player_id, None)
         # note that we use kill instead of graceful close here,
         # because otherwise it can take a very long time for the process to exit.
         if ffmpeg and not ffmpeg.closed:
             await ffmpeg.kill()
         if airplay_player.stream and airplay_player.stream.session == self:
+            airplay_player.stream.reset_reanchor_shift()
             await airplay_player.stream.stop(force=True)
 
     async def add_client(self, airplay_player: AirPlayPlayer) -> None:  # noqa: PLR0915
         """
         Add a sync client to the session as a late joiner.
 
-        Uses the PCM ring buffer to prime the late joiner's pipeline so it
-        starts playing quickly. Timing-source readiness is resolved before the
-        session lock; buffer calculations and writes stay under the lock so
-        ``seconds_streamed`` and the buffer remain consistent.
+        The joiner cannot honour an anchor in the past — cliairplay makes the
+        first post-START stdin byte audible exactly at the commanded instant and
+        then freezes the anchor, with no catch-up. So the anchor is chosen a
+        fixed headroom into the future and the stream position due at that
+        instant is derived from the group's effective (shift-adjusted) timeline.
+        Depending on where that position falls relative to the ring buffer the
+        joiner is either primed from the ring tail (position at or behind the
+        write head) or has the leading bytes of the live feed skipped (position
+        ahead of the write head), so its first audible sample lands exactly where
+        the group is playing.
 
-        Devices generally cannot honour a start anchor that is in the
-        past — they just play whatever the pipe gives them, trailing the
-        group by the deficit. To stay in sync we therefore push the late
-        joiner's ``start_at`` into the future (at least ``wait_start`` ahead
-        of now) and trim the corresponding amount from the head of the
-        buffered PCM, so the first sample we send maps to the correct future
-        stream position.
-
-        1. Connect the new client without anchoring playback.
-        2. Snapshot the ring buffer and map its first byte to its stream
-           position; if the
-           resulting start anchor is in the past, shift it forward to
-           ``now + min_headroom`` and trim that many seconds from the buffer
-           head so timing stays aligned with the rest of the group.
-        3. Anchor the joiner with a single START at the computed group-aligned
-           time, then feed the (possibly trimmed) buffer into its stdin and add
-           the client so the live stream continues priming it.
+        Timing-source readiness is resolved before the session lock; all buffer
+        and anchor math stays under the lock so ``seconds_streamed``, the ring
+        buffer and the per-client skip counter stay consistent with the live
+        feed.
         """
         await self._resolve_late_joiner_ptp(airplay_player)
         async with self._lock:
@@ -343,74 +400,109 @@ class AirPlayStreamSession:
                 await self.stop_client(airplay_player, reason="session ended during late join")
                 return
             now = time.time()
-            pcm_sample_size = self.pcm_format.pcm_sample_size
-            frame_size = (self.pcm_format.bit_depth // 8) * self.pcm_format.channels
-            # Snapshot the buffer and calculate its duration
-            buffered_pcm = bytes(self._pcm_buffer)
-            buffer_seconds = len(buffered_pcm) / pcm_sample_size
-            # The first byte in the buffer corresponds to this stream position
-            first_byte_pos = self.seconds_streamed - buffer_seconds
-            first_sample_pos = first_byte_pos
-            start_at = self.start_time + first_byte_pos
+            pcm_sample_size = self._pcm_byte_rate
+            frame_size = self._pcm_frame_size
+            effective_start_time = self.effective_start_time
 
-            # The audio we hand to ffmpeg → cliairplay must be bit-aligned with
-            # ``start_at``: the first sample sent should be the one that should
-            # play at ``start_at``. cliairplay buffers ``wait_start`` seconds of
-            # audio before starting playback, so we keep ``start_at`` at least
-            # that far in the future (using the larger of the session's
-            # existing wait_start, the late joiner's own and the late-join
-            # floor, which is more conservative than the plain session lead).
+            def map_to(anchor_at: float) -> tuple[float, float, bytes, int]:
+                """
+                Map an anchor instant onto the live feed.
+
+                Snapshots the ring and derives which stream position the group
+                plays at ``anchor_at``, returning the (possibly ring-capped)
+                anchor, the due feed position, the prime slice and the live
+                skip. Called again with the binary's TRUE scheduled instant
+                when it corrected the anchor forward, so the fed content
+                always matches where the joiner actually starts.
+                """
+                # Snapshot the ring and map its span onto stream positions:
+                # it covers [seconds_streamed - buffer_seconds, seconds_streamed].
+                buffered_pcm = bytes(self._pcm_buffer)
+                buffer_seconds = len(buffered_pcm) / pcm_sample_size
+                ring_floor = self.seconds_streamed - buffer_seconds
+                due = anchor_at - effective_start_time
+                skip = 0
+                prime_slice = b""
+                if due <= self.seconds_streamed:
+                    # The due position is at or behind the write head: prime
+                    # the joiner from the ring so the live feed then continues
+                    # seamlessly.
+                    if due < ring_floor:
+                        # The due position predates the ring (an unusually
+                        # large lead). Cap the prime at the whole buffer and
+                        # grow the headroom so the anchor still maps to the
+                        # prime's first sample exactly.
+                        self.prov.logger.debug(
+                            "Late joiner %s: due position %.2fs predates the "
+                            "%.2fs ring; capping prime at the whole buffer",
+                            airplay_player.player_id,
+                            due,
+                            buffer_seconds,
+                        )
+                        due = ring_floor
+                        anchor_at = effective_start_time + due
+                    keep_bytes = int((self.seconds_streamed - due) * pcm_sample_size)
+                    # Frame-align the prime START in ABSOLUTE stream
+                    # coordinates. The prime must end exactly at the write head
+                    # (the live feed continues byte-contiguously from there),
+                    # so only the start may move: shift it forward to the next
+                    # frame boundary (dropping under one frame, ~23 us).
+                    start_abs = self._pcm_total_fed - keep_bytes
+                    realign = (frame_size - start_abs % frame_size) % frame_size
+                    keep_bytes -= realign
+                    if realign:
+                        self.prov.logger.debug(
+                            "Late joiner %s: prime start realigned +%d bytes "
+                            "(write head sits mid-frame)",
+                            airplay_player.player_id,
+                            realign,
+                        )
+                    if keep_bytes > 0:
+                        prime_slice = buffered_pcm[len(buffered_pcm) - keep_bytes :]
+                else:
+                    # The due position is ahead of the write head: skip that
+                    # many bytes off the head of the live feed so the joiner's
+                    # first delivered byte is the sample due at the anchor.
+                    skip = int((due - self.seconds_streamed) * pcm_sample_size)
+                    # The first delivered live byte must land on a frame
+                    # boundary in ABSOLUTE stream coordinates (round the skip
+                    # up, under one frame).
+                    first_abs = self._pcm_total_fed + skip
+                    skip += (frame_size - first_abs % frame_size) % frame_size
+                return anchor_at, due, prime_slice, skip
+
+            # cliairplay makes the first post-START stdin byte audible exactly at
+            # the anchor, so pick the anchor first — far enough ahead that the
+            # device can connect and prime — then derive the stream position due
+            # at that instant. min_headroom is the most conservative of the
+            # session lead, the joiner's own lead and the late-join floor; the
+            # binary corrects an infeasible anchor forward and the mapping is
+            # then redone from its verified instant.
             min_headroom = max(
                 self.wait_start,
                 airplay_player.wait_start / 1000,
                 AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000,
             )
-            target_start_at = now + min_headroom
-            trim_seconds = 0.0
-            if start_at < target_start_at:
-                # Shift start_at forward so the device has time to prep, and
-                # trim the buffer head by the same amount so the first sample
-                # we send is the one that should play at the new start_at.
-                trim_seconds = target_start_at - start_at
-                trim_bytes = int(trim_seconds * pcm_sample_size)
-                trim_bytes -= trim_bytes % frame_size
-                if trim_bytes >= len(buffered_pcm):
-                    # Nothing left of the buffer after the trim. Drop it and
-                    # let the audio_streamer feed the late joiner from the
-                    # next chunk. Set start_at to the current live position;
-                    # the clamp below may still move it later to preserve
-                    # the required headroom.
-                    buffered_pcm = b""
-                    first_sample_pos = self.seconds_streamed
-                    start_at = self.start_time + self.seconds_streamed
-                else:
-                    buffered_pcm = buffered_pcm[trim_bytes:]
-                    # Advance start_at by exactly the trimmed duration so the
-                    # NTP anchor matches the first sample we actually send.
-                    trimmed_seconds = trim_bytes / pcm_sample_size
-                    first_sample_pos += trimmed_seconds
-                    start_at += trimmed_seconds
-                # Make sure start_at still leaves enough lead time for slow
-                # connections / very-far-behind joiners.
-                start_at = max(start_at, target_start_at)
+            start_at, fed_pos_due, prime, skip_bytes = map_to(now + min_headroom)
+            self._client_skip_bytes[airplay_player.player_id] = skip_bytes
 
             start_unix_ms = int(start_at * 1000)
             sync_adjust = airplay_player.config.get_value(CONF_SYNC_ADJUST, 0)
-            if isinstance(sync_adjust, int):
-                start_unix_ms += sync_adjust
-            position_ms = int(((self.media.elapsed_time or 0) + first_sample_pos) * 1000)
+            adjust_ms = sync_adjust if isinstance(sync_adjust, int) else 0
+            position_ms = int(((self.media.elapsed_time or 0) + fed_pos_due) * 1000)
 
             self.prov.logger.debug(
-                "Late joiner %s: sending %.2fs of buffered audio, "
-                "stream_pos=%.2fs, first_byte_pos=%.2fs, "
-                "start_at is %.2fs from now (min_headroom=%.2fs, trimmed=%.2fs)",
+                "Late joiner %s: priming %.2fs, skipping %.2fs, stream_pos=%.2fs, "
+                "fed_pos_due=%.2fs, start_at is %.2fs from now "
+                "(min_headroom=%.2fs, effective_shift=%.2fs)",
                 airplay_player.player_id,
-                len(buffered_pcm) / pcm_sample_size,
+                len(prime) / pcm_sample_size,
+                skip_bytes / pcm_sample_size,
                 self.seconds_streamed,
-                first_byte_pos,
+                fed_pos_due,
                 start_at - now,
                 min_headroom,
-                trim_seconds,
+                effective_start_time - self.start_time,
             )
 
             try:
@@ -421,9 +513,21 @@ class AirPlayStreamSession:
                 # group's feed. Anchored, the binary drains the prime as it
                 # streams in. The START does not re-anchor the session
                 # timeline (the group keeps playing).
-                await stream.start(start_unix_ms, position_ms)
-                if buffered_pcm:
-                    await self._write_chunk_to_player(airplay_player, buffered_pcm)
+                actual = await stream.start(start_unix_ms + adjust_ms, position_ms)
+                if actual is not None and abs((actual - adjust_ms) - start_unix_ms) > 2:
+                    # The binary corrected the anchor forward (verified truth):
+                    # redo the mapping from the actual instant so the fed
+                    # content matches where the joiner really starts.
+                    self.prov.logger.warning(
+                        "Late joiner %s: anchor corrected %+d ms by the binary; "
+                        "remapping the prime",
+                        airplay_player.player_id,
+                        (actual - adjust_ms) - start_unix_ms,
+                    )
+                    start_at, fed_pos_due, prime, skip_bytes = map_to((actual - adjust_ms) / 1000)
+                    self._client_skip_bytes[airplay_player.player_id] = skip_bytes
+                if prime:
+                    await self._write_chunk_to_player(airplay_player, prime)
             except asyncio.CancelledError:
                 await self.stop_client(airplay_player, reason="late joiner start cancelled")
                 raise
@@ -584,7 +688,8 @@ class AirPlayStreamSession:
 
             # Update seconds_streamed and ring buffer under the lock so
             # add_client always reads consistent values.
-            self.seconds_streamed += len(chunk) / self.pcm_format.pcm_sample_size
+            self.seconds_streamed += len(chunk) / self._pcm_byte_rate
+            self._pcm_total_fed += len(chunk)
             self._pcm_buffer.extend(chunk)
             overflow = len(self._pcm_buffer) - self._pcm_buffer_max
             if overflow > 0:
@@ -631,6 +736,15 @@ class AirPlayStreamSession:
     async def _write_chunk_to_player(self, airplay_player: AirPlayPlayer, chunk: bytes) -> None:
         """Write audio chunk to a player's ffmpeg process."""
         player_id = airplay_player.player_id
+        # Drain any pending late-join skip first: a joiner anchored ahead of the
+        # write head must drop that many leading bytes of the live feed so its
+        # first delivered byte is the sample due at its anchor.
+        if skip := self._client_skip_bytes.get(player_id, 0):
+            if skip >= len(chunk):
+                self._client_skip_bytes[player_id] = skip - len(chunk)
+                return
+            chunk = chunk[skip:]
+            self._client_skip_bytes[player_id] = 0
         if ffmpeg := self._player_ffmpeg.get(player_id):
             if ffmpeg.closed:
                 return
@@ -652,6 +766,8 @@ class AirPlayStreamSession:
         :param use_shared_ptp: The session-wide shared-PTP decision applied to
             this member so the whole group shares one timing source.
         """
+        # joining a session supersedes any pending automatic group re-join
+        airplay_player.cancel_group_rejoin()
         # sync volume from parent player if needed
         airplay_player.sync_volume_level()
         if airplay_player.stream and airplay_player.stream.running:
@@ -662,12 +778,59 @@ class AirPlayStreamSession:
         await airplay_player.stream.connect(use_shared_ptp)
         await self._start_player_ffmpeg(airplay_player, self.media)
 
-    def _anchor_start_unix_ms(self) -> int:
-        """Return the shared audible-start instant for a readiness-confirmed start."""
-        lead_ms = (
-            AIRPLAY_START_LEAD_MS if len(self.sync_clients) == 1 else AIRPLAY_GROUP_START_LEAD_MS
-        )
-        return int(time.time() * 1000) + lead_ms
+    def _anchor_start_unix_ms(self, *, warm: bool = False) -> int:
+        """
+        Return the shared audible-start instant for a readiness-confirmed start.
+
+        :param warm: True for a warm re-start over live connections (seek/next/
+            resume-from-park). Members on the Apple splice timeline report a
+            minimum warm lead — their queued audio plays out before the new
+            content can begin — and the shared anchor must sit beyond the
+            largest member value so every member splices at the same instant.
+        """
+        if len(self.sync_clients) == 1:
+            lead_ms = AIRPLAY_START_LEAD_MS
+        elif warm:
+            lead_ms = AIRPLAY_GROUP_START_LEAD_MS
+        else:
+            # Cold group start: cover the members' receiver-side clock
+            # acquisition (see AIRPLAY_COLD_GROUP_START_LEAD_MS).
+            lead_ms = AIRPLAY_COLD_GROUP_START_LEAD_MS
+        anchor = int(time.time() * 1000) + lead_ms
+        if not warm:
+            return anchor
+        # Splice-timeline members honor the commanded instant only when that
+        # instant (plus their sync_adjust) lands beyond their queued audio.
+        # A NEGATIVE sync_adjust moves a member's commanded instant earlier,
+        # eating into the lead, so it must be added to that member's
+        # requirement — otherwise the first round can never succeed for that
+        # member and every group start pays a corrective round.
+        member_requirement = 0
+        for player in self.sync_clients:
+            stream = player.stream
+            if stream is None or stream.warm_lead_ms <= 0:
+                continue
+            sync_adjust = player.config.get_value(CONF_SYNC_ADJUST, 0)
+            adjust_ms = sync_adjust if isinstance(sync_adjust, int) else 0
+            member_requirement = max(member_requirement, stream.warm_lead_ms - min(0, adjust_ms))
+        if member_requirement > 0:
+            anchor = max(
+                anchor,
+                int(time.time() * 1000) + member_requirement + AIRPLAY_SPLICE_LEAD_MARGIN_MS,
+            )
+        for player in self.sync_clients:
+            stream = player.stream
+            if stream is None or stream.flushed_head_unix_ms <= 0:
+                continue
+            sync_adjust = player.config.get_value(CONF_SYNC_ADJUST, 0)
+            adjust_ms = sync_adjust if isinstance(sync_adjust, int) else 0
+            # The member's commanded instant is anchor + adjust; it must clear
+            # the member's frozen head with margin for the command round-trip.
+            anchor = max(
+                anchor,
+                stream.flushed_head_unix_ms - adjust_ms + AIRPLAY_SPLICE_LEAD_MARGIN_MS,
+            )
+        return anchor
 
     async def _wait_members_audio_present(self) -> None:
         """Wait until every member's binary reports the new audio flowing."""
@@ -687,23 +850,63 @@ class AirPlayStreamSession:
         """
         Anchor every member's playback at one shared audible instant.
 
+        The binaries verify the instant: each ack carries the TRUE scheduled
+        instant (an infeasible one is corrected forward, never silently
+        misplaced). When any member was corrected, every member is re-STARTed
+        at the largest reported instant so the group converges on one shared
+        instant; the recorded session anchor is always the verified truth.
+
         :param position_ms: Media position mapped to the first sample of the anchor.
         :param start_unix_ms: Shared audible-start instant in unix epoch ms.
         :param reanchor_session: Whether this start becomes the session timeline anchor.
         """
-        async with asyncio.TaskGroup() as task_group:
-            for player in self.sync_clients:
-                stream = player.stream
-                if stream is None:
-                    continue
-                member_start = start_unix_ms
-                sync_adjust = player.config.get_value(CONF_SYNC_ADJUST, 0)
-                if isinstance(sync_adjust, int):
-                    member_start += sync_adjust
-                task_group.create_task(stream.start(member_start, position_ms))
+        target_ms = start_unix_ms
+        for _ in range(4):
+            member_tasks: list[tuple[int, asyncio.Task[int | None]]] = []
+            async with asyncio.TaskGroup() as task_group:
+                for player in self.sync_clients:
+                    stream = player.stream
+                    if stream is None:
+                        continue
+                    sync_adjust = player.config.get_value(CONF_SYNC_ADJUST, 0)
+                    adjust_ms = sync_adjust if isinstance(sync_adjust, int) else 0
+                    member_tasks.append(
+                        (
+                            adjust_ms,
+                            task_group.create_task(
+                                stream.start(target_ms + adjust_ms, position_ms)
+                            ),
+                        )
+                    )
+            corrected_ms = target_ms
+            for adjust_ms, task in member_tasks:
+                actual = task.result()
+                if actual is None:
+                    continue  # older binary without a started ack
+                corrected_ms = max(corrected_ms, actual - adjust_ms)
+            if corrected_ms <= target_ms + 2:
+                break
+            self.prov.logger.warning(
+                "AirPlay group start corrected: a member could not honor %d, "
+                "re-anchoring all members at %d (+%d ms)",
+                target_ms,
+                corrected_ms,
+                corrected_ms - target_ms,
+            )
+            # The corrected instant already carries the binary's own
+            # command-latency slack; the extra margin covers fanning the
+            # retry out to every member so the next round lands.
+            target_ms = corrected_ms + AIRPLAY_SPLICE_LEAD_MARGIN_MS
+        else:
+            self.prov.logger.error(
+                "AirPlay group start did not converge after 4 rounds "
+                "(last instant %d) - members may be audibly out of sync; "
+                "please report this with a debug log",
+                target_ms,
+            )
         if reanchor_session:
-            self.start_unix_ms = start_unix_ms
-            self.start_time = start_unix_ms / 1000
+            self.start_unix_ms = target_ms
+            self.start_time = target_ms / 1000
 
     async def _flush_member(self, player: AirPlayPlayer) -> bool:
         """Flush one member's live stream in place and report the binary's ack."""
@@ -711,6 +914,12 @@ class AirPlayStreamSession:
         if stream is None:
             return False
         return await stream.flush()
+
+    def _reset_member_shifts(self) -> None:
+        """Zero every member's accumulated starvation shift for a fresh anchor."""
+        for player in self.sync_clients:
+            if player.stream is not None:
+                player.stream.reset_reanchor_shift()
 
     async def _start_player_ffmpeg(self, player: AirPlayPlayer, media: PlayerMedia) -> None:
         """
@@ -752,3 +961,18 @@ class AirPlayStreamSession:
         )
         await ffmpeg.start()
         self._player_ffmpeg[player.player_id] = ffmpeg
+
+
+def _first_music_assistant_error(err: BaseException) -> MusicAssistantError | None:
+    """
+    Return the first MusicAssistantError inside an error or (nested) exception group.
+
+    :param err: The error to inspect.
+    """
+    if isinstance(err, MusicAssistantError):
+        return err
+    if isinstance(err, BaseExceptionGroup):
+        for nested in err.exceptions:
+            if (found := _first_music_assistant_error(nested)) is not None:
+                return found
+    return None

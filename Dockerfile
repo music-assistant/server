@@ -4,8 +4,8 @@ ARG BASE_IMAGE_VERSION=latest
 FROM --platform=$BUILDPLATFORM ghcr.io/music-assistant/base:$BASE_IMAGE_VERSION AS cliairplay-download
 
 # Bump the version and checksum-manifest hash together.
-ARG CLIAIRPLAY_VERSION=v0.3.6
-ARG CLIAIRPLAY_CHECKSUMS_SHA256=f6656028eb30c3c63539804fb0f560c447a9071ecf6d991028d13997bfd8694a
+ARG CLIAIRPLAY_VERSION=v0.4.0
+ARG CLIAIRPLAY_CHECKSUMS_SHA256=61f805bcb13434d696ba19d7e93833eebfb27b287160d9084f20625d1c5a3873
 ARG TARGETARCH
 
 # Download the cliairplay release asset for this image architecture.

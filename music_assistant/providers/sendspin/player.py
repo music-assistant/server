@@ -1078,7 +1078,7 @@ class SendspinPlayer(SendspinBasePlayer):
             # the device's announcement pipeline plays at its own volume;
             # the announce volume config entries are hidden for this player
             self.logger.debug("Ignoring announcement volume level for player %s", self.display_name)
-        await hass.play_announcement_on_entity(entity_id, announcement.uri)
+        await hass.play_announcement_on_entity(entity_id, announcement)
         self.logger.debug("Playing announcement on %s completed", self.display_name)
 
     def restore_bridge_identity(
@@ -1334,8 +1334,15 @@ class SendspinPlayer(SendspinBasePlayer):
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         self.update_state()
-        await self.playback_session.cancel("stop command")
-        await self.api.group.stop()
+        # group.stop() snapshots the live position, which it can only do while the push
+        # stream is up - cancelling first leaves it re-emitting a stale anchor. Teardown
+        # goes in finally so a failing group stop can't strand the session, and nothing
+        # may await between the two: the STOPPED event cancels this session inline, and a
+        # suspension in between would let that cancel cut pipeline teardown short.
+        try:
+            await self.api.group.stop()
+        finally:
+            await self.playback_session.cancel("stop command")
 
     def _get_cast_bridge_manager(self) -> SendspinBridgeManager | None:
         """Return the Chromecast provider's Sendspin bridge manager, if loaded."""

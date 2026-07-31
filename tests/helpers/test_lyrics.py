@@ -1,6 +1,10 @@
 """Tests for the lyrics helpers."""
 
-from music_assistant.helpers.lyrics import convert_to_lrc_lyrics, normalize_lrc_lyrics
+from music_assistant.helpers.lyrics import (
+    convert_to_lrc_lyrics,
+    extract_lrc_lyrics,
+    normalize_lrc_lyrics,
+)
 
 LRC_WITH_ID_TAGS = """[ar:Chubby Checker oppure  Beatles, The]
 [al:Hits Of The 60's - Vol. 2 - Oldies]
@@ -164,3 +168,34 @@ def test_convert_multiple_lines_partially_invalid() -> None:
     assert convert_to_lrc_lyrics(lyrics) == (
         "[00:00.00]First line\n[00:01.00]Second line\n[00:02.00]Third line"
     )
+
+
+def test_extract_detects_lrc_content() -> None:
+    """Test that LRC formatted text in the plain lyrics tag is detected as-is."""
+    assert extract_lrc_lyrics(LRC_CLEAN) == LRC_CLEAN
+    assert extract_lrc_lyrics(LRC_WITH_ID_TAGS) == LRC_WITH_ID_TAGS
+    assert extract_lrc_lyrics("[2:30]Short timestamp style") == "[2:30]Short timestamp style"
+
+
+def test_extract_rejects_plain_lyrics() -> None:
+    """Test that regular unsynced lyrics text is not detected as LRC."""
+    assert extract_lrc_lyrics("Just some lyrics\nspread over\nmultiple lines") is None
+    assert extract_lrc_lyrics(None) is None
+    assert extract_lrc_lyrics("") is None
+    assert extract_lrc_lyrics("\n\n") is None
+    # ID tag lines alone do not count as synced lyrics content
+    assert extract_lrc_lyrics("[ar:Some Artist]\n[ti:Some Title]") is None
+
+
+def test_extract_rejects_timestamp_mention_in_text() -> None:
+    """Test that a timestamp-like mention within plain lyrics does not trigger detection."""
+    lyrics = (
+        "First plain line\nat [2:30] the beat drops\nanother plain line\nand yet another plain line"
+    )
+    assert extract_lrc_lyrics(lyrics) is None
+
+
+def test_extract_tolerates_some_untimed_lines() -> None:
+    """Test that LRC content with a minority of untimed lines is still detected."""
+    lyrics = "[00:12.00]First line\n[00:15.30]Second line\nuntimed line"
+    assert extract_lrc_lyrics(lyrics) == lyrics

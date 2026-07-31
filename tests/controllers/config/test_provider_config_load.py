@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig, ProviderError
 from music_assistant_models.enums import ConfigEntryType, ProviderStatus, ProviderType
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, SetupFailedError
 
 from music_assistant.constants import CONF_PROVIDERS
 from music_assistant.controllers.config.helpers import _provider_status
@@ -72,6 +72,26 @@ async def test_failed_reload_records_auth_error(mass_minimal: MusicAssistant) ->
     prov_conf = _prov_conf(instance)
     prov_conf.last_error = ProviderError.from_dict(stored)
     assert _provider_status(prov_conf, is_loaded=False) == ProviderStatus.AUTH_REQUIRED
+
+
+async def test_failed_post_load_step_unloads_the_provider(mass_minimal: MusicAssistant) -> None:
+    """A provider that fails to finish loading is unloaded, so it can never read as loaded."""
+    instance = "spotify--test"
+    provider = MagicMock()
+    provider.instance_id = instance
+    provider.domain = "spotify"
+    with (
+        patch.object(
+            mass_minimal,
+            "_update_available_providers_cache",
+            AsyncMock(side_effect=TimeoutError),
+        ),
+        patch.object(mass_minimal, "unload_provider", AsyncMock()) as mock_unload,
+        pytest.raises(SetupFailedError, match="timed out while trying to finish loading"),
+    ):
+        await mass_minimal._register_loaded_provider(provider, _prov_conf(instance))
+
+    mock_unload.assert_awaited_once_with(instance)
 
 
 async def test_save_preserves_unknown_stored_values(mass_minimal: MusicAssistant) -> None:

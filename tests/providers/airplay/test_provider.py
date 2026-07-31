@@ -11,6 +11,7 @@ from music_assistant_models.enums import PlaybackState
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.providers.airplay.constants import (
+    AIRPLAY_COLD_GROUP_START_LEAD_MS,
     AirPlayRemoteCommand,
     StreamingProtocol,
 )
@@ -176,7 +177,7 @@ async def test_ptp_daemon_spawn_advertises_dacp_identity() -> None:
         ),
         patch("music_assistant.providers.airplay.provider.AsyncProcess") as process_cls,
     ):
-        process_cls.return_value.start = AsyncMock()
+        process_cls.return_value.start = AsyncMock(return_value=None)
         await prov._start_ptp_daemon()
 
     assert process_cls.call_args.args[0] == [
@@ -209,19 +210,21 @@ async def test_ptp_daemon_spawn_quiet_at_debug_level() -> None:
         ),
         patch("music_assistant.providers.airplay.provider.AsyncProcess") as process_cls,
     ):
-        process_cls.return_value.start = AsyncMock()
+        process_cls.return_value.start = AsyncMock(return_value=None)
         await prov._start_ptp_daemon()
 
     assert "--debug" not in process_cls.call_args.args[0]
 
 
 async def test_ptp_daemon_spawn_traces_at_verbose_level() -> None:
-    """A verbose session turns on the daemon's per-packet timing trace."""
+    """The daemon's per-packet trace needs verbose logging AND the opt-in toggle."""
     prov = _ptp_provider()
     prov.dacp_id = "AABBCCDD11223344"
     prov.mass = MagicMock()
     prov.mass.streams.bind_ip = "0.0.0.0"
     prov.logger.setLevel(VERBOSE_LOG_LEVEL)
+    prov.config = MagicMock()
+    prov.config.get_value = MagicMock(return_value=True)
 
     def _consume_task(coro: object) -> MagicMock:
         if asyncio.iscoroutine(coro):
@@ -237,10 +240,24 @@ async def test_ptp_daemon_spawn_traces_at_verbose_level() -> None:
         ),
         patch("music_assistant.providers.airplay.provider.AsyncProcess") as process_cls,
     ):
-        process_cls.return_value.start = AsyncMock()
+        process_cls.return_value.start = AsyncMock(return_value=None)
         await prov._start_ptp_daemon()
 
     assert process_cls.call_args.args[0][-2:] == ["--debug", "10"]
+
+    # Without the opt-in the daemon stays quiet even on a verbose session
+    # (its ~10 lines/s timing trace would otherwise flood every verbose log).
+    prov.config.get_value = MagicMock(return_value=False)
+    with (
+        patch(
+            "music_assistant.providers.airplay.provider.get_cli_binary",
+            AsyncMock(return_value="/bin/cliairplay"),
+        ),
+        patch("music_assistant.providers.airplay.provider.AsyncProcess") as process_cls,
+    ):
+        process_cls.return_value.start = AsyncMock(return_value=None)
+        await prov._start_ptp_daemon()
+    assert "--debug" not in process_cls.call_args.args[0]
 
 
 def test_pyatv_logging_quiet_at_debug_level() -> None:
@@ -471,6 +488,7 @@ async def test_raop_session_resolves_ptp_for_first_ap2_late_joiner() -> None:
     raop_player.player_id = "raop"
     raop_player.stream = MagicMock()
     raop_player.stream.running = True
+    raop_player.stream.cumulative_shift_seconds = 0.0
     ap2_player = _ap2_player()
     ap2_player.player_id = "airplay2"
     ap2_player.stream = None
@@ -493,7 +511,11 @@ async def test_raop_session_resolves_ptp_for_first_ap2_late_joiner() -> None:
         player.stream = MagicMock(running=True, connected=True)
         player.stream.wait_for_connection = AsyncMock()
         player.stream.flush = AsyncMock(return_value=True)
-        player.stream.start = AsyncMock()
+        # Verified-start API defaults: no started ack, no warm-lead constraint
+        # (an older binary), so the test asserts the commanded values directly.
+        player.stream.start = AsyncMock(return_value=None)
+        player.stream.warm_lead_ms = 0
+        player.stream.flushed_head_unix_ms = 0
 
     with patch.object(
         session, "_start_client", new_callable=AsyncMock, side_effect=_start_client
@@ -517,7 +539,7 @@ async def test_session_start_applies_uniform_ptp_decision_to_all_members() -> No
         player.stream = MagicMock()
         player.stream.wait_for_connection = AsyncMock()
         player.stream.wait_audio_present = AsyncMock(return_value=True)
-        player.stream.start = AsyncMock()
+        player.stream.start = AsyncMock(return_value=None)
     session = _make_ptp_session(prov, players)
 
     with (
@@ -541,7 +563,7 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
         player.stream = MagicMock()
         player.stream.wait_for_connection = AsyncMock()
         player.stream.wait_audio_present = AsyncMock(return_value=True)
-        player.stream.start = AsyncMock()
+        player.stream.start = AsyncMock(return_value=None)
         player.config.get_value = MagicMock(return_value=0)
     session = _make_ptp_session(prov, players)
     now = 100.0
@@ -562,12 +584,14 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
     ):
         await session.start(MagicMock())
 
-    # anchor = now (103_000 ms) + the group start lead (500 ms); readiness is
-    # event-confirmed, so no setup-time guess is added on top.
-    assert session.start_unix_ms == 103_500
+    # anchor = now (103_000 ms) + the COLD group start lead: a cold group
+    # start covers the members' receiver-side clock acquisition, unlike the
+    # short event-confirmed warm leads.
+    expected = 103_000 + AIRPLAY_COLD_GROUP_START_LEAD_MS
+    assert session.start_unix_ms == expected
     for player in players:
         player.stream.start.assert_awaited_once()
-        assert player.stream.start.await_args.args[0] == 103_500
+        assert player.stream.start.await_args.args[0] == expected
 
 
 # --- Session decision reaches the CLI args (overrides bare liveness) ------------

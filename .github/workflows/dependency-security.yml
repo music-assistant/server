@@ -277,7 +277,7 @@ jobs:
       # Step 6: Hand off report fragments and results to the reporting workflow
       - name: Upload security reports
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v7.0.1
         with:
           name: security-reports
           path: |
