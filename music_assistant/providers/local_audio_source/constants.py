@@ -25,8 +25,10 @@ ICON_PRESETS: tuple[str, ...] = (
     "stereo",
 )
 
-CHANNELS = 2  # 1=Mono, 2=Stereo
-SAMPLE_RATE_HZ = 44100
+DEFAULT_CHANNELS = 2
+DEFAULT_SAMPLE_RATE = 44100
+DEFAULT_BIT_DEPTH = 16
+HIGH_BIT_DEPTH_THRESHOLD = 24  # sources at/above this depth are captured as 32-bit PCM
 
 PAUSE_DEBOUNCE_S = 0.5
 RESUME_DEBOUNCE_S = 0.5

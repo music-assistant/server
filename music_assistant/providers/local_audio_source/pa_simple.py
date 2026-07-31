@@ -40,10 +40,17 @@ class PASimpleRecordStream:
     All calls must be invoked via run_in_executor from async code.
     """
 
-    def __init__(self, source_name: str, app_name: str, rate: int, channels: int) -> None:
+    def __init__(
+        self,
+        source_name: str,
+        app_name: str,
+        rate: int,
+        channels: int,
+        sample_format: int = PA_SAMPLE_S16LE,
+    ) -> None:
         """Open a synchronous PCM capture stream from the named PA/PipeWire source."""
         lib = get_simple_lib()
-        spec = _PASampleSpec(format=PA_SAMPLE_S16LE, rate=rate, channels=channels)
+        spec = _PASampleSpec(format=sample_format, rate=rate, channels=channels)
         fragsize = max(1, int(rate * channels * 2 * 0.02))
         buffer_attr = _PABufferAttr(
             maxlength=fragsize * 4,

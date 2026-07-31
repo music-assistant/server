@@ -25,7 +25,10 @@ async def get_available_input_devices(include_monitors: bool = False) -> list[Co
     for src in sources:
         if src["is_monitor"] and not include_monitors:
             continue
-        label = f"{src['description']} — {src['channels']}ch @ {src['sample_rate']}Hz"
+        label = (
+            f"{src['description']} — "
+            f"{src['bit_depth']}bit/{src['sample_rate']}Hz/{src['channels']}ch"
+        )
         options.append(ConfigValueOption(src["name"], title=label))
 
     if not options:

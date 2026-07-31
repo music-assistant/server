@@ -33,11 +33,11 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
+from music_assistant.helpers.pulseaudio import PA_SAMPLE_S16LE, PA_SAMPLE_S32LE
 from music_assistant.models.plugin import PluginProvider
 
 from .constants import (
     AUDIO_SOURCE_ID,
-    CHANNELS,
     CONF_AUTO_TRIGGER,
     CONF_FRIENDLY_NAME,
     CONF_ICON_PRESET,
@@ -45,12 +45,15 @@ from .constants import (
     CONF_TARGET_PLAYER_ID,
     CONF_THUMBNAIL_IMAGE,
     CONF_TRIGGER_THRESHOLD_DBFS,
+    DEFAULT_BIT_DEPTH,
+    DEFAULT_CHANNELS,
+    DEFAULT_SAMPLE_RATE,
     DEFAULT_TRIGGER_THRESHOLD_DBFS,
+    HIGH_BIT_DEPTH_THRESHOLD,
     ICON_PRESET_CUSTOM,
     ICON_PRESETS,
     PAUSE_DEBOUNCE_S,
     PLAYER_ID_AUTO,
-    SAMPLE_RATE_HZ,
     SENSOR_CHUNK_MS,
     SENSOR_RETRY_S,
     SUPPORTED_FEATURES,
@@ -58,7 +61,7 @@ from .constants import (
     TRIGGER_PENDING_TIMEOUT_S,
     TRIGGER_RELEASE_S,
 )
-from .pa_simple import PASimpleRecordStream
+from .pa_simple import PASimpleRecordStream, enumerate_pa_sources
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
@@ -110,8 +113,8 @@ class LocalAudioSourceProvider(PluginProvider):
             self.config.get_value(CONF_TRIGGER_THRESHOLD_DBFS) or DEFAULT_TRIGGER_THRESHOLD_DBFS,
         )
 
-        self._sample_rate: int = SAMPLE_RATE_HZ
-        self._channels: int = CHANNELS
+        self._sample_rate: int = DEFAULT_SAMPLE_RATE
+        self._channels: int = DEFAULT_CHANNELS
 
         self._capture_stream: PASimpleRecordStream | None = None
         self._capture_lock = asyncio.Lock()
@@ -126,37 +129,21 @@ class LocalAudioSourceProvider(PluginProvider):
             max_workers=4, thread_name_prefix=f"las-{self.instance_id}"
         )
 
-        self._audio_format = AudioFormat(
-            content_type=ContentType.PCM_S16LE,
-            codec_type=ContentType.PCM_S16LE,
-            sample_rate=self._sample_rate,
-            bit_depth=16,
-            channels=self._channels,
-        )
+        # per-stream capture format, set at the top of get_audio_stream()
+        self._active_sample_rate: int = DEFAULT_SAMPLE_RATE
+        self._active_channels: int = DEFAULT_CHANNELS
+        self._active_bit_depth: int = DEFAULT_BIT_DEPTH
+        self._active_bytes_per_sample: int = 2
+        self._active_pa_sample_format: int = PA_SAMPLE_S16LE
 
-        image = self._build_image()
-
-        self._audio_source = AudioSource(
-            item_id=AUDIO_SOURCE_ID,
-            provider=self.instance_id,
-            name=self._friendly_name,
-            metadata=(
-                MediaItemMetadata(images=UniqueList([image])) if image else MediaItemMetadata()
-            ),
-            provider_mappings={
-                ProviderMapping(
-                    item_id=AUDIO_SOURCE_ID,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    audio_format=self._audio_format,
-                )
-            },
-            can_play_pause=True,
-            can_seek=False,
-            can_next_previous=False,
-            exclusive=True,
-            allow_external_trigger=self._auto_trigger,
-            can_initiate=True,
+        self._audio_source = self._build_audio_source(
+            AudioFormat(
+                content_type=ContentType.PCM_S16LE,
+                codec_type=ContentType.PCM_S16LE,
+                sample_rate=DEFAULT_SAMPLE_RATE,
+                bit_depth=DEFAULT_BIT_DEPTH,
+                channels=DEFAULT_CHANNELS,
+            )
         )
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -209,7 +196,8 @@ class LocalAudioSourceProvider(PluginProvider):
         return self._friendly_name
 
     async def handle_async_init(self) -> None:
-        """Start the signal-detection sensor task, if auto-start is configured."""
+        """Resolve the source format once and start the signal-detection sensor task, if auto-start configured."""
+        self._audio_source = self._build_audio_source(await self._resolve_audio_format())
         if not self._auto_trigger:
             return
         self._sensor_task = self.mass.create_task(
@@ -238,7 +226,7 @@ class LocalAudioSourceProvider(PluginProvider):
         return StreamDetails(
             provider=self.instance_id,
             item_id=source_id,
-            audio_format=self._audio_format,
+            audio_format=await self._resolve_audio_format(),
             media_type=MediaType.AUDIO_SOURCE,
             stream_type=StreamType.CUSTOM,
             stream_metadata=StreamMetadata(
@@ -257,7 +245,18 @@ class LocalAudioSourceProvider(PluginProvider):
         consumer_queue = self._in_use_by_queue
         captured_session_id = self._active_session_id
 
-        bytes_per_sec = self._sample_rate * self._channels * 2  # 16-bit PCM
+        fmt = streamdetails.audio_format
+        self._active_sample_rate = fmt.sample_rate
+        self._active_channels = fmt.channels
+        self._active_bit_depth = fmt.bit_depth
+        self._active_bytes_per_sample = 4 if fmt.bit_depth >= HIGH_BIT_DEPTH_THRESHOLD else 2
+        self._active_pa_sample_format = (
+            PA_SAMPLE_S32LE if fmt.bit_depth >= HIGH_BIT_DEPTH_THRESHOLD else PA_SAMPLE_S16LE
+        )
+
+        bytes_per_sec = (
+            self._active_sample_rate * self._active_channels * self._active_bytes_per_sample
+        )
         period_s = _CHUNK_MS / 1000
         chunk_size = max(256, int(bytes_per_sec * period_s))
 
@@ -607,16 +606,18 @@ class LocalAudioSourceProvider(PluginProvider):
     async def _start_capture_stream(self) -> PASimpleRecordStream | None:
         """Open a new PulseAudio/PipeWire capture stream via libpulse-simple."""
         self.logger.debug(
-            "Opening capture stream for %s (source=%s sr=%d ch=%d)",
+            "Opening capture stream for %s (source=%s %dbit/%dHz/%dch)",
             self._friendly_name,
             self._pa_source,
-            self._sample_rate,
-            self._channels,
+            self._active_bit_depth,
+            self._active_sample_rate,
+            self._active_channels,
         )
         pa_source = self._pa_source
         app_name = f"music-assistant-{self.instance_id}"
-        sample_rate = self._sample_rate
-        channels = self._channels
+        sample_rate = self._active_sample_rate
+        channels = self._active_channels
+        sample_format = self._active_pa_sample_format
         loop = asyncio.get_running_loop()
         try:
             return await loop.run_in_executor(
@@ -626,6 +627,7 @@ class LocalAudioSourceProvider(PluginProvider):
                     app_name=app_name,
                     rate=sample_rate,
                     channels=channels,
+                    sample_format=sample_format,
                 ),
             )
         except OSError as err:
@@ -639,3 +641,68 @@ class LocalAudioSourceProvider(PluginProvider):
             loop = asyncio.get_running_loop()
             with suppress(OSError):
                 await loop.run_in_executor(self._pa_executor, stream.close)
+
+    def _build_audio_source(self, audio_format: AudioFormat) -> AudioSource:
+        """Build the AudioSource item for the given (resolved or placeholder) format."""
+        image = self._build_image()
+        return AudioSource(
+            item_id=AUDIO_SOURCE_ID,
+            provider=self.instance_id,
+            name=self._friendly_name,
+            metadata=(
+                MediaItemMetadata(images=UniqueList([image])) if image else MediaItemMetadata()
+            ),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=AUDIO_SOURCE_ID,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=audio_format,
+                )
+            },
+            can_play_pause=True,
+            can_seek=False,
+            can_next_previous=False,
+            exclusive=True,
+            allow_external_trigger=self._auto_trigger,
+            can_initiate=True,
+        )
+
+    async def _resolve_audio_format(self) -> AudioFormat:
+        """Resolve the live AudioFormat for the configured source."""
+        loop = asyncio.get_running_loop()
+        try:
+            sources = await loop.run_in_executor(None, enumerate_pa_sources)
+        except (FileNotFoundError, RuntimeError) as err:
+            self.logger.warning(
+                "Could not query format for source %r, using defaults: %s", self._pa_source, err
+            )
+            sources = []
+
+        match = next((s for s in sources if s["name"] == self._pa_source), None)
+        if match is None:
+            return AudioFormat(
+                content_type=ContentType.PCM_S16LE,
+                codec_type=ContentType.PCM_S16LE,
+                sample_rate=DEFAULT_SAMPLE_RATE,
+                bit_depth=DEFAULT_BIT_DEPTH,
+                channels=DEFAULT_CHANNELS,
+            )
+
+        bit_depth = match["bit_depth"] or DEFAULT_BIT_DEPTH
+        # we always capture into either a 16-bit or a 32-bit container, so the
+        # reported bit_depth must match the container we actually stream,
+        # otherwise consumers (and the silence keepalive) misalign the byte stream.
+        if bit_depth >= HIGH_BIT_DEPTH_THRESHOLD:
+            content_type = ContentType.PCM_S32LE
+            bit_depth = 32
+        else:
+            content_type = ContentType.PCM_S16LE
+            bit_depth = 16
+        return AudioFormat(
+            content_type=content_type,
+            codec_type=content_type,
+            sample_rate=match["sample_rate"] or DEFAULT_SAMPLE_RATE,
+            bit_depth=bit_depth,
+            channels=match["channels"] or DEFAULT_CHANNELS,
+        )
