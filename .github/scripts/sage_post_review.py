@@ -1,16 +1,21 @@
-"""Post OHF Sage findings (the JSON array Copilot CLI printed to stdout) as a PR review.
+# ruff: noqa: INP001  # standalone CI helper, not part of a package
+"""
+Post OHF Sage findings (the JSON array Copilot CLI printed to stdout) as a PR review.
 
 Clearly labeled as an automated AI review. Falls back: inline review -> summary-only review ->
 plain PR comment (so it also works on closed/merged PRs while testing).
 
-Env: REPO=owner/name, PR_NUMBER=<n>, GH_TOKEN with pull-requests:write.
-Usage: python sage_post_review.py findings.json
+Env: ``REPO=owner/name``, ``PR_NUMBER=<n>``, ``GH_TOKEN`` with pull-requests:write.
+Usage: ``python sage_post_review.py findings.json``
 """
+
 import json
+import logging
 import os
-import re
 import subprocess
 import sys
+
+logger = logging.getLogger("sage_post_review")
 
 SEV = {"CRITICAL": 0, "PROBLEM": 1, "SUGGESTION": 2}
 HEADER = (
@@ -22,80 +27,118 @@ HEADER = (
 
 
 def gh(args, inp=None):
-    p = subprocess.run(["gh"] + args, input=inp, capture_output=True,
-                       text=True, encoding="utf-8", errors="replace")
-    if p.returncode:
-        raise RuntimeError(p.stderr.strip())
-    return p.stdout
+    """Run a ``gh`` command, returning stdout; raise ``RuntimeError`` on failure."""
+    proc = subprocess.run(  # noqa: S603  # args are built here, not from untrusted input
+        ["gh", *args],  # noqa: S607  # gh is a trusted CLI on the runner PATH
+        input=inp,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    if proc.returncode:
+        raise RuntimeError(proc.stderr.strip())
+    return proc.stdout
 
 
 def extract_findings(raw):
-    """Pull the first JSON array out of the CLI output (tolerant of stray prose)."""
-    m = re.search(r"\[.*\]", raw, re.S)
-    if not m:
-        return []
-    try:
-        data = json.loads(m.group(0))
-        return data if isinstance(data, list) else []
-    except json.JSONDecodeError:
-        return []
+    """Return the first balanced ``[...]`` in the output that parses to a JSON list."""
+    depth = 0
+    start = -1
+    for i, char in enumerate(raw):
+        if char == "[":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif char == "]" and depth > 0:
+            depth -= 1
+            if depth == 0 and start != -1:
+                try:
+                    data = json.loads(raw[start : i + 1])
+                except json.JSONDecodeError:
+                    start = -1
+                    continue
+                if isinstance(data, list):
+                    return data
+                start = -1
+    return []
 
 
-def summary_line(f):
-    cite = f.get("citation_url")
-    loc = f"`{f.get('path','—')}`" + (f":{f['line']}" if isinstance(f.get("line"), int) else "")
-    return (f"- **[{f.get('severity','SUGGESTION')}]** {loc} — {f.get('issue','')}"
-            + (f" ([source]({cite}))" if cite else ""))
+def summary_line(finding):
+    """Render one finding as a Markdown summary bullet."""
+    cite = finding.get("citation_url")
+    line = finding.get("line")
+    loc = f"`{finding.get('path', '—')}`" + (f":{line}" if isinstance(line, int) else "")
+    return f"- **[{finding.get('severity', 'SUGGESTION')}]** {loc} — {finding.get('issue', '')}" + (
+        f" ([source]({cite}))" if cite else ""
+    )
+
+
+def post_review(repo, pr, payload):
+    """Submit a PR review payload via the GitHub API."""
+    gh(
+        ["api", f"repos/{repo}/pulls/{pr}/reviews", "-X", "POST", "--input", "-"],
+        inp=json.dumps(payload),
+    )
 
 
 def main():
+    """Read findings JSON, post it as a PR review, falling back as needed."""
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     repo, pr = os.environ["REPO"], os.environ["PR_NUMBER"]
-    findings = sorted(extract_findings(open(sys.argv[1], encoding="utf-8", errors="replace").read()),
-                      key=lambda f: SEV.get(f.get("severity"), 3))
+    with open(sys.argv[1], encoding="utf-8", errors="replace") as handle:
+        raw = handle.read()
+    findings = sorted(extract_findings(raw), key=lambda f: SEV.get(f.get("severity"), 3))
 
-    intro = [HEADER, "",
-             (f"**{len(findings)} finding(s)** against the cited principles."
-              if findings else "No principle violations found."), ""]
+    intro = [
+        HEADER,
+        "",
+        (
+            f"**{len(findings)} finding(s)** against the cited principles."
+            if findings
+            else "No principle violations found."
+        ),
+        "",
+    ]
 
     comments, overflow = [], []
-    for f in findings:
-        body = f"**[{f.get('severity','SUGGESTION')}]** {f.get('issue','')}"
-        if f.get("citation_url"):
-            body += f"\n\n_Principle: {f.get('principle','')} — {f['citation_url']}_"
-        if f.get("path") and isinstance(f.get("line"), int):
-            comments.append({"path": f["path"], "line": f["line"], "side": "RIGHT", "body": body})
+    for finding in findings:
+        body = f"**[{finding.get('severity', 'SUGGESTION')}]** {finding.get('issue', '')}"
+        if finding.get("citation_url"):
+            body += f"\n\n_Principle: {finding.get('principle', '')} — {finding['citation_url']}_"
+        if finding.get("path") and isinstance(finding.get("line"), int):
+            comments.append(
+                {"path": finding["path"], "line": finding["line"], "side": "RIGHT", "body": body},
+            )
         else:
-            overflow.append(summary_line(f))
+            overflow.append(summary_line(finding))
 
-    review_body = "\n".join(intro + (["### Notes (not anchored to diff lines)", *overflow]
-                                     if overflow else []))
+    review_body = "\n".join(
+        intro + (["### Notes (not anchored to diff lines)", *overflow] if overflow else []),
+    )
     summary_only = "\n".join(intro + [summary_line(f) for f in findings])
 
-    def review(payload):
-        gh(["api", f"repos/{repo}/pulls/{pr}/reviews", "-X", "POST", "--input", "-"],
-           inp=json.dumps(payload))
-
-    # 1) full review with inline comments
+    payload = {"body": review_body, "event": "COMMENT"}
+    if comments:
+        payload["comments"] = comments
     try:
-        payload = {"body": review_body, "event": "COMMENT"}
-        if comments:
-            payload["comments"] = comments
-        review(payload)
-        print(f"posted review: {len(comments)} inline, {len(overflow)} notes")
+        post_review(repo, pr, payload)
+        logger.info("posted review: %s inline, %s notes", len(comments), len(overflow))
         return
-    except RuntimeError as e:
-        print(f"inline review failed ({e})", file=sys.stderr)
-    # 2) summary-only review (inline lines not in the diff)
+    except RuntimeError as err:
+        logger.warning("inline review failed (%s)", err)
     try:
-        review({"body": summary_only, "event": "COMMENT"})
-        print("posted summary-only review")
+        post_review(repo, pr, {"body": summary_only, "event": "COMMENT"})
+        logger.info("posted summary-only review")
         return
-    except RuntimeError as e:
-        print(f"summary review failed ({e})", file=sys.stderr)
-    # 3) plain PR comment (works on closed/merged PRs)
-    gh(["api", f"repos/{repo}/issues/{pr}/comments", "-X", "POST", "--input", "-"],
-       inp=json.dumps({"body": summary_only}))
-    print("posted plain comment (reviews API unavailable — PR likely closed)")
+    except RuntimeError as err:
+        logger.warning("summary review failed (%s)", err)
+    gh(
+        ["api", f"repos/{repo}/issues/{pr}/comments", "-X", "POST", "--input", "-"],
+        inp=json.dumps({"body": summary_only}),
+    )
+    logger.info("posted plain comment (reviews API unavailable — PR likely closed)")
 
 
 if __name__ == "__main__":
