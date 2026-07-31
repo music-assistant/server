@@ -109,8 +109,8 @@ def main():
         anchored = bool(finding.get("path")) and isinstance(finding.get("line"), int)
         suggestion = finding.get("suggestion")
         if anchored and isinstance(suggestion, str) and suggestion.strip():
-            # A fenced ```suggestion block renders as an applyable one-click change that
-            # replaces the anchored line; only the model's mechanical fixes carry one.
+            # A fenced ```suggestion block renders as a one-click change a maintainer can apply,
+            # replacing the anchored line; only the model's mechanical fixes carry one.
             block = suggestion.rstrip("\n")
             body += f"\n\n```suggestion\n{block}\n```"
         if anchored:
