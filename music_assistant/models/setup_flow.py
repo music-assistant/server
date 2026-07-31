@@ -229,6 +229,31 @@ class SetupSession:
         finally:
             self._callback_future = None
 
+    async def external_until(
+        self,
+        awaitable: Awaitable[_T],
+        url: str,
+        step_id: str = "auth",
+        expires_in: float | None = None,
+    ) -> _T:
+        """
+        Show an external "Open URL" step that completes when ``awaitable`` resolves.
+
+        Unlike :meth:`external`, which waits for a browser callback, this drives
+        completion from the given awaitable (e.g. a device-code poll) for flows that
+        have no callback to return to. The step renders identically - an Open button for
+        ``url`` plus a waiting spinner - and is dismissed when the awaitable resolves.
+
+        :param awaitable: The work/wait whose completion advances the flow.
+        :param url: The URL the user must open.
+        :param step_id: Stable slug identifying this step (also the i18n key segment).
+        :param expires_in: Optional deadline in seconds; when it passes,
+            StepExpiredError is raised here (and the client countdown runs out).
+        """
+        step = self._build_step(FlowStepType.EXTERNAL, step_id, url=url, expires_in=expires_in)
+        self._publish_step(step)
+        return await self._await_with_deadline(awaitable, expires_in)
+
     def progress(
         self,
         step_id: str,

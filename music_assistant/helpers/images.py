@@ -6,6 +6,7 @@ import asyncio
 import contextlib
 import hashlib
 import itertools
+import logging
 import os
 import random
 import re
@@ -40,6 +41,8 @@ if TYPE_CHECKING:
 
     from music_assistant.mass import MusicAssistant
 
+
+LOGGER = logging.getLogger(__name__)
 
 # Thumbnail cache: on-disk (persistent) + small in-memory FIFO (hot path)
 _THUMB_CACHE_DIR = "thumbnails"
@@ -187,6 +190,35 @@ class _SourceMemoryCache:
 
 _source_memory_cache = _SourceMemoryCache()
 
+# Negative cache for sources that recently failed to fetch. Without it, a
+# persistently failing origin (e.g. an artwork URL that keeps returning 404)
+# is re-fetched — with a fresh error logged each time — for every thumbnail,
+# palette or metadata request that references it, and each consumer waits for
+# the full network round-trip just to fail again.
+_FAILED_SOURCE_TTL = 300
+_FAILED_SOURCE_MAX_ENTRIES = 256
+_failed_sources: OrderedDict[str, tuple[float, str]] = OrderedDict()
+
+
+def _get_failed_source(cache_key: str) -> str | None:
+    """Return the failure message for a recently failed source, or None."""
+    entry = _failed_sources.get(cache_key)
+    if entry is None:
+        return None
+    expires_at, message = entry
+    if time.monotonic() >= expires_at:
+        _failed_sources.pop(cache_key, None)
+        return None
+    return message
+
+
+def _store_failed_source(cache_key: str, message: str) -> None:
+    """Remember a failed source fetch so it is not retried for a short while."""
+    _failed_sources[cache_key] = (time.monotonic() + _FAILED_SOURCE_TTL, message)
+    _failed_sources.move_to_end(cache_key)
+    while len(_failed_sources) > _FAILED_SOURCE_MAX_ENTRIES:
+        _failed_sources.popitem(last=False)
+
 
 def _has_alpha(img: ImageClass) -> bool:
     """Return True if the image actually uses transparency."""
@@ -279,6 +311,9 @@ async def get_image_data(
     cache_key = create_thumb_hash(provider, path_or_url)
     if (cached := _source_memory_cache.get(cache_key)) is not None:
         return cached
+    # fail fast on sources that just failed instead of hammering the origin
+    if (failure := _get_failed_source(cache_key)) is not None:
+        raise FileNotFoundError(failure)
     # fetch de-duplicated across concurrent requests for the same source
     task: asyncio.Task[bytes] = mass.create_task(
         _fetch_and_cache_source_image,
@@ -367,7 +402,16 @@ async def _fetch_and_cache_source_image(
         _source_memory_cache.put(cache_key, disk_data)
         return disk_data
 
-    img_data, disk_cacheable = await _fetch_source_image(mass, path_or_url, provider, depth)
+    try:
+        img_data, disk_cacheable = await _fetch_source_image(mass, path_or_url, provider, depth)
+    except FileNotFoundError as err:
+        # remember the failure briefly and log it once, concisely: every
+        # thumbnail/palette/metadata request for this source would otherwise
+        # retry the origin and log the same error over and over
+        _store_failed_source(cache_key, str(err))
+        LOGGER.warning("%s (not retrying for %s seconds)", err, _FAILED_SOURCE_TTL)
+        raise
+    _failed_sources.pop(cache_key, None)
     _source_memory_cache.put(cache_key, img_data)
     if disk_cacheable:
         # persist to disk cache (best-effort, don't fail on I/O errors)
@@ -710,6 +754,7 @@ async def invalidate_cached_image(mass: MusicAssistant, provider: str, path_or_u
     for key in [key for key in _thumb_memory_cache if key.startswith(prefix)]:
         _thumb_memory_cache.pop(key, None)
     _source_memory_cache.pop(thumb_hash)
+    _failed_sources.pop(thumb_hash, None)
 
     thumb_dir = os.path.realpath(os.path.join(mass.cache_path, _THUMB_CACHE_DIR))
 
