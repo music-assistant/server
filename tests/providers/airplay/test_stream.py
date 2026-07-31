@@ -733,7 +733,7 @@ async def test_start_transition_artwork_settled_or_retried(complete_before_start
         assert commands[-2:] == [start_command, "ARTWORK=/cache/posttransition.jpg"]
         assert "ARTWORK=/cache/pretransition.jpg" not in commands
     assert stream._metadata_generation == 2
-    assert stream._metadata_checksum == "item-new|New track|Artist|Album|new-image"
+    assert stream._metadata_artwork_checksum == "new-image"
 
 
 @pytest.mark.asyncio
@@ -1362,9 +1362,7 @@ async def test_process_eof_during_render_does_not_send_artwork() -> None:
         ),
         patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
     ):
-        render_task = asyncio.create_task(
-            stream._render_and_send_artwork("image", "metadata-checksum", 1)
-        )
+        render_task = asyncio.create_task(stream._render_and_send_artwork("image", 1))
         await render_started.wait()
         stream._stopped = True
         release_render.set()
@@ -1452,7 +1450,6 @@ async def test_metadata_revert_resends_text_after_superseded_artwork() -> None:
         image_url="second-image",
     )
     first_checksum = "First track|Artist|Album|180|None"
-    stream._metadata_checksum = first_checksum
     stream._metadata_text_checksum = first_checksum
     stream._pending_metadata_checksum = first_checksum
     artwork_started = asyncio.Event()
@@ -1498,7 +1495,7 @@ async def test_repeated_metadata_retries_superseded_artwork() -> None:
     stream._cli_proc = process
     initial_text_checksum = "item-initial|Initial|Artist|Album"
     initial_checksum = f"{initial_text_checksum}|initial-image"
-    stream._metadata_checksum = initial_checksum
+    stream._metadata_artwork_checksum = "initial-image"
     stream._metadata_text_checksum = initial_text_checksum
     stream._pending_metadata_checksum = initial_checksum
     metadata_b = MagicMock(
@@ -1561,7 +1558,7 @@ async def test_repeated_metadata_retries_superseded_artwork() -> None:
     assert "ARTWORK=b-stale.jpg\n" not in commands
     assert "ARTWORK=c.jpg\n" not in commands
     assert commands[-1] == "ARTWORK=b-final.jpg\n"
-    assert stream._metadata_checksum == "item-b|Track B|Artist|Album|b-image"
+    assert stream._metadata_artwork_checksum == "b-image"
 
 
 @pytest.mark.asyncio
@@ -1600,7 +1597,6 @@ async def test_failed_artwork_delivery_is_retried() -> None:
         album="Album",
         image_url="image",
     )
-    metadata_checksum = "item-1|Track|Artist|Album|image"
     artwork_path = "/cache/thumbnails/artwork.jpg"
 
     with (
@@ -1618,14 +1614,61 @@ async def test_failed_artwork_delivery_is_retried() -> None:
         ) as send_command,
     ):
         await stream.send_metadata(None, metadata)
-        assert stream._metadata_checksum == ""
+        assert stream._metadata_artwork_checksum == ""
         await stream.send_metadata(None, metadata)
 
     assert prepare_artwork.await_count == 2
     assert [args.args[0] for args in send_command.await_args_list].count(
         f"ARTWORK={artwork_path}"
     ) == 2
-    assert stream._metadata_checksum == metadata_checksum
+    assert stream._metadata_artwork_checksum == "image"
+
+
+@pytest.mark.asyncio
+async def test_text_refinement_keeps_delivered_artwork_settled() -> None:
+    """A text-only metadata update after delivery does not re-render unchanged art."""
+    stream = AirPlayStream(_make_player())
+    metadata = MagicMock(
+        duration=180,
+        title="Track",
+        artist="Artist",
+        album="Album",
+        image_url="image",
+    )
+    refined = MagicMock(
+        queue_item_id=metadata.queue_item_id,
+        duration=180,
+        title="Track (Remastered)",
+        artist="Artist",
+        album="Album",
+        image_url="image",
+    )
+    artwork_path = "/cache/thumbnails/artwork.jpg"
+
+    with (
+        patch.object(
+            stream,
+            "_prepare_artwork",
+            new_callable=AsyncMock,
+            return_value=artwork_path,
+        ) as prepare_artwork,
+        patch.object(
+            stream,
+            "send_cli_command",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as send_command,
+    ):
+        await stream.send_metadata(None, metadata)
+        assert stream._metadata_artwork_checksum == "image"
+        # the refinement bumps the metadata generation (pending identity
+        # changed), which before the identity settle re-armed the artwork
+        await stream.send_metadata(None, refined)
+
+    prepare_artwork.assert_awaited_once()
+    commands = [args.args[0] for args in send_command.await_args_list]
+    assert commands.count(f"ARTWORK={artwork_path}") == 1
+    assert "TITLE=Track (Remastered)" in commands[-1]
 
 
 # --- Structured connect failures reported by the binary ---

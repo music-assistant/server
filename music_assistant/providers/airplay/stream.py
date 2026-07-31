@@ -127,8 +127,14 @@ class AirPlayStream:
         # `connected` this makes readiness fully event-driven, so START can
         # use a short re-anchor lead instead of a guessed setup time.
         self._audio_present = asyncio.Event()
-        self._metadata_checksum = ""
         self._metadata_text_checksum = ""
+        # Artwork identity (the source image url) whose rendered bytes were
+        # last delivered to the binary. Settles on the first successful
+        # delivery, independent of the metadata generation: media updates
+        # around a track transition keep bumping the generation, and a settle
+        # tied to it would re-render and re-send the same art on every update
+        # until the churn stops.
+        self._metadata_artwork_checksum = ""
         self._pending_metadata_checksum = ""
         self._metadata_generation = 0
         self._metadata_lock = asyncio.Lock()
@@ -239,8 +245,8 @@ class AirPlayStream:
         await self.send_cli_command(f"VOLUME={volume}")
         self.mass.call_later(2, self.send_cli_command(f"VOLUME={volume}"))
         async with self._metadata_lock:
-            self._metadata_checksum = ""
             self._metadata_text_checksum = ""
+            self._metadata_artwork_checksum = ""
             self._pending_metadata_checksum = ""
             self._metadata_generation += 1
         # Push track metadata before START. Some receivers (notably Sonos) hold
@@ -451,6 +457,7 @@ class AirPlayStream:
         """
         metadata_checksum: str | None = None
         text_checksum: str | None = None
+        artwork_checksum = ""
         duration = 0
         title = ""
         artist = ""
@@ -467,6 +474,7 @@ class AirPlayStream:
             # full metadata each time — which makes an Apple TV re-render its
             # Now Playing popup.
             text_checksum = f"{item_id}|{title}|{artist}|{album}"
+            artwork_checksum = metadata.image_url or ""
             metadata_checksum = f"{text_checksum}|{metadata.image_url}"
 
         artwork_url: str | None = None
@@ -479,16 +487,13 @@ class AirPlayStream:
                     self._pending_metadata_checksum = metadata_checksum
                     self._metadata_generation += 1
                 metadata_generation = self._metadata_generation
+            needs_artwork = artwork_checksum != self._metadata_artwork_checksum
             if (
                 metadata
                 and metadata_checksum is not None
                 and text_checksum is not None
-                and (
-                    metadata_checksum != self._metadata_checksum
-                    or text_checksum != self._metadata_text_checksum
-                )
+                and (needs_artwork or text_checksum != self._metadata_text_checksum)
             ):
-                needs_artwork = metadata_checksum != self._metadata_checksum
                 if text_checksum != self._metadata_text_checksum:
                     # ITEMID gives the binary a stable per-track identity, so
                     # a later tag refinement for the same queue item (library
@@ -514,7 +519,7 @@ class AirPlayStream:
                     self._artwork_render_generations.add(metadata_generation)
                     artwork_url = metadata.image_url
                 elif not metadata.image_url or not needs_artwork:
-                    self._metadata_checksum = metadata_checksum
+                    self._metadata_artwork_checksum = artwork_checksum
             if progress is not None and (
                 self._last_progress_sent is None or abs(progress - self._last_progress_sent) >= 2
             ):
@@ -524,8 +529,8 @@ class AirPlayStream:
                 if await self.send_cli_command(f"{duration_cmd}PROGRESS={progress}"):
                     self._last_progress_sent = progress
 
-        if artwork_url is not None and metadata_checksum is not None:
-            await self._render_and_send_artwork(artwork_url, metadata_checksum, metadata_generation)
+        if artwork_url is not None:
+            await self._render_and_send_artwork(artwork_url, metadata_generation)
 
     def _full_media_duration(self, metadata: PlayerMedia) -> int:
         """
@@ -553,14 +558,12 @@ class AirPlayStream:
                     return min(int(full_duration), 3600)
         return min(metadata.duration or 0, 3600)
 
-    async def _render_and_send_artwork(
-        self, artwork_url: str, metadata_checksum: str, metadata_generation: int
-    ) -> None:
+    async def _render_and_send_artwork(self, artwork_url: str, metadata_generation: int) -> None:
         """
         Render and apply artwork for the current metadata generation.
 
-        :param artwork_url: Source URL for the artwork.
-        :param metadata_checksum: Identity of the metadata receiving the artwork.
+        :param artwork_url: Source URL for the artwork; settles as the
+            delivered artwork identity once the binary accepts the command.
         :param metadata_generation: Generation that must still be current before apply.
         """
         try:
@@ -576,15 +579,9 @@ class AirPlayStream:
                 and not self._stopped
                 and not self._stopping
                 and metadata_generation == self._metadata_generation
+                and await self.send_cli_command(f"ARTWORK={artwork}")
             ):
-                artwork_delivered = await self.send_cli_command(f"ARTWORK={artwork}")
-                if (
-                    artwork_delivered
-                    and not self._stopped
-                    and not self._stopping
-                    and metadata_generation == self._metadata_generation
-                ):
-                    self._metadata_checksum = metadata_checksum
+                self._metadata_artwork_checksum = artwork_url
 
     async def _build_cli_args(  # noqa: PLR0915
         self,
