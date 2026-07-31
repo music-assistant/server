@@ -35,11 +35,11 @@
     },
     "snapcast_stream_sample_rate": {
       "label": "Snapcast stream sample rate",
-      "description": "Maximum PCM sample rate for Music Assistant Snapcast TCP sources. Default is 48000. Higher rates require Snapcast clients that support them."
+      "description": "Only used with an external Snapserver. Sample rate Music Assistant sends into Snapcast (48000, 96000, or 192000). Your Snapcast clients must support the chosen rate. Default is 48000."
     },
     "snapcast_stream_bit_depth": {
       "label": "Snapcast stream bit depth",
-      "description": "Maximum PCM bit depth for Music Assistant Snapcast TCP sources. Default is 16. 24-bit requires a Snapserver build with packed_s24le TCP ingest support (see snapcast/snapcast#1532)."
+      "description": "Only used with an external Snapserver. Bit depth Music Assistant sends into Snapcast (16 or 24). 24-bit needs an external Snapserver built with packed 24-bit PCM support; the built-in Snapserver and normal package builds do not support this yet. Default is 16."
     }
   },
   "manifest": {

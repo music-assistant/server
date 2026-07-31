@@ -235,7 +235,8 @@ class SnapCastProvider(PlayerProvider):
                 options=[ConfigValueOption(rate) for rate in SNAPCAST_SAMPLE_RATES],
                 default_value=DEFAULT_SNAPCAST_FORMAT.sample_rate,
                 required=False,
-                advanced=True,
+                depends_on=CONF_USE_EXTERNAL_SERVER,
+                advanced=local_snapserver_present,
             ),
             ConfigEntry(
                 key=CONF_STREAM_BIT_DEPTH,
@@ -243,7 +244,8 @@ class SnapCastProvider(PlayerProvider):
                 options=[ConfigValueOption(depth) for depth in SNAPCAST_BIT_DEPTHS],
                 default_value=DEFAULT_SNAPCAST_FORMAT.bit_depth,
                 required=False,
-                advanced=True,
+                depends_on=CONF_USE_EXTERNAL_SERVER,
+                advanced=local_snapserver_present,
             ),
         )
 
@@ -280,10 +282,15 @@ class SnapCastProvider(PlayerProvider):
                 str(self.config.get_value(CONF_SERVER_CONTROL_PORT))
             )
         self._snapcast_stream_idle_threshold = self.config.get_value(CONF_STREAM_IDLE_THRESHOLD)
-        self._snapcast_stream_format = snapcast_stream_format(
-            int(cast("int", self.config.get_value(CONF_STREAM_SAMPLE_RATE) or 48000)),
-            int(cast("int", self.config.get_value(CONF_STREAM_BIT_DEPTH) or 16)),
-        )
+        # Higher rates / 24-bit are only supported with an external Snapserver for now.
+        # The built-in server always stays at the default 48 kHz / 16-bit format.
+        if self._use_builtin_server:
+            self._snapcast_stream_format = DEFAULT_SNAPCAST_FORMAT
+        else:
+            self._snapcast_stream_format = snapcast_stream_format(
+                int(cast("int", self.config.get_value(CONF_STREAM_SAMPLE_RATE) or 48000)),
+                int(cast("int", self.config.get_value(CONF_STREAM_BIT_DEPTH) or 16)),
+            )
         self._ids_map = bidict({})
         self._last_status_refresh = 0.0
 
