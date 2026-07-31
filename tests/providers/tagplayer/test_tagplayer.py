@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import cast
+from collections.abc import AsyncGenerator, Callable
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -11,6 +12,16 @@ from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import ProviderMapping
 
 from music_assistant.providers.tagplayer import TagPlayerProvider
+
+
+def _async_iter(items: list[MagicMock]) -> Callable[..., AsyncGenerator[MagicMock]]:
+    """Return a stub for iter_library_items_by_prov_id yielding the given items."""
+
+    async def _iter(*_args: Any, **_kwargs: Any) -> AsyncGenerator[MagicMock]:
+        for item in items:
+            yield item
+
+    return _iter
 
 
 def _mock_library_item(
@@ -38,7 +49,7 @@ def _mock_controller(
 
     :param media_type: The media type this controller handles.
     :param items_by_prov_id: Map of prov_item_id -> library item for get_library_item_by_prov_id.
-    :param provider_items: Items returned by get_library_items_by_prov_id().
+    :param provider_items: Items yielded by iter_library_items_by_prov_id().
     """
     ctrl = MagicMock()
     ctrl.media_type = media_type
@@ -55,7 +66,7 @@ def _mock_controller(
     ctrl.get_library_item = AsyncMock()
     ctrl.add_provider_mapping = AsyncMock()
     ctrl.remove_provider_mapping = AsyncMock()
-    ctrl.get_library_items_by_prov_id = AsyncMock(return_value=provider_items or [])
+    ctrl.iter_library_items_by_prov_id = _async_iter(provider_items or [])
     return ctrl
 
 
@@ -278,8 +289,8 @@ class TestListTags:
             MediaType.TRACK,
             provider_mappings={tag_mapping, other_mapping},
         )
-        mock_mass._test_controllers[MediaType.TRACK].get_library_items_by_prov_id = AsyncMock(
-            return_value=[track]
+        mock_mass._test_controllers[MediaType.TRACK].iter_library_items_by_prov_id = _async_iter(
+            [track]
         )
 
         result = await provider.list_tags()
@@ -314,11 +325,11 @@ class TestListTags:
         track = _mock_library_item(1, "Track", MediaType.TRACK, {track_tag})
         playlist = _mock_library_item(2, "Playlist", MediaType.PLAYLIST, {playlist_tag})
 
-        mock_mass._test_controllers[MediaType.TRACK].get_library_items_by_prov_id = AsyncMock(
-            return_value=[track]
+        mock_mass._test_controllers[MediaType.TRACK].iter_library_items_by_prov_id = _async_iter(
+            [track]
         )
-        mock_mass._test_controllers[MediaType.PLAYLIST].get_library_items_by_prov_id = AsyncMock(
-            return_value=[playlist]
+        mock_mass._test_controllers[MediaType.PLAYLIST].iter_library_items_by_prov_id = _async_iter(
+            [playlist]
         )
 
         result = await provider.list_tags()
