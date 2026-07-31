@@ -242,7 +242,7 @@ class TagPlayerProvider(PluginProvider):
             raise InvalidDataError(msg)
         try:
             media_type = MediaType(media_type_str)
-        except ValueError as err:
+        except InvalidDataError as err:
             raise InvalidDataError(msg) from err
         if media_type not in TAGGABLE_MEDIA_TYPES:
             raise InvalidDataError(msg)
