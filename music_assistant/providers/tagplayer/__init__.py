@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, QueueOption
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import ProviderMapping
@@ -67,11 +68,11 @@ class TagPlayerProvider(PluginProvider):
     async def loaded_in_mass(self) -> None:
         """Register API commands after the provider is loaded."""
         self._unregister_commands = [
-            self.mass.register_api_command("tagplayer/link", self.link_tag),
-            self.mass.register_api_command("tagplayer/unlink", self.unlink_tag),
-            self.mass.register_api_command("tagplayer/get", self.get_tag),
-            self.mass.register_api_command("tagplayer/list", self.list_tags),
-            self.mass.register_api_command("tagplayer/play", self.play_tag),
+            self.mass.register_api_command("tagplayer/link", self.link_tag, required_scope=Scope.LIBRARY_WRITE),
+            self.mass.register_api_command("tagplayer/unlink", self.unlink_tag, required_scope=Scope.LIBRARY_WRITE),
+            self.mass.register_api_command("tagplayer/get", self.get_tag, required_scope=Scope.LIBRARY_READ),
+            self.mass.register_api_command("tagplayer/list", self.list_tags, required_scope=Scope.LIBRARY_READ),
+            self.mass.register_api_command("tagplayer/play", self.play_tag, required_scope=Scope.QUEUES_CONTROL),
         ]
 
     async def unload(self, is_removed: bool = False) -> None:
