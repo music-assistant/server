@@ -678,6 +678,17 @@ class AirPlayPlayer(Player):
         # Ignore state updates from old/stale streams
         if stream is not None and stream != self.stream:
             return
+        # The stream reclaims the device: an external (Companion-observed)
+        # source snapshot can leak in during a brief stream-restart window and
+        # would otherwise stick, freezing the UI on a stale "external source"
+        # view while we stream. While MA streams, the stream is the sole
+        # authority on this player's state.
+        active_source = getattr(self, "_attr_active_source", None)
+        if active_source is not None and active_source in getattr(self, "_external_source_ids", ()):
+            media = getattr(self, "_attr_current_media", None)
+            if media is not None and media.source_id == active_source:
+                self._attr_current_media = None
+            self._attr_active_source = None
         if state is not None:
             self._attr_playback_state = state
         if elapsed_time is not None:

@@ -34,6 +34,10 @@
     },
     "pair_now": {
       "label": "Set up now"
+    },
+    "verbose_ptp_logging": {
+      "label": "Verbose PTP daemon logging",
+      "description": "Log the shared PTP clock daemon's per-packet timing trace (Announce/Sync/Follow_Up) when verbose logging is active. Only useful when diagnosing multi-room clock sync issues; it floods the log at ~10 lines per second."
     }
   },
   "setup_flow": {
