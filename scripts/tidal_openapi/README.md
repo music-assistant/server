@@ -21,9 +21,9 @@ official API's OpenAPI spec.
 
 ## Files
 
-- `tidal-api-oas.json` — vendored copy of the official spec (source of truth for
+- `tidal-api-oas.json`: vendored copy of the official spec (source of truth for
   generation and for spotting upstream changes). Not shipped in the package.
-- `generate_models.py` — regenerates the TypedDict models from the vendored spec.
+- `generate_models.py`: regenerates the TypedDict models from the vendored spec.
 
 The generated output lives at
 `music_assistant/providers/tidal/_openapi_models.py` and **must not be edited by

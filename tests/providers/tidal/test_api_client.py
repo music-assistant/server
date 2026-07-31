@@ -1,6 +1,5 @@
 """Test Tidal API Client."""
 
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
@@ -193,70 +192,6 @@ async def test_post_success(api_client: TidalAPIClient, provider_mock: Mock) -> 
 
     result = await api_client.post("test/endpoint", data={"key": "value"})
     assert result == {"success": True}
-
-
-async def test_paginate(api_client: TidalAPIClient, provider_mock: Mock) -> None:
-    """Test pagination."""
-    # Mock first page response
-    response1 = AsyncMock(spec=ClientResponse)
-    response1.status = 200
-    response1.json.return_value = {"items": [{"id": 1}, {"id": 2}], "totalNumberOfItems": 4}
-
-    # Mock second page response
-    response2 = AsyncMock(spec=ClientResponse)
-    response2.status = 200
-    response2.json.return_value = {"items": [{"id": 3}, {"id": 4}], "totalNumberOfItems": 4}
-
-    # Mock empty response to stop iteration
-    response3 = AsyncMock(spec=ClientResponse)
-    response3.status = 200
-    response3.json.return_value = {"items": []}
-
-    ctx1 = AsyncMock()
-    ctx1.__aenter__.return_value = response1
-
-    ctx2 = AsyncMock()
-    ctx2.__aenter__.return_value = response2
-
-    ctx3 = AsyncMock()
-    ctx3.__aenter__.return_value = response3
-
-    provider_mock.mass.http_session.request = MagicMock(side_effect=[ctx1, ctx2, ctx3])
-
-    items: list[dict[str, Any]] = []
-    async for item in api_client.paginate("test/endpoint", limit=2):
-        items.append(item)
-
-    assert len(items) == 4
-    assert items[0]["id"] == 1
-    assert items[3]["id"] == 4
-
-
-async def test_paginate_preserves_params_across_pages(
-    api_client: TidalAPIClient, provider_mock: Mock
-) -> None:
-    """Test that caller-supplied params are sent on every page, not just the first."""
-    response1 = AsyncMock(spec=ClientResponse)
-    response1.status = 200
-    response1.json.return_value = {"items": [{"id": 1}, {"id": 2}]}
-
-    response2 = AsyncMock(spec=ClientResponse)
-    response2.status = 200
-    response2.json.return_value = {"items": []}
-
-    ctx1 = AsyncMock()
-    ctx1.__aenter__.return_value = response1
-    ctx2 = AsyncMock()
-    ctx2.__aenter__.return_value = response2
-    provider_mock.mass.http_session.request = MagicMock(side_effect=[ctx1, ctx2])
-
-    items: list[dict[str, Any]] = []
-    async for item in api_client.paginate("test/endpoint", limit=2, params={"order": "DATE"}):
-        items.append(item)
-
-    assert len(items) == 2
-    for call in provider_mock.mass.http_session.request.call_args_list:
-        assert call[1]["params"]["order"] == "DATE"
 
 
 async def test_write_jsonapi(api_client: TidalAPIClient, provider_mock: Mock) -> None:

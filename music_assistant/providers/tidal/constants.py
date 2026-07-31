@@ -16,7 +16,6 @@ SESSIONS_URL = f"{BASE_URL}/sessions"
 JSONAPI_CONTENT_TYPE = "application/vnd.api+json"
 
 # Authentication
-TOKEN_TYPE = "Bearer"
 AUTH_URL = "https://auth.tidal.com/v1/oauth2"
 # OAuth scopes requested for the device flow (read, write, subscription).
 AUTH_SCOPE = "r_usr w_usr w_sub"
@@ -30,15 +29,9 @@ CONF_AUTH_TOKEN = "auth_token"
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_USER_ID = "user_id"
 CONF_EXPIRY_TIME = "expiry_time"
-CONF_COUNTRY_CODE = "country_code"
-CONF_SESSION_ID = "session_id"
 CONF_QUALITY = "quality"
 
-# API defaults
-DEFAULT_LIMIT: Final[int] = 50
-
 # Cache keys
-CACHE_CATEGORY_DEFAULT: Final[int] = 0
 CACHE_CATEGORY_RECOMMENDATIONS: Final[int] = 1
 CACHE_CATEGORY_ISRC_MAP: Final[int] = 2
 

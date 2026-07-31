@@ -227,3 +227,52 @@ async def test_poll_device_login_terminal_error(
 
     with pytest.raises(LoginFailed):
         await TidalAuthManager.poll_device_login(http_session, device)
+
+
+async def test_finalize_login_missing_tokens(http_session: AsyncMock) -> None:
+    """_finalize_login raises when the token response lacks the required tokens."""
+    with pytest.raises(LoginFailed):
+        await TidalAuthManager._finalize_login(http_session, {"access_token": "only_access"})
+
+
+async def test_finalize_login_sessions_error(http_session: AsyncMock) -> None:
+    """_finalize_login raises when the sessions lookup returns a non-200."""
+    response = AsyncMock()
+    response.status = 500
+    response.text.return_value = "server error"
+    http_session.get.return_value.__aenter__.return_value = response
+
+    with pytest.raises(LoginFailed):
+        await TidalAuthManager._finalize_login(
+            http_session, {"access_token": "access", "refresh_token": "refresh"}
+        )
+
+
+@patch("music_assistant.providers.tidal.auth_manager.asyncio.sleep")
+@patch("music_assistant.providers.tidal.auth_manager.app_var")
+async def test_poll_device_login_slow_down(
+    mock_app_var: Mock, mock_sleep: AsyncMock, http_session: AsyncMock
+) -> None:
+    """poll_device_login backs off on slow_down and then succeeds."""
+    mock_app_var.side_effect = ["client_id", "client_secret"]
+    device = {"deviceCode": "dev", "interval": 0}
+
+    slow = AsyncMock()
+    slow.status = 400
+    slow.json.return_value = {"error": "slow_down"}
+    ok = AsyncMock()
+    ok.status = 200
+    ok.json.return_value = {"access_token": "a", "refresh_token": "r", "expires_in": 3600}
+    user = AsyncMock()
+    user.status = 200
+    user.json.return_value = {"userId": "u"}
+
+    http_session.post.return_value.__aenter__.side_effect = [slow, ok]
+    http_session.get.return_value.__aenter__.return_value = user
+
+    result = await TidalAuthManager.poll_device_login(http_session, device)
+
+    assert result["access_token"] == "a"
+    assert http_session.post.call_count == 2
+    # slept once before each poll (the second interval was bumped by slow_down)
+    assert mock_sleep.await_count == 2

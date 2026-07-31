@@ -3,7 +3,7 @@
 import json
 import pathlib
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType
@@ -31,15 +31,6 @@ def provider_mock() -> Mock:
     provider.auth.country_code = "US"
     provider.api = AsyncMock()
     provider.api.get.return_value = {}
-    provider.api.paginate = MagicMock()
-
-    async def async_iter(*_args: Any, **_kwargs: Any) -> Any:
-        for item in provider.api.paginate.return_value:
-            yield item
-
-    provider.api.paginate.side_effect = async_iter
-    provider.api.paginate.return_value = []
-
     provider.logger = Mock()
 
     def get_item_mapping(media_type: MediaType, key: str, name: str) -> ItemMapping:

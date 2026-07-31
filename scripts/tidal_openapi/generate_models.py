@@ -50,34 +50,6 @@ Regenerate with: python scripts/tidal_openapi/generate_models.py
 # ruff: noqa'''
 
 
-def _collect_refs(obj: Any) -> list[str]:
-    """Return the schema names referenced by ``$ref`` anywhere within ``obj``."""
-    found: list[str] = []
-    if isinstance(obj, dict):
-        for key, value in obj.items():
-            if key == "$ref" and isinstance(value, str):
-                found.append(value.split("/")[-1])
-            else:
-                found.extend(_collect_refs(value))
-    elif isinstance(obj, list):
-        for value in obj:
-            found.extend(_collect_refs(value))
-    return found
-
-
-def _closure(schemas: dict[str, Any], seeds: list[str]) -> set[str]:
-    """Return the transitive ``$ref`` closure of ``seeds`` within ``schemas``."""
-    seen: set[str] = set()
-    stack = list(seeds)
-    while stack:
-        name = stack.pop()
-        if name in seen or name not in schemas:
-            continue
-        seen.add(name)
-        stack.extend(_collect_refs(schemas[name]))
-    return seen
-
-
 def main() -> int:
     """Generate the models file and return a process exit code."""
     spec = json.loads(SPEC_PATH.read_text())
@@ -132,6 +104,34 @@ def main() -> int:
 
     print(f"Wrote {OUTPUT_PATH.relative_to(HERE.parent.parent)}")
     return 0
+
+
+def _collect_refs(obj: Any) -> list[str]:
+    """Return the schema names referenced by ``$ref`` anywhere within ``obj``."""
+    found: list[str] = []
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key == "$ref" and isinstance(value, str):
+                found.append(value.split("/")[-1])
+            else:
+                found.extend(_collect_refs(value))
+    elif isinstance(obj, list):
+        for value in obj:
+            found.extend(_collect_refs(value))
+    return found
+
+
+def _closure(schemas: dict[str, Any], seeds: list[str]) -> set[str]:
+    """Return the transitive ``$ref`` closure of ``seeds`` within ``schemas``."""
+    seen: set[str] = set()
+    stack = list(seeds)
+    while stack:
+        name = stack.pop()
+        if name in seen or name not in schemas:
+            continue
+        seen.add(name)
+        stack.extend(_collect_refs(schemas[name]))
+    return seen
 
 
 if __name__ == "__main__":

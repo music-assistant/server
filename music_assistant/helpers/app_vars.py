@@ -54,8 +54,6 @@ APP_VAR_NAMES = (
     "fanarttv_api_key",
     "deezer_decrypt_key",
     "apple_music_token",
-    "tidal_client_id",
-    "tidal_client_secret",
     "tidal_client_id_v2",
     "tidal_client_secret_v2",
     "lastfm_api_key",

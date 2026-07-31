@@ -1751,3 +1751,43 @@ async def test_external_until_raises_on_deadline(flow_mass: MusicAssistant) -> N
         step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
         assert step.type == FlowStepType.EXTERNAL
         await _wait_for(lambda: expired.is_set())
+
+
+async def test_tidal_flow_device_login_remints_on_expiry(
+    flow_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An expired device code re-mints a fresh one and the flow completes on the retry."""
+    from music_assistant.providers.tidal.auth_manager import TidalAuthManager  # noqa: PLC0415
+    from music_assistant.providers.tidal.setup_flow import run_setup  # noqa: PLC0415
+
+    monkeypatch.setattr(flow_mass, "_http_session", MagicMock())
+    device = {
+        "deviceCode": "dev",
+        "userCode": "ABCDE",
+        "verificationUri": "link.tidal.com",
+        "verificationUriComplete": "link.tidal.com/ABCDE",
+        "interval": 0,
+        "expiresIn": 0.1,
+    }
+    auth_data = {"access_token": "at", "refresh_token": "rt", "expires_at": 1.0, "userId": 7}
+    polls = {"n": 0}
+
+    async def _poll(_http_session: Any, _device: dict[str, Any]) -> dict[str, Any]:
+        polls["n"] += 1
+        if polls["n"] == 1:
+            # never resolve, so the step's expires_in deadline fires (StepExpiredError)
+            await asyncio.Event().wait()
+        return auth_data
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(TidalAuthManager, "start_device_login", AsyncMock(return_value=device)),
+        patch.object(TidalAuthManager, "poll_device_login", _poll),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        assert step.type == FlowStepType.EXTERNAL
+        session = flow_mass.config._setup_flows[step.flow_id].session
+        await _wait_for(lambda: session.finished)
+    # the first (expired) attempt is followed by a re-minted second that succeeds
+    assert polls["n"] == 2

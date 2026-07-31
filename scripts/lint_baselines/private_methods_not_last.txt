@@ -69,7 +69,6 @@ music_assistant/providers/sonic_analysis/vendored_clap/clap_wrapper.py	4
 music_assistant/providers/sonic_analysis/vendored_clap/models/htsat.py	7
 music_assistant/providers/sonic_similarity/provider.py	1
 music_assistant/providers/soundcloud/__init__.py	7
-music_assistant/providers/tidal/api_client.py	1
 music_assistant/providers/tidal/tidal_page_parser.py	2
 music_assistant/providers/tunein/__init__.py	2
 music_assistant/providers/vban_receiver/stats.py	2
