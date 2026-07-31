@@ -1471,7 +1471,6 @@
   "provider.mammamiradio.config_entries.mammamiradio_url.label": "Mamma Mi Radio URL",
   "provider.mammamiradio.errors.invalid_base_url": "Invalid Mamma Mi Radio URL. Enter a full HTTP(S) base URL with a hostname, for example http://localhost:8000.",
   "provider.mammamiradio.manifest.description": "Two Italian hosts. One very opinionated smart home. Self-hosted radio for Home Assistant: music, banter, and ads, with your home's moments worked into the show.",
-  "provider.motherearthradio.manifest.description": "Stream audiophile-quality internet radio — human-curated, ad-free, and listener supported.",
   "provider.mpd.config_entries.manual_discovery_ip_addresses.description": "List of MPD servers to connect to. Enter one server per line as host or host:port. Port defaults to 6600 if not specified.",
   "provider.mpd.config_entries.manual_discovery_ip_addresses.label": "MPD Servers",
   "provider.mpd.config_entries.password.description": "MPD password, if required by the server.",
