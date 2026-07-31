@@ -124,6 +124,12 @@ class StructureDetector:
         self._beats_per_bar = 4
         self._unanchored = 0
         self._anchored = False
+        # Recent scheduled beats as (timestamp, beat-in-bar). Beats arrive ahead
+        # of playback, so the current bar position must be resolved against
+        # now_us from these records - an EMA extrapolation drifts within the
+        # bar and shows skipped or doubled counts even on a perfect schedule.
+        self._sched: deque[tuple[int, int]] = deque(maxlen=256)
+        self._sched_bib = -1  # bar position of the last noted beat; -1 = unanchored
         # energy envelopes
         self._broad_fast = self._broad_slow = self._broad_delayed = 0.0
         self._bass_fast = self._bass_slow = self._bass_delayed = 0.0
@@ -174,6 +180,13 @@ class StructureDetector:
             if self._unanchored >= _ANCHOR_FALLBACK_BEATS:
                 self._bar_anchor_ts = timestamp_us
                 self._anchored = True
+        if is_downbeat:
+            self._sched_bib = 0
+        elif self._sched_bib >= 0:
+            self._sched_bib = (self._sched_bib + 1) % self._beats_per_bar
+        elif self._anchored:
+            self._sched_bib = 0  # the fallback anchor treats this beat as the "1"
+        self._sched.append((timestamp_us, self._sched_bib))
 
     def reset(self) -> None:
         """Clear all state (used on stream restart / track change)."""
@@ -184,6 +197,8 @@ class StructureDetector:
         self._bar_anchor_ts = -1
         self._unanchored = 0
         self._anchored = False
+        self._sched.clear()
+        self._sched_bib = -1
         self._initialized = False
         self._int_ref = 0.0
         self._bright_ref = 0.0
@@ -261,8 +276,35 @@ class StructureDetector:
         """Current tempo estimate (0 if unknown)."""
         return 60_000_000.0 / self._ibi_ema if self._ibi_ema > 0 else 0.0
 
+    def _sched_base(self, now_us: int) -> tuple[int, int] | None:
+        """
+        The latest scheduled beat at or before ``now_us``, or None.
+
+        Prunes entries that are two or more beats in the past so the deque stays
+        bounded (a mutating getter, like ``onset_density``). Entries recorded
+        before the bar anchor existed carry -1 and never form a base.
+        """
+        sched = self._sched
+        while len(sched) > 1 and sched[1][0] <= now_us:
+            sched.popleft()
+        for entry in reversed(sched):
+            if entry[0] <= now_us and entry[1] >= 0:
+                return entry
+        return None
+
     def bar_phase(self, now_us: int) -> float:
         """Position within the current bar: 0 at the downbeat, -> 1 at the bar end."""
+        base = self._sched_base(now_us)
+        if base is not None and self._ibi_ema > 0:
+            ts, bib = base
+            # Fractional progress against the actual next beat when it is known;
+            # the EMA carries it only once the schedule has run dry.
+            if len(self._sched) > 1 and self._sched[1][0] > max(now_us, ts):
+                span = float(self._sched[1][0] - ts)
+            else:
+                span = self._ibi_ema
+            pos = bib + (now_us - ts) / span
+            return (pos % self._beats_per_bar) / self._beats_per_bar
         if self._ibi_ema <= 0 or self._bar_anchor_ts < 0:
             return 0.0
         bars = (now_us - self._bar_anchor_ts) / (self._ibi_ema * self._beats_per_bar)
@@ -270,6 +312,13 @@ class StructureDetector:
 
     def beat_in_bar(self, now_us: int) -> int:
         """Which beat of the bar we are on (0-based), 0 if unknown."""
+        base = self._sched_base(now_us)
+        if base is not None:
+            ts, bib = base
+            # 0 while the schedule is alive (the base IS the current beat);
+            # counts elapsed EMA beats only once the schedule has run dry.
+            extra = int((now_us - ts) / self._ibi_ema) if self._ibi_ema > 0 else 0
+            return (bib + extra) % self._beats_per_bar
         if self._ibi_ema <= 0 or self._bar_anchor_ts < 0:
             return 0
         beats = int((now_us - self._bar_anchor_ts) / self._ibi_ema)
