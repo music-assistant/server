@@ -2,7 +2,29 @@
 
 from pathlib import Path
 
-from music_assistant.providers.filesystem_local.helpers import sorted_scandir
+from music_assistant.providers.filesystem_local.helpers import (
+    FileSystemItem,
+    get_folder_signature,
+    sorted_scandir,
+)
+
+
+def _file_item(name: str, checksum: str = "1700000000", file_size: int = 1024) -> FileSystemItem:
+    """
+    Build a FileSystemItem for a file, without touching the filesystem.
+
+    :param name: Relative path of the file.
+    :param checksum: Last modified time of the file.
+    :param file_size: Size of the file in bytes.
+    """
+    return FileSystemItem(
+        filename=name.rsplit("/", 1)[-1],
+        relative_path=name,
+        absolute_path=f"/media/{name}",
+        is_dir=False,
+        checksum=checksum,
+        file_size=file_size,
+    )
 
 
 def test_sorted_scandir_natural_order(tmp_path: Path) -> None:
@@ -32,3 +54,26 @@ def test_sorted_scandir_unsorted_by_default(tmp_path: Path) -> None:
     result = sorted_scandir(str(tmp_path), str(tmp_path))
 
     assert sorted(item.filename for item in result) == ["a.flac", "b.flac"]
+
+
+def test_folder_signature_ignores_item_order() -> None:
+    """The same set of files always produces the same signature."""
+    items = [_file_item("pod/ep1.mp3"), _file_item("pod/ep2.mp3")]
+
+    assert get_folder_signature(items) == get_folder_signature(list(reversed(items)))
+
+
+def test_folder_signature_detects_changes() -> None:
+    """Adding, removing, replacing or retagging a file changes the signature."""
+    items = [_file_item("pod/ep1.mp3"), _file_item("pod/ep2.mp3")]
+    signature = get_folder_signature(items)
+
+    assert get_folder_signature([*items, _file_item("pod/ep3.mp3")]) != signature
+    assert get_folder_signature(items[:1]) != signature
+    # same number of files, but one of them replaced, retagged or renamed
+    for changed in (
+        _file_item("pod/ep2.mp3", checksum="1800000000"),
+        _file_item("pod/ep2.mp3", file_size=2048),
+        _file_item("pod/renamed.mp3"),
+    ):
+        assert get_folder_signature([items[0], changed]) != signature

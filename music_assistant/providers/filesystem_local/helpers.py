@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import logging
 import os
 import re
@@ -107,6 +108,19 @@ class FileSystemItem:
             file_size=stat.st_size,
             created_at=created_at,
         )
+
+
+def get_folder_signature(items: list[FileSystemItem]) -> str:
+    """
+    Return a digest of the given files' paths, modification times and sizes.
+
+    Callers use this as a cache checksum: any file added, removed, replaced or
+    retagged changes the digest. The result is independent of the order of the items.
+
+    :param items: The files to include in the digest.
+    """
+    parts = sorted(f"{x.relative_path}:{x.checksum}:{x.file_size}" for x in items)
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()
 
 
 def get_artist_dir(
