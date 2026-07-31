@@ -49,7 +49,14 @@ async def run_setup(session: SetupSession) -> None:
     # prefer the bundled developer token; only prompt for (and store) a manual one when
     # the bundle ships an empty/expired token, e.g. on development builds
     app_token = MUSIC_APP_TOKEN
-    if not await _app_token_valid(mass, app_token):
+    # a custom developer token stored by an earlier flow run (e.g. a personal token
+    # used to escape rate limiting of the shared bundled token) takes precedence and
+    # must survive reconfiguration; fall back to the bundled token if it went stale
+    existing_app_token = str(session.context.setup_data.get(CONF_MUSIC_APP_TOKEN) or "")
+    if existing_app_token != app_token and await _app_token_valid(mass, existing_app_token):
+        app_token = existing_app_token
+        collected[CONF_MUSIC_APP_TOKEN] = existing_app_token
+    elif not await _app_token_valid(mass, app_token):
         app_token_errors: dict[str, str] | None = None
         while True:
             values = await session.form(
