@@ -104,7 +104,7 @@ class TagPlayerProvider(PluginProvider):
         """
         self._validate_tag_id(tag_id)
 
-        media_type, library_id = self._parse_target(target)
+        media_type, library_id = self.(target)
         controller = self.mass.music.get_controller(media_type)
 
         # verify the library item exists
@@ -246,12 +246,14 @@ class TagPlayerProvider(PluginProvider):
 
         :param target: Target string in the format "media_type/library_id".
         """
+        msg = f"Invalid target format: {target}. Expected: type/id (e.g., track/42)"
+        media_type_str, _, item_id_str = target.strip("/").partition("/")
+        if not item_id_str.isdigit():
+            raise InvalidDataError(msg)
         try:
-            media_type_str, item_id_str = target.strip("/").split("/", 1)
             media_type = MediaType(media_type_str)
-            if media_type not in TAGGABLE_MEDIA_TYPES:
-                raise ValueError
-            return (media_type, int(item_id_str))
-        except (ValueError, KeyError) as err:
-            msg = f"Invalid target format: {target}. Expected: type/id (e.g., track/42)"
-            raise ValueError(msg) from err
+        except ValueError as err:
+            raise InvalidDataError(msg) from err
+        if media_type not in TAGGABLE_MEDIA_TYPES:
+            raise InvalidDataError(msg)
+        return (media_type, int(item_id_str))
