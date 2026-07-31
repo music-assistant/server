@@ -862,6 +862,7 @@
   "provider.alexa.config_entries.alexa_language.options.fr-CA": "French (Canada)",
   "provider.alexa.config_entries.alexa_language.options.fr-FR": "French (France)",
   "provider.alexa.config_entries.alexa_language.options.it-IT": "Italian (Italy)",
+  "provider.alexa.config_entries.alexa_language.options.nl-NL": "Dutch (Netherlands)",
   "provider.alexa.config_entries.alexa_language.options.pt-BR": "Portuguese (Brazil)",
   "provider.alexa.config_entries.api_password.label": "API Basic Auth Password",
   "provider.alexa.config_entries.api_url.label": "API Url",
