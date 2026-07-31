@@ -68,11 +68,21 @@ class TagPlayerProvider(PluginProvider):
     async def loaded_in_mass(self) -> None:
         """Register API commands after the provider is loaded."""
         self._unregister_commands = [
-            self.mass.register_api_command("tagplayer/link", self.link_tag, required_scope=Scope.LIBRARY_WRITE),
-            self.mass.register_api_command("tagplayer/unlink", self.unlink_tag, required_scope=Scope.LIBRARY_WRITE),
-            self.mass.register_api_command("tagplayer/get", self.get_tag, required_scope=Scope.LIBRARY_READ),
-            self.mass.register_api_command("tagplayer/list", self.list_tags, required_scope=Scope.LIBRARY_READ),
-            self.mass.register_api_command("tagplayer/play", self.play_tag, required_scope=Scope.QUEUES_CONTROL),
+            self.mass.register_api_command(
+                "tagplayer/link", self.link_tag, required_scope=Scope.LIBRARY_WRITE
+            ),
+            self.mass.register_api_command(
+                "tagplayer/unlink", self.unlink_tag, required_scope=Scope.LIBRARY_WRITE
+            ),
+            self.mass.register_api_command(
+                "tagplayer/get", self.get_tag, required_scope=Scope.LIBRARY_READ
+            ),
+            self.mass.register_api_command(
+                "tagplayer/list", self.list_tags, required_scope=Scope.LIBRARY_READ
+            ),
+            self.mass.register_api_command(
+                "tagplayer/play", self.play_tag, required_scope=Scope.QUEUES_CONTROL
+            ),
         ]
 
     async def unload(self, is_removed: bool = False) -> None:
