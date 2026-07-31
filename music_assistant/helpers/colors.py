@@ -18,6 +18,7 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from modern_colorthief import get_palette as _mmcq_palette
+from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import MediaItemPalette
 
 from music_assistant.helpers.images import (
@@ -218,7 +219,13 @@ def extract_palette(image_bytes: bytes) -> MediaItemPalette:
 async def _extract_and_cache(
     mass: MusicAssistant, path_or_url: str, provider: str, key: str
 ) -> MediaItemPalette:
-    img_data = await get_image_data(mass, path_or_url, provider)
+    try:
+        img_data = await get_image_data(mass, path_or_url, provider)
+    except FileNotFoundError, MusicAssistantError:
+        # the image is unavailable (e.g. a stale artwork URL that 404s); the
+        # empty palette is not cached below, so extraction is retried once the
+        # image becomes available again
+        return MediaItemPalette()
     palette = await asyncio.to_thread(extract_palette, img_data)
     # Only persist a palette that actually yielded colors; an empty result is
     # usually a transient decode/download failure that should be retried rather
