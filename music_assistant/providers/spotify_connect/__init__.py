@@ -627,10 +627,12 @@ class SpotifyConnectProvider(PluginProvider):
         os.makedirs(self.cache_dir, exist_ok=True)
         initial_volume = 50
         if self._default_player_id != PLAYER_ID_AUTO:
+            # the resolved logical (0-100) volume matches the Spotify volume scale;
+            # clamp it as it can be out of range until volume limit enforcement runs
             if (player := self.mass.players.get_player(self._default_player_id)) and (
-                player.volume_level is not None
+                player.state.volume_level is not None
             ):
-                initial_volume = player.volume_level
+                initial_volume = max(0, min(100, player.state.volume_level))
         config: dict[str, Any] = {
             "device_name": self._publish_name,
             "device_type": "speaker",
