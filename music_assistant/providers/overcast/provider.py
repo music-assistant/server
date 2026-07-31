@@ -77,7 +77,9 @@ class OvercastProvider(MusicProvider):
 
     http_session: aiohttp.ClientSession
     max_episodes: int
-    _last_applied_ts: datetime | None = None
+    # newest playback state applied per feed url: a feed that could not be retrieved
+    # keeps its own watermark, so its states are still applied once it recovers
+    _feed_watermarks: dict[str, datetime]
     # the parsed export, kept alongside the raw text it was parsed from so a
     # refreshed export is re-parsed while repeated lookups are not
     _opml_cache: tuple[str, dict[str, OvercastSubscription]] | None = None
@@ -117,14 +119,15 @@ class OvercastProvider(MusicProvider):
         if not cookie_valid:
             await self._login()
 
-        raw_watermark = await self.mass.cache.get(
+        raw_watermarks = await self.mass.cache.get(
             key=CACHE_KEY_LAST_APPLIED,
             provider=self.instance_id,
             category=CACHE_CATEGORY_OPML,
-            default=None,
+            default={},
         )
-        if raw_watermark is not None:
-            self._last_applied_ts = from_iso_string(raw_watermark)
+        self._feed_watermarks = {
+            feed_url: from_iso_string(raw) for feed_url, raw in raw_watermarks.items()
+        }
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
@@ -139,7 +142,6 @@ class OvercastProvider(MusicProvider):
     async def get_library_podcasts(self) -> AsyncGenerator[Podcast]:
         """Retrieve the subscribed podcasts from the Overcast account."""
         subscriptions = await self._get_opml_subscriptions()
-        newest_applied = self._last_applied_ts
         for feed_url, subscription in subscriptions.items():
             self.logger.debug("Adding podcast with feed %s to library", feed_url)
             try:
@@ -158,21 +160,16 @@ class OvercastProvider(MusicProvider):
                 parsed_feed=parsed_podcast,
             )
             applied = await self._apply_playback_states(feed_url, subscription, parsed_podcast)
-            if applied is not None and (newest_applied is None or applied > newest_applied):
-                newest_applied = applied
+            if applied is not None:
+                # stored right away: the caller may stop consuming this generator at
+                # any point, which would otherwise re-apply these states on the next sync
+                self._feed_watermarks[feed_url] = applied
+                await self._store_watermarks()
             yield parse_podcast(
                 feed_url=feed_url,
                 parsed_feed=parsed_podcast,
                 instance_id=self.instance_id,
                 domain=self.domain,
-            )
-        if newest_applied is not None and newest_applied != self._last_applied_ts:
-            self._last_applied_ts = newest_applied
-            await self.mass.cache.set(
-                key=CACHE_KEY_LAST_APPLIED,
-                provider=self.instance_id,
-                category=CACHE_CATEGORY_OPML,
-                data=newest_applied.isoformat(),
             )
 
     async def get_podcast(self, prov_podcast_id: str) -> Podcast:
@@ -376,6 +373,7 @@ class OvercastProvider(MusicProvider):
         :param parsed_podcast: The podcastparser dict of the feed.
         :return: The newest state timestamp that was applied, or None if none were.
         """
+        watermark = self._feed_watermarks.get(feed_url)
         newest_applied: datetime | None = None
         podcast_cover = parsed_podcast.get("cover_url")
         podcast_name = parsed_podcast.get("title")
@@ -391,7 +389,7 @@ class OvercastProvider(MusicProvider):
                 # never mark items unplayed: an absent state cannot be told apart
                 # from an episode that simply was never touched in Overcast
                 continue
-            if self._last_applied_ts is not None and state.user_updated_at <= self._last_applied_ts:
+            if watermark is not None and state.user_updated_at <= watermark:
                 # already applied in a previous sync; skipping it also makes sure
                 # local progress made since then is not overwritten
                 continue
@@ -406,6 +404,12 @@ class OvercastProvider(MusicProvider):
             )
             if mass_episode is None:
                 continue
+            if not state.played:
+                # never move the user backwards: the playlog write replaces whatever MA
+                # recorded itself, which may be a position further into the episode
+                _, local_position_ms = await self.mass.music.get_resume_position(mass_episode)
+                if local_position_ms > (state.progress_s or 0) * 1000:
+                    continue
             await self.mass.music.mark_item_played(
                 mass_episode,
                 fully_played=state.played,
@@ -414,6 +418,17 @@ class OvercastProvider(MusicProvider):
             if newest_applied is None or state.user_updated_at > newest_applied:
                 newest_applied = state.user_updated_at
         return newest_applied
+
+    async def _store_watermarks(self) -> None:
+        """Persist the per-feed watermarks of the applied playback states."""
+        # watermarks of feeds that are no longer subscribed are kept on purpose,
+        # so re-subscribing does not re-apply the feed's entire playback history
+        await self.mass.cache.set(
+            key=CACHE_KEY_LAST_APPLIED,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_OPML,
+            data={feed_url: ts.isoformat() for feed_url, ts in self._feed_watermarks.items()},
+        )
 
     async def _enrich_episode_chapters(
         self, prov_podcast_id: str, guid_or_stream_url: str, mass_episode: PodcastEpisode

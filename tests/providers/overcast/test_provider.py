@@ -11,13 +11,21 @@ from unittest.mock import AsyncMock, MagicMock, Mock
 
 import pytest
 from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import LoginFailed, ResourceTemporarilyUnavailable
+from music_assistant_models.errors import (
+    LoginFailed,
+    MediaNotFoundError,
+    ResourceTemporarilyUnavailable,
+)
 
+from music_assistant.providers.overcast import provider as overcast_provider
 from music_assistant.providers.overcast.helpers import (
     OvercastEpisodeState,
     OvercastSubscription,
 )
 from music_assistant.providers.overcast.provider import OvercastProvider
+
+FEED_A = "https://example.com/feed1.xml"
+FEED_B = "https://example.com/feed2.xml"
 
 
 class _FakeResponse:
@@ -237,7 +245,7 @@ async def test_apply_playback_states_respects_watermark() -> None:
         ],
     }
     provider = MagicMock()
-    provider._last_applied_ts = watermark
+    provider._feed_watermarks = {FEED_A: watermark}
     provider.instance_id = "overcast--test"
     provider.domain = "overcast"
     provider.mass.music.mark_item_played = AsyncMock()
@@ -252,3 +260,133 @@ async def test_apply_playback_states_respects_watermark() -> None:
     call = provider.mass.music.mark_item_played.await_args
     assert call.kwargs["fully_played"] is True
     assert call.kwargs["seconds_played"] == 123
+
+
+async def test_apply_playback_states_ignores_other_feeds_watermark() -> None:
+    """A feed is gated by its own watermark only, never by one of another feed."""
+    state = _episode_state(played=True, user_updated_at=datetime(2026, 2, 1, tzinfo=UTC))
+    parsed_podcast = {
+        "title": "Feed One",
+        "cover_url": None,
+        "episodes": [{"title": "A", "guid": "g-a", "enclosures": [{"url": state.enclosure_url}]}],
+    }
+    provider = MagicMock()
+    provider._feed_watermarks = {FEED_B: datetime(2026, 3, 1, tzinfo=UTC)}
+    provider.instance_id = "overcast--test"
+    provider.domain = "overcast"
+    provider.mass.music.mark_item_played = AsyncMock()
+    result = await OvercastProvider._apply_playback_states(
+        cast("OvercastProvider", provider),
+        FEED_A,
+        _subscription(state),
+        parsed_podcast,
+    )
+    assert result == state.user_updated_at
+    provider.mass.music.mark_item_played.assert_awaited_once()
+
+
+def _in_progress_provider(local_position_ms: int) -> MagicMock:
+    """Build a provider stub whose playlog already holds the given local position."""
+    provider = MagicMock()
+    provider._feed_watermarks = {}
+    provider.instance_id = "overcast--test"
+    provider.domain = "overcast"
+    provider.mass.music.get_resume_position = AsyncMock(return_value=(False, local_position_ms))
+    provider.mass.music.mark_item_played = AsyncMock()
+    return provider
+
+
+async def test_apply_playback_states_keeps_further_local_progress() -> None:
+    """An Overcast position behind the one MA recorded itself is not written to the playlog."""
+    state = _episode_state(progress_s=1200)
+    parsed_podcast = {
+        "title": "Feed One",
+        "cover_url": None,
+        "episodes": [{"title": "A", "guid": "g-a", "enclosures": [{"url": state.enclosure_url}]}],
+    }
+    provider = _in_progress_provider(local_position_ms=1800 * 1000)
+    result = await OvercastProvider._apply_playback_states(
+        cast("OvercastProvider", provider),
+        FEED_A,
+        _subscription(state),
+        parsed_podcast,
+    )
+    assert result is None
+    provider.mass.music.mark_item_played.assert_not_awaited()
+
+
+async def test_apply_playback_states_applies_progress_ahead_of_the_playlog() -> None:
+    """An Overcast position ahead of MA's own record is applied as usual."""
+    state = _episode_state(progress_s=1200)
+    parsed_podcast = {
+        "title": "Feed One",
+        "cover_url": None,
+        "episodes": [{"title": "A", "guid": "g-a", "enclosures": [{"url": state.enclosure_url}]}],
+    }
+    provider = _in_progress_provider(local_position_ms=600 * 1000)
+    result = await OvercastProvider._apply_playback_states(
+        cast("OvercastProvider", provider),
+        FEED_A,
+        _subscription(state),
+        parsed_podcast,
+    )
+    assert result == state.user_updated_at
+    assert provider.mass.music.mark_item_played.await_args.kwargs["seconds_played"] == 1200
+
+
+def _sync_provider(applied: datetime, monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    """Build a provider stub syncing two feeds, of which the second one is unreachable."""
+    provider = MagicMock()
+    provider._feed_watermarks = {}
+    provider.instance_id = "overcast--test"
+    provider.domain = "overcast"
+    provider.max_episodes = 0
+    provider._get_opml_subscriptions = AsyncMock(
+        return_value={FEED_A: _subscription(), FEED_B: _subscription()}
+    )
+    provider._apply_playback_states = AsyncMock(return_value=applied)
+    provider.mass.cache.set = AsyncMock()
+    provider._store_watermarks = partial(OvercastProvider._store_watermarks, provider)
+
+    async def _parsed_feed(*, feed_url: str, **_kwargs: Any) -> dict[str, Any]:
+        if feed_url == FEED_B:
+            raise MediaNotFoundError("feed is down")
+        return {"title": "Feed One", "episodes": []}
+
+    monkeypatch.setattr(overcast_provider, "get_podcastparser_dict", _parsed_feed)
+    monkeypatch.setattr(overcast_provider, "set_cached_podcast", AsyncMock())
+    monkeypatch.setattr(overcast_provider, "parse_podcast", Mock(return_value=MagicMock()))
+    return provider
+
+
+async def test_failing_feed_does_not_advance_another_feeds_watermark(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreachable feed keeps its own (absent) watermark while others advance."""
+    applied = datetime(2026, 3, 2, tzinfo=UTC)
+    provider = _sync_provider(applied, monkeypatch)
+    podcasts = [
+        podcast
+        async for podcast in OvercastProvider.get_library_podcasts(
+            cast("OvercastProvider", provider)
+        )
+    ]
+    assert len(podcasts) == 1
+    assert provider._feed_watermarks == {FEED_A: applied}
+    assert provider.mass.cache.set.await_args.kwargs["data"] == {FEED_A: applied.isoformat()}
+
+
+async def test_watermark_of_unsubscribed_feed_is_retained(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A feed that is no longer subscribed keeps its watermark, so it can be re-subscribed."""
+    applied = datetime(2026, 3, 2, tzinfo=UTC)
+    unsubscribed = datetime(2026, 1, 1, tzinfo=UTC)
+    provider = _sync_provider(applied, monkeypatch)
+    provider._feed_watermarks = {"https://example.com/gone.xml": unsubscribed}
+    async for _ in OvercastProvider.get_library_podcasts(cast("OvercastProvider", provider)):
+        pass
+    assert provider.mass.cache.set.await_args.kwargs["data"] == {
+        "https://example.com/gone.xml": unsubscribed.isoformat(),
+        FEED_A: applied.isoformat(),
+    }

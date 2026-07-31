@@ -32,6 +32,10 @@ class OvercastSubscription:
     title: str | None
     overcast_id: str | None
     episodes: list[OvercastEpisodeState] = field(default_factory=list)
+    # lazily built enclosure url -> state index, see match_episode_state
+    _state_index: dict[str, OvercastEpisodeState] | None = field(
+        default=None, repr=False, compare=False
+    )
 
 
 def parse_extended_opml(xml_text: str) -> dict[str, OvercastSubscription]:
@@ -80,16 +84,28 @@ def match_episode_state(
     :param subscription: The subscription holding the episode states.
     :param stream_url: The episode's enclosure/stream url from the RSS feed.
     """
-    for state in subscription.episodes:
-        if state.enclosure_url == stream_url:
-            return state
+    if subscription._state_index is None:
+        subscription._state_index = _build_state_index(subscription.episodes)
+    if (state := subscription._state_index.get(stream_url)) is not None:
+        return state
     # signed enclosure urls may rotate their query part between exports,
-    # so compare again with query and fragment stripped
-    stripped_url = _strip_url(stream_url)
-    for state in subscription.episodes:
-        if state.enclosure_url and _strip_url(state.enclosure_url) == stripped_url:
-            return state
-    return None
+    # so look up again with query and fragment stripped
+    return subscription._state_index.get(_strip_url(stream_url))
+
+
+def _build_state_index(
+    episodes: list[OvercastEpisodeState],
+) -> dict[str, OvercastEpisodeState]:
+    # exact urls are indexed first so they win from a stripped url of another state,
+    # and the first state wins per url to keep the export's order authoritative
+    index: dict[str, OvercastEpisodeState] = {}
+    for state in episodes:
+        if state.enclosure_url:
+            index.setdefault(state.enclosure_url, state)
+    for state in episodes:
+        if state.enclosure_url:
+            index.setdefault(_strip_url(state.enclosure_url), state)
+    return index
 
 
 def _parse_episode_outline(episode: dict[str, str]) -> OvercastEpisodeState:

@@ -15,7 +15,8 @@ CONF_SESSION_COOKIE = "session_cookie"
 CONF_MAX_NUM_EPISODES = "max_num_episodes"
 
 CACHE_CATEGORY_OPML = 1
-CACHE_KEY_LAST_APPLIED = "last_applied_playback_ts"  # ISO datetime of newest applied progress
+# feed url -> ISO datetime of the newest progress applied for that feed
+CACHE_KEY_LAST_APPLIED = "last_applied_playback_ts"
 
 # The OPML export endpoint is rate limited by Overcast (roughly 10 requests/day),
 # so the export is cached to match the default 12h library sync interval and is
