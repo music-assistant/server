@@ -73,8 +73,11 @@ jobs:
           Walk the WHOLE diff. When a standard does not cover something you see, grep
           ./review-corpus.jsonl (case-insensitive keyword alternation) for a prior project decision
           and cite its link. Present every finding as a project standard — do NOT name individual
-          maintainers. Output ONLY a JSON array of findings; each element:
-          {"severity":"CRITICAL|PROBLEM|SUGGESTION","path":"file/path","line":<int or null>,"issue":"1-2 sentences","principle":"the project standard","citation_url":"source link"}
+          maintainers. For a concrete one-line fix, set "suggestion" to the exact replacement for
+          the line at "line" (keep its indentation, no diff +/- prefix); GitHub turns that into a
+          one-click change. Leave "suggestion" null for architectural or multi-line findings.
+          Output ONLY a JSON array of findings; each element:
+          {"severity":"CRITICAL|PROBLEM|SUGGESTION","path":"file/path","line":<int or null>,"issue":"1-2 sentences","principle":"the project standard","citation_url":"source link","suggestion":"<one-line replacement, or null>"}
           No prose outside the JSON array. Never invent a standard or citation.
           EOF
           # Minimal tools: read (diff + standards) and grep (history search) only — no write, no network.

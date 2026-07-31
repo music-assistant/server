@@ -106,7 +106,14 @@ def main():
         body = f"**[{finding.get('severity', 'SUGGESTION')}]** {finding.get('issue', '')}"
         if finding.get("citation_url"):
             body += f"\n\n_Standard: {finding.get('principle', '')} — {finding['citation_url']}_"
-        if finding.get("path") and isinstance(finding.get("line"), int):
+        anchored = bool(finding.get("path")) and isinstance(finding.get("line"), int)
+        suggestion = finding.get("suggestion")
+        if anchored and isinstance(suggestion, str) and suggestion.strip():
+            # A fenced ```suggestion block renders as an applyable one-click change that
+            # replaces the anchored line; only the model's mechanical fixes carry one.
+            block = suggestion.rstrip("\n")
+            body += f"\n\n```suggestion\n{block}\n```"
+        if anchored:
             comments.append(
                 {"path": finding["path"], "line": finding["line"], "side": "RIGHT", "body": body},
             )
