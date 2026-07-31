@@ -723,12 +723,11 @@ class MusicAssistant:
 
         def task_done_callback(_task: asyncio.Task[Any]) -> None:
             self._tracked_tasks.pop(task_id, None)
-            # log unhandled exceptions
-            if (
-                LOGGER.isEnabledFor(logging.DEBUG)
-                and not _task.cancelled()
-                and (err := _task.exception())
-            ):
+            if _task.cancelled():
+                return
+            # always retrieve the exception, otherwise asyncio logs a noisy
+            # "Task exception was never retrieved" error at garbage collection time
+            if err := _task.exception():
                 task_name = _task.get_name() if hasattr(_task, "get_name") else str(_task)
                 LOGGER.warning(
                     "Exception in task %s - target: %s: %s",
