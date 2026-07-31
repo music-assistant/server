@@ -1002,6 +1002,9 @@ class AirPlayStream:
                 requested = int(fields.get("requested_unix_ms", 0))
                 actual = int(fields.get("at_unix_ms", 0))
             except ValueError, IndexError:
+                # Malformed ack: leave _start_ack unset so the caller falls
+                # back to trusting the commanded instant, without waiting out
+                # the ack timeout.
                 pass
             else:
                 self._start_ack = (requested, actual)
@@ -1017,7 +1020,7 @@ class AirPlayStream:
                         requested,
                         actual,
                     )
-                self._started.set()
+            self._started.set()
         elif "[STATUS] flushed" in line:
             # A splice-timeline member reports the audible instant of its
             # frozen delivery head; the warm START must anchor beyond it (a

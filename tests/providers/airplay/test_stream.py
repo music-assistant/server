@@ -1644,6 +1644,24 @@ async def test_connect_error_status_line_is_parsed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_started_ack_status_line_parsing() -> None:
+    """A started ack releases the START wait; a malformed one carries no details."""
+    stream = AirPlayStream(_make_player())
+
+    stream._handle_status_line(
+        "[STATUS] started requested_unix_ms=1750000000000 at_unix_ms=1750000000004"
+    )
+    assert stream._started.is_set()
+    assert stream._start_ack == (1750000000000, 1750000000004)
+
+    stream._started.clear()
+    stream._start_ack = None
+    stream._handle_status_line("[STATUS] started requested_unix_ms=garbage at_unix_ms=1")
+    assert stream._started.is_set()
+    assert stream._start_ack is None
+
+
+@pytest.mark.asyncio
 async def test_connect_error_status_line_tolerates_missing_fields() -> None:
     """A failure line without http/detail still yields the reported code."""
     stream = AirPlayStream(_make_player())
