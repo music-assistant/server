@@ -42,25 +42,22 @@ def gh(args, inp=None):
 
 
 def extract_findings(raw):
-    """Return the first balanced ``[...]`` in the output that parses to a JSON list."""
-    depth = 0
-    start = -1
+    """
+    Return the first ``[...]`` in the output that parses as a JSON list of findings.
+
+    Uses ``raw_decode`` (which honours JSON string quoting) rather than counting brackets,
+    so ``[``/``]`` inside a finding's text can't break detection. Trailing prose is ignored.
+    """
+    decoder = json.JSONDecoder()
     for i, char in enumerate(raw):
-        if char == "[":
-            if depth == 0:
-                start = i
-            depth += 1
-        elif char == "]" and depth > 0:
-            depth -= 1
-            if depth == 0 and start != -1:
-                try:
-                    data = json.loads(raw[start : i + 1])
-                except json.JSONDecodeError:
-                    start = -1
-                    continue
-                if isinstance(data, list):
-                    return data
-                start = -1
+        if char != "[":
+            continue
+        try:
+            data = decoder.raw_decode(raw[i:])[0]
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, list) and (not data or isinstance(data[0], dict)):
+            return data
     return []
 
 
