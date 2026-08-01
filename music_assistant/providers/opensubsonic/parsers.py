@@ -153,7 +153,7 @@ def parse_track(  # noqa: PLR0915
         track_number=sonic_song.track or 0,
     )
 
-    if mbid := clean_mbid(sonic_song.music_brainz_id, sonic_song.path or f"track {name}"):
+    if mbid := clean_mbid(sonic_song.music_brainz_id, sonic_song.path or f"track {name}", logger):
         track.mbid = mbid
 
     if sonic_song.sort_name:
@@ -226,7 +226,10 @@ def parse_track(  # noqa: PLR0915
 
 
 def parse_artist(
-    instance_id: str, sonic_artist: SonicArtist, sonic_info: SonicArtistInfo | None = None
+    instance_id: str,
+    sonic_artist: SonicArtist,
+    sonic_info: SonicArtistInfo | None = None,
+    logger: logging.Logger | None = None,
 ) -> Artist:
     """Parse artist and artistInfo into a Music Assistant Artist."""
     metadata: MediaItemMetadata = MediaItemMetadata()
@@ -280,7 +283,7 @@ def parse_artist(
         sort_name=sonic_artist.sort_name,
     )
 
-    if mbid := clean_mbid(sonic_artist.music_brainz_id, f"artist {sonic_artist.name}"):
+    if mbid := clean_mbid(sonic_artist.music_brainz_id, f"artist {sonic_artist.name}", logger):
         artist.mbid = mbid
 
     return artist
@@ -358,7 +361,7 @@ def parse_album(
     if sonic_album.sort_name:
         album.sort_name = sonic_album.sort_name
 
-    if mbid := clean_mbid(sonic_album.music_brainz_id, f"album {sonic_album.name}"):
+    if mbid := clean_mbid(sonic_album.music_brainz_id, f"album {sonic_album.name}", logger):
         album.mbid = mbid
 
     if sonic_album.artist_id:

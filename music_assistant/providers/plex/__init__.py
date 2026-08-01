@@ -1238,7 +1238,9 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             album.metadata.release_date = plex_album.originallyAvailableAt
         if (explicit := get_explicit(plex_album)) is not None:
             album.metadata.explicit = explicit
-        if mbid := clean_mbid(get_musicbrainz_id(plex_album), f"album {plex_album.title}"):
+        if mbid := clean_mbid(
+            get_musicbrainz_id(plex_album), f"album {plex_album.title}", self.logger
+        ):
             album.mbid = mbid
 
         album.artists.append(
@@ -1280,7 +1282,9 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             artist.metadata.style = next(
                 (style.tag for style in plex_artist.styles if style.tag), None
             )
-        if mbid := clean_mbid(get_musicbrainz_id(plex_artist), f"artist {plex_artist.title}"):
+        if mbid := clean_mbid(
+            get_musicbrainz_id(plex_artist), f"artist {plex_artist.title}", self.logger
+        ):
             artist.mbid = mbid
         return artist
 
@@ -1476,7 +1480,9 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             track.metadata.mood = next((mood.tag for mood in plex_track.moods if mood.tag), None)
         if (explicit := get_explicit(plex_track)) is not None:
             track.metadata.explicit = explicit
-        if mbid := clean_mbid(get_musicbrainz_id(plex_track), f"track {plex_track.title}"):
+        if mbid := clean_mbid(
+            get_musicbrainz_id(plex_track), f"track {plex_track.title}", self.logger
+        ):
             track.mbid = mbid
         if plex_track.parentKey:
             track.album = self._get_item_mapping(
