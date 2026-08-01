@@ -183,6 +183,10 @@ class AirPlayStream:
         # binaries emit it alongside the legacy warn for the same event, so the
         # warn line is then ignored to avoid double counting.
         self._reanchor_status_seen: bool = False
+        # Set once a stalled receiver clock has been reported, so the warning
+        # stays a single support signal instead of repeating with every
+        # clock_ready update of this stream session.
+        self._clock_stall_warned: bool = False
 
     @property
     def running(self) -> bool:
@@ -1448,6 +1452,9 @@ class AirPlayStream:
         """
         Parse a [STATUS] clock_ready line into the receiver's readiness projection.
 
+        A ``stalled`` state means the receiver never answered our clock and will
+        render silence, which is warned about once per stream session.
+
         :param line: The status line, e.g. ``[STATUS] clock_ready mode=ptp
             state=probing streak_ms=0 exchanges=1 ready_in_ms=2300
             ready_at_unix_ms=1750000002300``.
@@ -1464,6 +1471,18 @@ class AirPlayStream:
             # No probe seen yet, so the line carries no projection; the binary
             # keeps reporting until one exists.
             return
+        if state == "stalled" and not self._clock_stall_warned:
+            # The receiver is not slaving to our clock at all, so it renders
+            # silence while everything else about the session looks healthy.
+            self._clock_stall_warned = True
+            self.player.logger.warning(
+                "%s has not answered the server's PTP clock (%s clock exchange(s), "
+                "probe streak %s ms), so it will not play any audio. Check that UDP "
+                "319/320 traffic can flow between the speaker and the server.",
+                self.player.display_name,
+                fields.get("exchanges", "?"),
+                fields.get("streak_ms", "?"),
+            )
         # NTP timing has no receiver clock to wait for, and a state without a
         # projection resolves the wait with nothing so a caller falls back
         # instead of blocking on evidence that will not arrive.

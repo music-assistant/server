@@ -957,6 +957,47 @@ async def test_wait_clock_ready_times_out_for_a_binary_that_never_reports() -> N
     assert await stream.wait_clock_ready(timeout=0.01) is None
 
 
+@pytest.mark.asyncio
+async def test_clock_ready_stalled_state_warns_once(caplog: pytest.LogCaptureFixture) -> None:
+    """A receiver that never answers our clock is reported loudly once and carries no projection."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.DEBUG):
+        ended = stream._handle_status_line(
+            "[STATUS] clock_ready mode=ptp state=stalled streak_ms=0 exchanges=0 "
+            "ready_in_ms=0 ready_at_unix_ms=0"
+        )
+        stream._handle_status_line(
+            "[STATUS] clock_ready mode=ptp state=stalled streak_ms=0 exchanges=0 "
+            "ready_in_ms=0 ready_at_unix_ms=0"
+        )
+
+    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert ended is False
+    assert len(warnings) == 1
+    assert "Player A" in warnings[0].getMessage()
+    assert "319/320" in warnings[0].getMessage()
+    assert stream._clock_ready.is_set()
+    assert await stream.wait_clock_ready(timeout=0.01) is None
+
+
+@pytest.mark.parametrize("state", ["cold", "probing", "ready"])
+def test_clock_ready_handshake_states_do_not_warn(
+    state: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Any state but a stall is a normal step of the clock handshake and stays quiet."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.DEBUG):
+        ended = stream._handle_status_line(
+            f"[STATUS] clock_ready mode=ptp state={state} streak_ms=900 exchanges=4 "
+            f"ready_in_ms=940 ready_at_unix_ms={START_UNIX_MS}"
+        )
+
+    assert ended is False
+    assert [record for record in caplog.records if record.levelno >= logging.WARNING] == []
+
+
 def test_elapsed_includes_start_position() -> None:
     """Reported progress is the current anchor's media base plus the binary delta."""
     player = _make_player()
