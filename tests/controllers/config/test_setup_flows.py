@@ -89,6 +89,8 @@ async def flow_mass(mass_minimal: MusicAssistant) -> AsyncGenerator[MusicAssista
     mass_minimal.music = MagicMock()
     # awaited at the tail of the real provider load path
     mass_minimal.music.on_provider_loaded = AsyncMock()
+    # awaited at the head of the real provider unload path
+    mass_minimal.music.unschedule_provider_sync = AsyncMock()
     mass_minimal.players = MagicMock()
     mass_minimal.players.on_player_config_change = AsyncMock()
     try:
