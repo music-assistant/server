@@ -118,6 +118,10 @@ class AirPlayStream:
         # the self-verification signal for the start contract.
         self._started = asyncio.Event()
         self._start_ack: tuple[int, int] | None = None
+        # Whether the last commanded START was a late-join start: routes the
+        # correction log levels (a corrected join is the routine landing path,
+        # a corrected origin start is a loud signal).
+        self._start_was_join = False
         # Receiver storm guard state: last-honored monotonic time per remote
         # transport command, plus a counter of suppressed repeats.
         self._remote_command_last: dict[str, float] = {}
@@ -370,7 +374,9 @@ class AirPlayStream:
             return False
         return True
 
-    async def start(self, start_unix_ms: int = 0, position_ms: int = 0) -> int | None:
+    async def start(
+        self, start_unix_ms: int = 0, position_ms: int = 0, *, join: bool = False
+    ) -> int | None:
         """
         Anchor playback so the first pending stdin sample is audible at an instant.
 
@@ -382,6 +388,10 @@ class AirPlayStream:
             clamps to its minimum lead).
         :param position_ms: Media position mapped to that first sample, used as
             the base for elapsed reporting.
+        :param join: This start must land on an already-live group timeline (a
+            late joiner): the binary then enforces receiver clock readiness and
+            corrects the anchor forward post-commit if needed ([STATUS]
+            anchor_corrected). Group/solo origin starts leave it False.
         :return: The true scheduled audible instant (unix ms) from the binary's
             started ack — the commanded instant when it was feasible, the
             corrected-forward one otherwise; None when no ack arrived (older
@@ -403,8 +413,12 @@ class AirPlayStream:
         self.player.set_state_from_stream(elapsed_time=self._start_position, stream=self)
         self._started.clear()
         self._start_ack = None
+        self._start_was_join = join
+        start_cmd = f"START_UNIX_MS={start_unix_ms}\nACTION=START"
+        if join:
+            start_cmd = f"START_UNIX_MS={start_unix_ms}\nSTART_JOIN=1\nACTION=START"
         async with self._metadata_lock:
-            if not await self._write_cli_command(f"START_UNIX_MS={start_unix_ms}\nACTION=START"):
+            if not await self._write_cli_command(start_cmd):
                 # Surfacing the dropped delivery lets the session fall back to a
                 # cold restart instead of waiting on an anchor that never happens.
                 raise PlayerCommandFailed(
@@ -977,7 +991,7 @@ class AirPlayStream:
             return active_group_id
         return None
 
-    def _handle_status_line(self, line: str) -> bool:
+    def _handle_status_line(self, line: str) -> bool:  # noqa: PLR0915
         """Dispatch one cliairplay status line; True ends the stderr loop."""
         player = self.player
         if "[STATUS] connected" in line:
@@ -1006,11 +1020,14 @@ class AirPlayStream:
             else:
                 self._start_ack = (requested, actual)
                 if requested and actual and abs(actual - requested) > 2:
-                    # Loud on purpose: the commanded instant was infeasible and
-                    # the binary corrected it forward. The session re-aligns
-                    # the group from these acks; repeated corrections are the
-                    # support signal that leads/readiness need attention.
-                    player.logger.warning(
+                    # The session re-aligns the group from these acks. A
+                    # corrected join is the routine landing path (the low join
+                    # headroom defers to the binary's readiness correction);
+                    # for origin starts and group convergence rounds a
+                    # correction stays loud — there repeated corrections are
+                    # the support signal that leads/readiness need attention.
+                    player.logger.log(
+                        logging.INFO if self._start_was_join else logging.WARNING,
                         "AirPlay start corrected by %+d ms on %s (requested %d, scheduled %d)",
                         actual - requested,
                         player.display_name,
@@ -1018,6 +1035,10 @@ class AirPlayStream:
                         actual,
                     )
             self._started.set()
+        elif "[STATUS] anchor_corrected " in line:
+            self._parse_anchor_corrected(line)
+        elif "[STATUS] clock_verified" in line:
+            self._parse_clock_verified(line)
         elif "[STATUS] flushed" in line:
             # A splice-timeline member reports the audible instant of its
             # frozen delivery head; the warm START must anchor beyond it (a
@@ -1307,3 +1328,55 @@ class AirPlayStream:
             # action (across restarts) until a working password is entered,
             # instead of only failing at the next play attempt.
             self.player.set_password_invalid(True)
+
+    def _parse_anchor_corrected(self, line: str) -> None:
+        """
+        Parse a post-commit [STATUS] anchor_corrected line and re-base the position.
+
+        The binary emits this at most once per START, when a receiver clock
+        exchange that only resumed after the START ack finds the committed
+        instant infeasible: it moves the anchor forward and advances the queued
+        content by the same amount (``content_cut_ms``), so the member still
+        lands on the group timeline — only the reported media position shifts.
+
+        :param line: The status line, e.g. ``[STATUS] anchor_corrected
+            requested_unix_ms=1750000000000 from_unix_ms=1750000000400
+            at_unix_ms=1750000000900 content_cut_ms=500``.
+        """
+        try:
+            fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+            requested_unix_ms = int(fields.get("requested_unix_ms", 0))
+            from_unix_ms = int(fields.get("from_unix_ms", 0))
+            at_unix_ms = int(fields.get("at_unix_ms", 0))
+            content_cut_ms = int(fields.get("content_cut_ms", 0))
+        except ValueError, IndexError:
+            # Malformed line: drop it rather than react to bogus numbers.
+            return
+        # The binary's elapsed counts only the retained content, so the
+        # position base moves by the cut to keep reported progress exact.
+        self._start_position += content_cut_ms / 1000
+        # Routine for a join start: the low join headroom defers to this
+        # correction, which lands the anchor at exact receiver readiness. A
+        # post-commit correction on any other START stays loud.
+        self.player.logger.log(
+            logging.INFO if self._start_was_join else logging.WARNING,
+            "AirPlay anchor for %s corrected %+d ms after commit "
+            "(requested %d, at %d, content advanced %d ms to stay in sync)",
+            self.player.display_name,
+            at_unix_ms - from_unix_ms,
+            requested_unix_ms,
+            at_unix_ms,
+            content_cut_ms,
+        )
+
+    def _parse_clock_verified(self, line: str) -> None:
+        """Debug-log a [STATUS] clock_verified line; no correction means no server action."""
+        try:
+            margin_ms = int(line.split("margin_ms=")[1])
+        except ValueError, IndexError:
+            return
+        self.player.logger.debug(
+            "cliairplay clock verified for %s (margin %d ms)",
+            self.player.display_name,
+            margin_ms,
+        )

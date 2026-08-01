@@ -63,15 +63,13 @@ DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 # RAOP because its pre-fill is paced.
 AIRPLAY_RAOP_SETUP_LEAD_MS: Final[int] = 1500
 AIRPLAY_AP2_SETUP_LEAD_MS: Final[int] = 2500
-# Late joiners keep a much more conservative headroom: besides connecting and
-# priming from the session's history buffer, the receiver must re-acquire the
-# shared PTP clock before it can render its anchor. Its Delay_Req exchange
-# only resumes ~0.7-1.5 s after the join's START is acked (measured on a
-# Sonos Era 100 pair, 2026-07-31) and the servo needs a further ~1.7-2.3 s to
-# lock — and a missed anchor is permanent on the splice timeline (the frozen
-# line is never re-announced), heard as a constant echo on the joined member.
-# The anchor therefore sits beyond exchange-resume plus lock plus margin.
-AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 4000
+# Late joiners anchor a low first guess, not a worst-case bound: a join START
+# makes the binary verify receiver clock readiness and correct the anchor
+# forward to it, advancing the queued content by the same (inaudible) amount.
+# The floor only keeps that correction window open: it must clear the binary's
+# verification arm window (AP2_CLOCK_VERIFY_MIN_WINDOW_MS, 1100 ms) plus a
+# poll round and the START command latency.
+AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 1500
 # Anchor lead for a readiness-confirmed START (cold and warm alike): the
 # session only anchors after the binary confirmed the connection ([STATUS]
 # connected) and the new audio flowing ([STATUS] audio), so the lead no longer

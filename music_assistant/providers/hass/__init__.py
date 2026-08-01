@@ -240,10 +240,19 @@ class HomeAssistantProvider(PluginProvider):
 
         # append player controls entries (if we have an active instance)
         if self.available:
-            return (
-                *base_entries,
-                *(await _get_config_entries(self)),
-            )
+            try:
+                return (
+                    *base_entries,
+                    *(await _get_config_entries(self)),
+                )
+            except TimeoutError:
+                # listing the selectable entities needs a live sweep of Home Assistant, so a
+                # slow or busy instance must not fail config resolution for the whole server.
+                # The entries below carry no options but do keep any stored selection.
+                self.logger.warning(
+                    "Timeout fetching entities from Home Assistant, "
+                    "player control options are unavailable until the next refresh"
+                )
 
         return (
             *base_entries,

@@ -17,6 +17,7 @@ from music_assistant.constants import CONF_LOG_LEVEL
 from music_assistant.providers.hass import (
     CONF_AI_TASK_ENTITY,
     CONF_AUTH_TOKEN,
+    CONF_POWER_CONTROLS,
     CONF_TTS_ENTITY,
     CONF_URL,
     CONF_VERIFY_SSL,
@@ -438,3 +439,27 @@ async def test_tts_not_advertised_without_entity(config_values: dict[str, str]) 
         _,
     ):
         assert ProviderFeature.TTS not in provider.supported_features
+
+
+async def test_config_entries_survive_a_state_fetch_timeout() -> None:
+    """A Home Assistant too slow to list its entities yields entries without options."""
+    async with _start_provider([_state("switch.example", "Example")]) as (provider, _):
+        # the entity sweep only runs for a provider the load machinery marked available
+        provider.available = True
+        with patch.object(provider, "get_states", AsyncMock(side_effect=TimeoutError)):
+            entries = await provider.get_config_entries()
+
+    keys = {entry.key for entry in entries}
+    assert CONF_POWER_CONTROLS in keys
+    assert CONF_TTS_ENTITY in keys
+    assert all(not entry.options for entry in entries)
+
+
+async def test_config_entries_list_entities_as_options() -> None:
+    """A responsive Home Assistant offers its entities as player control options."""
+    async with _start_provider([_state("switch.example", "Example")]) as (provider, _):
+        provider.available = True
+        entries = await provider.get_config_entries()
+
+    power_controls = next(entry for entry in entries if entry.key == CONF_POWER_CONTROLS)
+    assert [option.value for option in power_controls.options] == ["switch.example"]
