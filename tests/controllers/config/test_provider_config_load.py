@@ -23,8 +23,9 @@ import pytest
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig, ProviderError
 from music_assistant_models.enums import ConfigEntryType, ProviderStatus, ProviderType
 from music_assistant_models.errors import LoginFailed, SetupFailedError
+from music_assistant_models.provider import ProviderManifest
 
-from music_assistant.constants import CONF_PROVIDERS
+from music_assistant.constants import CONF_LOG_LEVEL, CONF_PROVIDERS
 from music_assistant.controllers.config.helpers import _provider_status
 from music_assistant.mass import MusicAssistant
 
@@ -147,6 +148,39 @@ async def test_dependent_scan_does_not_resolve_option_values(
     assert mock_get.await_args is not None
     assert mock_get.await_args.kwargs.get("include_values") is not True
     assert True not in mock_get.await_args.args
+
+
+async def test_dependent_is_loaded_with_resolved_config_values(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A dependent is handed a config with its values resolved, not the bare scan result."""
+    config = mass_minimal.config
+    instance = "dependent--test"
+    raw = {"domain": "dependent", "type": "player", "instance_id": instance, "enabled": True}
+    config.set(f"{CONF_PROVIDERS}/{instance}", raw)
+    mass_minimal._provider_manifests["dependent"] = ProviderManifest(
+        type=ProviderType.PLAYER,
+        domain="dependent",
+        name="Dependent",
+        description="",
+        codeowners=[],
+        depends_on="spotify",
+    )
+    # what the (deliberately cheap) dependent scan yields: no entries, so no values
+    scanned = cast("ProviderConfig", ProviderConfig.parse([], raw))
+    assert scanned.get_value(CONF_LOG_LEVEL) is None
+
+    with (
+        patch.object(mass_minimal, "_load_provider", AsyncMock()) as mock_load,
+        patch.object(config, "get_provider_configs", AsyncMock(return_value=[scanned])),
+    ):
+        await mass_minimal.load_provider_config(_prov_conf("spotify--test"))
+
+    loaded = mock_load.await_args_list[-1].args[0]
+    assert loaded.instance_id == instance
+    # a provider reads its log level while being constructed, so an unresolved config
+    # (value None) makes logger.setLevel() raise and the dependent never loads at all
+    assert loaded.get_value(CONF_LOG_LEVEL) == "GLOBAL"
 
 
 async def test_dependent_scan_failure_is_not_blamed_on_loaded_provider(
