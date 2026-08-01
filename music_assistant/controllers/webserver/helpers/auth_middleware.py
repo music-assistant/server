@@ -1,4 +1,4 @@
-"""Authentication middleware and helpers for HTTP requests and WebSocket connections."""
+"""Authentication helpers for HTTP requests and WebSocket connections."""
 
 from __future__ import annotations
 
@@ -8,7 +8,6 @@ from contextvars import ContextVar
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final, Self, cast
 
-from aiohttp import web
 from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
 from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
 
@@ -19,6 +18,8 @@ from .auth_providers import get_ha_user_details, get_ha_user_role
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
 if TYPE_CHECKING:
+    from aiohttp import web
+
     from music_assistant import MusicAssistant
 
 # Context key for storing authenticated user in request
@@ -72,7 +73,7 @@ async def get_authenticated_user(request: web.Request) -> User | None:
 
     :param request: The aiohttp request.
     """
-    # Check if user is already in context (from middleware)
+    # Return the user resolved by an earlier call on this same request
     if USER_CONTEXT_KEY in request:
         return cast("User | None", request[USER_CONTEXT_KEY])
 
@@ -167,21 +168,6 @@ async def get_authenticated_user(request: web.Request) -> User | None:
         # Store in request context
         request[USER_CONTEXT_KEY] = user
 
-    return user
-
-
-async def require_authentication(request: web.Request) -> User:
-    """
-    Require authentication for a request, raise 401 if not authenticated.
-
-    :param request: The aiohttp request.
-    """
-    user = await get_authenticated_user(request)
-    if not user:
-        raise web.HTTPUnauthorized(
-            text="Authentication required",
-            headers={"WWW-Authenticate": 'Bearer realm="Music Assistant"'},
-        )
     return user
 
 
@@ -365,48 +351,6 @@ def is_request_from_ingress(request: web.Request) -> bool:
         pass
 
     return False
-
-
-@web.middleware
-async def auth_middleware(request: web.Request, handler: Any) -> web.StreamResponse:
-    """
-    Authenticate requests and store user in context.
-
-    :param request: The aiohttp request.
-    :param handler: The request handler.
-    """
-    # Skip authentication for ingress requests (HA handles auth)
-    if is_request_from_ingress(request):
-        return cast("web.StreamResponse", await handler(request))
-
-    # Unauthenticated routes (static files, info, login, setup, etc.)
-    unauthenticated_paths = [
-        "/info",
-        "/login",
-        "/setup",
-        "/auth/",
-        "/api-docs/",
-        "/assets/",
-        "/favicon.ico",
-        "/manifest.json",
-        "/index.html",
-        "/",
-    ]
-
-    # Check if path should bypass auth
-    for path_prefix in unauthenticated_paths:
-        if request.path.startswith(path_prefix):
-            return cast("web.StreamResponse", await handler(request))
-
-    # Try to authenticate
-    user = await get_authenticated_user(request)
-
-    # Store user in context (might be None for unauthenticated requests)
-    request[USER_CONTEXT_KEY] = user
-
-    # Let the handler decide if authentication is required
-    # The handler will call require_authentication() if needed
-    return cast("web.StreamResponse", await handler(request))
 
 
 class ImpersonatedUser:
