@@ -647,6 +647,10 @@ class HueAudioAnalyzer:
     def clear_beats(self) -> None:
         """Drop the entire beat schedule + pending peaks (seek / stream end)."""
         self.clear_beat_schedule()
+        # A stream boundary can also be a clock-domain boundary (a different
+        # input takes over); a stale audio marker from the old domain must not
+        # hold the idle fallback on - or off - in the new one.
+        self._last_audio_us = None
         self._pending_peaks.clear()
         self._peak_boost = 0.0
         self._peak_set_at_us = None
