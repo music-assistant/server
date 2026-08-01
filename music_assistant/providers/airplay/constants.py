@@ -70,17 +70,17 @@ AIRPLAY_AP2_SETUP_LEAD_MS: Final[int] = 2500
 # verification arm window (AP2_CLOCK_VERIFY_MIN_WINDOW_MS, 1100 ms) plus a
 # poll round and the START command latency.
 AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 1500
-# Anchor lead for a readiness-confirmed START (cold and warm alike): the
-# session only anchors after the binary confirmed the connection ([STATUS]
-# connected) and the new audio flowing ([STATUS] audio), so the lead no longer
-# guesses at setup or transcoder spin-up time. It covers the receiver
+# Anchor leads for a readiness-confirmed START (cold and warm alike), solo and
+# group: the session only anchors after the binary confirmed the connection
+# ([STATUS] connected) and the new audio flowing ([STATUS] audio), so a lead no
+# longer guesses at setup or transcoder spin-up time. Both cover the receiver
 # re-anchor (accepted down to ~150 ms in the flush-ladder measurements) plus
-# the command's trip down the pipe, and for groups fanning the shared instant
-# out to every member. The pipe margin is what keeps the lead workable: the
-# binary rejects any instant inside its own 250 ms floor measured from when IT
-# reads the command, and corrects a miss to that floor plus another full lead,
-# so a lead sitting exactly on the floor misses by the delivery time every
-# time and turns a start into a group-wide re-anchor ladder.
+# the command's trip down the pipe; the group one also covers fanning the
+# shared instant out to every member. The pipe margin is what keeps them
+# workable: the binary rejects any instant inside its own 250 ms floor,
+# measured from when IT reads the command, and corrects a miss to that floor
+# plus another full lead — so a lead sitting exactly on the floor misses by the
+# delivery time every time and turns a start into a group-wide re-anchor ladder.
 AIRPLAY_START_LEAD_MS: Final[int] = 400
 AIRPLAY_GROUP_START_LEAD_MS: Final[int] = 500
 # Cold GROUP starts anchor further out: a receiver on a brand-new session
