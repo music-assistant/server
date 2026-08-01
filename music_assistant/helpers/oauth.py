@@ -35,7 +35,7 @@ def authorization_code_from_params(params: dict[str, str]) -> str:
     :param params: The merged callback query/body params returned by session.external().
     """
     code = params.get("code")
-    # the hosted relay page forwards a literal "null" code when consent was denied
+    # an older (cached) hosted relay page forwards a literal "null" code on denied consent
     if not code or code == "null":
         error = params.get("error") or "no authorization code returned"
         raise SetupFlowError(f"Authorization failed: {error}")
