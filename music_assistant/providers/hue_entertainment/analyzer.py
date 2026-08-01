@@ -331,6 +331,11 @@ _SPATIAL_SPREAD_THRESHOLD = 0.3
 # vanishes while the stream is active.
 _PER_CHANNEL_MIN_MULT = 0.3
 
+# Below this output level a lamp gets true black instead of the residue: at
+# 1-2 % drive many Hue lamps (the outdoor Lily family especially) mis-mix
+# their LEDs and a decaying colour tail blinks visibly green.
+_EMIT_FLOOR = 0.02
+
 # Bass-band → saturation modulation. Sustained bass keeps the slow baseline
 # tracking the current level, so only TRANSIENTS (kicks above the baseline)
 # push saturation toward the max — quiet music sits at the min.
@@ -1575,6 +1580,10 @@ class HueAudioAnalyzer:
         peak = max(r, g, b)
         if peak > 1.0:
             r, g, b = r / peak, g / peak, b / peak
+        elif peak < _EMIT_FLOOR:
+            # A decaying tail must end in true black: at 1-2 % drive the lamp's
+            # LED mixing goes visibly green before it reaches darkness.
+            r = g = b = 0.0
         return LightColorCommand(
             channel_id=channel_id,
             red=int(max(0.0, min(1.0, r)) * 65535),
