@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import socket
 import time
 from contextlib import suppress
@@ -77,6 +78,9 @@ PTP_DAEMON_READY_TIMEOUT: Final[float] = 3.0
 # Grace period after broadcasting a goodbye for a stale DACP registration before
 # re-registering the (name-stable) service, letting the cache flush the old record.
 DACP_RECLAIM_DELAY: Final[float] = 1.0
+# Opt-in for pyatv's own debug logging. Set to any non-empty value to trace the
+# pyatv protocol traffic itself.
+ENV_PYATV_DEBUG: Final[str] = "MASS_PYATV_DEBUG"
 
 
 class AirPlayProvider(PlayerProvider):
@@ -361,14 +365,16 @@ class AirPlayProvider(PlayerProvider):
         return await player.async_get_external_artwork(artwork_id)
 
     def _set_pyatv_log_level(self) -> None:
-        """Keep pyatv's (very chatty) logging quiet unless verbose logging is enabled."""
-        # pyatv is extremely chatty at debug level (it logs every protocol
-        # message and heartbeat of each control connection), so only pass
-        # through its debug logging when verbose logging is enabled
-        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+        """Keep pyatv's (very chatty) logging quiet unless it is explicitly asked for."""
+        # pyatv logs every protocol message, HTTP exchange and encrypted payload of
+        # each control connection at debug level, which buries our own logging and
+        # rotates the log file within minutes. Its debug output is therefore held
+        # back even on verbose sessions, which are meant to surface our own deep
+        # diagnostics (the cliairplay [STATUS] and PTP traces) rather than pyatv's.
+        if os.environ.get(ENV_PYATV_DEBUG):
             logging.getLogger("pyatv").setLevel(logging.DEBUG)
         else:
-            logging.getLogger("pyatv").setLevel(self.logger.level + 10)
+            logging.getLogger("pyatv").setLevel(max(self.logger.level + 10, logging.INFO))
 
     async def _setup_player(
         self, player_id: str, display_name: str, discovery_info: AsyncServiceInfo
