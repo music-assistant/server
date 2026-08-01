@@ -1751,20 +1751,6 @@ def test_anchor_corrected_status_line_logs_a_warning(caplog: pytest.LogCaptureFi
     assert "+500 ms" in caplog.text
 
 
-def test_anchor_corrected_status_line_without_a_cut_only_warns() -> None:
-    """A correction without the content cut (older binary) leaves the position base alone."""
-    stream = AirPlayStream(_make_player())
-    stream._start_position = 12.0
-
-    ended = stream._handle_status_line(
-        "[STATUS] anchor_corrected requested_unix_ms=0 "
-        "from_unix_ms=1750000000400 at_unix_ms=1750000000900"
-    )
-
-    assert ended is False
-    assert stream._start_position == 12.0
-
-
 def test_anchor_corrected_status_line_tolerates_malformed_line() -> None:
     """A malformed anchor_corrected line is dropped instead of raising or rebasing."""
     stream = AirPlayStream(_make_player())

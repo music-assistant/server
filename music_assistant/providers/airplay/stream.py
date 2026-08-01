@@ -1344,10 +1344,9 @@ class AirPlayStream:
         except ValueError, IndexError:
             # Malformed line: drop it rather than react to bogus numbers.
             return
-        if content_cut_ms > 0:
-            # The binary's elapsed counts only the retained content, so the
-            # position base moves by the cut to keep reported progress exact.
-            self._start_position += content_cut_ms / 1000
+        # The binary's elapsed counts only the retained content, so the
+        # position base moves by the cut to keep reported progress exact.
+        self._start_position += content_cut_ms / 1000
         # Loud on purpose: the join raced the receiver's clock exchange and the
         # commanded lead was too tight — recurring corrections mean the join
         # headroom needs attention.
