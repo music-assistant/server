@@ -341,15 +341,25 @@ class MusicTimelineQuizType(QuizType):
             preferred,
             limit=BONUS_CANDIDATE_LIMIT,
         )
-        distractors = self._filter_bonus_candidates(
-            track,
-            bonus_type,
-            [
-                *preferred,
-                *(await self._source_pool_bonus_distractors(track, bonus_type)),
-            ],
-            limit=DEFAULT_BONUS_OPTION_COUNT - 1,
-        )
+        if self._has_enough_bonus_candidates(track, bonus_type, preferred):
+            distractors = self._filter_bonus_candidates(
+                track,
+                bonus_type,
+                preferred,
+                limit=DEFAULT_BONUS_OPTION_COUNT - 1,
+            )
+        else:
+            # the source pool holds every configured track, so it is only walked
+            # when the preferred candidates cannot fill every wrong option
+            distractors = self._filter_bonus_candidates(
+                track,
+                bonus_type,
+                [
+                    *preferred,
+                    *(await self._source_pool_bonus_distractors(track, bonus_type)),
+                ],
+                limit=DEFAULT_BONUS_OPTION_COUNT - 1,
+            )
         if self.config.use_ai_distractors:
             mixed = await self._get_ai_bonus_distractors(
                 track,

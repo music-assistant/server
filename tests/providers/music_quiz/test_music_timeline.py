@@ -912,13 +912,19 @@ async def test_title_bonus_uses_same_artist_source_tracks_outside_playback_set()
     )
     quiz._eligible_tracks = [current, unrelated]
 
-    options = await quiz._create_bonus_options(current, TimelineBonusType.TITLE)
+    with patch.object(
+        quiz,
+        "_source_pool_bonus_distractors",
+        wraps=quiz._source_pool_bonus_distractors,
+    ) as source_pool_fallback:
+        options = await quiz._create_bonus_options(current, TimelineBonusType.TITLE)
 
     assert {option.label for option in options if not option.is_correct} == {
         "D.A.N.C.E.",
         "Phantom",
         "Audio, Video, Disco",
     }
+    source_pool_fallback.assert_not_awaited()
     mass.music.artists.top_tracks.assert_not_awaited()
     mass.music.search.assert_not_awaited()
 
