@@ -16,7 +16,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import MediaType, QueueOption
+from music_assistant_models.enums import MediaType, ProviderFeature, QueueOption
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import ProviderMapping
 
@@ -53,27 +53,44 @@ async def setup(
 class TagPlayerProvider(PluginProvider):
     """Tag Player plugin that links identifiers to existing library items."""
 
-    _unregister_commands: list[Callable[[], None]]
+    def __init__(
+        self,
+        mass: MusicAssistant,
+        manifest: ProviderManifest,
+        config: ProviderConfig,
+        supported_features: set[ProviderFeature] | None = None,
+    ) -> None:
+        """Initialize the Tag Player plugin."""
+        super().__init__(mass, manifest, config, supported_features)
+        self._unregister_commands: list[Callable[[], None]] = []
 
     async def loaded_in_mass(self) -> None:
         """Register API commands after the provider is loaded."""
-        self._unregister_commands = [
+        self._unregister_commands.append(
             self.mass.register_api_command(
                 "tagplayer/link", self.link_tag, required_scope=Scope.LIBRARY_WRITE
-            ),
+            )
+        )
+        self._unregister_commands.append(
             self.mass.register_api_command(
                 "tagplayer/unlink", self.unlink_tag, required_scope=Scope.LIBRARY_WRITE
-            ),
+            )
+        )
+        self._unregister_commands.append(
             self.mass.register_api_command(
                 "tagplayer/get", self.get_tag, required_scope=Scope.LIBRARY_READ
-            ),
+            )
+        )
+        self._unregister_commands.append(
             self.mass.register_api_command(
                 "tagplayer/list", self.list_tags, required_scope=Scope.LIBRARY_READ
-            ),
+            )
+        )
+        self._unregister_commands.append(
             self.mass.register_api_command(
                 "tagplayer/play", self.play_tag, required_scope=Scope.QUEUES_CONTROL
-            ),
-        ]
+            )
+        )
 
     async def unload(self, is_removed: bool = False) -> None:
         """Unregister API commands and clean up."""
