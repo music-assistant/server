@@ -825,24 +825,33 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 continue
 
             try:
-                method_name = f"get_{self.media_type.value}_by_external_id"
-                method = getattr(prov, method_name, None)
-                if method is None:
-                    continue
+                result: ItemCls | None = None
+                match self.media_type:
+                    case MediaType.TRACK:
+                        result = await prov.get_track_by_external_id(
+                            external_id, str(external_id_type)
+                        )
+                    case MediaType.ALBUM:
+                        result = await prov.get_album_by_external_id(
+                            external_id, str(external_id_type)
+                        )
+                    case MediaType.ARTIST:
+                        result = await prov.get_artist_by_external_id(
+                            external_id, str(external_id_type)
+                        )
 
-                if result := await method(external_id, str(external_id_type)):
+                if result:
                     if result.provider == "library":
                         return result
                     return (
                         await self.get_library_item_by_prov_id(result.item_id, result.provider)
                         or result
                     )
-            except NotImplementedError:
+            except NotImplementedError, MediaNotFoundError:
                 continue
-            except (MediaNotFoundError, ProviderUnavailableError) as err:
+            except ProviderUnavailableError as err:
                 self.logger.debug(
-                    "Error looking up %s by external ID on %s: %s",
-                    self.media_type.value,
+                    "Provider %s unavailable for external ID lookup: %s",
                     prov.domain,
                     err,
                 )
