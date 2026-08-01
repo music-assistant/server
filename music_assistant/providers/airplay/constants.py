@@ -63,9 +63,13 @@ DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 # RAOP because its pre-fill is paced.
 AIRPLAY_RAOP_SETUP_LEAD_MS: Final[int] = 1500
 AIRPLAY_AP2_SETUP_LEAD_MS: Final[int] = 2500
-# Late joiners keep a more conservative headroom: besides connecting, their
-# pipeline must also be primed from the session's history buffer.
-AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 2000
+# Late joiners anchor a low first guess, not a worst-case bound: a join START
+# makes the binary verify receiver clock readiness and correct the anchor
+# forward to it, advancing the queued content by the same (inaudible) amount.
+# The floor only keeps that correction window open: it must clear the binary's
+# verification arm window (AP2_CLOCK_VERIFY_MIN_WINDOW_MS, 1100 ms) plus a
+# poll round and the START command latency.
+AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 1500
 # Anchor lead for a readiness-confirmed START (cold and warm alike): the
 # session only anchors after the binary confirmed the connection ([STATUS]
 # connected) and the new audio flowing ([STATUS] audio), so the lead no longer

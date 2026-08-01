@@ -1,13 +1,16 @@
 """Tests for the core Music Assistant server object."""
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import EventType
 
+from music_assistant.constants import MASS_LOGGER_NAME
 from music_assistant.mass import MusicAssistant
 
 if TYPE_CHECKING:
+    import pytest
     from music_assistant_models.event import MassEvent
 
 
@@ -61,3 +64,23 @@ async def test_events(mass: MusicAssistant) -> None:
         mass.signal_event(EventType.UNKNOWN)
         await asyncio.sleep(0)
         assert flag is False
+
+
+async def test_create_task_failure_logged(
+    mass_minimal: MusicAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test that a failed task without awaiter is logged, also without debug logging."""
+
+    async def _boom() -> None:
+        raise ValueError("boom")
+
+    with caplog.at_level(logging.INFO, logger=MASS_LOGGER_NAME):
+        mass_minimal.create_task(_boom)
+        # allow the task's done callback to run
+        await asyncio.sleep(0)
+
+    assert any(
+        "boom" in record.getMessage()
+        for record in caplog.records
+        if record.levelno == logging.WARNING
+    )

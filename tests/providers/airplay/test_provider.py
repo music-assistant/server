@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 from contextlib import AbstractContextManager
-from typing import cast
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from music_assistant_models.enums import PlaybackState
@@ -16,7 +16,7 @@ from music_assistant.providers.airplay.constants import (
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.player import AirPlayPlayer
-from music_assistant.providers.airplay.provider import AirPlayProvider
+from music_assistant.providers.airplay.provider import ENV_PYATV_DEBUG, AirPlayProvider
 from music_assistant.providers.airplay.sendspin_bridge import (
     SendspinAirPlayBridge,
     SendspinBridgeManager,
@@ -24,6 +24,9 @@ from music_assistant.providers.airplay.sendspin_bridge import (
 from music_assistant.providers.airplay.stream import AirPlayStream
 from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
 from music_assistant.providers.airplay_receiver import airplay_receiver_port
+
+if TYPE_CHECKING:
+    import pytest
 
 INSTANCE_ID = "airplay"
 START_UNIX_MS = 1_750_000_000_000
@@ -271,10 +274,22 @@ def test_pyatv_logging_quiet_at_debug_level() -> None:
     assert logging.getLogger("pyatv").level == logging.INFO
 
 
-def test_pyatv_logging_traces_at_verbose_level() -> None:
-    """A verbose session passes pyatv's debug logging through."""
+def test_pyatv_logging_quiet_at_verbose_level() -> None:
+    """A verbose session keeps pyatv's protocol chatter out of the log too."""
     prov = _ptp_provider()
     prov.logger.setLevel(VERBOSE_LOG_LEVEL)
+
+    prov._set_pyatv_log_level()
+
+    # verbose is there to surface our own diagnostics, not pyatv's protocol dumps
+    assert logging.getLogger("pyatv").level == logging.INFO
+
+
+def test_pyatv_logging_traces_with_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The dedicated opt-in releases pyatv's own debug logging."""
+    prov = _ptp_provider()
+    prov.logger.setLevel(VERBOSE_LOG_LEVEL)
+    monkeypatch.setenv(ENV_PYATV_DEBUG, "1")
 
     prov._set_pyatv_log_level()
 

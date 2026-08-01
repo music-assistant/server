@@ -655,6 +655,22 @@ async def test_start_sends_command_and_stamps_position() -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_join_marks_the_command() -> None:
+    """A late-join START carries START_JOIN=1 so the binary enforces clock readiness."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command:
+        await stream.start(START_UNIX_MS, 0, join=True)
+
+    write_command.assert_awaited_once_with(
+        f"START_UNIX_MS={START_UNIX_MS}\nSTART_JOIN=1\nACTION=START"
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "complete_before_start",
     [True, False],
@@ -1702,6 +1718,59 @@ async def test_started_ack_status_line_parsing() -> None:
     stream._handle_status_line("[STATUS] started requested_unix_ms=garbage at_unix_ms=1")
     assert stream._started.is_set()
     assert stream._start_ack is None
+
+
+# --- Post-commit anchor verification ---
+
+
+def test_anchor_corrected_status_line_rebases_the_position() -> None:
+    """A correction carrying a content cut moves the reported-position base by it."""
+    stream = AirPlayStream(_make_player())
+    stream._start_position = 12.0
+
+    ended = stream._handle_status_line(
+        "[STATUS] anchor_corrected requested_unix_ms=1750000000000 "
+        "from_unix_ms=1750000000400 at_unix_ms=1750000000900 content_cut_ms=500"
+    )
+
+    assert ended is False
+    assert stream._start_position == 12.5
+
+
+def test_anchor_corrected_status_line_logs_a_warning(caplog: pytest.LogCaptureFixture) -> None:
+    """The correction is logged loudly, including the display name and the delta."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.WARNING):
+        stream._handle_status_line(
+            "[STATUS] anchor_corrected requested_unix_ms=0 "
+            "from_unix_ms=1750000000400 at_unix_ms=1750000000900 content_cut_ms=500"
+        )
+
+    assert "Player A" in caplog.text
+    assert "+500 ms" in caplog.text
+
+
+def test_anchor_corrected_status_line_tolerates_malformed_line() -> None:
+    """A malformed anchor_corrected line is dropped instead of raising or rebasing."""
+    stream = AirPlayStream(_make_player())
+    stream._start_position = 12.0
+
+    ended = stream._handle_status_line("[STATUS] anchor_corrected requested_unix_ms=garbage")
+
+    assert ended is False
+    assert stream._start_position == 12.0
+
+
+def test_clock_verified_status_line_is_debug_logged(caplog: pytest.LogCaptureFixture) -> None:
+    """A clock_verified line needs no server action beyond a debug note of the margin."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.DEBUG):
+        ended = stream._handle_status_line("[STATUS] clock_verified margin_ms=42")
+
+    assert ended is False
+    assert "42" in caplog.text
 
 
 @pytest.mark.asyncio
