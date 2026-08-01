@@ -430,6 +430,27 @@ class TestStreamDetailsGuards:
         assert result.audio_format.bit_rate is None
 
     @pytest.mark.asyncio
+    async def test_music_stream_without_analysis_metadata_uses_original_download(
+        self,
+    ) -> None:
+        """Tracks missing analysis metadata should keep their original stream format."""
+        provider = _make_provider(stream_quality=STREAM_QUALITY_128)
+        plex_track = _make_stream_track(has_audio_streams=False)
+        plex_track.media[0].parts[0].size = None
+        provider._get_data = AsyncMock(return_value=plex_track)
+        provider._plex_server.url.return_value = "http://plex.local/file.flac?download=1"
+
+        result = await provider.get_stream_details("/library/metadata/1", MediaType.TRACK)
+
+        assert result.stream_type == StreamType.HTTP
+        assert result.path == "http://plex.local/file.flac?download=1"
+        assert result.audio_format.content_type == ContentType.FLAC
+        assert result.audio_format.bit_rate is None
+        provider._plex_server.url.assert_called_once_with(
+            "/library/parts/1/file.flac?download=1", True
+        )
+
+    @pytest.mark.asyncio
     async def test_podcast_episode_stream_transcoded_uses_plex_hls(self) -> None:
         """Configured bitrate should request Plex HLS transcoding for podcast episodes."""
         provider = _make_provider(LIBRARY_TYPE_PODCASTS, stream_quality=STREAM_QUALITY_128)
