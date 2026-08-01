@@ -265,7 +265,7 @@ class HomeAssistantPlayer(Player):
                 "albumName": media.album,
                 "images": [{"url": media.image_url}] if media.image_url else None,
                 "imageUrl": media.image_url,
-                "duration": media.duration,
+                "duration": media.stream_duration or media.duration,
             },
         }
         if self.extra_data.get("hass_domain") == "esphome":
