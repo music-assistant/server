@@ -240,10 +240,7 @@ class TagPlayerProvider(PluginProvider):
         media_type_str, _, item_id_str = target.strip("/").partition("/")
         if not item_id_str.isdigit():
             raise InvalidDataError(msg)
-        try:
-            media_type = MediaType(media_type_str)
-        except InvalidDataError as err:
-            raise InvalidDataError(msg) from err
+        media_type = MediaType(media_type_str)
         if media_type not in TAGGABLE_MEDIA_TYPES:
             raise InvalidDataError(msg)
         return (media_type, int(item_id_str))
