@@ -360,7 +360,7 @@ _PEAK_MIN_STRENGTH = 0.1
 # Ghost pulse: with the schedule dry but music still playing, keep pulsing at
 # the last known tempo, dimmed, so the room stays in the groove of the set.
 _GHOST_DIM = 0.60  # overall brightness scale while ghosting
-_GHOST_FLOOR = 0.45  # envelope trough, as a fraction of the ghost peak
+_GHOST_FLOOR = 0.45  # envelope low point, as a fraction of the ghost peak
 # Breathe: tempo-free slow swell for the same situation.
 _BREATHE_HZ = 0.15
 _BREATHE_LO = 0.30
@@ -416,6 +416,9 @@ class _ExpFilter:
 
 class HueAudioAnalyzer:
     """Render Hue colors from a paced beat schedule and a color@v1 palette."""
+
+    _last_sched_beat_us: int
+    _last_audio_us: int | None
 
     def __init__(
         self,
@@ -729,7 +732,9 @@ class HueAudioAnalyzer:
         if self._color_mode == "pulse":
             return self._render_pulse(now_us, palette, (prior, next_beat, segment), strobe_levels)
 
-        if no_schedule:
+        # Spelled out (rather than reusing no_schedule) so the type checker can
+        # narrow prior/next_beat/segment to non-None past this point.
+        if prior is None or next_beat is None or segment is None or segment <= 0:
             colors = self._peak_walk_colors(palette, now_us)
             return self._fill_per_channel(colors, base_brightness, channel_mults, strobe_levels)
 

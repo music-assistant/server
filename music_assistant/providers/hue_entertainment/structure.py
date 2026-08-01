@@ -276,22 +276,6 @@ class StructureDetector:
         """Current tempo estimate (0 if unknown)."""
         return 60_000_000.0 / self._ibi_ema if self._ibi_ema > 0 else 0.0
 
-    def _sched_base(self, now_us: int) -> tuple[int, int] | None:
-        """
-        Return the latest scheduled beat at or before ``now_us``, or None.
-
-        Prunes entries that are two or more beats in the past so the deque stays
-        bounded (a mutating getter, like ``onset_density``). Entries recorded
-        before the bar anchor existed carry -1 and never form a base.
-        """
-        sched = self._sched
-        while len(sched) > 1 and sched[1][0] <= now_us:
-            sched.popleft()
-        for entry in reversed(sched):
-            if entry[0] <= now_us and entry[1] >= 0:
-                return entry
-        return None
-
     def bar_phase(self, now_us: int) -> float:
         """Position within the current bar: 0 at the downbeat, -> 1 at the bar end."""
         base = self._sched_base(now_us)
@@ -347,6 +331,22 @@ class StructureDetector:
         )
 
     # -- internals --
+
+    def _sched_base(self, now_us: int) -> tuple[int, int] | None:
+        """
+        Return the latest scheduled beat at or before ``now_us``, or None.
+
+        Prunes entries that are two or more beats in the past so the deque stays
+        bounded (a mutating getter, like ``onset_density``). Entries recorded
+        before the bar anchor existed carry -1 and never form a base.
+        """
+        sched = self._sched
+        while len(sched) > 1 and sched[1][0] <= now_us:
+            sched.popleft()
+        for entry in reversed(sched):
+            if entry[0] <= now_us and entry[1] >= 0:
+                return entry
+        return None
 
     def _step_state(self, now_us: int) -> None:  # noqa: PLR0915
         ceiling = self._broad_ceiling + 1e-6

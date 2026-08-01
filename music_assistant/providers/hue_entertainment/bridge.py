@@ -14,7 +14,7 @@ import asyncio
 import json
 import logging
 from contextlib import suppress
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import hue_entertainment
 from aiosendspin.models.core import ClientHelloPayload
@@ -602,6 +602,11 @@ class HueEntertainmentBridgeManager:
             return provider.server_api
         return None
 
+    @property
+    def areas(self) -> list[EntertainmentArea]:
+        """Return the entertainment areas that currently have a bridge."""
+        return [bridge.area for bridge in self._bridges.values()]
+
     async def setup_bridges(self, areas: list[EntertainmentArea]) -> None:
         """Set up bridges for all entertainment areas."""
         sendspin_server = self.sendspin_server
@@ -635,7 +640,7 @@ class HueEntertainmentBridgeManager:
             self._bridges[area.id] = bridge
             self.logger.info("Bridge created for Hue area '%s'", area.name)
 
-    def update_settings(self, **kwargs) -> None:
+    def update_settings(self, **kwargs: Any) -> None:
         """
         Update settings on all bridges.
 
@@ -645,6 +650,13 @@ class HueEntertainmentBridgeManager:
         """
         for bridge in self._bridges.values():
             bridge.update_settings(**kwargs)
+
+    def set_rotation(
+        self, enabled: bool, names: list[str], beats: int, smooth: bool = False
+    ) -> None:
+        """Configure bar-aligned palette rotation on all bridges."""
+        for bridge in self._bridges.values():
+            bridge.set_rotation(enabled, names, beats, smooth)
 
     async def stop_all(self) -> None:
         """Stop all bridges."""
