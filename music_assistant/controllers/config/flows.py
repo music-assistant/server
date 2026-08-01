@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import logging
 import time
 from dataclasses import dataclass
@@ -24,7 +23,7 @@ from music_assistant_models.setup_flow import SetupFlowStep
 from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS
 from music_assistant.controllers.config.helpers import _AUTH_ERROR_CODES
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.util import load_provider_module
+from music_assistant.helpers.util import import_module_in_thread, load_provider_module
 from music_assistant.models.player import Player
 from music_assistant.models.setup_flow import (
     AbortFlow,
@@ -596,7 +595,7 @@ class SetupFlowMixin:
         await load_provider_module(manifest.domain, manifest.requirements)
         module_path = f"music_assistant.providers.{manifest.domain}.setup_flow"
         try:
-            return await asyncio.to_thread(importlib.import_module, module_path)
+            return await import_module_in_thread(module_path)
         except ModuleNotFoundError as err:
             if err.name == module_path:
                 # the provider ships no setup_flow module: it needs no setup input

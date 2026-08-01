@@ -69,7 +69,9 @@ PROVIDER_SETUP_FLOW_KEYS: dict[str, tuple[str, ...]] = {
     "alexa": ("url", "username", "password", "api_url", "api_username", "api_password"),
     "amplipi": ("host",),
     "apple_music": ("music_app_token", "music_user_token", "music_user_manual_token"),
+    "airplay_receiver": ("mass_player_id", "airplay_name"),
     "ard_audiothek": ("email", "password", "token", "user_id", "token_expiry", "display_name"),
+    "ariacast_receiver": ("mass_player_id",),
     "audible": ("auth_file", "locale"),
     "audiobookshelf": ("url", "username", "password", "token", "api_token", "verify_ssl"),
     "bandcamp": ("identity",),
@@ -134,9 +136,19 @@ PROVIDER_SETUP_FLOW_KEYS: dict[str, tuple[str, ...]] = {
     "qqmusic": ("uin", "musicid", "musickey", "login_type", "credential_json"),
     "siriusxm": ("sxm_email_address", "sxm_password", "sxm_region"),
     "soundcloud": ("client_id", "authorization"),
+    "spotify_connect": ("mass_player_id", "publish_name"),
     "teddycloud": ("url",),
     "tidal": ("auth_token", "refresh_token", "expiry_time", "user_id"),
     "tunein": ("username",),
+    "vban_receiver": (
+        "bind_ip",
+        "bind_port",
+        "sender_host",
+        "vban_stream_name",
+        "audio_format",
+        "sample_rate",
+        "audio_channels",
+    ),
     "webdav": ("content_type", "url", "username", "password", "verify_ssl"),
     "yandex_music": ("token", "x_token", "refresh_token"),
     "yandex_smarthome": (
@@ -156,7 +168,7 @@ PROVIDER_SETUP_FLOW_KEYS: dict[str, tuple[str, ...]] = {
         "refresh_token",
         "remember_session",
     ),
-    "yandex_ynison": ("ym_instance", "token", "x_token"),
+    "yandex_ynison": ("ym_instance", "token", "x_token", "mass_player_id", "publish_name"),
     "yousee": ("username", "password"),
     "ytmusic": ("username", "cookie", "po_token_server_url"),
     "zvuk_music": ("token",),
@@ -343,15 +355,23 @@ def migrate_provider_setup_data(data: dict[str, Any], encrypt: Callable[[str], s
         if not isinstance(values, dict):
             continue
         movable_keys = [key for key in owned_keys if key in values]
-        if not movable_keys:
+        setup_data = provider_cfg.get("setup_data")
+        needs_airplay_default = provider_cfg.get("domain") == "airplay_receiver" and (
+            not isinstance(setup_data, dict) or "airplay_name" not in setup_data
+        )
+        if not movable_keys and not needs_airplay_default:
             continue
-        setup_data = provider_cfg.setdefault("setup_data", {})
+        if not isinstance(setup_data, dict):
+            setup_data = {}
+            provider_cfg["setup_data"] = setup_data
         for key in movable_keys:
             # a value already collected into setup_data wins; only drop the stale copy
             if key not in setup_data:
                 value = values[key]
                 setup_data[key] = encrypt(value) if isinstance(value, str) else value
             del values[key]
+        if needs_airplay_default and "airplay_name" not in setup_data:
+            setup_data["airplay_name"] = encrypt("Music Assistant")
         changed = True
     if changed:
         LOGGER.info("Migrated provider setup values into setup_data")
@@ -797,6 +817,11 @@ def _migrate_airplay_receiver_ghost_players(data: dict[str, Any]) -> bool:
         if not isinstance(provider_cfg, dict) or provider_cfg.get("domain") != "airplay_receiver":
             continue
         if not provider_cfg.get("enabled", True):
+            continue
+        setup_data = provider_cfg.get("setup_data")
+        if isinstance(setup_data, dict) and "airplay_name" in setup_data:
+            # New setup-flow instances cannot have produced legacy ghosts. Their
+            # encrypted receiver name is unavailable during this early migration.
             continue
         provider_values = provider_cfg.get("values")
         airplay_name = (

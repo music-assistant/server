@@ -177,6 +177,11 @@ def is_apple_device(manufacturer: str, model: str) -> bool:
     )
 
 
+def is_macos_device(manufacturer: str, model: str) -> bool:
+    """Return whether an AirPlay device identifies as a Mac."""
+    return manufacturer.lower().startswith("apple") and model.lower().startswith(("mac", "imac"))
+
+
 def is_apple_tv(manufacturer: str, model: str) -> bool:
     """
     Check if a device identifies as an Apple TV (and not a HomePod).

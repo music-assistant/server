@@ -52,7 +52,7 @@
   "setup_flow": {
     "user": {
       "title": "Yandex Music account",
-      "description": "Borrow the account of a linked Yandex Music provider, or use your own credentials (QR login)."
+      "description": "Choose the Yandex Music account, target player and device name."
     },
     "scan_qr": {
       "title": "Scan to sign in",

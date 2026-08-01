@@ -11,9 +11,11 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+import re
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING, cast
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Final, cast
 from uuid import uuid4
 
 from music_assistant_models.enums import PlaybackState
@@ -47,6 +49,25 @@ if TYPE_CHECKING:
     from music_assistant.providers.airplay.player import AirPlayPlayer
     from music_assistant.providers.airplay.provider import AirPlayProvider
     from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
+
+# Slugs of the machine-readable failure line the binary emits right before it
+# gives up on a connect:
+#   [STATUS] error code=<slug> http=<int> detail="<short text>"
+CONNECT_ERROR_AUTH_REQUIRED: Final[str] = "auth_required"
+CONNECT_ERROR_AUTH_FAILED: Final[str] = "auth_failed"
+
+_CONNECT_ERROR_CODE_RE = re.compile(r"\bcode=(\S+)")
+_CONNECT_ERROR_HTTP_RE = re.compile(r"\bhttp=(\d+)")
+_CONNECT_ERROR_DETAIL_RE = re.compile(r'\bdetail="([^"]*)"')
+
+
+@dataclass
+class ConnectError:
+    """Fatal connect failure as reported by the cliairplay binary."""
+
+    code: str
+    http_status: int = 0
+    detail: str = ""
 
 
 class AirPlayStream:
@@ -82,20 +103,47 @@ class AirPlayStream:
         self._cleanup_complete = False
         self._stop_lock = asyncio.Lock()
         self._connected = asyncio.Event()
+        # Set when the stderr reader ends, i.e. the binary is gone. A connect
+        # wait watches it so a process that died (for example on a rejected
+        # password) fails right away instead of running out its timeout.
+        self._process_ended = asyncio.Event()
+        # Structured fatal failure the binary reported before exiting; stays
+        # None with an older binary that does not emit the line.
+        self._connect_error: ConnectError | None = None
         # Set when the binary acknowledges an in-place FLUSH ([STATUS] flushed).
         self._flushed = asyncio.Event()
+        # Set when the binary acks a START ([STATUS] started); carries the
+        # (requested, actual) unix-ms pair. The binary corrects an infeasible
+        # instant FORWARD and always reports the truth, so a mismatch here is
+        # the self-verification signal for the start contract.
+        self._started = asyncio.Event()
+        self._start_ack: tuple[int, int] | None = None
+        # Whether the last commanded START was a late-join start: routes the
+        # correction log levels (a corrected join is the routine landing path,
+        # a corrected origin start is a loud signal).
+        self._start_was_join = False
+        # Receiver storm guard state: last-honored monotonic time per remote
+        # transport command, plus a counter of suppressed repeats.
+        self._remote_command_last: dict[str, float] = {}
+        self._remote_commands_suppressed: int = 0
         # Set when the binary reports the first audio bytes of the current
         # start cycle arriving on its stdin ([STATUS] audio). Together with
         # `connected` this makes readiness fully event-driven, so START can
         # use a short re-anchor lead instead of a guessed setup time.
         self._audio_present = asyncio.Event()
-        self._metadata_checksum = ""
         self._metadata_text_checksum = ""
+        # Artwork identity (the source image url) whose rendered bytes were
+        # last delivered to the binary. Settles on the first successful
+        # delivery, independent of the metadata generation: media updates
+        # around a track transition keep bumping the generation, and a settle
+        # tied to it would re-render and re-send the same art on every update
+        # until the churn stops.
+        self._metadata_artwork_checksum = ""
         self._pending_metadata_checksum = ""
         self._metadata_generation = 0
         self._metadata_lock = asyncio.Lock()
         self._artwork_render_generations: set[int] = set()
-        self._last_progress_sent: int = -1
+        self._last_progress_sent: int | None = None
         # Media position (seconds) mapped to the first sample of the current
         # START anchor. The binary reports "playing elapsed_ms" relative to that
         # anchor (resetting to ~0 at each START), so elapsed is this base plus
@@ -106,9 +154,28 @@ class AirPlayStream:
         self.latency_lead_ms: int = 0
         self.device_min_frames: int = 0
         self.device_max_frames: int = 0
+        # Minimum lead (ms) a warm commanded START needs for exact placement.
+        # Nonzero on the Apple splice timeline, where the receiver's queued
+        # audio plays out before the new content can begin; a warm group
+        # anchor must sit beyond the largest member value. 0 = no constraint.
+        self.warm_lead_ms: int = 0
+        # Audible instant (unix ms) of the delivery head frozen by the latest
+        # warm flush, from the flushed ack (0 = none/no constraint). The warm
+        # START anchor must land beyond it for the splice skip to engage.
+        self.flushed_head_unix_ms: int = 0
         # Route the binary resolved for this stream (empty until reported),
         # e.g. "AirPlay 2 (native, PTP)" or "RAOP"
         self.active_route: str = ""
+        # Cumulative playout shift (seconds) this process reported after PCM
+        # starvation re-anchors (AP2 only). The stream session adds the
+        # reference member's shift so a late joiner anchors to the group's real
+        # timeline. Reset per process (and on every re-anchoring START/resume);
+        # a new cliairplay re-anchors from scratch.
+        self.cumulative_shift_seconds: float = 0.0
+        # Set once the machine-readable [STATUS] REANCHOR line is seen: newer
+        # binaries emit it alongside the legacy warn for the same event, so the
+        # warn line is then ignored to avoid double counting.
+        self._reanchor_status_seen: bool = False
 
     @property
     def running(self) -> bool:
@@ -142,6 +209,10 @@ class AirPlayStream:
             NTP timing. None (single-stream callers) falls back to the daemon's
             live state.
         """
+        self._check_password_preflight()
+        # A fresh cliairplay process re-anchors from scratch, so drop any shift
+        # (and its status-line supersession flag) carried on this stream object.
+        self.reset_reanchor_shift()
         args = await self._build_cli_args(use_shared_ptp)
         self.player.logger.debug("Starting cliairplay for player %s", self.player.player_id)
         self._cli_proc = AsyncProcess(args, stdin=True, stdout=True, stderr=True, name="cliairplay")
@@ -159,10 +230,17 @@ class AirPlayStream:
             raise
 
     async def wait_for_connection(self) -> None:
-        """Wait for device connection to be established."""
+        """
+        Wait for device connection to be established.
+
+        :raises PlayerCommandFailed: If the binary reported that the device needs
+            a password, or rejected the configured one.
+        :raises TimeoutError: If the connection was not established for any other
+            reason (including a binary too old to report one).
+        """
         if not self._cli_proc:
             raise RuntimeError("cliairplay process is not running")
-        await asyncio.wait_for(self._connected.wait(), timeout=10)
+        await self._await_connected()
         # Send the mute-aware volume right away — audio can start within a
         # second now that metadata goes out immediately — and repeat it after
         # 2 seconds because some players ignore the first volume command
@@ -171,8 +249,8 @@ class AirPlayStream:
         await self.send_cli_command(f"VOLUME={volume}")
         self.mass.call_later(2, self.send_cli_command(f"VOLUME={volume}"))
         async with self._metadata_lock:
-            self._metadata_checksum = ""
             self._metadata_text_checksum = ""
+            self._metadata_artwork_checksum = ""
             self._pending_metadata_checksum = ""
             self._metadata_generation += 1
         # Push track metadata before START. Some receivers (notably Sonos) hold
@@ -296,7 +374,9 @@ class AirPlayStream:
             return False
         return True
 
-    async def start(self, start_unix_ms: int = 0, position_ms: int = 0) -> None:
+    async def start(
+        self, start_unix_ms: int = 0, position_ms: int = 0, *, join: bool = False
+    ) -> int | None:
         """
         Anchor playback so the first pending stdin sample is audible at an instant.
 
@@ -308,32 +388,73 @@ class AirPlayStream:
             clamps to its minimum lead).
         :param position_ms: Media position mapped to that first sample, used as
             the base for elapsed reporting.
+        :param join: This start must land on an already-live group timeline (a
+            late joiner): the binary then enforces receiver clock readiness and
+            corrects the anchor forward post-commit if needed ([STATUS]
+            anchor_corrected). Group/solo origin starts leave it False.
+        :return: The true scheduled audible instant (unix ms) from the binary's
+            started ack — the commanded instant when it was feasible, the
+            corrected-forward one otherwise; None when no ack arrived (older
+            binary), in which case the commanded instant was applied under the
+            legacy clamp semantics.
         :raises PlayerCommandFailed: If the START command cannot be delivered.
         """
         if not self.running or not self.connected:
             raise RuntimeError("Cannot start playback without a connected cliairplay process")
+        # A START re-anchors playout from scratch — the binary zeroes its own
+        # re-anchor total on start/resume — so drop any shift accumulated against
+        # the previous anchor (this also covers the warm-seek FLUSH->refill->START
+        # path) to keep the server and binary baselines aligned.
+        self.reset_reanchor_shift()
         self._start_position = position_ms / 1000
         # Stamp the player's elapsed onto the new anchor's base right away: until
         # the binary's first status arrives, interpolation would otherwise keep
         # extending the previous anchor's clock, briefly mapping a bogus position.
         self.player.set_state_from_stream(elapsed_time=self._start_position, stream=self)
+        self._started.clear()
+        self._start_ack = None
+        self._start_was_join = join
+        start_cmd = f"START_UNIX_MS={start_unix_ms}\nACTION=START"
+        if join:
+            start_cmd = f"START_UNIX_MS={start_unix_ms}\nSTART_JOIN=1\nACTION=START"
         async with self._metadata_lock:
-            if not await self._write_cli_command(f"START_UNIX_MS={start_unix_ms}\nACTION=START"):
+            if not await self._write_cli_command(start_cmd):
                 # Surfacing the dropped delivery lets the session fall back to a
                 # cold restart instead of waiting on an anchor that never happens.
                 raise PlayerCommandFailed(
                     f"Could not deliver START to AirPlay player {self.player.player_id}"
                 )
-            # A receiver may discard artwork sent before a new playback anchor.
-            # Start a fresh generation so an in-flight pre-transition render is
-            # superseded and the artwork is pushed again after START.
-            self._metadata_checksum = ""
+            # Supersede an in-flight pre-transition artwork render; the task
+            # below then sends only what actually changed (a track change's
+            # text/artwork). Unchanged title/artwork stay deduped — re-pushing
+            # identical metadata around every anchor makes an Apple TV
+            # re-render its Now Playing popup on each seek, and a re-anchor
+            # cannot lose artwork anyway now that the binary carries the
+            # artwork bytes in every now-playing push. The progress correction
+            # is deliberately NOT sent here: every now-playing push visibly
+            # refreshes the Apple TV screen, so the single settled correction
+            # from the post-anchor media-updated nudge (+1s) does the job with
+            # one refresh instead of two.
             self._metadata_generation += 1
         self.mass.create_task(
-            self._send_current_metadata,
+            self._send_current_metadata_without_progress,
             task_id=f"airplay_metadata_after_start_{self._stream_id}",
             abort_existing=True,
         )
+        # The binary always acks with the TRUE scheduled instant (correcting an
+        # infeasible one forward), so the caller can verify the contract and
+        # re-align a group. No ack within the timeout means an older binary:
+        # fall back to trusting the commanded instant (legacy clamp semantics).
+        try:
+            await asyncio.wait_for(self._started.wait(), 2.0)
+        except TimeoutError:
+            return None
+        return self._start_ack[1] if self._start_ack else None
+
+    def reset_reanchor_shift(self) -> None:
+        """Clear the accumulated re-anchor shift and its status-line supersession flag."""
+        self.cumulative_shift_seconds = 0.0
+        self._reanchor_status_seen = False
 
     async def send_metadata(
         self,
@@ -349,16 +470,26 @@ class AirPlayStream:
         :param send_artwork: Whether artwork should be rendered and sent.
         """
         metadata_checksum: str | None = None
+        text_checksum: str | None = None
+        artwork_checksum = ""
         duration = 0
         title = ""
         artist = ""
         album = ""
+        item_id = ""
         if metadata:
-            duration = min(metadata.duration or 0, 3600)
+            duration = self._full_media_duration(metadata)
             title = metadata.title or ""
             artist = metadata.artist or ""
             album = metadata.album or ""
-            metadata_checksum = f"{title}|{artist}|{album}|{duration}|{metadata.image_url}"
+            item_id = metadata.queue_item_id or ""
+            # The identity deliberately excludes duration and image url: a
+            # value that shifts per seek or per media-update would re-send the
+            # full metadata each time — which makes an Apple TV re-render its
+            # Now Playing popup.
+            text_checksum = f"{item_id}|{title}|{artist}|{album}"
+            artwork_checksum = metadata.image_url or ""
+            metadata_checksum = f"{text_checksum}|{metadata.image_url}"
 
         artwork_url: str | None = None
         metadata_generation = 0
@@ -370,22 +501,27 @@ class AirPlayStream:
                     self._pending_metadata_checksum = metadata_checksum
                     self._metadata_generation += 1
                 metadata_generation = self._metadata_generation
+            needs_artwork = artwork_checksum != self._metadata_artwork_checksum
             if (
                 metadata
                 and metadata_checksum is not None
-                and (
-                    metadata_checksum != self._metadata_checksum
-                    or metadata_checksum != self._metadata_text_checksum
-                )
+                and text_checksum is not None
+                and (needs_artwork or text_checksum != self._metadata_text_checksum)
             ):
-                needs_artwork = metadata_checksum != self._metadata_checksum
-                if metadata_checksum != self._metadata_text_checksum:
+                if text_checksum != self._metadata_text_checksum:
+                    # ITEMID gives the binary a stable per-track identity, so
+                    # a later tag refinement for the same queue item (library
+                    # enrichment can settle after playback starts) updates the
+                    # receiver's now-playing item in place instead of
+                    # presenting as a new track.
                     cmd = f"TITLE={title}\nARTIST={artist}\nALBUM={album}\n"
-                    cmd += f"DURATION={duration}\nPROGRESS=0\nACTION=SENDMETA\n"
+                    cmd += f"DURATION={duration}\nITEMID={item_id}\nACTION=SENDMETA\n"
                     if not await self.send_cli_command(cmd):
                         return
-                    self._metadata_text_checksum = metadata_checksum
-                    self._last_progress_sent = 0
+                    self._metadata_text_checksum = text_checksum
+                    # the metadata push carried the previous position; always
+                    # follow with a fresh progress correction
+                    self._last_progress_sent = None
                 if metadata_generation != self._metadata_generation:
                     return
                 if (
@@ -397,22 +533,51 @@ class AirPlayStream:
                     self._artwork_render_generations.add(metadata_generation)
                     artwork_url = metadata.image_url
                 elif not metadata.image_url or not needs_artwork:
-                    self._metadata_checksum = metadata_checksum
-            if progress is not None and abs(progress - self._last_progress_sent) >= 2:
-                if await self.send_cli_command(f"PROGRESS={progress}"):
+                    self._metadata_artwork_checksum = artwork_checksum
+            if progress is not None and (
+                self._last_progress_sent is None or abs(progress - self._last_progress_sent) >= 2
+            ):
+                # duration rides along so the seek-rebased remaining time
+                # reaches the device without re-sending the metadata identity
+                duration_cmd = f"DURATION={duration}\n" if metadata else ""
+                if await self.send_cli_command(f"{duration_cmd}PROGRESS={progress}"):
                     self._last_progress_sent = progress
 
-        if artwork_url is not None and metadata_checksum is not None:
-            await self._render_and_send_artwork(artwork_url, metadata_checksum, metadata_generation)
+        if artwork_url is not None:
+            await self._render_and_send_artwork(artwork_url, metadata_generation)
 
-    async def _render_and_send_artwork(
-        self, artwork_url: str, metadata_checksum: str, metadata_generation: int
-    ) -> None:
+    def _full_media_duration(self, metadata: PlayerMedia) -> int:
+        """
+        Return the media's full track duration in seconds.
+
+        The queue rewrites ``PlayerMedia.duration`` to the REMAINING time on a
+        seek (the stream-restart convention for players whose position resets
+        to zero). The spliced AirPlay timeline reports absolute positions, so
+        the device needs the real total — and a total that changes on every
+        seek also makes an Apple TV re-lay-out its Now Playing screen each
+        time, which shows as a brief artwork/screen flash.
+
+        :param metadata: Media whose duration is resolved.
+        """
+        if metadata.source_id and metadata.queue_item_id:
+            queue_item = self.mass.player_queues.get_item(
+                metadata.source_id, metadata.queue_item_id
+            )
+            if queue_item:
+                streamdetails = queue_item.streamdetails
+                full_duration = (
+                    streamdetails.duration if streamdetails else None
+                ) or queue_item.duration
+                if full_duration:
+                    return min(int(full_duration), 3600)
+        return min(metadata.duration or 0, 3600)
+
+    async def _render_and_send_artwork(self, artwork_url: str, metadata_generation: int) -> None:
         """
         Render and apply artwork for the current metadata generation.
 
-        :param artwork_url: Source URL for the artwork.
-        :param metadata_checksum: Identity of the metadata receiving the artwork.
+        :param artwork_url: Source URL for the artwork; settles as the
+            delivered artwork identity once the binary accepts the command.
         :param metadata_generation: Generation that must still be current before apply.
         """
         try:
@@ -428,15 +593,9 @@ class AirPlayStream:
                 and not self._stopped
                 and not self._stopping
                 and metadata_generation == self._metadata_generation
+                and await self.send_cli_command(f"ARTWORK={artwork}")
             ):
-                artwork_delivered = await self.send_cli_command(f"ARTWORK={artwork}")
-                if (
-                    artwork_delivered
-                    and not self._stopped
-                    and not self._stopping
-                    and metadata_generation == self._metadata_generation
-                ):
-                    self._metadata_checksum = metadata_checksum
+                self._metadata_artwork_checksum = artwork_url
 
     async def _build_cli_args(  # noqa: PLR0915
         self,
@@ -637,6 +796,32 @@ class AirPlayStream:
                 "Ignoring unknown cliairplay remote command: %s", command_value
             )
             return
+        # Receiver storm guard: MediaRemote re-sends an unfulfilled transport
+        # command at ~10 Hz (measured on tvOS: a next-track storm at end of
+        # item drowned the whole server in seeks until playback collapsed).
+        # No human intends repeats that fast, so only one command per window
+        # is honored; the suppressed repeats are counted and reported loudly
+        # as the support signal.
+        window = (
+            2.0 if command in (AirPlayRemoteCommand.NEXT, AirPlayRemoteCommand.PREVIOUS) else 0.5
+        )
+        now = time.monotonic()
+        last = self._remote_command_last.get(command_value, 0.0)
+        if now - last < window:
+            self._remote_commands_suppressed += 1
+            suppressed = self._remote_commands_suppressed
+            if suppressed in (1, 10) or suppressed % 100 == 0:
+                self.player.logger.warning(
+                    "Storm guard: suppressed %d repeated remote '%s' "
+                    "command(s) from %s within %.1fs",
+                    suppressed,
+                    command_value,
+                    self.player.display_name,
+                    window,
+                )
+            return
+        self._remote_command_last[command_value] = now
+        self._remote_commands_suppressed = 0
         prov = cast("AirPlayProvider", self.prov)
         prov.handle_remote_command(self.player, command)
 
@@ -698,6 +883,7 @@ class AirPlayStream:
             self.latency_lead_ms = int(fields.get("lead_ms", 0))
             self.device_min_frames = int(fields.get("device_min_frames", 0))
             self.device_max_frames = int(fields.get("device_max_frames", 0))
+            self.warm_lead_ms = int(fields.get("warm_lead_ms", 0))
         except ValueError:
             return
         self.player.logger.debug(
@@ -717,6 +903,7 @@ class AirPlayStream:
           [STATUS] playing elapsed_ms=<ms>
           [STATUS] paused
           [STATUS] eof
+          [STATUS] error code=<slug> http=<int> detail="<short text>"
           [ERROR] <message>
         """
         player = self.player
@@ -734,6 +921,7 @@ class AirPlayStream:
             await asyncio.sleep(0)
 
         logger.debug("cliairplay stderr reader ended")
+        self._process_ended.set()
         if not self._stopped and not self._stopping:
             self._stopped = True
             try:
@@ -741,24 +929,75 @@ class AirPlayStream:
                     logger.warning(
                         "cliairplay process stopped unexpectedly for %s", player.display_name
                     )
+                    # Candidates for the automatic re-join: the leader this member
+                    # was synced to (plus its other members, in case leadership
+                    # transfers while the backoff runs), or - when this was the
+                    # leader itself - the members that survive it. Captured before
+                    # the ungroup below mutates the group state (create_task
+                    # starts eagerly).
+                    was_leader = bool(player.group_members)
+                    if player.synced_to:
+                        rejoin_candidates = [player.synced_to]
+                        if leader := self.mass.players.get_player(player.synced_to):
+                            rejoin_candidates += [
+                                member_id
+                                for member_id in leader.group_members
+                                if member_id not in (player.player_id, player.synced_to)
+                            ]
+                    else:
+                        rejoin_candidates = [
+                            m for m in player.group_members if m != player.player_id
+                        ]
                     # Hand off to the player controller so it drops just this member, or
                     # transfers leadership to a healthy member, instead of dissolving the
                     # whole group over a single dead transport. A sync leader is left in
                     # its current state here on purpose: the controller only transfers
                     # leadership while the queue still looks active, and transfer_queue or
                     # dissolve sets the final state.
-                    self.mass.create_task(self.mass.players.cmd_ungroup(player.player_id))
-                    if player.group_members:
+                    # One exception: a member that is a STATIC member of an active group
+                    # player must not go through cmd_ungroup - the controller interprets
+                    # unjoining a static member as releasing the whole group (HA unjoin
+                    # semantics), which would silence every room over one dead transport.
+                    # Its membership is configuration; drop only this member from the
+                    # leader's live session instead. The set_members call cannot bounce
+                    # back to the group player: the controller only redirects it when
+                    # the group advertises SET_MEMBERS, which a static group never does.
+                    static_member_of = self._static_group_membership(player)
+                    if static_member_of and player.synced_to:
+                        self.mass.create_task(
+                            self.mass.players.cmd_set_members(
+                                player.synced_to, player_ids_to_remove=[player.player_id]
+                            )
+                        )
+                    else:
+                        self.mass.create_task(self.mass.players.cmd_ungroup(player.player_id))
+                    if rejoin_candidates:
+                        # the group (or its successor) may still be playing:
+                        # schedule bounded attempts to re-join it
+                        player.schedule_group_rejoin(rejoin_candidates)
+                    if was_leader:
                         return
                 player.set_state_from_stream(state=PlaybackState.IDLE, elapsed_time=0, stream=self)
             finally:
                 await self.commands_pipe.remove()
 
-    def _handle_status_line(self, line: str) -> bool:
+    def _static_group_membership(self, player: AirPlayPlayer) -> str | None:
+        """Return the active group player id the player is a static member of, if any."""
+        active_group_id = player.state.active_group
+        if not active_group_id:
+            return None
+        group_player = self.mass.players.get_player(active_group_id)
+        if group_player and player.player_id in group_player.static_group_members:
+            return active_group_id
+        return None
+
+    def _handle_status_line(self, line: str) -> bool:  # noqa: PLR0915
         """Dispatch one cliairplay status line; True ends the stderr loop."""
         player = self.player
         if "[STATUS] connected" in line:
             self._connected.set()
+            # whatever the device accepted just now is a working password
+            player.set_password_invalid(False)
         elif "[STATUS] playing elapsed_ms=" in line:
             try:
                 millis = int(line.split("elapsed_ms=")[1])
@@ -768,7 +1007,52 @@ class AirPlayStream:
                 self._update_elapsed(millis / 1000)
         elif "[STATUS] paused" in line:
             player.set_state_from_stream(state=PlaybackState.PAUSED, stream=self)
+        elif "[STATUS] started " in line:
+            try:
+                fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+                requested = int(fields.get("requested_unix_ms", 0))
+                actual = int(fields.get("at_unix_ms", 0))
+            except ValueError, IndexError:
+                # Malformed ack: leave _start_ack unset so the caller falls
+                # back to trusting the commanded instant, without waiting out
+                # the ack timeout.
+                pass
+            else:
+                self._start_ack = (requested, actual)
+                if requested and actual and abs(actual - requested) > 2:
+                    # The session re-aligns the group from these acks. A
+                    # corrected join is the routine landing path (the low join
+                    # headroom defers to the binary's readiness correction);
+                    # for origin starts and group convergence rounds a
+                    # correction stays loud — there repeated corrections are
+                    # the support signal that leads/readiness need attention.
+                    player.logger.log(
+                        logging.INFO if self._start_was_join else logging.WARNING,
+                        "AirPlay start corrected by %+d ms on %s (requested %d, scheduled %d)",
+                        actual - requested,
+                        player.display_name,
+                        requested,
+                        actual,
+                    )
+            self._started.set()
+        elif "[STATUS] anchor_corrected " in line:
+            self._parse_anchor_corrected(line)
+        elif "[STATUS] clock_verified" in line:
+            self._parse_clock_verified(line)
         elif "[STATUS] flushed" in line:
+            # A splice-timeline member reports the audible instant of its
+            # frozen delivery head; the warm START must anchor beyond it (a
+            # commanded instant at or behind the head splices at the head,
+            # silently breaking the shared instant).
+            if "head_unix_ms=" in line:
+                try:
+                    self.flushed_head_unix_ms = int(
+                        line.split("head_unix_ms=")[1].split(maxsplit=1)[0]
+                    )
+                except ValueError, IndexError:
+                    self.flushed_head_unix_ms = 0
+            else:
+                self.flushed_head_unix_ms = 0
             self._flushed.set()
         elif "[STATUS] audio " in line:
             self._audio_present.set()
@@ -780,6 +1064,12 @@ class AirPlayStream:
         elif "[STATUS] eof" in line:
             player.logger.debug("End of stream reached")
             return True
+        elif "[STATUS] REANCHOR" in line:
+            self._parse_reanchor_status(line)
+        elif "Re-anchored" in line and "shifted_frames=" in line:
+            self._parse_reanchor_shift(line)
+        elif "[STATUS] error " in line:
+            self._parse_connect_error(line)
         elif "[ERROR]" in line:
             player.logger.error("cliairplay: %s", line.strip())
         return False
@@ -793,6 +1083,69 @@ class AirPlayStream:
         self.player.set_state_from_stream(
             state=PlaybackState.PLAYING, elapsed_time=elapsed_time, stream=self
         )
+
+    def _parse_reanchor_status(self, line: str) -> None:
+        """
+        Parse the machine-readable [STATUS] REANCHOR line from newer binaries.
+
+        Newer cliairplay builds report the shift cumulative since the last
+        start/resume directly, so this SETS the tracked shift (using the sample
+        rate carried on the line when present) and marks the legacy warn line as
+        superseded, since both fire for the same event and would otherwise be
+        double counted.
+
+        :param line: The status line, e.g. ``[STATUS] REANCHOR shifted_frames=67870
+            total_shifted_frames=135740 sample_rate=44100``.
+        """
+        fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+        try:
+            total_frames = int(fields["total_shifted_frames"])
+        except KeyError, ValueError:
+            return
+        self._reanchor_status_seen = True
+        self.cumulative_shift_seconds = total_frames / self._reanchor_sample_rate(
+            fields.get("sample_rate")
+        )
+        self.player.logger.debug(
+            "cliairplay re-anchored %s after PCM starvation: cumulative shift %.3fs",
+            self.player.display_name,
+            self.cumulative_shift_seconds,
+        )
+
+    def _parse_reanchor_shift(self, line: str) -> None:
+        """
+        Track a legacy cliairplay PCM-starvation re-anchor warning on stderr.
+
+        The warn line reports the per-event shift in frames, so it is accumulated
+        at the session PCM rate. Ignored once the machine-readable [STATUS]
+        REANCHOR line has been seen: newer binaries emit both for the same event
+        and the status line carries the authoritative cumulative total.
+
+        :param line: The raw stderr line, e.g. ``[AP2] Re-anchored after PCM
+            starvation: shifted_frames=67870 lead_frames=77175 count=1``.
+        """
+        if self._reanchor_status_seen:
+            return
+        match = re.search(r"shifted_frames=(\d+)", line)
+        if not match:
+            return
+        self.cumulative_shift_seconds += int(match.group(1)) / self._reanchor_sample_rate(None)
+        self.player.logger.debug(
+            "cliairplay re-anchored %s after PCM starvation: cumulative shift %.3fs",
+            self.player.display_name,
+            self.cumulative_shift_seconds,
+        )
+
+    def _reanchor_sample_rate(self, reported: str | None) -> int:
+        """Return the frame->seconds rate, preferring a valid rate reported on the line."""
+        if reported is not None:
+            try:
+                rate = int(reported)
+            except ValueError:
+                rate = 0
+            if rate > 0:
+                return rate
+        return self.pcm_format.sample_rate or 44100
 
     async def _prepare_artwork(self, image_url: str, _generation: int) -> str | None:
         """
@@ -830,6 +1183,19 @@ class AirPlayStream:
         progress = int(metadata.corrected_elapsed_time or 0)
         await self.send_metadata(progress, metadata, send_artwork=send_artwork)
 
+    async def _send_current_metadata_without_progress(self) -> None:
+        """
+        Send only the identity metadata for the active stream's media.
+
+        Used right after a commanded START: the anchor may still be settling,
+        so the position correction is left to the post-anchor media-updated
+        nudge — one settled now-playing refresh on the device instead of two.
+        """
+        metadata = self.session.media if self.session else self.player.current_media
+        if not metadata:
+            return
+        await self.send_metadata(None, metadata)
+
     async def _cleanup_failed_start(self) -> None:
         """Release all resources owned by a cliairplay process that failed to start."""
         self._stopping = True
@@ -861,3 +1227,156 @@ class AirPlayStream:
         if command_delivered:
             self.player.last_command_sent = time.time()
         return command_delivered
+
+    def _check_password_preflight(self) -> None:
+        """
+        Refuse a native AirPlay 2 connect that has nothing to authenticate with.
+
+        A password-protected receiver answers the RTSP setup with a 401 unless the
+        binary can present the device password or stored pairing credentials, so
+        without either there is no point in spawning the process at all. A player
+        in this state is already blocked from playback by ``needs_setup``, leaving
+        this as the backstop for a device that only announced its password
+        protection after the player was resolved as a playback target.
+
+        :raises PlayerCommandFailed: If the device password is missing.
+        """
+        target_protocol = self.player.protocol_override or self.player.protocol
+        if target_protocol != StreamingProtocol.AIRPLAY2 or not self.player.password_required:
+            return
+        if self.player.config.get_value(CONF_PASSWORD):
+            return
+        # stored credentials keep the binary's pair-verify leg viable, and its own
+        # failure report guides the user when that leg is rejected after all
+        if self.player.get_setup_value(CONF_AIRPLAY_CREDENTIALS) or self.player.get_setup_value(
+            CONF_RAOP_CREDENTIALS
+        ):
+            return
+        raise self._password_required_error()
+
+    async def _await_connected(self, timeout: float = 10) -> None:
+        """
+        Wait for the binary to confirm the device connection.
+
+        :param timeout: Seconds to wait for the confirmation.
+        """
+        waiters = [
+            asyncio.ensure_future(self._connected.wait()),
+            asyncio.ensure_future(self._process_ended.wait()),
+        ]
+        try:
+            await asyncio.wait(waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
+        if self._connected.is_set():
+            return
+        raise self._connect_failed_error()
+
+    def _connect_failed_error(self) -> Exception:
+        """
+        Return the error for a connection that was never established.
+
+        A binary that reported why it gave up produces a specific, actionable
+        error. Everything else - including an older binary that reports no reason
+        at all - keeps the plain timeout the callers already handle.
+        """
+        error = self._connect_error
+        if error and error.code == CONNECT_ERROR_AUTH_REQUIRED:
+            return self._password_required_error()
+        if error and error.code == CONNECT_ERROR_AUTH_FAILED:
+            return PlayerCommandFailed(
+                f"{self.player.display_name} rejected the saved password. "
+                "Run the setup for this player to enter it again.",
+                translation_key="authentication_failed",
+                translation_owner=self.player.translation_owner,
+            )
+        reason = f": {error.detail}" if error and error.detail else ""
+        return TimeoutError(f"cliairplay did not connect to {self.player.display_name}{reason}")
+
+    def _password_required_error(self) -> PlayerCommandFailed:
+        """Return the error that points the user at the player's setup flow."""
+        return PlayerCommandFailed(
+            f"{self.player.display_name} requires a password. "
+            "Run the setup for this player to enter it.",
+            translation_key="password_required",
+        )
+
+    def _parse_connect_error(self, line: str) -> None:
+        """Parse and store the structured failure the binary reports before it exits."""
+        payload = line.split("[STATUS] error ", 1)[-1]
+        code_match = _CONNECT_ERROR_CODE_RE.search(payload)
+        http_match = _CONNECT_ERROR_HTTP_RE.search(payload)
+        detail_match = _CONNECT_ERROR_DETAIL_RE.search(payload)
+        self._connect_error = ConnectError(
+            code=code_match.group(1) if code_match else "",
+            http_status=int(http_match.group(1)) if http_match else 0,
+            detail=detail_match.group(1) if detail_match else "",
+        )
+        self.player.logger.debug(
+            "cliairplay reported a fatal error for %s: code=%s http=%s detail=%s",
+            self.player.display_name,
+            self._connect_error.code,
+            self._connect_error.http_status,
+            self._connect_error.detail,
+        )
+        if self._connect_error.code in (CONNECT_ERROR_AUTH_FAILED, CONNECT_ERROR_AUTH_REQUIRED):
+            # The stored password is wrong, or the device demanded one we could
+            # not supply (devices can enforce a password without announcing it -
+            # e.g. an Apple TV with stale TXT records after the password was
+            # enabled). Persist that so the player keeps offering its setup
+            # action (across restarts) until a working password is entered,
+            # instead of only failing at the next play attempt.
+            self.player.set_password_invalid(True)
+
+    def _parse_anchor_corrected(self, line: str) -> None:
+        """
+        Parse a post-commit [STATUS] anchor_corrected line and re-base the position.
+
+        The binary emits this at most once per START, when a receiver clock
+        exchange that only resumed after the START ack finds the committed
+        instant infeasible: it moves the anchor forward and advances the queued
+        content by the same amount (``content_cut_ms``), so the member still
+        lands on the group timeline — only the reported media position shifts.
+
+        :param line: The status line, e.g. ``[STATUS] anchor_corrected
+            requested_unix_ms=1750000000000 from_unix_ms=1750000000400
+            at_unix_ms=1750000000900 content_cut_ms=500``.
+        """
+        try:
+            fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+            requested_unix_ms = int(fields.get("requested_unix_ms", 0))
+            from_unix_ms = int(fields.get("from_unix_ms", 0))
+            at_unix_ms = int(fields.get("at_unix_ms", 0))
+            content_cut_ms = int(fields.get("content_cut_ms", 0))
+        except ValueError, IndexError:
+            # Malformed line: drop it rather than react to bogus numbers.
+            return
+        # The binary's elapsed counts only the retained content, so the
+        # position base moves by the cut to keep reported progress exact.
+        self._start_position += content_cut_ms / 1000
+        # Routine for a join start: the low join headroom defers to this
+        # correction, which lands the anchor at exact receiver readiness. A
+        # post-commit correction on any other START stays loud.
+        self.player.logger.log(
+            logging.INFO if self._start_was_join else logging.WARNING,
+            "AirPlay anchor for %s corrected %+d ms after commit "
+            "(requested %d, at %d, content advanced %d ms to stay in sync)",
+            self.player.display_name,
+            at_unix_ms - from_unix_ms,
+            requested_unix_ms,
+            at_unix_ms,
+            content_cut_ms,
+        )
+
+    def _parse_clock_verified(self, line: str) -> None:
+        """Debug-log a [STATUS] clock_verified line; no correction means no server action."""
+        try:
+            margin_ms = int(line.split("margin_ms=")[1])
+        except ValueError, IndexError:
+            return
+        self.player.logger.debug(
+            "cliairplay clock verified for %s (margin %d ms)",
+            self.player.display_name,
+            margin_ms,
+        )

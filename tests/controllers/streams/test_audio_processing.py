@@ -137,6 +137,65 @@ def test_audio_processing_manager_attaches_grouped_chain() -> None:
     )
 
 
+def test_lossy_source_can_have_bit_perfect_lossless_output() -> None:
+    """Lossy source quality does not prevent preserving its decoded PCM samples."""
+    manager, _mass, _queue_data, streamdetails, lossless_plan, lossy_plan = _manager_context()
+    streamdetails.audio_format = AudioFormat(
+        content_type=ContentType.OGG,
+        codec_type=ContentType.VORBIS,
+        sample_rate=44100,
+        bit_depth=16,
+        channels=2,
+        bit_rate=320,
+    )
+    pcm_format = _format(ContentType.PCM_S16LE)
+    manager.update_item_runtime(
+        "queue-1",
+        "session-1",
+        "item-1",
+        input_format=pcm_format,
+        pcm_format=pcm_format,
+        normalization=None,
+        playback_speed=1.0,
+    )
+    lossless_plan.input_format = pcm_format
+    lossless_plan.output_details.output_format = _format(ContentType.FLAC)
+    lossy_plan.input_format = pcm_format
+    lossy_plan.output_details.output_format = _format(ContentType.MP3, bit_rate=320)
+
+    manager.update_output(
+        "lossless-player",
+        lossless_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+    manager.update_output(
+        "lossy-player",
+        lossy_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    chain = cast("AudioProcessingChain", streamdetails.audio_processing)
+    outputs = {output.player_ids[0]: output for output in chain.outputs}
+    assert chain.input_fidelity.quality == AudioQuality.STANDARD
+    assert outputs["lossless-player"].fidelity == AudioFidelity(
+        quality=AudioQuality.STANDARD,
+        bit_perfect=True,
+    )
+    assert outputs["lossy-player"].fidelity == AudioFidelity(
+        quality=AudioQuality.STANDARD,
+        bit_perfect=False,
+    )
+    serialized = streamdetails.to_dict()
+    serialized_outputs = {
+        output["player_ids"][0]: output for output in serialized["audio_processing"]["outputs"]
+    }
+    assert serialized_outputs["lossless-player"]["fidelity"]["bit_perfect"] is True
+
+
 def test_shared_output_destinations_are_registered_atomically() -> None:
     """One shared output publishes all destinations in a single queue update."""
     manager, mass, _queue_data, streamdetails, output_plan, _lossy_plan = _manager_context()

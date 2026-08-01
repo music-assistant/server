@@ -337,6 +337,11 @@
       "description": "Select the preferred protocol for audio playback to this device.",
       "options": {
         "auto": "Auto-select"
+      },
+      "disabled_reasons": {
+        "needs_setup": "This output must be set up before it can be used.",
+        "unavailable": "This output is currently not available.",
+        "turned_off": "This output is turned off."
       }
     },
     "bind_port": {
@@ -1146,13 +1151,16 @@
     "action_unavailable": "This action is currently unavailable.",
     "authentication_required": "Authentication is required.",
     "authentication_failed": "Authentication failed. The credentials are invalid.",
+    "password_required": "This device requires a password. Run the setup for this player to enter it.",
     "insufficient_permissions": "You do not have permission to perform this action.",
     "invalid_token": "The access token is invalid or has expired.",
     "resource_busy": "This resource is currently in use elsewhere.",
     "rate_limited": "Rate limit reached. Please try again later.",
     "host_unresolvable": "Unable to resolve {0}, make sure the address is resolvable.",
     "connection_timeout": "Connection timed out: {0}.",
-    "connect_failed": "Failed to connect to {0}."
+    "connect_failed": "Failed to connect to {0}.",
+    "mount_failed": "Unable to connect to the remote location: {0}",
+    "unmount_failed": "The previous connection to the remote location could not be closed: {0}"
   },
   "setup_flow": {
     "select_child": {

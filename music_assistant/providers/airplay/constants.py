@@ -33,6 +33,10 @@ class AirPlayRemoteCommand(StrEnum):
 
 CONF_VOLUME_START: Final[str] = "volume_start"
 CONF_PASSWORD: Final[str] = "password"
+# Storage-only marker (no config entry) set when the device rejected the stored
+# password, so the player keeps asking for setup across restarts until a working
+# password is entered.
+CONF_PASSWORD_INVALID: Final[str] = "password_invalid"
 CONF_IGNORE_VOLUME: Final[str] = "ignore_volume"
 CONF_ENCRYPTION: Final[str] = "encryption"
 # Advanced per-device escape hatch: force the legacy RAOP protocol on an
@@ -59,9 +63,13 @@ DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 # RAOP because its pre-fill is paced.
 AIRPLAY_RAOP_SETUP_LEAD_MS: Final[int] = 1500
 AIRPLAY_AP2_SETUP_LEAD_MS: Final[int] = 2500
-# Late joiners keep a more conservative headroom: besides connecting, their
-# pipeline must also be primed from the session's history buffer.
-AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 2000
+# Late joiners anchor a low first guess, not a worst-case bound: a join START
+# makes the binary verify receiver clock readiness and correct the anchor
+# forward to it, advancing the queued content by the same (inaudible) amount.
+# The floor only keeps that correction window open: it must clear the binary's
+# verification arm window (AP2_CLOCK_VERIFY_MIN_WINDOW_MS, 1100 ms) plus a
+# poll round and the START command latency.
+AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 1500
 # Anchor lead for a readiness-confirmed START (cold and warm alike): the
 # session only anchors after the binary confirmed the connection ([STATUS]
 # connected) and the new audio flowing ([STATUS] audio), so the lead no longer
@@ -71,11 +79,31 @@ AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 2000
 # shared instant out to every member.
 AIRPLAY_START_LEAD_MS: Final[int] = 250
 AIRPLAY_GROUP_START_LEAD_MS: Final[int] = 500
+# Cold GROUP starts anchor further out: a receiver on a brand-new session
+# still acquires its PTP slave lock (~1.7-2.3 s measured on Sonos) and cannot
+# render at an anchor inside that window - it starts late and the group opens
+# audibly out of sync. Warm re-anchors reuse a locked clock and keep the
+# short leads above; solo cold starts have no sync partner to miss.
+AIRPLAY_COLD_GROUP_START_LEAD_MS: Final[int] = 2500
+# Margin added on top of a member's reported warm lead (the splice-timeline
+# queue depth on Apple receivers) when anchoring a warm re-start: covers the
+# command round-trips between the flush acks and the shared START so every
+# member's skip target lands beyond its queued audio.
+AIRPLAY_SPLICE_LEAD_MARGIN_MS: Final[int] = 150
+
+# Delay (seconds) before automatically re-joining a group member whose
+# cliairplay process died unexpectedly mid-session (e.g. the device rode out a
+# network blackout longer than the binary's own keepalive tolerance). A single
+# attempt keeps the behaviour predictable: it waits long enough for a short
+# blackout to clear, and if the device is still gone the player is left idle.
+# Staged retries can be reintroduced by adding entries to the tuple.
+AIRPLAY_REJOIN_ATTEMPT_DELAYS: Final[tuple[int, ...]] = (5,)
 
 # Cover art is rendered to a local JPEG for the binary to embed (the binary
 # does not fetch URLs). 512px keeps the SET_PARAMETER payload small while still
 # looking sharp on speaker apps and the Apple TV now-playing screen.
 AIRPLAY_ARTWORK_SIZE: Final[int] = 512
+EXTERNAL_ARTWORK_PATH_PREFIX: Final[str] = "external_artwork"
 
 # Per-protocol credential storage keys
 CONF_RAOP_CREDENTIALS: Final[str] = "raop_credentials"
@@ -129,3 +157,12 @@ BASE_PLAYER_FEATURES: Final[set[PlayerFeature]] = {
 PIN_REQUIRED = 0x8
 PASSWORD_BIT = 0x80
 LEGACY_PAIRING_BIT = 0x200
+# Observed on tvOS when an AirPlay password is set. Apple TVs keep PASSWORD_BIT
+# raised at all times (it marks their onscreen-code capability, not a password),
+# so this is the only flags-based password signal they give.
+ATV_PASSWORD_BIT = 0x1000
+
+# Provider setting: opt-in for the shared PTP daemon's per-packet timing trace
+# (Announce/Sync/Follow_Up) when verbose logging is active. Off by default —
+# the trace floods the log and only matters for clock-sync debugging.
+CONF_VERBOSE_PTP_LOGGING: Final[str] = "verbose_ptp_logging"

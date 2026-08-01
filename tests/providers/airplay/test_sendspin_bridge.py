@@ -414,7 +414,7 @@ async def test_cold_start_connects_then_anchors_first_start() -> None:
     stream = MagicMock()
     stream.connect = AsyncMock()
     stream.wait_for_connection = AsyncMock()
-    stream.start = AsyncMock()
+    stream.start = AsyncMock(return_value=None)
 
     with (
         patch(
@@ -447,7 +447,7 @@ async def test_cold_start_superseded_before_start_stops_transport() -> None:
     stream.connect = AsyncMock()
     stream.stop = AsyncMock()
     stream.wait_for_connection = AsyncMock()
-    stream.start = AsyncMock()
+    stream.start = AsyncMock(return_value=None)
 
     with (
         patch(
@@ -560,7 +560,7 @@ async def test_warm_stream_flushes_and_reanchors_on_kept_instance() -> None:
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     kept_stream = MagicMock()
     kept_stream.flush = AsyncMock(return_value=True)
-    kept_stream.start = AsyncMock()
+    kept_stream.start = AsyncMock(return_value=None)
     bridge._airplay_stream = kept_stream
     bridge._airplay_stream_start_task = asyncio.current_task()
 
@@ -579,7 +579,7 @@ async def test_warm_stream_flush_timeout_falls_back_to_cold() -> None:
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     kept_stream = MagicMock()
     kept_stream.flush = AsyncMock(return_value=False)
-    kept_stream.start = AsyncMock()
+    kept_stream.start = AsyncMock(return_value=None)
     bridge._airplay_stream = kept_stream
     bridge._airplay_stream_start_task = asyncio.current_task()
 
@@ -595,7 +595,7 @@ async def test_warm_stream_superseded_before_start_does_not_anchor() -> None:
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     kept_stream = MagicMock()
     kept_stream.flush = AsyncMock(return_value=True)
-    kept_stream.start = AsyncMock()
+    kept_stream.start = AsyncMock(return_value=None)
     bridge._airplay_stream = kept_stream
     # Simulate a newer stream start having already replaced the tracked task.
     bridge._airplay_stream_start_task = MagicMock()
@@ -619,7 +619,7 @@ async def test_warm_stream_cancellation_propagates() -> None:
         return True
 
     kept_stream.flush = AsyncMock(side_effect=flush)
-    kept_stream.start = AsyncMock()
+    kept_stream.start = AsyncMock(return_value=None)
     bridge._airplay_stream = kept_stream
 
     warm_task = asyncio.create_task(bridge._start_warm_stream(kept_stream, 1_784_000_000_000))

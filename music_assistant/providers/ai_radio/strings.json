@@ -1,0 +1,16 @@
+{
+  "config_entries": {
+    "timezone": {
+      "label": "Timezone",
+      "description": "IANA timezone (e.g. Europe/Amsterdam) used to resolve the current time for stations."
+    },
+    "weather_city": {
+      "label": "Weather City",
+      "description": "City used to look up the weather forecast for stations that reference it."
+    },
+    "weather_country": {
+      "label": "Weather Country",
+      "description": "Country used to look up the weather forecast for stations that reference it."
+    }
+  }
+}

@@ -14,6 +14,8 @@ from music_assistant.models.setup_flow import SetupFlowContext, SetupSession
 from music_assistant.providers.yandex_ynison import setup_flow as yn_flow
 from music_assistant.providers.yandex_ynison.constants import (
     CONF_ACCOUNT_LOGIN,
+    CONF_MASS_PLAYER_ID,
+    CONF_PUBLISH_NAME,
     CONF_REMEMBER_SESSION,
     CONF_TOKEN,
     CONF_X_TOKEN,
@@ -51,6 +53,10 @@ def _make_session(
     """Build a real SetupSession backed by a Mock mass listing the given YM providers."""
     mass = mock.Mock()
     mass.config.get = mock.Mock(return_value=providers or {})
+    player = mock.Mock()
+    player.player_id = "kitchen"
+    player.display_name = "Kitchen"
+    mass.players.all_players.return_value = [player]
     context = SetupFlowContext(kind="setup", reason="user", domain="yandex_ynison")
     return SetupSession(mass, "flow-test", context, finish_handler), mass
 
@@ -88,11 +94,22 @@ async def test_borrow_mode_finishes_with_instance_only() -> None:
     )
     task = asyncio.create_task(yn_flow.run_setup(session))
     await _await_user_form(session)
-    session.handle_submit({CONF_YM_INSTANCE: "ym-a", CONF_REMEMBER_SESSION: True})
+    session.handle_submit(
+        {
+            CONF_YM_INSTANCE: "ym-a",
+            CONF_REMEMBER_SESSION: True,
+            CONF_MASS_PLAYER_ID: "kitchen",
+            CONF_PUBLISH_NAME: "Kitchen Yandex",
+        }
+    )
     await _wait_for(lambda: session.finished)
     await task
 
-    assert collected == {CONF_YM_INSTANCE: "ym-a"}
+    assert collected == {
+        CONF_YM_INSTANCE: "ym-a",
+        CONF_MASS_PLAYER_ID: "kitchen",
+        CONF_PUBLISH_NAME: "Kitchen Yandex",
+    }
 
 
 async def test_own_mode_qr_persists_tokens_and_login() -> None:
@@ -110,7 +127,14 @@ async def test_own_mode_qr_persists_tokens_and_login() -> None:
         pc.create.return_value = _async_cm(client)
         task = asyncio.create_task(yn_flow.run_setup(session))
         await _await_user_form(session)
-        session.handle_submit({CONF_YM_INSTANCE: YM_INSTANCE_OWN, CONF_REMEMBER_SESSION: True})
+        session.handle_submit(
+            {
+                CONF_YM_INSTANCE: YM_INSTANCE_OWN,
+                CONF_REMEMBER_SESSION: True,
+                CONF_MASS_PLAYER_ID: "kitchen",
+                CONF_PUBLISH_NAME: "Kitchen Yandex",
+            }
+        )
         await _wait_for(lambda: session.finished)
         await task
 
@@ -119,6 +143,8 @@ async def test_own_mode_qr_persists_tokens_and_login() -> None:
         CONF_TOKEN: "MT",
         CONF_X_TOKEN: "XT",
         CONF_ACCOUNT_LOGIN: "alice",
+        CONF_MASS_PLAYER_ID: "kitchen",
+        CONF_PUBLISH_NAME: "Kitchen Yandex",
     }
     scan_steps = [s for s in _published_steps(mass) if s.step_id == "scan_qr"]
     assert scan_steps
@@ -140,7 +166,14 @@ async def test_own_mode_without_remember_clears_x_token() -> None:
         pc.create.return_value = _async_cm(client)
         task = asyncio.create_task(yn_flow.run_setup(session))
         await _await_user_form(session)
-        session.handle_submit({CONF_YM_INSTANCE: YM_INSTANCE_OWN, CONF_REMEMBER_SESSION: False})
+        session.handle_submit(
+            {
+                CONF_YM_INSTANCE: YM_INSTANCE_OWN,
+                CONF_REMEMBER_SESSION: False,
+                CONF_MASS_PLAYER_ID: "kitchen",
+                CONF_PUBLISH_NAME: "Kitchen Yandex",
+            }
+        )
         await _wait_for(lambda: session.finished)
         await task
 

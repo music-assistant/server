@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import aiofiles
-import orjson
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -36,9 +34,11 @@ from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import CONF_ENTRY_LIBRARY_SYNC_PODCASTS
 from music_assistant.controllers.cache import use_cache
+from music_assistant.helpers.countries import get_country_codes
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
     get_podcastparser_dict,
+    get_stream_url_from_episode,
     parse_podcast,
     parse_podcast_episode,
 )
@@ -102,9 +102,7 @@ class ITunesPodcastsProvider(MusicProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
-        json_path = Path(__file__).parent / "itunes_country_codes.json"
-        async with aiofiles.open(json_path) as f:
-            country_codes = orjson.loads(await f.read())
+        country_codes = await asyncio.to_thread(get_country_codes)
 
         language_options = [
             ConfigValueOption(key.lower(), title=val) for key, val in country_codes.items()
@@ -364,12 +362,11 @@ class ITunesPodcastsProvider(MusicProvider):
         podcast = await self._cache_get_podcast(podcast_id)
         episodes = podcast.get("episodes", [])
         for episode in episodes:
-            episode_enclosures = episode.get("enclosures", [])
-            if len(episode_enclosures) < 1:
-                # episode without an enclosure carries no stream; skip it instead of
+            stream_url = get_stream_url_from_episode(episode=episode)
+            if stream_url is None:
+                # episode without a playable enclosure carries no stream; skip it instead of
                 # aborting the lookup for the (potentially later) requested episode
                 continue
-            stream_url: str | None = episode_enclosures[0].get("url", None)
             guid = episode.get("guid")
             if guid is not None and len(guid.split(" ")) == 1:
                 _guid_or_stream_url_compare = guid

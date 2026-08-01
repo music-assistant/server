@@ -41,7 +41,7 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.constants import UNKNOWN_ARTIST, UNKNOWN_ARTIST_ID_MBID
 from music_assistant.helpers.cue_sheet import CueSheet, CueTrack, parse_cue_sheet
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
-from music_assistant.helpers.tags import AudioTags, async_parse_tags
+from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid
 from music_assistant.helpers.util import detect_charset
 
 from .constants import CACHE_CATEGORY_CUE_SHEETS, TRACK_EXTENSIONS
@@ -495,9 +495,9 @@ class CueSheetHandler:
             track.album = ctx.album
         for isrc in cue_track.isrcs:
             track.external_ids.add((ExternalID.ISRC, isrc))
-        if cue_track.musicbrainz_recordingid:
-            # the setter runs UUID validation and keeps external_ids in sync
-            track.mbid = cue_track.musicbrainz_recordingid
+        if recording_mbid := clean_mbid(cue_track.musicbrainz_recordingid, cue_item.relative_path):
+            # the setter keeps external_ids in sync
+            track.mbid = recording_mbid
         if cue_track.musicbrainz_releasetrackid:
             track.external_ids.add((ExternalID.MB_TRACK, cue_track.musicbrainz_releasetrackid))
         if ctx.embedded_image is not None:

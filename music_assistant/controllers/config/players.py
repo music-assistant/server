@@ -837,28 +837,42 @@ class PlayerConfigMixin:
             ):
                 base_protocols[protocol.output_protocol_id] = base_protocol
 
-        # Build options from available output protocols, sorted by priority
+        # Build options from all output protocols, sorted by priority
         options: list[ConfigValueOption] = []
 
-        # Add each available output protocol as an option, sorted by priority
+        # Add each output protocol as an option, sorted by priority. An output that can not be
+        # used right now is offered disabled with the reason why, rather than left out entirely:
+        # that keeps the device's outputs recognizable and explains what to do about it.
         has_native = False
         for protocol in sorted(output_protocols, key=lambda p: p.priority):
             protocol_name = self._get_protocol_display_name(protocol.protocol_domain)
-            if protocol.available:
-                # Use "native" for native playback,
-                # otherwise use the protocol output id (=player id)
-                if protocol.is_native:
-                    title = f"{protocol_name} (native)"
-                elif base_protocol := base_protocols.get(protocol.output_protocol_id):
-                    title = (
-                        f"{protocol_name} "
-                        f"(over {self._get_protocol_display_name(base_protocol.protocol_domain)})"
-                    )
-                else:
-                    title = protocol_name
-                value = "native" if protocol.is_native else protocol.output_protocol_id
-                options.append(ConfigValueOption(value, title=title))
-                has_native = has_native or protocol.is_native
+            # Use "native" for native playback,
+            # otherwise use the protocol output id (=player id)
+            if protocol.is_native:
+                title = f"{protocol_name} (native)"
+            elif base_protocol := base_protocols.get(protocol.output_protocol_id):
+                title = (
+                    f"{protocol_name} "
+                    f"(over {self._get_protocol_display_name(base_protocol.protocol_domain)})"
+                )
+            else:
+                title = protocol_name
+            value = "native" if protocol.is_native else protocol.output_protocol_id
+            options.append(
+                ConfigValueOption(
+                    value,
+                    title=title,
+                    disabled=not protocol.available,
+                    # the option's value is a player id, so its reason is keyed by this slug
+                    translation_key=(
+                        None
+                        if protocol.available
+                        else self._output_protocol_unavailable_reason(player, protocol)
+                    ),
+                )
+            )
+            # never default to an output that can not be selected
+            has_native = has_native or (protocol.is_native and protocol.available)
 
         if has_native:
             default_value = "native"
@@ -1003,6 +1017,22 @@ class PlayerConfigMixin:
                 continue
             values[entry.key] = stored_value
         return values
+
+    def _output_protocol_unavailable_reason(self, player: Player, protocol: OutputProtocol) -> str:
+        """
+        Return the translation slug telling why an output protocol can not be selected.
+
+        :param player: The player the output protocol belongs to.
+        :param protocol: The output protocol that is currently unavailable.
+        """
+        if protocol.is_native:
+            return "needs_setup" if player.needs_setup else "unavailable"
+        if not self.get_raw_player_config_value(protocol.output_protocol_id, CONF_ENABLED, True):
+            return "turned_off"
+        protocol_player = self.mass.players.get_player(protocol.output_protocol_id)
+        if protocol_player is not None and protocol_player.needs_setup:
+            return "needs_setup"
+        return "unavailable"
 
     def _get_protocol_display_name(self, protocol_domain: str) -> str:
         """Return the display name for a protocol domain."""

@@ -6,13 +6,16 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import socket
 import time
 from contextlib import suppress
 from ipaddress import IPv4Address, IPv6Address, ip_address
 from typing import TYPE_CHECKING, Final, cast
 
-from music_assistant_models.enums import PlaybackState
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType, PlaybackState
+from music_assistant_models.errors import MediaNotFoundError
 from zeroconf import NonUniqueNameException, ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
@@ -38,7 +41,9 @@ from .constants import (
     COMPANION_DISCOVERY_TYPE,
     CONF_IGNORE_VOLUME,
     CONF_STORED_VOLUME,
+    CONF_VERBOSE_PTP_LOGGING,
     DACP_DISCOVERY_TYPE,
+    EXTERNAL_ARTWORK_PATH_PREFIX,
     FALLBACK_VOLUME,
     MRP_DISCOVERY_TYPE,
     RAOP_DISCOVERY_TYPE,
@@ -58,7 +63,7 @@ from .player import AirPlayPlayer, GenericAirPlayPlayer
 from .sendspin_bridge import SendspinBridgeManager
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import ProviderConfig
 
 # Marker the `cliairplay --ptp-daemon` process prints once it has bound the
 # privileged PTP ports (UDP 319/320) and opened its control channel. Until this
@@ -73,6 +78,9 @@ PTP_DAEMON_READY_TIMEOUT: Final[float] = 3.0
 # Grace period after broadcasting a goodbye for a stale DACP registration before
 # re-registering the (name-stable) service, letting the cache flush the old record.
 DACP_RECLAIM_DELAY: Final[float] = 1.0
+# Opt-in for pyatv's own debug logging. Set to any non-empty value to trace the
+# pyatv protocol traffic itself.
+ENV_PYATV_DEBUG: Final[str] = "MASS_PYATV_DEBUG"
 
 
 class AirPlayProvider(PlayerProvider):
@@ -175,7 +183,15 @@ class AirPlayProvider(PlayerProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
-        return ()
+        return (
+            ConfigEntry(
+                key=CONF_VERBOSE_PTP_LOGGING,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                required=False,
+                advanced=True,
+            ),
+        )
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -327,15 +343,38 @@ class AirPlayProvider(PlayerProvider):
         """Return AirplayPlayer by id."""
         return cast("AirPlayPlayer | None", self.mass.players.get_player(player_id))
 
+    async def resolve_image(self, path: str) -> bytes:
+        """
+        Resolve artwork for the current external media on an Apple device.
+
+        :param path: AirPlay artwork path produced for the image proxy.
+        :return: Raw artwork bytes.
+        :raises MediaNotFoundError: If the artwork is invalid, stale, or unavailable.
+        """
+        try:
+            prefix, player_id, artwork_id = path.split("/", 2)
+        except ValueError as err:
+            raise MediaNotFoundError("Invalid AirPlay artwork path") from err
+        player = self.get_player(player_id)
+        if (
+            prefix != EXTERNAL_ARTWORK_PATH_PREFIX
+            or not artwork_id
+            or not isinstance(player, AirPlayControlPlayer)
+        ):
+            raise MediaNotFoundError("AirPlay artwork is unavailable")
+        return await player.async_get_external_artwork(artwork_id)
+
     def _set_pyatv_log_level(self) -> None:
-        """Keep pyatv's (very chatty) logging quiet unless verbose logging is enabled."""
-        # pyatv is extremely chatty at debug level (it logs every protocol
-        # message and heartbeat of each control connection), so only pass
-        # through its debug logging when verbose logging is enabled
-        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+        """Keep pyatv's (very chatty) logging quiet unless it is explicitly asked for."""
+        # pyatv logs every protocol message, HTTP exchange and encrypted payload of
+        # each control connection at debug level, which buries our own logging and
+        # rotates the log file within minutes. Its debug output is therefore held
+        # back even on verbose sessions, which are meant to surface our own deep
+        # diagnostics (the cliairplay [STATUS] and PTP traces) rather than pyatv's.
+        if os.environ.get(ENV_PYATV_DEBUG):
             logging.getLogger("pyatv").setLevel(logging.DEBUG)
         else:
-            logging.getLogger("pyatv").setLevel(self.logger.level + 10)
+            logging.getLogger("pyatv").setLevel(max(self.logger.level + 10, logging.INFO))
 
     async def _setup_player(
         self, player_id: str, display_name: str, discovery_info: AsyncServiceInfo
@@ -514,8 +553,12 @@ class AirPlayProvider(PlayerProvider):
                 continue
             if not raw_conf.get("enabled", True):
                 continue
+            setup_name = self.mass.config.get_provider_setup_value(
+                str(instance_id), CONF_AIRPLAY_NAME
+            )
             values = raw_conf.get("values")
-            airplay_name = values.get(CONF_AIRPLAY_NAME) if isinstance(values, dict) else None
+            legacy_name = values.get(CONF_AIRPLAY_NAME) if isinstance(values, dict) else None
+            airplay_name = setup_name or legacy_name
             receiver_names.add(str(airplay_name) if airplay_name else DEFAULT_AIRPLAY_NAME)
             receiver_ports.add(airplay_receiver_port(str(instance_id)))
         # running instances are authoritative for the actual daemon ports
@@ -735,10 +778,13 @@ class AirPlayProvider(PlayerProvider):
         bind_ip = str(self.mass.streams.bind_ip)
         if bind_ip not in ("0.0.0.0", "::", ""):
             args += ["--if", bind_ip]
-        # The daemon runs quiet by default; only a verbose session turns on its
-        # per-packet PTP tracing (Announce/Sync/Delay_Req), so a normal debug
-        # session does not flood the log with timing chatter.
-        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+        # The daemon runs quiet by default: its per-packet PTP tracing
+        # (Announce/Sync/Delay_Req, ~10 lines/s) needs BOTH verbose logging and
+        # the dedicated opt-in, so ordinary verbose sessions are not flooded
+        # with timing chatter that only matters for clock-sync debugging.
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) and self.config.get_value(
+            CONF_VERBOSE_PTP_LOGGING
+        ):
             args += ["--debug", "10"]
         daemon = AsyncProcess(args, stdout=True, stderr=True, name="cliairplay-ptp-daemon")
         # (Re)gate readiness for this daemon instance: not ready until a reader

@@ -13,6 +13,7 @@ from music_assistant_models.errors import LoginFailed, SetupFailedError, Unsuppo
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.json import SerializableType
+from music_assistant.helpers.mount import error_summary, unmount
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.util import get_ip_from_host
 from music_assistant.providers.filesystem_local import (
@@ -43,6 +44,19 @@ CONF_SHARE = "share"
 CONF_SUBFOLDER = "subfolder"
 CONF_SMB_VERSION = "smb_version"
 CONF_CACHE_MODE = "cache_mode"
+
+# lowercase fragments that both mount tools (Linux mount.cifs and macOS mount_smbfs) emit when
+# the server rejected the credentials - only those must be reported back as an auth problem
+_AUTH_FAILURE_MARKERS = (
+    "permission denied",
+    "authentication error",
+    "nt_status_logon_failure",
+    "nt_status_access_denied",
+    "nt_status_account_disabled",
+    "nt_status_account_locked_out",
+    "nt_status_password_expired",
+    "nt_status_wrong_password",
+)
 
 
 async def setup(
@@ -123,7 +137,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         await makedirs(self.base_path, exist_ok=True)
         try:
             # do unmount first to cleanup any unexpected state
-            await self.unmount(ignore_error=True)
+            await unmount(self.base_path, self.logger)
             await self.mount()
         except OSError as err:
             msg = f"Unable to run the mount command: {err}"
@@ -136,7 +150,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
 
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
-        await self.unmount(ignore_error=True)
+        await unmount(self.base_path, self.logger)
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
@@ -180,19 +194,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         self.logger.log(VERBOSE_LOG_LEVEL, "Using mount command: %s", " ".join(mount_cmd))
         returncode, output = await check_output(*mount_cmd, env=env_vars)
         if returncode != 0:
-            mount_output = output.decode()
-            msg = f"SMB mount failed with error: {mount_output}"
-            # only report a credentials problem when the server actually rejected them,
-            # so an unreachable NAS does not send the user hunting for a wrong password
-            if _is_permission_denied(mount_output):
-                raise LoginFailed(msg)
-            raise SetupFailedError(msg)
-
-    async def unmount(self, ignore_error: bool = False) -> None:
-        """Unmount the remote share."""
-        returncode, output = await check_output("umount", self.base_path)
-        if returncode != 0 and not ignore_error:
-            self.logger.warning("SMB unmount failed with error: %s", output.decode())
+            raise _mount_error(output.decode().strip())
 
     def _build_macos_mount_cmd(
         self, server: str, username: str, password: str | None, share: str, subfolder: str
@@ -298,11 +300,17 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         return mount_cmd, env_vars
 
 
-def _is_permission_denied(mount_output: str) -> bool:
+def _mount_error(output: str) -> SetupFailedError | LoginFailed:
     """
-    Check whether a failed mount command was rejected by the server's access control.
+    Return the error to raise for a failed mount command.
 
-    :param mount_output: Combined output of the mount command that failed.
+    :param output: The (combined) output of the mount command.
     """
-    lowered = mount_output.lower()
-    return "error(13)" in lowered or "permission denied" in lowered or "access denied" in lowered
+    lowered = output.lower()
+    if any(marker in lowered for marker in _AUTH_FAILURE_MARKERS):
+        return LoginFailed(f"SMB mount failed with error: {output}")
+    return SetupFailedError(
+        f"SMB mount failed with error: {output}",
+        translation_key="mount_failed",
+        translation_args=[error_summary(output)],
+    )

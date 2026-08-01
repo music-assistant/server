@@ -749,6 +749,9 @@ def get_normalization_mode(
     if streamdetails.media_type == MediaType.AUDIO_SOURCE:
         # live/realtime: upstream producer owns loudness, no measurement to converge on
         return VolumeNormalizationMode.DISABLED
+    if streamdetails.media_type == MediaType.SOUND_EFFECT:
+        # never measured, and the dynamic fallback compresses short clips
+        return VolumeNormalizationMode.DISABLED
     if streamdetails.target_loudness is None:
         # no target loudness set, disable normalization
         return VolumeNormalizationMode.DISABLED
