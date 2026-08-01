@@ -761,27 +761,54 @@ class AirPlayStream:
         if_arg: str | None = None
         target_is_ipv6 = ":" in self.player.address
         if_ip = await resolve_if_ip(self.mass, str(self.player.device_info.ip_address))
-        if if_ip not in ("0.0.0.0", "::", ""):
+        if if_ip in ("0.0.0.0", "::", ""):
+            if_detail = f"<omitted: all interfaces ({if_ip or 'unset'})>"
+        else:
             try:
                 source_is_ipv6 = isinstance(ipaddress.ip_address(if_ip), ipaddress.IPv6Address)
+            except ValueError:
+                # A configured zeroconf interface is handed back verbatim, so this may be
+                # an interface name rather than an address. Its family cannot be matched
+                # against the device, so route selection is left to the binary.
+                if_detail = f"<omitted: {if_ip} is not an ip address>"
+            else:
                 if source_is_ipv6 == target_is_ipv6:
                     if_arg = if_ip
+                    if_detail = if_ip
                     args += ["--if", if_ip]
-            except ValueError:
-                pass
+                else:
+                    if_detail = f"<omitted: {if_ip} family differs from device>"
 
         # Address advertised inside the protocol (timing peers) for hosts where
         # the reachable address differs from the bind address (e.g. containers).
         publish_ip = str(self.mass.streams.publish_ip or "")
-        if publish_ip and publish_ip != if_arg:
+        if not publish_ip:
+            publish_detail = "<unset>"
+        elif publish_ip == if_arg:
+            publish_detail = f"<omitted: same as if ({publish_ip})>"
+        else:
             try:
                 publish_is_ipv6 = isinstance(
                     ipaddress.ip_address(publish_ip), ipaddress.IPv6Address
                 )
-                if publish_is_ipv6 == target_is_ipv6:
-                    args += ["--publish-ip", publish_ip]
             except ValueError:
-                pass
+                publish_detail = f"<omitted: {publish_ip} is not an ip address>"
+            else:
+                if publish_is_ipv6 == target_is_ipv6:
+                    publish_detail = publish_ip
+                    args += ["--publish-ip", publish_ip]
+                else:
+                    publish_detail = f"<omitted: {publish_ip} family differs from device>"
+
+        # The addressing the stream ends up with is the first thing needed when triaging
+        # a connection or timing issue from a user's log, and it is invisible otherwise:
+        # both flags are dropped silently when the resolved value is unusable here.
+        self.player.logger.debug(
+            "cliairplay network binding for player %s: if=%s publish_ip=%s",
+            self.player.player_id,
+            if_detail,
+            publish_detail,
+        )
 
         # Debug level
         if self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):

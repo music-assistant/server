@@ -778,6 +778,9 @@ class AirPlayProvider(PlayerProvider):
         bind_ip = str(self.mass.streams.bind_ip)
         if bind_ip not in ("0.0.0.0", "::", ""):
             args += ["--if", bind_ip]
+            if_detail = bind_ip
+        else:
+            if_detail = f"<omitted: all interfaces ({bind_ip or 'unset'})>"
         # The daemon runs quiet by default: its per-packet PTP tracing
         # (Announce/Sync/Delay_Req, ~10 lines/s) needs BOTH verbose logging and
         # the dedicated opt-in, so ordinary verbose sessions are not flooded
@@ -786,6 +789,10 @@ class AirPlayProvider(PlayerProvider):
             CONF_VERBOSE_PTP_LOGGING
         ):
             args += ["--debug", "10"]
+        # The binding the daemon ends up with is the first thing needed when triaging
+        # timing issues from a user's log, and it is invisible otherwise: --if is left
+        # out entirely for a default bind ip.
+        self.logger.debug("Starting shared PTP clock daemon: if=%s", if_detail)
         daemon = AsyncProcess(args, stdout=True, stderr=True, name="cliairplay-ptp-daemon")
         # (Re)gate readiness for this daemon instance: not ready until a reader
         # sees the "daemon up" line (a restart clears any previous readiness).
