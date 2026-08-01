@@ -363,7 +363,9 @@ class Provider:
             # async_init completed
             logging_name = self.name
         self.logger = mass_logger.getChild(logging_name)
-        log_level = str(config.get_value(CONF_LOG_LEVEL))
+        # fall back to the entry's own default: a config that reaches us without its
+        # entries resolved must not take the whole provider down over a log level
+        log_level = str(config.get_value(CONF_LOG_LEVEL) or "GLOBAL")
         if log_level == "GLOBAL":
             self.logger.setLevel(mass_logger.level)
         else:

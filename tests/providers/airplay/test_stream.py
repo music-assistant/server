@@ -655,19 +655,36 @@ async def test_start_sends_command_and_stamps_position() -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_join_marks_the_command() -> None:
+    """A late-join START carries START_JOIN=1 so the binary enforces clock readiness."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command:
+        await stream.start(START_UNIX_MS, 0, join=True)
+
+    write_command.assert_awaited_once_with(
+        f"START_UNIX_MS={START_UNIX_MS}\nSTART_JOIN=1\nACTION=START"
+    )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "complete_before_start",
     [True, False],
     ids=["delivered", "rendering"],
 )
-async def test_start_repushes_transition_artwork(complete_before_start: bool) -> None:
-    """START re-sends artwork prepared before or during a track transition."""
+async def test_start_transition_artwork_settled_or_retried(complete_before_start: bool) -> None:
+    """START keeps already-delivered transition artwork settled and retries a superseded render."""
     player = _make_player()
     stream = AirPlayStream(player)
     stream._cli_proc = MagicMock(closed=False)
     stream._connected.set()
     metadata = MagicMock(
         corrected_elapsed_time=0,
+        queue_item_id="item-new",
         title="New track",
         artist="Artist",
         album="Album",
@@ -720,13 +737,19 @@ async def test_start_repushes_transition_artwork(complete_before_start: bool) ->
         await pretransition_task
 
     commands = [args.args[0] for args in write_command.await_args_list]
-    assert commands[-2:] == [
-        f"START_UNIX_MS={START_UNIX_MS}\nACTION=START",
-        "ARTWORK=/cache/posttransition.jpg",
-    ]
-    assert ("ARTWORK=/cache/pretransition.jpg" in commands) is complete_before_start
+    start_command = f"START_UNIX_MS={START_UNIX_MS}\nACTION=START"
+    if complete_before_start:
+        # artwork delivered before the anchor stays settled; re-pushing it
+        # around the START would make an Apple TV re-render its screen
+        assert commands[-1] == start_command
+        assert "ARTWORK=/cache/pretransition.jpg" in commands
+    else:
+        # the anchor superseded the in-flight render; the post-anchor push
+        # renders again and delivers the artwork once
+        assert commands[-2:] == [start_command, "ARTWORK=/cache/posttransition.jpg"]
+        assert "ARTWORK=/cache/pretransition.jpg" not in commands
     assert stream._metadata_generation == 2
-    assert stream._metadata_checksum == "New track|Artist|Album|180|new-image"
+    assert stream._metadata_artwork_checksum == "new-image"
 
 
 @pytest.mark.asyncio
@@ -1046,9 +1069,11 @@ async def test_initial_metadata_skips_artwork() -> None:
     ):
         await stream.send_metadata(0, metadata, send_artwork=False)
 
-    send_command.assert_awaited_once()
-    assert send_command.await_args is not None
-    assert "TITLE=Track" in send_command.await_args.args[0]
+    assert send_command.await_count == 2
+    commands = [args.args[0] for args in send_command.await_args_list]
+    assert "TITLE=Track" in commands[0]
+    # the progress correction rides along right after the metadata push
+    assert commands[1].endswith("PROGRESS=0")
     send_artwork.assert_not_awaited()
 
 
@@ -1353,9 +1378,7 @@ async def test_process_eof_during_render_does_not_send_artwork() -> None:
         ),
         patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
     ):
-        render_task = asyncio.create_task(
-            stream._render_and_send_artwork("image", "metadata-checksum", 1)
-        )
+        render_task = asyncio.create_task(stream._render_and_send_artwork("image", 1))
         await render_started.wait()
         stream._stopped = True
         release_render.set()
@@ -1443,7 +1466,6 @@ async def test_metadata_revert_resends_text_after_superseded_artwork() -> None:
         image_url="second-image",
     )
     first_checksum = "First track|Artist|Album|180|None"
-    stream._metadata_checksum = first_checksum
     stream._metadata_text_checksum = first_checksum
     stream._pending_metadata_checksum = first_checksum
     artwork_started = asyncio.Event()
@@ -1487,11 +1509,13 @@ async def test_repeated_metadata_retries_superseded_artwork() -> None:
     process = MagicMock()
     process.closed = False
     stream._cli_proc = process
-    initial_checksum = "Initial|Artist|Album|180|initial-image"
-    stream._metadata_checksum = initial_checksum
-    stream._metadata_text_checksum = initial_checksum
+    initial_text_checksum = "item-initial|Initial|Artist|Album"
+    initial_checksum = f"{initial_text_checksum}|initial-image"
+    stream._metadata_artwork_checksum = "initial-image"
+    stream._metadata_text_checksum = initial_text_checksum
     stream._pending_metadata_checksum = initial_checksum
     metadata_b = MagicMock(
+        queue_item_id="item-b",
         title="Track B",
         artist="Artist",
         album="Album",
@@ -1499,6 +1523,7 @@ async def test_repeated_metadata_retries_superseded_artwork() -> None:
         image_url="b-image",
     )
     metadata_c = MagicMock(
+        queue_item_id="item-c",
         title="Track C",
         artist="Artist",
         album="Album",
@@ -1549,7 +1574,7 @@ async def test_repeated_metadata_retries_superseded_artwork() -> None:
     assert "ARTWORK=b-stale.jpg\n" not in commands
     assert "ARTWORK=c.jpg\n" not in commands
     assert commands[-1] == "ARTWORK=b-final.jpg\n"
-    assert stream._metadata_checksum == "Track B|Artist|Album|180|b-image"
+    assert stream._metadata_artwork_checksum == "b-image"
 
 
 @pytest.mark.asyncio
@@ -1581,13 +1606,13 @@ async def test_failed_artwork_delivery_is_retried() -> None:
     """A dropped ARTWORK command remains pending for the next metadata update."""
     stream = AirPlayStream(_make_player())
     metadata = MagicMock(
+        queue_item_id="item-1",
         duration=180,
         title="Track",
         artist="Artist",
         album="Album",
         image_url="image",
     )
-    metadata_checksum = "Track|Artist|Album|180|image"
     artwork_path = "/cache/thumbnails/artwork.jpg"
 
     with (
@@ -1605,14 +1630,61 @@ async def test_failed_artwork_delivery_is_retried() -> None:
         ) as send_command,
     ):
         await stream.send_metadata(None, metadata)
-        assert stream._metadata_checksum == ""
+        assert stream._metadata_artwork_checksum == ""
         await stream.send_metadata(None, metadata)
 
     assert prepare_artwork.await_count == 2
     assert [args.args[0] for args in send_command.await_args_list].count(
         f"ARTWORK={artwork_path}"
     ) == 2
-    assert stream._metadata_checksum == metadata_checksum
+    assert stream._metadata_artwork_checksum == "image"
+
+
+@pytest.mark.asyncio
+async def test_text_refinement_keeps_delivered_artwork_settled() -> None:
+    """A text-only metadata update after delivery does not re-render unchanged art."""
+    stream = AirPlayStream(_make_player())
+    metadata = MagicMock(
+        duration=180,
+        title="Track",
+        artist="Artist",
+        album="Album",
+        image_url="image",
+    )
+    refined = MagicMock(
+        queue_item_id=metadata.queue_item_id,
+        duration=180,
+        title="Track (Remastered)",
+        artist="Artist",
+        album="Album",
+        image_url="image",
+    )
+    artwork_path = "/cache/thumbnails/artwork.jpg"
+
+    with (
+        patch.object(
+            stream,
+            "_prepare_artwork",
+            new_callable=AsyncMock,
+            return_value=artwork_path,
+        ) as prepare_artwork,
+        patch.object(
+            stream,
+            "send_cli_command",
+            new_callable=AsyncMock,
+            return_value=True,
+        ) as send_command,
+    ):
+        await stream.send_metadata(None, metadata)
+        assert stream._metadata_artwork_checksum == "image"
+        # the refinement bumps the metadata generation (pending identity
+        # changed), which before the identity settle re-armed the artwork
+        await stream.send_metadata(None, refined)
+
+    prepare_artwork.assert_awaited_once()
+    commands = [args.args[0] for args in send_command.await_args_list]
+    assert commands.count(f"ARTWORK={artwork_path}") == 1
+    assert "TITLE=Track (Remastered)" in commands[-1]
 
 
 # --- Structured connect failures reported by the binary ---
@@ -1628,6 +1700,77 @@ async def test_connect_error_status_line_is_parsed() -> None:
     )
 
     assert stream._connect_error == ConnectError("auth_required", 401, "RTSP setup rejected")
+
+
+@pytest.mark.asyncio
+async def test_started_ack_status_line_parsing() -> None:
+    """A started ack releases the START wait; a malformed one carries no details."""
+    stream = AirPlayStream(_make_player())
+
+    stream._handle_status_line(
+        "[STATUS] started requested_unix_ms=1750000000000 at_unix_ms=1750000000004"
+    )
+    assert stream._started.is_set()
+    assert stream._start_ack == (1750000000000, 1750000000004)
+
+    stream._started.clear()
+    stream._start_ack = None
+    stream._handle_status_line("[STATUS] started requested_unix_ms=garbage at_unix_ms=1")
+    assert stream._started.is_set()
+    assert stream._start_ack is None
+
+
+# --- Post-commit anchor verification ---
+
+
+def test_anchor_corrected_status_line_rebases_the_position() -> None:
+    """A correction carrying a content cut moves the reported-position base by it."""
+    stream = AirPlayStream(_make_player())
+    stream._start_position = 12.0
+
+    ended = stream._handle_status_line(
+        "[STATUS] anchor_corrected requested_unix_ms=1750000000000 "
+        "from_unix_ms=1750000000400 at_unix_ms=1750000000900 content_cut_ms=500"
+    )
+
+    assert ended is False
+    assert stream._start_position == 12.5
+
+
+def test_anchor_corrected_status_line_logs_a_warning(caplog: pytest.LogCaptureFixture) -> None:
+    """The correction is logged loudly, including the display name and the delta."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.WARNING):
+        stream._handle_status_line(
+            "[STATUS] anchor_corrected requested_unix_ms=0 "
+            "from_unix_ms=1750000000400 at_unix_ms=1750000000900 content_cut_ms=500"
+        )
+
+    assert "Player A" in caplog.text
+    assert "+500 ms" in caplog.text
+
+
+def test_anchor_corrected_status_line_tolerates_malformed_line() -> None:
+    """A malformed anchor_corrected line is dropped instead of raising or rebasing."""
+    stream = AirPlayStream(_make_player())
+    stream._start_position = 12.0
+
+    ended = stream._handle_status_line("[STATUS] anchor_corrected requested_unix_ms=garbage")
+
+    assert ended is False
+    assert stream._start_position == 12.0
+
+
+def test_clock_verified_status_line_is_debug_logged(caplog: pytest.LogCaptureFixture) -> None:
+    """A clock_verified line needs no server action beyond a debug note of the margin."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.DEBUG):
+        ended = stream._handle_status_line("[STATUS] clock_verified margin_ms=42")
+
+    assert ended is False
+    assert "42" in caplog.text
 
 
 @pytest.mark.asyncio
