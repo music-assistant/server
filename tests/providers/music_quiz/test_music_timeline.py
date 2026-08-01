@@ -897,6 +897,97 @@ async def test_title_bonus_uses_unrelated_source_only_when_grounded_pool_is_spar
 
 
 @pytest.mark.asyncio
+async def test_title_bonus_uses_same_artist_source_tracks_outside_playback_set() -> None:
+    """Ground same-artist titles in the complete source pool without extra lookups."""
+    current = _track("current", "Genesis", "Justice", album_year=2007)
+    undated_same_artist = [
+        _track("one", "D.A.N.C.E.", "Justice"),
+        _track("two", "Phantom", "Justice"),
+        _track("three", "Audio, Video, Disco", "Justice"),
+    ]
+    unrelated = _track("unrelated", "Teardrop", "Massive Attack", album_year=1998)
+    quiz, mass = _quiz(
+        [current, *undated_same_artist, unrelated],
+        title_mode=TimelineBonusMode.MULTIPLE_CHOICE,
+    )
+    quiz._eligible_tracks = [current, unrelated]
+
+    with patch.object(
+        quiz,
+        "_source_pool_bonus_distractors",
+        wraps=quiz._source_pool_bonus_distractors,
+    ) as source_pool_fallback:
+        options = await quiz._create_bonus_options(current, TimelineBonusType.TITLE)
+
+    assert {option.label for option in options if not option.is_correct} == {
+        "D.A.N.C.E.",
+        "Phantom",
+        "Audio, Video, Disco",
+    }
+    source_pool_fallback.assert_not_awaited()
+    mass.music.artists.top_tracks.assert_not_awaited()
+    mass.music.search.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_bonus_fallback_uses_source_tracks_outside_playback_set() -> None:
+    """Fill the last-resort bonus options from source tracks the timeline cannot use."""
+    current = _track("current", "Genesis", "Justice", album_year=2007)
+    undated = [
+        _track("one", "Teardrop", "Massive Attack"),
+        _track("two", "Glory Box", "Portishead"),
+        _track("three", "Roads", "Tricky"),
+    ]
+    quiz, _ = _quiz(
+        [current, *undated],
+        artist_mode=TimelineBonusMode.MULTIPLE_CHOICE,
+        title_mode=TimelineBonusMode.MULTIPLE_CHOICE,
+    )
+    quiz._eligible_tracks = [current]
+
+    artist_options = await quiz._create_bonus_options(current, TimelineBonusType.ARTIST)
+    title_options = await quiz._create_bonus_options(current, TimelineBonusType.TITLE)
+
+    assert {option.label for option in artist_options if not option.is_correct} == {
+        "Massive Attack",
+        "Portishead",
+        "Tricky",
+    }
+    assert {option.label for option in title_options if not option.is_correct} == {
+        "Teardrop",
+        "Glory Box",
+        "Roads",
+    }
+
+
+@pytest.mark.asyncio
+async def test_rejected_track_is_excluded_from_bonus_options() -> None:
+    """Never reuse a rejected track as a bonus label while the pool can still fill options."""
+    current = _track("current", "Genesis", "Justice", album_year=2007)
+    failed = _track("failed", "Teardrop", "Massive Attack", album_year=1998)
+    remaining = [
+        _track("one", "Glory Box", "Portishead"),
+        _track("two", "Roads", "Tricky"),
+        _track("three", "Sexy Boy", "Air"),
+    ]
+    quiz, _ = _quiz(
+        [current, failed, *remaining],
+        title_mode=TimelineBonusMode.MULTIPLE_CHOICE,
+    )
+    quiz._eligible_tracks = [current, failed]
+    assert failed.uri is not None
+
+    quiz.reject_track(failed.uri)
+    options = await quiz._create_bonus_options(current, TimelineBonusType.TITLE)
+
+    assert {option.label for option in options if not option.is_correct} == {
+        "Glory Box",
+        "Roads",
+        "Sexy Boy",
+    }
+
+
+@pytest.mark.asyncio
 async def test_ai_artist_bonus_keeps_real_candidates_dominant() -> None:
     """Use two ranked similar artists and at most one synthetic artist."""
     current = _track("current", "Genesis", "Justice", album_year=2007)
