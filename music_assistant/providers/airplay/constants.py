@@ -63,15 +63,20 @@ DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 # RAOP because its pre-fill is paced.
 AIRPLAY_RAOP_SETUP_LEAD_MS: Final[int] = 1500
 AIRPLAY_AP2_SETUP_LEAD_MS: Final[int] = 2500
-# Late joiners keep a much more conservative headroom: besides connecting and
-# priming from the session's history buffer, the receiver must re-acquire the
-# shared PTP clock before it can render its anchor. Its Delay_Req exchange
-# only resumes ~0.7-1.5 s after the join's START is acked (measured on a
-# Sonos Era 100 pair, 2026-07-31) and the servo needs a further ~1.7-2.3 s to
-# lock — and a missed anchor is permanent on the splice timeline (the frozen
-# line is never re-announced), heard as a constant echo on the joined member.
-# The anchor therefore sits beyond exchange-resume plus lock plus margin.
-AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 4000
+# Late joiners anchor a deliberately low headroom ahead — a first guess, not
+# a worst-case bound. A join START makes the binary verify receiver clock
+# readiness from its PTP probe streak and correct an early anchor forward to
+# exact readiness, advancing the joiner's queued content by the same amount
+# ([STATUS] anchor_corrected): the cut frames are audio the group already
+# played, so the correction is inaudible and the join lands as soon as the
+# receiver can render (~2.7-3.8 s after the START ack on a cold clock,
+# measured on Sonos Era 100 and Apple TV 4K). The floor only keeps the
+# correction window open: it must clear the binary's verification arm window
+# (AP2_CLOCK_VERIFY_MIN_WINDOW_MS = 600 ms pacing depth + 500 ms poll round
+# and slack, cliairplay src/ap2_client.c) plus one further 250 ms poll round
+# and the START command latency; a member's sync_adjust shifts its commanded
+# anchor within the same budget.
+AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 1500
 # Anchor lead for a readiness-confirmed START (cold and warm alike): the
 # session only anchors after the binary confirmed the connection ([STATUS]
 # connected) and the new audio flowing ([STATUS] audio), so the lead no longer

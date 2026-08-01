@@ -785,7 +785,9 @@ async def test_late_join_primes_from_ring_tail_at_headroom() -> None:
     session = _make_session(start_time, seconds_streamed)
     # Fill ring buffer with 5 seconds of non-silent PCM.
     session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 5)
-    player = _make_late_joiner(wait_start_ms=2000)
+    # Leads below the late-join floor, so the floor is what anchors the join.
+    session.wait_start = 1.0
+    player = _make_late_joiner(wait_start_ms=1000)
 
     written_chunks: list[bytes] = []
 
@@ -800,7 +802,7 @@ async def test_late_join_primes_from_ring_tail_at_headroom() -> None:
         mock_start.side_effect = _setup_stream(player)
         await session.add_client(player)
 
-    # start_at is now + min_headroom (the late-join floor); fed_pos_due = 4.5s
+    # start_at is now + min_headroom (the late-join floor); fed_pos_due = 2.0s
     assert mock_start.called, "_start_client was never called"
     expected_headroom = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000
     assert _captured_start_at(player) - now == pytest.approx(expected_headroom, abs=0.01), (
@@ -808,7 +810,7 @@ async def test_late_join_primes_from_ring_tail_at_headroom() -> None:
         f"got offset {_captured_start_at(player) - now:.4f}s"
     )
 
-    # The last 0.5s of the ring is primed (positions 4.5s..5.0s), nothing skipped.
+    # The last 3.0s of the ring is primed (positions 2.0s..5.0s), nothing skipped.
     assert session._client_skip_bytes[player.player_id] == 0
     assert written_chunks, "No data was written to the player"
     remaining_seconds = len(written_chunks[0]) / PCM_SAMPLE_SIZE
@@ -824,8 +826,8 @@ async def test_late_join_skips_live_feed_when_anchor_ahead_of_write_head() -> No
     # Freeze time so both the test and the code under test agree on `now`.
     now = 1_000_000.0
     # Diagnosed clamp case: now - start_time = 8.84s, seconds_streamed = 10.0s,
-    # min_headroom = 4.0s (the floor) and no group shift ->
-    # fed_pos_due = 12.84s > 10.0s.
+    # min_headroom = 2.5s (the session lead, above the late-join floor) and no
+    # group shift -> fed_pos_due = 11.34s > 10.0s.
     start_time = now - 8.84
     seconds_streamed = 10.0
     session = _make_session(start_time, seconds_streamed)
@@ -847,10 +849,10 @@ async def test_late_join_skips_live_feed_when_anchor_ahead_of_write_head() -> No
         await session.add_client(player)
 
     # anchor is now + min_headroom and nothing is primed (position past the head)
-    assert _captured_start_at(player) - now == pytest.approx(4.0, abs=0.01)
+    assert _captured_start_at(player) - now == pytest.approx(2.5, abs=0.01)
     assert written_chunks == []
     skip_seconds = session._client_skip_bytes[player.player_id] / PCM_SAMPLE_SIZE
-    assert skip_seconds == pytest.approx(2.84, abs=0.01)
+    assert skip_seconds == pytest.approx(1.34, abs=0.01)
 
 
 @pytest.mark.asyncio
@@ -860,8 +862,8 @@ async def test_late_join_primes_from_ring_under_group_shift() -> None:
     now = 1_000_000.0
     # Same base as the clamp case, but the reference member accumulated a
     # +3.039s starvation shift (134020 frames @44100) so the group's effective
-    # anchor is later: fed_pos_due = 9.80s, back inside the ring. The joiner is
-    # primed with ~0.2s from the ring tail and skips nothing.
+    # anchor is later: fed_pos_due = 8.30s, back inside the ring. The joiner is
+    # primed with ~1.7s from the ring tail and skips nothing.
     start_time = now - 8.84
     seconds_streamed = 10.0
     session = _make_session(start_time, seconds_streamed)
@@ -884,11 +886,11 @@ async def test_late_join_primes_from_ring_under_group_shift() -> None:
         mock_start.side_effect = _setup_stream(player)
         await session.add_client(player)
 
-    assert _captured_start_at(player) - now == pytest.approx(4.0, abs=0.01)
+    assert _captured_start_at(player) - now == pytest.approx(2.5, abs=0.01)
     assert session._client_skip_bytes[player.player_id] == 0
     assert written_chunks, "expected a prime write from the ring tail"
     primed_seconds = len(written_chunks[0]) / PCM_SAMPLE_SIZE
-    assert primed_seconds == pytest.approx(0.199, abs=0.01)
+    assert primed_seconds == pytest.approx(1.699, abs=0.01)
 
 
 @pytest.mark.asyncio

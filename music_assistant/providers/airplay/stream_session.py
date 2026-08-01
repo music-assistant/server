@@ -517,8 +517,9 @@ class AirPlayStreamSession:
                 if actual is not None and abs((actual - adjust_ms) - start_unix_ms) > 2:
                     # The binary corrected the anchor forward (verified truth):
                     # redo the mapping from the actual instant so the fed
-                    # content matches where the joiner really starts.
-                    self.prov.logger.warning(
+                    # content matches where the joiner really starts. Routine
+                    # at the low join headroom, so informational only.
+                    self.prov.logger.info(
                         "Late joiner %s: anchor corrected %+d ms by the binary; "
                         "remapping the prime",
                         airplay_player.player_id,
