@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from math import ceil
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -17,13 +18,20 @@ from music_assistant.constants import CONF_LOG_LEVEL
 from music_assistant.providers.hass import (
     CONF_AI_TASK_ENTITY,
     CONF_AUTH_TOKEN,
+    CONF_MUTE_CONTROLS,
     CONF_POWER_CONTROLS,
     CONF_TTS_ENTITY,
     CONF_URL,
     CONF_VERIFY_SSL,
+    CONF_VOLUME_CONTROLS,
+    STATE_FETCH_BATCH_SIZE,
     HomeAssistantProvider,
     setup,
 )
+
+LAST_CHANGED = 1683832716.072648
+LAST_CHANGED_ISO = "2023-05-11T19:18:36.072648+00:00"
+CONTEXT_ID = "01H0640ES8JCY1NGTNW3V41T5T"
 
 
 def _state(entity_id: str, friendly_name: str) -> dict[str, Any]:
@@ -35,13 +43,26 @@ def _state(entity_id: str, friendly_name: str) -> dict[str, Any]:
     }
 
 
-def _config(**values: str) -> MagicMock:
+def _compressed(state: dict[str, Any]) -> dict[str, Any]:
+    """Return the compressed form Home Assistant sends for the given entity state."""
+    return {
+        "s": state["state"],
+        "a": state["attributes"],
+        "lc": LAST_CHANGED,
+        "c": CONTEXT_ID,
+    }
+
+
+def _config(**values: Any) -> MagicMock:
     """Return a provider config exposing the given values via get_value (entry defaults)."""
     persisted_values = {
         CONF_URL: "http://homeassistant.local:8123",
         CONF_AUTH_TOKEN: "token",
         CONF_VERIFY_SSL: True,
         CONF_LOG_LEVEL: "GLOBAL",
+        CONF_POWER_CONTROLS: [],
+        CONF_MUTE_CONTROLS: [],
+        CONF_VOLUME_CONTROLS: [],
         **values,
     }
     config = MagicMock()
@@ -53,24 +74,6 @@ def _config(**values: str) -> MagicMock:
     return config
 
 
-def _mock_state_http(mass: MagicMock, states: list[dict[str, Any]]) -> None:
-    """Serve the given states via the mocked REST ``/api/states/<entity_id>`` endpoint."""
-    states_by_id = {state["entity_id"]: state for state in states}
-
-    def _get(url: str, headers: dict[str, str] | None = None) -> MagicMock:  # noqa: ARG001
-        entity_id = url.rsplit("/api/states/", 1)[-1]
-        state = states_by_id.get(entity_id)
-        response = MagicMock()
-        response.status = 200 if state is not None else 404
-        response.json = AsyncMock(return_value=state)
-        context = MagicMock()
-        context.__aenter__ = AsyncMock(return_value=response)
-        context.__aexit__ = AsyncMock(return_value=False)
-        return context
-
-    mass.http_session.get.side_effect = _get
-
-
 def _mass() -> MagicMock:
     """Return the Music Assistant dependencies used during provider startup."""
     mass = MagicMock()
@@ -78,6 +81,7 @@ def _mass() -> MagicMock:
     mass.http_session = MagicMock()
     mass.http_session_no_ssl = MagicMock()
     mass.create_task.side_effect = asyncio.create_task
+    mass.players.register_player_control = AsyncMock()
     # get_setup_value reads the (empty, here) live setup_data blob from the store, then
     # falls through to the provider config mock's get_value for the persisted test values
     mass.config.get = MagicMock(return_value={})
@@ -105,7 +109,16 @@ class _HomeAssistantClient:
         self.registry_cancelled = asyncio.Event()
         self.registry_stopped = asyncio.Event()
         self.calls: list[str] = []
-        self._states = states
+        self.subscribed = asyncio.Event()
+        # entity_ids per subscribe_entities call and per invoked unsubscribe callable
+        self.subscriptions: list[list[str]] = []
+        self.unsubscribed: list[list[str]] = []
+        self.active_subscriptions = 0
+        # compressed states keyed by entity_id, as delivered over the websocket
+        self.compressed_states = {state["entity_id"]: _compressed(state) for state in states}
+        # events delivered ahead of a subscription's initial state message
+        self.leading_events: list[dict[str, Any]] = []
+        self.deliver_initial_states = True
         self._registry_error = registry_error
         self._listener_error = listener_error
         self._connect_error = connect_error
@@ -147,12 +160,38 @@ class _HomeAssistantClient:
                 await self._registry_result
             if self._registry_error:
                 raise self._registry_error
-            return [{"entity_id": state["entity_id"]} for state in self._states]
+            return [{"entity_id": entity_id} for entity_id in self.compressed_states]
         except asyncio.CancelledError:
             self.registry_cancelled.set()
             raise
         finally:
             self.registry_stopped.set()
+
+    async def subscribe_entities(
+        self, cb_func: Callable[[dict[str, Any]], None], entity_ids: list[str]
+    ) -> Callable[[], None]:
+        """Deliver the subscription's state messages and return the unsubscribe callable."""
+        self.calls.append("subscribe_entities")
+        self.subscriptions.append(list(entity_ids))
+        self.active_subscriptions += 1
+        self.subscribed.set()
+        loop = asyncio.get_running_loop()
+        for event in self.leading_events:
+            loop.call_soon(cb_func, event)
+        if self.deliver_initial_states:
+            initial = {
+                entity_id: self.compressed_states[entity_id]
+                for entity_id in entity_ids
+                if entity_id in self.compressed_states
+            }
+            loop.call_soon(cb_func, {"a": initial})
+
+        def _unsubscribe() -> None:
+            self.calls.append("unsubscribe_entities")
+            self.unsubscribed.append(list(entity_ids))
+            self.active_subscriptions -= 1
+
+        return _unsubscribe
 
     async def disconnect(self) -> None:
         """Disconnect the client."""
@@ -163,12 +202,11 @@ class _HomeAssistantClient:
 
 @asynccontextmanager
 async def _start_provider(
-    states: list[dict[str, Any]], **config_values: str
+    states: list[dict[str, Any]], **config_values: Any
 ) -> AsyncIterator[tuple[HomeAssistantProvider, _HomeAssistantClient]]:
     """Start the provider with a connected mocked Home Assistant client."""
     hass = _HomeAssistantClient(states)
     mass = _mass()
-    _mock_state_http(mass, states)
     manifest = MagicMock()
     manifest.domain = "hass"
     manifest.name = "Home Assistant"
@@ -463,3 +501,169 @@ async def test_config_entries_list_entities_as_options() -> None:
 
     power_controls = next(entry for entry in entries if entry.key == CONF_POWER_CONTROLS)
     assert [option.value for option in power_controls.options] == ["switch.example"]
+
+
+async def test_domain_states_use_a_single_subscription() -> None:
+    """Fetch every entity of a domain in one websocket round-trip."""
+    states = [_state(f"media_player.player_{index}", f"Player {index}") for index in range(50)]
+
+    async with _start_provider(states) as (provider, hass):
+        result = await provider.get_states(domains=("media_player",))
+
+        assert len(result) == len(states)
+        assert len(hass.subscriptions) == 1
+        assert hass.subscriptions[0] == sorted(state["entity_id"] for state in states)
+
+
+async def test_large_requests_are_split_into_batches() -> None:
+    """Split a request that exceeds the batch size into bounded batches."""
+    entity_ids = [
+        f"media_player.player_{index:04d}" for index in range(STATE_FETCH_BATCH_SIZE * 2 + 1)
+    ]
+    states = [_state(entity_id, entity_id) for entity_id in entity_ids]
+
+    async with _start_provider(states) as (provider, hass):
+        result = await provider.get_states(domains=("media_player",))
+
+        assert len(result) == len(entity_ids)
+        assert len(hass.subscriptions) == ceil(len(entity_ids) / STATE_FETCH_BATCH_SIZE)
+        assert all(len(batch) <= STATE_FETCH_BATCH_SIZE for batch in hass.subscriptions)
+        requested = [entity_id for batch in hass.subscriptions for entity_id in batch]
+        assert sorted(requested) == sorted(entity_ids)
+        assert len(requested) == len(set(requested))
+
+
+async def test_every_batch_is_unsubscribed() -> None:
+    """Release the subscription of every batch once its states have been received."""
+    entity_ids = [f"media_player.player_{index}" for index in range(5)]
+    states = [_state(entity_id, entity_id) for entity_id in entity_ids]
+
+    async with _start_provider(states) as (provider, hass):
+        with patch("music_assistant.providers.hass.STATE_FETCH_BATCH_SIZE", 2):
+            await provider.get_states(domains=("media_player",))
+
+        assert len(hass.subscriptions) == 3
+        assert hass.unsubscribed == hass.subscriptions
+        assert hass.active_subscriptions == 0
+
+
+async def test_timed_out_fetch_is_unsubscribed() -> None:
+    """Release the subscription when Home Assistant never sends the states."""
+    async with _start_provider([_state("media_player.kitchen", "Kitchen")]) as (provider, hass):
+        hass.deliver_initial_states = False
+
+        with (
+            patch("music_assistant.providers.hass.STATE_FETCH_TIMEOUT", 0.05),
+            pytest.raises(TimeoutError),
+        ):
+            await provider.get_states(entity_ids=["media_player.kitchen"])
+
+        assert hass.unsubscribed == [["media_player.kitchen"]]
+        assert hass.active_subscriptions == 0
+
+
+async def test_cancelled_fetch_is_unsubscribed() -> None:
+    """Release the subscription when the state fetch is cancelled."""
+    async with _start_provider([_state("media_player.kitchen", "Kitchen")]) as (provider, hass):
+        hass.deliver_initial_states = False
+        fetch_task = asyncio.create_task(provider.get_states(entity_ids=["media_player.kitchen"]))
+        async with asyncio.timeout(1):
+            await hass.subscribed.wait()
+        fetch_task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await fetch_task
+
+        assert hass.unsubscribed == [["media_player.kitchen"]]
+        assert hass.active_subscriptions == 0
+
+
+async def test_compressed_states_are_expanded() -> None:
+    """Expand the compressed states of the initial message into full states."""
+    async with _start_provider([]) as (provider, hass):
+        hass.compressed_states = {
+            "media_player.full": {
+                "s": "playing",
+                "a": {"friendly_name": "Full"},
+                "lc": LAST_CHANGED,
+                "lu": 1683838800.736819,
+                "c": {"id": CONTEXT_ID, "parent_id": None, "user_id": "user"},
+            },
+            "media_player.unchanged": {"s": "idle", "lc": LAST_CHANGED, "c": CONTEXT_ID},
+            "media_player.minimal": {},
+        }
+
+        result = {
+            state["entity_id"]: state
+            for state in await provider.get_states(entity_ids=list(hass.compressed_states))
+        }
+
+        assert result["media_player.full"]["state"] == "playing"
+        assert result["media_player.full"]["attributes"] == {"friendly_name": "Full"}
+        assert result["media_player.full"]["last_changed"] == LAST_CHANGED_ISO
+        assert result["media_player.full"]["last_updated"] == "2023-05-11T21:00:00.736819+00:00"
+        assert result["media_player.full"]["context"] == {
+            "id": CONTEXT_ID,
+            "parent_id": None,
+            "user_id": "user",
+        }
+        # last_updated is omitted by HA when it is identical to last_changed
+        assert result["media_player.unchanged"]["last_changed"] == LAST_CHANGED_ISO
+        assert result["media_player.unchanged"]["last_updated"] == LAST_CHANGED_ISO
+        assert result["media_player.unchanged"]["context"] == {
+            "id": CONTEXT_ID,
+            "parent_id": None,
+            "user_id": None,
+        }
+        assert result["media_player.minimal"] == {
+            "entity_id": "media_player.minimal",
+            "state": "",
+            "attributes": {},
+            "last_changed": "",
+            "last_updated": "",
+            "context": {"id": "", "parent_id": None, "user_id": None},
+        }
+
+
+async def test_entity_without_state_is_absent() -> None:
+    """Omit entities that Home Assistant has no state for."""
+    async with _start_provider([_state("media_player.kitchen", "Kitchen")]) as (provider, hass):
+        result = await provider.get_states(
+            entity_ids=["media_player.kitchen", "media_player.removed"]
+        )
+
+        assert [state["entity_id"] for state in result] == ["media_player.kitchen"]
+        assert hass.subscriptions == [["media_player.kitchen", "media_player.removed"]]
+
+
+async def test_state_change_does_not_complete_the_fetch() -> None:
+    """Ignore a state change that arrives before the initial state message."""
+    async with _start_provider([_state("media_player.kitchen", "Kitchen")]) as (provider, hass):
+        hass.leading_events = [{"c": {"media_player.kitchen": {"+": {"s": "playing"}}}}]
+
+        result = await provider.get_states(entity_ids=["media_player.kitchen"])
+
+        assert [state["entity_id"] for state in result] == ["media_player.kitchen"]
+        assert result[0]["state"] == "idle"
+
+
+async def test_player_control_subscription_is_replaced() -> None:
+    """Replace the player control subscription instead of stacking a second one."""
+    states = [_state("media_player.kitchen", "Kitchen")]
+    async with _start_provider(states, **{CONF_POWER_CONTROLS: ["media_player.kitchen"]}) as (
+        provider,
+        hass,
+    ):
+        await provider.loaded_in_mass()
+        assert hass.active_subscriptions == 1
+
+        await provider._register_player_controls()
+
+        assert len(hass.subscriptions) == 4
+        assert hass.active_subscriptions == 1
+        # the previous control subscription is released before the new one is created
+        assert hass.calls[-2:] == ["unsubscribe_entities", "subscribe_entities"]
+
+        await provider.unload()
+
+        assert hass.active_subscriptions == 0

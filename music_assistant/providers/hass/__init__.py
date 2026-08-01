@@ -13,9 +13,9 @@ import asyncio
 import logging
 import os
 from functools import partial
+from itertools import batched
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from aiohttp import ClientError
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import get_websocket_url
@@ -37,6 +37,7 @@ from music_assistant_models.player_control import PlayerControl
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.helpers.datetime import iso_from_utc_timestamp
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.util import try_parse_int
 from music_assistant.models.plugin import PluginProvider
@@ -44,10 +45,10 @@ from music_assistant.models.plugin import PluginProvider
 from .constants import OFF_STATES, MediaPlayerEntityFeature
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Callable, Collection
 
     from aiohttp import ClientSession
-    from hass_client.models import CompressedState, Device, EntityStateEvent, State
+    from hass_client.models import CompressedState, Context, Device, EntityStateEvent, State
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.player import PlayerMedia
     from music_assistant_models.provider import ProviderManifest
@@ -66,7 +67,7 @@ CONF_TTS_ENTITY = "tts_entity"
 CONF_AI_TASK_ENTITY = "ai_task_entity"
 FEATURE_DISCOVERY_TIMEOUT = 30
 STATE_FETCH_TIMEOUT = 30
-STATE_FETCH_CONCURRENCY = 8
+STATE_FETCH_BATCH_SIZE = 500
 
 # Home Assistant entity domains Music Assistant can offer as player controls.
 CONTROL_DOMAINS = ("media_player", "switch", "input_boolean", "number", "input_number")
@@ -190,6 +191,7 @@ class HomeAssistantProvider(PluginProvider):
     hass: HomeAssistantClient
     _listen_task: asyncio.Task[None] | None = None
     _player_controls: dict[str, PlayerControl] | None = None
+    _unsubscribe_controls: Callable[[], None] | None = None
     _tts_entity_id: str | None = None
     _ai_task_entity_id: str | None = None
     _startup_complete: bool = False
@@ -522,38 +524,13 @@ class HomeAssistantProvider(PluginProvider):
             )
         if not ids:
             return []
-        # fetch each state via the REST api rather than the websocket: it is not subject
-        # to the websocket message size limit and lets us request individual entities
-        ha_url, headers, http_session = self._get_ha_http()
-        semaphore = asyncio.Semaphore(STATE_FETCH_CONCURRENCY)
-
-        async def _fetch_state(entity_id: str) -> State | None:
-            try:
-                async with (
-                    semaphore,
-                    http_session.get(
-                        f"{ha_url}/api/states/{entity_id}", headers=headers
-                    ) as response,
-                ):
-                    if response.status == 404:
-                        # entity currently has no state (e.g. not available)
-                        return None
-                    if response.status != 200:
-                        self.logger.warning(
-                            "Unexpected status %s fetching state for %s",
-                            response.status,
-                            entity_id,
-                        )
-                        return None
-                    return cast("State", await response.json())
-            except (ClientError, ValueError) as err:
-                # ValueError covers a malformed JSON body
-                self.logger.warning("Failed to fetch state for %s: %s", entity_id, err)
-                return None
-
+        states: list[State] = []
         async with asyncio.timeout(STATE_FETCH_TIMEOUT):
-            states = await asyncio.gather(*(_fetch_state(entity_id) for entity_id in ids))
-        return [state for state in states if state is not None]
+            # exceeding hass_client's 16MB websocket message limit drops the entire
+            # connection, so bound the state dump by construction and fetch in batches
+            for batch in batched(sorted(ids), STATE_FETCH_BATCH_SIZE, strict=False):
+                states.extend(await self._fetch_states(list(batch)))
+        return states
 
     async def resolve_image(self, path: str) -> bytes:
         """Resolve an image from an image path."""
@@ -714,8 +691,13 @@ class HomeAssistantProvider(PluginProvider):
                 control.mute_set = partial(self._handle_player_control_mute_set, entity_id)
             self._player_controls[entity_id] = control
             await self.mass.players.register_player_control(control)
-        # register for entity state updates
-        await self.hass.subscribe_entities(self._on_entity_state_update, list(control_entity_ids))
+        # register for entity state updates, replacing any earlier subscription
+        if unsubscribe := self._unsubscribe_controls:
+            self._unsubscribe_controls = None
+            unsubscribe()
+        self._unsubscribe_controls = await self.hass.subscribe_entities(
+            self._on_entity_state_update, list(control_entity_ids)
+        )
 
     async def _handle_player_control_power_on(self, entity_id: str) -> None:
         """Handle powering on the playercontrol."""
@@ -792,6 +774,33 @@ class HomeAssistantProvider(PluginProvider):
                 player_control.volume_muted = attributes.get("is_volume_muted")
         self.mass.players.update_player_control(entity_id)
 
+    async def _fetch_states(self, entity_ids: list[str]) -> list[State]:
+        """
+        Return the current Home Assistant state of the given entities.
+
+        :param entity_ids: The entity IDs to fetch the current state for.
+        :return: The states of the requested entities; entities that currently have
+            no state are absent from the result.
+        """
+        initial_states: asyncio.Future[dict[str, CompressedState]]
+        initial_states = asyncio.get_running_loop().create_future()
+
+        def _on_initial_states(event: EntityStateEvent) -> None:
+            # only the first message of a subscription carries the full state under "a";
+            # a state change racing in ahead of it must not resolve the fetch
+            if (added := event.get("a")) is not None and not initial_states.done():
+                initial_states.set_result(added)
+
+        unsubscribe = await self.hass.subscribe_entities(_on_initial_states, entity_ids)
+        try:
+            compressed_states = await initial_states
+        finally:
+            unsubscribe()
+        return [
+            _decompress_state(entity_id, compressed_state)
+            for entity_id, compressed_state in compressed_states.items()
+        ]
+
     def _get_ha_http(self) -> tuple[str, dict[str, str], ClientSession]:
         """Return HA base URL (without trailing /api), auth headers, and the HTTP session."""
         ha_url = cast("str", self.get_setup_value(CONF_URL)).rstrip("/")
@@ -804,6 +813,9 @@ class HomeAssistantProvider(PluginProvider):
 
     async def _disconnect_hass(self) -> None:
         """Stop listening for Home Assistant events and disconnect the client."""
+        if unsubscribe := self._unsubscribe_controls:
+            self._unsubscribe_controls = None
+            unsubscribe()
         if listen_task := self._listen_task:
             self._listen_task = None
             if not listen_task.done():
@@ -901,3 +913,29 @@ def _select_feature_entity(
             return None
         return configured_entity if configured_entity in available_entity_ids else None
     return str(options[0].value) if options else None
+
+
+def _decompress_state(entity_id: str, compressed_state: CompressedState) -> State:
+    """
+    Return the full state representation of a compressed state message.
+
+    :param entity_id: The entity the compressed state belongs to.
+    :param compressed_state: The compressed state as received over the websocket.
+    """
+    raw_context = compressed_state.get("c")
+    context: Context = (
+        raw_context
+        if isinstance(raw_context, dict)
+        else {"id": raw_context or "", "parent_id": None, "user_id": None}
+    )
+    last_changed = compressed_state.get("lc")
+    # Home Assistant omits last_updated when it is identical to last_changed
+    last_updated = compressed_state.get("lu", last_changed)
+    return {
+        "entity_id": entity_id,
+        "state": compressed_state.get("s", ""),
+        "attributes": compressed_state.get("a", {}),
+        "last_changed": iso_from_utc_timestamp(last_changed) if last_changed else "",
+        "last_updated": iso_from_utc_timestamp(last_updated) if last_updated else "",
+        "context": context,
+    }
