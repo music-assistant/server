@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections.abc import Callable
 from contextlib import suppress
@@ -55,8 +56,10 @@ from music_assistant_models.errors import AlreadyRegisteredError, SetupFailedErr
 from music_assistant.constants import (
     CONF_ENABLED,
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
+    CONF_LOG_LEVEL,
     CONF_PLAYERS,
     CONF_PROVIDERS,
+    VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.mass import MusicAssistant
@@ -293,6 +296,7 @@ class SendspinProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Load the persistent server identity and pairing store, then create the server."""
+        self._set_aiosendspin_log_level()
         storage_dir = Path(self.mass.storage_path) / "sendspin"
         identity_path = storage_dir / IDENTITY_FILENAME
         try:
@@ -346,6 +350,14 @@ class SendspinProvider(PlayerProvider):
         # seed the hass availability snapshot so the first (un)load is seen as a change
         hass = self.mass.get_provider("hass")
         self._hass_available = hass is not None and hass.available
+
+    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        await super().update_config(config, changed_keys)
+        # a log level(-only) change does not reload the provider,
+        # so realign aiosendspin's logger here
+        if f"values/{CONF_LOG_LEVEL}" in changed_keys:
+            self._set_aiosendspin_log_level()
 
     def event_cb(self, server: SendspinServer, event: SendspinEvent) -> None:
         """Event callback registered to the sendspin server."""
@@ -847,6 +859,15 @@ class SendspinProvider(PlayerProvider):
             ),
             return_exceptions=True,
         )
+
+    def _set_aiosendspin_log_level(self) -> None:
+        """Keep aiosendspin's (very chatty) logging quiet unless verbose logging is enabled."""
+        # aiosendspin logs every protocol message of every client session at debug
+        # level, so only pass that through when verbose logging is enabled
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            logging.getLogger("aiosendspin").setLevel(logging.DEBUG)
+        else:
+            logging.getLogger("aiosendspin").setLevel(self.logger.level + 10)
 
     def _begin_client_event(self, client_id: str) -> int:
         """Increment version and in-flight task count for a client event."""
