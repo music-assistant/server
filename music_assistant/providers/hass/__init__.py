@@ -41,7 +41,7 @@ from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.util import try_parse_int
 from music_assistant.models.plugin import PluginProvider
 
-from .constants import OFF_STATES, MediaPlayerEntityFeature
+from .constants import OFF_STATES, MediaPlayerEntityFeature, parse_supported_features
 
 if TYPE_CHECKING:
     from collections.abc import Collection
@@ -123,7 +123,11 @@ async def _get_config_entries(hass_prov: HomeAssistantProvider) -> tuple[ConfigE
         if "mass_player_type" in state["attributes"]:
             # filter out mass players
             continue
-        supported_features = MediaPlayerEntityFeature(state["attributes"]["supported_features"])
+        supported_features = parse_supported_features(
+            state["attributes"].get("supported_features"),
+            state["entity_id"],
+            hass_prov.logger,
+        )
         if MediaPlayerEntityFeature.VOLUME_MUTE in supported_features:
             all_mute_entities.append(ConfigValueOption(state["entity_id"], title=name))
         if MediaPlayerEntityFeature.VOLUME_SET in supported_features:
@@ -409,8 +413,8 @@ class HomeAssistantProvider(PluginProvider):
         def _supports_announce(entity_id: str) -> bool:
             if (state := states.get(entity_id)) is None:
                 return False
-            supported_features = MediaPlayerEntityFeature(
-                state["attributes"].get("supported_features") or 0
+            supported_features = parse_supported_features(
+                state["attributes"].get("supported_features"), entity_id, self.logger
             )
             return MediaPlayerEntityFeature.MEDIA_ANNOUNCE in supported_features
 

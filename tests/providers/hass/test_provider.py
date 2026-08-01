@@ -21,9 +21,11 @@ from music_assistant.providers.hass import (
     CONF_TTS_ENTITY,
     CONF_URL,
     CONF_VERIFY_SSL,
+    CONF_VOLUME_CONTROLS,
     HomeAssistantProvider,
     setup,
 )
+from music_assistant.providers.hass.constants import MediaPlayerEntityFeature
 
 
 def _state(entity_id: str, friendly_name: str) -> dict[str, Any]:
@@ -463,3 +465,34 @@ async def test_config_entries_list_entities_as_options() -> None:
 
     power_controls = next(entry for entry in entries if entry.key == CONF_POWER_CONTROLS)
     assert [option.value for option in power_controls.options] == ["switch.example"]
+
+
+async def test_config_entries_survive_an_entity_with_invalid_features() -> None:
+    """An entity reporting an uninterpretable supported_features value is skipped."""
+    broken = {
+        "entity_id": "media_player.new_receiver",
+        "state": "idle",
+        "attributes": {"friendly_name": "New Receiver", "supported_features": []},
+    }
+    usable = {
+        "entity_id": "media_player.old_receiver",
+        "state": "idle",
+        "attributes": {
+            "friendly_name": "Old Receiver",
+            "supported_features": int(
+                MediaPlayerEntityFeature.TURN_ON
+                | MediaPlayerEntityFeature.TURN_OFF
+                | MediaPlayerEntityFeature.VOLUME_SET
+            ),
+        },
+    }
+
+    async with _start_provider([broken, usable]) as (provider, _):
+        provider.available = True
+        entries = await provider.get_config_entries()
+
+    options_by_key = {entry.key: entry.options for entry in entries}
+    for key in (CONF_POWER_CONTROLS, CONF_VOLUME_CONTROLS):
+        assert [option.value for option in options_by_key[key] or ()] == [
+            "media_player.old_receiver"
+        ]
