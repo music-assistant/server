@@ -94,14 +94,18 @@ AIRPLAY_JOIN_CLOCK_READY_LEAD_MS: Final[int] = 500
 # instant, so a window shorter than the binary's verification silently maps the
 # joiner's content onto an instant the binary never used.
 AIRPLAY_JOIN_START_ACK_TIMEOUT_MS: Final[int] = 5000
-# Anchor lead for a readiness-confirmed START (cold and warm alike): the
-# session only anchors after the binary confirmed the connection ([STATUS]
-# connected) and the new audio flowing ([STATUS] audio), so the lead no longer
-# guesses at setup or transcoder spin-up time. It covers just the receiver
-# re-anchor (accepted down to ~150 ms in the flush-ladder measurements; the
-# binary clamps below its own 250 ms floor) plus, for groups, fanning the
-# shared instant out to every member.
-AIRPLAY_START_LEAD_MS: Final[int] = 250
+# Anchor leads for a readiness-confirmed START (cold and warm alike), solo and
+# group: the session only anchors after the binary confirmed the connection
+# ([STATUS] connected) and the new audio flowing ([STATUS] audio), so a lead no
+# longer guesses at setup or transcoder spin-up time. Both cover the receiver
+# re-anchor (accepted down to ~150 ms in the flush-ladder measurements) plus
+# the command's trip down the pipe; the group one also covers fanning the
+# shared instant out to every member. The pipe margin is what keeps them
+# workable: the binary rejects any instant inside its own 250 ms floor,
+# measured from when IT reads the command, and corrects a miss to that floor
+# plus another full lead — so a lead sitting exactly on the floor misses by the
+# delivery time every time and turns a start into a group-wide re-anchor ladder.
+AIRPLAY_START_LEAD_MS: Final[int] = 400
 AIRPLAY_GROUP_START_LEAD_MS: Final[int] = 500
 # Cold GROUP starts anchor further out: a receiver on a brand-new session
 # still acquires its PTP slave lock (~1.7-2.3 s measured on Sonos) and cannot

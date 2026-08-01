@@ -809,6 +809,39 @@ async def test_msx_audio_arms_wait_before_enqueue(
         await client.close()
 
 
+# --- Served audio length (Content-Length) ---
+
+
+def test_served_duration_uses_media_duration(provider: MSXBridgeProvider) -> None:
+    """Without a seek the served audio is the whole media item."""
+    server = MSXHTTPServer(provider, 0)
+    media = PlayerMedia(uri="library://track/1", duration=180)
+
+    assert server._resolve_served_duration(media) == 180
+
+
+def test_served_duration_prefers_stream_duration(provider: MSXBridgeProvider) -> None:
+    """Starting mid-track serves less audio than the media item is long."""
+    server = MSXHTTPServer(provider, 0)
+    media = PlayerMedia(uri="library://track/1", duration=180, stream_duration=60)
+
+    assert server._resolve_served_duration(media) == 60
+
+
+def test_served_duration_falls_back_to_queue_item(
+    provider: MSXBridgeProvider, mass_mock: Mock
+) -> None:
+    """A media item of unknown length is resolved through its queue item."""
+    server = MSXHTTPServer(provider, 0)
+    queue_item = MagicMock()
+    queue_item.media_item = None
+    queue_item.duration = 240
+    mass_mock.player_queues.get_item.return_value = queue_item
+    media = PlayerMedia(uri="library://track/1", source_id="q1", queue_item_id="item1")
+
+    assert server._resolve_served_duration(media) == 240
+
+
 # --- MSX playlist endpoints ---
 
 
