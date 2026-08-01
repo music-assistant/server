@@ -1471,7 +1471,8 @@ class AirPlayStream:
             # No probe seen yet, so the line carries no projection; the binary
             # keeps reporting until one exists.
             return
-        if state == "stalled" and not self._clock_stall_warned:
+        stalled = state == "stalled" and mode != "ntp"
+        if stalled and not self._clock_stall_warned:
             # The receiver is not slaving to our clock at all, so it renders
             # silence while everything else about the session looks healthy.
             self._clock_stall_warned = True
@@ -1485,8 +1486,9 @@ class AirPlayStream:
             )
         # NTP timing has no receiver clock to wait for, and a state without a
         # projection resolves the wait with nothing so a caller falls back
-        # instead of blocking on evidence that will not arrive.
-        self._clock_ready_at_unix_ms = 0 if mode == "ntp" else ready_at_unix_ms
+        # instead of blocking on evidence that will not arrive. A stalled clock
+        # is one of those states however the line is numbered.
+        self._clock_ready_at_unix_ms = 0 if mode == "ntp" or stalled else ready_at_unix_ms
         self._clock_ready.set()
         self.player.logger.debug(
             "cliairplay reports the clock for %s as %s (mode=%s, usable at %d)",

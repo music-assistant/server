@@ -981,6 +981,20 @@ async def test_clock_ready_stalled_state_warns_once(caplog: pytest.LogCaptureFix
     assert await stream.wait_clock_ready(timeout=0.01) is None
 
 
+def test_clock_ready_stall_warning_is_ptp_only(caplog: pytest.LogCaptureFixture) -> None:
+    """An NTP-timed session has no clock of ours to answer, so it never reads as a stall."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.DEBUG):
+        stream._handle_status_line(
+            "[STATUS] clock_ready mode=ntp state=stalled streak_ms=0 exchanges=0 "
+            f"ready_in_ms=0 ready_at_unix_ms={START_UNIX_MS}"
+        )
+
+    assert [record for record in caplog.records if record.levelno >= logging.WARNING] == []
+    assert stream._clock_ready_at_unix_ms == 0
+
+
 @pytest.mark.parametrize("state", ["cold", "probing", "ready"])
 def test_clock_ready_handshake_states_do_not_warn(
     state: str, caplog: pytest.LogCaptureFixture
