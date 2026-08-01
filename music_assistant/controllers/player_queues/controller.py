@@ -1573,12 +1573,14 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param queue_item: The queue item to create media from.
         """
         queue_data = self._queue_data[queue_item.queue_id]
+        stream_duration: int | None = None
         if queue_item.streamdetails:
             # prefer netto duration
-            # when seeking, the player only receives the remaining duration
             duration = queue_item.streamdetails.duration or queue_item.duration
             if duration and queue_item.streamdetails.seek_position:
-                duration = int(duration - queue_item.streamdetails.seek_position)
+                # the audio handed to the player starts at the seek position,
+                # so it is shorter than the media item itself
+                stream_duration = int(duration - queue_item.streamdetails.seek_position)
         else:
             duration = queue_item.duration
         if queue_data.session_id is None:
@@ -1589,6 +1591,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             title=queue_item.name,
             image_url=MASS_LOGO_ONLINE,
             duration=duration,
+            stream_duration=stream_duration,
             source_id=queue_item.queue_id,
             queue_item_id=queue_item.queue_item_id,
             custom_data={

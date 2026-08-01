@@ -1428,7 +1428,8 @@ small {{ color: #666; display: block; margin-top: 4px; }}
             return web.Response(status=504, text="Playback setup timeout")
 
         # Resolve duration from media or queue item for Content-Length header
-        duration = media.duration or 0
+        # (the length of the audio we serve, not of the media item)
+        duration = media.stream_duration or media.duration or 0
         if not duration and media.source_id and media.queue_item_id:
             queue_item = self.provider.mass.player_queues.get_item(
                 media.source_id, media.queue_item_id
@@ -2022,8 +2023,9 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         if not media:
             return web.Response(status=404, text="No active stream")
 
-        duration = media.duration or 0
-        if media.source_id and media.queue_item_id:
+        # the Content-Length describes the audio we serve, not the media item
+        duration = media.stream_duration or media.duration or 0
+        if not duration and media.source_id and media.queue_item_id:
             queue_item = self.provider.mass.player_queues.get_item(
                 media.source_id, media.queue_item_id
             )
