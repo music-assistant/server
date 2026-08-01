@@ -394,6 +394,11 @@ class _ScheduledBeat:
     is_downbeat: bool
 
 
+def _normalise_no_beat(value: str) -> str:
+    """Clamp a no-beat setting to the known options."""
+    return value if value in {v for v, _ in NO_BEAT_OPTIONS} else DEFAULT_NO_BEAT
+
+
 class _ExpFilter:
     """Exponential smoothing filter with separate attack and decay rates."""
 
@@ -484,11 +489,10 @@ class HueAudioAnalyzer:
         self._beats: deque[_ScheduledBeat] = deque()
         # -1 means no beat seen yet; first beat (or first downbeat) anchors it.
         self._last_beat_in_bar = -1
-        # No-beat fallback + silence idle state.
-        valid_no_beat = {value for value, _ in NO_BEAT_OPTIONS}
-        self._no_beat = no_beat if no_beat in valid_no_beat else DEFAULT_NO_BEAT
-        self._last_sched_beat_us = -1  # newest pushed beat; -1 = none this stream
-        self._last_audio_us: int | None = None  # newest audible spectrum frame
+        # No-beat fallback + silence idle state: the newest pushed beat
+        # (-1 = none this stream) and the newest audible spectrum frame.
+        self._no_beat = _normalise_no_beat(no_beat)
+        self._last_sched_beat_us, self._last_audio_us = -1, None
 
         # Per-channel smoothed band energy (one filter per light).
         self._channel_filters: list[_ExpFilter] = [
@@ -542,8 +546,7 @@ class HueAudioAnalyzer:
     ) -> None:
         """Update settings without reset."""
         if no_beat is not None:
-            valid_no_beat = {value for value, _ in NO_BEAT_OPTIONS}
-            self._no_beat = no_beat if no_beat in valid_no_beat else DEFAULT_NO_BEAT
+            self._no_beat = _normalise_no_beat(no_beat)
         if color_mode is not None:
             self._color_mode = color_mode
             self._mode = _MODES.get(color_mode, _MODES[DEFAULT_MODE])
@@ -671,10 +674,7 @@ class HueAudioAnalyzer:
             return []
         # Full silence overrides every mode: a faint idle drift instead of a
         # frozen last frame (or a free-running pulse into an empty room).
-        if (
-            self._last_audio_us is not None
-            and now_us - self._last_audio_us > _IDLE_AFTER_US
-        ):
+        if self._last_audio_us is not None and now_us - self._last_audio_us > _IDLE_AFTER_US:
             return self._render_idle(now_us)
         channel_mults = self._combined_channel_multipliers()
         # `_consume_peaks` always runs (it advances the peak palette walker and
@@ -713,13 +713,13 @@ class HueAudioAnalyzer:
         # fallback (ghost pulse / breathe) takes over in EVERY mode, so the
         # policy reads the same whether the base mode is smooth or club.
         no_schedule = next_beat is None or segment is None or segment <= 0 or prior is None
-        if no_schedule:
-            env = self._no_beat_envelope(now_us)
-            if env is not None:
-                colors = self._peak_walk_colors(palette, now_us)
-                return self._fill_per_channel(
-                    colors, base_brightness * env, channel_mults, strobe_levels
-                )
+        fallback = (
+            self._render_no_beat(now_us, palette, base_brightness, channel_mults, strobe_levels)
+            if no_schedule
+            else None
+        )
+        if fallback is not None:
+            return fallback
 
         if self._color_mode == "club":
             return self._render_club(
@@ -736,6 +736,21 @@ class HueAudioAnalyzer:
         pulse = self._compute_pulse(now_us, prior, next_beat, segment)
         colors = self._per_channel_colors(palette, prior, next_beat, now_us, segment)
         return self._fill_per_channel(colors, base_brightness * pulse, channel_mults, strobe_levels)
+
+    def _render_no_beat(
+        self,
+        now_us: int,
+        palette: list[tuple[float, float, float]],
+        base_brightness: float,
+        channel_mults: list[float],
+        strobe_levels: dict[int, float] | None,
+    ) -> list[LightColorCommand] | None:
+        """Render the no-beat fallback, or None when the plain path should run."""
+        env = self._no_beat_envelope(now_us)
+        if env is None:
+            return None
+        colors = self._peak_walk_colors(palette, now_us)
+        return self._fill_per_channel(colors, base_brightness * env, channel_mults, strobe_levels)
 
     def _no_beat_envelope(self, now_us: int) -> float | None:
         """
@@ -764,9 +779,7 @@ class HueAudioAnalyzer:
         palette = self._active_palette()
         palette_len = len(palette)
         if palette_len == 0:
-            return self._fill_per_channel(
-                [(0.0, 0.0, 0.0) for _ in self._channels], 0.0, None
-            )
+            return self._fill_per_channel([(0.0, 0.0, 0.0) for _ in self._channels], 0.0, None)
         t = now_us / 1_000_000.0
         breathe = 0.5 * (1.0 + math.sin(2.0 * math.pi * _IDLE_BREATHE_HZ * t))
         level = _IDLE_LO + (_IDLE_HI - _IDLE_LO) * breathe

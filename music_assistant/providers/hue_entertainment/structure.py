@@ -278,7 +278,7 @@ class StructureDetector:
 
     def _sched_base(self, now_us: int) -> tuple[int, int] | None:
         """
-        The latest scheduled beat at or before ``now_us``, or None.
+        Return the latest scheduled beat at or before ``now_us``, or None.
 
         Prunes entries that are two or more beats in the past so the deque stays
         bounded (a mutating getter, like ``onset_density``). Entries recorded
