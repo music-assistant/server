@@ -319,7 +319,7 @@ class WebserverController(CoreController):
             # add assets subdir as static_content
             static_content=("/assets", os.path.join(frontend_dir, "assets"), "assets"),
             ingress_tcp_site_params=ingress_tcp_site_params,
-            # Add mass object to app for use in auth middleware
+            # Add mass object to app for use by the auth helpers
             app_state={"mass": self.mass},
             ssl_context=ssl_context,
         )
