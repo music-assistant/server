@@ -27,6 +27,7 @@ from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
+    AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
     AIRPLAY_PCM_FORMAT,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_ENCRYPTION,
@@ -390,8 +391,9 @@ class AirPlayStream:
             the base for elapsed reporting.
         :param join: This start must land on an already-live group timeline (a
             late joiner): the binary then enforces receiver clock readiness and
-            corrects the anchor forward post-commit if needed ([STATUS]
-            anchor_corrected). Group/solo origin starts leave it False.
+            holds its ack until that resolves, so the returned instant is the one
+            the caller must map the joiner's content onto. Group/solo origin
+            starts leave it False.
         :return: The true scheduled audible instant (unix ms) from the binary's
             started ack — the commanded instant when it was feasible, the
             corrected-forward one otherwise; None when no ack arrived (older
@@ -443,13 +445,31 @@ class AirPlayStream:
         )
         # The binary always acks with the TRUE scheduled instant (correcting an
         # infeasible one forward), so the caller can verify the contract and
-        # re-align a group. No ack within the timeout means an older binary:
-        # fall back to trusting the commanded instant (legacy clamp semantics).
+        # re-align a group. A join's ack is held back until the receiver clock
+        # verification resolves and therefore gets a much wider window than a
+        # plain start, which acks within the command round-trip. No ack within
+        # the timeout means an older binary: fall back to trusting the commanded
+        # instant (legacy clamp semantics).
+        ack_timeout = AIRPLAY_JOIN_START_ACK_TIMEOUT_MS / 1000 if join else 2.0
         try:
-            await asyncio.wait_for(self._started.wait(), 2.0)
+            await asyncio.wait_for(self._started.wait(), ack_timeout)
         except TimeoutError:
             return None
         return self._start_ack[1] if self._start_ack else None
+
+    def rebase_position(self, position_ms: int) -> None:
+        """
+        Re-map reported progress onto a start instant that moved after the command.
+
+        A join's START is acked with the instant the receiver can actually seat,
+        which may be later than the commanded one. The caller maps its content
+        onto that instant and reports the position that lands there.
+
+        :param position_ms: Media position of the first sample the binary
+            renders at the acked instant.
+        """
+        self._start_position = position_ms / 1000
+        self.player.set_state_from_stream(elapsed_time=self._start_position, stream=self)
 
     def reset_reanchor_shift(self) -> None:
         """Clear the accumulated re-anchor shift and its status-line supersession flag."""

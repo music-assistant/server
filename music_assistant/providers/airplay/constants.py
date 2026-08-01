@@ -64,12 +64,20 @@ DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 AIRPLAY_RAOP_SETUP_LEAD_MS: Final[int] = 1500
 AIRPLAY_AP2_SETUP_LEAD_MS: Final[int] = 2500
 # Late joiners anchor a low first guess, not a worst-case bound: a join START
-# makes the binary verify receiver clock readiness and correct the anchor
-# forward to it, advancing the queued content by the same (inaudible) amount.
-# The floor only keeps that correction window open: it must clear the binary's
+# makes the binary verify receiver clock readiness and report the instant it can
+# truly honor, onto which the server then maps the joiner's content. The floor
+# only keeps that verification window open: it must clear the binary's
 # verification arm window (AP2_CLOCK_VERIFY_MIN_WINDOW_MS, 1100 ms) plus a
 # poll round and the START command latency.
 AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 1500
+# How long a join START waits for the binary's [STATUS] started ack. That ack is
+# held back until the clock verification above resolves, so the window must
+# cover the verification arm window plus a poll round on top of the commanded
+# anchor (which bounds the verification), where a plain START acks within the
+# command round-trip. On timeout the server falls back to trusting the commanded
+# instant, so a window shorter than the binary's verification silently maps the
+# joiner's content onto an instant the binary never used.
+AIRPLAY_JOIN_START_ACK_TIMEOUT_MS: Final[int] = 5000
 # Anchor lead for a readiness-confirmed START (cold and warm alike): the
 # session only anchors after the binary confirmed the connection ([STATUS]
 # connected) and the new audio flowing ([STATUS] audio), so the lead no longer

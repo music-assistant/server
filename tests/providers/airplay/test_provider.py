@@ -513,7 +513,6 @@ async def test_raop_session_resolves_ptp_for_first_ap2_late_joiner() -> None:
     pcm_format.bit_depth = 16
     pcm_format.channels = 2
     session.start_time = time.time() - 5
-    session.wait_start = 1.5
     session.seconds_streamed = 5
 
     async def _wait_ptp_daemon_ready() -> bool:

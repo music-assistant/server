@@ -64,17 +64,15 @@ def _make_session(
     session.start_time = start_time
     session.seconds_streamed = seconds_streamed
     session.start_unix_ms = 1  # dummy
-    session.wait_start = 2.0
 
     return session
 
 
-def _make_late_joiner(wait_start_ms: int = 2000) -> MagicMock:
+def _make_late_joiner() -> MagicMock:
     """Create a mock AirPlay player for late-join testing."""
     player = MagicMock()
     player.player_id = "late_joiner"
     player.protocol = StreamingProtocol.RAOP
-    player.wait_start = wait_start_ms
     player.stream = None
     player.config = MagicMock()
     player.config.get_value = MagicMock(return_value=0)
@@ -673,7 +671,7 @@ async def test_late_join_empty_buffer() -> None:
     start_time = now - 8
     seconds_streamed = 12.5
     session = _make_session(start_time, seconds_streamed)
-    player = _make_late_joiner(wait_start_ms=2000)
+    player = _make_late_joiner()
 
     with patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start:
         mock_start.side_effect = _setup_stream(player)
@@ -696,7 +694,7 @@ async def test_late_join_caps_prime_at_whole_ring_when_position_predates_it() ->
     start_time = now + 5.0
     session = _make_session(start_time, seconds_streamed)
     session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * buffer_seconds)
-    player = _make_late_joiner(wait_start_ms=2000)
+    player = _make_late_joiner()
 
     written_chunks: list[bytes] = []
 
@@ -785,9 +783,7 @@ async def test_late_join_primes_from_ring_tail_at_headroom() -> None:
     session = _make_session(start_time, seconds_streamed)
     # Fill ring buffer with 5 seconds of non-silent PCM.
     session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 5)
-    # Leads below the late-join floor, so the floor is what anchors the join.
-    session.wait_start = 1.0
-    player = _make_late_joiner(wait_start_ms=1000)
+    player = _make_late_joiner()
 
     written_chunks: list[bytes] = []
 
@@ -826,14 +822,13 @@ async def test_late_join_skips_live_feed_when_anchor_ahead_of_write_head() -> No
     # Freeze time so both the test and the code under test agree on `now`.
     now = 1_000_000.0
     # Diagnosed clamp case: now - start_time = 8.84s, seconds_streamed = 10.0s,
-    # min_headroom = 2.5s (the session lead, above the late-join floor) and no
-    # group shift -> fed_pos_due = 11.34s > 10.0s.
+    # min_headroom = 1.5s (the late-join floor) and no group shift, so the
+    # anchor is due at 10.34s of feed, past the 10.0s write head.
     start_time = now - 8.84
     seconds_streamed = 10.0
     session = _make_session(start_time, seconds_streamed)
-    session.wait_start = 2.5
     session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 10)
-    player = _make_late_joiner(wait_start_ms=2000)
+    player = _make_late_joiner()
 
     written_chunks: list[bytes] = []
 
@@ -849,10 +844,11 @@ async def test_late_join_skips_live_feed_when_anchor_ahead_of_write_head() -> No
         await session.add_client(player)
 
     # anchor is now + min_headroom and nothing is primed (position past the head)
-    assert _captured_start_at(player) - now == pytest.approx(2.5, abs=0.01)
+    expected_headroom = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000
+    assert _captured_start_at(player) - now == pytest.approx(expected_headroom, abs=0.01)
     assert written_chunks == []
     skip_seconds = session._client_skip_bytes[player.player_id] / PCM_SAMPLE_SIZE
-    assert skip_seconds == pytest.approx(1.34, abs=0.01)
+    assert skip_seconds == pytest.approx(0.34, abs=0.01)
 
 
 @pytest.mark.asyncio
@@ -862,16 +858,15 @@ async def test_late_join_primes_from_ring_under_group_shift() -> None:
     now = 1_000_000.0
     # Same base as the clamp case, but the reference member accumulated a
     # +3.039s starvation shift (134020 frames @44100) so the group's effective
-    # anchor is later: fed_pos_due = 8.30s, back inside the ring. The joiner is
-    # primed with ~1.7s from the ring tail and skips nothing.
+    # anchor is later: fed_pos_due = 7.30s, back inside the ring. The joiner is
+    # primed with ~2.7s from the ring tail and skips nothing.
     start_time = now - 8.84
     seconds_streamed = 10.0
     session = _make_session(start_time, seconds_streamed)
-    session.wait_start = 2.5
     session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 10)
     reference: Any = session.sync_clients[0]
     reference.stream.cumulative_shift_seconds = 134020 / 44100
-    player = _make_late_joiner(wait_start_ms=2000)
+    player = _make_late_joiner()
 
     written_chunks: list[bytes] = []
 
@@ -886,11 +881,141 @@ async def test_late_join_primes_from_ring_under_group_shift() -> None:
         mock_start.side_effect = _setup_stream(player)
         await session.add_client(player)
 
-    assert _captured_start_at(player) - now == pytest.approx(2.5, abs=0.01)
+    expected_headroom = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000
+    assert _captured_start_at(player) - now == pytest.approx(expected_headroom, abs=0.01)
     assert session._client_skip_bytes[player.player_id] == 0
     assert written_chunks, "expected a prime write from the ring tail"
     primed_seconds = len(written_chunks[0]) / PCM_SAMPLE_SIZE
-    assert primed_seconds == pytest.approx(1.699, abs=0.01)
+    assert primed_seconds == pytest.approx(2.699, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_late_join_feed_keeps_flowing_while_start_ack_is_outstanding() -> None:
+    """The group keeps being fed while a join's START ack is outstanding."""
+    # Freeze time so both the test and the code under test agree on `now`.
+    now = 1_000_000.0
+    start_time = now - 5.0
+    session = _make_session(start_time, 5.0)
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 5)
+    player = _make_late_joiner()
+    ack_outstanding = asyncio.Event()
+    ack_released = asyncio.Event()
+
+    def setup_deferred_ack(*_args: Any, **_kwargs: Any) -> None:
+        _setup_stream(player)()
+
+        async def start(*_args: Any, **_kwargs: Any) -> None:
+            # the binary holds its ack until the receiver clock is verified
+            ack_outstanding.set()
+            await ack_released.wait()
+
+        player.stream.start = AsyncMock(side_effect=start)
+
+    writes: list[tuple[str, int]] = []
+
+    async def capture_write(target: Any, chunk: bytes) -> None:
+        writes.append((target.player_id, len(chunk)))
+
+    with (
+        patch.object(session, "_start_client", side_effect=setup_deferred_ack),
+        patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        join = asyncio.create_task(session.add_client(player))
+        await asyncio.wait_for(ack_outstanding.wait(), timeout=5)
+        assert await asyncio.wait_for(
+            session._write_chunk_to_all_players(b"\x02" * PCM_SAMPLE_SIZE), timeout=5
+        )
+        ack_released.set()
+        await asyncio.wait_for(join, timeout=5)
+
+    # that second of feed reached the leader and moved the write head to 6.0s
+    assert ("leader", PCM_SAMPLE_SIZE) in writes
+    assert session.seconds_streamed == pytest.approx(6.0)
+    # the anchor (now + the 1.5s floor) is due at 6.5s of feed, so the joiner
+    # skips only the 0.5s still to come, not the 1.5s due at the commanded
+    # mapping: the content is mapped against the head the feed actually reached
+    skip_seconds = session._client_skip_bytes[player.player_id] / PCM_SAMPLE_SIZE
+    assert skip_seconds == pytest.approx(0.5, abs=0.01)
+    assert player in session.sync_clients
+
+
+@pytest.mark.asyncio
+async def test_late_join_cancelled_while_ack_outstanding_stops_the_client() -> None:
+    """A join cancelled while its START ack is outstanding never half-joins the session."""
+    session = _make_session(time.time() - 5, 5.0)
+    player = _make_late_joiner()
+    ack_outstanding = asyncio.Event()
+
+    def setup_pending_ack(*_args: Any, **_kwargs: Any) -> None:
+        _setup_stream(player)()
+
+        async def start(*_args: Any, **_kwargs: Any) -> None:
+            ack_outstanding.set()
+            await asyncio.Event().wait()
+
+        player.stream.start = AsyncMock(side_effect=start)
+
+    with (
+        patch.object(session, "_start_client", side_effect=setup_pending_ack),
+        patch.object(session, "stop_client", new_callable=AsyncMock) as stop_client,
+    ):
+        join = asyncio.create_task(session.add_client(player))
+        await asyncio.wait_for(ack_outstanding.wait(), timeout=5)
+        join.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await join
+
+    assert player not in session.sync_clients
+    stop_client.assert_awaited_once_with(player, reason="late joiner start cancelled")
+
+
+@pytest.mark.asyncio
+async def test_late_join_maps_content_from_the_acked_instant() -> None:
+    """A binary that acks later than commanded gets its content mapped to the acked instant."""
+    # Freeze time so both the test and the code under test agree on `now`.
+    now = 1_000_000.0
+    start_time = now - 5.0
+    session = _make_session(start_time, 5.0)
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 5)
+    player = _make_late_joiner()
+    # A sync_adjust rides on top of the commanded instant, so it has to be taken
+    # back out of the ack before the content is mapped onto it.
+    adjust_ms = 200
+    player.config.get_value = MagicMock(return_value=adjust_ms)
+    deferral_ms = 1500
+
+    def setup_deferred_ack(*_args: Any, **_kwargs: Any) -> None:
+        _setup_stream(player)()
+
+        async def start(start_unix_ms: int, _position_ms: int, *, join: bool = False) -> int:
+            assert join is True
+            return start_unix_ms + deferral_ms
+
+        player.stream.start = AsyncMock(side_effect=start)
+
+    written_chunks: list[bytes] = []
+
+    async def capture_write(_player: Any, chunk: bytes) -> None:
+        written_chunks.append(chunk)
+
+    with (
+        patch.object(session, "_start_client", side_effect=setup_deferred_ack),
+        patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        await session.add_client(player)
+
+    commanded_ms = int((now + AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000) * 1000) + adjust_ms
+    assert player.stream.start.await_args.args[0] == commanded_ms
+    # The ack lands 1.5s later than commanded, so the due position is 8.0s of
+    # feed instead of 6.5s: the joiner skips 3.0s of the live feed.
+    assert written_chunks == []
+    skip_seconds = session._client_skip_bytes[player.player_id] / PCM_SAMPLE_SIZE
+    assert skip_seconds == pytest.approx(3.0, abs=0.01)
+    # Progress is reported against the sample that lands on the acked instant,
+    # not the one that would have landed on the commanded instant.
+    player.stream.rebase_position.assert_called_once_with(8000)
 
 
 @pytest.mark.asyncio
