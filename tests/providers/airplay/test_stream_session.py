@@ -11,7 +11,9 @@ from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_COLD_GROUP_START_LEAD_MS,
+    AIRPLAY_GROUP_START_LEAD_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
+    AIRPLAY_START_LEAD_MS,
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
@@ -234,8 +236,8 @@ async def test_initial_single_player_starts_after_connect(
     ):
         await session.start(MagicMock())
 
-    # start = now (200_000 ms) + the solo start lead (250 ms), position 0
-    stream.start.assert_awaited_once_with(200_250, 0)
+    # start = now (200_000 ms) + the solo start lead, position 0
+    stream.start.assert_awaited_once_with(200_000 + AIRPLAY_START_LEAD_MS, 0)
 
 
 @pytest.mark.asyncio
@@ -405,7 +407,9 @@ async def test_standby_resumes_warm_on_existing_streams(
         assert await session.replace(MagicMock(), media)
 
     # start = now (100_000 ms) + solo/group start lead, position 10s
-    expected_start = 100_000 + (250 if len(protocols) == 1 else 500)
+    expected_start = 100_000 + (
+        AIRPLAY_START_LEAD_MS if len(protocols) == 1 else AIRPLAY_GROUP_START_LEAD_MS
+    )
     for player in players:
         stream = original_streams[player.player_id]
         assert player.stream is stream

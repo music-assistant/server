@@ -233,7 +233,7 @@ The `AirPlayStreamSession` class in [stream_session.py](stream_session.py) manag
    - Wires each member's ffmpeg into its persistent CLI stdin and starts feeding audio
    - Waits until every member's binary confirms the feed flowing (`[STATUS] audio`),
      then sends one shared audible start instant with a short anchor lead
-     (250 ms solo / 500 ms group); readiness is fully event-driven, so no
+     (400 ms solo / 500 ms group); readiness is fully event-driven, so no
      setup time is guessed and the binary bursts the receiver pre-fill after START
 
 2. **Client Setup** (per player, `_start_client()` method)
@@ -426,7 +426,7 @@ protocol path (RAOP, AirPlay 2 RAOP-compat and native).
 1. Start every CLI and wait until every group member reports connected
 2. Wire each member's ffmpeg into its persistent stdin, begin feeding PCM and
    wait until every member confirms the feed flowing (`[STATUS] audio`)
-3. Send one shared `START` (now + 250 ms solo / 500 ms group) to every member;
+3. Send one shared `START` (now + 400 ms solo / 500 ms group) to every member;
    readiness is event-confirmed so the anchor covers only the receiver re-anchor,
    and the binary bursts the receiver pre-fill from START
 4. **Warm seek / next-track / grouped resume** reuse the live connections: MA
