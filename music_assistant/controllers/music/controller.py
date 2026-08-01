@@ -221,8 +221,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         await self.schedule_provider_sync(provider.instance_id)
 
     async def on_provider_unload(self, provider: MusicProvider) -> None:
-        """Handle logic when a provider is (about to get) unloaded."""
-        await self.unschedule_provider_sync(provider.instance_id)
+        """
+        Handle logic when a provider is (about to get) unloaded.
+
+        Sync tasks are unscheduled by MusicAssistant.unload_provider itself, which also
+        decides whether their persisted state is kept (reload) or cleared (removal).
+        """
 
     @property
     def providers(self) -> list[MusicProvider]:

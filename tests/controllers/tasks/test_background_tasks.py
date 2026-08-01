@@ -536,6 +536,52 @@ async def test_schedule_provider_sync_registers_scheduled_background_tasks(
         tasks_controller.get_task(music._get_sync_task_id(provider, MediaType.TRACK))
 
 
+async def test_on_provider_unload_keeps_persisted_sync_state(
+    mass_minimal: MusicAssistant,
+    tasks_controller: TasksController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Whether persisted sync state survives is decided by unload_provider, not by the hook."""
+    music = MusicController(mass_minimal)
+    mass_minimal.music = music
+
+    provider_config = ProviderConfig(
+        values={},
+        type=ProviderType.MUSIC,
+        domain="test_provider",
+        instance_id="test_provider--instance",
+        name="Test provider",
+    )
+    monkeypatch.setattr(provider_config, "get_value", lambda *_args, **_kwargs: "GLOBAL")
+    provider = DummyMusicProvider(
+        mass_minimal,
+        manifest=ProviderManifest(
+            type=ProviderType.MUSIC,
+            domain="test_provider",
+            name="Test provider",
+            description="Test provider",
+            codeowners=["@music-assistant"],
+        ),
+        config=provider_config,
+    )
+
+    async def handler() -> None:
+        """No-op sync handler for a task that is never run."""
+
+    task_id = music._get_sync_task_id(provider, MediaType.TRACK)
+    tasks_controller.register_scheduled_task(
+        task_id=task_id,
+        name="Sync tracks",
+        handler=handler,
+        schedule=TaskSchedule.hourly(every=12),
+    )
+    assert task_id in tasks_controller._get_persisted_task_states()
+
+    await music.on_provider_unload(provider)
+
+    assert task_id in tasks_controller._get_persisted_task_states()
+
+
 async def test_core_maintenance_tasks_register_nightly_schedules(
     mass_minimal: MusicAssistant,
     tasks_controller: TasksController,
