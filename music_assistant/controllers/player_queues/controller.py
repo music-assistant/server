@@ -1578,9 +1578,11 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             # prefer netto duration
             duration = queue_item.streamdetails.duration or queue_item.duration
             if duration and queue_item.streamdetails.seek_position:
-                # the audio handed to the player starts at the seek position,
-                # so it is shorter than the media item itself
-                stream_duration = int(duration - queue_item.streamdetails.seek_position)
+                # the audio handed to the player starts at the seek position, so it is
+                # shorter than the media item itself. seeking to (or past) the end
+                # leaves no stream to describe, so the full length is kept instead.
+                remaining = int(duration - queue_item.streamdetails.seek_position)
+                stream_duration = remaining if remaining > 0 else None
         else:
             duration = queue_item.duration
         if queue_data.session_id is None:

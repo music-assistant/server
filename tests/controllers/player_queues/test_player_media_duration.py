@@ -60,6 +60,25 @@ async def test_seeked_item_keeps_full_duration_and_reports_stream_duration() -> 
     assert media.stream_duration == FULL_DURATION - 120
 
 
+async def test_seek_to_the_end_leaves_no_stream_duration() -> None:
+    """A seek that leaves no audio to play keeps the full media length."""
+    ctrl, queue_item = _controller_with_item(seek_position=FULL_DURATION)
+
+    media = await ctrl.player_media_from_queue_item(queue_item)
+
+    assert media.duration == FULL_DURATION
+    assert media.stream_duration is None
+
+
+async def test_seek_past_the_streamed_length_never_goes_negative() -> None:
+    """Seeking beyond what the stream itself holds never yields a negative length."""
+    ctrl, queue_item = _controller_with_item(seek_position=295, streamdetails_duration=290)
+
+    media = await ctrl.player_media_from_queue_item(queue_item)
+
+    assert media.stream_duration is None
+
+
 async def test_item_without_streamdetails_duration_falls_back_to_item_duration() -> None:
     """The queue item's own duration is used when streamdetails carry none."""
     ctrl, queue_item = _controller_with_item(seek_position=60, streamdetails_duration=None)
