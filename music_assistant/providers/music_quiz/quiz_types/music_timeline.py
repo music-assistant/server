@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from music_assistant.providers.music_quiz.models import MusicQuizConfig
 
 LOGGER = logging.getLogger(__name__)
+SYSTEM_RANDOM = secrets.SystemRandom()
 
 DEFAULT_BONUS_OPTION_COUNT = 4
 COMPLETED_REVEAL_AUTO_ADVANCE_SECONDS = 30.0
@@ -218,7 +219,7 @@ class MusicTimelineQuizType(QuizType):
         eligible_tracks: dict[str, Track] = {}
         unresolved_tracks: list[Track] = []
         for track in source_tracks:
-            if self._track_is_eligible(track):
+            if self._track_is_resolved(track):
                 assert track.uri is not None
                 eligible_tracks[track.uri] = track
             elif track.available and track.is_playable:
@@ -230,9 +231,14 @@ class MusicTimelineQuizType(QuizType):
             except Exception as err:
                 LOGGER.debug("Could not enrich Music Quiz track %s: %s", track.uri, err)
                 return None
+            # the track controller can fail to resolve an album mapping, so accept the
+            # best release year the enriched track offers rather than requiring an album
             return enriched if self._track_is_eligible(enriched) else None
 
         target_track_count = self.config.round_count + 1 + PLAYBACK_REPLACEMENT_RESERVE
+        # enrichment stops at the target count, so sample the whole source pool
+        # instead of always enriching the same leading tracks
+        SYSTEM_RANDOM.shuffle(unresolved_tracks)
         unresolved_offset = 0
         while len(eligible_tracks) < target_track_count and unresolved_offset < len(
             unresolved_tracks
@@ -842,6 +848,22 @@ class MusicTimelineQuizType(QuizType):
             label=label,
             title=label if bonus_type == TimelineBonusType.TITLE else None,
         )
+
+    @classmethod
+    def _track_is_resolved(cls, track: Track) -> bool:
+        """
+        Return whether a track is usable for Music Timeline without resolving its album.
+
+        :param track: Source track to classify.
+        """
+        if not cls._track_is_eligible(track):
+            return False
+        album = track.album
+        if not isinstance(album, ItemMapping) or album.year is None:
+            return True
+        # an album mapping carries no album type, so a year taken from it cannot be judged;
+        # a year the track carries itself differs from the mapping's and stands on its own
+        return cls._release_year(track) != album.year
 
     @classmethod
     def _track_is_eligible(cls, track: Track) -> bool:
