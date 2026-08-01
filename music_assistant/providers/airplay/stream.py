@@ -118,6 +118,10 @@ class AirPlayStream:
         # the self-verification signal for the start contract.
         self._started = asyncio.Event()
         self._start_ack: tuple[int, int] | None = None
+        # Whether the last commanded START was a late-join start: routes the
+        # correction log levels (a corrected join is the routine landing path,
+        # a corrected origin start is a loud signal).
+        self._start_was_join = False
         # Receiver storm guard state: last-honored monotonic time per remote
         # transport command, plus a counter of suppressed repeats.
         self._remote_command_last: dict[str, float] = {}
@@ -409,6 +413,7 @@ class AirPlayStream:
         self.player.set_state_from_stream(elapsed_time=self._start_position, stream=self)
         self._started.clear()
         self._start_ack = None
+        self._start_was_join = join
         start_cmd = f"START_UNIX_MS={start_unix_ms}\nACTION=START"
         if join:
             start_cmd = f"START_UNIX_MS={start_unix_ms}\nSTART_JOIN=1\nACTION=START"
@@ -1015,11 +1020,14 @@ class AirPlayStream:
             else:
                 self._start_ack = (requested, actual)
                 if requested and actual and abs(actual - requested) > 2:
-                    # Loud on purpose: the commanded instant was infeasible and
-                    # the binary corrected it forward. The session re-aligns
-                    # the group from these acks; repeated corrections are the
-                    # support signal that leads/readiness need attention.
-                    player.logger.warning(
+                    # The session re-aligns the group from these acks. A
+                    # corrected join is the routine landing path (the low join
+                    # headroom defers to the binary's readiness correction);
+                    # for origin starts and group convergence rounds a
+                    # correction stays loud — there repeated corrections are
+                    # the support signal that leads/readiness need attention.
+                    player.logger.log(
+                        logging.INFO if self._start_was_join else logging.WARNING,
                         "AirPlay start corrected by %+d ms on %s (requested %d, scheduled %d)",
                         actual - requested,
                         player.display_name,
@@ -1347,10 +1355,11 @@ class AirPlayStream:
         # The binary's elapsed counts only the retained content, so the
         # position base moves by the cut to keep reported progress exact.
         self._start_position += content_cut_ms / 1000
-        # Loud on purpose: the join raced the receiver's clock exchange and the
-        # commanded lead was too tight — recurring corrections mean the join
-        # headroom needs attention.
-        self.player.logger.warning(
+        # Routine for a join start: the low join headroom defers to this
+        # correction, which lands the anchor at exact receiver readiness. A
+        # post-commit correction on any other START stays loud.
+        self.player.logger.log(
+            logging.INFO if self._start_was_join else logging.WARNING,
             "AirPlay anchor for %s corrected %+d ms after commit "
             "(requested %d, at %d, content advanced %d ms to stay in sync)",
             self.player.display_name,
