@@ -882,7 +882,15 @@ class MusicAssistant:
             if manifest.depends_on != prov_conf.domain:
                 continue
             try:
-                await self._load_provider(dep_prov_conf)
+                # the scan above skipped the config values, but the load path does need them:
+                # a provider reads config (e.g. its log level) while it is being constructed.
+                # Resolve them here, for this single dependent instead of for every provider.
+                dep_conf = await self.config.get_provider_config(dep_prov_conf.instance_id)
+            except KeyError:
+                # config was removed while we were scanning
+                continue
+            try:
+                await self._load_provider(dep_conf)
             except Exception as exc:
                 # record the failure against the provider that hit it: attributing it to the
                 # provider we just loaded (which is fine) flags the wrong one in the UI
