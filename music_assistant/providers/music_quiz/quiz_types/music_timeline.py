@@ -211,7 +211,7 @@ class MusicTimelineQuizType(QuizType):
                 ]
 
     async def _get_eligible_tracks(self) -> list[Track]:
-        """Return unique source tracks with usable release metadata."""
+        """Return the unique source tracks that can be played and placed on the timeline."""
         if self._eligible_tracks is not None:
             return self._eligible_tracks
         source_tracks = list((await self._get_source_track_pool()).values())
@@ -346,7 +346,7 @@ class MusicTimelineQuizType(QuizType):
             bonus_type,
             [
                 *preferred,
-                *self._source_pool_bonus_distractors(track, bonus_type),
+                *(await self._source_pool_bonus_distractors(track, bonus_type)),
             ],
             limit=DEFAULT_BONUS_OPTION_COUNT - 1,
         )
@@ -421,13 +421,15 @@ class MusicTimelineQuizType(QuizType):
         primary_artist = self._primary_artist(track)
         if primary_artist is None:
             return []
-        assert self._eligible_tracks is not None
+        # a bonus distractor only needs a display label, so the complete source pool
+        # is used here instead of the (release-year bounded) playback set
+        source_tracks = (await self._get_source_track_pool()).values()
         candidates = self._filter_bonus_candidates(
             track,
             TimelineBonusType.TITLE,
             [
                 self._bonus_candidate(candidate, TimelineBonusType.TITLE)
-                for candidate in self._eligible_tracks
+                for candidate in source_tracks
                 if self._track_has_primary_artist(candidate, primary_artist)
             ],
             limit=BONUS_CANDIDATE_LIMIT,
@@ -689,21 +691,21 @@ class MusicTimelineQuizType(QuizType):
                 break
         return result
 
-    def _source_pool_bonus_distractors(
+    async def _source_pool_bonus_distractors(
         self,
         track: Track,
         bonus_type: TimelineBonusType,
     ) -> list[SuggestionCandidate]:
         """Return unrelated source-pool candidates as the final resilience fallback."""
-        assert self._eligible_tracks is not None
+        source_tracks = (await self._get_source_track_pool()).values()
         if bonus_type == TimelineBonusType.TITLE:
             return [
                 self._bonus_candidate(candidate, bonus_type)
-                for candidate in self._eligible_tracks
+                for candidate in source_tracks
                 if candidate.uri != track.uri
             ]
         candidates: list[SuggestionCandidate] = []
-        for candidate in self._eligible_tracks:
+        for candidate in source_tracks:
             if candidate.uri != track.uri:
                 candidates.extend(self._artist_candidates(candidate.artists))
         return candidates
