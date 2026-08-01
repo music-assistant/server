@@ -63,13 +63,29 @@ DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 # RAOP because its pre-fill is paced.
 AIRPLAY_RAOP_SETUP_LEAD_MS: Final[int] = 1500
 AIRPLAY_AP2_SETUP_LEAD_MS: Final[int] = 2500
-# Late joiners anchor a low first guess, not a worst-case bound: a join START
-# makes the binary verify receiver clock readiness and report the instant it can
-# truly honor, onto which the server then maps the joiner's content. The floor
-# only keeps that verification window open: it must clear the binary's
-# verification arm window (AP2_CLOCK_VERIFY_MIN_WINDOW_MS, 1100 ms) plus a
-# poll round and the START command latency.
-AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 1500
+# Lower bound for a late joiner's anchor, and the whole anchor whenever the
+# binary reports no readiness projection ([STATUS] clock_ready). It has to keep
+# the binary's own clock verification viable without any device evidence: that
+# verification gives up 850 ms before the anchor, and a cold receiver was
+# measured taking 1078 ms after connect to send its first clock probe, so an
+# anchor below 1078 + 850 = ~1.93 s can close the window before a single probe
+# arrives - the joiner then seats on a cold clock and lands audibly behind.
+# 2500 ms clears that by ~570 ms, the margin the field-proven value carried.
+AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 2500
+# How long a join waits for the binary's first receiver-clock projection
+# ([STATUS] clock_ready with state=probing|ready). The binary emits its first
+# line right after [STATUS] connected and refreshes it about every 250 ms, and
+# the projection exists from the receiver's first probe (~1078 ms after connect
+# on a cold device), so this only has to cover a slower device before giving up
+# and anchoring on the floor above.
+AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS: Final[int] = 2500
+# Lead added on top of a reported readiness instant when anchoring a join. The
+# binary refuses to place an anchor inside its own 250 ms floor, measured from
+# when IT reads the START command rather than when the server sends it (the same
+# trap as AIRPLAY_START_LEAD_MS, see PR #5208), so the lead carries that floor
+# plus 250 ms for the command reaching the binary and for the convergence error
+# of a projection made from the receiver's very first probe.
+AIRPLAY_JOIN_CLOCK_READY_LEAD_MS: Final[int] = 500
 # How long a join START waits for the binary's [STATUS] started ack. That ack is
 # held back until the clock verification above resolves, so the window must
 # cover the verification arm window plus a poll round on top of the commanded

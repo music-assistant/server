@@ -132,6 +132,12 @@ class AirPlayStream:
         # `connected` this makes readiness fully event-driven, so START can
         # use a short re-anchor lead instead of a guessed setup time.
         self._audio_present = asyncio.Event()
+        # Set once the binary settled the receiver's clock readiness ([STATUS]
+        # clock_ready): either it projected when the clock becomes usable, or it
+        # reported that there is nothing to wait for. The projected instant
+        # (unix ms) stays 0 in the latter case.
+        self._clock_ready = asyncio.Event()
+        self._clock_ready_at_unix_ms: int = 0
         self._metadata_text_checksum = ""
         # Artwork identity (the source image url) whose rendered bytes were
         # last delivered to the binary. Settles on the first successful
@@ -374,6 +380,26 @@ class AirPlayStream:
         except TimeoutError:
             return False
         return True
+
+    async def wait_clock_ready(self, timeout: float = 2.5) -> int | None:
+        """
+        Wait for the binary to project when the receiver's clock becomes usable.
+
+        A receiver starts probing its clock as soon as it is connected, so the
+        projection is available well before any anchor is announced and resolves
+        from the receiver's first probe rather than from its full servo lock.
+
+        :param timeout: Seconds to wait for the projection.
+        :return: The projected instant (unix ms) at which the receiver's clock
+            is usable — possibly already in the past when it is locked — or None
+            when there is nothing to wait for (NTP timing, a receiver that never
+            probed within the timeout, or a binary that does not report it).
+        """
+        try:
+            await asyncio.wait_for(self._clock_ready.wait(), timeout)
+        except TimeoutError:
+            return None
+        return self._clock_ready_at_unix_ms or None
 
     async def start(
         self, start_unix_ms: int = 0, position_ms: int = 0, *, join: bool = False
@@ -1057,6 +1083,8 @@ class AirPlayStream:
             self._started.set()
         elif "[STATUS] anchor_corrected " in line:
             self._parse_anchor_corrected(line)
+        elif "[STATUS] clock_ready " in line:
+            self._parse_clock_ready(line)
         elif "[STATUS] clock_verified" in line:
             self._parse_clock_verified(line)
         elif "[STATUS] flushed" in line:
@@ -1387,6 +1415,39 @@ class AirPlayStream:
             requested_unix_ms,
             at_unix_ms,
             content_cut_ms,
+        )
+
+    def _parse_clock_ready(self, line: str) -> None:
+        """
+        Parse a [STATUS] clock_ready line into the receiver's readiness projection.
+
+        :param line: The status line, e.g. ``[STATUS] clock_ready mode=ptp
+            state=probing streak_ms=0 exchanges=1 ready_in_ms=2300
+            ready_at_unix_ms=1750000002300``.
+        """
+        try:
+            fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+            mode = fields.get("mode", "")
+            state = fields.get("state", "")
+            ready_at_unix_ms = int(fields.get("ready_at_unix_ms", 0))
+        except ValueError, IndexError:
+            # Malformed line: drop it rather than react to bogus numbers.
+            return
+        if state == "cold" and mode != "ntp":
+            # No probe seen yet, so the line carries no projection; the binary
+            # keeps reporting until one exists.
+            return
+        # NTP timing has no receiver clock to wait for, and a state without a
+        # projection resolves the wait with nothing so a caller falls back
+        # instead of blocking on evidence that will not arrive.
+        self._clock_ready_at_unix_ms = 0 if mode == "ntp" else ready_at_unix_ms
+        self._clock_ready.set()
+        self.player.logger.debug(
+            "cliairplay reports the clock for %s as %s (mode=%s, usable at %d)",
+            self.player.display_name,
+            state,
+            mode,
+            self._clock_ready_at_unix_ms,
         )
 
     def _parse_clock_verified(self, line: str) -> None:

@@ -898,6 +898,65 @@ def test_flushed_status_sets_flush_event() -> None:
     assert stream._flushed.is_set()
 
 
+@pytest.mark.asyncio
+async def test_clock_ready_projection_resolves_the_wait() -> None:
+    """A probing receiver reports when its clock becomes usable, from its first probe."""
+    stream = AirPlayStream(_make_player())
+
+    assert (
+        stream._handle_status_line(
+            "[STATUS] clock_ready mode=ptp state=probing streak_ms=0 exchanges=1 "
+            f"ready_in_ms=2300 ready_at_unix_ms={START_UNIX_MS}"
+        )
+        is False
+    )
+
+    assert await stream.wait_clock_ready(timeout=0.01) == START_UNIX_MS
+
+
+@pytest.mark.asyncio
+async def test_clock_ready_cold_line_keeps_waiting_for_a_projection() -> None:
+    """A receiver that has not probed yet carries no projection, so the wait goes on."""
+    stream = AirPlayStream(_make_player())
+
+    stream._handle_status_line(
+        "[STATUS] clock_ready mode=ptp state=cold streak_ms=0 exchanges=0 "
+        "ready_in_ms=0 ready_at_unix_ms=0"
+    )
+
+    assert await stream.wait_clock_ready(timeout=0.01) is None
+    assert not stream._clock_ready.is_set()
+
+    stream._handle_status_line(
+        "[STATUS] clock_ready mode=ptp state=ready streak_ms=2400 exchanges=9 "
+        f"ready_in_ms=0 ready_at_unix_ms={START_UNIX_MS}"
+    )
+
+    assert await stream.wait_clock_ready(timeout=0.01) == START_UNIX_MS
+
+
+@pytest.mark.asyncio
+async def test_clock_ready_ntp_resolves_without_a_projection() -> None:
+    """NTP timing has no receiver clock to wait for, so the wait ends with nothing."""
+    stream = AirPlayStream(_make_player())
+
+    stream._handle_status_line(
+        "[STATUS] clock_ready mode=ntp state=ready streak_ms=0 exchanges=0 "
+        f"ready_in_ms=0 ready_at_unix_ms={START_UNIX_MS}"
+    )
+
+    assert stream._clock_ready.is_set()
+    assert await stream.wait_clock_ready(timeout=0.01) is None
+
+
+@pytest.mark.asyncio
+async def test_wait_clock_ready_times_out_for_a_binary_that_never_reports() -> None:
+    """A binary that does not report readiness leaves the caller with no projection."""
+    stream = AirPlayStream(_make_player())
+
+    assert await stream.wait_clock_ready(timeout=0.01) is None
+
+
 def test_elapsed_includes_start_position() -> None:
     """Reported progress is the current anchor's media base plus the binary delta."""
     player = _make_player()

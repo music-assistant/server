@@ -11,6 +11,8 @@ from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_COLD_GROUP_START_LEAD_MS,
+    AIRPLAY_JOIN_CLOCK_READY_LEAD_MS,
+    AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
     StreamingProtocol,
 )
@@ -23,10 +25,11 @@ def _stream_defaults(stream: MagicMock) -> MagicMock:
     """
     Apply the verified-start API defaults to a mocked stream.
 
-    No started ack and no warm-lead constraint, matching an older binary, so
-    the tests assert the commanded values directly.
+    No started ack, no warm-lead constraint and no receiver clock projection,
+    matching an older binary, so the tests assert the commanded values directly.
     """
     stream.start = AsyncMock(return_value=None)
+    stream.wait_clock_ready = AsyncMock(return_value=None)
     stream.warm_lead_ms = 0
     stream.flushed_head_unix_ms = 0
     return stream
@@ -822,8 +825,9 @@ async def test_late_join_skips_live_feed_when_anchor_ahead_of_write_head() -> No
     # Freeze time so both the test and the code under test agree on `now`.
     now = 1_000_000.0
     # Diagnosed clamp case: now - start_time = 8.84s, seconds_streamed = 10.0s,
-    # min_headroom = 1.5s (the late-join floor) and no group shift, so the
-    # anchor is due at 10.34s of feed, past the 10.0s write head.
+    # min_headroom = 2.5s (the late-join floor, no readiness projection) and no
+    # group shift, so the anchor is due at 11.34s of feed, past the 10.0s write
+    # head.
     start_time = now - 8.84
     seconds_streamed = 10.0
     session = _make_session(start_time, seconds_streamed)
@@ -848,7 +852,7 @@ async def test_late_join_skips_live_feed_when_anchor_ahead_of_write_head() -> No
     assert _captured_start_at(player) - now == pytest.approx(expected_headroom, abs=0.01)
     assert written_chunks == []
     skip_seconds = session._client_skip_bytes[player.player_id] / PCM_SAMPLE_SIZE
-    assert skip_seconds == pytest.approx(0.34, abs=0.01)
+    assert skip_seconds == pytest.approx(1.34, abs=0.01)
 
 
 @pytest.mark.asyncio
@@ -858,8 +862,8 @@ async def test_late_join_primes_from_ring_under_group_shift() -> None:
     now = 1_000_000.0
     # Same base as the clamp case, but the reference member accumulated a
     # +3.039s starvation shift (134020 frames @44100) so the group's effective
-    # anchor is later: fed_pos_due = 7.30s, back inside the ring. The joiner is
-    # primed with ~2.7s from the ring tail and skips nothing.
+    # anchor is later: fed_pos_due = 8.30s, back inside the ring. The joiner is
+    # primed with ~1.7s from the ring tail and skips nothing.
     start_time = now - 8.84
     seconds_streamed = 10.0
     session = _make_session(start_time, seconds_streamed)
@@ -886,7 +890,121 @@ async def test_late_join_primes_from_ring_under_group_shift() -> None:
     assert session._client_skip_bytes[player.player_id] == 0
     assert written_chunks, "expected a prime write from the ring tail"
     primed_seconds = len(written_chunks[0]) / PCM_SAMPLE_SIZE
-    assert primed_seconds == pytest.approx(2.699, abs=0.01)
+    assert primed_seconds == pytest.approx(1.699, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_late_join_anchors_on_the_reported_clock_readiness() -> None:
+    """A projected readiness instant anchors the join, just past the receiver's clock."""
+    # Freeze time so both the test and the code under test agree on `now`.
+    now = 1_000_000.0
+    session = _make_session(now - 5.0, 5.0)
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 5)
+    player = _make_late_joiner()
+    # A cold receiver: its clock is projected usable 3.0s out, well past the floor.
+    ready_at_unix_ms = int((now + 3.0) * 1000)
+
+    def setup_with_projection(*_args: Any, **_kwargs: Any) -> None:
+        _setup_stream(player)()
+        player.stream.wait_clock_ready = AsyncMock(return_value=ready_at_unix_ms)
+
+    with (
+        patch.object(session, "_start_client", side_effect=setup_with_projection),
+        patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        await session.add_client(player)
+
+    expected_lead = AIRPLAY_JOIN_CLOCK_READY_LEAD_MS / 1000
+    assert _captured_start_at(player) - now == pytest.approx(3.0 + expected_lead, abs=0.01)
+    player.stream.wait_clock_ready.assert_awaited_once_with(
+        timeout=AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS / 1000
+    )
+
+
+@pytest.mark.asyncio
+async def test_late_join_floor_wins_over_a_clock_that_is_already_ready() -> None:
+    """A receiver whose clock is already locked still gets the join floor as its anchor."""
+    # Freeze time so both the test and the code under test agree on `now`.
+    now = 1_000_000.0
+    session = _make_session(now - 5.0, 5.0)
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 5)
+    player = _make_late_joiner()
+    # A warm receiver reports a readiness instant that has already passed.
+    ready_at_unix_ms = int((now - 1.0) * 1000)
+
+    def setup_with_projection(*_args: Any, **_kwargs: Any) -> None:
+        _setup_stream(player)()
+        player.stream.wait_clock_ready = AsyncMock(return_value=ready_at_unix_ms)
+
+    with (
+        patch.object(session, "_start_client", side_effect=setup_with_projection),
+        patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        await session.add_client(player)
+
+    expected_headroom = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000
+    assert _captured_start_at(player) - now == pytest.approx(expected_headroom, abs=0.01)
+
+
+@pytest.mark.asyncio
+async def test_late_join_falls_back_to_the_floor_without_a_clock_projection() -> None:
+    """No projection (older binary, NTP timing or a silent receiver) anchors on the floor."""
+    # Freeze time so both the test and the code under test agree on `now`.
+    now = 1_000_000.0
+    session = _make_session(now - 5.0, 5.0)
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 5)
+    player = _make_late_joiner()
+
+    with (
+        patch.object(session, "_start_client", new_callable=AsyncMock) as mock_start,
+        patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        mock_start.side_effect = _setup_stream(player)
+        await session.add_client(player)
+
+    # every fallback shape surfaces as "no projection" to the session
+    player.stream.wait_clock_ready.assert_awaited_once_with(
+        timeout=AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS / 1000
+    )
+    expected_headroom = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000
+    assert _captured_start_at(player) - now == pytest.approx(expected_headroom, abs=0.01)
+    assert player in session.sync_clients
+
+
+@pytest.mark.asyncio
+async def test_late_join_feed_keeps_flowing_while_waiting_for_clock_readiness() -> None:
+    """The group keeps being fed while a joiner's receiver clock projection is pending."""
+    session = _make_session(time.time() - 5, 5.0)
+    player = _make_late_joiner()
+    readiness_pending = asyncio.Event()
+    readiness_released = asyncio.Event()
+
+    def setup_pending_projection(*_args: Any, **_kwargs: Any) -> None:
+        _setup_stream(player)()
+
+        async def wait_clock_ready(*_args: Any, **_kwargs: Any) -> None:
+            readiness_pending.set()
+            await readiness_released.wait()
+
+        player.stream.wait_clock_ready = AsyncMock(side_effect=wait_clock_ready)
+
+    with (
+        patch.object(session, "_start_client", side_effect=setup_pending_projection),
+        patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
+    ):
+        join = asyncio.create_task(session.add_client(player))
+        await asyncio.wait_for(readiness_pending.wait(), timeout=5)
+        assert await asyncio.wait_for(
+            session._write_chunk_to_all_players(b"\x02" * PCM_SAMPLE_SIZE), timeout=5
+        )
+        readiness_released.set()
+        await asyncio.wait_for(join, timeout=5)
+
+    assert session.seconds_streamed == pytest.approx(6.0)
+    assert player in session.sync_clients
 
 
 @pytest.mark.asyncio
@@ -932,11 +1050,11 @@ async def test_late_join_feed_keeps_flowing_while_start_ack_is_outstanding() -> 
     # that second of feed reached the leader and moved the write head to 6.0s
     assert ("leader", PCM_SAMPLE_SIZE) in writes
     assert session.seconds_streamed == pytest.approx(6.0)
-    # the anchor (now + the 1.5s floor) is due at 6.5s of feed, so the joiner
-    # skips only the 0.5s still to come, not the 1.5s due at the commanded
+    # the anchor (now + the 2.5s floor) is due at 7.5s of feed, so the joiner
+    # skips only the 1.5s still to come, not the 2.5s due at the commanded
     # mapping: the content is mapped against the head the feed actually reached
     skip_seconds = session._client_skip_bytes[player.player_id] / PCM_SAMPLE_SIZE
-    assert skip_seconds == pytest.approx(0.5, abs=0.01)
+    assert skip_seconds == pytest.approx(1.5, abs=0.01)
     assert player in session.sync_clients
 
 
@@ -1008,14 +1126,14 @@ async def test_late_join_maps_content_from_the_acked_instant() -> None:
 
     commanded_ms = int((now + AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000) * 1000) + adjust_ms
     assert player.stream.start.await_args.args[0] == commanded_ms
-    # The ack lands 1.5s later than commanded, so the due position is 8.0s of
-    # feed instead of 6.5s: the joiner skips 3.0s of the live feed.
+    # The ack lands 1.5s later than commanded, so the due position is 9.0s of
+    # feed instead of 7.5s: the joiner skips 4.0s of the live feed.
     assert written_chunks == []
     skip_seconds = session._client_skip_bytes[player.player_id] / PCM_SAMPLE_SIZE
-    assert skip_seconds == pytest.approx(3.0, abs=0.01)
+    assert skip_seconds == pytest.approx(4.0, abs=0.01)
     # Progress is reported against the sample that lands on the acked instant,
     # not the one that would have landed on the commanded instant.
-    player.stream.rebase_position.assert_called_once_with(8000)
+    player.stream.rebase_position.assert_called_once_with(9000)
 
 
 @pytest.mark.asyncio

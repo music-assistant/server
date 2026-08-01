@@ -18,6 +18,8 @@ from music_assistant.helpers.ffmpeg import FFMpeg
 from .constants import (
     AIRPLAY_COLD_GROUP_START_LEAD_MS,
     AIRPLAY_GROUP_START_LEAD_MS,
+    AIRPLAY_JOIN_CLOCK_READY_LEAD_MS,
+    AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
     AIRPLAY_START_LEAD_MS,
@@ -351,8 +353,9 @@ class AirPlayStreamSession:
 
         The joiner cannot honour an anchor in the past — cliairplay makes the
         first post-START stdin byte audible exactly at the instant it acks and
-        then freezes the anchor, with no catch-up. So an anchor a fixed headroom
-        into the future is commanded, the binary acks the instant it can truly
+        then freezes the anchor, with no catch-up. So the anchor is commanded
+        just past the instant the receiver reports its clock becomes usable (and
+        never inside the join floor), the binary acks the instant it can truly
         honour, and the stream position due at that instant is derived from the
         group's effective (shift-adjusted) timeline. Depending on where that
         position falls relative to the ring buffer the joiner is either primed
@@ -361,10 +364,11 @@ class AirPlayStreamSession:
         head), so its first audible sample lands exactly where the group is
         playing.
 
-        Timing-source readiness and the START ack are awaited without the session
-        lock so the rest of the group keeps being fed meanwhile; all buffer and
-        anchor math stays under the lock so ``seconds_streamed``, the ring buffer
-        and the per-client skip counter stay consistent with the live feed.
+        Timing-source readiness, the receiver's clock projection and the START
+        ack are all awaited without the session lock so the rest of the group
+        keeps being fed meanwhile; all buffer and anchor math stays under the
+        lock so ``seconds_streamed``, the ring buffer and the per-client skip
+        counter stay consistent with the live feed.
         """
         await self._resolve_late_joiner_ptp(airplay_player)
         async with self._lock:
@@ -375,6 +379,14 @@ class AirPlayStreamSession:
             stream = airplay_player.stream
             assert stream
             await stream.wait_for_connection()
+            # A receiver starts probing its clock at connect, so how long it
+            # still needs is measurable before any anchor is announced. Waiting
+            # for that projection here — outside the session lock, so the rest
+            # of the group keeps being fed — lets the join anchor on the
+            # device's own readiness instead of a fixed guess.
+            ready_at_unix_ms = await stream.wait_clock_ready(
+                timeout=AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS / 1000
+            )
         except asyncio.CancelledError:
             await self.stop_client(airplay_player, reason="late joiner start cancelled")
             raise
@@ -456,17 +468,30 @@ class AirPlayStreamSession:
             return anchor_at, due, prime_slice, skip
 
         now = time.time()
+        self.prov.logger.debug(
+            "Late joiner %s: receiver clock readiness %s",
+            airplay_player.player_id,
+            f"projected {ready_at_unix_ms / 1000 - now:.2f}s out"
+            if ready_at_unix_ms
+            else "not reported; anchoring on the join floor",
+        )
         async with self._lock:
             if not self._session_is_live():
                 await self.stop_client(airplay_player, reason="session ended during late join")
                 return
             # cliairplay makes the first post-START stdin byte audible exactly at
             # the instant it acks, so the anchor is commanded first and the
-            # content mapped onto the ack afterwards. min_headroom is the
-            # late-join floor: low enough that the joiner starts promptly, high
-            # enough for the binary to verify the receiver clock before it.
+            # content mapped onto the ack afterwards. It sits just past the
+            # instant the receiver's clock becomes usable; the floor is only a
+            # lower bound, and carries the whole anchor when no projection came.
             min_headroom = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000
-            requested_at, fed_pos_due = map_to(now + min_headroom)[:2]
+            anchor_at = now + min_headroom
+            if ready_at_unix_ms:
+                anchor_at = max(
+                    anchor_at,
+                    (ready_at_unix_ms + AIRPLAY_JOIN_CLOCK_READY_LEAD_MS) / 1000,
+                )
+            requested_at, fed_pos_due = map_to(anchor_at)[:2]
             start_unix_ms = int(requested_at * 1000)
             sync_adjust = airplay_player.config.get_value(CONF_SYNC_ADJUST, 0)
             adjust_ms = sync_adjust if isinstance(sync_adjust, int) else 0
