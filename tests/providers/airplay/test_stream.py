@@ -1723,21 +1723,18 @@ async def test_started_ack_status_line_parsing() -> None:
 # --- Post-commit anchor verification ---
 
 
-def test_anchor_corrected_status_line_invokes_callback() -> None:
-    """A post-commit anchor correction is parsed and handed to the wired callback."""
+def test_anchor_corrected_status_line_rebases_the_position() -> None:
+    """A correction carrying a content cut moves the reported-position base by it."""
     stream = AirPlayStream(_make_player())
-    received: list[tuple[int, int, int]] = []
-    stream.on_anchor_corrected = lambda requested, from_ms, at_ms: received.append(
-        (requested, from_ms, at_ms)
-    )
+    stream._start_position = 12.0
 
     ended = stream._handle_status_line(
         "[STATUS] anchor_corrected requested_unix_ms=1750000000000 "
-        "from_unix_ms=1750000000400 at_unix_ms=1750000000900"
+        "from_unix_ms=1750000000400 at_unix_ms=1750000000900 content_cut_ms=500"
     )
 
     assert ended is False
-    assert received == [(1750000000000, 1750000000400, 1750000000900)]
+    assert stream._start_position == 12.5
 
 
 def test_anchor_corrected_status_line_logs_a_warning(caplog: pytest.LogCaptureFixture) -> None:
@@ -1747,35 +1744,22 @@ def test_anchor_corrected_status_line_logs_a_warning(caplog: pytest.LogCaptureFi
     with caplog.at_level(logging.WARNING):
         stream._handle_status_line(
             "[STATUS] anchor_corrected requested_unix_ms=0 "
-            "from_unix_ms=1750000000400 at_unix_ms=1750000000900"
+            "from_unix_ms=1750000000400 at_unix_ms=1750000000900 content_cut_ms=500"
         )
 
     assert "Player A" in caplog.text
     assert "+500 ms" in caplog.text
 
 
-def test_anchor_corrected_status_line_tolerates_missing_callback() -> None:
-    """A correction with nothing wired to on_anchor_corrected is parsed without raising."""
-    stream = AirPlayStream(_make_player())
-    assert stream.on_anchor_corrected is None
-
-    ended = stream._handle_status_line(
-        "[STATUS] anchor_corrected requested_unix_ms=0 "
-        "from_unix_ms=1750000000400 at_unix_ms=1750000000900"
-    )
-
-    assert ended is False
-
-
 def test_anchor_corrected_status_line_tolerates_malformed_line() -> None:
-    """A malformed anchor_corrected line is dropped instead of raising or notifying."""
+    """A malformed anchor_corrected line is dropped instead of raising or rebasing."""
     stream = AirPlayStream(_make_player())
-    stream.on_anchor_corrected = MagicMock()
+    stream._start_position = 12.0
 
     ended = stream._handle_status_line("[STATUS] anchor_corrected requested_unix_ms=garbage")
 
     assert ended is False
-    stream.on_anchor_corrected.assert_not_called()
+    assert stream._start_position == 12.0
 
 
 def test_clock_verified_status_line_is_debug_logged(caplog: pytest.LogCaptureFixture) -> None:

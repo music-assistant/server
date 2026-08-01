@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import functools
 import time
 from collections.abc import AsyncGenerator
 from contextlib import suppress
@@ -17,7 +16,6 @@ from music_assistant.controllers.streams.audio_processing import get_media_sessi
 from music_assistant.helpers.ffmpeg import FFMpeg
 
 from .constants import (
-    AIRPLAY_ANCHOR_RESYNC_MIN_MS,
     AIRPLAY_COLD_GROUP_START_LEAD_MS,
     AIRPLAY_GROUP_START_LEAD_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
@@ -777,9 +775,6 @@ class AirPlayStreamSession:
         stream_pcm_format = airplay_player.get_stream_pcm_format(self.pcm_format)
         airplay_player.stream = AirPlayStream(airplay_player, pcm_format=stream_pcm_format)
         airplay_player.stream.session = self
-        airplay_player.stream.on_anchor_corrected = functools.partial(
-            self._handle_member_anchor_corrected, airplay_player
-        )
         await airplay_player.stream.connect(use_shared_ptp)
         await self._start_player_ffmpeg(airplay_player, self.media)
 
@@ -966,71 +961,6 @@ class AirPlayStreamSession:
         )
         await ffmpeg.start()
         self._player_ffmpeg[player.player_id] = ffmpeg
-
-    def _handle_member_anchor_corrected(
-        self, player: AirPlayPlayer, requested_unix_ms: int, from_unix_ms: int, at_unix_ms: int
-    ) -> None:
-        """
-        React to a member's stream verifying its commit against a live clock exchange.
-
-        Called synchronously from the stream's stderr-reader task context, so this
-        only ever logs or schedules a background task, never awaits anything itself.
-        A solo player's elapsed reporting already tracks the verified instant (the
-        binary reports it from real content), so only a grouped member whose offset
-        clears the resync floor is worth the cost of a re-join.
-
-        :param player: The member whose stream reported the correction.
-        :param requested_unix_ms: The instant originally commanded on the START (0
-            if the server let the binary pick).
-        :param from_unix_ms: The previously scheduled audible instant.
-        :param at_unix_ms: The new, verified audible instant.
-        """
-        delta_ms = at_unix_ms - from_unix_ms
-        solo = self.sync_clients == [player]
-        if solo or delta_ms <= AIRPLAY_ANCHOR_RESYNC_MIN_MS:
-            log = self.prov.logger.info if solo else self.prov.logger.warning
-            log(
-                "AirPlay anchor for %s verified %+d ms late (requested %d, from %d, at %d)",
-                player.display_name,
-                delta_ms,
-                requested_unix_ms,
-                from_unix_ms,
-                at_unix_ms,
-            )
-            return
-        self.prov.logger.warning(
-            "AirPlay anchor for %s verified %+d ms late (requested %d, from %d, at %d); "
-            "re-joining so its next commit lands after the verified clock exchange",
-            player.display_name,
-            delta_ms,
-            requested_unix_ms,
-            from_unix_ms,
-            at_unix_ms,
-        )
-        self.mass.create_task(
-            self._resync_member_anchor, player, task_id=f"airplay_resync_{player.player_id}"
-        )
-
-    async def _resync_member_anchor(self, player: AirPlayPlayer) -> None:
-        """
-        Re-join a member whose post-commit anchor correction crossed the resync floor.
-
-        Stops and re-adds the player through the regular late-join path so its
-        next commit lands after the receiver's clock exchange is verified live,
-        instead of racing it the way the original commit did.
-
-        :param player: The member to re-join.
-        """
-        # Scheduled work: re-check the session and this player's membership,
-        # since both may have changed by the time this task actually runs.
-        async with self._lock:
-            if not self.sync_clients or player not in self.sync_clients:
-                return
-            first_client = self.sync_clients[0]
-            if not first_client.stream or not first_client.stream.running:
-                return
-        await self.stop_client(player, reason="anchor corrected after commit")
-        await self.add_client(player)
 
 
 def _first_music_assistant_error(err: BaseException) -> MusicAssistantError | None:
