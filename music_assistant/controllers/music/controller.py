@@ -2821,7 +2821,6 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             )
         except MediaNotFoundError, NotImplementedError:
             # NotImplementedError: the uri has a valid format, but specifies an unknown media type
-            # e.g. when called from HA: media-source://media_source/local/loud_alarm_clock.mp3
             return False
 
         # non library item handling for users with no filter, or no user at all
