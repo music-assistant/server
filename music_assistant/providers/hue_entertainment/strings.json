@@ -40,6 +40,15 @@
       "label": "Smooth palette rotation",
       "description": "Only affects palette rotation (set up by dragging palettes into the rotation tray in the live preview).\nON = a short, tempo-locked crossfade (about one beat) glides from one palette to the next.\nOFF = a hard cut that snaps the new palette exactly on the bar - punchier and tighter for a clubbing effect, so turn this OFF for hard house/techno sets.\nApplies live."
     },
+    "no_beat_mode": {
+      "label": "When the beat disappears",
+      "description": "What the lights do while the music keeps playing but no beat is detected (breakdowns, ambient intros and interludes).\nGhost pulse = keep pulsing at the last known tempo, dimmed, so the room stays in the groove.\nBreathe = a slow tempo-free swell, calmer.\nOnsets only = react only to what is actually heard, no artificial pulse.\nIn full silence the lights always fall back to a faint idle drift.\nApplies live.",
+      "options": {
+        "ghost": "Ghost pulse (keep the last tempo, dimmed)",
+        "breathe": "Breathe (slow swell, no tempo)",
+        "onsets": "Onsets only (react to hits, no pulse)"
+      }
+    },
     "divider_pulse": {
       "label": "Pulse / Club fire"
     },

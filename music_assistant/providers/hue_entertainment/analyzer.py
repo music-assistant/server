@@ -23,10 +23,12 @@ from .constants import (
     CONF_PULSE_DOWNBEAT,
     CONF_PULSE_FLOOR,
     CONF_PULSE_SELECT,
+    DEFAULT_NO_BEAT,
     DEFAULT_PULSE_DECAY,
     DEFAULT_PULSE_DOWNBEAT,
     DEFAULT_PULSE_FLOOR,
     DEFAULT_PULSE_SELECT,
+    NO_BEAT_OPTIONS,
 )
 from .palettes import resolve_palette
 from .strobe_overlay import StrobeOverlay, StrobeSettings
@@ -354,6 +356,25 @@ _PEAK_BOOST_SCALE = 0.3
 # scroll the palette or lift brightness. Tunable.
 _PEAK_MIN_STRENGTH = 0.1
 
+# -- No-beat fallback + silence idle --
+# Ghost pulse: with the schedule dry but music still playing, keep pulsing at
+# the last known tempo, dimmed, so the room stays in the groove of the set.
+_GHOST_DIM = 0.60  # overall brightness scale while ghosting
+_GHOST_FLOOR = 0.45  # envelope trough, as a fraction of the ghost peak
+# Breathe: tempo-free slow swell for the same situation.
+_BREATHE_HZ = 0.15
+_BREATHE_LO = 0.30
+_BREATHE_HI = 0.75
+# Full silence: after this long without audible spectrum the room goes idle -
+# a faint breathing envelope over a slowly drifting palette.
+_IDLE_AFTER_US = 3_000_000
+_IDLE_BREATHE_HZ = 0.08
+_IDLE_LO = 0.08
+_IDLE_HI = 0.22
+_IDLE_DRIFT_PER_S = 0.04  # palette slots per second while idle
+# A spectrum bin above this (normalised) counts as "audio present".
+_AUDIO_GATE = 0.03
+
 # Optional palette-rotation crossfade (CONF_PALETTE_ROTATE_SMOOTH). The glide
 # lasts one beat so it tracks tempo, clamped to a short ceiling and with a fixed
 # fallback when the BPM is unknown. Two palettes of different lengths are blended
@@ -401,12 +422,15 @@ class HueAudioAnalyzer:
         palette: str = "",
         per_light: dict[int, float] | None = None,
         pulse: PulseSettings | None = None,
+        no_beat: str = DEFAULT_NO_BEAT,
     ) -> None:
         """
         Initialize the analyzer.
 
         ``color_mode`` selects a preset bundle from `_MODES` (defaults to
         `DEFAULT_MODE` when unknown); reactivity is governed by that preset.
+        ``no_beat`` picks the fallback for beatless-but-audible sections
+        (see NO_BEAT_OPTIONS in constants).
         """
         self._channels = channels
         self._color_mode = color_mode
@@ -460,6 +484,11 @@ class HueAudioAnalyzer:
         self._beats: deque[_ScheduledBeat] = deque()
         # -1 means no beat seen yet; first beat (or first downbeat) anchors it.
         self._last_beat_in_bar = -1
+        # No-beat fallback + silence idle state.
+        valid_no_beat = {value for value, _ in NO_BEAT_OPTIONS}
+        self._no_beat = no_beat if no_beat in valid_no_beat else DEFAULT_NO_BEAT
+        self._last_sched_beat_us = -1  # newest pushed beat; -1 = none this stream
+        self._last_audio_us: int | None = None  # newest audible spectrum frame
 
         # Per-channel smoothed band energy (one filter per light).
         self._channel_filters: list[_ExpFilter] = [
@@ -509,8 +538,12 @@ class HueAudioAnalyzer:
         palette: str | None = None,
         per_light: dict[int, float] | None = None,
         pulse: PulseSettings | None = None,
+        no_beat: str | None = None,
     ) -> None:
         """Update settings without reset."""
+        if no_beat is not None:
+            valid_no_beat = {value for value, _ in NO_BEAT_OPTIONS}
+            self._no_beat = no_beat if no_beat in valid_no_beat else DEFAULT_NO_BEAT
         if color_mode is not None:
             self._color_mode = color_mode
             self._mode = _MODES.get(color_mode, _MODES[DEFAULT_MODE])
@@ -602,12 +635,14 @@ class HueAudioAnalyzer:
                 )
             )
             self._last_beat_in_bar = bib
+            self._last_sched_beat_us = beat.timestamp_us
             self._structure.note_beat(beat.timestamp_us, beat.is_downbeat)
 
     def clear_beat_schedule(self) -> None:
         """Drop only the beat schedule (a track change re-pushes it; spectrum keeps flowing)."""
         self._beats.clear()
         self._last_beat_in_bar = -1
+        self._last_sched_beat_us = -1
 
     def clear_beats(self) -> None:
         """Drop the entire beat schedule + pending peaks (seek / stream end)."""
@@ -630,6 +665,13 @@ class HueAudioAnalyzer:
         self._advance_spectrum(now_us)
         if not self._channels:
             return []
+        # Full silence overrides every mode: a faint idle drift instead of a
+        # frozen last frame (or a free-running pulse into an empty room).
+        if (
+            self._last_audio_us is not None
+            and now_us - self._last_audio_us > _IDLE_AFTER_US
+        ):
+            return self._render_idle(now_us)
         channel_mults = self._combined_channel_multipliers()
         # `_consume_peaks` always runs (it advances the peak palette walker and
         # feeds the structure detector's onset window); `onset_boost` gates only
@@ -663,6 +705,18 @@ class HueAudioAnalyzer:
             section=self._structure.section(),
         )
 
+        # Beat schedule dry while music still plays: the configured no-beat
+        # fallback (ghost pulse / breathe) takes over in EVERY mode, so the
+        # policy reads the same whether the base mode is smooth or club.
+        no_schedule = next_beat is None or segment is None or segment <= 0 or prior is None
+        if no_schedule:
+            env = self._no_beat_envelope(now_us)
+            if env is not None:
+                colors = self._peak_walk_colors(palette, now_us)
+                return self._fill_per_channel(
+                    colors, base_brightness * env, channel_mults, strobe_levels
+                )
+
         if self._color_mode == "club":
             return self._render_club(
                 now_us, palette, (prior, next_beat, segment), channel_mults, strobe_levels
@@ -671,13 +725,55 @@ class HueAudioAnalyzer:
         if self._color_mode == "pulse":
             return self._render_pulse(now_us, palette, (prior, next_beat, segment), strobe_levels)
 
-        if next_beat is None or segment is None or segment <= 0 or prior is None:
+        if no_schedule:
             colors = self._peak_walk_colors(palette, now_us)
             return self._fill_per_channel(colors, base_brightness, channel_mults, strobe_levels)
 
         pulse = self._compute_pulse(now_us, prior, next_beat, segment)
         colors = self._per_channel_colors(palette, prior, next_beat, now_us, segment)
         return self._fill_per_channel(colors, base_brightness * pulse, channel_mults, strobe_levels)
+
+    def _no_beat_envelope(self, now_us: int) -> float | None:
+        """
+        Brightness envelope while the schedule is dry but music still plays.
+
+        Returns None when the plain onset behaviour should apply instead: the
+        "onsets" setting, or a stream that never had a beat schedule at all
+        (a server without beat analysis must keep its original look).
+        """
+        if self._no_beat == "onsets" or self._last_sched_beat_us < 0:
+            return None
+        if self._no_beat == "ghost":
+            bpm = self._structure.bpm
+            if bpm > 0:
+                period_us = 60_000_000.0 / bpm
+                pos = ((now_us - self._last_sched_beat_us) / period_us) % 1.0
+                # Sharp at the remembered beat, easing out toward the next.
+                shape = (1.0 - pos) ** 2
+                return _GHOST_DIM * (_GHOST_FLOOR + (1.0 - _GHOST_FLOOR) * shape)
+        t = now_us / 1_000_000.0
+        breathe = 0.5 * (1.0 + math.sin(2.0 * math.pi * _BREATHE_HZ * t))
+        return _BREATHE_LO + (_BREATHE_HI - _BREATHE_LO) * breathe
+
+    def _render_idle(self, now_us: int) -> list[LightColorCommand]:
+        """Silence: a slow palette drift under a faint breathing envelope."""
+        palette = self._active_palette()
+        palette_len = len(palette)
+        if palette_len == 0:
+            return self._fill_per_channel(
+                [(0.0, 0.0, 0.0) for _ in self._channels], 0.0, None
+            )
+        t = now_us / 1_000_000.0
+        breathe = 0.5 * (1.0 + math.sin(2.0 * math.pi * _IDLE_BREATHE_HZ * t))
+        level = _IDLE_LO + (_IDLE_HI - _IDLE_LO) * breathe
+        colors: list[tuple[float, float, float]] = []
+        for i in range(len(self._channels)):
+            position = (t * _IDLE_DRIFT_PER_S + self._spatial_palette_offset(i)) % palette_len
+            low = int(position) % palette_len
+            high = (low + 1) % palette_len
+            frac = position - int(position)
+            colors.append(_lerp(palette[low], palette[high], frac))
+        return self._fill_per_channel(colors, self._brightness * level, None)
 
     def _reset_fire_state(self) -> None:
         """Reset the distributed-fire per-channel envelopes so a new track starts dark."""
@@ -692,8 +788,10 @@ class HueAudioAnalyzer:
     def _advance_spectrum(self, now_us: int) -> None:
         """Drain due spectrum frames and update saturation per drained frame."""
         while self._pending_spectrum and self._pending_spectrum[0][0] <= now_us:
-            _, bins = self._pending_spectrum.popleft()
+            ts, bins = self._pending_spectrum.popleft()
             self._consume_spectrum_frame(bins)
+            if any(v > _AUDIO_GATE for v in self._spectrum):
+                self._last_audio_us = ts
 
     def _consume_spectrum_frame(self, bins: list[int]) -> None:
         """Normalize ``bins`` into ``self._spectrum`` and step bass saturation."""

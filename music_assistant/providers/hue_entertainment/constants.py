@@ -106,6 +106,18 @@ PULSE_SELECT_OPTIONS: Final[tuple[tuple[str, str], ...]] = (
     ("spectrum", "Spectrum (loudest band's light)"),
 )
 
+# What the lights do when the beat schedule dries up while music keeps playing
+# (breakdowns, ambient interludes). "ghost" keeps pulsing at the last known
+# tempo, dimmed; "breathe" is a slow tempo-free swell; "onsets" only reacts to
+# what is actually heard. Full silence always falls back to a low idle drift.
+CONF_NO_BEAT: Final[str] = "no_beat_mode"
+DEFAULT_NO_BEAT: Final[str] = "ghost"
+NO_BEAT_OPTIONS: Final[tuple[tuple[str, str], ...]] = (
+    ("ghost", "Ghost pulse (keep the last tempo, dimmed)"),
+    ("breathe", "Breathe (slow swell, no tempo)"),
+    ("onsets", "Onsets only (react to hits, no pulse)"),
+)
+
 # Selected colour palette name. The album-art choice needs a real value: an empty string
 # flattens the translation key to "...palette.options." and the frontend cannot select it.
 # Older configs stored "" for the same choice, so both still resolve to album colours.

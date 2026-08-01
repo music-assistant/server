@@ -38,6 +38,7 @@ from .constants import (
     CONF_PALETTE_ROTATE,
     CONF_PALETTE_ROTATE_BEATS,
     CONF_PALETTE_ROTATE_LIST,
+    CONF_NO_BEAT,
     CONF_PALETTE_ROTATE_SMOOTH,
     CONF_PERLIGHT_BRIGHTNESS_DATA,
     CONF_PULSE_DECAY,
@@ -69,6 +70,7 @@ from .constants import (
     DEFAULT_PULSE_DECAY,
     DEFAULT_PULSE_DOWNBEAT,
     DEFAULT_PULSE_FLOOR,
+    DEFAULT_NO_BEAT,
     DEFAULT_PULSE_SELECT,
     DEFAULT_STROBE_AUTO,
     DEFAULT_STROBE_BEAT_SYNC,
@@ -83,6 +85,7 @@ from .constants import (
     DEFAULT_STROBE_RELEASE_MS,
     DEFAULT_STROBE_SENSITIVITY,
     PALETTE_ALBUM_COLORS,
+    NO_BEAT_OPTIONS,
     PULSE_SELECT_OPTIONS,
     STROBE_COLOR_OPTIONS,
 )
@@ -247,6 +250,14 @@ class HueEntertainmentProvider(PluginProvider):
                 immediate_apply=True,
                 category="settings",
                 advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_NO_BEAT,
+                type=ConfigEntryType.STRING,
+                default_value=DEFAULT_NO_BEAT,
+                options=[ConfigValueOption(value) for value, _ in NO_BEAT_OPTIONS],
+                immediate_apply=True,
+                category="settings",
             ),
             # ---- Pulse / Club fire engine ----
             # These four values drive BOTH the Pulse and Club base modes, so they cannot
@@ -789,6 +800,7 @@ class HueEntertainmentProvider(PluginProvider):
                 CONF_PULSE_DECAY,
                 CONF_PULSE_SELECT,
                 CONF_PULSE_DOWNBEAT,
+                CONF_NO_BEAT,
             )
         }
         if self._bridge_manager and (changed_keys & live_keys):
@@ -804,6 +816,7 @@ class HueEntertainmentProvider(PluginProvider):
                 palette=str(config.get_value(CONF_PALETTE) or ""),
                 per_light_data=str(config.get_value(CONF_PERLIGHT_BRIGHTNESS_DATA) or ""),
                 pulse=PulseSettings.from_config(config),
+                no_beat=str(config.get_value(CONF_NO_BEAT) or DEFAULT_NO_BEAT),
             )
 
         # Palette rotation feeds set_rotation (not update_settings), so re-push it on

@@ -45,12 +45,14 @@ from .constants import (
     CONF_PALETTE_ROTATE,
     CONF_PALETTE_ROTATE_BEATS,
     CONF_PALETTE_ROTATE_LIST,
+    CONF_NO_BEAT,
     CONF_PALETTE_ROTATE_SMOOTH,
     CONF_PERLIGHT_BRIGHTNESS_DATA,
     CONF_STROBE_LIGHTS,
     CONF_USERNAME,
     DEFAULT_COLOR_BOOST,
     DEFAULT_HUE_LATENCY_MS,
+    DEFAULT_NO_BEAT,
     DEFAULT_PALETTE_ROTATE_BEATS,
     DEFAULT_PALETTE_ROTATE_SMOOTH,
     SPECTRUM_BINS,
@@ -158,6 +160,7 @@ class HueEntertainmentBridge:
             palette=str(cfg.get_value(CONF_PALETTE) or ""),
             per_light=self._per_light_for_area(cfg.get_value(CONF_PERLIGHT_BRIGHTNESS_DATA)),
             pulse=PulseSettings.from_config(cfg),
+            no_beat=str(cfg.get_value(CONF_NO_BEAT) or DEFAULT_NO_BEAT),
         )
         rotate_smooth = cfg.get_value(CONF_PALETTE_ROTATE_SMOOTH)
         self._analyzer.set_rotation(
@@ -274,6 +277,7 @@ class HueEntertainmentBridge:
         palette: str | None = None,
         per_light_data: object = None,
         pulse: PulseSettings | None = None,
+        no_beat: str | None = None,
     ) -> None:
         """Update analyzer/bridge settings without restarting the bridge."""
         if self._analyzer:
@@ -295,6 +299,7 @@ class HueEntertainmentBridge:
                 palette=palette,
                 per_light=per_light,
                 pulse=pulse,
+                no_beat=no_beat,
             )
         if hue_latency_ms is not None:
             self._hue_latency_us = hue_latency_ms * 1000
@@ -630,19 +635,16 @@ class HueEntertainmentBridgeManager:
             self._bridges[area.id] = bridge
             self.logger.info("Bridge created for Hue area '%s'", area.name)
 
-    def update_settings(
-        self,
-        color_mode: str | None = None,
-        brightness: int | None = None,
-        hue_latency_ms: int | None = None,
-    ) -> None:
-        """Update settings on all bridges."""
+    def update_settings(self, **kwargs) -> None:
+        """
+        Update settings on all bridges.
+
+        Forwards every keyword straight through: the previous explicit
+        signature silently lagged behind the bridge's and raised on live
+        updates of the newer settings (palette, strobe, pulse).
+        """
         for bridge in self._bridges.values():
-            bridge.update_settings(
-                color_mode=color_mode,
-                brightness=brightness,
-                hue_latency_ms=hue_latency_ms,
-            )
+            bridge.update_settings(**kwargs)
 
     async def stop_all(self) -> None:
         """Stop all bridges."""
