@@ -230,7 +230,8 @@ class MusicTimelineQuizType(QuizType):
                 enriched = await self.mass.music.tracks.get(track.item_id, track.provider)
             except Exception as err:
                 LOGGER.debug("Could not enrich Music Quiz track %s: %s", track.uri, err)
-                return None
+                # a failed lookup is no reason to drop a track that already carries a year
+                return track if self._track_is_eligible(track) else None
             # the track controller can fail to resolve an album mapping, so accept the
             # best release year the enriched track offers rather than requiring an album
             return enriched if self._track_is_eligible(enriched) else None

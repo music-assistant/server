@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import AlbumType, ExternalID, MediaType
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -531,6 +531,30 @@ async def test_enrichment_keeps_tracks_revealed_as_original_releases(
     eligible_tracks = {track.item_id: track for track in quiz._eligible_tracks}
     assert set(eligible_tracks) == {"mapped", "resolved-0", "resolved-1"}
     assert MusicTimelineQuizType._release_year(eligible_tracks["mapped"]) == 1971
+
+
+@pytest.mark.asyncio
+async def test_album_mappings_stay_eligible_when_enrichment_fails() -> None:
+    """Trust an album mapping year when its resolution raises."""
+    mapped = [
+        _track(
+            f"mapped-{index}",
+            f"Mapped {index}",
+            f"Artist {index}",
+            album_year=1990 + index,
+            album_mapping=True,
+        )
+        for index in range(12)
+    ]
+    round_count = 3
+    target_count = round_count + 1 + PLAYBACK_REPLACEMENT_RESERVE
+    quiz, mass = _quiz(mapped, round_count=round_count)
+    mass.music.tracks.get.side_effect = MediaNotFoundError("provider unavailable")
+
+    await quiz.initialize()
+
+    assert quiz._eligible_tracks is not None
+    assert len(quiz._eligible_tracks) == target_count
 
 
 @pytest.mark.asyncio
