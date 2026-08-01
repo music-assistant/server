@@ -448,6 +448,37 @@ async def test_external_step_callback_roundtrip(flow_mass: MusicAssistant) -> No
     await _wait_for(lambda: callback_path not in registered_routes)
 
 
+async def test_external_step_replaced_by_progress_on_callback(flow_mass: MusicAssistant) -> None:
+    """The external step gives way to a progress step while the callback is processed."""
+    release = asyncio.Event()
+
+    async def run_setup(session: SetupSession) -> None:
+        await session.external("https://example.com/authorize")
+        await release.wait()
+        await session.finish({})
+
+    with (
+        _use_flow(flow_mass, run_setup),
+        patch.object(flow_mass, "load_provider_config", AsyncMock()),
+    ):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        session = flow_mass.config._setup_flows[step.flow_id].session
+        callback_path = f"/setup_flow/callback/{step.flow_id}"
+        handler = cast("Any", flow_mass.webserver).routes[callback_path]
+        await handler(make_mocked_request("GET", f"{callback_path}?code=abc"))
+        progress_step = await _wait_for(
+            lambda: (
+                session.current_step
+                if session.current_step is not None
+                and session.current_step.type == FlowStepType.PROGRESS
+                else None
+            )
+        )
+        assert progress_step.step_id == "working"
+        release.set()
+        await _wait_for(lambda: session.finished)
+
+
 async def test_external_callback_json_body_coerced(flow_mass: MusicAssistant) -> None:
     """A JSON callback body with non-string values is coerced to the str params contract."""
     received: dict[str, str] = {}
