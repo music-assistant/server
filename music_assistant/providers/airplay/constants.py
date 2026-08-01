@@ -63,19 +63,12 @@ DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 # RAOP because its pre-fill is paced.
 AIRPLAY_RAOP_SETUP_LEAD_MS: Final[int] = 1500
 AIRPLAY_AP2_SETUP_LEAD_MS: Final[int] = 2500
-# Late joiners anchor a deliberately low headroom ahead — a first guess, not
-# a worst-case bound. A join START makes the binary verify receiver clock
-# readiness from its PTP probe streak and correct an early anchor forward to
-# exact readiness, advancing the joiner's queued content by the same amount
-# ([STATUS] anchor_corrected): the cut frames are audio the group already
-# played, so the correction is inaudible and the join lands as soon as the
-# receiver can render (~2.7-3.8 s after the START ack on a cold clock,
-# measured on Sonos Era 100 and Apple TV 4K). The floor only keeps the
-# correction window open: it must clear the binary's verification arm window
-# (AP2_CLOCK_VERIFY_MIN_WINDOW_MS = 600 ms pacing depth + 500 ms poll round
-# and slack, cliairplay src/ap2_client.c) plus one further 250 ms poll round
-# and the START command latency; a member's sync_adjust shifts its commanded
-# anchor within the same budget.
+# Late joiners anchor a low first guess, not a worst-case bound: a join START
+# makes the binary verify receiver clock readiness and correct the anchor
+# forward to it, advancing the queued content by the same (inaudible) amount.
+# The floor only keeps that correction window open: it must clear the binary's
+# verification arm window (AP2_CLOCK_VERIFY_MIN_WINDOW_MS, 1100 ms) plus a
+# poll round and the START command latency.
 AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 1500
 # Anchor lead for a readiness-confirmed START (cold and warm alike): the
 # session only anchors after the binary confirmed the connection ([STATUS]
