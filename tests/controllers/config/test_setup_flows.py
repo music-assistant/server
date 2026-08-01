@@ -479,6 +479,29 @@ async def test_external_step_replaced_by_progress_on_callback(flow_mass: MusicAs
         await _wait_for(lambda: session.finished)
 
 
+async def test_external_expiry_aborts_flow(
+    flow_mass: MusicAssistant, flow_events: list[MassEvent]
+) -> None:
+    """An external step whose callback never arrives times out and releases its route."""
+
+    async def run_setup(session: SetupSession) -> None:
+        await session.external("https://example.com/authorize", expires_in=0.05)
+        await session.finish({})
+
+    with _use_flow(flow_mass, run_setup):
+        step = await flow_mass.config.setup_provider(FAKE_DOMAIN)
+        assert step.expires_at is not None
+        abort_step = await _wait_for(
+            lambda: next(iter(_abort_events(flow_events)), None), timeout=2
+        )
+    assert abort_step.reason == "timed_out"
+    assert step.flow_id not in flow_mass.config._setup_flows
+    # the expired step is not followed by a progress step: nothing was completed
+    assert not [event.data for event in flow_events if event.data.type == FlowStepType.PROGRESS]
+    registered_routes = cast("Any", flow_mass.webserver).routes
+    assert f"/setup_flow/callback/{step.flow_id}" not in registered_routes
+
+
 async def test_external_callback_json_body_coerced(flow_mass: MusicAssistant) -> None:
     """A JSON callback body with non-string values is coerced to the str params contract."""
     received: dict[str, str] = {}
