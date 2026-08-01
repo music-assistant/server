@@ -936,7 +936,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # backwards compatibility - to remove when 2.0 stable is released
             provider_instance_id_or_domain = "library"
         provider = self.mass.get_provider(provider_instance_id_or_domain)
-        if media_type in (MediaType.TRACK, MediaType.RADIO, MediaType.SOUND_EFFECT) and (
+        if media_type in (
+            MediaType.TRACK,
+            MediaType.RADIO,
+            MediaType.SOUND_EFFECT,
+            MediaType.UNKNOWN,  # e.g. plain (HA) URLs, see helpers/uri.py
+        ) and (
             provider_instance_id_or_domain == "builtin"
             or (provider and getattr(provider, "domain", None) == "builtin")
         ):
