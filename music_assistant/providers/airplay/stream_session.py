@@ -907,7 +907,10 @@ class AirPlayStreamSession:
 
     async def _wait_members_clock_ready(self) -> int:
         """
-        Return the latest instant at which every member's receiver clock is usable.
+        Return the latest receiver-clock readiness any member reported.
+
+        Members that report nothing are not represented in the result; the
+        caller anchors those on its lead alone.
 
         :return: Unix epoch ms of the latest projection any member reported, or 0
             when there is nothing to wait for — a solo start, a receiver on NTP

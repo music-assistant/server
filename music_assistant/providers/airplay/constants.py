@@ -66,24 +66,25 @@ DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 # arrives - the joiner then seats on a cold clock and lands audibly behind.
 # 2500 ms clears that by ~570 ms, the margin the field-proven value carried.
 AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 2500
-# How long a join waits for the binary's first receiver-clock projection
-# ([STATUS] clock_ready with state=probing|ready). The binary emits its first
-# line right after [STATUS] connected and refreshes it about every 250 ms, and
-# the projection exists from the receiver's first probe (~1078 ms after connect
-# on a cold device), so this only has to cover a slower device before giving up
-# and anchoring on the floor above. Independent of the binary's own stall
-# report (state=stalled), which is a slower, higher-confidence diagnosis of a
-# receiver that never answers at all: a join that times out here has simply run
-# out of planning time and falls back, while a stall says the speaker will not
-# play. Keep them apart - tightening the stall report to meet this deadline
-# would trade the margin that keeps it free of false alarms.
+# How long a group start, a join or the Sendspin bridge waits for the binary's
+# first receiver-clock projection ([STATUS] clock_ready with state=probing|
+# ready). The binary emits its first line right after [STATUS] connected and
+# refreshes it about every 250 ms, and the projection exists from the receiver's
+# first probe (~1078 ms after connect on a cold device), so this only has to
+# cover a slower device before giving up and anchoring on the lead alone.
+# Independent of the binary's own stall report (state=stalled), which is a
+# slower, higher-confidence diagnosis of a receiver that never answers at all: a
+# wait that times out here has simply run out of planning time and falls back,
+# while a stall says the speaker will not play. Keep them apart - tightening the
+# stall report to meet this deadline would trade the margin that keeps it free
+# of false alarms.
 AIRPLAY_CLOCK_READY_TIMEOUT_MS: Final[int] = 2500
-# Lead added on top of a reported readiness instant when anchoring a join. The
-# binary refuses to place an anchor inside its own 250 ms floor, measured from
-# when IT reads the START command rather than when the server sends it (the same
-# trap as AIRPLAY_START_LEAD_MS, see PR #5208), so the lead carries that floor
-# plus 250 ms for the command reaching the binary and for the convergence error
-# of a projection made from the receiver's very first probe.
+# Lead added on top of a reported readiness instant, wherever one is waited for.
+# The binary refuses to place an anchor inside its own 250 ms floor, measured
+# from when IT reads the START command rather than when the server sends it (the
+# same trap as AIRPLAY_START_LEAD_MS), so the lead carries that floor plus 250 ms
+# for the command reaching the binary and for the convergence error of a
+# projection made from the receiver's very first probe.
 AIRPLAY_CLOCK_READY_LEAD_MS: Final[int] = 500
 # How long a join START waits for the binary's [STATUS] started ack. That ack is
 # held back until the clock verification above resolves, so the window must
