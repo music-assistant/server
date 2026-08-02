@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Coroutine
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.errors import MusicAssistantError, PlayerCommandFailed
@@ -147,9 +147,19 @@ class AirPlayStreamSession:
         try:
             async with asyncio.TaskGroup() as task_group:
                 for player in self.sync_clients:
-                    task_group.create_task(self._start_client(player, self.use_shared_ptp))
+                    task_group.create_task(
+                        self._member_start_step(
+                            player, "spawn its cli", self._start_client(player, self.use_shared_ptp)
+                        )
+                    )
             await asyncio.gather(
-                *[p.stream.wait_for_connection() for p in self.sync_clients if p.stream]
+                *[
+                    self._member_start_step(
+                        player, "connect to its device", player.stream.wait_for_connection()
+                    )
+                    for player in self.sync_clients
+                    if player.stream
+                ]
             )
             # The binary buffers stdin into its ring from process start; feed
             # audio first and wait for every member to confirm it flowing, then
@@ -172,7 +182,15 @@ class AirPlayStreamSession:
             await self.stop()
             raise
         except Exception as err:
-            # playback failed to start, cleanup
+            # playback failed to start, cleanup. This runs for every failure. A
+            # per-member one has already been named where it happened, so here
+            # the line says the whole session went down with it; for a failure
+            # no single member owns, it is the only line there is.
+            self.prov.logger.warning(
+                "AirPlay start failed for a session of %d member(s): %s",
+                len(self.sync_clients),
+                err,
+            )
             await self.stop()
             # A member can fail for a specific, user-actionable reason (a device
             # that needs its password configured, for example). That error must
@@ -817,6 +835,34 @@ class AirPlayStreamSession:
             if airplay_player.stream:
                 await airplay_player.stream.write_audio_eof()
 
+    async def _member_start_step(
+        self, airplay_player: AirPlayPlayer, step: str, awaitable: Coroutine[Any, Any, None]
+    ) -> None:
+        """
+        Run one per-member step of a group start, naming the member if it fails.
+
+        A group start fans its members out over a task group and a gather, both
+        of which collapse into a single exception at the caller - so with five
+        speakers connecting, nothing in the log says which one failed. That,
+        with whatever reason its binary reported, is the whole diagnostic.
+
+        :param airplay_player: The member the step belongs to.
+        :param step: What the member was doing, for the failure message.
+        :param awaitable: The step to run.
+        """
+        try:
+            await awaitable
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            self.prov.logger.warning(
+                "AirPlay group start: %s failed to %s: %s",
+                airplay_player.display_name,
+                step,
+                err,
+            )
+            raise
+
     async def _start_client(self, airplay_player: AirPlayPlayer, use_shared_ptp: bool) -> None:
         """
         Connect a CLI process and start its ffmpeg for a single client.
@@ -899,11 +945,18 @@ class AirPlayStreamSession:
 
     async def _wait_members_audio_present(self) -> None:
         """Wait until every member's binary reports the new audio flowing."""
-        results = await asyncio.gather(
-            *[p.stream.wait_audio_present() for p in self.sync_clients if p.stream]
-        )
-        if not all(results):
-            raise PlayerCommandFailed("audio feed was not confirmed")
+        members = [(p, p.stream) for p in self.sync_clients if p.stream]
+        results = await asyncio.gather(*[stream.wait_audio_present() for _, stream in members])
+        if all(results):
+            return
+        # Name the members that never reported audio: they are what has to be
+        # looked at, and the group start below is abandoned for all of them.
+        silent = [
+            player.display_name
+            for (player, _), present in zip(members, results, strict=True)
+            if not present
+        ]
+        raise PlayerCommandFailed(f"audio feed was not confirmed by {', '.join(silent)}")
 
     async def _wait_members_clock_ready(self) -> int:
         """
