@@ -216,10 +216,9 @@ class MSXPlayer(Player):
         if self._attr_playback_state != PlaybackState.PLAYING:
             return
         normalized = max(0.0, float(position))
-        current_media = self._attr_current_media
-        duration = getattr(current_media, "duration", None) if current_media is not None else None
-        if isinstance(duration, (int, float)) and duration > 0:
-            normalized = min(normalized, float(duration))
+        duration = self._served_duration()
+        if duration is not None:
+            normalized = min(normalized, duration)
         self._attr_elapsed_time = normalized
         # elapsed_time_last_updated is compared against time.time() by MA core
         # (corrected_elapsed_time) — must stay wall-clock. The WS staleness
@@ -256,12 +255,9 @@ class MSXPlayer(Player):
             now = time.time()
             delta = now - self._attr_elapsed_time_last_updated
             new_elapsed = max(0.0, float(self._attr_elapsed_time) + float(delta))
-            current_media = self._attr_current_media
-            duration = (
-                getattr(current_media, "duration", None) if current_media is not None else None
-            )
-            if isinstance(duration, (int, float)) and duration > 0:
-                new_elapsed = min(new_elapsed, float(duration))
+            duration = self._served_duration()
+            if duration is not None:
+                new_elapsed = min(new_elapsed, duration)
             self._attr_elapsed_time = new_elapsed
             self._attr_elapsed_time_last_updated = now
             self.update_state()
@@ -353,6 +349,20 @@ class MSXPlayer(Player):
         provider.notify_play_playlist(self.player_id, start_index, queue_id=source_id)
         self._playing_from_queue = True
 
+    def _served_duration(self) -> float | None:
+        """
+        Return the length in seconds of the audio served to the TV, if known.
+
+        The TV reports its position within that audio, which is shorter than the
+        media item itself when playback starts at a seek position.
+        """
+        if (media := self._attr_current_media) is None:
+            return None
+        duration = media.stream_duration or media.duration
+        if not isinstance(duration, (int, float)) or duration <= 0:
+            return None
+        return float(duration)
+
     def _resolve_media_metadata(
         self, media: PlayerMedia
     ) -> tuple[str | None, str | None, str | None, int | None]:
@@ -360,7 +370,7 @@ class MSXPlayer(Player):
         title = media.title
         artist = media.artist
         image_url = media.image_url
-        duration = media.duration
+        duration = media.stream_duration or media.duration
         if media.source_id and media.queue_item_id:
             queue_item = self.mass.player_queues.get_item(media.source_id, media.queue_item_id)
             if queue_item:

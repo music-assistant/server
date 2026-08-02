@@ -9,7 +9,10 @@ from typing import TYPE_CHECKING, TypedDict, cast
 from music_assistant_models.enums import IdentifierType
 from music_assistant_models.errors import InvalidDataError, LoginFailed
 
-from music_assistant.providers.hass.constants import MediaPlayerEntityFeature
+from music_assistant.providers.hass.constants import (
+    MediaPlayerEntityFeature,
+    parse_supported_features,
+)
 
 from .constants import BLOCKLISTED_HASS_INTEGRATIONS, DOMAIN
 
@@ -40,7 +43,11 @@ async def get_hass_media_players(
         if "friendly_name" not in state["attributes"]:
             # filter out invalid/unavailable players
             continue
-        supported_features = MediaPlayerEntityFeature(state["attributes"]["supported_features"])
+        supported_features = parse_supported_features(
+            state["attributes"].get("supported_features"),
+            state["entity_id"],
+            hass_prov.logger,
+        )
         if MediaPlayerEntityFeature.PLAY_MEDIA not in supported_features:
             continue
         entity_registry_entry = entity_registry.get(state["entity_id"])

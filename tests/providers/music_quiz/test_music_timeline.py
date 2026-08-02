@@ -4,22 +4,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.enums import AlbumType, ExternalID, MediaType
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
+    Artist,
     ItemMapping,
     ProviderMapping,
     Track,
 )
 from music_assistant_models.unique_list import UniqueList
 
+from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.controllers.music.recency import RecencySnapshot
 from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.music_quiz.ai_distractors import AI_QUERY_TIMEOUT_SECONDS
@@ -44,6 +47,9 @@ from music_assistant.providers.music_quiz.suggestions import (
     answer_labels_are_too_close,
 )
 
+# album types whose year describes a reissue rather than an original release
+UNTRUSTED_ALBUM_TYPES = frozenset({AlbumType.COMPILATION, AlbumType.LIVE, AlbumType.SOUNDTRACK})
+
 
 def _track(
     item_id: str,
@@ -54,9 +60,21 @@ def _track(
     release_year: int | None = None,
     available: bool = True,
     is_playable: bool = True,
+    album_mapping: bool = False,
 ) -> Track:
-    """Return a track with configurable album and metadata years."""
+    """Return a track with a resolved or unresolved album and configurable years."""
     provider = "prov"
+    album: Album | ItemMapping = (
+        ItemMapping(
+            media_type=MediaType.ALBUM,
+            item_id=f"album-{item_id}",
+            provider=provider,
+            name=f"Album {item_id}",
+            year=album_year,
+        )
+        if album_mapping
+        else _full_album(f"album-{item_id}", f"Album {item_id}", year=album_year)
+    )
     track = Track(
         item_id=item_id,
         provider=provider,
@@ -73,13 +91,7 @@ def _track(
                 )
             ]
         ),
-        album=ItemMapping(
-            media_type=MediaType.ALBUM,
-            item_id=f"album-{item_id}",
-            provider=provider,
-            name=f"Album {item_id}",
-            year=album_year,
-        ),
+        album=album,
         provider_mappings={
             ProviderMapping(
                 item_id=item_id,
@@ -92,6 +104,50 @@ def _track(
     if release_year is not None:
         track.metadata.release_date = datetime(release_year, 1, 1, tzinfo=UTC)
     return track
+
+
+def _full_album(
+    item_id: str,
+    name: str,
+    *,
+    album_type: AlbumType = AlbumType.ALBUM,
+    artists: Sequence[Artist | ItemMapping] = (),
+    year: int | None = None,
+    provider: str = "prov",
+) -> Album:
+    """Return a full album with configurable compilation evidence."""
+    return Album(
+        item_id=item_id,
+        provider=provider,
+        name=name,
+        album_type=album_type,
+        artists=UniqueList(artists),
+        year=year,
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=provider,
+                provider_instance=provider,
+            )
+        },
+    )
+
+
+def _album_artist(
+    item_id: str,
+    name: str,
+    *,
+    mbid: str | None = None,
+    provider: str = "prov",
+) -> Artist:
+    """Return a full album artist with optional MusicBrainz identity."""
+    return Artist(
+        item_id=item_id,
+        provider=provider,
+        name=name,
+        external_ids={(ExternalID.MB_ARTIST, mbid)} if mbid else set(),
+        provider_mappings=set(),
+    )
 
 
 def _artist(item_id: str, name: str) -> ItemMapping:
@@ -336,12 +392,198 @@ async def test_track_enrichment_stops_after_game_requirement_and_reserve() -> No
     await quiz.initialize()
 
     assert mass.music.tracks.get.await_count == expected_enrichments
-    assert [await_call.args[0] for await_call in mass.music.tracks.get.await_args_list] == [
-        track.item_id for track in partial[:expected_enrichments]
-    ]
+    enriched_ids = [await_call.args[0] for await_call in mass.music.tracks.get.await_args_list]
+    assert len(set(enriched_ids)) == expected_enrichments
+    assert set(enriched_ids) <= {track.item_id for track in partial}
     assert quiz._eligible_tracks is not None
     assert len(quiz._eligible_tracks) == target_count
     assert quiz._eligible_tracks[: len(ready)] == ready
+
+
+@pytest.mark.asyncio
+async def test_bounded_enrichment_samples_across_the_whole_source_pool() -> None:
+    """Draw the bounded enrichment sample from anywhere in the source pool."""
+    partial = [
+        _track(f"partial-{index}", f"Partial {index}", f"Artist {index}") for index in range(20)
+    ]
+    enriched = {
+        track.item_id: _track(
+            track.item_id,
+            track.name,
+            track.artist_str,
+            album_year=2000 + index,
+        )
+        for index, track in enumerate(partial)
+    }
+    round_count = 3
+    target_count = round_count + 1 + PLAYBACK_REPLACEMENT_RESERVE
+    quiz, mass = _quiz(partial, round_count=round_count)
+    mass.music.tracks.get.side_effect = lambda item_id, _provider: enriched[item_id]
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.music_timeline.SYSTEM_RANDOM.shuffle",
+        side_effect=list.reverse,
+    ) as shuffle:
+        await quiz.initialize()
+
+    shuffle.assert_called_once()
+    enriched_ids = [await_call.args[0] for await_call in mass.music.tracks.get.await_args_list]
+    assert enriched_ids == [track.item_id for track in reversed(partial[-target_count:])]
+    assert quiz._eligible_tracks is not None
+    assert len(quiz._eligible_tracks) == target_count
+
+
+def test_only_unresolved_album_mapping_years_require_enrichment() -> None:
+    """Require album resolution only for a year that can come from an album mapping."""
+    resolved = _track("resolved", "Resolved", "Artist", album_year=1998)
+    mapped = _track("mapped", "Mapped", "Artist", album_year=1998, album_mapping=True)
+    mapped_with_track_year = _track(
+        "own-year",
+        "Own Year",
+        "Artist",
+        album_year=1998,
+        release_year=1962,
+        album_mapping=True,
+    )
+    mapped_without_album_year = _track(
+        "undated-album",
+        "Undated Album",
+        "Artist",
+        release_year=1975,
+        album_mapping=True,
+    )
+    undated = _track("undated", "Undated", "Artist")
+
+    assert MusicTimelineQuizType._track_is_resolved(resolved) is True
+    assert MusicTimelineQuizType._track_is_resolved(mapped) is False
+    assert MusicTimelineQuizType._track_is_resolved(mapped_with_track_year) is True
+    assert MusicTimelineQuizType._track_is_resolved(mapped_without_album_year) is True
+    assert MusicTimelineQuizType._track_is_resolved(undated) is False
+
+
+@pytest.mark.asyncio
+async def test_album_mapping_years_are_enriched_before_they_are_trusted() -> None:
+    """Resolve an album mapping before accepting the release year it reports."""
+    mapped = _track("mapped", "Mapped Track", "Artist", album_year=1998, album_mapping=True)
+    enriched = _track("mapped", "Mapped Track", "Artist")
+    enriched.album = _full_album("album-mapped", "Real Album", year=1998)
+    resolved = _track("resolved", "Resolved Track", "Other Artist", album_year=2007)
+    quiz, mass = _quiz([mapped, resolved])
+    mass.music.tracks.get.return_value = enriched
+
+    await quiz.initialize()
+
+    enriched_ids = [await_call.args[0] for await_call in mass.music.tracks.get.await_args_list]
+    assert enriched_ids == [mapped.item_id]
+    assert quiz._eligible_tracks is not None
+    assert {track.item_id for track in quiz._eligible_tracks} == {"mapped", "resolved"}
+
+
+@pytest.mark.asyncio
+async def test_enrichment_excludes_tracks_revealed_as_compilations() -> None:
+    """Drop a track once enrichment reveals its album is a compilation."""
+    mapped = _track("mapped", "Mapped Track", "Artist", album_year=1998, album_mapping=True)
+    enriched = _track("mapped", "Mapped Track", "Artist")
+    enriched.album = _full_album(
+        "album-mapped",
+        "Party Hits",
+        album_type=AlbumType.COMPILATION,
+        year=1998,
+    )
+    resolved = [
+        _track(f"resolved-{index}", f"Resolved {index}", "Artist", album_year=1990 + index)
+        for index in range(2)
+    ]
+    quiz, mass = _quiz([mapped, *resolved])
+    mass.music.tracks.get.return_value = enriched
+
+    await quiz.initialize()
+
+    mass.music.tracks.get.assert_awaited_once_with(mapped.item_id, mapped.provider)
+    assert quiz._eligible_tracks is not None
+    assert {track.item_id for track in quiz._eligible_tracks} == {"resolved-0", "resolved-1"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("album_type", [AlbumType.ALBUM, AlbumType.SINGLE])
+async def test_enrichment_keeps_tracks_revealed_as_original_releases(
+    album_type: AlbumType,
+) -> None:
+    """Keep the resolved year of a track whose album dates an original release."""
+    mapped = _track("mapped", "Mapped Track", "Artist", album_year=1998, album_mapping=True)
+    enriched = _track("mapped", "Mapped Track", "Artist")
+    enriched.album = _full_album(
+        "album-mapped",
+        "Real Album",
+        album_type=album_type,
+        year=1971,
+    )
+    resolved = [
+        _track(f"resolved-{index}", f"Resolved {index}", "Artist", album_year=1990 + index)
+        for index in range(2)
+    ]
+    quiz, mass = _quiz([mapped, *resolved])
+    mass.music.tracks.get.return_value = enriched
+
+    await quiz.initialize()
+
+    assert quiz._eligible_tracks is not None
+    eligible_tracks = {track.item_id: track for track in quiz._eligible_tracks}
+    assert set(eligible_tracks) == {"mapped", "resolved-0", "resolved-1"}
+    assert MusicTimelineQuizType._release_year(eligible_tracks["mapped"]) == 1971
+
+
+@pytest.mark.asyncio
+async def test_album_mappings_stay_eligible_when_enrichment_fails() -> None:
+    """Trust an album mapping year when its resolution raises."""
+    mapped = [
+        _track(
+            f"mapped-{index}",
+            f"Mapped {index}",
+            f"Artist {index}",
+            album_year=1990 + index,
+            album_mapping=True,
+        )
+        for index in range(12)
+    ]
+    round_count = 3
+    target_count = round_count + 1 + PLAYBACK_REPLACEMENT_RESERVE
+    quiz, mass = _quiz(mapped, round_count=round_count)
+    mass.music.tracks.get.side_effect = MediaNotFoundError("provider unavailable")
+
+    await quiz.initialize()
+
+    assert quiz._eligible_tracks is not None
+    assert len(quiz._eligible_tracks) == target_count
+
+
+@pytest.mark.asyncio
+async def test_album_mappings_stay_eligible_when_enrichment_cannot_resolve_them() -> None:
+    """Trust an album mapping year once its resolution has been attempted."""
+    mapped = [
+        _track(
+            f"mapped-{index}",
+            f"Mapped {index}",
+            f"Artist {index}",
+            album_year=1990 + index,
+            album_mapping=True,
+        )
+        for index in range(12)
+    ]
+    round_count = 3
+    target_count = round_count + 1 + PLAYBACK_REPLACEMENT_RESERVE
+    tracks_by_id = {track.item_id: track for track in mapped}
+    quiz, mass = _quiz(mapped, round_count=round_count)
+    mass.music.tracks.get.side_effect = lambda item_id, _provider: tracks_by_id[item_id]
+
+    await quiz.initialize()
+
+    assert mass.music.tracks.get.await_count == target_count
+    assert quiz._eligible_tracks is not None
+    assert len(quiz._eligible_tracks) == target_count
+    assert [MusicTimelineQuizType._release_year(track) for track in quiz._eligible_tracks] == [
+        1990 + int(track.item_id.removeprefix("mapped-")) for track in quiz._eligible_tracks
+    ]
 
 
 @pytest.mark.asyncio
@@ -479,6 +721,99 @@ def test_release_year_uses_earliest_valid_track_or_album_year() -> None:
     assert MusicTimelineQuizType._release_year(future_album) == 2004
     assert MusicTimelineQuizType._release_year(too_old_track) == 2006
     assert MusicTimelineQuizType._release_year(invalid) is None
+
+
+@pytest.mark.parametrize("album_type", list(AlbumType), ids=lambda value: value.value)
+def test_release_year_trusts_only_original_release_album_types(album_type: AlbumType) -> None:
+    """Accept album years only from album types that date an original release."""
+    track = _track("typed", "Typed Track", "Artist")
+    track.album = _full_album("album", "Typed Album", album_type=album_type, year=1998)
+    expected_year = None if album_type in UNTRUSTED_ALBUM_TYPES else 1998
+
+    assert MusicTimelineQuizType._release_year(track) == expected_year
+
+
+@pytest.mark.parametrize(
+    "album_artists",
+    [
+        [_album_artist("va-mbid", "Artistes divers", mbid=VARIOUS_ARTISTS_MBID)],
+        [_album_artist("va-name", VARIOUS_ARTISTS_NAME)],
+        [
+            _album_artist("primary", "Primary Artist"),
+            _album_artist("va-multiple", "VARIOUS-ARTISTS"),
+        ],
+    ],
+    ids=["canonical-mbid", "canonical-name", "multiple-artists"],
+)
+def test_release_year_rejects_various_artists_album_credits(
+    album_artists: list[Artist],
+) -> None:
+    """Reject the album year of a various-artists set typed as a regular album."""
+    track = _track("various", "Various Track", "Artist")
+    track.album = _full_album(
+        "album",
+        "Various Album",
+        album_type=AlbumType.ALBUM,
+        artists=album_artists,
+        year=1998,
+    )
+
+    assert MusicTimelineQuizType._release_year(track) is None
+
+
+def test_release_year_trusts_an_album_mapping_without_compilation_evidence() -> None:
+    """Accept the album year of a mapping that carries no album type or artists."""
+    track = _track("mapping", "Mapped Track", "Artist", album_year=1998)
+    track.album = ItemMapping(
+        media_type=MediaType.ALBUM,
+        item_id="album-mapping",
+        provider="prov",
+        name=VARIOUS_ARTISTS_NAME,
+        year=1998,
+    )
+
+    assert MusicTimelineQuizType._release_year(track) == 1998
+
+
+def test_release_year_of_a_compilation_falls_back_to_the_track_year() -> None:
+    """Read the track year when a compilation album supplies the only other year."""
+    track = _track("compilation", "Compilation Track", "Artist", release_year=1962)
+    track.album = _full_album(
+        "album",
+        "Greatest Hits",
+        album_type=AlbumType.COMPILATION,
+        year=1998,
+    )
+
+    assert MusicTimelineQuizType._release_year(track) == 1962
+
+
+@pytest.mark.asyncio
+async def test_compilation_tracks_are_excluded_from_the_eligible_pool() -> None:
+    """Build the timeline pool from original releases only."""
+    dated = [
+        _track(f"dated-{index}", f"Dated {index}", "Artist", album_year=1990 + index)
+        for index in range(2)
+    ]
+    compilations = [
+        _track(f"compilation-{index}", f"Compilation {index}", "Artist") for index in range(2)
+    ]
+    for index, track in enumerate(compilations):
+        track.album = _full_album(
+            f"album-{index}",
+            f"Party Hits {index}",
+            album_type=AlbumType.COMPILATION,
+            year=2005 + index,
+        )
+    tracks = [*dated, *compilations]
+    quiz, mass = _quiz(tracks, round_count=1)
+    tracks_by_id = {track.item_id: track for track in tracks}
+    mass.music.tracks.get.side_effect = lambda item_id, _provider: tracks_by_id[item_id]
+
+    await quiz.initialize()
+
+    assert quiz._eligible_tracks is not None
+    assert [track.uri for track in quiz._eligible_tracks] == [track.uri for track in dated]
 
 
 def test_reject_track_removes_it_from_music_timeline_caches() -> None:
@@ -894,6 +1229,97 @@ async def test_title_bonus_uses_unrelated_source_only_when_grounded_pool_is_spar
     mass.music.artists.top_tracks.assert_awaited_once()
     mass.music.search.assert_awaited_once()
     mass.music.artists.tracks.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_title_bonus_uses_same_artist_source_tracks_outside_playback_set() -> None:
+    """Ground same-artist titles in the complete source pool without extra lookups."""
+    current = _track("current", "Genesis", "Justice", album_year=2007)
+    undated_same_artist = [
+        _track("one", "D.A.N.C.E.", "Justice"),
+        _track("two", "Phantom", "Justice"),
+        _track("three", "Audio, Video, Disco", "Justice"),
+    ]
+    unrelated = _track("unrelated", "Teardrop", "Massive Attack", album_year=1998)
+    quiz, mass = _quiz(
+        [current, *undated_same_artist, unrelated],
+        title_mode=TimelineBonusMode.MULTIPLE_CHOICE,
+    )
+    quiz._eligible_tracks = [current, unrelated]
+
+    with patch.object(
+        quiz,
+        "_source_pool_bonus_distractors",
+        wraps=quiz._source_pool_bonus_distractors,
+    ) as source_pool_fallback:
+        options = await quiz._create_bonus_options(current, TimelineBonusType.TITLE)
+
+    assert {option.label for option in options if not option.is_correct} == {
+        "D.A.N.C.E.",
+        "Phantom",
+        "Audio, Video, Disco",
+    }
+    source_pool_fallback.assert_not_awaited()
+    mass.music.artists.top_tracks.assert_not_awaited()
+    mass.music.search.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_bonus_fallback_uses_source_tracks_outside_playback_set() -> None:
+    """Fill the last-resort bonus options from source tracks the timeline cannot use."""
+    current = _track("current", "Genesis", "Justice", album_year=2007)
+    undated = [
+        _track("one", "Teardrop", "Massive Attack"),
+        _track("two", "Glory Box", "Portishead"),
+        _track("three", "Roads", "Tricky"),
+    ]
+    quiz, _ = _quiz(
+        [current, *undated],
+        artist_mode=TimelineBonusMode.MULTIPLE_CHOICE,
+        title_mode=TimelineBonusMode.MULTIPLE_CHOICE,
+    )
+    quiz._eligible_tracks = [current]
+
+    artist_options = await quiz._create_bonus_options(current, TimelineBonusType.ARTIST)
+    title_options = await quiz._create_bonus_options(current, TimelineBonusType.TITLE)
+
+    assert {option.label for option in artist_options if not option.is_correct} == {
+        "Massive Attack",
+        "Portishead",
+        "Tricky",
+    }
+    assert {option.label for option in title_options if not option.is_correct} == {
+        "Teardrop",
+        "Glory Box",
+        "Roads",
+    }
+
+
+@pytest.mark.asyncio
+async def test_rejected_track_is_excluded_from_bonus_options() -> None:
+    """Never reuse a rejected track as a bonus label while the pool can still fill options."""
+    current = _track("current", "Genesis", "Justice", album_year=2007)
+    failed = _track("failed", "Teardrop", "Massive Attack", album_year=1998)
+    remaining = [
+        _track("one", "Glory Box", "Portishead"),
+        _track("two", "Roads", "Tricky"),
+        _track("three", "Sexy Boy", "Air"),
+    ]
+    quiz, _ = _quiz(
+        [current, failed, *remaining],
+        title_mode=TimelineBonusMode.MULTIPLE_CHOICE,
+    )
+    quiz._eligible_tracks = [current, failed]
+    assert failed.uri is not None
+
+    quiz.reject_track(failed.uri)
+    options = await quiz._create_bonus_options(current, TimelineBonusType.TITLE)
+
+    assert {option.label for option in options if not option.is_correct} == {
+        "Glory Box",
+        "Roads",
+        "Sexy Boy",
+    }
 
 
 @pytest.mark.asyncio
