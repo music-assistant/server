@@ -94,6 +94,14 @@ AIRPLAY_CLOCK_READY_LEAD_MS: Final[int] = 500
 # instant, so a window shorter than the binary's verification silently maps the
 # joiner's content onto an instant the binary never used.
 AIRPLAY_JOIN_START_ACK_TIMEOUT_MS: Final[int] = 5000
+# How far the content a corrected anchor actually cut may fall short of the cut
+# it asked for before the reported media position is re-based and the shortfall
+# reported. The binary derives the cut it took from the bytes it discarded, so a
+# few ms of byte quantization is expected and correcting for it would only
+# jitter the base; anything larger means the cut really did end early (the input
+# ran out inside it, or a teardown settled it) and the position is over-advanced
+# by that much for the rest of the anchor.
+AIRPLAY_CONTENT_CUT_TOLERANCE_MS: Final[int] = 20
 # Anchor leads for a readiness-confirmed START (cold and warm alike), solo and
 # group: the session only anchors after the binary confirmed the connection
 # ([STATUS] connected) and the new audio flowing ([STATUS] audio), so a lead no

@@ -26,6 +26,7 @@ from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
+    AIRPLAY_CONTENT_CUT_TOLERANCE_MS,
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
     AIRPLAY_PCM_FORMAT,
     CLI_PROBLEM_MARKERS,
@@ -155,6 +156,10 @@ class AirPlayStream:
         # anchor (resetting to ~0 at each START), so elapsed is this base plus
         # the reported delta.
         self._start_position: float = 0.0
+        # Content cut (ms) a post-commit anchor correction asked for and that is
+        # already folded into the base above, until the binary reports what it
+        # actually managed to take. 0 when no cut is outstanding.
+        self._pending_content_cut_ms: int = 0
         self._stdout_reader_task: asyncio.Task[None] | None = None
         # Device latency info reported by the binary after connect (0 = unreported)
         self.latency_lead_ms: int = 0
@@ -438,6 +443,9 @@ class AirPlayStream:
         # path) to keep the server and binary baselines aligned.
         self.reset_reanchor_shift()
         self._start_position = position_ms / 1000
+        # This base is absolute, so a cut still outstanding against the previous
+        # anchor is no longer part of it and must not be reconciled into it.
+        self._pending_content_cut_ms = 0
         # Stamp the player's elapsed onto the new anchor's base right away: until
         # the binary's first status arrives, interpolation would otherwise keep
         # extending the previous anchor's clock, briefly mapping a bogus position.
@@ -509,6 +517,7 @@ class AirPlayStream:
             renders at the acked instant.
         """
         self._start_position = position_ms / 1000
+        self._pending_content_cut_ms = 0
         self.player.set_state_from_stream(elapsed_time=self._start_position, stream=self)
 
     def reset_reanchor_shift(self) -> None:
@@ -1103,6 +1112,8 @@ class AirPlayStream:
             self._started.set()
         elif "[STATUS] anchor_corrected " in line:
             self._parse_anchor_corrected(line)
+        elif "[STATUS] content_cut " in line:
+            self._parse_content_cut(line)
         elif "[STATUS] clock_ready " in line:
             self._parse_clock_ready(line)
         elif "[STATUS] clock_verified" in line:
@@ -1406,6 +1417,8 @@ class AirPlayStream:
         instant infeasible: it moves the anchor forward and advances the queued
         content by the same amount (``content_cut_ms``), so the member still
         lands on the group timeline — only the reported media position shifts.
+        That amount is what the correction ASKED for; :meth:`_parse_content_cut`
+        reconciles it with what the cut managed to take.
 
         :param line: The status line, e.g. ``[STATUS] anchor_corrected
             requested_unix_ms=1750000000000 from_unix_ms=1750000000400
@@ -1423,6 +1436,7 @@ class AirPlayStream:
         # The binary's elapsed counts only the retained content, so the
         # position base moves by the cut to keep reported progress exact.
         self._start_position += content_cut_ms / 1000
+        self._pending_content_cut_ms = content_cut_ms
         # Routine for a join start: the low join headroom defers to this
         # correction, which lands the anchor at exact receiver readiness. A
         # post-commit correction on any other START stays loud.
@@ -1435,6 +1449,68 @@ class AirPlayStream:
             requested_unix_ms,
             at_unix_ms,
             content_cut_ms,
+        )
+
+    def _parse_content_cut(self, line: str) -> None:
+        """
+        Settle a corrected anchor's content cut against the cut it asked for.
+
+        ``anchor_corrected`` reports the cut arithmetic on two instants demands,
+        which :meth:`_parse_anchor_corrected` folds into the position base right
+        away. This line reports what the cut actually took once the last byte is
+        discarded, and the two disagree when the cut ended short — the input ran
+        out inside it, or a teardown settled it. Every ms it fell short is a ms
+        the reported position stays over-advanced by for the rest of the anchor,
+        so the base is corrected back and the shortfall reported.
+
+        :param line: The status line, e.g. ``[STATUS] content_cut
+            requested_ms=500 cut_ms=180 cut_bytes=31752 drain_ms=210``.
+        """
+        try:
+            fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+            cut_ms = int(fields["cut_ms"])
+            requested_ms = int(fields.get("requested_ms", 0))
+            cut_bytes = int(fields.get("cut_bytes", 0))
+            drain_ms = int(fields.get("drain_ms", 0))
+        except KeyError, ValueError, IndexError:
+            # Malformed line: drop it rather than react to bogus numbers.
+            return
+        applied_ms = self._pending_content_cut_ms
+        self._pending_content_cut_ms = 0
+        if not applied_ms:
+            # The cut settled against an anchor whose base this stream no longer
+            # reports on (a START or a join re-base landed in between), so there
+            # is nothing of it left to correct.
+            self.player.logger.debug(
+                "AirPlay content cut on %s settled after the anchor it belonged to "
+                "(requested %d ms, cut %d ms)",
+                self.player.display_name,
+                requested_ms,
+                cut_ms,
+            )
+            return
+        shortfall_ms = applied_ms - cut_ms
+        if shortfall_ms < AIRPLAY_CONTENT_CUT_TOLERANCE_MS:
+            self.player.logger.debug(
+                "AirPlay content cut on %s took the full %d ms (%d bytes in %d ms)",
+                self.player.display_name,
+                cut_ms,
+                cut_bytes,
+                drain_ms,
+            )
+            return
+        self._start_position -= shortfall_ms / 1000
+        self.player.logger.warning(
+            "AirPlay content cut on %s fell %d ms short: the corrected anchor asked "
+            "for %d ms and the cut took %d ms (%d bytes in %d ms). Reported position "
+            "re-based by -%d ms; playback is that much ahead of the group timeline.",
+            self.player.display_name,
+            shortfall_ms,
+            applied_ms,
+            cut_ms,
+            cut_bytes,
+            drain_ms,
+            shortfall_ms,
         )
 
     def _parse_clock_ready(self, line: str) -> None:
