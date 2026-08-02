@@ -43,8 +43,8 @@ from music_assistant.providers.sendspin.bridge_role import (
 from music_assistant.providers.sendspin.helpers import bridge_client_id_from_mac
 
 from .constants import (
-    AIRPLAY_JOIN_CLOCK_READY_LEAD_MS,
-    AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS,
+    AIRPLAY_CLOCK_READY_LEAD_MS,
+    AIRPLAY_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
 )
@@ -641,7 +641,7 @@ class SendspinAirPlayBridge:
         :return: True when the stream is anchored, False when superseded.
         """
         ready_at_unix_ms = await stream.wait_clock_ready(
-            timeout=AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS / 1000
+            timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
         )
         sendspin_now_us = self.sendspin_server.clock.now_us()
         unix_now = time.time()
@@ -653,7 +653,7 @@ class SendspinAirPlayBridge:
         )
         anchor_ms = max(now_ms + AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS, first_chunk_unix_ms)
         if ready_at_unix_ms:
-            anchor_ms = max(anchor_ms, ready_at_unix_ms + AIRPLAY_JOIN_CLOCK_READY_LEAD_MS)
+            anchor_ms = max(anchor_ms, ready_at_unix_ms + AIRPLAY_CLOCK_READY_LEAD_MS)
         sync_adjust = self.airplay_player.config.get_value(CONF_SYNC_ADJUST, 0)
         adjust_ms = sync_adjust if isinstance(sync_adjust, int) else 0
         if warm:

@@ -34,7 +34,7 @@ from aiosendspin.clock import ManualClock
 from aiosendspin.server.roles import AudioChunk
 
 from music_assistant.providers.airplay.constants import (
-    AIRPLAY_JOIN_CLOCK_READY_LEAD_MS,
+    AIRPLAY_CLOCK_READY_LEAD_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
     StreamingProtocol,
@@ -634,7 +634,7 @@ async def test_anchor_follows_the_clock_ready_projection() -> None:
 
     assert await _anchor(bridge, stream) is True
 
-    assert _commanded_instant(stream) == ready_at + AIRPLAY_JOIN_CLOCK_READY_LEAD_MS
+    assert _commanded_instant(stream) == ready_at + AIRPLAY_CLOCK_READY_LEAD_MS
 
 
 async def test_anchor_never_precedes_content_already_scheduled() -> None:

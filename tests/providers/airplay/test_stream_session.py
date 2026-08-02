@@ -10,10 +10,10 @@ import pytest
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.providers.airplay.constants import (
+    AIRPLAY_CLOCK_READY_LEAD_MS,
+    AIRPLAY_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_COLD_GROUP_START_LEAD_MS,
     AIRPLAY_GROUP_START_LEAD_MS,
-    AIRPLAY_JOIN_CLOCK_READY_LEAD_MS,
-    AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
     AIRPLAY_START_LEAD_MS,
     StreamingProtocol,
@@ -201,6 +201,36 @@ async def test_initial_group_waits_for_every_member_before_shared_start(
     # start = now (100_000 ms) + the group start lead (500 ms), one shared instant
     starts = {int(op.rsplit(":", 1)[1]) for op in operations if op.startswith("started:")}
     assert starts == {100_000 + AIRPLAY_COLD_GROUP_START_LEAD_MS}
+
+
+@pytest.mark.asyncio
+async def test_initial_start_never_anchors_before_the_receiver_clock_is_usable() -> None:
+    """A cold receiver whose clock lands after the start lead pushes the anchor out."""
+    now = 100.0
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.protocol = StreamingProtocol.AIRPLAY2
+    player.config.get_value = MagicMock(return_value=0)
+    # Readiness lands past the solo start lead, as an Apple TV does on a fresh
+    # connect: anchoring on the lead alone would render silence.
+    ready_at = int(now * 1000) + AIRPLAY_START_LEAD_MS + 400
+
+    async def start_client(_player: MagicMock, _use_shared_ptp: bool) -> None:
+        stream = _stream_defaults(MagicMock(running=True))
+        stream.wait_for_connection = AsyncMock()
+        stream.wait_audio_present = AsyncMock(return_value=True)
+        stream.wait_clock_ready = AsyncMock(return_value=ready_at)
+        player.stream = stream
+
+    with (
+        patch.object(session, "_start_client", side_effect=start_client),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch.object(session, "_resolve_shared_ptp", new_callable=AsyncMock, return_value=False),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        await session.start(MagicMock())
+
+    assert player.stream.start.await_args.args[0] == ready_at + AIRPLAY_CLOCK_READY_LEAD_MS
 
 
 @pytest.mark.asyncio
@@ -939,10 +969,10 @@ async def test_late_join_anchors_on_the_reported_clock_readiness() -> None:
     ):
         await session.add_client(player)
 
-    expected_lead = AIRPLAY_JOIN_CLOCK_READY_LEAD_MS / 1000
+    expected_lead = AIRPLAY_CLOCK_READY_LEAD_MS / 1000
     assert _captured_start_at(player) - now == pytest.approx(3.0 + expected_lead, abs=0.01)
     player.stream.wait_clock_ready.assert_awaited_once_with(
-        timeout=AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS / 1000
+        timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
     )
 
 
@@ -991,7 +1021,7 @@ async def test_late_join_falls_back_to_the_floor_without_a_clock_projection() ->
 
     # every fallback shape surfaces as "no projection" to the session
     player.stream.wait_clock_ready.assert_awaited_once_with(
-        timeout=AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS / 1000
+        timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
     )
     expected_headroom = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000
     assert _captured_start_at(player) - now == pytest.approx(expected_headroom, abs=0.01)

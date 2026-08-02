@@ -583,6 +583,7 @@ async def test_session_start_applies_uniform_ptp_decision_to_all_members() -> No
         player.stream = MagicMock()
         player.stream.wait_for_connection = AsyncMock()
         player.stream.wait_audio_present = AsyncMock(return_value=True)
+        player.stream.wait_clock_ready = AsyncMock(return_value=None)
         player.stream.start = AsyncMock(return_value=None)
     session = _make_ptp_session(prov, players)
 
@@ -607,6 +608,7 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
         player.stream = MagicMock()
         player.stream.wait_for_connection = AsyncMock()
         player.stream.wait_audio_present = AsyncMock(return_value=True)
+        player.stream.wait_clock_ready = AsyncMock(return_value=None)
         player.stream.start = AsyncMock(return_value=None)
         player.config.get_value = MagicMock(return_value=0)
     session = _make_ptp_session(prov, players)

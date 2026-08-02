@@ -77,14 +77,14 @@ AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 2500
 # out of planning time and falls back, while a stall says the speaker will not
 # play. Keep them apart - tightening the stall report to meet this deadline
 # would trade the margin that keeps it free of false alarms.
-AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS: Final[int] = 2500
+AIRPLAY_CLOCK_READY_TIMEOUT_MS: Final[int] = 2500
 # Lead added on top of a reported readiness instant when anchoring a join. The
 # binary refuses to place an anchor inside its own 250 ms floor, measured from
 # when IT reads the START command rather than when the server sends it (the same
 # trap as AIRPLAY_START_LEAD_MS, see PR #5208), so the lead carries that floor
 # plus 250 ms for the command reaching the binary and for the convergence error
 # of a projection made from the receiver's very first probe.
-AIRPLAY_JOIN_CLOCK_READY_LEAD_MS: Final[int] = 500
+AIRPLAY_CLOCK_READY_LEAD_MS: Final[int] = 500
 # How long a join START waits for the binary's [STATUS] started ack. That ack is
 # held back until the clock verification above resolves, so the window must
 # cover the verification arm window plus a poll round on top of the commanded
