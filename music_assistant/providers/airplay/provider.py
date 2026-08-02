@@ -104,7 +104,7 @@ class AirPlayProvider(PlayerProvider):
     _ptp_daemon_ready: asyncio.Event | None = None
     # Rate-limit state for daemon lines promoted to WARNING (see
     # PTP_DAEMON_WARN_BURST).
-    _ptp_daemon_warn_window_start: float = 0.0
+    _ptp_daemon_warn_window_start: float | None = None
     _ptp_daemon_warns_in_window: int = 0
     _ptp_daemon_warns_suppressed: int = 0
 
@@ -890,7 +890,7 @@ class AirPlayProvider(PlayerProvider):
                 "suppressed; enable verbose logging to see them all",
                 self._ptp_daemon_warns_suppressed,
             )
-        self._ptp_daemon_warn_window_start = 0.0
+        self._ptp_daemon_warn_window_start = None
         self._ptp_daemon_warns_in_window = 0
         self._ptp_daemon_warns_suppressed = 0
 
@@ -908,7 +908,12 @@ class AirPlayProvider(PlayerProvider):
         :param line: The daemon output line that matched a problem marker.
         """
         now = time.monotonic()
-        if now - self._ptp_daemon_warn_window_start >= PTP_DAEMON_WARN_WINDOW:
+        window_start = self._ptp_daemon_warn_window_start
+        # None means no window is open yet, which is not the same as one that
+        # started at monotonic zero: time.monotonic() counts from boot on Linux,
+        # so a server started in the first minute of uptime would otherwise get
+        # a first window shorter than the rest.
+        if window_start is None or now - window_start >= PTP_DAEMON_WARN_WINDOW:
             if self._ptp_daemon_warns_suppressed:
                 self.logger.warning(
                     "PTP daemon: %d further problem line(s) were suppressed over the last "

@@ -392,6 +392,26 @@ def test_ptp_daemon_reports_what_it_suppressed(
     assert any(message.endswith(trace) for message in messages)
 
 
+def test_ptp_daemon_warn_window_runs_from_its_first_line(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """time.monotonic() counts from boot, so a server started early must still get a full window."""
+    prov = _ptp_provider()
+    trace = "[15:44:56.101] [PTP] slave offset seq=7 error=0.000012"
+    clock = 5.0  # five seconds of uptime
+    monkeypatch.setattr("music_assistant.providers.airplay.provider.time.monotonic", lambda: clock)
+    for _ in range(PTP_DAEMON_WARN_BURST + 2):
+        prov._handle_ptp_daemon_line(trace)
+
+    # 56s into the window, so it must not have rolled over yet
+    clock += PTP_DAEMON_WARN_WINDOW - 4
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        prov._handle_ptp_daemon_line(trace)
+
+    assert caplog.text == ""
+
+
 def test_ptp_daemon_restart_gets_a_fresh_warning_budget(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
