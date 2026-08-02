@@ -943,7 +943,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             MediaType.UNKNOWN,  # e.g. plain (HA) URLs, see helpers/uri.py
         ) and (
             provider_instance_id_or_domain == "builtin"
-            or (provider and getattr(provider, "domain", None) == "builtin")
+            or (provider and provider.domain == "builtin")
         ):
             # handle special case of 'builtin' MusicProvider which allows us to play regular url's
             builtin_prov = cast("BuiltinProvider", provider or self.mass.get_provider("builtin"))
