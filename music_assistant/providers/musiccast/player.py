@@ -280,8 +280,8 @@ class MusicCastPlayer(Player):
                 self._attr_playback_state = PlaybackState.PAUSED
             case MusicCastPlayerState.PLAYING:
                 self._attr_playback_state = PlaybackState.PLAYING
-                self._attr_elapsed_time = self.zone_device.media_position
                 if self.zone_device.media_position_updated_at is not None:
+                    self._attr_elapsed_time = self.zone_device.media_position
                     self._attr_elapsed_time_last_updated = (
                         self.zone_device.media_position_updated_at.timestamp()
                     )
