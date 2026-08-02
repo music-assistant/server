@@ -225,6 +225,28 @@ def _quiz(
     return quiz, mass
 
 
+def _with_musicbrainz(
+    mass: MagicMock,
+    years: dict[str, int] | None = None,
+    error: Exception | None = None,
+) -> MagicMock:
+    """Attach a MusicBrainz provider that dates the given ISRCs to the mock MusicAssistant."""
+    provider = MagicMock()
+    provider.get_release_year_by_isrc = AsyncMock(
+        side_effect=error if error is not None else lambda isrc: (years or {}).get(isrc)
+    )
+    mass.get_provider = MagicMock(
+        side_effect=lambda domain: provider if domain == "musicbrainz" else None
+    )
+    return provider
+
+
+def _with_isrc(track: Track, isrc: str) -> Track:
+    """Return the given track carrying an ISRC."""
+    track.add_external_id(ExternalID.ISRC, isrc)
+    return track
+
+
 def test_config_normalization_and_validation_are_music_timeline_specific() -> None:
     """Use fixed option defaults without requiring guess-the-song settings."""
     config = MusicQuizConfig(
@@ -664,6 +686,110 @@ async def test_track_enrichment_concurrency_is_bounded() -> None:
 
     assert mass.music.tracks.get.await_count == len(tracks)
     assert max_active_calls <= TRACK_ENRICHMENT_CONCURRENCY
+
+
+@pytest.mark.asyncio
+async def test_musicbrainz_year_only_wins_when_it_predates_the_library_year() -> None:
+    """Keep the earliest of the library and MusicBrainz release year."""
+    reissue = _with_isrc(
+        _track("reissue", "Immigrant Song", "Led Zeppelin", album_year=2018),
+        "ISRC-REISSUE",
+    )
+    # remasters get their own ISRC, so MusicBrainz can date a song later than the library does
+    remaster = _with_isrc(
+        _track("remaster", "Penny Lane", "The Beatles", album_year=1967),
+        "ISRC-REMASTER",
+    )
+    quiz, mass = _quiz([reissue, remaster])
+    _with_musicbrainz(mass, {"ISRC-REISSUE": 1970, "ISRC-REMASTER": 2017})
+
+    await quiz.initialize()
+
+    assert quiz._eligible_tracks is not None
+    eligible_tracks = {track.item_id: track for track in quiz._eligible_tracks}
+    assert MusicTimelineQuizType._release_year(eligible_tracks["reissue"]) == 1970
+    assert MusicTimelineQuizType._release_year(eligible_tracks["remaster"]) == 1967
+
+
+@pytest.mark.asyncio
+async def test_musicbrainz_dates_tracks_dropped_as_compilations() -> None:
+    """Restore a compilation track once MusicBrainz dates its recording."""
+    compilation = _with_isrc(_track("compilation", "Africa", "Toto"), "ISRC-COMPILATION")
+    compilation.album = _full_album(
+        "album-compilation",
+        "Party Hits",
+        album_type=AlbumType.COMPILATION,
+        year=1998,
+    )
+    resolved = _track("resolved", "Genesis", "Justice", album_year=2007)
+    quiz, mass = _quiz([compilation, resolved])
+    mass.music.tracks.get.return_value = compilation
+    _with_musicbrainz(mass, {"ISRC-COMPILATION": 1982})
+
+    await quiz.initialize()
+
+    assert quiz._eligible_tracks is not None
+    eligible_tracks = {track.item_id: track for track in quiz._eligible_tracks}
+    assert set(eligible_tracks) == {"compilation", "resolved"}
+    assert MusicTimelineQuizType._release_year(eligible_tracks["compilation"]) == 1982
+
+
+@pytest.mark.asyncio
+async def test_library_years_are_kept_without_musicbrainz() -> None:
+    """Place tracks on the timeline when no MusicBrainz provider is configured."""
+    tracks = [
+        _with_isrc(_track("one", "Teardrop", "Massive Attack", album_year=1998), "ISRC-ONE"),
+        _with_isrc(_track("two", "Genesis", "Justice", album_year=2007), "ISRC-TWO"),
+    ]
+    quiz, mass = _quiz(tracks)
+    mass.get_provider = MagicMock(return_value=None)
+
+    await quiz.initialize()
+
+    assert quiz._eligible_tracks is not None
+    assert [MusicTimelineQuizType._release_year(track) for track in quiz._eligible_tracks] == [
+        1998,
+        2007,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_tracks_without_an_isrc_are_not_looked_up() -> None:
+    """Never ask MusicBrainz about a track that carries no ISRC."""
+    tracks = [
+        _track("one", "Teardrop", "Massive Attack", album_year=1998),
+        _track("two", "Genesis", "Justice", album_year=2007),
+    ]
+    quiz, mass = _quiz(tracks)
+    musicbrainz = _with_musicbrainz(mass, {"ISRC-ONE": 1970})
+
+    await quiz.initialize()
+
+    musicbrainz.get_release_year_by_isrc.assert_not_awaited()
+    assert quiz._eligible_tracks is not None
+    assert [MusicTimelineQuizType._release_year(track) for track in quiz._eligible_tracks] == [
+        1998,
+        2007,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_failing_musicbrainz_lookups_keep_the_library_year() -> None:
+    """Start the game on library years when the MusicBrainz lookup fails."""
+    tracks = [
+        _with_isrc(_track("one", "Teardrop", "Massive Attack", album_year=1998), "ISRC-ONE"),
+        _with_isrc(_track("two", "Genesis", "Justice", album_year=2007), "ISRC-TWO"),
+    ]
+    quiz, mass = _quiz(tracks)
+    _with_musicbrainz(mass, error=RuntimeError("musicbrainz unavailable"))
+
+    await quiz.initialize()
+
+    assert quiz._eligible_tracks is not None
+    assert [MusicTimelineQuizType._release_year(track) for track in quiz._eligible_tracks] == [
+        1998,
+        2007,
+    ]
 
 
 def test_release_year_uses_earliest_valid_track_or_album_year() -> None:

@@ -6,10 +6,12 @@ import asyncio
 import logging
 import secrets
 from collections.abc import Sequence
+from contextlib import suppress
 from dataclasses import replace
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import ExternalID, MediaType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import Artist, ItemMapping, Track
 
@@ -56,6 +58,7 @@ from music_assistant.providers.music_quiz.suggestions import (
 if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
     from music_assistant.providers.music_quiz.models import MusicQuizConfig
+    from music_assistant.providers.musicbrainz import MusicbrainzProvider
 
 LOGGER = logging.getLogger(__name__)
 SYSTEM_RANDOM = secrets.SystemRandom()
@@ -63,6 +66,7 @@ SYSTEM_RANDOM = secrets.SystemRandom()
 DEFAULT_BONUS_OPTION_COUNT = 4
 COMPLETED_REVEAL_AUTO_ADVANCE_SECONDS = 30.0
 TRACK_ENRICHMENT_CONCURRENCY = 10
+RELEASE_YEAR_LOOKUP_BUDGET_SECONDS = 2.0
 BONUS_CANDIDATE_LIMIT = 24
 
 
@@ -218,6 +222,7 @@ class MusicTimelineQuizType(QuizType):
         source_tracks = list((await self._get_source_track_pool()).values())
         eligible_tracks: dict[str, Track] = {}
         unresolved_tracks: list[Track] = []
+        undated_tracks: list[Track] = []
         for track in source_tracks:
             if self._track_is_resolved(track):
                 assert track.uri is not None
@@ -234,7 +239,10 @@ class MusicTimelineQuizType(QuizType):
                 return track if self._track_is_eligible(track) else None
             # the track controller can fail to resolve an album mapping, so accept the
             # best release year the enriched track offers rather than requiring an album
-            return enriched if self._track_is_eligible(enriched) else None
+            if self._track_is_eligible(enriched):
+                return enriched
+            undated_tracks.append(enriched)
+            return None
 
         target_track_count = self.config.round_count + 1 + PLAYBACK_REPLACEMENT_RESERVE
         # enrichment stops at the target count, so sample the whole source pool
@@ -256,6 +264,15 @@ class MusicTimelineQuizType(QuizType):
             for resolved_track in resolved_tracks:
                 if resolved_track is not None and resolved_track.uri is not None:
                     eligible_tracks.setdefault(resolved_track.uri, resolved_track)
+        # this pass has to run after the resolution loop above and not inside it: that loop
+        # only sees tracks that failed _track_is_resolved, so a track carrying a trusted but
+        # wrong album year would never be corrected there. While the pool is short of the
+        # target, tracks the loop dropped for an untrusted year also get a second chance.
+        shortfall = max(target_track_count - len(eligible_tracks), 0)
+        await self._apply_musicbrainz_release_years(
+            eligible_tracks,
+            [*eligible_tracks.values(), *undated_tracks[:shortfall]],
+        )
         self._eligible_tracks = list(eligible_tracks.values())
         if not self._eligible_tracks:
             raise InvalidDataError(
@@ -264,6 +281,56 @@ class MusicTimelineQuizType(QuizType):
                 translation_owner=TRANSLATION_OWNER,
             )
         return self._eligible_tracks
+
+    async def _apply_musicbrainz_release_years(
+        self,
+        eligible_tracks: dict[str, Track],
+        candidates: list[Track],
+    ) -> None:
+        """
+        Date candidate tracks with the first release year MusicBrainz knows for their recording.
+
+        :param eligible_tracks: Tracks that can be placed on the timeline, keyed by URI and
+            updated in place with every candidate that MusicBrainz could date.
+        :param candidates: Tracks to look up, including tracks that lack a usable year and
+            only become eligible once MusicBrainz supplies one.
+        """
+        musicbrainz = self.mass.get_provider("musicbrainz")
+        if musicbrainz is None:
+            return
+        semaphore = asyncio.Semaphore(TRACK_ENRICHMENT_CONCURRENCY)
+
+        async def _apply_release_year(track: Track) -> None:
+            isrc = track.get_external_id(ExternalID.ISRC)
+            if not isrc:
+                return
+            async with semaphore:
+                try:
+                    release_year = await cast(
+                        "MusicbrainzProvider", musicbrainz
+                    ).get_release_year_by_isrc(isrc)
+                except Exception as err:
+                    LOGGER.debug("Could not date Music Quiz track %s: %s", track.uri, err)
+                    return
+            if release_year is None:
+                return
+            # the track controller hands out objects that are shared with the library cache,
+            # so the release date is written to a copy instead of the track itself
+            dated_track = replace(
+                track,
+                metadata=replace(
+                    track.metadata, release_date=datetime(release_year, 1, 1, tzinfo=UTC)
+                ),
+            )
+            if dated_track.uri is not None and self._track_is_eligible(dated_track):
+                eligible_tracks[dated_track.uri] = dated_track
+
+        # game start waits for this and MusicBrainz throttles to 10 requests per 10 seconds,
+        # so anything that does not resolve within the budget keeps its library year and is
+        # corrected in a later game from the 30 day response cache
+        with suppress(TimeoutError):
+            async with asyncio.timeout(RELEASE_YEAR_LOOKUP_BUDGET_SECONDS):
+                await asyncio.gather(*(_apply_release_year(track) for track in candidates))
 
     async def _create_entry(
         self,
