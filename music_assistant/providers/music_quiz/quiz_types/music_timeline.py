@@ -264,15 +264,14 @@ class MusicTimelineQuizType(QuizType):
             for resolved_track in resolved_tracks:
                 if resolved_track is not None and resolved_track.uri is not None:
                     eligible_tracks.setdefault(resolved_track.uri, resolved_track)
-        # this pass has to run after the resolution loop above and not inside it: that loop
-        # only sees tracks that failed _track_is_resolved, so a track carrying a trusted but
-        # wrong album year would never be corrected there. While the pool is short of the
-        # target, tracks the loop dropped for an untrusted year also get a second chance.
+        # this pass has to run after the resolution loop above and not inside it: only once
+        # the loop is done is it known how far the pool is short of the target, and a track
+        # the loop dropped for a missing or untrusted year can never become eligible later,
+        # so MusicBrainz is its only second chance. Tracks that already carry a year are
+        # left alone here and are corrected when they are placed on the timeline.
         shortfall = max(target_track_count - len(eligible_tracks), 0)
-        await self._apply_musicbrainz_release_years(
-            eligible_tracks,
-            [*eligible_tracks.values(), *undated_tracks[:shortfall]],
-        )
+        if shortfall and undated_tracks:
+            await self._rescue_undated_tracks(eligible_tracks, undated_tracks[:shortfall])
         self._eligible_tracks = list(eligible_tracks.values())
         if not self._eligible_tracks:
             raise InvalidDataError(
@@ -282,55 +281,66 @@ class MusicTimelineQuizType(QuizType):
             )
         return self._eligible_tracks
 
-    async def _apply_musicbrainz_release_years(
+    async def _rescue_undated_tracks(
         self,
         eligible_tracks: dict[str, Track],
         candidates: list[Track],
     ) -> None:
         """
-        Date candidate tracks with the first release year MusicBrainz knows for their recording.
+        Make tracks that only MusicBrainz can date available to the timeline.
 
         :param eligible_tracks: Tracks that can be placed on the timeline, keyed by URI and
             updated in place with every candidate that MusicBrainz could date.
-        :param candidates: Tracks to look up, including tracks that lack a usable year and
-            only become eligible once MusicBrainz supplies one.
+        :param candidates: Tracks that lack a usable release year of their own.
         """
-        musicbrainz = self.mass.get_provider("musicbrainz")
-        if musicbrainz is None:
-            return
         semaphore = asyncio.Semaphore(TRACK_ENRICHMENT_CONCURRENCY)
 
-        async def _apply_release_year(track: Track) -> None:
-            isrc = track.get_external_id(ExternalID.ISRC)
-            if not isrc:
-                return
+        async def _rescue_track(track: Track) -> None:
             async with semaphore:
+                dated_track = await self._musicbrainz_dated_track(track)
+            if dated_track.uri is not None and self._track_is_eligible(dated_track):
+                eligible_tracks[dated_track.uri] = dated_track
+
+        # game start waits for this, so tracks that cannot be dated within the budget stay
+        # out of this game and are rescued in a later one from the 30 day response cache
+        with suppress(TimeoutError):
+            async with asyncio.timeout(RELEASE_YEAR_LOOKUP_BUDGET_SECONDS):
+                await asyncio.gather(*(_rescue_track(track) for track in candidates))
+
+    async def _musicbrainz_dated_track(self, track: Track) -> Track:
+        """
+        Return the track dated with the first release year MusicBrainz knows for its recording.
+
+        The track itself is returned unchanged when MusicBrainz has nothing better to offer.
+
+        :param track: Track to date by its ISRC.
+        """
+        musicbrainz = self.mass.get_provider("musicbrainz")
+        isrc = track.get_external_id(ExternalID.ISRC)
+        if musicbrainz is None or not isrc:
+            return track
+        release_year: int | None = None
+        # callers wait for this and MusicBrainz throttles to 10 requests per 10 seconds, so a
+        # lookup that does not resolve within the budget leaves the track on its library year
+        with suppress(TimeoutError):
+            async with asyncio.timeout(RELEASE_YEAR_LOOKUP_BUDGET_SECONDS):
                 try:
                     release_year = await cast(
                         "MusicbrainzProvider", musicbrainz
                     ).get_release_year_by_isrc(isrc)
                 except Exception as err:
                     LOGGER.debug("Could not date Music Quiz track %s: %s", track.uri, err)
-                    return
-            if release_year is None:
-                return
-            # the track controller hands out objects that are shared with the library cache,
-            # so the release date is written to a copy instead of the track itself
-            dated_track = replace(
-                track,
-                metadata=replace(
-                    track.metadata, release_date=datetime(release_year, 1, 1, tzinfo=UTC)
-                ),
-            )
-            if dated_track.uri is not None and self._track_is_eligible(dated_track):
-                eligible_tracks[dated_track.uri] = dated_track
-
-        # game start waits for this and MusicBrainz throttles to 10 requests per 10 seconds,
-        # so anything that does not resolve within the budget keeps its library year and is
-        # corrected in a later game from the 30 day response cache
-        with suppress(TimeoutError):
-            async with asyncio.timeout(RELEASE_YEAR_LOOKUP_BUDGET_SECONDS):
-                await asyncio.gather(*(_apply_release_year(track) for track in candidates))
+        if release_year is None:
+            return track
+        release_date = track.metadata.release_date
+        if release_date is not None and release_date.year <= release_year:
+            return track
+        # the track controller hands out objects that are shared with the library cache,
+        # so the release date is written to a copy instead of the track itself
+        return replace(
+            track,
+            metadata=replace(track.metadata, release_date=datetime(release_year, 1, 1, tzinfo=UTC)),
+        )
 
     async def _create_entry(
         self,
@@ -340,6 +350,7 @@ class MusicTimelineQuizType(QuizType):
         existing_ids: set[str] | None = None,
     ) -> TimelineEntry:
         """Create a stable timeline entry from an eligible track."""
+        track = await self._musicbrainz_dated_track(track)
         release_year = self._release_year(track)
         if release_year is None or not track.uri or not track.artist_str:
             raise InvalidDataError("Music Timeline track is missing required timeline metadata")

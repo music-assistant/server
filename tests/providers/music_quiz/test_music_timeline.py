@@ -29,6 +29,7 @@ from music_assistant.providers.music_quiz.ai_distractors import AI_QUERY_TIMEOUT
 from music_assistant.providers.music_quiz.models import (
     MusicQuizConfig,
     MusicQuizDifficulty,
+    MusicQuizRound,
     TimelineBonusMode,
     TimelineBonusType,
     TimelineFreeTextBonusDefinition,
@@ -245,6 +246,18 @@ def _with_isrc(track: Track, isrc: str) -> Track:
     """Return the given track carrying an ISRC."""
     track.add_external_id(ExternalID.ISRC, isrc)
     return track
+
+
+async def _prepare_round_with_tracks(
+    quiz: MusicTimelineQuizType,
+    tracks: list[Track],
+) -> MusicQuizRound:
+    """Prepare the first round with the given tracks selected as anchor and candidate."""
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.music_timeline.secrets.choice",
+        side_effect=tracks,
+    ):
+        return await quiz.prepare_round(0, [])
 
 
 def test_config_normalization_and_validation_are_music_timeline_specific() -> None:
@@ -704,11 +717,50 @@ async def test_musicbrainz_year_only_wins_when_it_predates_the_library_year() ->
     _with_musicbrainz(mass, {"ISRC-REISSUE": 1970, "ISRC-REMASTER": 2017})
 
     await quiz.initialize()
+    game_round = await _prepare_round_with_tracks(quiz, [reissue, remaster])
 
-    assert quiz._eligible_tracks is not None
-    eligible_tracks = {track.item_id: track for track in quiz._eligible_tracks}
-    assert MusicTimelineQuizType._release_year(eligible_tracks["reissue"]) == 1970
-    assert MusicTimelineQuizType._release_year(eligible_tracks["remaster"]) == 1967
+    assert isinstance(game_round.answer_state, TimelineRoundState)
+    assert game_round.answer_state.placement_snapshot[0].release_year == 1970
+    assert game_round.answer_state.candidate.entry.release_year == 1967
+
+
+@pytest.mark.asyncio
+async def test_an_earlier_track_release_date_survives_a_later_musicbrainz_year() -> None:
+    """Never push a release date the track already carries forward to a later year."""
+    dated = _with_isrc(
+        _track("dated", "Suspicious Minds", "Elvis Presley", release_year=1969),
+        "ISRC-DATED",
+    )
+    other = _track("other", "Genesis", "Justice", album_year=2007)
+    quiz, mass = _quiz([dated, other])
+    _with_musicbrainz(mass, {"ISRC-DATED": 1990})
+
+    await quiz.initialize()
+    game_round = await _prepare_round_with_tracks(quiz, [dated, other])
+
+    assert isinstance(game_round.answer_state, TimelineRoundState)
+    assert game_round.answer_state.placement_snapshot[0].release_year == 1969
+
+
+@pytest.mark.asyncio
+async def test_musicbrainz_lookups_do_not_scale_with_the_source_pool() -> None:
+    """Date only the tracks that reach the timeline, never the complete eligible pool."""
+    tracks = [
+        _with_isrc(
+            _track(f"track-{index}", f"Song {index}", f"Artist {index}", album_year=1990),
+            f"ISRC-{index}",
+        )
+        for index in range(60)
+    ]
+    quiz, mass = _quiz(tracks)
+    musicbrainz = _with_musicbrainz(mass, {f"ISRC-{index}": 1970 for index in range(60)})
+
+    await quiz.initialize()
+    game_round = await quiz.prepare_round(0, [])
+
+    assert isinstance(game_round.answer_state, TimelineRoundState)
+    assert game_round.answer_state.candidate.entry.release_year == 1970
+    assert musicbrainz.get_release_year_by_isrc.await_count <= quiz.config.round_count + 1
 
 
 @pytest.mark.asyncio
@@ -745,12 +797,11 @@ async def test_library_years_are_kept_without_musicbrainz() -> None:
     mass.get_provider = MagicMock(return_value=None)
 
     await quiz.initialize()
+    game_round = await _prepare_round_with_tracks(quiz, tracks)
 
-    assert quiz._eligible_tracks is not None
-    assert [MusicTimelineQuizType._release_year(track) for track in quiz._eligible_tracks] == [
-        1998,
-        2007,
-    ]
+    assert isinstance(game_round.answer_state, TimelineRoundState)
+    assert game_round.answer_state.placement_snapshot[0].release_year == 1998
+    assert game_round.answer_state.candidate.entry.release_year == 2007
 
 
 @pytest.mark.asyncio
@@ -764,13 +815,12 @@ async def test_tracks_without_an_isrc_are_not_looked_up() -> None:
     musicbrainz = _with_musicbrainz(mass, {"ISRC-ONE": 1970})
 
     await quiz.initialize()
+    game_round = await _prepare_round_with_tracks(quiz, tracks)
 
     musicbrainz.get_release_year_by_isrc.assert_not_awaited()
-    assert quiz._eligible_tracks is not None
-    assert [MusicTimelineQuizType._release_year(track) for track in quiz._eligible_tracks] == [
-        1998,
-        2007,
-    ]
+    assert isinstance(game_round.answer_state, TimelineRoundState)
+    assert game_round.answer_state.placement_snapshot[0].release_year == 1998
+    assert game_round.answer_state.candidate.entry.release_year == 2007
 
 
 @pytest.mark.asyncio
@@ -784,12 +834,40 @@ async def test_failing_musicbrainz_lookups_keep_the_library_year() -> None:
     _with_musicbrainz(mass, error=RuntimeError("musicbrainz unavailable"))
 
     await quiz.initialize()
+    game_round = await _prepare_round_with_tracks(quiz, tracks)
 
-    assert quiz._eligible_tracks is not None
-    assert [MusicTimelineQuizType._release_year(track) for track in quiz._eligible_tracks] == [
-        1998,
-        2007,
+    assert isinstance(game_round.answer_state, TimelineRoundState)
+    assert game_round.answer_state.placement_snapshot[0].release_year == 1998
+    assert game_round.answer_state.candidate.entry.release_year == 2007
+
+
+@pytest.mark.asyncio
+async def test_stalled_musicbrainz_lookups_keep_the_library_year() -> None:
+    """Never let a MusicBrainz lookup that does not answer hold up a round."""
+    tracks = [
+        _with_isrc(_track("one", "Teardrop", "Massive Attack", album_year=1998), "ISRC-ONE"),
+        _with_isrc(_track("two", "Genesis", "Justice", album_year=2007), "ISRC-TWO"),
     ]
+    quiz, mass = _quiz(tracks)
+    musicbrainz = _with_musicbrainz(mass)
+
+    async def _never_answer(_isrc: str) -> int:
+        await asyncio.sleep(30)
+        return 1970
+
+    musicbrainz.get_release_year_by_isrc.side_effect = _never_answer
+
+    await quiz.initialize()
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types."
+        "music_timeline.RELEASE_YEAR_LOOKUP_BUDGET_SECONDS",
+        0.01,
+    ):
+        game_round = await _prepare_round_with_tracks(quiz, tracks)
+
+    assert isinstance(game_round.answer_state, TimelineRoundState)
+    assert game_round.answer_state.placement_snapshot[0].release_year == 1998
+    assert game_round.answer_state.candidate.entry.release_year == 2007
 
 
 def test_release_year_uses_earliest_valid_track_or_album_year() -> None:
