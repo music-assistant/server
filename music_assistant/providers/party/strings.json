@@ -15,6 +15,10 @@
         "__auto__": "Auto (last active player)"
       }
     },
+    "party_duration": {
+      "label": "Party Duration",
+      "description": "How long a generated guest join link/QR code stays valid. Changing this only affects links created after the change - it won't extend one that's already active."
+    },
     "party_name": {
       "label": "Party Name",
       "description": "Custom name/title for the party, displayed in the party dashboard. Leave blank to not show a text at all."
@@ -30,7 +34,7 @@
       "action_label": "Enable Guest Access"
     },
     "guest_enabled_note": {
-      "label": "Guest mode is enabled. Guests will be able to join your party by scanning the QR code (which automatically expires after 8 hours). Click the button below to end the party and withdraw guest access."
+      "label": "Guest mode is enabled. Guests will be able to join your party by scanning the QR code (which automatically expires after 8 hours unless configured otherwise). Click the button below to end the party and withdraw guest access."
     },
     "action_disable_guest_access": {
       "label": "Disable Guest Access",

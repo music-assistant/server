@@ -63,6 +63,7 @@ CONF_ANTI_BURN_IN = "anti_burn_in"
 # Custom party settings
 CONF_PARTY_NAME = "party_name"
 CONF_PARTY_QR_TEXT = "qr_text"
+CONF_PARTY_DURATION = "party_duration"
 CONF_HIDE_BACK_BUTTON = "hide_back_button"
 CONF_SHOW_PROGRESS_BAR = "show_progress_bar"
 CONF_PREVENT_DUPLICATE_TRACKS = "prevent_duplicate_tracks"
@@ -129,6 +130,7 @@ class PartyConfig(DataClassDictMixin):
     # Custom party settings
     party_name: str | None
     qr_text: str | None
+    party_duration: int
     hide_back_button: bool
     show_progress_bar: bool
     prevent_duplicate_tracks: bool
@@ -185,6 +187,12 @@ class PartyPlugin(PluginProvider):
                 type=ConfigEntryType.STRING,
                 default_value="",
                 required=False,
+            ),
+            ConfigEntry(
+                key=CONF_PARTY_DURATION,
+                type=ConfigEntryType.INTEGER,
+                default_value=guest_access.DEFAULT_JOIN_CODE_EXPIRY_HOURS,
+                advanced=True,
             ),
             ConfigEntry(
                 key=CONF_ENABLE_GUEST_ACCESS,
@@ -515,7 +523,10 @@ class PartyPlugin(PluginProvider):
             self.mass, PARTY_GUEST_USER, PARTY_GUEST_DISPLAY_NAME
         )
         code = await guest_access.get_or_create_join_code(
-            self.mass, guest_user, device_name="Party Guest"
+            self.mass,
+            guest_user,
+            device_name="Party Guest",
+            expires_in_hours=cast("int", self.config.get_value(CONF_PARTY_DURATION)),
         )
         return guest_access.build_join_url(self.mass, code)
 
@@ -586,6 +597,7 @@ class PartyPlugin(PluginProvider):
             anti_burn_in=cast("bool", self.config.get_value(CONF_ANTI_BURN_IN)),
             party_name=cast("str | None", self.config.get_value(CONF_PARTY_NAME)),
             qr_text=cast("str | None", self.config.get_value(CONF_PARTY_QR_TEXT)),
+            party_duration=cast("int", self.config.get_value(CONF_PARTY_DURATION)),
             hide_back_button=cast("bool", self.config.get_value(CONF_HIDE_BACK_BUTTON)),
             show_progress_bar=cast("bool", self.config.get_value(CONF_SHOW_PROGRESS_BAR)),
             prevent_duplicate_tracks=cast(
