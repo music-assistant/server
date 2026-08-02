@@ -1480,3 +1480,45 @@ def test_write_head_lead_is_not_measured_before_the_anchor_arrives() -> None:
     with patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now):
         unanchored._observe_write_head_lead()
     assert unanchored._peak_lead_seconds == 0.0
+
+
+@pytest.mark.asyncio
+async def test_late_join_silence_pad_is_bounded_and_reports_the_residual() -> None:
+    """An implausible ack is padded only up to the ring bound, and says so."""
+    now = 1_000_000.0
+    session = _make_session(now - 400.0, 420.0)
+    session._pcm_total_fed = int(420.0 * PCM_SAMPLE_SIZE)
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 2)
+    session._pcm_buffer_max = PCM_SAMPLE_SIZE * 2
+    session._peak_lead_seconds = 1e6
+    logger = MagicMock()
+    session.prov.logger = logger
+    player = _make_late_joiner()
+
+    written: list[tuple[str, bytes]] = []
+
+    async def capture_write(target: Any, chunk: bytes) -> None:
+        written.append((target.player_id, chunk))
+
+    def setup_with_stale_ack(*_args: Any, **_kwargs: Any) -> None:
+        _setup_stream(player)()
+        # The binary reports an instant far behind the commanded one, mapping
+        # the joiner back near the start of the session. 320s of head is owed.
+        player.stream.start = AsyncMock(return_value=int((now - 300.0) * 1000))
+
+    with (
+        patch.object(session, "_start_client", side_effect=setup_with_stale_ack),
+        patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        await session.add_client(player)
+
+    prime = next(chunk for pid, chunk in written if pid == player.player_id)
+    # Bounded at one ring of silence plus the ring itself - never the 320s owed.
+    assert len(prime) / PCM_SAMPLE_SIZE == pytest.approx(4.0, abs=0.01)
+    assert (session._pcm_total_fed - len(prime)) % session._pcm_frame_size == 0
+    # The joiner cannot be placed exactly, so the log must not claim sync.
+    logger.warning.assert_called_once()
+    tail = logger.warning.call_args.args[-1]
+    assert "ahead of the group" in tail
+    assert "in sync" not in tail

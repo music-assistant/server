@@ -485,16 +485,23 @@ class AirPlayStreamSession:
                         # mapping back near the session start) can allocate.
                         pad = min(missing, self._pcm_buffer_max)
                         prime_slice = bytes(pad) + servable
+                        # A clamped pad cannot reach the due position, so the
+                        # joiner really does end up ahead of the group by the
+                        # remainder. Say which of the two happened.
+                        residual = (missing - pad) / pcm_sample_size
                         self.prov.logger.warning(
                             "Late joiner %s: the feed runs %.2fs ahead of the audible "
                             "position, past the %.2fs of audio kept for a join; opening "
-                            "with %.2fs of silence so the content still lands in sync. "
-                            "The joiner is audible that much late; please report this "
-                            "with a debug log.",
+                            "with %.2fs of silence to cover the missing head. %s Please "
+                            "report this with a debug log.",
                             airplay_player.player_id,
                             lead,
                             len(servable) / pcm_sample_size,
                             pad / pcm_sample_size,
+                            f"That still leaves it {residual:.2f}s ahead of the group."
+                            if residual
+                            else "The content itself still lands in sync; the joiner is "
+                            "only audible that much late.",
                         )
                     else:
                         due += missing / pcm_sample_size
