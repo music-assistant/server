@@ -57,12 +57,6 @@ MRP_DISCOVERY_TYPE: Final[str] = "_mediaremotetv._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
-# Setup lead (ms) advertised to externally timed sources such as Sendspin.
-# It covers process spawn, connect/session setup and receiver pre-fill before
-# the commanded audible instant. Native AirPlay 2 needs a larger budget than
-# RAOP because its pre-fill is paced.
-AIRPLAY_RAOP_SETUP_LEAD_MS: Final[int] = 1500
-AIRPLAY_AP2_SETUP_LEAD_MS: Final[int] = 2500
 # Lower bound for a late joiner's anchor, and the whole anchor whenever the
 # binary reports no readiness projection ([STATUS] clock_ready). It has to keep
 # the binary's own clock verification viable without any device evidence: that

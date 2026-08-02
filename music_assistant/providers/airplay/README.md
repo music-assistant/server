@@ -435,9 +435,10 @@ protocol path (RAOP, AirPlay 2 RAOP-compat and native).
    then feeds a fresh ffmpeg into the same stdin, awaits `[STATUS] audio` and
    sends one shared `START`.
    Standby keeps each protocol connection alive for the same flush-refill resume
-5. Sendspin starts preserve its externally supplied audible instant, riding the
-   same persistent-stdin flush-refill (cold connect + `START`, warm `FLUSH` +
-   `START`) instead of a cold reconnect
+5. Sendspin starts ride the same persistent-stdin flush-refill (cold connect +
+   `START`, warm `FLUSH` + `START`) instead of a cold reconnect. They anchor as
+   a join, so the binary reports the instant it really scheduled and the bridge
+   maps the group's audio onto that instant rather than the one it asked for
 6. Per-player `sync_adjust` config allows fine-tuning (+/- milliseconds)
 
 ### Shared PTP Clock Daemon
