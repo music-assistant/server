@@ -14,6 +14,7 @@ import re
 import time
 from contextlib import suppress
 from dataclasses import dataclass
+from http import HTTPStatus
 from typing import TYPE_CHECKING, Final, cast
 from uuid import uuid4
 
@@ -43,6 +44,8 @@ from music_assistant.providers.airplay.helpers import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.player import PlayerMedia
 
@@ -886,12 +889,54 @@ class AirPlayStream:
         prov.handle_remote_command(self.player, command)
 
     def _parse_mrp_status(self, line: str) -> None:
-        """Parse the [STATUS] mrp line and log the now-playing push result."""
+        """
+        Parse a [STATUS] mrp line and report how the now-playing push landed.
+
+        A push the device accepted is routine bookkeeping and stays at debug.
+        A rejection is not: it is why a now-playing screen stays blank or keeps
+        the previous track's art, with nothing else about the session looking
+        wrong, so it is reported.
+
+        :param line: The status line, in one of the shapes
+            ``[STATUS] mrp path=<command|channel> status=<int>`` or
+            ``[STATUS] mrp artwork=<posted|rejected> ...``.
+        """
         fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
-        self.player.logger.info(
+        display_name = self.player.display_name
+        if artwork := fields.get("artwork"):
+            # The artwork variants carry no path=, and a rejection reports its
+            # reason plus a clear_status rather than a status of its own.
+            if artwork == "rejected":
+                self.player.logger.warning(
+                    "%s rejected the now-playing artwork (%s, %s bytes); its screen keeps "
+                    "whatever art it had",
+                    display_name,
+                    fields.get("reason", "no reason given"),
+                    fields.get("bytes", "?"),
+                )
+            else:
+                self.player.logger.debug(
+                    "MRP now-playing artwork accepted by %s (%s bytes, HTTP %s)",
+                    display_name,
+                    fields.get("bytes", "?"),
+                    fields.get("status", "?"),
+                )
+            return
+        if fields.get("path") == "channel":
+            # Not an HTTP status: 0 = the opt-in data channel was attempted and
+            # did not come up, 1 = established.
+            self.player.logger.debug(
+                "MRP data channel for %s: %s",
+                display_name,
+                "established" if fields.get("status") == "1" else "not established",
+            )
+            return
+        status = _status_int(fields, "status")
+        self.player.logger.log(
+            logging.DEBUG if HTTPStatus.OK <= status < HTTPStatus.BAD_REQUEST else logging.WARNING,
             "MRP now-playing push (%s path) for %s: HTTP %s",
             fields.get("path", "?"),
-            self.player.display_name,
+            display_name,
             fields.get("status", "?"),
         )
 
@@ -938,18 +983,21 @@ class AirPlayStream:
 
     def _parse_latency_status(self, line: str) -> None:
         """Parse and store the [STATUS] latency line reported by the binary."""
-        try:
-            fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
-            self.latency_lead_ms = int(fields.get("lead_ms", 0))
-            self.device_min_frames = int(fields.get("device_min_frames", 0))
-            self.device_max_frames = int(fields.get("device_max_frames", 0))
-            self.warm_lead_ms = int(fields.get("warm_lead_ms", 0))
-        except ValueError:
-            return
+        fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+        # Read field by field: one unusable value used to abandon the rest of
+        # the line, leaving whatever came after it stale from the previous
+        # report while the values before it had already moved. Every field here
+        # means "unreported" at 0, so a missing or malformed one lands there.
+        self.latency_lead_ms = _status_int(fields, "lead_ms")
+        self.device_min_frames = _status_int(fields, "device_min_frames")
+        self.device_max_frames = _status_int(fields, "device_max_frames")
+        self.warm_lead_ms = _status_int(fields, "warm_lead_ms")
         self.player.logger.debug(
-            "Device latency for %s: lead=%dms, buffer window=%d-%d frames (0=unreported)",
+            "Device latency for %s: lead=%dms, warm lead=%dms, "
+            "buffer window=%d-%d frames (0=unreported)",
             self.player.display_name,
             self.latency_lead_ms,
+            self.warm_lead_ms,
             self.device_min_frames,
             self.device_max_frames,
         )
@@ -1498,3 +1546,20 @@ class AirPlayStream:
             self.player.display_name,
             margin_ms,
         )
+
+
+def _status_int(fields: Mapping[str, str], key: str) -> int:
+    """
+    Return one integer field of a [STATUS] line, or 0 when it is unusable.
+
+    Status lines are read field by field so a value the binary could not format
+    - or one an older build does not emit at all - does not take the rest of the
+    line down with it. Every field read this way means "unreported" at 0.
+
+    :param fields: The parsed key=value pairs of the status line.
+    :param key: The field to read.
+    """
+    try:
+        return int(fields[key])
+    except KeyError, ValueError:
+        return 0

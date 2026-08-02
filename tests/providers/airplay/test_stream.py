@@ -312,11 +312,95 @@ def test_parse_latency_status() -> None:
     player = _make_player()
     stream = AirPlayStream(player)
     stream._parse_latency_status(
-        "[STATUS] latency lead_ms=1750 device_min_frames=11025 device_max_frames=88200"
+        "[STATUS] latency lead_ms=1750 device_min_frames=11025 device_max_frames=88200 "
+        "warm_lead_ms=1200"
     )
     assert stream.latency_lead_ms == 1750
     assert stream.device_min_frames == 11025
     assert stream.device_max_frames == 88200
+    assert stream.warm_lead_ms == 1200
+
+
+def test_parse_latency_status_reads_every_field_on_its_own() -> None:
+    """One unusable value must not leave the fields after it stale from the last report."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._parse_latency_status(
+        "[STATUS] latency lead_ms=1750 device_min_frames=11025 device_max_frames=88200 "
+        "warm_lead_ms=1200"
+    )
+
+    stream._parse_latency_status(
+        "[STATUS] latency lead_ms=900 device_min_frames=garbage device_max_frames=44100 "
+        "warm_lead_ms=300"
+    )
+
+    assert stream.latency_lead_ms == 900
+    assert stream.device_min_frames == 0  # unusable, so unreported
+    assert stream.device_max_frames == 44100
+    assert stream.warm_lead_ms == 300
+
+
+def test_parse_latency_status_logs_the_warm_lead(caplog: pytest.LogCaptureFixture) -> None:
+    """The warm lead drives every warm group anchor, so it belongs in the line."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.DEBUG):
+        stream._parse_latency_status(
+            "[STATUS] latency lead_ms=1750 device_min_frames=11025 device_max_frames=88200 "
+            "warm_lead_ms=1200"
+        )
+
+    assert "warm lead=1200ms" in caplog.text
+
+
+def test_mrp_push_accepted_is_not_logged_at_info(caplog: pytest.LogCaptureFixture) -> None:
+    """A push the device accepted is bookkeeping, not something to act on."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.INFO):
+        stream._parse_mrp_status("[STATUS] mrp path=command status=200")
+
+    assert caplog.text == ""
+
+
+def test_mrp_push_rejection_is_reported(caplog: pytest.LogCaptureFixture) -> None:
+    """A non-2xx push is the device refusing what was sent, so it is reported."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.WARNING):
+        stream._parse_mrp_status("[STATUS] mrp path=command status=403")
+
+    assert "Player A" in caplog.text
+    assert "403" in caplog.text
+
+
+def test_mrp_artwork_rejection_is_reported(caplog: pytest.LogCaptureFixture) -> None:
+    """An artwork rejection carries no path= or status=, and must not read as a plain push."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.WARNING):
+        stream._parse_mrp_status(
+            "[STATUS] mrp artwork=rejected reason=progressive_jpeg bytes=48123 "
+            "width=512 height=512 precision=8 sof=0xc2 components=3 progressive=1 "
+            "clear_status=200 staging_max_bytes=131072"
+        )
+
+    assert "rejected the now-playing artwork" in caplog.text
+    assert "progressive_jpeg" in caplog.text
+    assert "HTTP ?" not in caplog.text
+
+
+def test_mrp_channel_status_is_not_read_as_an_http_status(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The data-channel line reports 0/1, which must not be warned about as a failed push."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.WARNING):
+        stream._parse_mrp_status("[STATUS] mrp path=channel status=0")
+
+    assert caplog.text == ""
 
 
 @pytest.mark.parametrize(
