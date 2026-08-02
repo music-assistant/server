@@ -77,7 +77,12 @@ AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 2500
 # line right after [STATUS] connected and refreshes it about every 250 ms, and
 # the projection exists from the receiver's first probe (~1078 ms after connect
 # on a cold device), so this only has to cover a slower device before giving up
-# and anchoring on the floor above.
+# and anchoring on the floor above. Independent of the binary's own stall
+# report (state=stalled), which is a slower, higher-confidence diagnosis of a
+# receiver that never answers at all: a join that times out here has simply run
+# out of planning time and falls back, while a stall says the speaker will not
+# play. Keep them apart - tightening the stall report to meet this deadline
+# would trade the margin that keeps it free of false alarms.
 AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS: Final[int] = 2500
 # Lead added on top of a reported readiness instant when anchoring a join. The
 # binary refuses to place an anchor inside its own 250 ms floor, measured from
