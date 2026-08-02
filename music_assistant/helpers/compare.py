@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import re
 from difflib import SequenceMatcher
 
-import unidecode
 from music_assistant_models.enums import ExternalID, MediaType
+from music_assistant_models.helpers import create_safe_string as create_safe_string_models
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -544,19 +543,7 @@ def compare_external_ids(
 
 def create_safe_string(input_str: str, lowercase: bool = True, replace_space: bool = False) -> str:
     """Return clean lowered string for compare actions."""
-    # handle some special cases
-    if input_str in ("P!nk", "p!nk"):
-        input_str = input_str.replace("!", "i")
-    if input_str in ("Wh♂", "wh♂"):
-        input_str = input_str.replace("♂", "o")
-    if input_str in ("KoЯn", "koЯn"):
-        input_str = input_str.replace("Я", "r")
-    if input_str == "$hort":
-        input_str = input_str.replace("$hort", "short")
-    input_str = input_str.lower().strip() if lowercase else input_str.strip()
-    unaccented_string = unidecode.unidecode(input_str)
-    regex = r"[^a-zA-Z0-9]" if replace_space else r"[^a-zA-Z0-9 ]"
-    return re.sub(regex, "", unaccented_string)
+    return create_safe_string_models(input_str, lowercase, replace_space)
 
 
 def loose_compare_strings(base: str, alt: str) -> bool:
