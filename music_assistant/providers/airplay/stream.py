@@ -931,9 +931,12 @@ class AirPlayStream:
                 "established" if fields.get("status") == "1" else "not established",
             )
             return
+        # Only a 2xx means the device took the push. Nothing else on this
+        # control channel does - a redirect is as much "not accepted" as a 4xx.
         status = _status_int(fields, "status")
+        accepted = HTTPStatus.OK <= status < HTTPStatus.MULTIPLE_CHOICES
         self.player.logger.log(
-            logging.DEBUG if HTTPStatus.OK <= status < HTTPStatus.BAD_REQUEST else logging.WARNING,
+            logging.DEBUG if accepted else logging.WARNING,
             "MRP now-playing push (%s path) for %s: HTTP %s",
             fields.get("path", "?"),
             display_name,

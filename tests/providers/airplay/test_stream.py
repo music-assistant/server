@@ -364,15 +364,16 @@ def test_mrp_push_accepted_is_not_logged_at_info(caplog: pytest.LogCaptureFixtur
     assert caplog.text == ""
 
 
-def test_mrp_push_rejection_is_reported(caplog: pytest.LogCaptureFixture) -> None:
-    """A non-2xx push is the device refusing what was sent, so it is reported."""
+@pytest.mark.parametrize("status", [302, 403, 500], ids=["redirect", "forbidden", "server-error"])
+def test_mrp_push_rejection_is_reported(status: int, caplog: pytest.LogCaptureFixture) -> None:
+    """Anything but a 2xx is the device not taking the push, so it is reported."""
     stream = AirPlayStream(_make_player())
 
     with caplog.at_level(logging.WARNING):
-        stream._parse_mrp_status("[STATUS] mrp path=command status=403")
+        stream._parse_mrp_status(f"[STATUS] mrp path=command status={status}")
 
     assert "Player A" in caplog.text
-    assert "403" in caplog.text
+    assert str(status) in caplog.text
 
 
 def test_mrp_artwork_rejection_is_reported(caplog: pytest.LogCaptureFixture) -> None:
