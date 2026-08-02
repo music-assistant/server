@@ -206,6 +206,31 @@ async def test_initial_group_waits_for_every_member_before_shared_start(
 
 
 @pytest.mark.asyncio
+async def test_group_start_that_never_converges_anchors_where_members_landed() -> None:
+    """A group that keeps correcting is anchored at the members' own last instant."""
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.config.get_value = MagicMock(return_value=0)
+    stream = _stream_defaults(MagicMock(running=True))
+    commanded: list[int] = []
+
+    async def start(start_unix_ms: int, _position_ms: int) -> int:
+        # Correct every round, so the loop exhausts without ever converging.
+        commanded.append(start_unix_ms)
+        return start_unix_ms + 100
+
+    stream.start = AsyncMock(side_effect=start)
+    player.stream = stream
+
+    await session._start_members(0, 100_000)
+
+    # The retry after the final round is never commanded, so it must not become
+    # the session anchor: that would map every later joiner behind the group.
+    assert session.start_unix_ms == commanded[-1] + 100
+    assert session.start_unix_ms not in commanded
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "protocol",
     [StreamingProtocol.RAOP, StreamingProtocol.AIRPLAY2],

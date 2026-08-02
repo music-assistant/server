@@ -483,6 +483,17 @@ class AirPlayStream:
         try:
             await asyncio.wait_for(self._started.wait(), ack_timeout)
         except TimeoutError:
+            # An older binary and a binary that failed the start look identical
+            # from here, and the caller treats both as "the commanded instant
+            # stands". Say so: on a current binary this line is the only sign
+            # that the content was mapped onto an instant nothing confirmed.
+            self.player.logger.warning(
+                "AirPlay player %s did not acknowledge its start within %.1fs; "
+                "assuming the commanded instant %d was applied",
+                self.player.display_name,
+                ack_timeout,
+                start_unix_ms,
+            )
             return None
         return self._start_ack[1] if self._start_ack else None
 
