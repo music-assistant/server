@@ -40,6 +40,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_impersonated_user,
 )
 from music_assistant.controllers.webserver.helpers.auth_providers import (
+    PRUNE_THRESHOLD,
     BuiltinLoginProvider,
     LoginRateLimiter,
 )
@@ -2082,6 +2083,29 @@ async def test_login_rate_limiter_drops_attempts_outside_window() -> None:
 
     await limiter.record_failed_attempt("key")
     assert limiter.get_attempt_count("key") == 0
+
+
+async def test_login_rate_limiter_prunes_expired_keys() -> None:
+    """
+    Verify expired keys do not pile up when they are never used again.
+
+    Keys are one-off by nature (a connection that gives up, a made-up username), so
+    without the sweep the bookkeeping would grow for as long as the server runs.
+    """
+    limiter = LoginRateLimiter(tracking_window=timedelta(seconds=0))
+
+    for index in range(PRUNE_THRESHOLD + 1):
+        await limiter.record_failed_attempt(f"key{index}")
+
+    # Every attempt is already outside this limiter's window, so the sweep drops them all.
+    assert len(limiter._failed_attempts) == 0
+
+    live = LoginRateLimiter()
+    for index in range(PRUNE_THRESHOLD + 1):
+        await live.record_failed_attempt(f"key{index}")
+
+    # Attempts inside the tracking window are never swept away.
+    assert len(live._failed_attempts) == PRUNE_THRESHOLD + 1
 
 
 async def test_resolve_command_impersonation(auth_manager: AuthenticationManager) -> None:

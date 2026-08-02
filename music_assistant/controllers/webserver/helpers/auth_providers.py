@@ -33,6 +33,8 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 # Progressive (failed attempts, delay in seconds) tiers applied to a single rate limit key
 DEFAULT_DELAY_TIERS: Final[tuple[tuple[int, int], ...]] = ((3, 30), (6, 60), (10, 120), (15, 300))
 DEFAULT_TRACKING_WINDOW: Final = timedelta(minutes=30)
+# Tracked keys before expired ones are swept from the rate limiter's bookkeeping
+PRUNE_THRESHOLD: Final = 128
 
 
 def normalize_username(username: str) -> str:
@@ -236,6 +238,13 @@ class LoginRateLimiter:
                     self._subject,
                     key,
                 )
+
+            # A key is only cleaned up when it is used again, and most keys (a one-off
+            # connection, a made-up username) never come back, so sweep the whole map once
+            # it grows past what any legitimate burst of callers produces.
+            if len(self._failed_attempts) > PRUNE_THRESHOLD:
+                for tracked_key in list(self._failed_attempts):
+                    self._cleanup_old_attempts(tracked_key)
 
     async def clear_attempts(self, key: str) -> None:
         """
