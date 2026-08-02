@@ -1131,30 +1131,14 @@ async def get_ip_from_host(dns_name: str) -> str | None:
     return await asyncio.to_thread(_resolve)
 
 
-async def get_source_ip_for_target(
-    target_ip: str,
-    *,
-    bind_ip: str | None = None,
-    publish_ip: str | None = None,
-) -> str:
+async def get_source_ip_for_target(target_ip: str) -> str:
     """
-    Resolve a local, bindable source IP that routes to ``target_ip``.
+    Return the local interface address the routing table would egress to ``target_ip`` from.
 
-    For providers that must bind a socket to, or advertise a callback URL
-    reachable by, one specific device. ``publish_ip`` (the server's advertised
-    address) is not necessarily a locally bindable interface address — e.g. a
-    container behind a published IP, or a multi-homed host — so binding to it
-    directly can fail with ``EADDRNOTAVAIL``.
+    Empty when no route to the target can be determined.
 
-    Resolution order:
-      1. an explicitly configured, concrete (non-wildcard) ``bind_ip``;
-      2. a routing-table lookup to ``target_ip`` (the interface that would
-         actually egress to it);
-      3. ``publish_ip`` as a concrete fallback;
-      4. ``bind_ip`` (even if a wildcard) as a last resort.
+    :param target_ip: IP address of the device the traffic is meant for.
     """
-    if bind_ip and bind_ip not in ("0.0.0.0", "::"):
-        return bind_ip
 
     def _routing_lookup() -> str:
         try:
@@ -1176,9 +1160,7 @@ async def get_source_ip_for_target(
                 pass
         return ""
 
-    if routed := await asyncio.to_thread(_routing_lookup):
-        return routed
-    return str(publish_ip or "") or str(bind_ip or "")
+    return await asyncio.to_thread(_routing_lookup)
 
 
 async def get_ip_pton(ip_string: str) -> bytes:

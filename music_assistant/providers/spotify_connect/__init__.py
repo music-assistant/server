@@ -615,7 +615,7 @@ class SpotifyConnectProvider(PluginProvider):
         except Exception as err:
             self.logger.debug("Failed to persist player ID: %s", err)
 
-    def _write_config(self) -> None:
+    def _write_config(self, source_ip: str | None) -> None:
         """
         Write the go-librespot ``config.yml`` for this instance.
 
@@ -623,6 +623,9 @@ class SpotifyConnectProvider(PluginProvider):
         sidestep an extra dependency and any string-quoting pitfalls (the device
         name is user-provided). The config dir doubles as the credential/device
         cache so the Spotify Connect device stays paired across restarts.
+
+        :param source_ip: Local address of the player-facing interface, or None to
+            advertise the Spotify Connect device on all interfaces.
         """
         os.makedirs(self.cache_dir, exist_ok=True)
         initial_volume = 50
@@ -658,14 +661,13 @@ class SpotifyConnectProvider(PluginProvider):
         # Advertise the Spotify Connect device only on the interface the streams
         # server binds to, so it lands on the right network on multi-homed hosts.
         # go-librespot selects advertise interfaces by name, so map the IP to one.
-        bind_ip = self.mass.streams.bind_ip
-        if bind_ip and bind_ip != "0.0.0.0":
-            if iface_name := interface_name_for_ip(bind_ip):
+        if source_ip:
+            if iface_name := interface_name_for_ip(source_ip):
                 config["zeroconf_interfaces_to_advertise"] = [iface_name]
             else:
                 self.logger.debug(
                     "No interface found for stream bind IP %s; advertising on all interfaces",
-                    bind_ip,
+                    source_ip,
                 )
         config_file = os.path.join(self.cache_dir, "config.yml")
         with open(config_file, "w", encoding="utf-8") as fileobj:
@@ -688,7 +690,7 @@ class SpotifyConnectProvider(PluginProvider):
                 self.logger.warning(
                     "API port in use by another process; switching to port %s", self._api_port
                 )
-            self._write_config()
+            self._write_config(await self.mass.streams.get_source_ip())
             proc: AsyncProcess | None = None
             try:
                 # stdout carries the decoded PCM (audio_output_pipe=/dev/stdout) and

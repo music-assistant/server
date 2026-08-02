@@ -160,7 +160,7 @@ async def test_ptp_daemon_spawn_advertises_dacp_identity() -> None:
     prov = _ptp_provider()
     prov.dacp_id = "AABBCCDD11223344"
     prov.mass = MagicMock()
-    prov.mass.streams.bind_ip = "0.0.0.0"
+    prov.mass.streams.get_source_ip = AsyncMock(return_value=None)
     # The spawn mirrors the live logger level into --debug flags; pin the
     # level so suite ordering (other tests raising verbosity) cannot leak
     # extra args into this assertion.
@@ -191,12 +191,42 @@ async def test_ptp_daemon_spawn_advertises_dacp_identity() -> None:
     ]
 
 
+async def test_ptp_daemon_spawn_pins_operator_configured_interface() -> None:
+    """One daemon serves every player, so only an explicit operator pin narrows it."""
+    prov = _ptp_provider()
+    prov.dacp_id = "AABBCCDD11223344"
+    prov.mass = MagicMock()
+    prov.mass.streams.get_source_ip = AsyncMock(return_value="192.168.1.5")
+    prov.logger.setLevel(logging.INFO)
+
+    def _consume_task(coro: object) -> MagicMock:
+        if asyncio.iscoroutine(coro):
+            coro.close()
+        return MagicMock()
+
+    prov.mass.create_task.side_effect = _consume_task
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.provider.get_cli_binary",
+            AsyncMock(return_value="/bin/cliairplay"),
+        ),
+        patch("music_assistant.providers.airplay.provider.AsyncProcess") as process_cls,
+    ):
+        process_cls.return_value.start = AsyncMock(return_value=None)
+        await prov._start_ptp_daemon()
+
+    args = process_cls.call_args.args[0]
+    assert args[args.index("--if") + 1] == "192.168.1.5"
+    prov.mass.streams.get_source_ip.assert_awaited_once_with()
+
+
 async def test_ptp_daemon_spawn_quiet_at_debug_level() -> None:
     """A normal debug session keeps the daemon quiet (no per-packet tracing)."""
     prov = _ptp_provider()
     prov.dacp_id = "AABBCCDD11223344"
     prov.mass = MagicMock()
-    prov.mass.streams.bind_ip = "0.0.0.0"
+    prov.mass.streams.get_source_ip = AsyncMock(return_value=None)
     prov.logger.setLevel(logging.DEBUG)
 
     def _consume_task(coro: object) -> MagicMock:
@@ -224,7 +254,7 @@ async def test_ptp_daemon_spawn_traces_at_verbose_level() -> None:
     prov = _ptp_provider()
     prov.dacp_id = "AABBCCDD11223344"
     prov.mass = MagicMock()
-    prov.mass.streams.bind_ip = "0.0.0.0"
+    prov.mass.streams.get_source_ip = AsyncMock(return_value=None)
     prov.logger.setLevel(VERBOSE_LOG_LEVEL)
     prov.config = MagicMock()
     prov.config.get_value = MagicMock(return_value=True)
@@ -635,6 +665,8 @@ def _stream_player(*, ptp_daemon_running: bool) -> MagicMock:
     prov.ptp_daemon_running = ptp_daemon_running
     prov.logger = logging.getLogger("test.airplay.prov")
     prov.mass.streams.publish_ip = "192.168.1.99"
+    prov.mass.streams.get_source_ip = AsyncMock(return_value="192.168.1.5")
+    prov.mass.streams.get_publish_ip = MagicMock(return_value=None)
     player.provider = prov
     return player
 
@@ -642,15 +674,9 @@ def _stream_player(*, ptp_daemon_running: bool) -> MagicMock:
 async def _build_args(player: MagicMock, use_shared_ptp: bool | None) -> list[str]:
     """Assemble CLI args for the player with the externals patched out."""
     stream = AirPlayStream(player)
-    with (
-        patch(
-            "music_assistant.providers.airplay.stream.get_cli_binary",
-            return_value="/fake/cliairplay",
-        ),
-        patch(
-            "music_assistant.providers.airplay.stream.resolve_if_ip",
-            return_value="192.168.1.5",
-        ),
+    with patch(
+        "music_assistant.providers.airplay.stream.get_cli_binary",
+        return_value="/fake/cliairplay",
     ):
         return await stream._build_cli_args(use_shared_ptp)
 

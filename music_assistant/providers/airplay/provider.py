@@ -38,6 +38,7 @@ from music_assistant.models.player_provider import PlayerProvider
 from .constants import (
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_VOLUME_MUTE,
+    CLI_PROBLEM_MARKERS,
     COMPANION_DISCOVERY_TYPE,
     CONF_IGNORE_VOLUME,
     CONF_STORED_VOLUME,
@@ -775,12 +776,9 @@ class AirPlayProvider(PlayerProvider):
         # (which derive their PTP clock id from --dacp), so receivers see one
         # consistent clock whether the daemon or an in-process engine serves it.
         args = [cli_binary, "--ptp-daemon", "--dacp", self.dacp_id]
-        bind_ip = str(self.mass.streams.bind_ip)
-        if bind_ip not in ("0.0.0.0", "::", ""):
-            args += ["--if", bind_ip]
-            if_detail = bind_ip
-        else:
-            if_detail = f"<omitted: all interfaces ({bind_ip or 'unset'})>"
+        if_arg = await self.mass.streams.get_source_ip()
+        if if_arg:
+            args += ["--if", if_arg]
         # The daemon runs quiet by default: its per-packet PTP tracing
         # (Announce/Sync/Delay_Req, ~10 lines/s) needs BOTH verbose logging and
         # the dedicated opt-in, so ordinary verbose sessions are not flooded
@@ -792,7 +790,7 @@ class AirPlayProvider(PlayerProvider):
         # The binding the daemon ends up with is the first thing needed when triaging
         # timing issues from a user's log, and it is invisible otherwise: --if is left
         # out entirely for a default bind ip.
-        self.logger.debug("Starting shared PTP clock daemon: if=%s", if_detail)
+        self.logger.debug("Starting shared PTP clock daemon: if=%s", if_arg or "<all interfaces>")
         daemon = AsyncProcess(args, stdout=True, stderr=True, name="cliairplay-ptp-daemon")
         # (Re)gate readiness for this daemon instance: not ready until a reader
         # sees the "daemon up" line (a restart clears any previous readiness).
@@ -826,10 +824,8 @@ class AirPlayProvider(PlayerProvider):
         """Log a PTP daemon output line and detect its readiness signal."""
         # Routine daemon output is verbose-only so it never floods a user's log
         # (the per-packet timing trace only runs at verbose in the first place).
-        # The daemon tags no log levels, so a genuine problem is recognised by
-        # keyword and promoted to a warning that stays visible at normal levels.
         lowered = line.lower()
-        if any(marker in lowered for marker in ("error", "cannot", "failed", "unable")):
+        if any(marker in lowered for marker in CLI_PROBLEM_MARKERS):
             self.logger.warning("PTP daemon: %s", line)
         else:
             self.logger.log(VERBOSE_LOG_LEVEL, "PTP daemon: %s", line)

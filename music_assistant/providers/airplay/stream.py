@@ -9,7 +9,6 @@ status is reported on stderr in normalized [STATUS] format.
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import logging
 import re
 import time
@@ -29,6 +28,7 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
     AIRPLAY_PCM_FORMAT,
+    CLI_PROBLEM_MARKERS,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_ENCRYPTION,
     CONF_PASSWORD,
@@ -39,7 +39,6 @@ from music_assistant.providers.airplay.constants import (
 from music_assistant.providers.airplay.helpers import (
     generate_active_remote_id,
     get_cli_binary,
-    resolve_if_ip,
     serialize_txt_records,
 )
 
@@ -762,56 +761,29 @@ class AirPlayStream:
                 args += ["--ptp-shared"]
 
         # Local interface binding
-        if_arg: str | None = None
-        target_is_ipv6 = ":" in self.player.address
-        if_ip = await resolve_if_ip(self.mass, str(self.player.device_info.ip_address))
-        if if_ip in ("0.0.0.0", "::", ""):
-            if_detail = f"<omitted: all interfaces ({if_ip or 'unset'})>"
-        else:
-            try:
-                source_is_ipv6 = isinstance(ipaddress.ip_address(if_ip), ipaddress.IPv6Address)
-            except ValueError:
-                # A configured zeroconf interface is handed back verbatim, so this may be
-                # an interface name rather than an address. Its family cannot be matched
-                # against the device, so route selection is left to the binary.
-                if_detail = f"<omitted: {if_ip} is not an ip address>"
-            else:
-                if source_is_ipv6 == target_is_ipv6:
-                    if_arg = if_ip
-                    if_detail = if_ip
-                    args += ["--if", if_ip]
-                else:
-                    if_detail = f"<omitted: {if_ip} family differs from device>"
+        target_ip = str(self.player.device_info.ip_address)
+        if_arg = await self.mass.streams.get_source_ip(target_ip)
+        if if_arg:
+            args += ["--if", if_arg]
 
-        # Address advertised inside the protocol (timing peers) for hosts where
-        # the reachable address differs from the bind address (e.g. containers).
-        publish_ip = str(self.mass.streams.publish_ip or "")
-        if not publish_ip:
-            publish_detail = "<unset>"
-        elif publish_ip == if_arg:
-            publish_detail = f"<omitted: same as if ({publish_ip})>"
-        else:
-            try:
-                publish_is_ipv6 = isinstance(
-                    ipaddress.ip_address(publish_ip), ipaddress.IPv6Address
-                )
-            except ValueError:
-                publish_detail = f"<omitted: {publish_ip} is not an ip address>"
-            else:
-                if publish_is_ipv6 == target_is_ipv6:
-                    publish_detail = publish_ip
-                    args += ["--publish-ip", publish_ip]
-                else:
-                    publish_detail = f"<omitted: {publish_ip} family differs from device>"
+        # Address advertised inside the protocol (timing peers) for hosts where the
+        # reachable address differs from the bind address (e.g. containers). The binary
+        # treats this as authoritative for the receiver's clock-source filter and it
+        # outranks its own connection-derived fallback, so only pass an address the user
+        # actually configured: an auto-detected one would silence a receiver whenever it
+        # names an interface the timing packets do not leave from.
+        publish_arg = self.mass.streams.get_publish_ip(target_ip)
+        if publish_arg and publish_arg != if_arg:
+            args += ["--publish-ip", publish_arg]
 
         # The addressing the stream ends up with is the first thing needed when triaging
         # a connection or timing issue from a user's log, and it is invisible otherwise:
-        # both flags are dropped silently when the resolved value is unusable here.
+        # both flags are dropped silently when no value applies here.
         self.player.logger.debug(
             "cliairplay network binding for player %s: if=%s publish_ip=%s",
             self.player.player_id,
-            if_detail,
-            publish_detail,
+            if_arg or "<all interfaces>",
+            publish_arg or "<not configured>",
         )
 
         # Debug level
@@ -994,7 +966,13 @@ class AirPlayStream:
             if self._handle_status_line(line):
                 expected_eof = True
                 break
-            logger.log(VERBOSE_LOG_LEVEL, line)
+            # Routine binary output is verbose-only so it never floods a user's log, but
+            # its own diagnostics (a failed socket bind, a missing receiver clock) are the
+            # first thing needed when triaging silent playback, so those stay visible.
+            if any(marker in line.lower() for marker in CLI_PROBLEM_MARKERS):
+                logger.warning("cliairplay for %s: %s", player.display_name, line)
+            else:
+                logger.log(VERBOSE_LOG_LEVEL, line)
             await asyncio.sleep(0)
 
         logger.debug("cliairplay stderr reader ended")
