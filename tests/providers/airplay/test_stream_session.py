@@ -1,6 +1,7 @@
 """Unit tests for AirPlay stream session late-join logic."""
 
 import asyncio
+import logging
 import time
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -360,6 +361,63 @@ async def test_initial_connection_failure_never_starts_partial_group() -> None:
         stream: Any = player.stream
         stream.start.assert_not_awaited()
     stop_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_connection_failure_names_the_member_that_failed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The log has to say WHICH speaker failed, and what its binary reported."""
+    session = _make_session(0, 0)
+    prov_logger = logging.getLogger("test.airplay.session")
+    session.prov.logger = prov_logger
+    first_player: Any = session.sync_clients[0]
+    first_player.display_name = "Player A"
+    first_player.protocol = StreamingProtocol.RAOP
+    second_player = MagicMock(player_id="second", display_name="Player B")
+    second_player.protocol = StreamingProtocol.RAOP
+    session.sync_clients.append(second_player)
+
+    async def start_client(player: MagicMock, _use_shared_ptp: bool) -> None:
+        stream = _stream_defaults(MagicMock(running=True))
+        if player is second_player:
+            stream.wait_for_connection = AsyncMock(
+                side_effect=TimeoutError("cliairplay did not connect to Player B: no route")
+            )
+        else:
+            stream.wait_for_connection = AsyncMock()
+        player.stream = stream
+
+    with (
+        caplog.at_level(logging.WARNING),
+        patch.object(session, "_start_client", side_effect=start_client),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch.object(session, "stop", new_callable=AsyncMock),
+        pytest.raises(PlayerCommandFailed),
+    ):
+        await session.start(MagicMock())
+
+    assert "Player B failed to connect to its device" in caplog.text
+    assert "no route" in caplog.text
+    assert "Player A failed" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_audio_feed_names_the_silent_members() -> None:
+    """A member whose binary never reported audio flowing is named in the failure."""
+    session = _make_session(0, 0)
+    first_player: Any = session.sync_clients[0]
+    first_player.display_name = "Player A"
+    first_player.protocol = StreamingProtocol.RAOP
+    first_player.stream.wait_audio_present = AsyncMock(return_value=True)
+    second_player = MagicMock(player_id="second", display_name="Player B")
+    second_player.protocol = StreamingProtocol.RAOP
+    second_player.stream = _stream_defaults(MagicMock(running=True))
+    second_player.stream.wait_audio_present = AsyncMock(return_value=False)
+    session.sync_clients.append(second_player)
+
+    with pytest.raises(PlayerCommandFailed, match="not confirmed by Player B"):
+        await session._wait_members_audio_present()
 
 
 @pytest.mark.asyncio
