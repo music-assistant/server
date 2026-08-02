@@ -50,20 +50,24 @@ if TYPE_CHECKING:
     from music_assistant.providers.airplay.provider import AirPlayProvider
     from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
 
-# Slugs of the machine-readable failure line the binary emits right before it
-# gives up on a connect:
+# Slugs of the machine-readable failure line the binary emits:
 #   [STATUS] error code=<slug> http=<int> detail="<short text>"
-CONNECT_ERROR_AUTH_REQUIRED: Final[str] = "auth_required"
-CONNECT_ERROR_AUTH_FAILED: Final[str] = "auth_failed"
+# The auth/connect slugs are terminal - the binary gives up and exits. The
+# command slugs are not: the connection survives a rejected transport command
+# and only the pending ack is answered with a failure.
+CLI_ERROR_AUTH_REQUIRED: Final[str] = "auth_required"
+CLI_ERROR_AUTH_FAILED: Final[str] = "auth_failed"
+CLI_ERROR_START_FAILED: Final[str] = "start_failed"
+CLI_ERROR_FLUSH_FAILED: Final[str] = "flush_failed"
 
-_CONNECT_ERROR_CODE_RE = re.compile(r"\bcode=(\S+)")
-_CONNECT_ERROR_HTTP_RE = re.compile(r"\bhttp=(\d+)")
-_CONNECT_ERROR_DETAIL_RE = re.compile(r'\bdetail="([^"]*)"')
+_CLI_ERROR_CODE_RE = re.compile(r"\bcode=(\S+)")
+_CLI_ERROR_HTTP_RE = re.compile(r"\bhttp=(\d+)")
+_CLI_ERROR_DETAIL_RE = re.compile(r'\bdetail="([^"]*)"')
 
 
 @dataclass
-class ConnectError:
-    """Fatal connect failure as reported by the cliairplay binary."""
+class CliError:
+    """Structured failure as reported by the cliairplay binary."""
 
     code: str
     http_status: int = 0
@@ -109,15 +113,21 @@ class AirPlayStream:
         self._process_ended = asyncio.Event()
         # Structured fatal failure the binary reported before exiting; stays
         # None with an older binary that does not emit the line.
-        self._connect_error: ConnectError | None = None
-        # Set when the binary acknowledges an in-place FLUSH ([STATUS] flushed).
+        self._connect_error: CliError | None = None
+        # Set when the binary answers an in-place FLUSH, either acknowledging it
+        # ([STATUS] flushed) or reporting that it rejected the command, which
+        # fills _flush_error. Each answer clears the other.
         self._flushed = asyncio.Event()
+        self._flush_error: CliError | None = None
         # Set when the binary acks a START ([STATUS] started); carries the
         # (requested, actual) unix-ms pair. The binary corrects an infeasible
         # instant FORWARD and always reports the truth, so a mismatch here is
-        # the self-verification signal for the start contract.
+        # the self-verification signal for the start contract. A reported start
+        # failure also sets it, filling _start_error instead of the ack; each
+        # answer clears the other.
         self._started = asyncio.Event()
         self._start_ack: tuple[int, int] | None = None
+        self._start_error: CliError | None = None
         # Whether the last commanded START was a late-join start: routes the
         # correction log levels (a corrected join is the routine landing path,
         # a corrected origin start is a loud signal).
@@ -349,8 +359,9 @@ class AirPlayStream:
         drain removes exactly the pre-flush bytes.
 
         :param timeout: Seconds to wait for the flushed acknowledgement.
-        :return: True once the flush is acknowledged; False on a delivery failure
-            or timeout so the caller can fall back to a cold restart.
+        :return: True once the flush is acknowledged; False on a delivery
+            failure, a flush the binary reports it rejected, or a timeout, so
+            the caller can fall back to a cold restart.
         """
         if not self.running or not self.connected:
             return False
@@ -363,6 +374,13 @@ class AirPlayStream:
         try:
             await asyncio.wait_for(self._flushed.wait(), timeout)
         except TimeoutError:
+            return False
+        if (error := self._flush_error) is not None:
+            self.player.logger.warning(
+                "cliairplay rejected the flush for %s (%s); falling back to a cold restart",
+                self.player.display_name,
+                error.detail or error.code,
+            )
             return False
         return True
 
@@ -428,7 +446,8 @@ class AirPlayStream:
             corrected-forward one otherwise; None when no ack arrived (older
             binary), in which case the commanded instant was applied under the
             legacy clamp semantics.
-        :raises PlayerCommandFailed: If the START command cannot be delivered.
+        :raises PlayerCommandFailed: If the START command cannot be delivered,
+            or the binary reports that it scheduled no instant.
         """
         if not self.running or not self.connected:
             raise RuntimeError("Cannot start playback without a connected cliairplay process")
@@ -476,17 +495,17 @@ class AirPlayStream:
         # infeasible one forward), so the caller can verify the contract and
         # re-align a group. A join's ack is held back until the receiver clock
         # verification resolves and therefore gets a much wider window than a
-        # plain start, which acks within the command round-trip. No ack within
-        # the timeout means an older binary: fall back to trusting the commanded
-        # instant (legacy clamp semantics).
+        # plain start, which acks within the command round-trip. A reported
+        # failure answers the wait immediately; no ack within the timeout means
+        # an older binary, so fall back to trusting the commanded instant
+        # (legacy clamp semantics).
         ack_timeout = AIRPLAY_JOIN_START_ACK_TIMEOUT_MS / 1000 if join else 2.0
         try:
             await asyncio.wait_for(self._started.wait(), ack_timeout)
         except TimeoutError:
-            # An older binary and a binary that failed the start look identical
-            # from here, and the caller treats both as "the commanded instant
-            # stands". Say so: on a current binary this line is the only sign
-            # that the content was mapped onto an instant nothing confirmed.
+            # Only an older binary reaches this now, and the caller treats it as
+            # "the commanded instant stands". Say so: it is the one case where
+            # content is mapped onto an instant nothing confirmed.
             self.player.logger.warning(
                 "AirPlay player %s did not acknowledge its start within %.1fs; "
                 "assuming the commanded instant %d was applied",
@@ -495,6 +514,14 @@ class AirPlayStream:
                 start_unix_ms,
             )
             return None
+        if (error := self._start_error) is not None:
+            # Nothing was anchored, so there is no instant to map content onto.
+            # Failing here costs the caller the round-trip instead of the whole
+            # ack timeout, and tells it apart from an unacknowledged start.
+            raise PlayerCommandFailed(
+                f"cliairplay could not start playback on {self.player.display_name}"
+                + (f": {error.detail}" if error.detail else "")
+            )
         return self._start_ack[1] if self._start_ack else None
 
     def rebase_position(self, position_ms: int) -> None:
@@ -964,6 +991,8 @@ class AirPlayStream:
           [STATUS] paused
           [STATUS] eof
           [STATUS] error code=<slug> http=<int> detail="<short text>"
+            (auth_required/auth_failed/connect_failed are terminal; the
+             start_failed/flush_failed command slugs answer a pending ack)
           [ERROR] <message>
         """
         player = self.player
@@ -1100,6 +1129,10 @@ class AirPlayStream:
                         requested,
                         actual,
                     )
+            # An ack and a failure are the two mutually exclusive answers to one
+            # START, so each clears the other: the caller then reads whichever
+            # answer released its wait, with nothing left from the previous one.
+            self._start_error = None
             self._started.set()
         elif "[STATUS] anchor_corrected " in line:
             self._parse_anchor_corrected(line)
@@ -1121,6 +1154,7 @@ class AirPlayStream:
                     self.flushed_head_unix_ms = 0
             else:
                 self.flushed_head_unix_ms = 0
+            self._flush_error = None
             self._flushed.set()
         elif "[STATUS] audio " in line:
             self._audio_present.set()
@@ -1137,7 +1171,7 @@ class AirPlayStream:
         elif "Re-anchored" in line and "shifted_frames=" in line:
             self._parse_reanchor_shift(line)
         elif "[STATUS] error " in line:
-            self._parse_connect_error(line)
+            self._parse_error_status(line)
         elif "[ERROR]" in line:
             player.logger.error("cliairplay: %s", line.strip())
         return False
@@ -1350,9 +1384,9 @@ class AirPlayStream:
         at all - keeps the plain timeout the callers already handle.
         """
         error = self._connect_error
-        if error and error.code == CONNECT_ERROR_AUTH_REQUIRED:
+        if error and error.code == CLI_ERROR_AUTH_REQUIRED:
             return self._password_required_error()
-        if error and error.code == CONNECT_ERROR_AUTH_FAILED:
+        if error and error.code == CLI_ERROR_AUTH_FAILED:
             return PlayerCommandFailed(
                 f"{self.player.display_name} rejected the saved password. "
                 "Run the setup for this player to enter it again.",
@@ -1370,25 +1404,37 @@ class AirPlayStream:
             translation_key="password_required",
         )
 
-    def _parse_connect_error(self, line: str) -> None:
-        """Parse and store the structured failure the binary reports before it exits."""
+    def _parse_error_status(self, line: str) -> None:
+        """Parse the structured failure the binary reports and route it to its waiter."""
         payload = line.split("[STATUS] error ", 1)[-1]
-        code_match = _CONNECT_ERROR_CODE_RE.search(payload)
-        http_match = _CONNECT_ERROR_HTTP_RE.search(payload)
-        detail_match = _CONNECT_ERROR_DETAIL_RE.search(payload)
-        self._connect_error = ConnectError(
+        code_match = _CLI_ERROR_CODE_RE.search(payload)
+        http_match = _CLI_ERROR_HTTP_RE.search(payload)
+        detail_match = _CLI_ERROR_DETAIL_RE.search(payload)
+        error = CliError(
             code=code_match.group(1) if code_match else "",
             http_status=int(http_match.group(1)) if http_match else 0,
             detail=detail_match.group(1) if detail_match else "",
         )
         self.player.logger.debug(
-            "cliairplay reported a fatal error for %s: code=%s http=%s detail=%s",
+            "cliairplay reported an error for %s: code=%s http=%s detail=%s",
             self.player.display_name,
-            self._connect_error.code,
-            self._connect_error.http_status,
-            self._connect_error.detail,
+            error.code,
+            error.http_status,
+            error.detail,
         )
-        if self._connect_error.code in (CONNECT_ERROR_AUTH_FAILED, CONNECT_ERROR_AUTH_REQUIRED):
+        # A rejected transport command leaves the connection alive, so it
+        # answers only the ack it failed - never the connect error, which
+        # decides how a NEW connection is reported to the user.
+        if error.code == CLI_ERROR_START_FAILED:
+            self._start_error = error
+            self._started.set()
+            return
+        if error.code == CLI_ERROR_FLUSH_FAILED:
+            self._flush_error = error
+            self._flushed.set()
+            return
+        self._connect_error = error
+        if error.code in (CLI_ERROR_AUTH_FAILED, CLI_ERROR_AUTH_REQUIRED):
             # The stored password is wrong, or the device demanded one we could
             # not supply (devices can enforce a password without announcing it -
             # e.g. an Apple TV with stale TXT records after the password was
