@@ -65,6 +65,10 @@ impersonated_user: ContextVar[User | None] = ContextVar("impersonated_user", def
 sendspin_player_id: ContextVar[str | None] = ContextVar("sendspin_player_id", default=None)
 # ContextVar for tracking the websocket client id associated with the current connection
 current_client_id: ContextVar[str | None] = ContextVar("current_client_id", default=None)
+# ContextVar for tracking the network address a stateless API request came from.
+# A reverse proxy or Home Assistant Ingress presents its own address for every client
+# behind it, so this identifies a caller far less precisely than a client id does.
+current_peer_address: ContextVar[str | None] = ContextVar("current_peer_address", default=None)
 
 
 async def get_authenticated_user(request: web.Request) -> User | None:
@@ -319,6 +323,24 @@ def set_current_client_id(client_id: str | None) -> None:
     :param client_id: The client id to set.
     """
     current_client_id.set(client_id)
+
+
+def get_current_peer_address() -> str | None:
+    """
+    Get the network address the current stateless API request came from.
+
+    :return: The peer address, or None if the caller is not a stateless API request.
+    """
+    return current_peer_address.get()
+
+
+def set_current_peer_address(peer_address: str | None) -> None:
+    """
+    Set the network address for the current stateless API request.
+
+    :param peer_address: The peer address to set.
+    """
+    current_peer_address.set(peer_address)
 
 
 def is_request_from_ingress(request: web.Request) -> bool:
