@@ -721,9 +721,11 @@ class SendspinAirPlayBridge:
             self._align_chunk(chunk)
         self._airplay_stream_ready.set()
 
+        # The content shift is signed: a later anchor skips content, an earlier
+        # one (the binary is free to ack either way) pads silence up to it.
         self.logger.info(
             "Bridge protocol %s for %s (start_unix_ms=%d, acked %+d ms off the commanded "
-            "instant, skipping %.0fms of content)",
+            "instant, content shifted %+.0f ms)",
             "resumed" if warm else "started",
             self.airplay_player.display_name,
             acked_adjusted,
