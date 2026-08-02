@@ -5,13 +5,14 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, cast
 
 import aiohttp
+from aiobosesoundtouch.client import SoundtouchDevice
+from aiobosesoundtouch.client.session_configuration import SessionConfiguration
 from zeroconf import ServiceStateChange
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf
 from music_assistant.models.player_provider import PlayerProvider
 
-from .client import SoundTouchClient
 from .config import (
     PRESET_KEY_PREFIX,
     build_preset_config_entries,
@@ -107,7 +108,11 @@ class BoseSoundTouchProvider(PlayerProvider):
 
     async def try_add_player(self, ip_address: str) -> None:
         """Try to add a Bose SoundTouch speaker as a player."""
-        client = SoundTouchClient(self.mass.http_session, ip_address)
+        client = SoundtouchDevice(
+            session_configuration=SessionConfiguration(
+                session=self.mass.http_session, ip=ip_address
+            )
+        )
         try:
             info = await client.get_info()
         except (aiohttp.ClientError, TimeoutError, OSError) as err:
