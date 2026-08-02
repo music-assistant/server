@@ -16,10 +16,10 @@ from music_assistant.controllers.streams.audio_processing import get_media_sessi
 from music_assistant.helpers.ffmpeg import FFMpeg
 
 from .constants import (
+    AIRPLAY_CLOCK_READY_LEAD_MS,
+    AIRPLAY_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_COLD_GROUP_START_LEAD_MS,
     AIRPLAY_GROUP_START_LEAD_MS,
-    AIRPLAY_JOIN_CLOCK_READY_LEAD_MS,
-    AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
     AIRPLAY_START_LEAD_MS,
@@ -158,7 +158,16 @@ class AirPlayStreamSession:
             # binary bursts the receiver pre-fill after START.
             self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
             await self._wait_members_audio_present()
-            await self._start_members(position_ms, self._anchor_start_unix_ms())
+            # Members of a group have to agree on one instant, and a freshly
+            # connected receiver needs about a second before it even starts
+            # probing — too late for the binary to raise its own commit floor,
+            # and a first start is the one case it will not correct afterwards.
+            # So a group anchor waits for the receivers to say when they can
+            # play, rather than trusting the lead to have covered it.
+            ready_at_unix_ms = await self._wait_members_clock_ready()
+            await self._start_members(
+                position_ms, self._anchor_start_unix_ms(ready_at_unix_ms=ready_at_unix_ms)
+            )
         except asyncio.CancelledError:
             await self.stop()
             raise
@@ -385,7 +394,7 @@ class AirPlayStreamSession:
             # of the group keeps being fed — lets the join anchor on the
             # device's own readiness instead of a fixed guess.
             ready_at_unix_ms = await stream.wait_clock_ready(
-                timeout=AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS / 1000
+                timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
             )
         except asyncio.CancelledError:
             await self.stop_client(airplay_player, reason="late joiner start cancelled")
@@ -489,7 +498,7 @@ class AirPlayStreamSession:
             if ready_at_unix_ms:
                 anchor_at = max(
                     anchor_at,
-                    (ready_at_unix_ms + AIRPLAY_JOIN_CLOCK_READY_LEAD_MS) / 1000,
+                    (ready_at_unix_ms + AIRPLAY_CLOCK_READY_LEAD_MS) / 1000,
                 )
             requested_at, fed_pos_due = map_to(anchor_at)[:2]
             start_unix_ms = int(requested_at * 1000)
@@ -828,7 +837,7 @@ class AirPlayStreamSession:
         await airplay_player.stream.connect(use_shared_ptp)
         await self._start_player_ffmpeg(airplay_player, self.media)
 
-    def _anchor_start_unix_ms(self, *, warm: bool = False) -> int:
+    def _anchor_start_unix_ms(self, *, warm: bool = False, ready_at_unix_ms: int = 0) -> int:
         """
         Return the shared audible-start instant for a readiness-confirmed start.
 
@@ -837,6 +846,10 @@ class AirPlayStreamSession:
             minimum warm lead — their queued audio plays out before the new
             content can begin — and the shared anchor must sit beyond the
             largest member value so every member splices at the same instant.
+        :param ready_at_unix_ms: Latest instant at which a member's receiver
+            clock becomes usable, as the binaries reported it. The anchor never
+            lands before it. 0 when no member reported a projection, leaving the
+            lead below as the whole anchor.
         """
         if len(self.sync_clients) == 1:
             lead_ms = AIRPLAY_START_LEAD_MS
@@ -847,6 +860,8 @@ class AirPlayStreamSession:
             # acquisition (see AIRPLAY_COLD_GROUP_START_LEAD_MS).
             lead_ms = AIRPLAY_COLD_GROUP_START_LEAD_MS
         anchor = int(time.time() * 1000) + lead_ms
+        if ready_at_unix_ms:
+            anchor = max(anchor, ready_at_unix_ms + AIRPLAY_CLOCK_READY_LEAD_MS)
         if not warm:
             return anchor
         # Splice-timeline members honor the commanded instant only when that
@@ -889,6 +904,40 @@ class AirPlayStreamSession:
         )
         if not all(results):
             raise PlayerCommandFailed("audio feed was not confirmed")
+
+    async def _wait_members_clock_ready(self) -> int:
+        """
+        Return the latest receiver-clock readiness any member reported.
+
+        Members that report nothing are not represented in the result; the
+        caller anchors those on its lead alone.
+
+        :return: Unix epoch ms of the latest projection any member reported, or 0
+            when there is nothing to wait for — a solo start, a receiver on NTP
+            timing, one that never answered, or a binary too old to report. The
+            caller then anchors on its lead alone.
+        """
+        if len(self.sync_clients) == 1:
+            # A lone receiver seats a fresh session by itself within ~20 ms and
+            # has no partner to be late against, so waiting only delays it. The
+            # instant matters once members have to agree on one.
+            return 0
+        results = await asyncio.gather(
+            *[
+                p.stream.wait_clock_ready(timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000)
+                for p in self.sync_clients
+                if p.stream
+            ]
+        )
+        ready_at_unix_ms = max((r for r in results if r), default=0)
+        if len(results) != len([r for r in results if r]):
+            self.prov.logger.debug(
+                "AirPlay start: %d of %d member(s) reported no receiver clock projection; "
+                "anchoring those on the start lead alone",
+                len(results) - len([r for r in results if r]),
+                len(results),
+            )
+        return ready_at_unix_ms
 
     async def _start_members(
         self,
