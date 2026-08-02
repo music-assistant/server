@@ -30,6 +30,7 @@ from music_assistant_models.errors import (
 from music_assistant.constants import DB_TABLE_PLAYLOG, HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     ROLE_SCOPES,
+    get_current_client_id,
     get_current_token,
     get_current_user,
     has_scope,
@@ -75,8 +76,17 @@ HA_TOKEN_NAME = "Home Assistant Integration"
 JOIN_CODE_LENGTH = 12
 JOIN_CODE_CHARSET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # No I/O/0/1 for readability
 JOIN_CODE_DEFAULT_EXPIRY_HOURS = 8
-# No source IP available here, so throttle failed exchanges globally under one key.
-JOIN_CODE_RATE_LIMIT_KEY = "join_code_exchange"
+# Failed exchanges are throttled per calling websocket connection, so one guest fumbling a
+# stale QR code cannot lock out every other guest at a party. Callers that reach the API
+# without a connection identity (the JSON RPC endpoint, in-process callers) share one bucket.
+JOIN_CODE_ANONYMOUS_RATE_LIMIT_KEY = "no-connection"
+# Second, server-wide bucket that backstops the per-connection buckets, since a client can
+# start a new connection (and thus a new bucket) at will. The join code itself is what makes
+# guessing infeasible (12 chars over a 32 symbol alphabet is ~2^60, valid for hours), so this
+# ceiling is deliberately far above any plausible party-scale burst of legitimate failures.
+JOIN_CODE_GLOBAL_RATE_LIMIT_KEY = "all-connections"
+JOIN_CODE_GLOBAL_FAILURE_CEILING = 1000
+JOIN_CODE_GLOBAL_COOLDOWN_SECONDS = 60
 
 
 class AuthenticationManager:
@@ -95,7 +105,13 @@ class AuthenticationManager:
         self.logger = LOGGER
         self._has_users: bool = False
         self.jwt_helper: JWTHelper = None  # type: ignore[assignment]
-        self._join_code_rate_limiter = LoginRateLimiter()
+        self._join_code_rate_limiter = LoginRateLimiter(subject="client")
+        self._join_code_global_rate_limiter = LoginRateLimiter(
+            delay_tiers=((JOIN_CODE_GLOBAL_FAILURE_CEILING, JOIN_CODE_GLOBAL_COOLDOWN_SECONDS),),
+            warn_threshold=JOIN_CODE_GLOBAL_FAILURE_CEILING,
+            alert_threshold=JOIN_CODE_GLOBAL_FAILURE_CEILING * 2,
+            subject="join_codes",
+        )
         # Stops concurrent exchanges from passing the rate limit check before failures land
         self._join_code_exchange_lock = asyncio.Lock()
 
@@ -1483,31 +1499,28 @@ class AuthenticationManager:
         :param code: The short join code.
         :return: Authentication result with access token if successful.
         """
+        client_id = get_current_client_id()
+        rate_limit_key = client_id or JOIN_CODE_ANONYMOUS_RATE_LIMIT_KEY
         async with self._join_code_exchange_lock:
-            allowed, remaining_delay = await self._join_code_rate_limiter.check_rate_limit(
-                JOIN_CODE_RATE_LIMIT_KEY
-            )
-            if not allowed:
-                self.logger.warning(
-                    "Join code exchange rate limit exceeded. %d seconds remaining.", remaining_delay
-                )
-                return {
-                    "success": False,
-                    "error": (
-                        f"Too many failed attempts. Please try again in {remaining_delay} seconds."
-                    ),
-                }
+            if throttled := await self._check_join_code_rate_limit(rate_limit_key, code):
+                return throttled
 
             token = await self._exchange_join_code(code)
 
             if not token:
-                await self._join_code_rate_limiter.record_failed_attempt(JOIN_CODE_RATE_LIMIT_KEY)
+                await self._join_code_rate_limiter.record_failed_attempt(rate_limit_key)
+                await self._join_code_global_rate_limiter.record_failed_attempt(
+                    JOIN_CODE_GLOBAL_RATE_LIMIT_KEY
+                )
                 return {
                     "success": False,
                     "error": "Invalid or expired join code",
                 }
 
-        # No clear_attempts on success: any valid-code holder could reset the global counter
+            # Only a per-connection bucket is cleared on success, so presenting a valid code
+            # lifts the throttle for that connection alone and never for anyone else.
+            if client_id:
+                await self._join_code_rate_limiter.clear_attempts(rate_limit_key)
 
         # Decode token to get user info
         try:
@@ -1890,6 +1903,43 @@ class AuthenticationManager:
         else:
             self.logger.info("Password changed for user %s", target_user.username)
 
+    async def _check_join_code_rate_limit(self, key: str, code: str) -> dict[str, Any] | None:
+        """
+        Check the join code exchange throttles that apply to the calling client.
+
+        :param key: Rate limit key identifying the calling client.
+        :param code: The join code the client wants to exchange, used for diagnostics only.
+        :return: The error result to return to the caller, or None if the attempt may proceed.
+        """
+        limiters = (
+            ("client", self._join_code_rate_limiter, key),
+            ("server", self._join_code_global_rate_limiter, JOIN_CODE_GLOBAL_RATE_LIMIT_KEY),
+        )
+        for scope, limiter, limiter_key in limiters:
+            allowed, remaining_delay = await limiter.check_rate_limit(limiter_key)
+            if allowed:
+                continue
+            self.logger.warning(
+                "Join code exchange throttled by the %s limit "
+                "(client=%s, code=%s, client_failures=%d, server_failures=%d). "
+                "%d seconds remaining.",
+                scope,
+                key,
+                _mask_join_code(code),
+                self._join_code_rate_limiter.get_attempt_count(key),
+                self._join_code_global_rate_limiter.get_attempt_count(
+                    JOIN_CODE_GLOBAL_RATE_LIMIT_KEY
+                ),
+                remaining_delay,
+            )
+            return {
+                "success": False,
+                "error": (
+                    f"Too many failed attempts. Please try again in {remaining_delay} seconds."
+                ),
+            }
+        return None
+
     async def _exchange_join_code(self, code: str) -> str | None:
         """
         Exchange a join code for a JWT access token.
@@ -1917,7 +1967,11 @@ class AuthenticationManager:
         await self.database.commit()
 
         if not row:
-            self.logger.warning("Join code exchange rejected (code=%s)", code.upper())
+            self.logger.warning(
+                "Join code exchange rejected (client=%s, code=%s)",
+                get_current_client_id() or JOIN_CODE_ANONYMOUS_RATE_LIMIT_KEY,
+                _mask_join_code(code),
+            )
             return None
 
         user = await self.get_user(row["user_id"])
@@ -2014,3 +2068,14 @@ class AuthenticationManager:
             days=TOKEN_ABSOLUTE_MAX_EXPIRATION - HA_TOKEN_ROTATION_MARGIN
         )
         return now < rotate_after
+
+
+def _mask_join_code(code: str) -> str:
+    """
+    Mask a join code so support logs can correlate attempts without exposing a usable code.
+
+    :param code: The join code as supplied by the client.
+    :return: The code with everything past its prefix replaced by asterisks.
+    """
+    normalized = code.upper()
+    return normalized[:4] + "*" * max(len(normalized) - 4, 0)

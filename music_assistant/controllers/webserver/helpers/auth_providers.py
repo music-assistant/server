@@ -7,9 +7,10 @@ import hashlib
 import logging
 import secrets
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Final, TypedDict, cast
 from urllib.parse import urlparse
 
 from hass_client import HomeAssistantClient
@@ -28,6 +29,10 @@ if TYPE_CHECKING:
 
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
+
+# Progressive (failed attempts, delay in seconds) tiers applied to a single rate limit key
+DEFAULT_DELAY_TIERS: Final[tuple[tuple[int, int], ...]] = ((3, 30), (6, 60), (10, 120), (15, 300))
+DEFAULT_TRACKING_WINDOW: Final = timedelta(minutes=30)
 
 
 def normalize_username(username: str) -> str:
@@ -118,62 +123,74 @@ async def get_ha_user_role(
 class LoginRateLimiter:
     """Rate limiter for login attempts to prevent brute force attacks."""
 
-    def __init__(self) -> None:
-        """Initialize the rate limiter."""
-        # Track failed attempts per username: {username: [timestamp1, timestamp2, ...]}
+    def __init__(
+        self,
+        delay_tiers: Sequence[tuple[int, int]] = DEFAULT_DELAY_TIERS,
+        tracking_window: timedelta = DEFAULT_TRACKING_WINDOW,
+        warn_threshold: int = 10,
+        alert_threshold: int = 20,
+        subject: str = "username",
+    ) -> None:
+        """
+        Initialize the rate limiter.
+
+        :param delay_tiers: (failed attempts, delay in seconds) pairs in ascending order of
+            attempts. The highest tier whose attempt count is reached sets the delay.
+        :param tracking_window: How long a failed attempt keeps counting towards the tiers.
+        :param warn_threshold: Failed attempts for one key before suspicious activity is logged.
+        :param alert_threshold: Failed attempts for one key before a stronger warning is logged.
+        :param subject: What the keys of this limiter identify, used in log messages.
+        """
+        # Track failed attempts per key: {key: [timestamp1, timestamp2, ...]}
         self._failed_attempts: dict[str, list[datetime]] = {}
-        # Time window for tracking attempts (30 minutes)
-        self._tracking_window = timedelta(minutes=30)
+        self._delay_tiers = tuple(delay_tiers)
+        self._tracking_window = tracking_window
+        self._warn_threshold = warn_threshold
+        self._alert_threshold = alert_threshold
+        self._subject = subject
         # Lock for thread-safe access to _failed_attempts
         self._lock = asyncio.Lock()
 
-    def get_delay(self, username: str) -> int:
+    def get_attempt_count(self, key: str) -> int:
         """
-        Get the delay in seconds before next login attempt is allowed.
+        Get the number of failed attempts for a key inside the tracking window.
 
-        Progressive delays based on failed attempts:
-        - 1-2 attempts: no delay
-        - 3-5 attempts: 30 seconds
-        - 6-9 attempts: 60 seconds
-        - 10-14 attempts: 120 seconds
-        - 15+ attempts: 300 seconds (5 minutes)
+        :param key: The key to count failed attempts for.
+        :return: Number of failed attempts still being tracked.
+        """
+        self._cleanup_old_attempts(key)
+        return len(self._failed_attempts.get(key, ()))
 
-        :param username: The username attempting to log in.
+    def get_delay(self, key: str) -> int:
+        """
+        Get the delay in seconds before the next attempt for a key is allowed.
+
+        :param key: The key attempting to authenticate.
         :return: Delay in seconds (0 if no delay needed).
         """
-        self._cleanup_old_attempts(username)
+        attempt_count = self.get_attempt_count(key)
+        delay = 0
+        for tier_attempts, tier_delay in self._delay_tiers:
+            if attempt_count >= tier_attempts:
+                delay = tier_delay
+        return delay
 
-        if username not in self._failed_attempts:
-            return 0
-
-        attempt_count = len(self._failed_attempts[username])
-
-        if attempt_count < 3:
-            return 0
-        if attempt_count < 6:
-            return 30
-        if attempt_count < 10:
-            return 60
-        if attempt_count < 15:
-            return 120
-        return 300  # 5 minutes max delay
-
-    async def check_rate_limit(self, username: str) -> tuple[bool, int]:
+    async def check_rate_limit(self, key: str) -> tuple[bool, int]:
         """
-        Check if login attempt is allowed and apply delay if needed.
+        Check if an attempt is allowed and apply delay if needed.
 
-        :param username: The username attempting to log in.
+        :param key: The key attempting to authenticate.
         :return: Tuple of (allowed, delay_seconds). If not allowed, includes remaining delay.
         """
         async with self._lock:
-            self._cleanup_old_attempts(username)
+            self._cleanup_old_attempts(key)
 
-            if username not in self._failed_attempts or not self._failed_attempts[username]:
+            if key not in self._failed_attempts or not self._failed_attempts[key]:
                 return True, 0
 
             # Get the most recent failed attempt
-            last_attempt = self._failed_attempts[username][-1]
-            required_delay = self.get_delay(username)
+            last_attempt = self._failed_attempts[key][-1]
+            required_delay = self.get_delay(key)
 
             if required_delay == 0:
                 return True, 0
@@ -188,60 +205,65 @@ class LoginRateLimiter:
 
             return True, 0
 
-    async def record_failed_attempt(self, username: str) -> None:
+    async def record_failed_attempt(self, key: str) -> None:
         """
-        Record a failed login attempt.
+        Record a failed attempt.
 
-        :param username: The username that failed to log in.
+        :param key: The key that failed to authenticate.
         """
         async with self._lock:
-            self._cleanup_old_attempts(username)
+            self._cleanup_old_attempts(key)
 
-            if username not in self._failed_attempts:
-                self._failed_attempts[username] = []
+            if key not in self._failed_attempts:
+                self._failed_attempts[key] = []
 
-            self._failed_attempts[username].append(utc())
+            self._failed_attempts[key].append(utc())
 
             # Log warning for suspicious activity
-            attempt_count = len(self._failed_attempts[username])
-            if attempt_count == 10:
+            attempt_count = len(self._failed_attempts[key])
+            if attempt_count == self._warn_threshold:
                 LOGGER.warning(
-                    "Suspicious login activity: 10 failed attempts for username '%s'", username
+                    "Suspicious activity: %d failed attempts (%s=%s)",
+                    attempt_count,
+                    self._subject,
+                    key,
                 )
-            elif attempt_count == 20:
+            elif attempt_count == self._alert_threshold:
                 LOGGER.warning(
-                    "High suspicious login activity: 20 failed attempts for username '%s'. "
-                    "Consider manually disabling this account.",
-                    username,
+                    "High suspicious activity: %d failed attempts (%s=%s). "
+                    "Manual intervention may be needed.",
+                    attempt_count,
+                    self._subject,
+                    key,
                 )
 
-    async def clear_attempts(self, username: str) -> None:
+    async def clear_attempts(self, key: str) -> None:
         """
-        Clear failed attempts for a username (called after successful login).
+        Clear failed attempts for a key (called after a successful attempt).
 
-        :param username: The username to clear.
+        :param key: The key to clear.
         """
         async with self._lock:
-            if username in self._failed_attempts:
-                del self._failed_attempts[username]
+            if key in self._failed_attempts:
+                del self._failed_attempts[key]
 
-    def _cleanup_old_attempts(self, username: str) -> None:
+    def _cleanup_old_attempts(self, key: str) -> None:
         """
         Remove failed attempts outside the tracking window.
 
-        :param username: The username to clean up.
+        :param key: The key to clean up.
         """
-        if username not in self._failed_attempts:
+        if key not in self._failed_attempts:
             return
 
         cutoff_time = utc() - self._tracking_window
-        self._failed_attempts[username] = [
-            timestamp for timestamp in self._failed_attempts[username] if timestamp > cutoff_time
+        self._failed_attempts[key] = [
+            timestamp for timestamp in self._failed_attempts[key] if timestamp > cutoff_time
         ]
 
-        # Remove username if no attempts left
-        if not self._failed_attempts[username]:
-            del self._failed_attempts[username]
+        # Remove key if no attempts left
+        if not self._failed_attempts[key]:
+            del self._failed_attempts[key]
 
 
 class LoginProviderConfig(TypedDict, total=False):
