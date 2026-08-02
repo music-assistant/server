@@ -199,3 +199,7 @@ ATV_PASSWORD_BIT = 0x1000
 # (Announce/Sync/Follow_Up) when verbose logging is active. Off by default —
 # the trace floods the log and only matters for clock-sync debugging.
 CONF_VERBOSE_PTP_LOGGING: Final[str] = "verbose_ptp_logging"
+
+# The cliairplay binary tags no log levels on its output, so a genuine problem is
+# recognised by keyword and promoted to a warning that stays visible at normal levels.
+CLI_PROBLEM_MARKERS: Final[tuple[str, ...]] = ("error", "cannot", "failed", "unable")

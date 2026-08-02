@@ -66,7 +66,11 @@ def _make_player() -> MagicMock:
     prov.dacp_id = "ABCDEF0123456789"
     prov.ptp_daemon_running = True
     prov.logger = logging.getLogger("test.airplay.prov")
+    # auto-detected publish ip: reachable address of this host, but not the interface
+    # the stream to this device leaves from - so it is never handed to the binary
     prov.mass.streams.publish_ip = "192.168.1.99"
+    prov.mass.streams.get_source_ip = AsyncMock(return_value="192.168.1.5")
+    prov.mass.streams.get_publish_ip = MagicMock(return_value=None)
     player.provider = prov
     return player
 
@@ -74,15 +78,9 @@ def _make_player() -> MagicMock:
 async def _build_args(player: MagicMock) -> list[str]:
     """Build the CLI args for the given player with the externals patched out."""
     stream = AirPlayStream(player)
-    with (
-        patch(
-            "music_assistant.providers.airplay.stream.get_cli_binary",
-            return_value="/fake/cliairplay",
-        ),
-        patch(
-            "music_assistant.providers.airplay.stream.resolve_if_ip",
-            return_value="192.168.1.5",
-        ),
+    with patch(
+        "music_assistant.providers.airplay.stream.get_cli_binary",
+        return_value="/fake/cliairplay",
     ):
         return await stream._build_cli_args()
 
@@ -123,13 +121,67 @@ async def test_cli_args_default_auto() -> None:
     assert "--latency" not in args
     # PTP daemon is running: stream attaches to the shared clock
     assert "--ptp-shared" in args
-    # networking
+    # networking: the interface the timing packets leave from is pinned
     assert _arg_value(args, "--if") == "192.168.1.5"
-    assert _arg_value(args, "--publish-ip") == "192.168.1.99"
+    assert "--publish-ip" not in args
     # the target is the only positional argument; PREPARE selects stdin
     assert args[-1] == "192.168.1.50"
     assert "-" not in args
     assert "--cmdpipe" in args
+
+
+@pytest.mark.asyncio
+async def test_cli_args_auto_publish_ip_is_never_advertised() -> None:
+    """
+    An auto-detected publish IP must not reach --publish-ip.
+
+    The binary treats it as authoritative for the PTP timing-peer list, while the
+    timing packets leave from the resolved --if interface. A peer list naming any
+    other address makes the receiver discard our clock and play silence.
+    """
+    player = _make_player()
+    player.provider.mass.streams.publish_ip = "10.45.0.20"
+
+    args = await _build_args(player)
+
+    assert _arg_value(args, "--if") == "192.168.1.5"
+    assert "--publish-ip" not in args
+    assert "10.45.0.20" not in args
+
+
+@pytest.mark.asyncio
+async def test_cli_args_configured_publish_ip_is_advertised() -> None:
+    """An explicitly configured publish IP is a reachability statement and is passed on."""
+    player = _make_player()
+    player.provider.mass.streams.get_publish_ip = MagicMock(return_value="10.45.0.20")
+
+    args = await _build_args(player)
+
+    assert _arg_value(args, "--publish-ip") == "10.45.0.20"
+    player.provider.mass.streams.get_publish_ip.assert_called_once_with("192.168.1.50")
+
+
+@pytest.mark.asyncio
+async def test_cli_args_publish_ip_omitted_when_it_matches_the_interface() -> None:
+    """A publish IP identical to the bound interface adds nothing to the peer list."""
+    player = _make_player()
+    player.provider.mass.streams.get_publish_ip = MagicMock(return_value="192.168.1.5")
+
+    args = await _build_args(player)
+
+    assert _arg_value(args, "--if") == "192.168.1.5"
+    assert "--publish-ip" not in args
+
+
+@pytest.mark.asyncio
+async def test_cli_args_no_interface_pin_leaves_routing_to_the_binary() -> None:
+    """With no interface to pin, --if is dropped so the routing table decides."""
+    player = _make_player()
+    player.provider.mass.streams.get_source_ip = AsyncMock(return_value=None)
+
+    args = await _build_args(player)
+
+    assert "--if" not in args
 
 
 @pytest.mark.asyncio
@@ -184,15 +236,9 @@ async def test_cli_args_hires_pcm_format() -> None:
     player = _make_player()
     hires_format = AudioFormat(content_type=ContentType.PCM_S32LE, sample_rate=48000, bit_depth=24)
     stream = AirPlayStream(player, pcm_format=hires_format)
-    with (
-        patch(
-            "music_assistant.providers.airplay.stream.get_cli_binary",
-            return_value="/fake/cliairplay",
-        ),
-        patch(
-            "music_assistant.providers.airplay.stream.resolve_if_ip",
-            return_value="192.168.1.5",
-        ),
+    with patch(
+        "music_assistant.providers.airplay.stream.get_cli_binary",
+        return_value="/fake/cliairplay",
     ):
         args = await stream._build_cli_args()
 
