@@ -477,6 +477,9 @@ class AudiobooksController(MediaControllerBase[Audiobook]):
             # audiobooks have no image picker, so keep the cover in sync with the
             # provider instead of accumulating merged entries
             metadata.images = update.metadata.images
+        if not overwrite and update.metadata.collections is not None:
+            # always update collections to prevent stale empty ones
+            metadata.collections = update.metadata.collections
         cur_item.external_ids.update(update.external_ids)
         name = update.name if overwrite else cur_item.name
         sort_name = update.sort_name if overwrite else cur_item.sort_name or update.sort_name
