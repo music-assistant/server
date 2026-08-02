@@ -213,9 +213,14 @@ class WebsocketClientHandler:
             self._logger.warning("Invalid command: %s", msg.command)
             return
 
-        # The client id identifies the connection, not the user, and unauthenticated handlers
-        # need it too (the join code exchange throttles per connection), so always set it.
+        # Put this connection's identity in context for the API methods. ContextVars live
+        # for as long as the connection does, so every command sets all of them: an
+        # unauthenticated handler must see this connection's own (possibly absent) user
+        # rather than whatever the command before it left behind.
         set_current_client_id(self.client_id)
+        set_current_user(self._authenticated_user)
+        set_current_token(self._current_token)
+        set_sendspin_player_id(self._sendspin_player_id)
 
         # Check authentication if required
         if handler.authenticated or handler.required_scope:
@@ -231,11 +236,6 @@ class WebsocketClientHandler:
                     )
                 )
                 return
-
-            # Set user, token and sendspin player in context for API methods
-            set_current_user(self._authenticated_user)
-            set_current_token(self._current_token)
-            set_sendspin_player_id(self._sendspin_player_id)
 
             # Check scope if required
             if handler.required_scope and not has_scope(

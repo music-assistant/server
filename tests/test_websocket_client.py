@@ -12,7 +12,11 @@ from music_assistant_models.errors import InsufficientPermissions
 
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_client_id,
+    get_current_token,
+    get_current_user,
     set_current_client_id,
+    set_current_token,
+    set_current_user,
 )
 from music_assistant.controllers.webserver.websocket_client import WebsocketClientHandler
 from music_assistant.helpers.api import APICommandHandler
@@ -141,3 +145,17 @@ async def test_command_sets_client_id_in_context(authenticated: bool) -> None:
 
     assert _sent_error_code(client) is None
     assert get_current_client_id() == "test_client"
+
+
+@pytest.mark.asyncio
+async def test_unauthenticated_command_does_not_inherit_a_user() -> None:
+    """An unauthenticated command must not see the user of a command that ran before it."""
+    set_current_user(User(user_id="user_1", username="tester", role=UserRole.ADMIN))
+    set_current_token("stale_token")
+    client = _create_client(None, _command_handler(authenticated=False))
+
+    await client._handle_command(CommandMessage(message_id="1", command="test/protected"))
+
+    assert _sent_error_code(client) is None
+    assert get_current_user() is None
+    assert get_current_token() is None
