@@ -158,12 +158,12 @@ class AirPlayStreamSession:
             # binary bursts the receiver pre-fill after START.
             self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
             await self._wait_members_audio_present()
-            # A receiver renders nothing at an anchor its clock cannot seat yet,
-            # and a freshly connected one needs about a second before it even
-            # starts probing — too late for the binary to raise its own commit
-            # floor, and an origin start is the one case it will not correct
-            # afterwards. So the anchor waits for the receivers to say when
-            # they can play.
+            # Members of a group have to agree on one instant, and a freshly
+            # connected receiver needs about a second before it even starts
+            # probing — too late for the binary to raise its own commit floor,
+            # and a first start is the one case it will not correct afterwards.
+            # So a group anchor waits for the receivers to say when they can
+            # play, rather than trusting the lead to have covered it.
             ready_at_unix_ms = await self._wait_members_clock_ready()
             await self._start_members(
                 position_ms, self._anchor_start_unix_ms(ready_at_unix_ms=ready_at_unix_ms)
@@ -910,9 +910,15 @@ class AirPlayStreamSession:
         Return the latest instant at which every member's receiver clock is usable.
 
         :return: Unix epoch ms of the latest projection any member reported, or 0
-            when none did — a receiver on NTP timing, one that never answered, or
-            a binary too old to report. The caller then anchors on its lead alone.
+            when there is nothing to wait for — a solo start, a receiver on NTP
+            timing, one that never answered, or a binary too old to report. The
+            caller then anchors on its lead alone.
         """
+        if len(self.sync_clients) == 1:
+            # A lone receiver seats a fresh session by itself within ~20 ms and
+            # has no partner to be late against, so waiting only delays it. The
+            # instant matters once members have to agree on one.
+            return 0
         results = await asyncio.gather(
             *[
                 p.stream.wait_clock_ready(timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000)
