@@ -1,0 +1,11 @@
+{
+  "type": "music",
+  "domain": "pira_at",
+  "stage": "beta",
+  "name": "PIRA.AT",
+  "description": "Live piratenstations uit de publieke PIRA.AT API.",
+  "codeowners": ["@Laav"],
+  "requirements": [],
+  "documentation": "https://github.com/Laav/music-assistant-pira-at-provider",
+  "multi_instance": false
+}
