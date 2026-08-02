@@ -1977,6 +1977,82 @@ def test_anchor_corrected_status_line_tolerates_malformed_line() -> None:
     assert stream._start_position == 12.0
 
 
+def test_content_cut_short_rebases_the_position_and_warns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A cut that ended early gives back the ms the correction over-advanced the base by."""
+    stream = AirPlayStream(_make_player())
+    stream._start_position = 12.0
+    stream._handle_status_line(
+        "[STATUS] anchor_corrected requested_unix_ms=1750000000000 "
+        "from_unix_ms=1750000000400 at_unix_ms=1750000000900 content_cut_ms=500"
+    )
+    assert stream._start_position == 12.5
+
+    with caplog.at_level(logging.WARNING):
+        ended = stream._handle_status_line(
+            "[STATUS] content_cut requested_ms=500 cut_ms=180 cut_bytes=31752 drain_ms=210"
+        )
+
+    assert ended is False
+    assert stream._start_position == pytest.approx(12.18)
+    assert "AirPlay content cut" in caplog.text
+    assert "Player A" in caplog.text
+    assert "320 ms short" in caplog.text
+
+
+def test_content_cut_in_full_leaves_the_position_alone(caplog: pytest.LogCaptureFixture) -> None:
+    """A cut that took what it asked for needs no correction and stays quiet."""
+    stream = AirPlayStream(_make_player())
+    stream._start_position = 12.0
+    stream._handle_status_line(
+        "[STATUS] anchor_corrected requested_unix_ms=1750000000000 "
+        "from_unix_ms=1750000000400 at_unix_ms=1750000000900 content_cut_ms=500"
+    )
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        # a few ms below the request is byte quantization, not a short cut
+        stream._handle_status_line(
+            "[STATUS] content_cut requested_ms=500 cut_ms=498 cut_bytes=87887 drain_ms=505"
+        )
+
+    assert stream._start_position == 12.5
+    assert caplog.text == ""
+
+
+def test_content_cut_after_a_new_anchor_is_not_reconciled() -> None:
+    """A cut settling after a START must not be taken off that START's absolute base."""
+    stream = AirPlayStream(_make_player())
+    stream._start_position = 12.0
+    stream._handle_status_line(
+        "[STATUS] anchor_corrected requested_unix_ms=1750000000000 "
+        "from_unix_ms=1750000000400 at_unix_ms=1750000000900 content_cut_ms=500"
+    )
+    stream.rebase_position(30_000)
+
+    stream._handle_status_line(
+        "[STATUS] content_cut requested_ms=500 cut_ms=0 cut_bytes=0 drain_ms=12"
+    )
+
+    assert stream._start_position == 30.0
+
+
+def test_content_cut_status_line_tolerates_malformed_line() -> None:
+    """A malformed content_cut line is dropped instead of raising or rebasing."""
+    stream = AirPlayStream(_make_player())
+    stream._start_position = 12.0
+    stream._handle_status_line(
+        "[STATUS] anchor_corrected requested_unix_ms=1750000000000 "
+        "from_unix_ms=1750000000400 at_unix_ms=1750000000900 content_cut_ms=500"
+    )
+
+    ended = stream._handle_status_line("[STATUS] content_cut requested_ms=500 cut_ms=garbage")
+
+    assert ended is False
+    assert stream._start_position == 12.5
+
+
 def test_clock_verified_status_line_is_debug_logged(caplog: pytest.LogCaptureFixture) -> None:
     """A clock_verified line needs no server action beyond a debug note of the margin."""
     stream = AirPlayStream(_make_player())
