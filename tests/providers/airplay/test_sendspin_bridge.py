@@ -41,6 +41,7 @@ from music_assistant.providers.airplay.constants import (
 )
 from music_assistant.providers.airplay.sendspin_bridge import (
     BRIDGE_COLD_START_LEAD_MS,
+    BRIDGE_MIN_BUFFER_MS,
     BRIDGE_WARM_START_LEAD_MS,
     MAX_DEVICE_BUFFER_SECONDS,
     MAX_HELD_AUDIO_US,
@@ -1188,7 +1189,7 @@ def test_bridge_timing_reports_the_cold_lead_without_a_warm_stream() -> None:
     bridge._refresh_bridge_timing()
 
     role.set_timing.assert_called_once_with(
-        required_lead_time_ms=BRIDGE_COLD_START_LEAD_MS, min_buffer_ms=0
+        required_lead_time_ms=BRIDGE_COLD_START_LEAD_MS, min_buffer_ms=BRIDGE_MIN_BUFFER_MS
     )
 
 
@@ -1201,7 +1202,7 @@ def test_bridge_timing_reports_the_warm_lead_for_a_reusable_stream() -> None:
     bridge._refresh_bridge_timing()
 
     role.set_timing.assert_called_once_with(
-        required_lead_time_ms=BRIDGE_WARM_START_LEAD_MS, min_buffer_ms=0
+        required_lead_time_ms=BRIDGE_WARM_START_LEAD_MS, min_buffer_ms=BRIDGE_MIN_BUFFER_MS
     )
 
 
@@ -1238,5 +1239,5 @@ def test_stream_start_reads_the_lead_before_rewinding_the_stream_state() -> None
 
     assert observed == [(True, kept_stream)]
     role.set_timing.assert_called_once_with(
-        required_lead_time_ms=BRIDGE_WARM_START_LEAD_MS, min_buffer_ms=0
+        required_lead_time_ms=BRIDGE_WARM_START_LEAD_MS, min_buffer_ms=BRIDGE_MIN_BUFFER_MS
     )

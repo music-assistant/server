@@ -91,6 +91,13 @@ BRIDGE_COLD_CONNECT_BUDGET_MS: int = 2000
 BRIDGE_COLD_START_LEAD_MS: int = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS + BRIDGE_COLD_CONNECT_BUDGET_MS
 BRIDGE_WARM_START_LEAD_MS: int = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS
 
+# Buffer (ms) Sendspin keeps the bridge supplied with for the whole stream, and
+# the only floor a live source honours -- the start lead above is a hint Sendspin
+# may ignore to keep live latency down. It keeps the binary's ring fed rather
+# than tracking real time, without charging every other group member the full
+# start lead in added latency on a live source.
+BRIDGE_MIN_BUFFER_MS: int = 1000
+
 # Defensive cap (µs of audio) on the backlog held while the start anchor is being
 # settled. Sendspin bounds what it hands a joiner at 30 s of producer backlog, so
 # a hold growing past that means the anchor never resolved; the oldest chunks are
@@ -369,11 +376,11 @@ class SendspinAirPlayBridge:
 
     def _refresh_bridge_timing(self) -> None:
         """
-        Push the AirPlay startup lead to the bridge role.
+        Push the AirPlay startup lead and ongoing buffer to the bridge role.
 
         The lead is how far ahead of the audible instant Sendspin schedules the
         first chunk; a kept, already-connected CLI needs less of it than a cold
-        one. ``min_buffer_ms`` is 0 — the device carries its own jitter buffer.
+        one.
         """
         if self._bridge_role is None:
             return
@@ -384,7 +391,7 @@ class SendspinAirPlayBridge:
         )
         self._bridge_role.set_timing(
             required_lead_time_ms=lead_ms,
-            min_buffer_ms=0,
+            min_buffer_ms=BRIDGE_MIN_BUFFER_MS,
         )
 
     def _stream_is_warm_eligible(self) -> bool:
