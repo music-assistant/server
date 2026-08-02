@@ -1043,10 +1043,6 @@ def interface_name_for_ip(ip: str) -> str | None:
     return None
 
 
-async def get_primary_ip_address() -> str | None:
-    """Return the primary IP address of the system."""
-
-
 async def is_port_in_use(port: int, host: str | None = None) -> bool:
     """
     Check if a port is in use.
