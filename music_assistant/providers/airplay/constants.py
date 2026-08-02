@@ -119,6 +119,37 @@ AIRPLAY_COLD_GROUP_START_LEAD_MS: Final[int] = 2500
 # member's skip target lands beyond its queued audio.
 AIRPLAY_SPLICE_LEAD_MARGIN_MS: Final[int] = 150
 
+# Floor for the late-join PCM ring, which has to hold every sample between the
+# audible position and the write head: a joiner's anchor maps onto content the
+# group was already fed but has not played yet. That distance - the write-head
+# lead - is the sum of every buffer between the session's byte counter and the
+# speaker, and it is far larger than the binary's own ring alone:
+#   ~5.7 s  the per-member ffmpeg and the pipes around it (measured 5.2 s
+#           steady / 5.7 s peak at 44.1 kHz/16-bit, which is the worst case in
+#           SECONDS - the same buffers hold ~4.3 s at the 32-bit hi-res carrier
+#           rate, and low-delay ffmpeg flags do not shrink them)
+#   ~4.0 s  the cliairplay ring: the binary's own lead (2000 ms default,
+#           clamped to the device-reported window) plus its 2 s of slack
+#   ~2.0 s  the receiver's own buffer
+# ~11.7 s in total, against 8.9-11.0 s measured across native AirPlay 2
+# sessions (Apple TV and Sonos, joining in both directions). This floor is that
+# sum rounded up, and it is only a floor: the lead is measured per session and
+# the ring grows to match, because a receiver that reports a wider lead window
+# or buffers more deeply moves the sum with nothing to announce it.
+AIRPLAY_LATE_JOIN_RING_MIN_SECONDS: Final[float] = 12.0
+# Grown on top of the largest lead a session has actually shown, so a lead that
+# drifts up between two joins cannot clip the oldest sample a joiner needs.
+AIRPLAY_LATE_JOIN_RING_MARGIN_SECONDS: Final[float] = 2.0
+# Hard bound on the ring, which is per session (one ring feeds every member) and
+# costs byte_rate x seconds. Bounded in BYTES rather than seconds on purpose:
+# the seconds the ring must hold are largest at the LOWEST byte rate (see the
+# measurements above), so a single byte bound buys ~35 s at 44.1 kHz/16-bit -
+# three times the measured lead, where the seconds are actually needed - and
+# still ~16 s at the 32-bit hi-res carrier, where the pipeline holds fewer
+# seconds anyway. 6 MiB per playing group is a few percent of the server's idle
+# footprint.
+AIRPLAY_LATE_JOIN_RING_MAX_BYTES: Final[int] = 6 * 1024 * 1024
+
 # Delay (seconds) before automatically re-joining a group member whose
 # cliairplay process died unexpectedly mid-session (e.g. the device rode out a
 # network blackout longer than the binary's own keepalive tolerance). A single
