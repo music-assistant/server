@@ -24,7 +24,7 @@ from music_assistant.providers.airplay.constants import (
     AirPlayRemoteCommand,
     StreamingProtocol,
 )
-from music_assistant.providers.airplay.stream import AirPlayStream, ConnectError
+from music_assistant.providers.airplay.stream import AirPlayStream, CliError
 
 START_UNIX_MS = 1_750_000_000_000
 AP2_FEATURES = "0x4A7FDFD5,0x3C177FDE"
@@ -866,6 +866,61 @@ async def test_start_raises_when_command_not_delivered() -> None:
         pytest.raises(PlayerCommandFailed, match="Could not deliver START"),
     ):
         await stream.start(1_750_000_000_000, 0)
+
+
+@pytest.mark.asyncio
+async def test_start_fails_fast_on_reported_start_failure() -> None:
+    """A reported start failure ends the ack wait at once instead of timing out."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
+        start_task = asyncio.create_task(stream.start(START_UNIX_MS, 0, join=True))
+        await asyncio.sleep(0)
+        stream._handle_status_line(
+            '[STATUS] error code=start_failed http=0 detail="no live session to start"'
+        )
+        with pytest.raises(PlayerCommandFailed, match="no live session to start"):
+            await start_task
+
+    # a command failure must not poison how a NEW connection is reported
+    assert stream._connect_error is None
+
+
+@pytest.mark.asyncio
+async def test_flush_fails_fast_on_reported_flush_failure() -> None:
+    """A reported flush failure resolves the ack wait as a failure, not a timeout."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
+        flush_task = asyncio.create_task(stream.flush())
+        await asyncio.sleep(0)
+        stream._handle_status_line(
+            '[STATUS] error code=flush_failed http=0 detail="session rejected the flush"'
+        )
+        assert await flush_task is False
+
+    assert stream._connect_error is None
+
+
+@pytest.mark.asyncio
+async def test_start_failure_does_not_outlive_its_command() -> None:
+    """A failed START leaves no error behind that would fail the next one."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+    stream._handle_status_line("[STATUS] error code=start_failed")
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
+        start_task = asyncio.create_task(stream.start(START_UNIX_MS, 0))
+        await asyncio.sleep(0)
+        stream._handle_status_line(
+            f"[STATUS] started requested_unix_ms={START_UNIX_MS} at_unix_ms={START_UNIX_MS}"
+        )
+        assert await start_task == START_UNIX_MS
 
 
 @pytest.mark.asyncio
@@ -1859,7 +1914,7 @@ async def test_connect_error_status_line_is_parsed() -> None:
         '[STATUS] error code=auth_required http=401 detail="RTSP setup rejected"'
     )
 
-    assert stream._connect_error == ConnectError("auth_required", 401, "RTSP setup rejected")
+    assert stream._connect_error == CliError("auth_required", 401, "RTSP setup rejected")
 
 
 @pytest.mark.asyncio
@@ -1922,6 +1977,82 @@ def test_anchor_corrected_status_line_tolerates_malformed_line() -> None:
     assert stream._start_position == 12.0
 
 
+def test_content_cut_short_rebases_the_position_and_warns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A cut that ended early gives back the ms the correction over-advanced the base by."""
+    stream = AirPlayStream(_make_player())
+    stream._start_position = 12.0
+    stream._handle_status_line(
+        "[STATUS] anchor_corrected requested_unix_ms=1750000000000 "
+        "from_unix_ms=1750000000400 at_unix_ms=1750000000900 content_cut_ms=500"
+    )
+    assert stream._start_position == 12.5
+
+    with caplog.at_level(logging.WARNING):
+        ended = stream._handle_status_line(
+            "[STATUS] content_cut requested_ms=500 cut_ms=180 cut_bytes=31752 drain_ms=210"
+        )
+
+    assert ended is False
+    assert stream._start_position == pytest.approx(12.18)
+    assert "AirPlay content cut" in caplog.text
+    assert "Player A" in caplog.text
+    assert "320 ms short" in caplog.text
+
+
+def test_content_cut_in_full_leaves_the_position_alone(caplog: pytest.LogCaptureFixture) -> None:
+    """A cut that took what it asked for needs no correction and stays quiet."""
+    stream = AirPlayStream(_make_player())
+    stream._start_position = 12.0
+    stream._handle_status_line(
+        "[STATUS] anchor_corrected requested_unix_ms=1750000000000 "
+        "from_unix_ms=1750000000400 at_unix_ms=1750000000900 content_cut_ms=500"
+    )
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        # a few ms below the request is byte quantization, not a short cut
+        stream._handle_status_line(
+            "[STATUS] content_cut requested_ms=500 cut_ms=498 cut_bytes=87887 drain_ms=505"
+        )
+
+    assert stream._start_position == 12.5
+    assert caplog.text == ""
+
+
+def test_content_cut_after_a_new_anchor_is_not_reconciled() -> None:
+    """A cut settling after a START must not be taken off that START's absolute base."""
+    stream = AirPlayStream(_make_player())
+    stream._start_position = 12.0
+    stream._handle_status_line(
+        "[STATUS] anchor_corrected requested_unix_ms=1750000000000 "
+        "from_unix_ms=1750000000400 at_unix_ms=1750000000900 content_cut_ms=500"
+    )
+    stream.rebase_position(30_000)
+
+    stream._handle_status_line(
+        "[STATUS] content_cut requested_ms=500 cut_ms=0 cut_bytes=0 drain_ms=12"
+    )
+
+    assert stream._start_position == 30.0
+
+
+def test_content_cut_status_line_tolerates_malformed_line() -> None:
+    """A malformed content_cut line is dropped instead of raising or rebasing."""
+    stream = AirPlayStream(_make_player())
+    stream._start_position = 12.0
+    stream._handle_status_line(
+        "[STATUS] anchor_corrected requested_unix_ms=1750000000000 "
+        "from_unix_ms=1750000000400 at_unix_ms=1750000000900 content_cut_ms=500"
+    )
+
+    ended = stream._handle_status_line("[STATUS] content_cut requested_ms=500 cut_ms=garbage")
+
+    assert ended is False
+    assert stream._start_position == 12.5
+
+
 def test_clock_verified_status_line_is_debug_logged(caplog: pytest.LogCaptureFixture) -> None:
     """A clock_verified line needs no server action beyond a debug note of the margin."""
     stream = AirPlayStream(_make_player())
@@ -1940,7 +2071,7 @@ async def test_connect_error_status_line_tolerates_missing_fields() -> None:
 
     stream._handle_status_line("[STATUS] error code=connect_failed")
 
-    assert stream._connect_error == ConnectError("connect_failed", 0, "")
+    assert stream._connect_error == CliError("connect_failed", 0, "")
 
 
 @pytest.mark.asyncio

@@ -361,12 +361,16 @@ class StreamsAudio:
                     )
                     streamdetails.stream_metadata_update_interval = 5
 
-        if streamdetails.duration is None:
+        # providers report an unknown duration as either None or 0
+        if not streamdetails.duration:
             if queue_item.media_item and queue_item.media_item.duration:
                 streamdetails.duration = queue_item.media_item.duration
             elif queue_item.duration:
                 streamdetails.duration = queue_item.duration
-        if seek_position and (not streamdetails.allow_seek or not streamdetails.duration):
+        if seek_position and not streamdetails.allow_seek:
+            self.logger.warning("seeking is not possible on this stream!")
+            seek_position = 0
+        elif seek_position and not streamdetails.duration:
             self.logger.warning("seeking is not possible on duration-less streams!")
             seek_position = 0
 
