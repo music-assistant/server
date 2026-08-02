@@ -30,6 +30,7 @@ from music_assistant.providers.hass.constants import (
     UNAVAILABLE_STATES,
     MediaPlayerEntityFeature,
     StateMap,
+    parse_supported_features,
 )
 
 from .constants import CONF_ENTRY_WARN_HASS_INTEGRATION, NATIVE_SUPPORTED_HASS_INTEGRATIONS
@@ -78,8 +79,8 @@ class HomeAssistantPlayer(Player):
         self._attr_playback_state = StateMap.get(hass_state["state"], PlaybackState.IDLE)
         # Work out supported features
         self._attr_supported_features = {PlayerFeature.PLAY_MEDIA}
-        hass_supported_features = MediaPlayerEntityFeature(
-            hass_state["attributes"]["supported_features"]
+        hass_supported_features = parse_supported_features(
+            hass_state["attributes"].get("supported_features"), player_id, self.logger
         )
         if MediaPlayerEntityFeature.VOLUME_SET in hass_supported_features:
             self._attr_supported_features.add(PlayerFeature.VOLUME_SET)
@@ -419,7 +420,9 @@ class HomeAssistantPlayer(Player):
                     self._attr_group_members.clear()
             elif key == "supported_features":
                 # Update supported features dynamically via shared helper
-                hass_supported_features = MediaPlayerEntityFeature(value)
+                hass_supported_features = parse_supported_features(
+                    value, self.player_id, self.logger
+                )
                 self.extra_data["hass_supported_features"] = hass_supported_features
                 self._update_hass_features(hass_supported_features)
 
