@@ -466,7 +466,6 @@ def _ap2_player() -> MagicMock:
     """Return a mock player that resolves to native AirPlay 2."""
     player = MagicMock()
     player.protocol = StreamingProtocol.AIRPLAY2
-    player.wait_start = 2500
     return player
 
 
@@ -474,7 +473,6 @@ def _raop_player() -> MagicMock:
     """Return a mock player that resolves to legacy RAOP."""
     player = MagicMock()
     player.protocol = StreamingProtocol.RAOP
-    player.wait_start = 1500
     return player
 
 

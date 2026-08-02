@@ -111,8 +111,7 @@ async def test_initial_client_failure_stops_started_clients() -> None:
     """A partial group startup failure cancels siblings before session teardown."""
     session = _make_session(time.time(), 0)
     first_player: Any = session.sync_clients[0]
-    first_player.wait_start = 0
-    second_player = MagicMock(wait_start=0)
+    second_player = MagicMock()
     session.sync_clients.append(second_player)
     first_started = asyncio.Event()
     first_cancelled = asyncio.Event()
@@ -165,9 +164,8 @@ async def test_initial_group_waits_for_every_member_before_shared_start(
     first_player: Any = session.sync_clients[0]
     first_player.player_id = "first"
     first_player.protocol = first_protocol
-    first_player.wait_start = 2500
     first_player.config.get_value = MagicMock(return_value=0)
-    second_player = MagicMock(player_id="second", wait_start=2500)
+    second_player = MagicMock(player_id="second")
     second_player.protocol = second_protocol
     second_player.config.get_value = MagicMock(return_value=0)
     session.sync_clients.append(second_player)
@@ -243,7 +241,6 @@ async def test_initial_single_player_starts_after_connect(
     player: Any = session.sync_clients[0]
     player.player_id = "solo"
     player.protocol = protocol
-    player.wait_start = 2500
     player.config.get_value = MagicMock(return_value=0)
     stream = _stream_defaults(MagicMock(running=True))
     stream.wait_for_connection = AsyncMock()
@@ -272,8 +269,7 @@ async def test_initial_connection_failure_never_starts_partial_group() -> None:
     session = _make_session(0, 0)
     first_player: Any = session.sync_clients[0]
     first_player.protocol = StreamingProtocol.RAOP
-    first_player.wait_start = 2500
-    second_player = MagicMock(player_id="second", wait_start=2500)
+    second_player = MagicMock(player_id="second")
     second_player.protocol = StreamingProtocol.RAOP
     session.sync_clients.append(second_player)
 
@@ -307,7 +303,6 @@ async def test_initial_connection_cancellation_never_starts_group() -> None:
     player: Any = session.sync_clients[0]
     player.player_id = "solo"
     player.protocol = StreamingProtocol.RAOP
-    player.wait_start = 2500
     connection_waiting = asyncio.Event()
     stream = _stream_defaults(MagicMock(running=True))
 
