@@ -237,3 +237,11 @@ CONF_VERBOSE_PTP_LOGGING: Final[str] = "verbose_ptp_logging"
 # The cliairplay binary tags no log levels on its output, so a genuine problem is
 # recognised by keyword and promoted to a warning that stays visible at normal levels.
 CLI_PROBLEM_MARKERS: Final[tuple[str, ...]] = ("error", "cannot", "failed", "unable")
+# Bound on how many of those promoted lines the shared PTP daemon may produce per
+# window before the rest are counted instead of logged. The markers above are
+# deliberately broad, and "error" is ordinary vocabulary in clock telemetry
+# (offset error, path delay error), so with the daemon's per-packet trace running
+# at ~10 lines/s a single matching line would otherwise fill the log at WARNING.
+# A burst still gets through, which is what a real one-shot daemon failure is.
+PTP_DAEMON_WARN_BURST: Final[int] = 5
+PTP_DAEMON_WARN_WINDOW: Final[float] = 60.0

@@ -12,6 +12,8 @@ from music_assistant_models.enums import PlaybackState
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_COLD_GROUP_START_LEAD_MS,
+    PTP_DAEMON_WARN_BURST,
+    PTP_DAEMON_WARN_WINDOW,
     AirPlayRemoteCommand,
     StreamingProtocol,
 )
@@ -353,6 +355,98 @@ def test_ptp_daemon_line_handler_tolerates_no_event() -> None:
     prov = _ptp_provider()  # _ptp_daemon_ready is None
     # Must not raise even when the readiness gate does not exist yet.
     prov._handle_ptp_daemon_line(DAEMON_UP_LINE)
+
+
+def test_ptp_daemon_problem_lines_are_rate_limited(caplog: pytest.LogCaptureFixture) -> None:
+    """A repeating trace line matching a marker must not fill the log at WARNING."""
+    prov = _ptp_provider()
+    trace = "[15:44:56.101] [PTP] slave offset seq=7 error=0.000012"
+
+    with caplog.at_level(logging.WARNING):
+        for _ in range(PTP_DAEMON_WARN_BURST + 20):
+            prov._handle_ptp_daemon_line(trace)
+
+    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == PTP_DAEMON_WARN_BURST
+
+
+def test_ptp_daemon_reports_what_it_suppressed(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The count of suppressed lines is reported once the window rolls over."""
+    prov = _ptp_provider()
+    trace = "[15:44:56.101] [PTP] slave offset seq=7 error=0.000012"
+    clock = 1000.0
+    monkeypatch.setattr("music_assistant.providers.airplay.provider.time.monotonic", lambda: clock)
+
+    with caplog.at_level(logging.WARNING):
+        for _ in range(PTP_DAEMON_WARN_BURST + 3):
+            prov._handle_ptp_daemon_line(trace)
+        caplog.clear()
+        clock += PTP_DAEMON_WARN_WINDOW + 1
+        prov._handle_ptp_daemon_line(trace)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("3 further problem line(s) were suppressed" in message for message in messages)
+    # and the window reopens for real problems
+    assert any(message.endswith(trace) for message in messages)
+
+
+def test_ptp_daemon_warn_window_runs_from_its_first_line(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """time.monotonic() counts from boot, so a server started early must still get a full window."""
+    prov = _ptp_provider()
+    trace = "[15:44:56.101] [PTP] slave offset seq=7 error=0.000012"
+    clock = 5.0  # five seconds of uptime
+    monkeypatch.setattr("music_assistant.providers.airplay.provider.time.monotonic", lambda: clock)
+    for _ in range(PTP_DAEMON_WARN_BURST + 2):
+        prov._handle_ptp_daemon_line(trace)
+
+    # 56s into the window, so it must not have rolled over yet
+    clock += PTP_DAEMON_WARN_WINDOW - 4
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        prov._handle_ptp_daemon_line(trace)
+
+    assert caplog.text == ""
+
+
+def test_ptp_daemon_restart_gets_a_fresh_warning_budget(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A replacement daemon's startup failure must not be eaten by the old one's budget."""
+    prov = _ptp_provider()
+    for _ in range(PTP_DAEMON_WARN_BURST + 2):
+        prov._handle_ptp_daemon_line("[15:44:56.101] [PTP] slave offset seq=7 error=0.000012")
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        prov._reset_ptp_daemon_warn_budget()
+        prov._handle_ptp_daemon_line("[15:44:57.002] [PTP] Cannot bind UDP 319: Permission denied")
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("2 further problem line(s) from the previous daemon" in m for m in messages)
+    assert any("Cannot bind UDP 319" in m for m in messages)
+
+
+async def test_diagnostics_report_daemon_readiness_and_per_stream_route() -> None:
+    """A live daemon that never bound its ports must not read as healthy timing."""
+    prov = _ptp_provider()
+    prov._dacp_server = MagicMock(is_serving=MagicMock(return_value=True))
+    prov._ptp_daemon = _live_ptp_daemon()
+    prov._ptp_daemon_ready = asyncio.Event()  # spawned, never reported ready
+    ntp_player = MagicMock(protocol=StreamingProtocol.AIRPLAY2)
+    ntp_player.stream = MagicMock(running=True, active_route="AirPlay 2 (buffered, NTP)")
+    raop_player = MagicMock(protocol=StreamingProtocol.RAOP)
+    raop_player.stream = MagicMock(running=True, active_route="RAOP")
+
+    with patch.object(prov, "get_players", return_value=[ntp_player, raop_player]):
+        diagnostics = await prov.get_diagnostics()
+
+    assert diagnostics["ptp_daemon_running"] is True
+    assert diagnostics["ptp_daemon_ready"] is False
+    assert diagnostics["streams_by_route"] == {"AirPlay 2 (buffered, NTP)": 1, "RAOP": 1}
 
 
 async def test_ptp_daemon_bind_failure_degrades_without_restart() -> None:
