@@ -2551,16 +2551,17 @@ class ProtocolLinkingMixin:
             # Hand the output over only if we're switching protocols
             if was_rendering and switching_protocols:
                 self.logger.info(
-                    "Restarting playback on %s via %s protocol after switching protocols",
+                    "Handing the output of %s over to the %s protocol%s",
                     parent_player.state.name,
                     parent_protocol_player.provider.domain,
+                    " and resuming playback" if was_playing else "",
                 )
                 if stranded_native_members:
                     await self._stop_native_session(
                         parent_player, parent_protocol_player, stranded_native_members
                     )
                 # Collect existing members from old protocol before stopping it,
-                # so we can re-add them to the new protocol after restart.
+                # so we can re-add them to the new protocol afterwards.
                 old_protocol_members: list[str] = []
                 if (
                     previous_protocol
