@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Iterable
 from typing import TYPE_CHECKING, ClassVar, Final, cast
 
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import AlbumType, MediaType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Album,
@@ -18,9 +18,14 @@ from music_assistant_models.media_items import (
     Track,
 )
 
-from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
+from music_assistant.constants import (
+    DYNAMIC_PLAYLIST_SAMPLE_SIZE,
+    VARIOUS_ARTISTS_MBID,
+    VARIOUS_ARTISTS_NAME,
+)
 from music_assistant.controllers.music.constants import DYNAMIC_RADIO_DYNAMIC_TARGET
 from music_assistant.controllers.music.recency import RecencyWindows
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.uri import parse_uri
@@ -59,12 +64,38 @@ SUPPORTED_SOURCE_MEDIA_TYPES: Final = frozenset(
         MediaType.GENRE,
     }
 )
+UNTRUSTED_RELEASE_ALBUM_TYPES: Final = frozenset(
+    {
+        AlbumType.COMPILATION,
+        AlbumType.LIVE,
+        AlbumType.SOUNDTRACK,
+    }
+)
 
 
 def is_supported_source(media_type: MediaType, provider: str) -> bool:
     """Return whether a media item can supply Music Quiz tracks."""
     return media_type in SUPPORTED_SOURCE_MEDIA_TYPES and (
         media_type != MediaType.GENRE or provider == "library"
+    )
+
+
+def has_untrusted_release_year(album: Album | ItemMapping) -> bool:
+    """
+    Return whether an album's year is unusable as the release year of its tracks.
+
+    An ``ItemMapping`` carries no album type or artists and is always trusted.
+
+    :param album: Album attached to a selected track.
+    """
+    if not isinstance(album, Album):
+        return False
+    if album.album_type in UNTRUSTED_RELEASE_ALBUM_TYPES:
+        return True
+    return any(
+        artist.mbid == VARIOUS_ARTISTS_MBID
+        or compare_strings(artist.name, VARIOUS_ARTISTS_NAME, strict=False)
+        for artist in album.artists
     )
 
 
@@ -408,7 +439,11 @@ def get_track_release_year(track: Track) -> int | None:
     :param track: Track whose release year should be resolved.
     """
     album = track.album
-    album_year = album.year if isinstance(album, Album | ItemMapping) else None
+    album_year = (
+        album.year
+        if isinstance(album, Album | ItemMapping) and not has_untrusted_release_year(album)
+        else None
+    )
     track_year = (
         track.metadata.release_date.year if track.metadata.release_date is not None else None
     )

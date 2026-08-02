@@ -27,6 +27,7 @@ from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
+    AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
     AIRPLAY_PCM_FORMAT,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_ENCRYPTION,
@@ -131,6 +132,12 @@ class AirPlayStream:
         # `connected` this makes readiness fully event-driven, so START can
         # use a short re-anchor lead instead of a guessed setup time.
         self._audio_present = asyncio.Event()
+        # Set once the binary settled the receiver's clock readiness ([STATUS]
+        # clock_ready): either it projected when the clock becomes usable, or it
+        # reported that there is nothing to wait for. The projected instant
+        # (unix ms) stays 0 in the latter case.
+        self._clock_ready = asyncio.Event()
+        self._clock_ready_at_unix_ms: int = 0
         self._metadata_text_checksum = ""
         # Artwork identity (the source image url) whose rendered bytes were
         # last delivered to the binary. Settles on the first successful
@@ -374,6 +381,26 @@ class AirPlayStream:
             return False
         return True
 
+    async def wait_clock_ready(self, timeout: float = 2.5) -> int | None:
+        """
+        Wait for the binary to project when the receiver's clock becomes usable.
+
+        A receiver starts probing its clock as soon as it is connected, so the
+        projection is available well before any anchor is announced and resolves
+        from the receiver's first probe rather than from its full servo lock.
+
+        :param timeout: Seconds to wait for the projection.
+        :return: The projected instant (unix ms) at which the receiver's clock
+            is usable — possibly already in the past when it is locked — or None
+            when there is nothing to wait for (NTP timing, a receiver that never
+            probed within the timeout, or a binary that does not report it).
+        """
+        try:
+            await asyncio.wait_for(self._clock_ready.wait(), timeout)
+        except TimeoutError:
+            return None
+        return self._clock_ready_at_unix_ms or None
+
     async def start(
         self, start_unix_ms: int = 0, position_ms: int = 0, *, join: bool = False
     ) -> int | None:
@@ -390,8 +417,9 @@ class AirPlayStream:
             the base for elapsed reporting.
         :param join: This start must land on an already-live group timeline (a
             late joiner): the binary then enforces receiver clock readiness and
-            corrects the anchor forward post-commit if needed ([STATUS]
-            anchor_corrected). Group/solo origin starts leave it False.
+            holds its ack until that resolves, so the returned instant is the one
+            the caller must map the joiner's content onto. Group/solo origin
+            starts leave it False.
         :return: The true scheduled audible instant (unix ms) from the binary's
             started ack — the commanded instant when it was feasible, the
             corrected-forward one otherwise; None when no ack arrived (older
@@ -443,13 +471,31 @@ class AirPlayStream:
         )
         # The binary always acks with the TRUE scheduled instant (correcting an
         # infeasible one forward), so the caller can verify the contract and
-        # re-align a group. No ack within the timeout means an older binary:
-        # fall back to trusting the commanded instant (legacy clamp semantics).
+        # re-align a group. A join's ack is held back until the receiver clock
+        # verification resolves and therefore gets a much wider window than a
+        # plain start, which acks within the command round-trip. No ack within
+        # the timeout means an older binary: fall back to trusting the commanded
+        # instant (legacy clamp semantics).
+        ack_timeout = AIRPLAY_JOIN_START_ACK_TIMEOUT_MS / 1000 if join else 2.0
         try:
-            await asyncio.wait_for(self._started.wait(), 2.0)
+            await asyncio.wait_for(self._started.wait(), ack_timeout)
         except TimeoutError:
             return None
         return self._start_ack[1] if self._start_ack else None
+
+    def rebase_position(self, position_ms: int) -> None:
+        """
+        Re-map reported progress onto a start instant that moved after the command.
+
+        A join's START is acked with the instant the receiver can actually seat,
+        which may be later than the commanded one. The caller maps its content
+        onto that instant and reports the position that lands there.
+
+        :param position_ms: Media position of the first sample the binary
+            renders at the acked instant.
+        """
+        self._start_position = position_ms / 1000
+        self.player.set_state_from_stream(elapsed_time=self._start_position, stream=self)
 
     def reset_reanchor_shift(self) -> None:
         """Clear the accumulated re-anchor shift and its status-line supersession flag."""
@@ -715,27 +761,54 @@ class AirPlayStream:
         if_arg: str | None = None
         target_is_ipv6 = ":" in self.player.address
         if_ip = await resolve_if_ip(self.mass, str(self.player.device_info.ip_address))
-        if if_ip not in ("0.0.0.0", "::", ""):
+        if if_ip in ("0.0.0.0", "::", ""):
+            if_detail = f"<omitted: all interfaces ({if_ip or 'unset'})>"
+        else:
             try:
                 source_is_ipv6 = isinstance(ipaddress.ip_address(if_ip), ipaddress.IPv6Address)
+            except ValueError:
+                # A configured zeroconf interface is handed back verbatim, so this may be
+                # an interface name rather than an address. Its family cannot be matched
+                # against the device, so route selection is left to the binary.
+                if_detail = f"<omitted: {if_ip} is not an ip address>"
+            else:
                 if source_is_ipv6 == target_is_ipv6:
                     if_arg = if_ip
+                    if_detail = if_ip
                     args += ["--if", if_ip]
-            except ValueError:
-                pass
+                else:
+                    if_detail = f"<omitted: {if_ip} family differs from device>"
 
         # Address advertised inside the protocol (timing peers) for hosts where
         # the reachable address differs from the bind address (e.g. containers).
         publish_ip = str(self.mass.streams.publish_ip or "")
-        if publish_ip and publish_ip != if_arg:
+        if not publish_ip:
+            publish_detail = "<unset>"
+        elif publish_ip == if_arg:
+            publish_detail = f"<omitted: same as if ({publish_ip})>"
+        else:
             try:
                 publish_is_ipv6 = isinstance(
                     ipaddress.ip_address(publish_ip), ipaddress.IPv6Address
                 )
-                if publish_is_ipv6 == target_is_ipv6:
-                    args += ["--publish-ip", publish_ip]
             except ValueError:
-                pass
+                publish_detail = f"<omitted: {publish_ip} is not an ip address>"
+            else:
+                if publish_is_ipv6 == target_is_ipv6:
+                    publish_detail = publish_ip
+                    args += ["--publish-ip", publish_ip]
+                else:
+                    publish_detail = f"<omitted: {publish_ip} family differs from device>"
+
+        # The addressing the stream ends up with is the first thing needed when triaging
+        # a connection or timing issue from a user's log, and it is invisible otherwise:
+        # both flags are dropped silently when the resolved value is unusable here.
+        self.player.logger.debug(
+            "cliairplay network binding for player %s: if=%s publish_ip=%s",
+            self.player.player_id,
+            if_detail,
+            publish_detail,
+        )
 
         # Debug level
         if self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
@@ -1037,6 +1110,8 @@ class AirPlayStream:
             self._started.set()
         elif "[STATUS] anchor_corrected " in line:
             self._parse_anchor_corrected(line)
+        elif "[STATUS] clock_ready " in line:
+            self._parse_clock_ready(line)
         elif "[STATUS] clock_verified" in line:
             self._parse_clock_verified(line)
         elif "[STATUS] flushed" in line:
@@ -1367,6 +1442,39 @@ class AirPlayStream:
             requested_unix_ms,
             at_unix_ms,
             content_cut_ms,
+        )
+
+    def _parse_clock_ready(self, line: str) -> None:
+        """
+        Parse a [STATUS] clock_ready line into the receiver's readiness projection.
+
+        :param line: The status line, e.g. ``[STATUS] clock_ready mode=ptp
+            state=probing streak_ms=0 exchanges=1 ready_in_ms=2300
+            ready_at_unix_ms=1750000002300``.
+        """
+        try:
+            fields = dict(part.split("=", 1) for part in line.split() if "=" in part)
+            mode = fields.get("mode", "")
+            state = fields.get("state", "")
+            ready_at_unix_ms = int(fields.get("ready_at_unix_ms", 0))
+        except ValueError, IndexError:
+            # Malformed line: drop it rather than react to bogus numbers.
+            return
+        if state == "cold" and mode != "ntp":
+            # No probe seen yet, so the line carries no projection; the binary
+            # keeps reporting until one exists.
+            return
+        # NTP timing has no receiver clock to wait for, and a state without a
+        # projection resolves the wait with nothing so a caller falls back
+        # instead of blocking on evidence that will not arrive.
+        self._clock_ready_at_unix_ms = 0 if mode == "ntp" else ready_at_unix_ms
+        self._clock_ready.set()
+        self.player.logger.debug(
+            "cliairplay reports the clock for %s as %s (mode=%s, usable at %d)",
+            self.player.display_name,
+            state,
+            mode,
+            self._clock_ready_at_unix_ms,
         )
 
     def _parse_clock_verified(self, line: str) -> None:

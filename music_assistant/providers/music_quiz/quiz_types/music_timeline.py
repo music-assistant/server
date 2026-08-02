@@ -58,6 +58,7 @@ if TYPE_CHECKING:
     from music_assistant.providers.music_quiz.models import MusicQuizConfig
 
 LOGGER = logging.getLogger(__name__)
+SYSTEM_RANDOM = secrets.SystemRandom()
 
 DEFAULT_BONUS_OPTION_COUNT = 4
 COMPLETED_REVEAL_AUTO_ADVANCE_SECONDS = 30.0
@@ -211,14 +212,14 @@ class MusicTimelineQuizType(QuizType):
                 ]
 
     async def _get_eligible_tracks(self) -> list[Track]:
-        """Return unique source tracks with usable release metadata."""
+        """Return the unique source tracks that can be played and placed on the timeline."""
         if self._eligible_tracks is not None:
             return self._eligible_tracks
         source_tracks = list((await self._get_source_track_pool()).values())
         eligible_tracks: dict[str, Track] = {}
         unresolved_tracks: list[Track] = []
         for track in source_tracks:
-            if self._track_is_eligible(track):
+            if self._track_is_resolved(track):
                 assert track.uri is not None
                 eligible_tracks[track.uri] = track
             elif track.available and track.is_playable:
@@ -229,10 +230,16 @@ class MusicTimelineQuizType(QuizType):
                 enriched = await self.mass.music.tracks.get(track.item_id, track.provider)
             except Exception as err:
                 LOGGER.debug("Could not enrich Music Quiz track %s: %s", track.uri, err)
-                return None
+                # a failed lookup is no reason to drop a track that already carries a year
+                return track if self._track_is_eligible(track) else None
+            # the track controller can fail to resolve an album mapping, so accept the
+            # best release year the enriched track offers rather than requiring an album
             return enriched if self._track_is_eligible(enriched) else None
 
         target_track_count = self.config.round_count + 1 + PLAYBACK_REPLACEMENT_RESERVE
+        # enrichment stops at the target count, so sample the whole source pool
+        # instead of always enriching the same leading tracks
+        SYSTEM_RANDOM.shuffle(unresolved_tracks)
         unresolved_offset = 0
         while len(eligible_tracks) < target_track_count and unresolved_offset < len(
             unresolved_tracks
@@ -341,15 +348,25 @@ class MusicTimelineQuizType(QuizType):
             preferred,
             limit=BONUS_CANDIDATE_LIMIT,
         )
-        distractors = self._filter_bonus_candidates(
-            track,
-            bonus_type,
-            [
-                *preferred,
-                *self._source_pool_bonus_distractors(track, bonus_type),
-            ],
-            limit=DEFAULT_BONUS_OPTION_COUNT - 1,
-        )
+        if self._has_enough_bonus_candidates(track, bonus_type, preferred):
+            distractors = self._filter_bonus_candidates(
+                track,
+                bonus_type,
+                preferred,
+                limit=DEFAULT_BONUS_OPTION_COUNT - 1,
+            )
+        else:
+            # the source pool holds every configured track, so it is only walked
+            # when the preferred candidates cannot fill every wrong option
+            distractors = self._filter_bonus_candidates(
+                track,
+                bonus_type,
+                [
+                    *preferred,
+                    *(await self._source_pool_bonus_distractors(track, bonus_type)),
+                ],
+                limit=DEFAULT_BONUS_OPTION_COUNT - 1,
+            )
         if self.config.use_ai_distractors:
             mixed = await self._get_ai_bonus_distractors(
                 track,
@@ -421,13 +438,15 @@ class MusicTimelineQuizType(QuizType):
         primary_artist = self._primary_artist(track)
         if primary_artist is None:
             return []
-        assert self._eligible_tracks is not None
+        # a bonus distractor only needs a display label, so the complete source pool
+        # is used here instead of the (release-year bounded) playback set
+        source_tracks = (await self._get_source_track_pool()).values()
         candidates = self._filter_bonus_candidates(
             track,
             TimelineBonusType.TITLE,
             [
                 self._bonus_candidate(candidate, TimelineBonusType.TITLE)
-                for candidate in self._eligible_tracks
+                for candidate in source_tracks
                 if self._track_has_primary_artist(candidate, primary_artist)
             ],
             limit=BONUS_CANDIDATE_LIMIT,
@@ -689,21 +708,21 @@ class MusicTimelineQuizType(QuizType):
                 break
         return result
 
-    def _source_pool_bonus_distractors(
+    async def _source_pool_bonus_distractors(
         self,
         track: Track,
         bonus_type: TimelineBonusType,
     ) -> list[SuggestionCandidate]:
         """Return unrelated source-pool candidates as the final resilience fallback."""
-        assert self._eligible_tracks is not None
+        source_tracks = (await self._get_source_track_pool()).values()
         if bonus_type == TimelineBonusType.TITLE:
             return [
                 self._bonus_candidate(candidate, bonus_type)
-                for candidate in self._eligible_tracks
+                for candidate in source_tracks
                 if candidate.uri != track.uri
             ]
         candidates: list[SuggestionCandidate] = []
-        for candidate in self._eligible_tracks:
+        for candidate in source_tracks:
             if candidate.uri != track.uri:
                 candidates.extend(self._artist_candidates(candidate.artists))
         return candidates
@@ -842,6 +861,22 @@ class MusicTimelineQuizType(QuizType):
             label=label,
             title=label if bonus_type == TimelineBonusType.TITLE else None,
         )
+
+    @classmethod
+    def _track_is_resolved(cls, track: Track) -> bool:
+        """
+        Return whether a track is usable for Music Timeline without resolving its album.
+
+        :param track: Source track to classify.
+        """
+        if not cls._track_is_eligible(track):
+            return False
+        album = track.album
+        if not isinstance(album, ItemMapping) or album.year is None:
+            return True
+        # an album mapping carries no album type, so a year taken from it cannot be judged;
+        # a year the track carries itself differs from the mapping's and stands on its own
+        return cls._release_year(track) != album.year
 
     @classmethod
     def _track_is_eligible(cls, track: Track) -> bool:

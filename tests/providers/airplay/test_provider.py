@@ -513,7 +513,6 @@ async def test_raop_session_resolves_ptp_for_first_ap2_late_joiner() -> None:
     pcm_format.bit_depth = 16
     pcm_format.channels = 2
     session.start_time = time.time() - 5
-    session.wait_start = 1.5
     session.seconds_streamed = 5
 
     async def _wait_ptp_daemon_ready() -> bool:
@@ -527,8 +526,10 @@ async def test_raop_session_resolves_ptp_for_first_ap2_late_joiner() -> None:
         player.stream.wait_for_connection = AsyncMock()
         player.stream.flush = AsyncMock(return_value=True)
         # Verified-start API defaults: no started ack, no warm-lead constraint
-        # (an older binary), so the test asserts the commanded values directly.
+        # and no receiver clock projection (an older binary), so the test
+        # asserts the commanded values directly.
         player.stream.start = AsyncMock(return_value=None)
+        player.stream.wait_clock_ready = AsyncMock(return_value=None)
         player.stream.warm_lead_ms = 0
         player.stream.flushed_head_unix_ms = 0
 
