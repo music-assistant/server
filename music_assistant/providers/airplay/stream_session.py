@@ -26,6 +26,7 @@ from .constants import (
     AIRPLAY_LATE_JOIN_RING_MIN_SECONDS,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
     AIRPLAY_START_LEAD_MS,
+    ClockReadiness,
     StreamingProtocol,
 )
 from .helpers import get_final_output_format
@@ -38,6 +39,18 @@ if TYPE_CHECKING:
 
     from .player import AirPlayPlayer
     from .provider import AirPlayProvider
+
+# What each readiness outcome means for the join anchor. They all end up
+# anchoring on the join floor, so only the reason distinguishes a device that
+# needs longer from one that will not play at all.
+_CLOCK_READINESS_NOTES: dict[ClockReadiness, str] = {
+    ClockReadiness.PROJECTED: "usable in {out:.2f}s; anchoring just past that",
+    ClockReadiness.NOT_APPLICABLE: "runs on NTP timing, so there is none to wait for; "
+    "anchoring on the join floor",
+    ClockReadiness.STALLED: "never answered ours; anchoring on the join floor",
+    ClockReadiness.UNREPORTED: "was not reported within {timeout:.1f}s (a slow device, or a "
+    "binary too old to report it); anchoring on the join floor",
+}
 
 
 class AirPlayStreamSession:
@@ -420,7 +433,7 @@ class AirPlayStreamSession:
             # for that projection here — outside the session lock, so the rest
             # of the group keeps being fed — lets the join anchor on the
             # device's own readiness instead of a fixed guess.
-            ready_at_unix_ms = await stream.wait_clock_ready(
+            readiness, ready_at_unix_ms = await stream.wait_clock_ready(
                 timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
             )
         except asyncio.CancelledError:
@@ -433,6 +446,20 @@ class AirPlayStreamSession:
                 err,
             )
             await self.stop_client(airplay_player, reason="late joiner connection failed")
+            return
+
+        if readiness is ClockReadiness.STALLED:
+            # The receiver never answered our clock, so it would render silence
+            # for as long as it stayed in the group while every other signal
+            # said it was playing. Better to leave it out: the group keeps
+            # playing and the player stays idle, which is the visible truth.
+            # The binary's own report names the device and the ports to check.
+            self.prov.logger.warning(
+                "Late joiner %s: not adding it to the group - its receiver never answered "
+                "the server's PTP clock, so it would render silence",
+                airplay_player.player_id,
+            )
+            await self.stop_client(airplay_player, reason="receiver clock stalled")
             return
 
         pcm_sample_size = self._pcm_byte_rate
@@ -550,11 +577,12 @@ class AirPlayStreamSession:
 
         now = time.time()
         self.prov.logger.debug(
-            "Late joiner %s: receiver clock readiness %s",
+            "Late joiner %s: receiver clock %s",
             airplay_player.player_id,
-            f"projected {ready_at_unix_ms / 1000 - now:.2f}s out"
-            if ready_at_unix_ms
-            else "not reported; anchoring on the join floor",
+            _CLOCK_READINESS_NOTES.get(readiness, "").format(
+                out=ready_at_unix_ms / 1000 - now,
+                timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000,
+            ),
         )
         async with self._lock:
             if not self._session_is_live():
@@ -1081,13 +1109,23 @@ class AirPlayStreamSession:
                 if p.stream
             ]
         )
-        ready_at_unix_ms = max((r for r in results if r), default=0)
-        if len(results) != len([r for r in results if r]):
+        ready_at_unix_ms = max(
+            (at for readiness, at in results if readiness is ClockReadiness.PROJECTED), default=0
+        )
+        # A group start does not drop a member that stalled - the rest of the
+        # group would still be started, and the member is already warned about
+        # by name, with the ports to check, where the binary reported it. Say
+        # which outcomes were seen so the anchor decision is readable.
+        unprojected = [
+            readiness for readiness, _ in results if readiness is not ClockReadiness.PROJECTED
+        ]
+        if unprojected:
             self.prov.logger.debug(
-                "AirPlay start: %d of %d member(s) reported no receiver clock projection; "
+                "AirPlay start: %d of %d member(s) reported no receiver clock projection (%s); "
                 "anchoring those on the start lead alone",
-                len(results) - len([r for r in results if r]),
+                len(unprojected),
                 len(results),
+                ", ".join(sorted({readiness.value for readiness in unprojected})),
             )
         return ready_at_unix_ms
 
