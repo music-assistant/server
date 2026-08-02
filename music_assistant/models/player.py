@@ -613,6 +613,18 @@ class Player(ABC):
         return self._attr_can_group_with
 
     @property
+    def native_grouping_requires_own_stream(self) -> bool:
+        """
+        Return whether native grouping only works while this player renders its own stream.
+
+        Device-side grouping keeps working whatever feeds the leader, so members can
+        stay natively grouped while the leader streams over another protocol.
+        Grouping that attaches members to the leader's own stream has nothing for
+        them to join once the leader moves to a protocol.
+        """
+        return False
+
+    @property
     def is_active_session(self) -> bool:
         """
         Return whether this group player is currently holding (capturing) its members.
