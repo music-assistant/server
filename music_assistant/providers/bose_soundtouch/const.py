@@ -1,6 +1,7 @@
 """Constants for the Bose SoundTouch player provider."""
 
 from __future__ import annotations
+from enum import StrEnum
 
 DOMAIN = "bose_soundtouch"
 PLAYER_ID_PREFIX = "bose_soundtouch_"
@@ -26,3 +27,10 @@ PRESET_IDS = range(1, 7)
 # now_playing "source" value reported while the speaker is in standby.
 SOURCE_STANDBY = "STANDBY"
 SOURCE_INVALID = "INVALID_SOURCE"
+
+
+class PlayerOptionKeys(StrEnum):
+    """PlayerOptionKeys."""
+
+    NETWORK_NAME = "network_name"
+    BASS = "bass"
