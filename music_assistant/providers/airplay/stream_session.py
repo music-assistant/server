@@ -182,9 +182,10 @@ class AirPlayStreamSession:
             await self.stop()
             raise
         except Exception as err:
-            # playback failed to start, cleanup. Which member failed is logged
-            # where it failed; this is the one line saying the whole session went
-            # with it, for the failures no single member owns.
+            # playback failed to start, cleanup. This runs for every failure. A
+            # per-member one has already been named where it happened, so here
+            # the line says the whole session went down with it; for a failure
+            # no single member owns, it is the only line there is.
             self.prov.logger.warning(
                 "AirPlay start failed for a session of %d member(s): %s",
                 len(self.sync_clients),
