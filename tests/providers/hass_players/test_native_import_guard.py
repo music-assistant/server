@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock
@@ -57,6 +58,7 @@ def _mass(
             get_device_registry=AsyncMock(return_value=devices or []),
         ),
         get_states=AsyncMock(return_value=[_state(entity["entity_id"]) for entity in entities]),
+        logger=logging.getLogger("test.hass"),
     )
     return cast(
         "MusicAssistant",

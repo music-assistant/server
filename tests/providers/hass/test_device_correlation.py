@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -25,6 +26,7 @@ def _provider(
         get_entity_registry=AsyncMock(return_value=entities),
     )
     provider.get_states = AsyncMock(return_value=states)  # type: ignore[method-assign]
+    provider.logger = logging.getLogger("test.hass")
     return provider
 
 

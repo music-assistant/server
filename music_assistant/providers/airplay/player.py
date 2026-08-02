@@ -29,12 +29,10 @@ from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.setup_flow import AbortFlow
 
 from .constants import (
-    AIRPLAY_AP2_SETUP_LEAD_MS,
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_HIRES_AUDIO_FORMATS,
     AIRPLAY_HIRES_SAMPLE_RATES,
     AIRPLAY_PCM_FORMAT,
-    AIRPLAY_RAOP_SETUP_LEAD_MS,
     AIRPLAY_REJOIN_ATTEMPT_DELAYS,
     ATV_PASSWORD_BIT,
     BASE_PLAYER_FEATURES,
@@ -270,13 +268,6 @@ class AirPlayPlayer(Player):
         return {
             p.player_id for p in prov.get_players() if p.available and p.player_id != self.player_id
         }
-
-    @property
-    def wait_start(self) -> int:
-        """Get the setup lead required by an externally timed audio source."""
-        if self.protocol == StreamingProtocol.RAOP:
-            return AIRPLAY_RAOP_SETUP_LEAD_MS
-        return AIRPLAY_AP2_SETUP_LEAD_MS
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
