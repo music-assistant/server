@@ -911,6 +911,7 @@ class AirPlayStreamSession:
         :param reanchor_session: Whether this start becomes the session timeline anchor.
         """
         target_ms = start_unix_ms
+        corrected_ms = start_unix_ms
         for _ in range(4):
             member_tasks: list[tuple[int, asyncio.Task[int | None]]] = []
             async with asyncio.TaskGroup() as task_group:
@@ -948,9 +949,14 @@ class AirPlayStreamSession:
             # retry out to every member so the next round lands.
             target_ms = corrected_ms + AIRPLAY_SPLICE_LEAD_MARGIN_MS
         else:
+            # No round landed, so the members sit on the instants they last
+            # reported, not on the retry that was about to be commanded. The
+            # anchor has to record where they actually are, or every later
+            # joiner maps against a timeline the group never played.
+            target_ms = corrected_ms
             self.prov.logger.error(
                 "AirPlay group start did not converge after 4 rounds "
-                "(last instant %d) - members may be audibly out of sync; "
+                "(members last reported %d) - they may be audibly out of sync; "
                 "please report this with a debug log",
                 target_ms,
             )
