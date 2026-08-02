@@ -27,7 +27,7 @@ def test_parse_catalog_normalizes_playable_stations() -> None:
         }
     )
 
-    station = catalog["gzc:42"]
+    station = catalog["GZC:42"]
     assert station.name == "Pira FM"
     assert station.stream_url == "https://radio.example/stream"
     assert station.region == "Overijssel"
