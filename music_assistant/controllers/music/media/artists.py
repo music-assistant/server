@@ -20,6 +20,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     ProviderUnavailableError,
 )
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -43,7 +44,6 @@ from music_assistant.helpers.compare import (
     compare_artist,
     compare_strings,
     compare_track,
-    create_safe_string,
 )
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import serialize_to_json

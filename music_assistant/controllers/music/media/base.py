@@ -26,7 +26,7 @@ from music_assistant_models.errors import (
     MediaNotFoundError,
     ProviderUnavailableError,
 )
-from music_assistant_models.helpers import get_global_cache_value
+from music_assistant_models.helpers import create_safe_string, get_global_cache_value
 from music_assistant_models.media_items import (
     AudioFormat,
     ItemMapping,
@@ -56,7 +56,7 @@ from music_assistant.helpers.collections import (
     get_collection_item_id,
     get_collection_name_from_item_id,
 )
-from music_assistant.helpers.compare import compare_media_item, create_safe_string
+from music_assistant.helpers.compare import compare_media_item
 from music_assistant.helpers.database import UNSET
 from music_assistant.helpers.json import json_loads, serialize_to_json
 from music_assistant.helpers.util import guard_single_request, parse_optional_bool

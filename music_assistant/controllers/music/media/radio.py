@@ -8,13 +8,13 @@ from typing import TYPE_CHECKING, Any, cast
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import MediaType, ProviderFeature
 from music_assistant_models.errors import ProviderUnavailableError
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import ProviderMapping, Radio, RadioSummary
 
 from music_assistant.constants import DB_TABLE_RADIOS
 from music_assistant.helpers.compare import (
     compare_media_item,
     compare_radio,
-    create_safe_string,
     loose_compare_strings,
 )
 from music_assistant.helpers.database import UNSET

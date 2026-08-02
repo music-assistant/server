@@ -17,8 +17,9 @@ import asyncio
 import os
 from typing import TYPE_CHECKING, Any
 
+from music_assistant_models.helpers import create_safe_string
+
 from music_assistant.helpers.api import api_command
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.json import load_json_dict
 from music_assistant.models.core_controller import CoreController
 

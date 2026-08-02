@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import MusicAssistantError
+from music_assistant_models.helpers import create_safe_string
 
 from music_assistant.constants import (
     DB_TABLE_ALBUMS,
@@ -39,7 +40,6 @@ from music_assistant.constants import (
 )
 from music_assistant.controllers.music.constants import DB_SCHEMA_VERSION
 from music_assistant.controllers.music.media.genres import GenreController
-from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.json import json_dumps, json_loads, serialize_to_json
 from music_assistant.helpers.lyrics import normalize_lrc_lyrics
 

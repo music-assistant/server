@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import ArtistType, MediaType, ProviderFeature
+from music_assistant_models.helpers import create_safe_string
 from music_assistant_models.media_items import (
     Artist,
     Audiobook,
@@ -29,7 +30,6 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import get_cu
 from music_assistant.helpers.compare import (
     compare_audiobook,
     compare_media_item,
-    create_safe_string,
     loose_compare_strings,
 )
 from music_assistant.helpers.database import UNSET
