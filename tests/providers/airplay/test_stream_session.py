@@ -16,6 +16,9 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_COLD_GROUP_START_LEAD_MS,
     AIRPLAY_GROUP_START_LEAD_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
+    AIRPLAY_LATE_JOIN_RING_MARGIN_SECONDS,
+    AIRPLAY_LATE_JOIN_RING_MAX_BYTES,
+    AIRPLAY_LATE_JOIN_RING_MIN_SECONDS,
     AIRPLAY_START_LEAD_MS,
     StreamingProtocol,
 )
@@ -1386,3 +1389,194 @@ async def test_cleanup_after_removal_skips_idle_when_player_has_new_session_stre
         await session._cleanup_after_removal(player)
 
     player.set_state_from_stream.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_late_join_pads_with_silence_when_the_ring_ran_out_under_a_committed_anchor() -> None:
+    """A due position lost to the ring after the START is covered with silence, not a moved anchor."""
+    # Freeze time so both the test and the code under test agree on `now`.
+    now = 1_000_000.0
+    start_time = now - 100.0
+    session = _make_session(start_time, 110.0)
+    session._pcm_total_fed = int(110.0 * PCM_SAMPLE_SIZE)
+    # An 8s ring against a 10s write-head lead: wide enough when the anchor is
+    # planned, too narrow by the time the binary owns the instant.
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 8)
+    session._pcm_buffer_max = PCM_SAMPLE_SIZE * 8
+    # Freeze the adaptive sizing so this test covers the cap, not the growth.
+    session._peak_lead_seconds = 1e6
+    logger = MagicMock()
+    session.prov.logger = logger
+    player = _make_late_joiner()
+
+    written: list[tuple[str, bytes]] = []
+
+    async def capture_write(target: Any, chunk: bytes) -> None:
+        written.append((target.player_id, chunk))
+
+    def setup_with_feed(*_args: Any, **_kwargs: Any) -> None:
+        _setup_stream(player)()
+
+        async def start(_start_unix_ms: int, _position_ms: int, *, join: bool = False) -> None:
+            assert join is True
+            # The group keeps being fed while the START ack is outstanding: this
+            # is what pushes the joiner's due position off the back of the ring.
+            await session._write_chunk_to_all_players(b"\x02" * int(2.0 * PCM_SAMPLE_SIZE))
+
+        player.stream.start = AsyncMock(side_effect=start)
+
+    with (
+        patch.object(session, "_start_client", side_effect=setup_with_feed),
+        patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        await session.add_client(player)
+
+    # The anchor is the one that was commanded: an acked instant is never moved.
+    headroom = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000
+    assert _captured_start_at(player) == pytest.approx(now + headroom, abs=0.001)
+    prime = next(chunk for pid, chunk in written if pid == player.player_id)
+    # due is 102.5s of feed and the write head reached 112.0s, so 9.5s is owed
+    # while only 8s survives in the ring: the missing 1.5s opens as silence.
+    assert len(prime) / PCM_SAMPLE_SIZE == pytest.approx(9.5, abs=0.001)
+    pad = int(1.5 * PCM_SAMPLE_SIZE)
+    assert prime[:pad] == bytes(pad), "the missing head must be silence"
+    assert set(prime[pad:]) == {1, 2}, "the rest must be the buffered feed"
+    assert pad % session._pcm_frame_size == 0
+    assert session._client_skip_bytes[player.player_id] == 0
+    # Position still reports where the GROUP is at that instant, because the
+    # real content lands exactly where it would have without the shortfall.
+    player.stream.rebase_position.assert_not_called()
+    logger.warning.assert_called_once()
+    assert "silence" in logger.warning.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_late_join_ring_shortfall_keeps_a_misaligned_ring_head_frame_aligned() -> None:
+    """A silence pad over a mid-frame ring head still lands the feed on frame boundaries."""
+    now = 1_000_000.0
+    session = _make_session(now - 100.0, 110.0)
+    # Both the write head and the ring head sit mid-frame.
+    session._pcm_total_fed = int(110.0 * PCM_SAMPLE_SIZE) + 3
+    session._pcm_buffer = bytearray(b"\x01" * (PCM_SAMPLE_SIZE * 8 + 2))
+    session._pcm_buffer_max = len(session._pcm_buffer)
+    session._peak_lead_seconds = 1e6
+    player = _make_late_joiner()
+
+    written: list[tuple[str, bytes]] = []
+
+    async def capture_write(target: Any, chunk: bytes) -> None:
+        written.append((target.player_id, chunk))
+
+    def setup_with_feed(*_args: Any, **_kwargs: Any) -> None:
+        _setup_stream(player)()
+
+        async def start(_start_unix_ms: int, _position_ms: int, *, join: bool = False) -> None:
+            assert join is True
+            await session._write_chunk_to_all_players(b"\x02" * (int(2.0 * PCM_SAMPLE_SIZE) + 1))
+
+        player.stream.start = AsyncMock(side_effect=start)
+
+    with (
+        patch.object(session, "_start_client", side_effect=setup_with_feed),
+        patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        await session.add_client(player)
+
+    prime = next(chunk for pid, chunk in written if pid == player.player_id)
+    frame_size = session._pcm_frame_size
+    # The prime ends exactly at the write head, so its start - and therefore the
+    # whole padded prime - has to sit on an absolute frame boundary.
+    assert (session._pcm_total_fed - len(prime)) % frame_size == 0
+    pad_len = len(prime) - len(prime.lstrip(b"\x00"))
+    assert pad_len % frame_size == 0
+
+
+def test_ring_grows_to_the_observed_write_head_lead() -> None:
+    """The ring tracks the largest lead a session shows, above a floor and under a byte cap."""
+    now = 1_000_000.0
+    session = _make_session(now - 100.0, 100.0)
+    assert session._pcm_buffer_max == int(AIRPLAY_LATE_JOIN_RING_MIN_SECONDS * PCM_SAMPLE_SIZE)
+
+    with patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now):
+        # A 4s lead stays under the floor, which keeps the ring where it was.
+        session.seconds_streamed = 104.0
+        session._observe_write_head_lead()
+        assert session._pcm_buffer_max == int(AIRPLAY_LATE_JOIN_RING_MIN_SECONDS * PCM_SAMPLE_SIZE)
+
+        # A 15s lead carries the ring past the floor, with the margin on top.
+        session.seconds_streamed = 115.0
+        session._observe_write_head_lead()
+        assert session._peak_lead_seconds == pytest.approx(15.0, abs=0.001)
+        expected = int((15.0 + AIRPLAY_LATE_JOIN_RING_MARGIN_SECONDS) * PCM_SAMPLE_SIZE)
+        assert session._pcm_buffer_max == expected
+
+        # A lead that falls back never shrinks the ring: the history a joiner
+        # still needs is already in it.
+        session.seconds_streamed = 108.0
+        session._observe_write_head_lead()
+        assert session._pcm_buffer_max == expected
+
+        # Growth is bounded in bytes, so a hi-res rate cannot multiply it out.
+        session.seconds_streamed = 100.0 + 3600.0
+        session._observe_write_head_lead()
+        assert session._pcm_buffer_max == AIRPLAY_LATE_JOIN_RING_MAX_BYTES
+
+
+def test_write_head_lead_is_not_measured_before_the_anchor_arrives() -> None:
+    """Audio fed inside the start lead is not counted as pipeline depth."""
+    now = 1_000_000.0
+    # Anchored 2.5s into the future: nothing is audible yet.
+    session = _make_session(now + 2.5, 8.0)
+    with patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now):
+        session._observe_write_head_lead()
+    assert session._peak_lead_seconds == 0.0
+    assert session._pcm_buffer_max == int(AIRPLAY_LATE_JOIN_RING_MIN_SECONDS * PCM_SAMPLE_SIZE)
+
+    unanchored = _make_session(0.0, 8.0)
+    with patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now):
+        unanchored._observe_write_head_lead()
+    assert unanchored._peak_lead_seconds == 0.0
+
+
+@pytest.mark.asyncio
+async def test_late_join_silence_pad_is_bounded_and_reports_the_residual() -> None:
+    """An implausible ack is padded only up to the ring bound, and says so."""
+    now = 1_000_000.0
+    session = _make_session(now - 400.0, 420.0)
+    session._pcm_total_fed = int(420.0 * PCM_SAMPLE_SIZE)
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 2)
+    session._pcm_buffer_max = PCM_SAMPLE_SIZE * 2
+    session._peak_lead_seconds = 1e6
+    logger = MagicMock()
+    session.prov.logger = logger
+    player = _make_late_joiner()
+
+    written: list[tuple[str, bytes]] = []
+
+    async def capture_write(target: Any, chunk: bytes) -> None:
+        written.append((target.player_id, chunk))
+
+    def setup_with_stale_ack(*_args: Any, **_kwargs: Any) -> None:
+        _setup_stream(player)()
+        # The binary reports an instant far behind the commanded one, mapping
+        # the joiner back near the start of the session. 320s of head is owed.
+        player.stream.start = AsyncMock(return_value=int((now - 300.0) * 1000))
+
+    with (
+        patch.object(session, "_start_client", side_effect=setup_with_stale_ack),
+        patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        await session.add_client(player)
+
+    prime = next(chunk for pid, chunk in written if pid == player.player_id)
+    # Bounded at one ring of silence plus the ring itself - never the 320s owed.
+    assert len(prime) / PCM_SAMPLE_SIZE == pytest.approx(4.0, abs=0.01)
+    assert (session._pcm_total_fed - len(prime)) % session._pcm_frame_size == 0
+    # The joiner cannot be placed exactly, so the log must not claim sync.
+    logger.warning.assert_called_once()
+    tail = logger.warning.call_args.args[-1]
+    assert "ahead of the group" in tail
+    assert "in sync" not in tail
