@@ -28,6 +28,7 @@ from music_assistant_models.player import (
 )
 
 from music_assistant.models.player import Player, PlayerMedia
+from music_assistant.providers.musiccast.avt_helpers import avt_play, avt_set_url, avt_stop
 
 from .const import (
     CONF_APP_KEY,
@@ -66,7 +67,37 @@ class BoseSoundTouchPlayer(Player):
         super().__init__(provider, player_id)
         self._client = client
         self._device_id = info.device_id
-        self._attr_name = info.name
+        # Native announcements require a Bose developer app key; when configured the
+        # speaker plays them as an overlay (ducking and resuming the current playback).
+        app_key = self.provider.get_setup_value(CONF_APP_KEY)
+        self._app_key = str(app_key) if app_key else None
+        self._update_lock = asyncio.Lock()
+
+        self._stop_event = asyncio.Event()
+        self._listener_task: asyncio.Task[None] | None = None
+
+        self._supported_player_options: set[PlayerOptionKeys] = set()
+
+    async def setup(self, info: Info) -> None:
+        """Fetch initial state and start listening for device updates."""
+        self.set_static_attributes(info)
+
+        # initial refresh no lock needed
+        await self._refresh_volume()
+        await self._refresh_now_playing()
+        await self._refresh_options()
+        await self._refresh_zone()
+        await self._refresh_sources()
+
+        self.update_state()
+
+        self._listener_task = self.mass.create_task(self._listen())
+
+    def set_static_attributes(self, info: Info) -> None:
+        """Set static attributes."""
+        self._attr_needs_poll = True
+        self._attr_poll_interval = IDLE_POLL_INTERVAL
+        self._attr_available = True
         self._attr_type = PlayerType.PLAYER
         # Playback (PLAY_MEDIA) is deliberately omitted: SoundTouch has no usable API to
         # play an arbitrary stream, so audio is routed through a linked playback protocol
@@ -80,14 +111,13 @@ class BoseSoundTouchPlayer(Player):
             PlayerFeature.SELECT_SOURCE,
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.OPTIONS,
+            PlayerFeature.PLAY_MEDIA,
         }
-        # Native announcements require a Bose developer app key; when configured the
-        # speaker plays them as an overlay (ducking and resuming the current playback).
-        app_key = provider.get_setup_value(CONF_APP_KEY)
-        self._app_key = str(app_key) if app_key else None
         if self._app_key:
             self._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
-        self._attr_can_group_with = {provider.instance_id}
+
+        self._attr_name = info.name
+        self._attr_can_group_with = {self.provider.instance_id}
         self._attr_device_info = DeviceInfo(
             model=info.model or "Bose SoundTouch",
             manufacturer="Bose",
@@ -100,40 +130,21 @@ class BoseSoundTouchPlayer(Player):
         if info.ip_addresses:
             for ip_address in info.ip_addresses:
                 self._attr_device_info.add_identifier(IdentifierType.IP_ADDRESS, ip_address)
-        self._stop_event = asyncio.Event()
-        self._listener_task: asyncio.Task[None] | None = None
-
-        self._supported_player_options: set[PlayerOptionKeys] = set()
-
-    # --- Lifecycle ---
-
-    async def setup(self) -> None:
-        """Fetch initial state and start listening for device updates."""
-        await self._refresh_volume()
-        await self._refresh_now_playing()
-        await self._refresh_sources()
-        await self._refresh_options()
-        await self._refresh_zone()
-        self._attr_needs_poll = True
-        self._attr_poll_interval = IDLE_POLL_INTERVAL
-        self._attr_available = True
-        self._listener_task = self.mass.create_task(self._listen())
 
     async def poll(self) -> None:
         """Poll the speaker as a safety net for missed websocket events."""
-        try:
-            await self._refresh_now_playing()
-            await self._refresh_volume()
-            await self._refresh_zone()
-            await self._refresh_options()
-        except (aiohttp.ClientError, TimeoutError, OSError) as err:
-            self.logger.debug("Poll failed for %s: %s", self.name, err)
-            if self._attr_available:
+        async with self._update_lock:
+            try:
+                await self._refresh_now_playing()
+                await self._refresh_volume()
+                await self._refresh_zone()
+                await self._refresh_options()
+            except (aiohttp.ClientError, TimeoutError, OSError) as err:
+                self.logger.debug("Poll failed for %s: %s", self.name, err)
                 self._attr_available = False
                 self.update_state()
-            return
-        if not self._attr_available:
-            self._attr_available = True
+                return
+        self._attr_available = True
         self._attr_poll_interval = (
             PLAYBACK_POLL_INTERVAL
             if self._attr_playback_state == PlaybackState.PLAYING
@@ -185,6 +196,13 @@ class BoseSoundTouchPlayer(Player):
         await self._client.press_key(Key.PLAY)
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
+
+    async def play_media(self, media: PlayerMedia) -> None:
+        """Play media command."""
+        async with self._update_lock:
+            await avt_stop(self.mass.http_session, self.physical_device)
+            await avt_set_url(self.mass.http_session, self.physical_device, player_media=media)
+            await avt_play(self.mass.http_session, self.physical_device)
 
     async def pause(self) -> None:
         """Handle PAUSE command on a native source."""
@@ -300,9 +318,9 @@ class BoseSoundTouchPlayer(Player):
                         if self._stop_event.is_set():
                             break
                         if msg.type == aiohttp.WSMsgType.TEXT:
-                            await self._handle_message(msg.data)
+                            await self._handle_update_message(msg.data)
                         elif msg.type == aiohttp.WSMsgType.BINARY:
-                            await self._handle_message(msg.data.decode())
+                            await self._handle_update_message(msg.data.decode())
                         elif msg.type in (
                             aiohttp.WSMsgType.ERROR,
                             aiohttp.WSMsgType.CLOSE,
@@ -322,7 +340,7 @@ class BoseSoundTouchPlayer(Player):
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(self._stop_event.wait(), timeout=RECONNECT_DELAY)
 
-    async def _handle_message(self, message: str) -> None:
+    async def _handle_update_message(self, message: str) -> None:
         """Handle a single websocket notification message."""
         # a physical preset button press maps to the configured Music Assistant media;
         # the bulk "presetsUpdated" notification (which lists all presets) is not a press
@@ -332,15 +350,20 @@ class BoseSoundTouchPlayer(Player):
         ):
             await self._handle_preset(preset_id)
             return
-        try:
-            if "volumeUpdated" in message:
-                await self._refresh_volume()
-            if "nowPlayingUpdated" in message:
-                await self._refresh_now_playing()
-            if "zoneUpdated" in message:
-                await self._refresh_zone()
-        except (aiohttp.ClientError, TimeoutError, OSError) as err:
-            self.logger.debug("Failed to refresh state for %s: %s", self.name, err)
+        if self._update_lock.locked():
+            # ignore message as we poll regularly too, and polling is the ultimate truth
+            return
+        async with self._update_lock:
+            try:
+                if "volumeUpdated" in message:
+                    await self._refresh_volume()
+                if "nowPlayingUpdated" in message:
+                    await self._refresh_now_playing()
+                if "zoneUpdated" in message:
+                    await self._refresh_zone()
+                self.update_state()
+            except (aiohttp.ClientError, TimeoutError, OSError) as err:
+                self.logger.debug("Failed to refresh state for %s: %s", self.name, err)
 
     async def _handle_preset(self, preset_id: int) -> None:
         """Play the Music Assistant media configured for the given preset button."""
@@ -364,7 +387,6 @@ class BoseSoundTouchPlayer(Player):
         volume = await self._client.get_volume()
         self._attr_volume_level = volume.actual_volume
         self._attr_volume_muted = volume.mute_enabled
-        self.update_state()
 
     async def _refresh_now_playing(self) -> None:
         """Refresh playback state from the speaker."""
@@ -425,8 +447,6 @@ class BoseSoundTouchPlayer(Player):
 
         self._attr_options = _updated_options
 
-        self.update_state()
-
     async def _refresh_sources(self) -> None:
         """Refresh the list of selectable native sources from the speaker."""
         try:
@@ -461,7 +481,6 @@ class BoseSoundTouchPlayer(Player):
             self._attr_group_members = members
         else:
             self._attr_group_members = []
-        self.update_state()
 
     def _update_state_from_now_playing(self, now_playing: NowPlaying) -> None:
         """Update player state from a now_playing snapshot."""
@@ -471,7 +490,6 @@ class BoseSoundTouchPlayer(Player):
             self._attr_playback_state = PlaybackState.IDLE
             self._attr_active_source = None
             self._attr_current_media = None
-            self.update_state()
             return
 
         if now_playing.play_status in [PlayStatus.PLAY_STATE, PlayStatus.BUFFERING_STATE]:
@@ -526,4 +544,3 @@ class BoseSoundTouchPlayer(Player):
                 )
             else:
                 self._attr_current_media = None
-        self.update_state()

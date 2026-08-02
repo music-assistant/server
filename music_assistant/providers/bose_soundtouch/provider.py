@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
 import aiohttp
 from aiobosesoundtouch.client import SoundtouchDevice
 from aiobosesoundtouch.client.session_configuration import SessionConfiguration
+from aiohttp import web
 from zeroconf import ServiceStateChange
 
 from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
@@ -88,6 +90,18 @@ class BoseSoundTouchProvider(PlayerProvider):
             if stripped := ip_address.strip():
                 await self.try_add_player(stripped)
 
+        self._on_unload_callbacks: list[Callable[[], None]] = []
+        self._on_unload_callbacks.append(
+            self.mass.webserver.register_dynamic_route(
+                f"/{self.instance_id}_preset", self._handle_preset_request
+            )
+        )
+
+    async def unload(self, is_removed: bool = False) -> None:
+        """Unload."""
+        for callback in self._on_unload_callbacks:
+            callback()
+
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
@@ -131,7 +145,7 @@ class BoseSoundTouchProvider(PlayerProvider):
 
         player = BoseSoundTouchPlayer(self, player_id, client, info)
         try:
-            await player.setup()
+            await player.setup(info)
             await self.mass.players.register_or_update(player)
         except Exception:
             self.logger.exception("Failed to register SoundTouch player %s", info.name)
@@ -148,3 +162,30 @@ class BoseSoundTouchProvider(PlayerProvider):
             ):
                 return player
         return None
+
+    async def _handle_preset_request(self, request: web.Request) -> web.Response:
+        """
+        Handle a preset request.
+
+        We detect via socket if a preset was pressed. But to have this message send the speaker
+        needs to store something as preset, even if that has no meaning.
+        """
+        if not (preset_id := request.query.get("preset_id")):
+            return web.Response(status=400, text="Missing preset_id")
+
+        if preset_id := request.query.get("preset_id"):
+            self.logger.error(preset_id)
+
+        return web.json_response(
+            {
+                "audio": {
+                    "hasPlaylist": False,
+                    "isRealtime": True,
+                    "streamUrl": f"http://192.168.37.11:8095/bose_soundtouch_preset?preset_id={preset_id}",
+                },
+                "imageUrl": "",
+                "name": "Music Assistant Preset",
+                "streamType": "liveRadio",
+            },
+            status=200,
+        )
