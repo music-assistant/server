@@ -160,8 +160,8 @@ class LoginRateLimiter:
         :param key: The key to count failed attempts for.
         :return: Number of failed attempts still being tracked.
         """
-        self._cleanup_old_attempts(key)
-        return len(self._failed_attempts.get(key, ()))
+        cutoff_time = utc() - self._tracking_window
+        return sum(1 for timestamp in self._failed_attempts.get(key, ()) if timestamp > cutoff_time)
 
     def get_delay(self, key: str) -> int:
         """

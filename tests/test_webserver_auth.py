@@ -35,6 +35,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     has_scope,
     resolve_command_impersonation,
     set_current_client_id,
+    set_current_peer_address,
     set_current_token,
     set_current_user,
     set_impersonated_user,
@@ -1936,8 +1937,6 @@ async def test_exchange_join_code_rate_limit_is_per_connection(
     assert "invalid" in result["error"].lower()
     assert (await auth_manager.exchange_join_code(code))["success"] is True
 
-    set_current_client_id(None)
-
 
 async def test_exchange_join_code_success_clears_connection_rate_limit(
     auth_manager: AuthenticationManager,
@@ -1995,19 +1994,37 @@ async def test_exchange_join_code_global_ceiling_throttles_every_client(
     assert result["success"] is False
     assert "too many" in result["error"].lower()
 
-    set_current_client_id(None)
 
-
-async def test_join_code_global_ceiling_exceeds_party_scale() -> None:
+async def test_exchange_join_code_rate_limit_falls_back_to_peer_address(
+    auth_manager: AuthenticationManager,
+) -> None:
     """
-    Verify the server-wide ceiling leaves room for a large party's legitimate failures.
+    Verify stateless API callers are told apart by the address they connect from.
 
-    An expired QR poster makes every guest present fail a few times in a row; that burst
-    must not be able to reach the ceiling.
+    The login page exchanges join codes over the JSON RPC endpoint, which carries no
+    connection identity, so without this every such caller would share one bucket.
+
+    :param auth_manager: AuthenticationManager instance.
     """
-    plausible_guests = 100
-    retries_per_guest = 5
-    assert 2 * plausible_guests * retries_per_guest <= JOIN_CODE_GLOBAL_FAILURE_CEILING
+    user = await auth_manager.create_user(username="httpguest", role=UserRole.GUEST)
+    code, _ = await auth_manager.generate_join_code(user=user, expires_in_hours=24, max_uses=0)
+
+    set_current_peer_address("192.0.2.10")
+    for _ in range(3):
+        assert (await auth_manager.exchange_join_code("EXPIRED12345"))["success"] is False
+    assert "too many" in (await auth_manager.exchange_join_code("EXPIRED12345"))["error"].lower()
+
+    # A caller from another address is unaffected.
+    set_current_peer_address("192.0.2.11")
+    assert (await auth_manager.exchange_join_code(code))["success"] is True
+
+    # An address can be shared by everyone behind a proxy, so success must not clear it.
+    set_current_peer_address("192.0.2.10")
+    assert "too many" in (await auth_manager.exchange_join_code(code))["error"].lower()
+
+    # A websocket client id always wins over the peer address.
+    set_current_client_id("connection-e")
+    assert (await auth_manager.exchange_join_code(code))["success"] is True
 
 
 def test_mask_join_code() -> None:
@@ -2044,8 +2061,6 @@ async def test_exchange_join_code_logs_identify_the_caller(
     assert "client=connection-d" in throttles[0]
     assert "client_failures=3" in throttles[0]
     assert "server_failures=3" in throttles[0]
-
-    set_current_client_id(None)
 
 
 async def test_login_rate_limiter_default_tiers() -> None:

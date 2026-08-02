@@ -31,6 +31,7 @@ from music_assistant.constants import DB_TABLE_PLAYLOG, HOMEASSISTANT_SYSTEM_USE
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
     ROLE_SCOPES,
     get_current_client_id,
+    get_current_peer_address,
     get_current_token,
     get_current_user,
     has_scope,
@@ -1499,10 +1500,9 @@ class AuthenticationManager:
         :param code: The short join code.
         :return: Authentication result with access token if successful.
         """
-        client_id = get_current_client_id()
-        rate_limit_key = client_id or JOIN_CODE_ANONYMOUS_RATE_LIMIT_KEY
+        rate_limit_key, key_is_exclusive = _join_code_rate_limit_key()
         async with self._join_code_exchange_lock:
-            if throttled := await self._check_join_code_rate_limit(rate_limit_key, code):
+            if throttled := await self._check_join_code_rate_limit(rate_limit_key):
                 return throttled
 
             token = await self._exchange_join_code(code)
@@ -1517,9 +1517,9 @@ class AuthenticationManager:
                     "error": "Invalid or expired join code",
                 }
 
-            # Only a per-connection bucket is cleared on success, so presenting a valid code
-            # lifts the throttle for that connection alone and never for anyone else.
-            if client_id:
+            # A bucket is only cleared when it belongs to one caller alone, so presenting a
+            # valid code never lifts the throttle for anyone else.
+            if key_is_exclusive:
                 await self._join_code_rate_limiter.clear_attempts(rate_limit_key)
 
         # Decode token to get user info
@@ -1903,12 +1903,11 @@ class AuthenticationManager:
         else:
             self.logger.info("Password changed for user %s", target_user.username)
 
-    async def _check_join_code_rate_limit(self, key: str, code: str) -> dict[str, Any] | None:
+    async def _check_join_code_rate_limit(self, key: str) -> dict[str, Any] | None:
         """
         Check the join code exchange throttles that apply to the calling client.
 
         :param key: Rate limit key identifying the calling client.
-        :param code: The join code the client wants to exchange, used for diagnostics only.
         :return: The error result to return to the caller, or None if the attempt may proceed.
         """
         limiters = (
@@ -1919,13 +1918,15 @@ class AuthenticationManager:
             allowed, remaining_delay = await limiter.check_rate_limit(limiter_key)
             if allowed:
                 continue
+            # The attempted code is deliberately absent here: it has not been checked yet,
+            # so it may well be a valid one. Each failure that filled the bucket already
+            # logged its own (rejected, and therefore unusable) code.
             self.logger.warning(
                 "Join code exchange throttled by the %s limit "
-                "(client=%s, code=%s, client_failures=%d, server_failures=%d). "
+                "(client=%s, client_failures=%d, server_failures=%d). "
                 "%d seconds remaining.",
                 scope,
                 key,
-                _mask_join_code(code),
                 self._join_code_rate_limiter.get_attempt_count(key),
                 self._join_code_global_rate_limiter.get_attempt_count(
                     JOIN_CODE_GLOBAL_RATE_LIMIT_KEY
@@ -2068,6 +2069,20 @@ class AuthenticationManager:
             days=TOKEN_ABSOLUTE_MAX_EXPIRATION - HA_TOKEN_ROTATION_MARGIN
         )
         return now < rotate_after
+
+
+def _join_code_rate_limit_key() -> tuple[str, bool]:
+    """
+    Work out which bucket the calling client's failed join code exchanges belong to.
+
+    :return: The rate limit key, and whether that key identifies a single caller
+        exclusively (a shared key must never be cleared on a successful exchange).
+    """
+    if client_id := get_current_client_id():
+        return client_id, True
+    if peer_address := get_current_peer_address():
+        return f"peer:{peer_address}", False
+    return JOIN_CODE_ANONYMOUS_RATE_LIMIT_KEY, False
 
 
 def _mask_join_code(code: str) -> str:
