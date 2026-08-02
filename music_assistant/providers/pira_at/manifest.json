@@ -3,7 +3,7 @@
   "domain": "pira_at",
   "stage": "beta",
   "name": "PIRA.AT",
-  "description": "Live piratenstations uit de publieke PIRA.AT API.",
+  "description": "Listen to live pirate radio stations from the public PIRA.AT API.",
   "codeowners": ["@Laav"],
   "requirements": [],
   "documentation": "https://github.com/Laav/music-assistant-pira-at-provider",

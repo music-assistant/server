@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from time import monotonic
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, unquote
 
 import aiohttp
@@ -64,7 +64,7 @@ async def setup(
 class PiraAtProvider(MusicProvider):
     """Expose PIRA.AT's live station catalog as native Music Assistant radio."""
 
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize the short-lived shared catalog cache."""
         super().__init__(*args, **kwargs)
         self._catalog: dict[str, Station] = {}
@@ -125,7 +125,8 @@ class PiraAtProvider(MusicProvider):
                     item_id="all",
                     provider=self.domain,
                     path=f"{path}all",
-                    name="Alle stations",
+                    name="All stations",
+                    translation_key="pira_at_all_stations",
                 )
             ]
             folders.extend(
@@ -252,7 +253,7 @@ class PiraAtProvider(MusicProvider):
         return radio
 
     @staticmethod
-    def _sort_stations(stations) -> list[Station]:
+    def _sort_stations(stations: Iterable[Station]) -> list[Station]:
         """Sort stations like the PIRA.AT site: listeners first, then name."""
         return sorted(
             stations,

@@ -1,0 +1,10 @@
+{
+  "media": {
+    "folder": {
+      "pira_at_all_stations": { "name": "All stations" }
+    }
+  },
+  "manifest": {
+    "description": "Listen to live pirate radio stations from the public PIRA.AT API."
+  }
+}

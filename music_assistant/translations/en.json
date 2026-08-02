@@ -1738,6 +1738,8 @@
   "provider.phishin.media.folder.user_playlists.name": "User Playlists",
   "provider.phishin.media.folder.venue.name": "{0} ({1} shows)",
   "provider.phishin.media.folder.year.name": "{0} ({1} shows)",
+  "provider.pira_at.manifest.description": "Listen to live pirate radio stations from the public PIRA.AT API.",
+  "provider.pira_at.media.folder.pira_at_all_stations.name": "All stations",
   "provider.playlist_metadata.config_entries.enable_genre_detection.description": "Automatically detect and assign genres based on track metadata.",
   "provider.playlist_metadata.config_entries.enable_genre_detection.label": "Enable genre detection",
   "provider.playlist_metadata.config_entries.genre_max_count.description": "Maximum number of genres to assign to a playlist.",
