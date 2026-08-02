@@ -269,6 +269,11 @@ class AirPlayPlayer(Player):
             p.player_id for p in prov.get_players() if p.available and p.player_id != self.player_id
         }
 
+    @property
+    def native_grouping_requires_own_stream(self) -> bool:
+        """Return True: members are attached to this player's own stream session."""
+        return True
+
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         # Pairing/credentials are no longer config entries: they are collected by the
@@ -589,6 +594,15 @@ class AirPlayPlayer(Player):
                     # (e.g. after a dynamic leader switch where the stream continues)
                     if child_player_to_add not in stream_session.sync_clients:
                         await stream_session.add_client(child_player_to_add)
+                elif self.active_output_protocol not in (None, "native"):
+                    # Members can only be attached to this player's own stream session, which
+                    # does not exist while it renders through one of its output protocols.
+                    self.logger.warning(
+                        "%s joined the group of %s while that player renders through another "
+                        "output protocol: there is no stream session to join, so it stays silent",
+                        child_player_to_add.display_name if child_player_to_add else player_id,
+                        self.display_name,
+                    )
 
             # Ensure group leader includes itself in group_members when it has members
             # This is required for the synced_to property to work correctly
