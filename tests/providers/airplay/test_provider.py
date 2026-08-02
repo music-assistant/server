@@ -392,6 +392,24 @@ def test_ptp_daemon_reports_what_it_suppressed(
     assert any(message.endswith(trace) for message in messages)
 
 
+def test_ptp_daemon_restart_gets_a_fresh_warning_budget(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A replacement daemon's startup failure must not be eaten by the old one's budget."""
+    prov = _ptp_provider()
+    for _ in range(PTP_DAEMON_WARN_BURST + 2):
+        prov._handle_ptp_daemon_line("[15:44:56.101] [PTP] slave offset seq=7 error=0.000012")
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        prov._reset_ptp_daemon_warn_budget()
+        prov._handle_ptp_daemon_line("[15:44:57.002] [PTP] Cannot bind UDP 319: Permission denied")
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("2 further problem line(s) from the previous daemon" in m for m in messages)
+    assert any("Cannot bind UDP 319" in m for m in messages)
+
+
 async def test_diagnostics_report_daemon_readiness_and_per_stream_route() -> None:
     """A live daemon that never bound its ports must not read as healthy timing."""
     prov = _ptp_provider()

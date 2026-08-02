@@ -831,6 +831,7 @@ class AirPlayProvider(PlayerProvider):
             self._ptp_daemon_ready = asyncio.Event()
         else:
             self._ptp_daemon_ready.clear()
+        self._reset_ptp_daemon_warn_budget()
         await daemon.start()
         self._ptp_daemon = daemon
         self._ptp_daemon_started = time.monotonic()
@@ -872,6 +873,26 @@ class AirPlayProvider(PlayerProvider):
         ):
             self.logger.debug("Shared PTP clock daemon reported ready")
             event.set()
+
+    def _reset_ptp_daemon_warn_budget(self) -> None:
+        """
+        Give a newly spawned daemon a full warning budget of its own.
+
+        The budget is per daemon, not per provider: a daemon that spent it
+        before crashing would otherwise have its replacement's startup failure -
+        the one line worth reading - suppressed for the rest of the window.
+        Whatever the old daemon had held back is reported on the way out rather
+        than dropped.
+        """
+        if self._ptp_daemon_warns_suppressed:
+            self.logger.warning(
+                "PTP daemon: %d further problem line(s) from the previous daemon were "
+                "suppressed; enable verbose logging to see them all",
+                self._ptp_daemon_warns_suppressed,
+            )
+        self._ptp_daemon_warn_window_start = 0.0
+        self._ptp_daemon_warns_in_window = 0
+        self._ptp_daemon_warns_suppressed = 0
 
     def _warn_ptp_daemon_line(self, line: str) -> None:
         """
