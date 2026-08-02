@@ -163,8 +163,7 @@ class WiimProvider(PlayerProvider):
                 upnp_location,
                 self.mass.http_session_no_ssl,
                 host=ip_address,
-                local_host=await self.mass.streams.get_source_ip(ip_address)
-                or str(self.mass.streams.publish_ip),
+                local_host=await self.mass.streams.get_source_ip(ip_address),
                 polling_interval=60,
             )
         except (WiimRequestException, WiimDeviceException) as err:
