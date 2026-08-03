@@ -8,7 +8,7 @@ import random
 from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.background_task import BackgroundTask
@@ -25,6 +25,8 @@ from music_assistant_models.media_items import SoundEffect
 from music_assistant.helpers.datetime import now as host_now
 from music_assistant.helpers.playlists import PlaylistItem, parse_m3u, parse_m3u_playlist_image
 from music_assistant.helpers.uri import create_uri
+from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
+from music_assistant.providers.ai_radio.constants import CONF_AI_ENGINE, CONF_TTS_ENGINE
 from music_assistant.providers.ai_radio.models import AudioSection, SessionState, Slot
 from music_assistant.providers.ai_radio.runtime import AIRadioRuntimeMixin
 
@@ -44,11 +46,16 @@ class StubConfig:
 class DummyRuntime(AIRadioRuntimeMixin):
     """Minimal runtime harness for testing mixin behavior."""
 
-    def __init__(self) -> None:
+    def __init__(self, setup_values: dict[str, Any] | None = None) -> None:
         """Initialize minimal state for runtime tests."""
         self.logger = logging.getLogger("tests.ai_radio.runtime")
         self._sessions: dict[str, SessionState] = {}
         self.config = cast("Any", StubConfig())
+        self._setup_values = setup_values or {}
+
+    def get_setup_value(self, key: str, default: Any = None) -> Any:
+        """Return the stubbed setup flow value for key, or default when absent."""
+        return self._setup_values.get(key, default)
 
     async def _run_playlist_mode(
         self,
@@ -82,6 +89,47 @@ class FailingRuntime(DummyRuntime):
 def _set_runtime_mass(runtime: AIRadioRuntimeMixin, mass: Any) -> None:
     """Attach lightweight test mass object while bypassing strict runtime typing."""
     cast("Any", runtime).mass = mass
+
+
+def _create_ai_plugin(instance_id: str, *engine_ids: str) -> MagicMock:
+    """Create a mock plugin provider exposing the given AI engines."""
+    provider = MagicMock(spec=PluginProvider)
+    provider.instance_id = instance_id
+    provider.get_ai_engines = AsyncMock(
+        return_value=[
+            AIEngine(id=engine_id, name=engine_id, provider=provider) for engine_id in engine_ids
+        ]
+    )
+    return provider
+
+
+def _create_tts_plugin(instance_id: str, *engine_ids: str) -> MagicMock:
+    """Create a mock plugin provider exposing the given TTS engines."""
+    provider = MagicMock(spec=PluginProvider)
+    provider.instance_id = instance_id
+    provider.get_tts_engines = AsyncMock(
+        return_value=[
+            TTSEngine(id=engine_id, name=engine_id, provider=provider) for engine_id in engine_ids
+        ]
+    )
+    return provider
+
+
+def _create_engine_mass(feature: ProviderFeature, *providers: Any, **attrs: Any) -> Any:
+    """Create a lightweight mass stand-in serving the given plugins for one feature."""
+
+    class DummyMass:
+        def get_providers_supporting_feature(
+            self,
+            requested: ProviderFeature,
+            priority: tuple[ProviderType, ...] = (),
+        ) -> list[Any]:
+            return list(providers) if requested == feature else []
+
+    mass = DummyMass()
+    for key, value in attrs.items():
+        setattr(mass, key, value)
+    return mass
 
 
 async def test_run_session_sets_completed_and_logs(caplog: Any) -> None:
@@ -291,38 +339,18 @@ def test_plan_sections_ignores_invalid_optional_chance() -> None:
 
 async def test_render_tts_converts_raw_http_path_to_builtin_sound_effect_uri() -> None:
     """Wrap raw TTS HTTP paths as builtin sound effect URIs for queue progression."""
+    plugin = _create_tts_plugin("hass_1", "tts.cloud")
+    plugin.get_tts_message = AsyncMock(
+        return_value=SimpleNamespace(path="http://example.test/api/tts_proxy/abc123.mp3")
+    )
 
-    class DummyStreamDetails:
-        def __init__(self, path: str) -> None:
-            self.path = path
+    def get_provider(provider: str) -> Any:
+        return SimpleNamespace(instance_id="builtin_1") if provider == "builtin" else None
 
-    class DummyTTSPlugin:
-        instance_id = "hass_1"
-
-        async def get_tts_message(self, message: str) -> DummyStreamDetails:
-            return DummyStreamDetails("http://example.test/api/tts_proxy/abc123.mp3")
-
-    class DummyMass:
-        def get_providers_supporting_feature(
-            self,
-            feature: ProviderFeature,
-            priority: tuple[ProviderType, ...] = (),
-        ) -> list[Any]:
-            if feature == ProviderFeature.TTS:
-                return [DummyTTSPlugin()]
-            return []
-
-        def get_provider(self, provider: str) -> Any:
-            if provider == "builtin":
-
-                class DummyBuiltinProvider:
-                    instance_id = "builtin_1"
-
-                return DummyBuiltinProvider()
-            return None
-
-    runtime = DummyRuntime()
-    _set_runtime_mass(runtime, DummyMass())
+    runtime = DummyRuntime({CONF_TTS_ENGINE: "hass_1/tts.cloud"})
+    _set_runtime_mass(
+        runtime, _create_engine_mass(ProviderFeature.TTS, plugin, get_provider=get_provider)
+    )
     runtime._warm_builtin_duration_cache = AsyncMock(return_value=11)  # type: ignore[method-assign]
 
     uri, duration = await runtime._render_tts("hello world", "Test Section")
@@ -333,35 +361,35 @@ async def test_render_tts_converts_raw_http_path_to_builtin_sound_effect_uri() -
         "http://example.test/api/tts_proxy/abc123.mp3",
     )
     assert duration == 11
+    plugin.get_tts_message.assert_awaited_once_with("hello world", engine_id="tts.cloud")
     runtime._warm_builtin_duration_cache.assert_awaited_once()
 
 
+async def test_render_tts_refuses_a_configured_engine_that_disappeared() -> None:
+    """A concrete TTS selection is never silently replaced by another available engine."""
+    plugin = _create_tts_plugin("hass_1", "tts.cloud")
+    runtime = DummyRuntime({CONF_TTS_ENGINE: "hass_1/tts.gone"})
+    _set_runtime_mass(runtime, _create_engine_mass(ProviderFeature.TTS, plugin))
+
+    with pytest.raises(MusicAssistantError, match="No text-to-speech engine available"):
+        await runtime._render_tts("hello world", "Test Section")
+
+
 async def test_generate_text_wraps_not_connected_error() -> None:
-    """Raise an actionable MusicAssistantError when AI provider is disconnected."""
+    """Raise an actionable MusicAssistantError when the AI engine is disconnected."""
 
     class NotConnected(Exception):
         """Match hass_client NotConnected exception name."""
 
-    class DummyAIPlugin:
-        instance_id = "hass_1"
-
-        async def ai_query(self, query: str) -> str:
-            raise NotConnected
-
-    class DummyMass:
-        metadata = SimpleNamespace(locale="en_US")
-
-        def get_providers_supporting_feature(
-            self,
-            feature: ProviderFeature,
-            priority: tuple[ProviderType, ...] = (),
-        ) -> list[Any]:
-            if feature == ProviderFeature.AI_QUERY:
-                return [DummyAIPlugin()]
-            return []
-
-    runtime = DummyRuntime()
-    _set_runtime_mass(runtime, DummyMass())
+    plugin = _create_ai_plugin("hass_1", "ai_task.default")
+    plugin.ai_query = AsyncMock(side_effect=NotConnected)
+    runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
+    _set_runtime_mass(
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.AI_QUERY, plugin, metadata=SimpleNamespace(locale="en_US")
+        ),
+    )
 
     with pytest.raises(MusicAssistantError) as error:
         await runtime._generate_text(
@@ -370,34 +398,20 @@ async def test_generate_text_wraps_not_connected_error() -> None:
             web_mode="disabled",
         )
     assert "not connected" in str(error.value).lower()
-    assert "hass_1" in str(error.value)
+    assert "hass_1/ai_task.default" in str(error.value)
 
 
 async def test_generate_text_asks_for_the_system_locale_language() -> None:
     """The AI query states the server locale so sections are written in that language."""
-    captured: list[str] = []
-
-    class DummyAIPlugin:
-        instance_id = "hass_1"
-
-        async def ai_query(self, query: str) -> str:
-            captured.append(query)
-            return "section text"
-
-    class DummyMass:
-        metadata = SimpleNamespace(locale="nl_NL")
-
-        def get_providers_supporting_feature(
-            self,
-            feature: ProviderFeature,
-            priority: tuple[ProviderType, ...] = (),
-        ) -> list[Any]:
-            if feature == ProviderFeature.AI_QUERY:
-                return [DummyAIPlugin()]
-            return []
-
-    runtime = DummyRuntime()
-    _set_runtime_mass(runtime, DummyMass())
+    plugin = _create_ai_plugin("hass_1", "ai_task.default")
+    plugin.ai_query = AsyncMock(return_value="section text")
+    runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
+    _set_runtime_mass(
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.AI_QUERY, plugin, metadata=SimpleNamespace(locale="nl_NL")
+        ),
+    )
 
     await runtime._generate_text(
         station={"general": {"instructions": "test"}},
@@ -405,7 +419,8 @@ async def test_generate_text_asks_for_the_system_locale_language() -> None:
         web_mode="disabled",
     )
 
-    assert "nl_NL" in captured[0]
+    assert "nl_NL" in plugin.ai_query.await_args.args[0]
+    assert plugin.ai_query.await_args.kwargs == {"engine_id": "ai_task.default"}
 
 
 def test_compose_builtin_playlist_items_preserves_section_metadata() -> None:
@@ -669,60 +684,61 @@ async def test_wait_for_background_task_completion_raises_on_failure(
         await runtime._wait_for_background_task_completion("task_x", timeout_seconds=1)
 
 
-def test_get_ai_plugin_preserves_priority_order() -> None:
-    """Honor provider priority order returned by mass over alphabetical sort (P5)."""
-
-    class DummyPlugin:
-        def __init__(self, instance_id: str) -> None:
-            self.instance_id = instance_id
-
-    high_priority = DummyPlugin("zz_high")
-    low_priority = DummyPlugin("aa_low")
-
-    class DummyMass:
-        def get_providers_supporting_feature(
-            self,
-            feature: ProviderFeature,
-            priority: tuple[ProviderType, ...] = (),
-        ) -> list[Any]:
-            if feature == ProviderFeature.AI_QUERY:
-                return [high_priority, low_priority]
-            return []
-
+async def test_get_ai_engine_requires_a_configured_selection() -> None:
+    """Without a stored selection no engine is picked, so the run fails with a clear error."""
     runtime = DummyRuntime()
-    _set_runtime_mass(runtime, DummyMass())
+    _set_runtime_mass(
+        runtime, _create_engine_mass(ProviderFeature.AI_QUERY, _create_ai_plugin("hass_1", "one"))
+    )
 
-    plugin = runtime._get_ai_plugin()
+    with pytest.raises(MusicAssistantError, match="No AI engine available"):
+        await runtime._get_ai_engine()
 
-    assert plugin.instance_id == "zz_high"
+
+async def test_get_ai_engine_uses_the_configured_selection() -> None:
+    """A configured engine uid wins over the first available engine."""
+    high_priority = _create_ai_plugin("zz_high", "engine")
+    low_priority = _create_ai_plugin("aa_low", "engine")
+    runtime = DummyRuntime({CONF_AI_ENGINE: "aa_low/engine"})
+    _set_runtime_mass(
+        runtime, _create_engine_mass(ProviderFeature.AI_QUERY, high_priority, low_priority)
+    )
+
+    assert (await runtime._get_ai_engine()).uid == "aa_low/engine"
 
 
-def test_get_tts_plugin_preserves_priority_order() -> None:
-    """Honor provider priority order returned by mass over alphabetical sort (P5)."""
+async def test_get_ai_engine_refuses_a_configured_engine_that_disappeared() -> None:
+    """A concrete AI selection is never silently replaced by another available engine."""
+    runtime = DummyRuntime({CONF_AI_ENGINE: "gone/engine"})
+    _set_runtime_mass(
+        runtime, _create_engine_mass(ProviderFeature.AI_QUERY, _create_ai_plugin("hass_1", "one"))
+    )
 
-    class DummyPlugin:
-        def __init__(self, instance_id: str) -> None:
-            self.instance_id = instance_id
+    with pytest.raises(MusicAssistantError, match="No AI engine available"):
+        await runtime._get_ai_engine()
 
-    high_priority = DummyPlugin("zz_high")
-    low_priority = DummyPlugin("aa_low")
 
-    class DummyMass:
-        def get_providers_supporting_feature(
-            self,
-            feature: ProviderFeature,
-            priority: tuple[ProviderType, ...] = (),
-        ) -> list[Any]:
-            if feature == ProviderFeature.TTS:
-                return [high_priority, low_priority]
-            return []
+async def test_get_tts_engine_uses_the_configured_selection() -> None:
+    """The stored TTS uid selects its engine, whatever order the plugins are served in."""
+    high_priority = _create_tts_plugin("zz_high", "engine")
+    low_priority = _create_tts_plugin("aa_low", "engine")
+    runtime = DummyRuntime({CONF_TTS_ENGINE: "aa_low/engine"})
+    _set_runtime_mass(
+        runtime, _create_engine_mass(ProviderFeature.TTS, high_priority, low_priority)
+    )
 
-    runtime = DummyRuntime()
-    _set_runtime_mass(runtime, DummyMass())
+    assert (await runtime._get_tts_engine()).uid == "aa_low/engine"
 
-    plugin = runtime._get_tts_plugin()
 
-    assert plugin.instance_id == "zz_high"
+async def test_get_tts_engine_refuses_a_configured_engine_that_disappeared() -> None:
+    """A concrete TTS selection is never silently replaced by another available engine."""
+    runtime = DummyRuntime({CONF_TTS_ENGINE: "gone/engine"})
+    _set_runtime_mass(
+        runtime, _create_engine_mass(ProviderFeature.TTS, _create_tts_plugin("hass_1", "one"))
+    )
+
+    with pytest.raises(MusicAssistantError, match="No text-to-speech engine available"):
+        await runtime._get_tts_engine()
 
 
 async def test_run_dynamic_mode_has_watchdog_for_stalled_playback(

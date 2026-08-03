@@ -407,6 +407,20 @@
     "child": {
       "label": "Device to set up",
       "description": "Choose which connected device to set up."
+    },
+    "ai_engine": {
+      "label": "AI engine",
+      "description": "The AI engine used for this feature."
+    },
+    "ai_engine_unavailable": {
+      "label": "No AI engine is available. Set up a plugin that provides AI, for example the Home Assistant plugin with an AI task entity."
+    },
+    "tts_engine": {
+      "label": "Text-to-speech engine",
+      "description": "The text-to-speech engine used for this feature."
+    },
+    "tts_engine_unavailable": {
+      "label": "No text-to-speech engine is available. Set up a plugin that provides text-to-speech, for example the Home Assistant plugin with a TTS entity."
     }
   },
   "config_categories": {
