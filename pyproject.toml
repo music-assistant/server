@@ -21,7 +21,7 @@ dependencies = [
   "certifi==2025.11.12",
   "colorlog==6.10.1",
   "modern_colorthief==0.2.1",
-  "cryptography==49.0.0",
+  "cryptography==50.0.0",
   "chardet>=5.2.0",
   "ifaddr==0.2.0",
   "getmac==0.9.5",
