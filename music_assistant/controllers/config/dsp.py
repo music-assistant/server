@@ -209,9 +209,8 @@ class DSPConfigMixin:
                 timeout=IR_TRANSCODE_TIMEOUT,
             )
             if returncode != 0:
-                raise InvalidDataError(
-                    f"Uploaded file is not valid audio: {output.decode().strip()}"
-                )
+                msg = output.decode(errors="replace").strip()
+                raise InvalidDataError(f"Uploaded file is not valid audio: {msg}")
             # a lossy codec smears the impulse across neighbouring samples, which
             # corrupts the very measurement the response is supposed to apply
             source_format = ContentType.try_parse((await async_parse_tags(upload_path)).format)
