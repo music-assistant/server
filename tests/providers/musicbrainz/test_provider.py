@@ -28,8 +28,10 @@ def _recordings(*first_release_dates: str | None) -> dict[str, Any]:
     return {
         "isrc": "GBAYE8600477",
         "recordings": [
-            {"title": "stub"} if date is None else {"title": "stub", "first-release-date": date}
-            for date in first_release_dates
+            {"id": f"stub-{i}", "title": "stub"}
+            if date is None
+            else {"id": f"stub-{i}", "title": "stub", "first-release-date": date}
+            for i, date in enumerate(first_release_dates)
         ],
     }
 
@@ -79,4 +81,83 @@ async def test_release_year_rejects_a_malformed_isrc() -> None:
     provider, get_data = _provider(_recordings("1986"))
 
     assert await provider.get_release_year_by_isrc("../artist/1") is None
+    get_data.assert_not_awaited()
+
+
+# ---------------------------------------------------------------------------
+# get_recordings_by_isrc
+# ---------------------------------------------------------------------------
+
+
+_YELLOW_SUBMARINE = {
+    "isrc": "GBAYE0601498",
+    "recordings": [
+        {
+            "id": "b2181aae-5cba-496c-bb0c-b4cc0109ebf8",
+            "title": "Yellow Submarine",
+            "length": 160000,
+            "first-release-date": "1966-08-05",
+            "disambiguation": "original stereo studio mix",
+            "video": False,
+        }
+    ],
+}
+
+
+async def test_recordings_by_isrc_parses_a_realistic_payload() -> None:
+    """Parse id, title and first-release-date from a real isrc lookup response."""
+    provider, _ = _provider(_YELLOW_SUBMARINE)
+
+    recordings = await provider.get_recordings_by_isrc("GBAYE0601498")
+
+    assert len(recordings) == 1
+    recording = recordings[0]
+    assert recording.id == "b2181aae-5cba-496c-bb0c-b4cc0109ebf8"
+    assert recording.title == "Yellow Submarine"
+    assert recording.first_release_date == "1966-08-05"
+
+
+async def test_recordings_by_isrc_returns_all_recordings() -> None:
+    """Return every recording an ISRC covers, not just the first."""
+    provider, _ = _provider(_recordings("2009-05-01", "1986-06", "1994"))
+
+    recordings = await provider.get_recordings_by_isrc("GBAYE8600477")
+
+    assert len(recordings) == 3
+    assert [r.first_release_date for r in recordings] == ["2009-05-01", "1986-06", "1994"]
+
+
+async def test_recordings_by_isrc_skips_a_malformed_entry() -> None:
+    """Skip a recording missing a required field while keeping its valid siblings."""
+    response = {
+        "isrc": "GBAYE8600477",
+        "recordings": [
+            {"title": "no id here"},
+            {"id": "good-1", "title": "stub", "first-release-date": "1986"},
+        ],
+    }
+    provider, _ = _provider(response)
+
+    recordings = await provider.get_recordings_by_isrc("GBAYE8600477")
+
+    assert len(recordings) == 1
+    assert recordings[0].id == "good-1"
+
+
+async def test_recordings_by_isrc_is_empty_without_usable_data() -> None:
+    """Return an empty list for every shape of "MusicBrainz has nothing" response."""
+    for response in (
+        None,
+        {"isrc": "GBAYE8600477"},
+        {"isrc": "GBAYE8600477", "recordings": []},
+    ):
+        provider, _ = _provider(response)
+        assert await provider.get_recordings_by_isrc("GBAYE8600477") == []
+
+
+async def test_recordings_by_isrc_rejects_a_malformed_isrc() -> None:
+    """Never put an ISRC that cannot be part of a URL path in the request."""
+    provider, get_data = _provider(_YELLOW_SUBMARINE)
+
+    assert await provider.get_recordings_by_isrc("../artist/1") == []
     get_data.assert_not_awaited()
