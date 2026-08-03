@@ -149,7 +149,13 @@ class MusicBrainzRecommendationManager:
                     life_span = LifeSpan(begin=mb_ls.begin, end=mb_ls.end, ended=mb_ls.ended)
             if not life_span:
                 continue
-            if entity_type in (ArtistEntityType.CHARACTER, ArtistEntityType.OTHER):
+            # Only process known artist types with date-based events (whitelist approach)
+            if entity_type not in (
+                ArtistEntityType.PERSON,
+                ArtistEntityType.GROUP,
+                ArtistEntityType.ORCHESTRA,
+                ArtistEntityType.CHOIR,
+            ):
                 continue
             begin = life_span.begin
             end = life_span.end
@@ -161,8 +167,7 @@ class MusicBrainzRecommendationManager:
                 # so the frontend can compute event type and date without extra API calls.
                 metadata = artist.metadata or MediaItemMetadata()
                 metadata.life_span = life_span
-                if entity_type not in (None, ArtistEntityType.UNKNOWN):
-                    metadata.artist_entity_type = entity_type
+                metadata.artist_entity_type = entity_type
                 artist.metadata = metadata
                 matched.append(artist)
 
