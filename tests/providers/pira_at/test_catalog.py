@@ -55,7 +55,15 @@ def test_parse_catalog_rejects_invalid_root_payload() -> None:
         parse_catalog([])
 
 
-def test_parse_catalog_rejects_catalog_without_playable_stations() -> None:
-    """An unusable response is surfaced to the provider refresh logic."""
-    with pytest.raises(ValueError, match="no playable stations"):
-        parse_catalog({"epc": {"offline": {"station": "Offline"}}})
+def test_parse_catalog_allows_catalog_without_playable_stations() -> None:
+    """A temporarily empty source remains available as an empty catalog."""
+    assert parse_catalog({"epc": {"offline": {"station": "Offline"}}}) == {}
+
+
+def test_parse_catalog_uses_english_fallback_labels() -> None:
+    """Incomplete station details have English display fallbacks."""
+    catalog = parse_catalog({"epc": {"1": {"id": "1", "mp3link": "https://radio.example/stream"}}})
+
+    station = catalog["epc:1"]
+    assert station.name == "Unknown station"
+    assert station.region == "Unknown"

@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable, Sequence
-from time import monotonic
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from urllib.parse import quote, unquote
 
 import aiohttp
@@ -31,6 +30,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails
 
+from music_assistant.controllers.cache import use_cache
 from music_assistant.models.music_provider import MusicProvider
 
 from .catalog import Station, parse_catalog
@@ -64,13 +64,6 @@ async def setup(
 class PiraAtProvider(MusicProvider):
     """Expose PIRA.AT's live station catalog as native Music Assistant radio."""
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
-        """Initialize the short-lived shared catalog cache."""
-        super().__init__(*args, **kwargs)
-        self._catalog: dict[str, Station] = {}
-        self._catalog_updated = 0.0
-        self._catalog_lock = asyncio.Lock()
-
     @property
     def is_streaming_provider(self) -> bool:
         """Declare this as a remote, changing catalog."""
@@ -78,7 +71,7 @@ class PiraAtProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Verify the public catalog before the provider is exposed."""
-        await self._async_get_catalog(force=True)
+        await self._get_catalog()
 
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
@@ -94,24 +87,17 @@ class PiraAtProvider(MusicProvider):
 
         matches = [
             station
-            for station in self._async_get_catalog_cached().values()
+            for station in (await self._get_catalog()).values()
             if query
             in f"{station.name} {station.region} {station.source} {station.now_playing}".casefold()
         ]
-        if not matches:
-            matches = [
-                station
-                for station in (await self._async_get_catalog()).values()
-                if query
-                in f"{station.name} {station.region} {station.source} {station.now_playing}".casefold()
-            ]
 
         result.radio = [self._as_radio(station) for station in self._sort_stations(matches)[:limit]]
         return result
 
     async def browse(self, path: str) -> Sequence[MediaItemType | BrowseFolder]:
         """Browse all current stations or stations grouped by region."""
-        catalog = await self._async_get_catalog()
+        catalog = await self._get_catalog()
         parts = [] if "://" not in path else path.split("://", 1)[1].split("/")
         category = parts[0] if parts and parts[0] else ""
 
@@ -157,7 +143,7 @@ class PiraAtProvider(MusicProvider):
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Return one station using its stable ``source:id`` identifier."""
-        station = (await self._async_get_catalog()).get(prov_radio_id)
+        station = (await self._get_catalog()).get(prov_radio_id)
         if station is None:
             raise MediaNotFoundError(f"PIRA.AT station not found: {prov_radio_id}")
         return self._as_radio(station)
@@ -166,7 +152,7 @@ class PiraAtProvider(MusicProvider):
         """Resolve the current stream URL immediately before playback."""
         if media_type is not MediaType.RADIO:
             raise MediaNotFoundError(f"PIRA.AT item is not radio: {item_id}")
-        station = (await self._async_get_catalog()).get(item_id)
+        station = (await self._get_catalog()).get(item_id)
         if station is None:
             raise MediaNotFoundError(f"PIRA.AT station not found: {item_id}")
 
@@ -181,48 +167,22 @@ class PiraAtProvider(MusicProvider):
             allow_seek=False,
         )
 
-    async def _async_get_catalog(self, force: bool = False) -> dict[str, Station]:
-        """Fetch once per interval; retain known-good data when a refresh fails."""
-        if (
-            not force
-            and self._catalog
-            and monotonic() - self._catalog_updated < CATALOG_TTL_SECONDS
-        ):
-            return self._catalog
-
-        async with self._catalog_lock:
-            if (
-                not force
-                and self._catalog
-                and monotonic() - self._catalog_updated < CATALOG_TTL_SECONDS
-            ):
-                return self._catalog
-            try:
-                async with asyncio.timeout(15):
-                    async with self.mass.http_session.get(
-                        API_URL,
-                        headers={
-                            "Accept": "application/json",
-                            "User-Agent": f"MusicAssistant/{self.mass.version} PIRA.AT provider",
-                        },
-                    ) as response:
-                        response.raise_for_status()
-                        catalog = parse_catalog(await response.json(content_type=None))
-            except (TimeoutError, aiohttp.ClientError, TypeError, ValueError) as err:
-                if self._catalog:
-                    self.logger.warning(
-                        "PIRA.AT refresh failed; using the last known catalog: %s", err
-                    )
-                    return self._catalog
-                raise ProviderUnavailableError(f"PIRA.AT API unavailable: {err}") from err
-
-            self._catalog = catalog
-            self._catalog_updated = monotonic()
-            return self._catalog
-
-    def _async_get_catalog_cached(self) -> dict[str, Station]:
-        """Return the current catalog without an unnecessary request for a search miss."""
-        return self._catalog
+    @use_cache(CATALOG_TTL_SECONDS, allow_expired_cache=True)
+    async def _get_catalog(self) -> dict[str, Station]:
+        """Fetch stations and serve stale catalog data while refreshing in the background."""
+        try:
+            async with asyncio.timeout(15):
+                async with self.mass.http_session.get(
+                    API_URL,
+                    headers={
+                        "Accept": "application/json",
+                        "User-Agent": f"MusicAssistant/{self.mass.version} PIRA.AT provider",
+                    },
+                ) as response:
+                    response.raise_for_status()
+                    return parse_catalog(await response.json(content_type=None))
+        except (TimeoutError, aiohttp.ClientError, TypeError, ValueError) as err:
+            raise ProviderUnavailableError(f"PIRA.AT API unavailable: {err}") from err
 
     def _as_radio(self, station: Station) -> Radio:
         """Map a PIRA.AT station into a native Music Assistant radio item."""

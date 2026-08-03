@@ -72,15 +72,13 @@ def parse_catalog(payload: Any) -> dict[str, Station]:
             stations[item_id] = Station(
                 item_id=item_id,
                 source=source,
-                name=_text(raw_station.get("station")) or "Onbekend station",
+                name=_text(raw_station.get("station")) or "Unknown station",
                 stream_url=stream_url,
                 frequency=_text(raw_station.get("freq")),
-                region=_text(raw_station.get("locatie")) or "Onbekend",
+                region=_text(raw_station.get("locatie")) or "Unknown",
                 listeners=_listeners(raw_station.get("luisteraars")),
                 now_playing=_text(raw_station.get("nowPlaying")),
                 timestamp=_listeners(raw_station.get("timestamp")),
             )
 
-    if not stations:
-        raise ValueError("PIRA.AT API response contains no playable stations")
     return stations

@@ -6,6 +6,6 @@
   "description": "Listen to live pirate radio stations from the public PIRA.AT API.",
   "codeowners": ["@Laav"],
   "requirements": [],
-  "documentation": "https://github.com/Laav/music-assistant-pira-at-provider",
+  "documentation": "https://music-assistant.io/music-providers/",
   "multi_instance": false
 }
