@@ -8,7 +8,7 @@ import json
 import time
 from collections.abc import AsyncGenerator, Callable
 from contextlib import suppress
-from ipaddress import ip_address
+from ipaddress import AddressValueError, IPv4Address
 from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp
@@ -897,8 +897,8 @@ class AriaCastReceiver(PluginProvider):
                 self._discovery_address_warned = True
                 self.logger.warning(
                     "Ignoring AriaCast discovery requests: the streamserver publish IP (%s) "
-                    "is not an address other devices can reach. Set the publish IP under "
-                    "Settings -> System -> Streams.",
+                    "is not an IPv4 address senders can reach. Set the publish IP in "
+                    "Settings --> System --> Streams.",
                     publish_ip,
                 )
             return None
@@ -955,13 +955,15 @@ class AriaCastReceiver(PluginProvider):
 
 def _is_advertisable_address(address: str) -> bool:
     """
-    Return whether an address may be handed to a device elsewhere on the network.
+    Return whether an address may be advertised to an AriaCast sender.
+
+    Senders reach discovery over IPv4 and connect straight back to the bare address
+    in the reply, so anything that is not a routable IPv4 address is unusable here.
 
     :param address: The address that would be advertised.
     """
     try:
-        parsed = ip_address(address)
-    except ValueError:
-        # A hostname was configured deliberately, so take it at face value.
-        return True
+        parsed = IPv4Address(address)
+    except AddressValueError:
+        return False
     return not (parsed.is_loopback or parsed.is_unspecified or parsed.is_link_local)
