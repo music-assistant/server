@@ -118,8 +118,8 @@ def get_folder_signature(items: list[FileSystemItem]) -> str:
 
     :param items: The files to include in the digest.
     """
-    parts = sorted(f"{x.relative_path}:{x.checksum}:{x.file_size}" for x in items)
-    return hashlib.sha256("|".join(parts).encode()).hexdigest()
+    parts = sorted(f"{x.relative_path}\0{x.checksum}\0{x.file_size}" for x in items)
+    return hashlib.sha256("\0\0".join(parts).encode()).hexdigest()
 
 
 def get_artist_dir(

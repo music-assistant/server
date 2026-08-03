@@ -77,3 +77,11 @@ def test_folder_signature_detects_changes() -> None:
         _file_item("pod/renamed.mp3"),
     ):
         assert get_folder_signature([items[0], changed]) != signature
+
+
+def test_folder_signature_cannot_be_forged_by_a_filename() -> None:
+    """A filename spelling out another entry does not collide with the entries it names."""
+    real = [_file_item("a.mp3"), _file_item("b.mp3", checksum="1800000000", file_size=2048)]
+    forged = [_file_item("a.mp3:1700000000:1024|b.mp3", checksum="1800000000", file_size=2048)]
+
+    assert get_folder_signature(forged) != get_folder_signature(real)
