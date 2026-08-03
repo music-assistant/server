@@ -30,7 +30,13 @@ from music_assistant_models.audio_processing import (
     AudioOutputDetails,
     AudioQueueProcessing,
 )
-from music_assistant_models.dsp import AudioChannel, DSPConfig, DSPFilter, DSPState
+from music_assistant_models.dsp import (
+    AudioChannel,
+    ConvolutionFilter,
+    DSPConfig,
+    DSPFilter,
+    DSPState,
+)
 from music_assistant_models.enums import (
     ContentType,
     CrossfadeMode,
@@ -1183,7 +1189,16 @@ class StreamsAudio:
             if dsp.input_gain != 0:
                 filter_params.append(f"volume={dsp.input_gain}dB")
             ir_dir = os.path.join(self.mass.storage_path, DSP_IRS_DIRNAME)
+            known_ir_ids = {record["ir_id"] for record in self.mass.config.get_dsp_irs()}
             for dsp_filter in enabled_filters:
+                # ffmpeg fails to open the graph if the impulse response file is gone,
+                # which costs the player all audio, so drop the filter instead
+                is_unknown_ir = (
+                    isinstance(dsp_filter, ConvolutionFilter)
+                    and dsp_filter.ir_id not in known_ir_ids
+                )
+                if is_unknown_ir:
+                    continue
                 params = filter_to_ffmpeg_params(dsp_filter, input_format, ir_dir=ir_dir)
                 if not params:
                     continue
