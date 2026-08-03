@@ -19,7 +19,6 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.enums import EventType
 
 from music_assistant.constants import CONF_CORE
-from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.helpers.webrtc_certificate import (
     get_or_create_remote_id,
     get_or_create_webrtc_certificate_pems,
@@ -212,7 +211,7 @@ class RemoteAccessManager:
         mode = "optimized" if using_ha_cloud else "basic"
         self.logger.info("Starting remote access in %s mode", mode)
 
-        sendspin_url = f"ws://{format_ip_for_url(str(self.mass.streams.publish_ip))}:8927/sendspin"
+        sendspin_url = self.webserver.internal_sendspin_url
 
         gateway = WebRTCGateway(
             http_session=self.mass.http_session,

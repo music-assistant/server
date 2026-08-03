@@ -190,6 +190,30 @@ async def test_remote_access_skips_restart_after_mode_flap_settles() -> None:
     assert manager._target_using_ha_cloud is False
 
 
+async def test_remote_access_gateway_uses_internal_sendspin_url(
+    cert_pems: tuple[str, str],
+) -> None:
+    """Bridge the Sendspin data channel to the locally reachable Sendspin server."""
+    manager = _create_remote_access_manager()
+    manager._remote_id = "TEST-REMOTE-ID"
+    cast("Mock", manager.mass).webserver.base_url = "http://192.168.1.5:8095"
+    cast("Mock", manager.webserver).internal_sendspin_url = "ws://127.0.0.1:8927/sendspin"
+
+    with (
+        patch(
+            "music_assistant.controllers.webserver.remote_access"
+            ".get_or_create_webrtc_certificate_pems",
+            return_value=cert_pems,
+        ),
+        patch.object(manager, "_get_ha_cloud_status", new=AsyncMock(return_value=(False, None))),
+        patch.object(WebRTCGateway, "start", new=AsyncMock()),
+    ):
+        await manager._start_gateway_locked()
+
+    assert manager.gateway is not None
+    assert manager.gateway.sendspin_url == "ws://127.0.0.1:8927/sendspin"
+
+
 async def test_webrtc_gateway_initialization(cert_pems: tuple[str, str]) -> None:
     """Test WebRTCGateway initializes correctly."""
     cert_pem, key_pem = cert_pems

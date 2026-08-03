@@ -31,7 +31,7 @@ from aiolibdatachannel import (
     install_python_logger,
 )
 
-from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.constants import MASS_LOGGER_NAME, SENDSPIN_SERVER_PORT, VERBOSE_LOG_LEVEL
 
 if TYPE_CHECKING:
     from aiolibdatachannel import DataChannel
@@ -44,6 +44,8 @@ HTTP_PROXY_CONCURRENCY = 6
 
 # Chunk ma-api messages larger than this; libdatachannel caps data-channel messages at 256 KiB.
 MA_API_CHUNK_SIZE = 64 * 1024
+
+DEFAULT_SENDSPIN_URL = f"ws://localhost:{SENDSPIN_SERVER_PORT}/sendspin"
 
 
 @dataclass
@@ -92,7 +94,7 @@ class WebRTCGateway:
         key_pem: str,
         signaling_url: str = "wss://signaling.music-assistant.io/ws",
         local_ws_url: str = "ws://localhost:8095/ws",
-        sendspin_url: str = "ws://localhost:8927/sendspin",
+        sendspin_url: str = DEFAULT_SENDSPIN_URL,
         ice_servers: list[dict[str, Any]] | None = None,
         ice_servers_callback: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None,
         set_sendspin_player_callback: Callable[[str, str], None] | None = None,

@@ -16,7 +16,6 @@ def mock_webserver() -> MagicMock:
     """Create a mock webserver controller."""
     webserver = MagicMock()
     webserver.mass = MagicMock()
-    webserver.mass.streams.bind_ip = "0.0.0.0"
     webserver.mass.http_session = MagicMock()
     return webserver
 
@@ -31,6 +30,35 @@ def _make_connector_error() -> ClientConnectorError:
     """Create a realistic ClientConnectorError for testing."""
     connection_key = MagicMock()
     return ClientConnectorError(connection_key, OSError(111, "Connection refused"))
+
+
+async def test_proxy_dials_the_webserver_url(
+    handler: SendspinProxyHandler, mock_webserver: MagicMock
+) -> None:
+    """Verify the proxy connects to the URL resolved by the webserver controller."""
+    mock_ws_response = AsyncMock(spec=web.WebSocketResponse)
+    mock_ws_response.closed = False
+    mock_webserver.internal_sendspin_url = "ws://127.0.0.1:8927/sendspin"
+
+    mock_internal_ws = AsyncMock()
+    mock_internal_ws.closed = False
+    mock_ws_connect = AsyncMock(return_value=mock_internal_ws)
+
+    with (
+        patch.object(handler, "_authenticate", return_value=MagicMock()),
+        patch.object(handler, "_proxy_messages", new_callable=AsyncMock),
+        patch("aiohttp.web.WebSocketResponse", return_value=mock_ws_response),
+        patch.object(handler.mass, "http_session", create=True) as mock_session,
+        patch(
+            "music_assistant.controllers.webserver.sendspin_proxy.is_request_from_ingress",
+            return_value=False,
+        ),
+    ):
+        mock_session.ws_connect = mock_ws_connect
+        request = make_mocked_request("GET", "/sendspin")
+        await handler.handle_sendspin_proxy(request)
+
+    mock_ws_connect.assert_awaited_once_with("ws://127.0.0.1:8927/sendspin")
 
 
 class TestSendspinProxyRetry:
