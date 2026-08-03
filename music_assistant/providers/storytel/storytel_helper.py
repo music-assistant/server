@@ -260,8 +260,9 @@ class StorytelHelper:
         library_items = {
             k: v
             for k, v in library_items.items()
-            if self._is_audiobook(v.get("model", {}))
-            and self._abook_is_released((v.get("model") or {}).get("formats") or [{}])
+            if (model := v.get("model") or {})
+            and self._is_audiobook(model)
+            and self._abook_is_released(model.get("formats") or [{}])
         }
 
         return library_items, following_items
