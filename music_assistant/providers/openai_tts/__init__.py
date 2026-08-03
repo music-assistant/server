@@ -2,9 +2,8 @@
 OpenAI Text-to-speech provider for Music Assistant.
 
 Renders speech through the OpenAI speech API and any self-hostable server implementing
-the same endpoint (Kokoro-FastAPI, LocalAI, Speaches, ...), exposing each available
-voice as a TTS engine. Rendered clips are cached on disk and served to the players
-from a dynamic route on the streamserver.
+the same endpoint (Kokoro-FastAPI, LocalAI, Speaches, ...), exposing each voice as a TTS
+engine. Rendered clips are cached on disk and served from a route on the streamserver.
 """
 
 from __future__ import annotations
@@ -59,9 +58,8 @@ DEFAULT_VOICES = ("alloy", "echo", "fable", "nova", "onyx", "shimmer")
 RESPONSE_FORMAT = "mp3"
 # rendered clips older than this are removed from the on-disk cache
 CACHE_MAX_AGE = 24 * 3600
-# the shared http session has no default timeout: voice discovery runs during provider
-# load so it must give up quickly, while rendering may legitimately take a while on a
-# self-hosted backend doing the work on cpu
+# the shared http session has no default timeout: discovery runs during provider load so
+# it must give up quickly, while rendering can legitimately be slow on a cpu-bound backend
 VOICES_TIMEOUT = ClientTimeout(total=10)
 SPEECH_TIMEOUT = ClientTimeout(total=120)
 
@@ -111,15 +109,13 @@ class OpenAITTSProvider(PluginProvider):
     _cache_dir: str
     _render_lock: asyncio.Lock
     _voices: list[str]
-    # index of the clips in the cache directory, keyed by file id; the route serves paths
-    # from here only, so a crafted id can never reach the filesystem
+    # rendered clips by file id; the route only serves paths from this index
     _clips: dict[str, str]
     _unregister_route: Callable[[], None] | None = None
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        # scoped per instance: instances can point at different endpoints, so the same
-        # model, voice and message can still render to different audio
+        # scoped per instance: different endpoints can render the same input differently
         self._cache_dir = os.path.join(self.mass.cache_path, self.domain, self.instance_id)
         self._render_lock = asyncio.Lock()
         self._voices = await self._resolve_voices()
@@ -203,8 +199,7 @@ class OpenAITTSProvider(PluginProvider):
         """Serve a rendered speech clip by its file id."""
         if not (file_id := request.query.get("id")):
             return web.Response(status=400, text="Missing id")
-        # the id from the url is only ever a lookup key: the path served comes from our
-        # own index, so it can never point outside the cache directory
+        # the id from the url is only a lookup key, never a path component
         if not (file_path := self._clips.get(file_id)):
             raise web.HTTPNotFound
         if not await aiopath.isfile(file_path):
@@ -220,23 +215,20 @@ class OpenAITTSProvider(PluginProvider):
         :param voice: The voice to render with.
         """
         model = str(self.get_setup_value(CONF_MODEL, DEFAULT_MODEL))
-        # the endpoint is part of the identity: repointing an instance at another backend
-        # must not reuse clips rendered by the previous one
+        # the endpoint is part of the identity: repointing an instance must not reuse clips
         digest = f"{self._base_url}\0{model}\0{voice}\0{message}"
         file_id = hashlib.sha256(digest.encode()).hexdigest()
         file_path = os.path.join(self._cache_dir, f"{file_id}.{RESPONSE_FORMAT}")
         async with self._render_lock:
             if await aiopath.isfile(file_path):
-                # keep the clip out of reach of the reaper: an identical message may be
-                # reused long after it was first rendered, but is played right away
+                # a reused clip is played right away, so keep it out of reach of the reaper
                 with suppress(OSError):
                     await asyncio.to_thread(os.utime, file_path, None)
                 self._clips[file_id] = file_path
                 return file_id
             await makedirs(self._cache_dir, exist_ok=True)
             audio_data = await self._request_speech(message, voice)
-            # write to a temp file first so an interrupted render can never
-            # leave a partial clip behind at the final path
+            # write to a temp file first so an interrupted render leaves no partial clip
             tmp_path = f"{file_path}.tmp"
             try:
                 async with aiofiles.open(tmp_path, "wb") as _file:

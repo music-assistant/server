@@ -108,8 +108,7 @@ async def _validate_credentials(
     :param model: The speech model to validate.
     """
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-    # self-hosted backends often serve their own voice names, so validating with a
-    # standard OpenAI voice would fail on a perfectly good endpoint
+    # self-hosted backends serve their own voice names, so a standard voice may not exist
     advertised = await fetch_backend_voices(session.mass.http_session, base_url, api_key)
     payload = {
         "model": model,
