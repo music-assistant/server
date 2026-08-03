@@ -264,7 +264,7 @@ class DSPConfigMixin:
                 raise
         else:
             await self._remove_file(ir_path)
-        self._clear_dsp_ir_assignments(ir_id)
+        await self._clear_dsp_ir_assignments(ir_id)
 
         self.mass.signal_event(
             EventType.DSP_IRS_UPDATED,
@@ -314,7 +314,7 @@ class DSPConfigMixin:
                 data=config,
             )
 
-    def _clear_dsp_ir_assignments(self, ir_id: str) -> None:
+    async def _clear_dsp_ir_assignments(self, ir_id: str) -> None:
         """Blank a removed impulse response from any player config or preset using it."""
         raw_configs: dict[str, dict[str, Any]] = self.get(CONF_PLAYER_DSP, {})
         for player_id, raw_config in tuple(raw_configs.items()):
@@ -322,6 +322,10 @@ class DSPConfigMixin:
             if not _blank_convolution_ir(config, ir_id):
                 continue
             self.set(f"{CONF_PLAYER_DSP}/{player_id}", config.to_dict())
+            if config.enabled:
+                # dropping the convolution changes what the player should hear, so the
+                # stream has to be rebuilt the same way a saved config change does it
+                await self.mass.players.on_player_dsp_change(player_id)
             self.mass.signal_event(
                 EventType.PLAYER_DSP_CONFIG_UPDATED,
                 object_id=player_id,

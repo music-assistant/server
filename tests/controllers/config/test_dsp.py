@@ -38,10 +38,11 @@ class _DSPConfigStore(DSPConfigMixin):
         self._data: dict[str, Any] = {}
         self.update_player_dsp_preset = MagicMock()
         self.signal_event = MagicMock()
+        self.on_player_dsp_change = AsyncMock()
         self.mass = cast(
             "MusicAssistant",
             SimpleNamespace(
-                players=SimpleNamespace(on_player_dsp_change=AsyncMock()),
+                players=SimpleNamespace(on_player_dsp_change=self.on_player_dsp_change),
                 streams=SimpleNamespace(
                     audio_processing=SimpleNamespace(
                         update_player_dsp_preset=self.update_player_dsp_preset
@@ -389,3 +390,34 @@ async def test_remove_ir_clears_references(tmp_path: Path) -> None:
     preset_filter = (await config.get_dsp_presets())[0].config.filters[0]
     assert isinstance(preset_filter, ConvolutionFilter)
     assert preset_filter.ir_id == ""
+
+
+async def test_remove_ir_rebuilds_the_stream_of_an_affected_player(tmp_path: Path) -> None:
+    """Blanking a convolution filter reapplies the DSP, as a saved config change would."""
+    config = _DSPConfigStore()
+    config.mass.storage_path = str(tmp_path)
+    await config.save_dsp_config(
+        "player-1",
+        DSPConfig(enabled=True, filters=[ConvolutionFilter(enabled=True, ir_id="abc123")]),
+    )
+    await config.save_dsp_config("player-2", DSPConfig(enabled=True, output_gain=-3.0))
+    config.on_player_dsp_change.reset_mock()
+
+    await config.remove_dsp_ir("abc123")
+
+    config.on_player_dsp_change.assert_awaited_once_with("player-1")
+
+
+async def test_remove_ir_leaves_a_disabled_player_dsp_alone(tmp_path: Path) -> None:
+    """A player with DSP switched off hears nothing different, so it is not restarted."""
+    config = _DSPConfigStore()
+    config.mass.storage_path = str(tmp_path)
+    await config.save_dsp_config(
+        "player-1",
+        DSPConfig(enabled=False, filters=[ConvolutionFilter(enabled=True, ir_id="abc123")]),
+    )
+    config.on_player_dsp_change.reset_mock()
+
+    await config.remove_dsp_ir("abc123")
+
+    config.on_player_dsp_change.assert_not_awaited()
