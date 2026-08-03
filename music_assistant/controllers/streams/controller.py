@@ -157,6 +157,29 @@ async def _wav_passthrough_stream(
         yield chunk
 
 
+def _get_publish_addresses(
+    bind_ip: str, configured_publish_ip: str | None, all_ip_addresses: tuple[str, ...]
+) -> list[str]:
+    """
+    Return the addresses this host should advertise to players on the local network.
+
+    :param bind_ip: The configured bind IP (a wildcard means all interfaces).
+    :param configured_publish_ip: The explicitly configured publish IP, or None when auto.
+    :param all_ip_addresses: All detected host IP addresses, in ranked order.
+    """
+    if configured_publish_ip:
+        # an explicitly configured address is the authoritative answer
+        return [configured_publish_ip]
+    if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
+        # only one interface is served, so no other address can be reached
+        return [bind_ip]
+    # Auto-detected: the primary address is only a guess at which interface the players
+    # live on, so advertise every address (highest ranked first) and let the device pick
+    # one it can reach. On a multi-homed host - a VPN or docker interface alongside the
+    # LAN - the primary-route address is regularly not the one on the players' network.
+    return list(all_ip_addresses)
+
+
 class StreamsController(CoreController):
     """Controller to stream audio to players."""
 
@@ -177,6 +200,9 @@ class StreamsController(CoreController):
         self.announcement_renderer = AnnouncementRenderer()
         self._bind_ip: str = "0.0.0.0"
         self._configured_publish_ip: str | None = None
+        # every address players may reach this host on, best candidate first - for mDNS
+        # records, which can carry them all, unlike the single-valued publish_ip
+        self.publish_addresses: list[str] = []
         self.audio = StreamsAudio(mass)
         self.audio_processing = AudioProcessingManager(mass)
         self._audio_analysis = AudioAnalysisController(self)
@@ -421,10 +447,12 @@ class StreamsController(CoreController):
             None if configured_publish_ip == CONF_VALUE_AUTO else configured_publish_ip
         )
         # resolve the "auto" default (or an unset value) to this server's primary IP
-        self.publish_ip = (
-            self._configured_publish_ip or (await get_ip_addresses(include_ipv6=True))[0]
-        )
+        all_ip_addresses = await get_ip_addresses(include_ipv6=True)
+        self.publish_ip = self._configured_publish_ip or all_ip_addresses[0]
         self._bind_ip = bind_ip = str(config.get_value(CONF_BIND_IP))
+        self.publish_addresses = _get_publish_addresses(
+            bind_ip, self._configured_publish_ip, all_ip_addresses
+        )
         # print a big fat message in the log where the streamserver is running
         # because this is a common source of issues for people with more complex setups
         self.logger.log(
