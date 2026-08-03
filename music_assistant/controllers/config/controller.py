@@ -29,6 +29,7 @@ from music_assistant.controllers.config.dsp import DSPConfigMixin
 from music_assistant.controllers.config.flows import SetupFlowMixin
 from music_assistant.controllers.config.migrations import (
     migrate,
+    migrate_hass_engine_selection,
     migrate_nfs_subfolder_into_export_path,
     migrate_provider_setup_data,
 )
@@ -90,6 +91,11 @@ class ConfigController(
             self._data, self.encrypt_string, self.decrypt_string
         )
         if setup_data_migrated or nfs_subfolder_migrated:
+            self.save(immediate=True)
+        # one-off: hand the Home Assistant plugin's former single TTS/AI entity choice over to
+        # the providers that select their own engine now. Runs here for the same reason: the
+        # ai_radio selection lands in its encrypted setup_data.
+        if migrate_hass_engine_selection(self._data, self.encrypt_string):
             self.save(immediate=True)
         if not self.onboard_done:
             self.mass.register_api_command(

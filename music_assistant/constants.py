@@ -3,6 +3,7 @@
 import json
 import os
 import pathlib
+import re
 from copy import deepcopy
 from typing import Any, Final, cast
 
@@ -47,7 +48,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 41
+API_SCHEMA_VERSION: Final[int] = 42
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -112,6 +113,12 @@ CONF_VOLUME_NORMALIZATION: Final[str] = "volume_normalization"
 CONF_VOLUME_NORMALIZATION_TARGET: Final[str] = "volume_normalization_target"
 CONF_PLAYER_DSP: Final[str] = "player_dsp"
 CONF_PLAYER_DSP_PRESETS: Final[str] = "player_dsp_presets"
+CONF_PLAYER_DSP_IRS: Final[str] = "player_dsp_irs"
+# subdirectory under the storage path holding convolution impulse response files
+DSP_IRS_DIRNAME: Final[str] = "dsp_irs"
+# impulse response ids are lowercased shortuuids, so plain lowercase alphanumerics;
+# validating against this keeps a caller-supplied id from escaping the storage dir
+DSP_IR_ID_RE: Final = re.compile(r"^[a-z0-9]+$")
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
 CONF_FLOW_MODE: Final[str] = "flow_mode"
 CONF_FLOW_MODE_SAMPLE_RATE: Final[str] = "flow_mode_sample_rate"

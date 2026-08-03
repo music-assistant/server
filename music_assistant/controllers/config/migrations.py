@@ -45,6 +45,14 @@ LEGACY_CONF_OUTPUT_LIMITER = "output_limiter"
 # shared prefix of the removed per-player Bose SoundTouch preset keys
 LEGACY_BOSE_PRESET_KEY_PREFIX = "preset_"
 
+# removed hass provider config keys, only referenced by their migration
+LEGACY_CONF_TTS_ENTITY = "tts_entity"
+LEGACY_CONF_AI_TASK_ENTITY = "ai_task_entity"
+
+# engine selection keys of the providers that consume the plugin engines
+CONF_AI_ENGINE = "ai_engine"
+CONF_TTS_ENGINE = "tts_engine"
+
 # Config keys each provider's setup flow owns: the keys it reads back with
 # get_setup_value / get_provider_setup_value (and rotates via _update_setup_data) from
 # `setup_data` rather than `values`. The one-off migrate_provider_setup_data step below
@@ -450,6 +458,86 @@ def migrate_nfs_subfolder_into_export_path(
     # later - with the new, fixed meaning - is never mistaken for a legacy one
     data[CONF_NFS_SUBFOLDER_MIGRATED] = True
     return True
+
+
+# TODO: remove after 2.10 release
+def migrate_hass_engine_selection(data: dict[str, Any], encrypt: Callable[[str], str]) -> bool:
+    """
+    Hand the removed Home Assistant TTS/AI entity choice over to the providers consuming it.
+
+    The Home Assistant plugin exposes every TTS/AI entity as a selectable engine now and each
+    consuming provider picks one itself, so the single choice that used to live on the plugin
+    is copied to the installed consumers that have no choice of their own yet. Providers
+    installed later pick an engine themselves at load. Returns True if anything changed.
+
+    Runs after encryption is initialized (like migrate_provider_setup_data), since the ai_radio
+    selection belongs in its encrypted `setup_data`.
+
+    :param data: The persistent settings data to migrate in-place.
+    :param encrypt: Callback that encrypts a string value, used for the values that land in
+        `setup_data`.
+    """
+    all_provider_configs = data.get(CONF_PROVIDERS, {})
+    if not isinstance(all_provider_configs, dict):
+        return False
+    hass_configs = {
+        instance_id: provider_cfg
+        for instance_id, provider_cfg in all_provider_configs.items()
+        if isinstance(provider_cfg, dict) and provider_cfg.get("domain") == "hass"
+    }
+    if len(hass_configs) > 1:
+        # there is no correct winner between several choices, so let the user pick per provider
+        LOGGER.warning(
+            "Skipped migrating the Home Assistant TTS/AI entity selection: "
+            "%s Home Assistant configurations found, select the engines manually",
+            len(hass_configs),
+        )
+        return False
+    changed = False
+    for instance_id, hass_cfg in hass_configs.items():
+        values = hass_cfg.get("values")
+        if not isinstance(values, dict):
+            continue
+        if not any(key in values for key in (LEGACY_CONF_TTS_ENTITY, LEGACY_CONF_AI_TASK_ENTITY)):
+            continue
+        tts_entity = values.pop(LEGACY_CONF_TTS_ENTITY, None)
+        ai_task_entity = values.pop(LEGACY_CONF_AI_TASK_ENTITY, None)
+        changed = True
+        if isinstance(ai_task_entity, str) and ai_task_entity:
+            ai_engine = f"{instance_id}/{ai_task_entity}"
+            _set_engine_selection(
+                all_provider_configs, "music_quiz", "values", CONF_AI_ENGINE, ai_engine
+            )
+            _set_engine_selection(
+                all_provider_configs, "smart_playlist", "values", CONF_AI_ENGINE, ai_engine
+            )
+            _set_engine_selection(
+                all_provider_configs, "ai_radio", "setup_data", CONF_AI_ENGINE, encrypt(ai_engine)
+            )
+        if isinstance(tts_entity, str) and tts_entity:
+            _set_engine_selection(
+                all_provider_configs,
+                "ai_radio",
+                "setup_data",
+                CONF_TTS_ENGINE,
+                encrypt(f"{instance_id}/{tts_entity}"),
+            )
+        LOGGER.info("Migrated the Home Assistant TTS/AI entity selection to the plugin engines")
+    return changed
+
+
+def _set_engine_selection(
+    all_provider_configs: dict[str, Any], domain: str, section: str, key: str, value: str
+) -> None:
+    """Store an engine selection on each config of the given domain that has none of its own."""
+    for provider_cfg in all_provider_configs.values():
+        if not isinstance(provider_cfg, dict) or provider_cfg.get("domain") != domain:
+            continue
+        section_values = provider_cfg.get(section)
+        if not isinstance(section_values, dict):
+            section_values = {}
+            provider_cfg[section] = section_values
+        section_values.setdefault(key, value)
 
 
 def _migrate_player_queue_settings(data: dict[str, Any]) -> bool:

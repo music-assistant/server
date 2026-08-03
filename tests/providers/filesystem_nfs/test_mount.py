@@ -109,13 +109,11 @@ async def test_mount_source_never_includes_the_subfolder() -> None:
 async def test_unmount_targets_the_mountpoint() -> None:
     """Umount must be given the mountpoint; a subdirectory of a mount cannot be unmounted."""
     provider = _provider("Music")
-    with patch(
-        "music_assistant.providers.filesystem_nfs.provider.check_output",
-        AsyncMock(return_value=(0, b"")),
-    ) as mock_check_output:
-        await provider.unmount()
+    mock_unmount = AsyncMock()
+    with patch("music_assistant.providers.filesystem_nfs.provider.unmount", mock_unmount):
+        await provider.unload()
 
-    assert mock_check_output.call_args.args == ("umount", MOUNT_PATH)
+    mock_unmount.assert_awaited_once_with(MOUNT_PATH, provider.logger)
 
 
 async def test_only_the_mountpoint_is_ever_created() -> None:
@@ -128,7 +126,7 @@ async def test_only_the_mountpoint_is_ever_created() -> None:
             AsyncMock(return_value="192.0.2.10"),
         ),
         patch.object(provider, "mount", AsyncMock()),
-        patch.object(provider, "unmount", AsyncMock()),
+        patch("music_assistant.providers.filesystem_nfs.provider.unmount", AsyncMock()),
         patch.object(provider, "check_write_access", AsyncMock()),
         patch(
             "music_assistant.providers.filesystem_nfs.provider.exists",
@@ -188,7 +186,7 @@ async def test_missing_subfolder_fails_setup_instead_of_an_empty_library() -> No
             AsyncMock(return_value="192.0.2.10"),
         ),
         patch.object(provider, "mount", AsyncMock()),
-        patch.object(provider, "unmount", mock_unmount),
+        patch("music_assistant.providers.filesystem_nfs.provider.unmount", mock_unmount),
         patch(
             "music_assistant.providers.filesystem_nfs.provider.exists",
             AsyncMock(return_value=True),

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Coroutine
+from collections.abc import Callable, Coroutine, Mapping
 from typing import TYPE_CHECKING, Any, Final
 
 from aiohttp import web
@@ -20,6 +20,23 @@ MAX_LINE_SIZE: Final = 24570
 DynamicRouteHandler = Callable[
     [web.Request], Coroutine[Any, Any, web.Response | web.StreamResponse]
 ]
+
+
+REDACTED_HEADER_VALUE: Final = "<redacted>"
+
+
+def redact_sensitive_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    """
+    Return request headers with credential-bearing values redacted.
+
+    :param headers: Headers to prepare for logging.
+    """
+    return {
+        key: REDACTED_HEADER_VALUE
+        if key.lower().startswith(("authorization", "proxy-authorization"))
+        else value
+        for key, value in headers.items()
+    }
 
 
 class Webserver:
@@ -205,6 +222,6 @@ class Webserver:
             request.method,
             request.path,
             request.remote,
-            request.headers,
+            redact_sensitive_headers(request.headers),
         )
         return web.Response(status=404)

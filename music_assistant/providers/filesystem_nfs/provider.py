@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import os
 import platform
+from contextlib import suppress
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING
 
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.errors import SetupFailedError, UnsupportedSystemError
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.helpers.json import SerializableType
+from music_assistant.helpers.mount import error_summary, unmount
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.security import is_safe_path
 from music_assistant.helpers.util import get_ip_from_host
@@ -130,7 +132,7 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
             await makedirs(self.mount_path)
         try:
             # unmount first to cleanup any unexpected state
-            await self.unmount(ignore_error=True)
+            await unmount(self.mount_path, self.logger)
             await self.mount()
         except OSError as err:
             msg = f"NFS mount failed: {err}"
@@ -139,7 +141,10 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
         # without this the failure is silent: check_write_access swallows every error and
         # the sync then just reports an empty library.
         if self._subfolder and not await isdir(self.base_path):
-            await self.unmount(ignore_error=True)
+            # a failed handle_async_init never gets unload() called, so drop the mount here
+            # rather than leaving it behind; a failure to do so must not mask the real cause
+            with suppress(SetupFailedError):
+                await unmount(self.mount_path, self.logger)
             msg = f"Subfolder {self._subfolder} does not exist in the NFS export"
             raise SetupFailedError(
                 msg,
@@ -155,7 +160,7 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
 
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
-        await self.unmount(ignore_error=True)
+        await unmount(self.mount_path, self.logger)
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
@@ -171,7 +176,7 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
 
         if platform.system() not in ("Linux", "Darwin"):
             msg = f"NFS provider is not supported on {platform.system()}"
-            raise SetupFailedError(msg)
+            raise UnsupportedSystemError(msg)
 
         mount_options = self._get_mount_options()
         mount_cmd = [
@@ -190,8 +195,13 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
         output: bytes
         returncode, output = await check_output(*mount_cmd)
         if returncode != 0:
-            msg = f"NFS mount failed with error: {output.decode()}"
-            raise SetupFailedError(msg)
+            error = output.decode().strip()
+            msg = f"NFS mount failed with error: {error}"
+            raise SetupFailedError(
+                msg,
+                translation_key="mount_failed",
+                translation_args=[error_summary(error)],
+            )
 
     def _get_mount_options(self) -> list[str]:
         """Get platform-specific NFS mount options."""
@@ -205,11 +215,3 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
             options.append(f"vers={nfs_version}")
 
         return options
-
-    async def unmount(self, ignore_error: bool = False) -> None:
-        """Unmount the remote NFS export."""
-        returncode: int
-        output: bytes
-        returncode, output = await check_output("umount", self.mount_path)
-        if returncode != 0 and not ignore_error:
-            self.logger.warning("NFS unmount failed with error: %s", output.decode())
