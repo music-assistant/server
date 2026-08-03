@@ -13,6 +13,7 @@ refers to are fetched directly from the podcasts' own servers.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import time
 from typing import TYPE_CHECKING, Any, cast
@@ -346,7 +347,8 @@ class OvercastProvider(MusicProvider):
     async def _get_opml_subscriptions(self) -> dict[str, OvercastSubscription]:
         opml_text = await self._fetch_opml_text()
         if self._opml_cache is None or self._opml_cache[0] != opml_text:
-            self._opml_cache = (opml_text, parse_extended_opml(opml_text))
+            parsed = await asyncio.to_thread(parse_extended_opml, opml_text)
+            self._opml_cache = (opml_text, parsed)
         return self._opml_cache[1]
 
     async def _get_subscription(self, feed_url: str) -> OvercastSubscription | None:
