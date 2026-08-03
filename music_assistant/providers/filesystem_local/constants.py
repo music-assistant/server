@@ -162,9 +162,8 @@ CACHE_CATEGORY_CUE_SHEETS: Final[int] = 6
 CACHE_CATEGORY_SOUND_EFFECTS: Final[int] = 7
 CACHE_CATEGORY_PODCAST_EPISODES: Final[int] = 8
 
-# how long a podcast episode listing that lost a file to a parse failure is cached for.
-# short, because the missing episode reappears no sooner than this, but long enough that
-# an unreadable file cannot make every request re-parse the whole folder
+# how long a podcast episode listing that lost a file to a parse failure is cached for:
+# the missing episode cannot reappear any sooner than this
 PARTIAL_LISTING_CACHE_EXPIRATION: Final[int] = 300
 
 DEFAULT_AUDIOBOOK_PODCAST_GENRE: Final[str] = "Spoken Word"

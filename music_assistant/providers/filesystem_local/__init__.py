@@ -831,17 +831,13 @@ class LocalFileSystemProvider(MusicProvider):
         """Get podcast episodes for given podcast id."""
         folder_items = [item for item in await self._scandir(prov_podcast_id) if not item.is_dir]
         episode_files = [x for x in folder_items if x.ext in PODCAST_EPISODE_EXTENSIONS]
-        # the signature covers the folder's artwork and metadata.json as well as its audio,
-        # because the parse embeds those into every episode: new cover art would otherwise
-        # stay hidden until an audio file happened to change
+        # artwork and metadata.json count towards the signature too, because the parse embeds
+        # them into every episode. Case-insensitive, matching _get_podcast_metadata's exists()
         signature_files = [
             x
             for x in folder_items
             if x.ext in PODCAST_EPISODE_EXTENSIONS
             or x.ext in IMAGE_EXTENSIONS
-            # matched case-insensitively: _get_podcast_metadata finds this through exists(),
-            # which resolves that way on APFS/SMB/NTFS, so a Metadata.json the parse embeds
-            # would otherwise never be able to invalidate this entry
             or x.filename.lower() == "metadata.json"
         ]
         cache_key = f"podcast_episodes.{prov_podcast_id}"
@@ -859,12 +855,9 @@ class LocalFileSystemProvider(MusicProvider):
                 yield episode
             return
 
-        # the artwork and metadata.json caches every episode reads from are not checksum
-        # validated, so a re-parse would fill the new entry with the values the signature
-        # just invalidated. Drop them, then refill once: left empty, all _SYNC_CONCURRENCY
-        # parse tasks miss at once and repeat the same scandir and file read. The refill
-        # cannot stick while the cache is bypassed (music/refresh_item), where each task
-        # reads the folder itself exactly as it did before
+        # these caches have no checksum of their own, so drop them before parsing or the new
+        # entry gets the values the signature just invalidated. Refill once, or every parse
+        # task below misses at the same time and repeats the same scandir and file read
         for stale_category in (CACHE_CATEGORY_FOLDER_IMAGES, CACHE_CATEGORY_PODCAST_METADATA):
             await self.mass.cache.delete(
                 prov_podcast_id, category=stale_category, provider=self.instance_id
@@ -886,23 +879,20 @@ class LocalFileSystemProvider(MusicProvider):
                     str(err),
                 )
 
-        # reuse the per-sync worker limit: webdav and the cloud filesystems lower it to 4 and
-        # are the slowest to parse cold anyway. concurrent listings of the same folder are not
-        # deduped, but the window closes as soon as the first one writes
+        # reuse the per-sync worker limit: the slowest filesystems to parse are exactly the
+        # ones that lower it
         async with TaskManager(self.mass, self._SYNC_CONCURRENCY) as tm:
             for index, item in enumerate(episode_files):
                 await tm.create_task_with_limit(_process_podcast_episode(index, item))
 
         episodes = [episode for episode in parsed if episode is not None]
-        # an incomplete listing is cached briefly rather than not at all: one file ffprobe
-        # cannot read would otherwise re-parse the whole folder on every request for as long
-        # as it sits there. Note the entry runs roughly 3-4KB per episode, so a feed of several
-        # thousand still pays a real stall rebuilding them from_dict on the event loop
+        # cache an incomplete listing briefly rather than not at all, so one unreadable file
+        # cannot make every request re-parse the whole folder
         complete = len(episodes) == len(episode_files)
         await self.mass.cache.set(
             key=cache_key,
             data=[episode.to_dict() for episode in episodes],
-            # a complete listing relies on the folder signature to invalidate it instead
+            # a complete listing is invalidated by the folder signature instead
             expiration=3600 * 24 * 365 if complete else PARTIAL_LISTING_CACHE_EXPIRATION,
             provider=self.instance_id,
             category=CACHE_CATEGORY_PODCAST_EPISODES,

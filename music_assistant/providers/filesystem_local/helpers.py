@@ -112,10 +112,9 @@ class FileSystemItem:
 
 def get_folder_signature(items: list[FileSystemItem]) -> str:
     """
-    Return a digest of the given files' paths, modification times and sizes.
+    Return an order-independent digest of the given files' paths, mtimes and sizes.
 
-    Callers use this as a cache checksum: any file added, removed, replaced or
-    retagged changes the digest. The result is independent of the order of the items.
+    Intended as a cache checksum: any file added, removed, replaced or retagged changes it.
 
     :param items: The files to include in the digest.
     """
