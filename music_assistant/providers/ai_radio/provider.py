@@ -6,14 +6,17 @@ import asyncio
 from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.enums import EventType
 from music_assistant_models.errors import InvalidDataError, SetupFailedError
 
-from music_assistant.helpers.plugin_engines import resolve_ai_engines, resolve_tts_engines
+from music_assistant.helpers.plugin_engines import (
+    select_ai_engine,
+    select_tts_engine,
+)
 from music_assistant.models.plugin import PluginProvider
 
 from .constants import (
@@ -354,7 +357,7 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
 
     async def _wait_for_engines(self) -> None:
         """
-        Wait (bounded) for the configured AI and TTS engines to become available.
+        Wait (bounded) until a concrete AI and TTS engine are selected for this instance.
 
         :raises SetupFailedError: When either engine is still unavailable at the deadline.
         """
@@ -364,29 +367,32 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
         )
         try:
             async with asyncio.timeout(ENGINE_DISCOVERY_TIMEOUT):
-                while (error := await self._missing_engine_error()) is not None:
+                while (error := await self._engine_selection_error()) is not None:
                     await engines_changed.wait()
                     # clearing only after the wait keeps an update that lands during the
                     # probe above signalled, so that wakeup is never lost
                     engines_changed.clear()
         except TimeoutError:
-            error = await self._missing_engine_error()
+            error = await self._engine_selection_error()
         finally:
             unsubscribe()
         if error is not None:
             raise error
 
-    async def _missing_engine_error(self) -> SetupFailedError | None:
-        """Return the error for the first engine that does not resolve, if any."""
-        selected_ai = cast("str | None", self.get_setup_value(CONF_AI_ENGINE))
-        if not await resolve_ai_engines(self.mass, selected_ai):
+    async def _engine_selection_error(self) -> SetupFailedError | None:
+        """
+        Seed a concrete engine selection where none is stored yet.
+
+        :return: The error for the first engine that cannot be selected or no longer
+            resolves, or None when both engines are settled.
+        """
+        if await select_ai_engine(self, CONF_AI_ENGINE, in_setup_data=True) is None:
             return SetupFailedError(
                 "AI Radio has no AI engine available",
                 translation_key="ai_radio_no_ai_engine",
                 translation_owner=TRANSLATION_OWNER,
             )
-        selected_tts = cast("str | None", self.get_setup_value(CONF_TTS_ENGINE))
-        if not await resolve_tts_engines(self.mass, selected_tts):
+        if await select_tts_engine(self, CONF_TTS_ENGINE, in_setup_data=True) is None:
             return SetupFailedError(
                 "AI Radio has no text-to-speech engine available",
                 translation_key="ai_radio_no_tts_engine",

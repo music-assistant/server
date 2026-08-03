@@ -36,9 +36,11 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user as get_auth_current_user,
 )
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
+from music_assistant.helpers.plugin_engines import select_ai_engine
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
 from music_assistant.models.plugin import AIEngine, PluginProvider
 from music_assistant.providers.music_quiz import (
+    CONF_AI_ENGINE,
     MUSIC_QUIZ_GUEST_USER,
     PLAYBACK_PREFERENCE_CACHE_EXPIRATION,
     PLAYBACK_PREFERENCE_CACHE_KEY,
@@ -295,6 +297,7 @@ def _create_plugin(
         "mode": mode,
         "player": player,
         "use_ai_distractors": use_ai_distractors,
+        "ai_engine": "ai--test/engine",
     }
     plugin.config.get_value.side_effect = lambda key, default=None: config_values.get(key, default)
     plugin._game = None
@@ -5490,7 +5493,26 @@ async def test_get_config_entries_reports_available_ai() -> None:
     assert entries[0].read_only is False
     # the picker stays reachable with the distractor toggle off (Trivia always needs an engine)
     assert entries[1].depends_on is None
-    assert [option.value for option in entries[1].options] == ["auto", "ai--test/engine"]
+    assert [option.value for option in entries[1].options] == ["ai--test/engine"]
+
+
+@pytest.mark.asyncio
+async def test_first_use_adopts_a_concrete_engine_selection() -> None:
+    """An instance without a stored selection adopts a concrete engine uid on first use."""
+    plugin = _create_plugin()
+    mass = cast("MagicMock", plugin.mass)
+    mass.get_providers_supporting_feature.return_value = [_create_ai_plugin()]
+    mass.config.get_raw_provider_config_value.return_value = None
+
+    engine = await select_ai_engine(plugin, CONF_AI_ENGINE)
+
+    assert engine is not None
+    assert engine.uid == "ai--test/engine"
+    assert mass.config.set_raw_provider_config_value.call_args.args == (
+        plugin.instance_id,
+        CONF_AI_ENGINE,
+        "ai--test/engine",
+    )
 
 
 @pytest.mark.asyncio

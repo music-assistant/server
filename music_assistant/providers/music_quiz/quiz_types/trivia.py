@@ -23,7 +23,7 @@ from music_assistant.helpers.json import (
     json_dumps,
     json_loads,
 )
-from music_assistant.helpers.plugin_engines import get_ai_engines, resolve_ai_engines
+from music_assistant.helpers.plugin_engines import get_ai_engines, resolve_ai_engine
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import (
     MultipleChoiceRoundState,
@@ -53,7 +53,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-AI_ATTEMPTS_PER_ENGINE = 2
+AI_GENERATION_ATTEMPTS = 2
 AI_QUERY_TIMEOUT_SECONDS = 30.0
 MAX_AI_PROMPT_BYTES = 8192
 MAX_AI_RESPONSE_BYTES = 4096
@@ -217,7 +217,7 @@ class TriviaQuizType(QuizType):
 
     async def initialize(self) -> None:
         """Validate AI availability and enough grounded content for the complete game."""
-        await self._require_ai_engines()
+        await self._require_ai_engine()
         eligible_tracks = await self._get_eligible_tracks()
         if len(eligible_tracks) < self.config.round_count:
             raise InvalidDataError(
@@ -306,33 +306,33 @@ class TriviaQuizType(QuizType):
         if len(prompt.encode("utf-8")) > MAX_AI_PROMPT_BYTES:
             raise self._generation_error()
         grounded_tracks = self._eligible_tracks.values() if self._eligible_tracks else ()
-        for engine in await self._require_ai_engines():
-            for _attempt in range(AI_ATTEMPTS_PER_ENGINE):
-                try:
-                    async with asyncio.timeout(AI_QUERY_TIMEOUT_SECONDS):
-                        response = await engine.provider.ai_query(prompt, engine_id=engine.id)
-                except Exception as err:
-                    LOGGER.debug(
-                        "Trivia generation failed via %s (%s)",
-                        engine.uid,
-                        type(err).__name__,
-                    )
-                    continue
-                try:
-                    return self._parse_generation(response, fact, grounded_tracks)
-                except (TypeError, ValueError) as err:
-                    LOGGER.debug(
-                        "Trivia engine %s returned an invalid response: %s",
-                        engine.uid,
-                        err,
-                    )
+        engine = await self._require_ai_engine()
+        for _attempt in range(AI_GENERATION_ATTEMPTS):
+            try:
+                async with asyncio.timeout(AI_QUERY_TIMEOUT_SECONDS):
+                    response = await engine.provider.ai_query(prompt, engine_id=engine.id)
+            except Exception as err:
+                LOGGER.debug(
+                    "Trivia generation failed via %s (%s)",
+                    engine.uid,
+                    type(err).__name__,
+                )
+                continue
+            try:
+                return self._parse_generation(response, fact, grounded_tracks)
+            except (TypeError, ValueError) as err:
+                LOGGER.debug(
+                    "Trivia engine %s returned an invalid response: %s",
+                    engine.uid,
+                    err,
+                )
         raise self._generation_error()
 
-    async def _require_ai_engines(self) -> list[AIEngine]:
-        """Return the AI engines to try, in fallback order."""
-        engines = await resolve_ai_engines(self.mass, self.config.ai_engine)
-        if engines:
-            return engines
+    async def _require_ai_engine(self) -> AIEngine:
+        """Return the configured AI engine, or raise when it is not available."""
+        engine = await resolve_ai_engine(self.mass, self.config.ai_engine)
+        if engine is not None:
+            return engine
         raise InvalidDataError(
             "Trivia requires an available AI engine",
             translation_key="music_quiz_trivia_ai_provider_required",

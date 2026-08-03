@@ -222,6 +222,7 @@ def _quiz(
         artist_bonus_mode=artist_mode,
         title_bonus_mode=title_mode,
         use_ai_distractors=use_ai,
+        ai_engine="ai--test/engine" if use_ai else None,
     )
     quiz = MusicTimelineQuizType(mass, config)
     quiz._source_track_pool = {track.uri: track for track in tracks if track.uri}
@@ -1611,7 +1612,6 @@ async def test_invalid_primary_ai_provider_does_not_try_another_provider() -> No
             extra=True,
         )
     )
-    invalid.instance_id = "ai--a"
     later = _ai_provider()
     later.instance_id = "ai--b"
     mass.get_providers_supporting_feature.return_value = [invalid, later]

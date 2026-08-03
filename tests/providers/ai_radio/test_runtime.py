@@ -347,7 +347,7 @@ async def test_render_tts_converts_raw_http_path_to_builtin_sound_effect_uri() -
     def get_provider(provider: str) -> Any:
         return SimpleNamespace(instance_id="builtin_1") if provider == "builtin" else None
 
-    runtime = DummyRuntime()
+    runtime = DummyRuntime({CONF_TTS_ENGINE: "hass_1/tts.cloud"})
     _set_runtime_mass(
         runtime, _create_engine_mass(ProviderFeature.TTS, plugin, get_provider=get_provider)
     )
@@ -383,7 +383,7 @@ async def test_generate_text_wraps_not_connected_error() -> None:
 
     plugin = _create_ai_plugin("hass_1", "ai_task.default")
     plugin.ai_query = AsyncMock(side_effect=NotConnected)
-    runtime = DummyRuntime()
+    runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
     _set_runtime_mass(
         runtime,
         _create_engine_mass(
@@ -405,7 +405,7 @@ async def test_generate_text_asks_for_the_system_locale_language() -> None:
     """The AI query states the server locale so sections are written in that language."""
     plugin = _create_ai_plugin("hass_1", "ai_task.default")
     plugin.ai_query = AsyncMock(return_value="section text")
-    runtime = DummyRuntime()
+    runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
     _set_runtime_mass(
         runtime,
         _create_engine_mass(
@@ -684,16 +684,15 @@ async def test_wait_for_background_task_completion_raises_on_failure(
         await runtime._wait_for_background_task_completion("task_x", timeout_seconds=1)
 
 
-async def test_get_ai_engine_preserves_priority_order() -> None:
-    """Honor provider priority order returned by mass over alphabetical sort (P5)."""
-    high_priority = _create_ai_plugin("zz_high", "engine")
-    low_priority = _create_ai_plugin("aa_low", "engine")
+async def test_get_ai_engine_requires_a_configured_selection() -> None:
+    """Without a stored selection no engine is picked, so the run fails with a clear error."""
     runtime = DummyRuntime()
     _set_runtime_mass(
-        runtime, _create_engine_mass(ProviderFeature.AI_QUERY, high_priority, low_priority)
+        runtime, _create_engine_mass(ProviderFeature.AI_QUERY, _create_ai_plugin("hass_1", "one"))
     )
 
-    assert (await runtime._get_ai_engine()).uid == "zz_high/engine"
+    with pytest.raises(MusicAssistantError, match="No AI engine available"):
+        await runtime._get_ai_engine()
 
 
 async def test_get_ai_engine_uses_the_configured_selection() -> None:
@@ -719,16 +718,27 @@ async def test_get_ai_engine_refuses_a_configured_engine_that_disappeared() -> N
         await runtime._get_ai_engine()
 
 
-async def test_get_tts_engine_preserves_priority_order() -> None:
-    """Honor provider priority order returned by mass over alphabetical sort (P5)."""
+async def test_get_tts_engine_uses_the_configured_selection() -> None:
+    """The stored TTS uid selects its engine, whatever order the plugins are served in."""
     high_priority = _create_tts_plugin("zz_high", "engine")
     low_priority = _create_tts_plugin("aa_low", "engine")
-    runtime = DummyRuntime()
+    runtime = DummyRuntime({CONF_TTS_ENGINE: "aa_low/engine"})
     _set_runtime_mass(
         runtime, _create_engine_mass(ProviderFeature.TTS, high_priority, low_priority)
     )
 
-    assert (await runtime._get_tts_engine()).uid == "zz_high/engine"
+    assert (await runtime._get_tts_engine()).uid == "aa_low/engine"
+
+
+async def test_get_tts_engine_refuses_a_configured_engine_that_disappeared() -> None:
+    """A concrete TTS selection is never silently replaced by another available engine."""
+    runtime = DummyRuntime({CONF_TTS_ENGINE: "gone/engine"})
+    _set_runtime_mass(
+        runtime, _create_engine_mass(ProviderFeature.TTS, _create_tts_plugin("hass_1", "one"))
+    )
+
+    with pytest.raises(MusicAssistantError, match="No text-to-speech engine available"):
+        await runtime._get_tts_engine()
 
 
 async def test_run_dynamic_mode_has_watchdog_for_stalled_playback(

@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
-from music_assistant.helpers.plugin_engines import resolve_ai_engines
+from music_assistant.helpers.plugin_engines import resolve_ai_engine
 from music_assistant.providers.music_quiz.suggestions import answer_labels_are_too_close
 
 if TYPE_CHECKING:
@@ -55,16 +55,15 @@ async def request_ai_distractors(
 
     :param mass: Music Assistant instance used to discover AI engines.
     :param prompt: Bounded prompt to submit.
-    :param engine_uid: The configured engine uid, or None/``ENGINE_AUTO`` for any available engine.
+    :param engine_uid: The configured engine uid.
     :param timeout: Maximum request duration in seconds.
     :return: The untrusted engine response, or ``None`` when unavailable.
     """
     if len(prompt.encode("utf-8")) > MAX_AI_PROMPT_BYTES:
         return None
-    engines = await resolve_ai_engines(mass, engine_uid)
-    if not engines:
+    engine = await resolve_ai_engine(mass, engine_uid)
+    if engine is None:
         return None
-    engine = engines[0]
     try:
         async with asyncio.timeout(timeout):
             return await engine.provider.ai_query(prompt, engine_id=engine.id)

@@ -93,7 +93,7 @@ async def test_setup_collects_both_engines() -> None:
     task = asyncio.create_task(setup_flow.run_setup(session))
     step = await _wait_for_form(session)
     assert [entry.key for entry in step.entries] == ["ai_engine", "tts_engine"]
-    assert [option.value for option in step.entries[0].options] == ["auto", "hass--1/ai_task.a"]
+    assert [option.value for option in step.entries[0].options] == ["hass--1/ai_task.a"]
     assert (
         session.handle_submit({"ai_engine": "hass--1/ai_task.a", "tts_engine": "hass--1/tts.a"})
         is None
@@ -103,18 +103,21 @@ async def test_setup_collects_both_engines() -> None:
     assert collected == {"ai_engine": "hass--1/ai_task.a", "tts_engine": "hass--1/tts.a"}
 
 
-async def test_setup_defaults_to_automatic_selection() -> None:
-    """Submitting the form untouched stores the automatic selection for both engines."""
+async def test_setup_rejects_a_submission_without_a_choice() -> None:
+    """Both engines are mandatory, so an empty submission re-shows the form with an error."""
     mass = _create_mass(_create_plugin("hass--1", ["ai_task.a"], ["tts.a"]))
     collected: dict[str, Any] = {}
     session = _create_session(mass, collected)
 
     task = asyncio.create_task(setup_flow.run_setup(session))
     await _wait_for_form(session)
-    assert session.handle_submit({}) is None
-    await task
+    step = session.handle_submit({})
+    assert step is not None
+    assert step.errors
+    assert not collected
 
-    assert collected == {"ai_engine": "auto", "tts_engine": "auto"}
+    session.handle_submit({"ai_engine": "hass--1/ai_task.a", "tts_engine": "hass--1/tts.a"})
+    await task
 
 
 async def test_setup_prefills_the_previous_selection() -> None:
@@ -126,7 +129,7 @@ async def test_setup_prefills_the_previous_selection() -> None:
     step = await _wait_for_form(session)
     assert step.entries[0].value is None
     assert step.entries[1].value == "hass--1/tts.a"
-    session.handle_submit({})
+    session.handle_submit({"ai_engine": "hass--1/ai_task.a", "tts_engine": "hass--1/tts.a"})
     await task
 
 

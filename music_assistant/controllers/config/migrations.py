@@ -386,7 +386,7 @@ def migrate_provider_setup_data(data: dict[str, Any], encrypt: Callable[[str], s
     return changed
 
 
-# TODO: remove after 2.13 release
+# TODO: remove after 2.10 release
 def migrate_hass_engine_selection(data: dict[str, Any], encrypt: Callable[[str], str]) -> bool:
     """
     Hand the removed Home Assistant TTS/AI entity choice over to the providers consuming it.
@@ -394,7 +394,7 @@ def migrate_hass_engine_selection(data: dict[str, Any], encrypt: Callable[[str],
     The Home Assistant plugin exposes every TTS/AI entity as a selectable engine now and each
     consuming provider picks one itself, so the single choice that used to live on the plugin
     is copied to the installed consumers that have no choice of their own yet. Providers
-    installed later fall back to automatic selection. Returns True if anything changed.
+    installed later pick an engine themselves at load. Returns True if anything changed.
 
     Runs after encryption is initialized (like migrate_provider_setup_data), since the ai_radio
     selection belongs in its encrypted `setup_data`.

@@ -84,6 +84,7 @@ from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.plugin_engines import (
     create_ai_engine_config_entries,
     get_ai_engines,
+    select_ai_engine,
 )
 from music_assistant.helpers.shared_playback import (
     SENDSPIN_DOMAIN,
@@ -397,7 +398,11 @@ class MusicQuizPlugin(PluginProvider):
                 venue_player_name=effective_player_name,
                 difficulty=difficulty,
                 use_ai_distractors=bool(self.config.get_value(CONF_USE_AI_DISTRACTORS)),
-                ai_engine=cast("str | None", self.config.get_value(CONF_AI_ENGINE)),
+                # selected on first use rather than at init: providers load concurrently,
+                # so the plugin supplying the engines may not have been available back then
+                ai_engine=(
+                    engine.uid if (engine := await select_ai_engine(self, CONF_AI_ENGINE)) else None
+                ),
                 language=language,
                 play_reveal_audio=play_reveal_audio,
                 artist_bonus_mode=parsed_artist_bonus_mode,

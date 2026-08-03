@@ -21,7 +21,7 @@ from contextlib import suppress
 from dataclasses import replace as dc_replace
 from itertools import zip_longest
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import ConfigEntry
@@ -50,7 +50,7 @@ from music_assistant.controllers.cache import use_cache
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
 from music_assistant.helpers.plugin_engines import (
     create_ai_engine_config_entries,
-    resolve_ai_engines,
+    select_ai_engine,
 )
 from music_assistant.helpers.security import is_safe_name
 from music_assistant.helpers.track_filter import filter_tracks
@@ -1374,7 +1374,7 @@ class SmartPlaylistProvider(PluginProvider):
 
     async def _generate_ai_description(self, name: str, rules: SmartPlaylistRules) -> str | None:
         """
-        Generate a natural-language description via the first AI engine that responds.
+        Generate a natural-language description via the configured AI engine.
 
         :param name: The playlist name, included in the prompt for context.
         :param rules: The rules whose summary the description should reflect.
@@ -1383,18 +1383,19 @@ class SmartPlaylistProvider(PluginProvider):
         if not self.config.get_value(CONF_AI_DESCRIPTIONS):
             return None
         locale = self.mass.metadata.locale
-        selected = cast("str | None", self.config.get_value(CONF_AI_ENGINE))
-        for engine in await resolve_ai_engines(self.mass, selected):
-            try:
-                response = await engine.provider.ai_query(
-                    self._build_ai_prompt(name, rules, locale), engine_id=engine.id
-                )
-            except Exception as exc:
-                self.logger.debug("AI description generation failed for '%s': %s", name, exc)
-                continue
-            if cleaned := response.strip():
-                return cleaned
-        return None
+        # selected on first use rather than at init: providers load concurrently, so the
+        # plugin supplying the engines may not have been available back then
+        engine = await select_ai_engine(self, CONF_AI_ENGINE)
+        if engine is None:
+            return None
+        try:
+            response = await engine.provider.ai_query(
+                self._build_ai_prompt(name, rules, locale), engine_id=engine.id
+            )
+        except Exception as exc:
+            self.logger.debug("AI description generation failed for '%s': %s", name, exc)
+            return None
+        return response.strip() or None
 
     def _build_ai_prompt(self, name: str, rules: SmartPlaylistRules, locale: str) -> str:
         """Build the prompt asking an AI provider to describe the smart playlist."""

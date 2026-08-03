@@ -106,6 +106,7 @@ def _quiz_type(
         source_uris=["prov://playlist/1"],
         difficulty=difficulty,
         use_ai_distractors=use_ai,
+        ai_engine="ai--1/engine" if use_ai else None,
     )
     quiz_type = GuessTheSongQuizType(mass, config)
     quiz_type._source_track_pool = {}
@@ -590,7 +591,6 @@ async def test_invalid_primary_ai_response_does_not_try_another_provider() -> No
             extra=True,
         )
     )
-    invalid.instance_id = "ai--a"
     later = _ai_provider()
     later.instance_id = "ai--b"
     mass.get_providers_supporting_feature.return_value = [invalid, later]

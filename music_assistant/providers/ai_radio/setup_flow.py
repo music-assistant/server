@@ -34,8 +34,8 @@ async def run_setup(session: SetupSession) -> None:
     if not await get_tts_engines(session.mass):
         raise AbortFlow("no_tts_engine")
     entries: list[ConfigEntry] = [
-        *await create_ai_engine_config_entries(session.mass, CONF_AI_ENGINE),
-        *await create_tts_engine_config_entries(session.mass, CONF_TTS_ENGINE),
+        *await create_ai_engine_config_entries(session.mass, CONF_AI_ENGINE, required=True),
+        *await create_tts_engine_config_entries(session.mass, CONF_TTS_ENGINE, required=True),
     ]
     for entry in entries:
         if (prefill := session.context.setup_data.get(entry.key)) is not None:

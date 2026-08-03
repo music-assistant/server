@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -38,7 +38,7 @@ from music_assistant.providers.music_quiz.models import (
 from music_assistant.providers.music_quiz.quiz_types import get_quiz_type
 from music_assistant.providers.music_quiz.quiz_types.base import MAX_SUGGESTION_COUNT
 from music_assistant.providers.music_quiz.quiz_types.trivia import (
-    AI_ATTEMPTS_PER_ENGINE,
+    AI_GENERATION_ATTEMPTS,
     AI_QUERY_TIMEOUT_SECONDS,
     MAX_AI_PROMPT_BYTES,
     MAX_AI_RESPONSE_BYTES,
@@ -196,14 +196,23 @@ def _quiz(
     tracks: list[Track],
     *,
     providers: Sequence[object] | None = None,
+    ai_engine: str | None = None,
     round_count: int = 1,
     suggestion_count: int = 4,
     difficulty: str = MusicQuizDifficulty.NORMAL.value,
     language: str = DEFAULT_TRIVIA_LANGUAGE,
     play_reveal_audio: bool = True,
 ) -> tuple[TriviaQuizType, MagicMock]:
-    """Return a Trivia strategy backed by a selected-track pool."""
-    mass = _mass(providers if providers is not None else [_ai_provider()])
+    """
+    Return a Trivia strategy backed by a selected-track pool.
+
+    :param ai_engine: The configured engine uid; defaults to the engine of the first
+        given plugin provider, since a game always runs on one concrete selection.
+    """
+    ai_providers = list(providers if providers is not None else [_ai_provider()])
+    mass = _mass(ai_providers)
+    if ai_engine is None and ai_providers:
+        ai_engine = f"{cast('Any', ai_providers[0]).instance_id}/engine"
     config = MusicQuizConfig(
         round_count=round_count,
         suggestion_count=suggestion_count,
@@ -211,6 +220,7 @@ def _quiz(
         difficulty=difficulty,
         language=language,
         play_reveal_audio=play_reveal_audio,
+        ai_engine=ai_engine,
     )
     quiz = TriviaQuizType(mass, config)
     quiz._source_track_pool = {track.uri: track for track in tracks if track.uri}
@@ -485,7 +495,7 @@ async def test_selected_track_and_playlist_sources_are_loaded_without_search(
     assert source.uri is not None
     quiz = TriviaQuizType(
         mass,
-        MusicQuizConfig(round_count=1, source_uris=[source.uri]),
+        MusicQuizConfig(round_count=1, source_uris=[source.uri], ai_engine="ai--1/engine"),
     )
 
     await quiz.initialize()
@@ -787,6 +797,7 @@ async def test_prepare_round_persists_unique_sources_across_fresh_strategies() -
         round_count=2,
         suggestion_count=4,
         source_uris=["prov://playlist/source"],
+        ai_engine="ai--1/engine",
     )
     mass = _mass([provider])
     first_quiz = TriviaQuizType(mass, config)
@@ -1247,7 +1258,7 @@ async def test_generation_retries_when_grounded_repair_is_insufficient() -> None
     result = await quiz._generate_question(_artist_fact())
 
     assert result.wrong_answers == ("Portishead", "Radiohead", "Air")
-    assert provider.ai_query.await_count == AI_ATTEMPTS_PER_ENGINE
+    assert provider.ai_query.await_count == AI_GENERATION_ATTEMPTS
 
 
 @pytest.mark.asyncio
@@ -1270,7 +1281,7 @@ async def test_generation_fails_when_all_grounded_repairs_are_insufficient() -> 
         await quiz._generate_question(_artist_fact())
 
     assert error.value.translation_key == "music_quiz_trivia_generation_failed"
-    assert provider.ai_query.await_count == AI_ATTEMPTS_PER_ENGINE
+    assert provider.ai_query.await_count == AI_GENERATION_ATTEMPTS
 
 
 @pytest.mark.parametrize(
@@ -1485,71 +1496,83 @@ async def test_generation_retries_invalid_response_then_accepts_valid_response()
     result = await quiz._generate_question(_artist_fact())
 
     assert result.question == "Which artist recorded this selected track?"
-    assert provider.ai_query.await_count == AI_ATTEMPTS_PER_ENGINE
+    assert provider.ai_query.await_count == AI_GENERATION_ATTEMPTS
 
 
 @pytest.mark.asyncio
-async def test_generation_uses_deterministic_engine_fallback() -> None:
-    """Try engines in the offered order and fall back after bounded invalid output."""
-    first = _ai_provider("invalid", instance_id="ai--a")
-    second = _ai_provider(_valid_response(), instance_id="ai--b")
-    quiz, _ = _quiz([], providers=[first, second])
+async def test_generation_stays_on_the_configured_engine() -> None:
+    """Another available engine never answers for the engine the game was configured with."""
+    configured = _ai_provider("invalid", instance_id="ai--a")
+    other = _ai_provider(_valid_response(), instance_id="ai--b")
+    quiz, _ = _quiz([], providers=[configured, other])
+
+    with pytest.raises(InvalidDataError) as error:
+        await quiz._generate_question(_artist_fact())
+
+    assert error.value.translation_key == "music_quiz_trivia_generation_failed"
+    assert configured.ai_query.await_count == AI_GENERATION_ATTEMPTS
+    other.ai_query.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_generation_retries_after_provider_exception() -> None:
+    """A raising query costs one attempt, leaving the next one to succeed."""
+    provider = _ai_provider()
+    provider.ai_query.side_effect = [RuntimeError("provider failed"), _valid_response()]
+    quiz, _ = _quiz([], providers=[provider])
 
     result = await quiz._generate_question(_artist_fact())
 
     assert result.question == "Which artist recorded this selected track?"
-    assert first.ai_query.await_count == AI_ATTEMPTS_PER_ENGINE
-    second.ai_query.assert_awaited_once()
+    assert provider.ai_query.await_count == AI_GENERATION_ATTEMPTS
 
 
 @pytest.mark.asyncio
-async def test_generation_falls_back_after_provider_exception() -> None:
-    """Continue to the next AI engine when a query raises."""
-    failing = _ai_provider(error=RuntimeError("provider failed"), instance_id="ai--a")
-    working = _ai_provider(_valid_response(), instance_id="ai--b")
-    quiz, _ = _quiz([], providers=[failing, working])
-
-    result = await quiz._generate_question(_artist_fact())
-
-    assert result.question == "Which artist recorded this selected track?"
-    assert failing.ai_query.await_count == AI_ATTEMPTS_PER_ENGINE
-    working.ai_query.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_generation_times_out_stalled_provider_before_fallback() -> None:
+async def test_generation_times_out_a_stalled_provider() -> None:
     """Bound each AI attempt so a stalled provider cannot block game management."""
 
     async def _stall(_prompt: str, **_kwargs: Any) -> str:
         await asyncio.Event().wait()
         raise AssertionError
 
-    stalled = _ai_provider(instance_id="ai--a")
+    stalled = _ai_provider()
     stalled.ai_query.side_effect = _stall
-    working = _ai_provider(_valid_response(), instance_id="ai--b")
-    quiz, _ = _quiz([], providers=[stalled, working])
+    quiz, _ = _quiz([], providers=[stalled])
 
-    with patch(
-        "music_assistant.providers.music_quiz.quiz_types.trivia.AI_QUERY_TIMEOUT_SECONDS",
-        AI_QUERY_TIMEOUT_SECONDS / 30_000,
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.trivia.AI_QUERY_TIMEOUT_SECONDS",
+            AI_QUERY_TIMEOUT_SECONDS / 30_000,
+        ),
+        pytest.raises(InvalidDataError) as error,
     ):
-        result = await quiz._generate_question(_artist_fact())
+        await quiz._generate_question(_artist_fact())
 
-    assert result.question == "Which artist recorded this selected track?"
-    assert stalled.ai_query.await_count == AI_ATTEMPTS_PER_ENGINE
-    working.ai_query.assert_awaited_once()
+    assert error.value.translation_key == "music_quiz_trivia_generation_failed"
+    assert stalled.ai_query.await_count == AI_GENERATION_ATTEMPTS
 
 
 @pytest.mark.asyncio
-async def test_generation_surfaces_localized_failure_after_all_providers() -> None:
-    """Fail explicitly after every provider exhausts its bounded attempts."""
-    invalid = _ai_provider("invalid", instance_id="ai--a")
-    failing = _ai_provider(error=RuntimeError("provider failed"), instance_id="ai--b")
-    quiz, _ = _quiz([], providers=[failing, invalid])
+async def test_generation_surfaces_localized_failure_after_all_attempts() -> None:
+    """Fail explicitly once the configured engine exhausts its bounded attempts."""
+    invalid = _ai_provider("invalid")
+    quiz, _ = _quiz([], providers=[invalid])
 
     with pytest.raises(InvalidDataError) as error:
         await quiz._generate_question(_artist_fact())
 
     assert error.value.translation_key == "music_quiz_trivia_generation_failed"
-    assert invalid.ai_query.await_count == AI_ATTEMPTS_PER_ENGINE
-    assert failing.ai_query.await_count == AI_ATTEMPTS_PER_ENGINE
+    assert invalid.ai_query.await_count == AI_GENERATION_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_generation_requires_the_configured_engine_to_exist() -> None:
+    """A configured engine that vanished fails the round instead of using another one."""
+    other = _ai_provider(_valid_response(), instance_id="ai--b")
+    quiz, _ = _quiz([], providers=[other], ai_engine="ai--a/engine")
+
+    with pytest.raises(InvalidDataError) as error:
+        await quiz._generate_question(_artist_fact())
+
+    assert error.value.translation_key == "music_quiz_trivia_ai_provider_required"
+    other.ai_query.assert_not_awaited()

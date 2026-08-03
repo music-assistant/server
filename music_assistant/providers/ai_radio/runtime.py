@@ -40,7 +40,7 @@ from music_assistant.helpers.playlists import (
     generate_m3u,
     media_item_to_playlist_item,
 )
-from music_assistant.helpers.plugin_engines import resolve_ai_engines, resolve_tts_engines
+from music_assistant.helpers.plugin_engines import resolve_ai_engine, resolve_tts_engine
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.uri import create_uri
 from music_assistant.providers.builtin import CACHE_CATEGORY_MEDIA_INFO
@@ -1644,8 +1644,8 @@ class AIRadioRuntimeMixin:
     async def _get_ai_engine(self) -> AIEngine:
         """Return the engine used for AI_QUERY tasks, honouring the configured selection."""
         selected = cast("str | None", self.get_setup_value(CONF_AI_ENGINE))
-        if engines := await resolve_ai_engines(self.mass, selected):
-            return engines[0]
+        if engine := await resolve_ai_engine(self.mass, selected):
+            return engine
         raise MusicAssistantError(
             "No AI engine available. Set up a plugin that provides AI (for example Home "
             "Assistant with an ai_task entity) and select it in the AI Radio settings."
@@ -1667,8 +1667,8 @@ class AIRadioRuntimeMixin:
     async def _get_tts_engine(self) -> TTSEngine:
         """Return the engine used for TTS tasks, honouring the configured selection."""
         selected = cast("str | None", self.get_setup_value(CONF_TTS_ENGINE))
-        if engines := await resolve_tts_engines(self.mass, selected):
-            return engines[0]
+        if engine := await resolve_tts_engine(self.mass, selected):
+            return engine
         raise MusicAssistantError(
             "No text-to-speech engine available. Set up a plugin that provides text-to-speech "
             "(for example Home Assistant with a TTS entity) and select it in the AI Radio "
