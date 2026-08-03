@@ -93,14 +93,24 @@ async def fetch_backend_voices(
         ) as response:
             response.raise_for_status()
             data = await response.json()
-        items = data.get("voices") if isinstance(data, dict) else data
-        voices = [
-            item if isinstance(item, str) else item.get("id") or item.get("name")
-            for item in items or []
-        ]
-        return [voice for voice in voices if voice]
     except Exception:
         return []
+    items = data.get("voices") if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        return []
+    # per item, so one unexpected entry does not discard the voices around it
+    voices: list[str] = []
+    for item in items:
+        name: object
+        if isinstance(item, str):
+            name = item
+        elif isinstance(item, dict):
+            name = item.get("id") or item.get("name")
+        else:
+            continue
+        if isinstance(name, str) and name:
+            voices.append(name)
+    return voices
 
 
 class OpenAITTSProvider(PluginProvider):

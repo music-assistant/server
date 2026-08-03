@@ -102,6 +102,11 @@ async def test_fetch_backend_voices_accepts_known_payload_shapes() -> None:
         ({"voices": [{"id": "af_bella"}, {"name": "am_adam"}]}, ["af_bella", "am_adam"]),
         ({"voices": [{"unexpected": "shape"}, "af_bella"]}, ["af_bella"]),
         ({"voices": []}, []),
+        # an unusable entry must not discard the voices around it
+        ({"voices": [None, 5, "af_bella", {"id": "am_adam"}]}, ["af_bella", "am_adam"]),
+        # a bare json string is not a voice list, and must not yield one-letter ids
+        ("af_bella", []),
+        ({"voices": "af_bella"}, []),
     ):
         session = create_voices_session(payload)
         assert await fetch_backend_voices(session, "http://localhost:8880/v1") == expected
