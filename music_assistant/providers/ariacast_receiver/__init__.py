@@ -5,10 +5,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import socket
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import suppress
+from ipaddress import ip_address
 from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp
@@ -128,6 +128,8 @@ class AriaCastReceiver(PluginProvider):
         # aiohttp server handles
         self._runner: web.AppRunner | None = None
         self._discovery_transport: asyncio.BaseTransport | None = None
+        # Guard so an unusable publish IP is reported once instead of on every probe
+        self._discovery_address_warned: bool = False
 
         self._audio_format = AudioFormat(
             content_type=ContentType.PCM_S16LE,
@@ -178,16 +180,20 @@ class AriaCastReceiver(PluginProvider):
 
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
-        site = web.TCPSite(self._runner, "0.0.0.0", ARIACAST_PORT, reuse_address=True)
+        bind_ip = self.mass.streams.bind_ip
+        site = web.TCPSite(self._runner, bind_ip, ARIACAST_PORT, reuse_address=True)
         try:
             await site.start()
         except OSError as err:
             raise SetupFailedError(
-                f"Cannot bind AriaCast server on port {ARIACAST_PORT}: {err}"
+                f"Cannot bind AriaCast server on {bind_ip}:{ARIACAST_PORT}: {err}"
             ) from err
 
         self.logger.info(
-            "AriaCast server '%s' listening on port %d", self._ariacast_name, ARIACAST_PORT
+            "AriaCast server '%s' listening on %s:%d",
+            self._ariacast_name,
+            bind_ip,
+            ARIACAST_PORT,
         )
         self.mass.create_task(self._run_udp_discovery())
         self._stats_task = self.mass.create_task(self._run_stats_broadcast())
@@ -835,27 +841,15 @@ class AriaCastReceiver(PluginProvider):
         """Respond to DISCOVER_AUDIOCAST UDP broadcasts on port 12888."""
         loop = asyncio.get_running_loop()
 
-        local_ip = self._get_local_ip()
-
-        response_payload = json.dumps(
-            {
-                "server_name": self._ariacast_name,
-                "ip": local_ip,
-                "port": ARIACAST_PORT,
-                "samplerate": 48000,
-                "channels": 2,
-            }
-        ).encode()
-
         class _Proto(asyncio.DatagramProtocol):
             def __init__(
                 self,
                 transport_holder: list[asyncio.DatagramTransport],
-                payload: bytes,
+                build_payload: Callable[[], bytes | None],
                 logger: Any,
             ) -> None:
                 self._holder = transport_holder
-                self._payload = payload
+                self._build_payload = build_payload
                 self._log = logger
 
             def connection_made(self, transport: asyncio.BaseTransport) -> None:
@@ -863,17 +857,22 @@ class AriaCastReceiver(PluginProvider):
                     self._holder.append(transport)
 
             def datagram_received(self, data: bytes, addr: tuple[str, int]) -> None:
-                if data.strip() == b"DISCOVER_AUDIOCAST":
-                    self._log.debug("Discovery from %s", addr)
-                    transport = self._holder[0] if self._holder else None
-                    if transport:
-                        with suppress(Exception):
-                            transport.sendto(self._payload, addr)
+                if data.strip() != b"DISCOVER_AUDIOCAST":
+                    return
+                self._log.debug("Discovery from %s", addr)
+                if (payload := self._build_payload()) is None:
+                    return
+                transport = self._holder[0] if self._holder else None
+                if transport:
+                    with suppress(Exception):
+                        transport.sendto(payload, addr)
 
         holder: list[asyncio.DatagramTransport] = []
         try:
             transport, _ = await loop.create_datagram_endpoint(
-                lambda: _Proto(holder, response_payload, self.logger),
+                lambda: _Proto(holder, self._build_discovery_payload, self.logger),
+                # Senders find us by broadcast, which is only delivered to a socket
+                # bound to the wildcard address, so this cannot follow streams.bind_ip.
                 local_addr=("0.0.0.0", DISCOVERY_PORT),
                 allow_broadcast=True,
             )
@@ -884,14 +883,33 @@ class AriaCastReceiver(PluginProvider):
                 "UDP discovery unavailable (port %d in use?): %s", DISCOVERY_PORT, exc
             )
 
-    @staticmethod
-    def _get_local_ip() -> str:
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-                s.connect(("8.8.8.8", 80))
-                return str(s.getsockname()[0])
-        except Exception:
-            return "127.0.0.1"
+    def _build_discovery_payload(self) -> bytes | None:
+        """
+        Return the discovery reply to send to a sender, or None to stay silent.
+
+        None means this server has no address a sender could connect back to.
+        """
+        publish_ip = str(self.mass.streams.publish_ip)
+        if not _is_advertisable_address(publish_ip):
+            if not self._discovery_address_warned:
+                self._discovery_address_warned = True
+                self.logger.warning(
+                    "Ignoring AriaCast discovery requests: the streamserver publish IP (%s) "
+                    "is not an address other devices can reach. Set the publish IP under "
+                    "Settings -> System -> Streams.",
+                    publish_ip,
+                )
+            return None
+        self._discovery_address_warned = False
+        return json.dumps(
+            {
+                "server_name": self._ariacast_name,
+                "ip": publish_ip,
+                "port": ARIACAST_PORT,
+                "samplerate": 48000,
+                "channels": 2,
+            }
+        ).encode()
 
     # -----------------------------------------------------------------------
     # Player selection helper
@@ -926,3 +944,22 @@ class AriaCastReceiver(PluginProvider):
 
         self.logger.debug("Using configured player: %s", self._default_player_id)
         return self._default_player_id
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _is_advertisable_address(address: str) -> bool:
+    """
+    Return whether an address may be handed to a device elsewhere on the network.
+
+    :param address: The address that would be advertised.
+    """
+    try:
+        parsed = ip_address(address)
+    except ValueError:
+        # A hostname was configured deliberately, so take it at face value.
+        return True
+    return not (parsed.is_loopback or parsed.is_unspecified or parsed.is_link_local)
