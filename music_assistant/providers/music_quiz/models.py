@@ -391,6 +391,9 @@ class MusicQuizRound(DataClassDictMixin):
     image_url: str | None = None
     duration: float | None = None
     started_at: float | None = None
+    # when the round's track became audible; only set for rounds that play a
+    # track while answering
+    audio_started_at: float | None = None
     ended_at: float | None = None
     auto_advance_at: float | None = None
 
