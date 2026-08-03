@@ -429,16 +429,30 @@ def _make_engine_provider(
         return [plugin for plugin in plugins if getattr(plugin, attribute).return_value]
 
     mass = MagicMock()
+    mass.closing = False
     mass.subscribe.side_effect = _subscribe
+    mass.create_task.side_effect = lambda coro, **_kwargs: asyncio.create_task(coro)
     mass.get_providers_supporting_feature.side_effect = _providers
     mass.config.get_provider_setup_value.side_effect = lambda _instance_id, key, default=None: (
         stored.get(key, default)
     )
     provider.mass = cast("Any", mass)
+    provider.logger = logging.getLogger("test.ai_radio")
+    provider._unloading = False
+    provider._engine_recheck_task = None
     provider._update_setup_data = cast(  # type: ignore[method-assign]
         "Any", lambda key, value, **_kwargs: stored.__setitem__(key, value)
     )
     return provider, subscribers, stored
+
+
+def _record_unload_with_error(provider: AIRadioProvider) -> list[Any]:
+    """Capture the errors the provider unloads itself with instead of really unloading."""
+    errors: list[Any] = []
+    provider.unload_with_error = cast(  # type: ignore[method-assign]
+        "Any", errors.append
+    )
+    return errors
 
 
 def _make_engine_plugin(instance_id: str, ai_ids: list[str], tts_ids: list[str]) -> MagicMock:
@@ -539,3 +553,111 @@ async def test_wait_for_engines_rejects_a_configured_engine_that_disappeared(
 
     assert error.value.translation_key == "ai_radio_no_ai_engine"
     assert stored[CONF_AI_ENGINE] == "p1/gone"
+
+
+async def test_providers_updated_leaves_a_healthy_selection_alone() -> None:
+    """A providers change that does not affect the engines is a no-op."""
+    provider, _, _ = _make_engine_provider(
+        [_make_engine_plugin("p1", ["ai"], ["tts"])],
+        setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"},
+    )
+    errors = _record_unload_with_error(provider)
+
+    await provider._on_providers_updated(MagicMock())
+
+    assert provider._engine_recheck_task is None
+    assert errors == []
+
+
+async def test_providers_updated_unloads_when_an_engine_stays_gone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An engine removed after the load surfaces as a provider error instead of at playtime."""
+    plugins: list[Any] = [_make_engine_plugin("p1", ["ai"], ["tts"])]
+    provider, _, _ = _make_engine_provider(
+        plugins,
+        setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"},
+    )
+    errors = _record_unload_with_error(provider)
+    monkeypatch.setattr(ai_radio_provider, "ENGINE_DISCOVERY_TIMEOUT", 0.05)
+    plugins.clear()
+
+    await provider._on_providers_updated(MagicMock())
+    assert provider._engine_recheck_task is not None
+    await provider._engine_recheck_task
+
+    assert [error.translation_key for error in errors] == ["ai_radio_no_ai_engine"]
+
+
+async def test_providers_updated_survives_a_supplier_reload() -> None:
+    """A plugin reload briefly takes its engines with it, which must not unload AI Radio."""
+    plugins: list[Any] = []
+    provider, subscribers, _ = _make_engine_provider(
+        plugins,
+        setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"},
+    )
+    errors = _record_unload_with_error(provider)
+
+    await provider._on_providers_updated(MagicMock())
+    assert provider._engine_recheck_task is not None
+    while not subscribers:
+        await asyncio.sleep(0)
+    plugins.append(_make_engine_plugin("p1", ["ai"], ["tts"]))
+    for callback in list(subscribers):
+        callback(MagicMock())
+    await provider._engine_recheck_task
+
+    assert errors == []
+    assert subscribers == []
+
+
+async def test_providers_updated_ignores_the_shutdown_sweep() -> None:
+    """Every provider unloads at shutdown, which is not an error the user has to act on."""
+    provider, _, _ = _make_engine_provider(
+        [], setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"}
+    )
+    errors = _record_unload_with_error(provider)
+    cast("Any", provider.mass).closing = True
+
+    await provider._on_providers_updated(MagicMock())
+
+    assert provider._engine_recheck_task is None
+    assert errors == []
+
+
+async def test_providers_updated_ignored_while_unloading() -> None:
+    """A providers change landing during our own unload is not acted on."""
+    provider, _, _ = _make_engine_provider(
+        [], setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"}
+    )
+    errors = _record_unload_with_error(provider)
+    provider._unloading = True
+
+    await provider._on_providers_updated(MagicMock())
+
+    assert provider._engine_recheck_task is None
+    assert errors == []
+
+
+async def test_providers_updated_keeps_a_single_recheck_in_flight() -> None:
+    """Providers changes arriving during the grace period do not stack up rechecks."""
+    plugins: list[Any] = []
+    provider, subscribers, _ = _make_engine_provider(
+        plugins,
+        setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"},
+    )
+    _record_unload_with_error(provider)
+
+    await provider._on_providers_updated(MagicMock())
+    first_task = provider._engine_recheck_task
+    assert first_task is not None
+    while not subscribers:
+        await asyncio.sleep(0)
+    await provider._on_providers_updated(MagicMock())
+
+    assert provider._engine_recheck_task is first_task
+    assert cast("Any", provider.mass).create_task.call_count == 1
+    plugins.append(_make_engine_plugin("p1", ["ai"], ["tts"]))
+    for callback in list(subscribers):
+        callback(MagicMock())
+    await first_task

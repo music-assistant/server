@@ -36,6 +36,7 @@ from .storage import AIRadioStorageMixin
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -64,6 +65,8 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
         self._station_lock = asyncio.Lock()
         self._session_lock = asyncio.Lock()
         self._unregister_handles: list[Callable[[], None]] = []
+        self._unloading = False
+        self._engine_recheck_task: asyncio.Task[None] | None = None
         self._sessions: dict[str, SessionState] = {}
         self._stations: dict[str, dict[str, Any]] = {}
         self._sections: dict[str, dict[str, Any]] = {}
@@ -117,13 +120,19 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
             self._unregister_handles.append(
                 self.mass.register_api_command(command, handler, required_scope=required_scope)
             )
+        self._unregister_handles.append(
+            self.mass.subscribe(self._on_providers_updated, EventType.PROVIDERS_UPDATED)
+        )
         self.logger.info(
             "AI Radio API routes registered (%d handlers)",
-            len(self._unregister_handles),
+            len(api_handlers),
         )
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle close/cleanup of the provider."""
+        self._unloading = True
+        if self._engine_recheck_task and not self._engine_recheck_task.done():
+            self._engine_recheck_task.cancel()
         cancelled = 0
         for session in self._sessions.values():
             if session.task and not session.task.done():
@@ -387,6 +396,30 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
                 translation_owner=TRANSLATION_OWNER,
             )
         return None
+
+    async def _on_providers_updated(self, _event: MassEvent) -> None:
+        """Re-check the engine selection whenever the set of loaded providers changes."""
+        # during (server) shutdown every provider unloads, so the engines disappearing
+        # along with their plugin is not something the user has to act on
+        if self._unloading or self.mass.closing:
+            return
+        if self._engine_recheck_task and not self._engine_recheck_task.done():
+            return
+        if await self._engine_selection_error() is None:
+            return
+        self._engine_recheck_task = self.mass.create_task(self._unload_when_engines_stay_missing())
+
+    async def _unload_when_engines_stay_missing(self) -> None:
+        """Unload with an error when a vanished engine does not come back in time."""
+        # a plugin reload takes its engines with it for a moment, so reuse the bounded
+        # wait from the load path instead of tearing the provider down right away
+        try:
+            await self._wait_for_engines()
+        except SetupFailedError as err:
+            if self._unloading or self.mass.closing:
+                return
+            self.logger.warning("%s - unloading the provider", err)
+            self.unload_with_error(err)
 
     def _prune_finished_sessions(self) -> None:
         """Drop the oldest finished sessions beyond the retention limit."""
