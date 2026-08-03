@@ -891,7 +891,9 @@ class AirPlayStream:
                     self._parse_capabilities_status(line)
                 elif line.startswith("[EVENT] remote command="):
                     self._parse_remote_event(line)
-                self.player.logger.log(VERBOSE_LOG_LEVEL, line)
+                self.player.logger.log(
+                    VERBOSE_LOG_LEVEL, "cliairplay for %s: %s", self.player.display_name, line
+                )
 
     def _parse_remote_event(self, line: str) -> None:
         """Dispatch a normalized remote command reported by cliairplay."""
