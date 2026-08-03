@@ -1,18 +1,21 @@
 """Tests for the party plugin."""
 
-from __future__ import annotations
-
 import asyncio
-from typing import cast
+from collections.abc import Coroutine
+from contextlib import suppress
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import MediaType, PlaybackState
+from music_assistant_models.enums import EventType, MediaType, PlaybackState
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.helpers.shared_playback import SharedPlaybackMode
+from music_assistant.models.plugin import PluginProvider
 from music_assistant.providers.party import (
+    _UNSET,
     CONF_ENABLE_ADD_QUEUE,
     CONF_ENABLE_BOOST,
     CONF_ENABLE_GUEST_ACCESS,
@@ -30,9 +33,15 @@ def _create_party_plugin() -> PartyPlugin:
     plugin.mass.player_queues = MagicMock()
     plugin.logger = MagicMock()
     plugin.config = MagicMock()
+    plugin.manifest = MagicMock()
+    plugin.manifest.instance_id = "party_instance_1"
+    plugin.config.instance_id = "party_instance_1"
     plugin._queue_lock = asyncio.Lock()
     plugin._session = None
     plugin._session_lock = asyncio.Lock()
+    plugin._unregister_handles = []
+    plugin._expiry_task = None
+    plugin._last_pushed_url = cast("Any", _UNSET)
     plugin.get_party_player = AsyncMock(return_value="party_queue")  # type: ignore[method-assign]
     config_values = {
         CONF_ENABLE_GUEST_ACCESS: True,
@@ -40,7 +49,7 @@ def _create_party_plugin() -> PartyPlugin:
         CONF_ENABLE_ADD_QUEUE: True,
         CONF_PREVENT_DUPLICATE_TRACKS: True,
     }
-    plugin.config.get_value.side_effect = config_values.__getitem__
+    plugin.config.get_value.side_effect = config_values.get
     return plugin
 
 
@@ -151,7 +160,9 @@ async def test_listen_in_attaches_guest_player() -> None:
 async def test_get_party_config_exposes_mode(mode: str) -> None:
     """get_party_config surfaces the configured playback mode to the guest frontend."""
     plugin = _create_party_plugin()
-    cast("MagicMock", plugin.config.get_value).side_effect = {CONF_PARTY_MODE: mode}.get
+    cast("MagicMock", plugin.config.get_value).side_effect = lambda key, *_args, **_kwargs: (
+        mode if key == CONF_PARTY_MODE else True
+    )
 
     config = await plugin.get_party_config()
 
@@ -160,9 +171,8 @@ async def test_get_party_config_exposes_mode(mode: str) -> None:
 
 @pytest.mark.asyncio
 async def test_guest_readable_commands_use_guest_scope() -> None:
-    """party/url and party/config stay on a guest-readable scope, never a host-only one."""
+    """party/url and party/config stay on a guest-readable scope, and loaded_in_mass subscribes to CORE_STATE_UPDATED."""
     plugin = _create_party_plugin()
-    plugin._unregister_handles = []
 
     await plugin.loaded_in_mass()
 
@@ -175,3 +185,224 @@ async def test_guest_readable_commands_use_guest_scope() -> None:
     assert scopes["party/listen_in"] == Scope.PLAYERS_CONTROL
     assert scopes["party/stop_listen_in"] == Scope.PLAYERS_CONTROL
     assert scopes["party/can_listen_in"] == Scope.PLAYERS_CONTROL
+
+    cast("MagicMock", plugin.mass.subscribe).assert_called_once_with(
+        plugin._on_core_state_updated, EventType.CORE_STATE_UPDATED
+    )
+
+
+@pytest.mark.asyncio
+async def test_push_url_update_dispatches_url_and_qr_code() -> None:
+    """_push_url_update dispatches provider_event with URL and SVG QR code."""
+    plugin = _create_party_plugin()
+    plugin._last_pushed_url = cast("Any", _UNSET)
+    plugin._expiry_task = None
+    plugin.signal_provider_event = MagicMock()  # type: ignore[misc,method-assign]
+
+    url = "https://app.music-assistant.io/?remote_id=MA-1234&join=CODE1"
+    expiry = datetime(2026, 7, 22, 18, 0, 0, tzinfo=UTC)
+    plugin._get_party_url_and_expiry = AsyncMock(return_value=(url, expiry))  # type: ignore[method-assign]
+    plugin._schedule_join_code_expiry_timer = AsyncMock()  # type: ignore[method-assign]
+
+    await plugin._push_url_update()
+
+    plugin.signal_provider_event.assert_called_once()
+    call_kwargs = plugin.signal_provider_event.call_args.kwargs
+    assert call_kwargs["sub_scope"] == "url"
+    assert call_kwargs["data"]["url"] == url
+    assert "<svg" in call_kwargs["data"]["qr_code"]
+    assert plugin._last_pushed_url == url
+
+
+@pytest.mark.asyncio
+async def test_push_url_update_deduplicates_unchanged_url() -> None:
+    """_push_url_update skips signaling if the URL has not changed."""
+    plugin = _create_party_plugin()
+    url = "https://app.music-assistant.io/?remote_id=MA-1234&join=CODE1"
+    plugin._last_pushed_url = cast("Any", url)
+    plugin._expiry_task = None
+    plugin.signal_provider_event = MagicMock()  # type: ignore[misc,method-assign]
+    plugin._schedule_join_code_expiry_timer = AsyncMock()  # type: ignore[method-assign]
+
+    expiry = datetime(2026, 7, 22, 18, 0, 0, tzinfo=UTC)
+    plugin._get_party_url_and_expiry = AsyncMock(return_value=(url, expiry))  # type: ignore[method-assign]
+
+    await plugin._push_url_update()
+
+    plugin.signal_provider_event.assert_not_called()
+    plugin._schedule_join_code_expiry_timer.assert_awaited_once_with(expiry)
+
+
+@pytest.mark.asyncio
+async def test_push_url_update_disabled_guest_access_pushes_none() -> None:
+    """_push_url_update pushes None for URL and QR code when guest access is disabled."""
+    plugin = _create_party_plugin()
+    plugin.signal_provider_event = MagicMock()  # type: ignore[misc,method-assign]
+    plugin._schedule_join_code_expiry_timer = AsyncMock()  # type: ignore[method-assign]
+
+    plugin._get_party_url_and_expiry = AsyncMock(return_value=(None, None))  # type: ignore[method-assign]
+
+    await plugin._push_url_update()
+
+    plugin.signal_provider_event.assert_called_once_with(
+        data={"url": None, "qr_code": None},
+        sub_scope="url",
+    )
+    plugin._schedule_join_code_expiry_timer.assert_awaited_once_with(None)
+    assert plugin._last_pushed_url is None
+
+
+@pytest.mark.asyncio
+async def test_push_url_update_transitions_from_active_url_to_none() -> None:
+    """_push_url_update dispatches None when guest access is disabled mid-session."""
+    plugin = _create_party_plugin()
+    plugin._last_pushed_url = cast(
+        "Any", "https://app.music-assistant.io/?remote_id=MA-1234&join=OLDCODE"
+    )
+    plugin.signal_provider_event = MagicMock()  # type: ignore[misc,method-assign]
+    plugin._schedule_join_code_expiry_timer = AsyncMock()  # type: ignore[method-assign]
+
+    plugin._get_party_url_and_expiry = AsyncMock(return_value=(None, None))  # type: ignore[method-assign]
+
+    await plugin._push_url_update()
+
+    plugin.signal_provider_event.assert_called_once_with(
+        data={"url": None, "qr_code": None},
+        sub_scope="url",
+    )
+    plugin._schedule_join_code_expiry_timer.assert_awaited_once_with(None)
+    assert plugin._last_pushed_url is None
+
+
+@pytest.mark.asyncio
+async def test_on_core_state_updated_triggers_url_push() -> None:
+    """_on_core_state_updated delegates to _push_url_update."""
+    plugin = _create_party_plugin()
+    plugin._push_url_update = AsyncMock()  # type: ignore[method-assign]
+
+    event = MagicMock()
+    await plugin._on_core_state_updated(event)
+
+    plugin._push_url_update.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_join_code_expiry_timer_refreshes_url_and_qr_code() -> None:
+    """When the active join code expires, the timer fires and pushes a refreshed URL/QR code."""
+    plugin = _create_party_plugin()
+    plugin.signal_provider_event = MagicMock()  # type: ignore[misc,method-assign]
+
+    def _create_task(coro: object) -> asyncio.Task[None]:
+        return asyncio.create_task(cast("Coroutine[Any, Any, None]", coro))
+
+    plugin.mass.create_task = MagicMock(side_effect=_create_task)  # type: ignore[method-assign]
+
+    code1_url = "https://app.music-assistant.io/?remote_id=MA-1234&join=CODE1"
+    code2_url = "https://app.music-assistant.io/?remote_id=MA-1234&join=CODE2"
+    now = datetime(2026, 7, 22, 12, 0, 0, tzinfo=UTC)
+    expiry1 = now + timedelta(hours=8)
+    expiry2 = now + timedelta(hours=16)
+
+    # Initial call returns CODE1, second call (after timer expiry) returns CODE2
+    plugin._get_party_url_and_expiry = AsyncMock(  # type: ignore[method-assign]
+        side_effect=[
+            (code1_url, expiry1),
+            (code2_url, expiry2),
+        ]
+    )
+
+    with (
+        patch("music_assistant.providers.party.utc", return_value=now),
+        patch(
+            "music_assistant.providers.party.asyncio.sleep", new_callable=AsyncMock
+        ) as mock_sleep,
+    ):
+        await plugin._push_url_update()
+        assert plugin._expiry_task is not None
+        with suppress(asyncio.CancelledError):
+            await plugin._expiry_task
+
+    # Verify asyncio.sleep was called with 8 hours + 1s buffer (28801 seconds)
+    expected_delay = (expiry1 - now).total_seconds() + 1
+    mock_sleep.assert_any_await(expected_delay)
+
+    # Verify signal_provider_event was called twice (first with CODE1, second with CODE2 after timer expiry)
+    assert plugin.signal_provider_event.call_count == 2
+
+    first_call_data = plugin.signal_provider_event.call_args_list[0].kwargs["data"]
+    assert first_call_data["url"] == code1_url
+
+    second_call_data = plugin.signal_provider_event.call_args_list[1].kwargs["data"]
+    assert second_call_data["url"] == code2_url
+    assert plugin._last_pushed_url == code2_url
+
+
+@pytest.mark.asyncio
+async def test_push_url_update_when_get_party_url_and_expiry_raises() -> None:
+    """_push_url_update logs error and aborts without pushing if _get_party_url_and_expiry raises."""
+    plugin = _create_party_plugin()
+    plugin.signal_provider_event = MagicMock()  # type: ignore[misc,method-assign]
+    plugin._get_party_url_and_expiry = AsyncMock(  # type: ignore[method-assign]
+        side_effect=RuntimeError("DB query failed")
+    )
+
+    await plugin._push_url_update()
+
+    plugin.signal_provider_event.assert_not_called()
+    cast("MagicMock", plugin.logger.error).assert_called_once()
+    assert plugin._last_pushed_url == _UNSET
+
+
+@pytest.mark.asyncio
+async def test_push_url_update_when_segno_make_raises() -> None:
+    """_push_url_update pushes URL with qr_code=None if QR generation raises an exception."""
+    plugin = _create_party_plugin()
+    plugin.signal_provider_event = MagicMock()  # type: ignore[misc,method-assign]
+    plugin._schedule_join_code_expiry_timer = AsyncMock()  # type: ignore[method-assign]
+
+    url = "https://app.music-assistant.io/?remote_id=MA-1234&join=CODE1"
+    expiry = datetime(2026, 7, 22, 18, 0, 0, tzinfo=UTC)
+    plugin._get_party_url_and_expiry = AsyncMock(return_value=(url, expiry))  # type: ignore[method-assign]
+
+    with patch(
+        "music_assistant.providers.party.segno.make",
+        side_effect=RuntimeError("Segno generation error"),
+    ):
+        await plugin._push_url_update()
+
+    plugin.signal_provider_event.assert_called_once_with(
+        data={"url": url, "qr_code": None},
+        sub_scope="url",
+    )
+    cast("MagicMock", plugin.logger.error).assert_called_once()
+    plugin._schedule_join_code_expiry_timer.assert_awaited_once_with(expiry)
+    assert plugin._last_pushed_url == url
+
+
+@pytest.mark.asyncio
+async def test_schedule_join_code_expiry_timer_cancels_existing_task() -> None:
+    """_schedule_join_code_expiry_timer cancels any existing expiry task before scheduling."""
+    plugin = _create_party_plugin()
+    mock_task = MagicMock(spec=asyncio.Task)
+    plugin._expiry_task = mock_task
+
+    await plugin._schedule_join_code_expiry_timer(None)
+
+    mock_task.cancel.assert_called_once()
+    assert plugin._expiry_task is None
+
+
+@pytest.mark.asyncio
+async def test_unload_cancels_expiry_task_and_resets_state() -> None:
+    """unload() cancels active expiry task and resets _last_pushed_url to _UNSET."""
+    plugin = _create_party_plugin()
+    mock_task = MagicMock(spec=asyncio.Task)
+    plugin._expiry_task = mock_task
+    plugin._last_pushed_url = "https://app.music-assistant.io/?remote_id=MA-1234&join=CODE1"
+
+    with patch.object(PluginProvider, "unload", new_callable=AsyncMock):
+        await plugin.unload()
+
+    mock_task.cancel.assert_called_once()
+    assert plugin._expiry_task is None
+    assert plugin._last_pushed_url == _UNSET  # type: ignore[unreachable]

@@ -8,10 +8,12 @@ to add songs to the queue with configurable rate limiting.
 from __future__ import annotations
 
 import asyncio
+import io
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
+import segno
 from mashumaro import DataClassDictMixin
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
@@ -19,15 +21,25 @@ from music_assistant_models.config_entries import (
     ConfigValueOption,
     ProviderConfig,
 )
-from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, ProviderFeature
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    EventType,
+    MediaType,
+    PlaybackState,
+    ProviderFeature,
+)
 from music_assistant_models.errors import InvalidDataError, SetupFailedError
 
 from music_assistant.controllers.player_queues.helpers import build_queue_item
 from music_assistant.helpers import guest_access
+from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
+    from datetime import datetime
+
+    from music_assistant_models.event import MassEvent
     from music_assistant_models.provider import ProviderManifest
     from music_assistant_models.queue_item import QueueItem
 
@@ -92,6 +104,13 @@ BADGE_COLOR_OPTIONS = [
 # Guest user configuration
 PARTY_GUEST_USER = "party_guest"
 PARTY_GUEST_DISPLAY_NAME = "Party Guest"
+
+
+class _Unset:
+    """Sentinel for uninitialized state."""
+
+
+_UNSET = _Unset()
 
 # Extra attribute keys for tracking guest items in the queue
 ATTR_PARTY_GUEST = "party_guest"
@@ -408,6 +427,8 @@ class PartyPlugin(PluginProvider):
         self._queue_lock = asyncio.Lock()
         self._session: SharedPlaybackSession | None = None
         self._session_lock = asyncio.Lock()
+        self._last_pushed_url: str | None | _Unset = _UNSET
+        self._expiry_task: asyncio.Task[None] | None = None
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -462,6 +483,13 @@ class PartyPlugin(PluginProvider):
                 "party/can_listen_in", self.can_listen_in, required_scope=Scope.PLAYERS_CONTROL
             )
         )
+        # React to remote access changes (which alter the URL format)
+        self._unregister_handles.append(
+            self.mass.subscribe(self._on_core_state_updated, EventType.CORE_STATE_UPDATED)
+        )
+
+        # Push initial URL and schedule code expiry timer
+        self.mass.create_task(self._push_url_update())
 
     async def unload(self, is_removed: bool = False) -> None:
         """
@@ -482,6 +510,11 @@ class PartyPlugin(PluginProvider):
             if self._session is not None:
                 await self._session.close()
                 self._session = None
+
+        if self._expiry_task:
+            self._expiry_task.cancel()
+            self._expiry_task = None
+        self._last_pushed_url = _UNSET
 
         # Revoke all guest tokens when:
         # 1. The plugin is being removed entirely (is_removed=True)
@@ -508,16 +541,8 @@ class PartyPlugin(PluginProvider):
 
         :returns: The guest join URL, or None if guest access is disabled.
         """
-        if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
-            return None
-
-        guest_user = await guest_access.get_or_create_guest_user(
-            self.mass, PARTY_GUEST_USER, PARTY_GUEST_DISPLAY_NAME
-        )
-        code = await guest_access.get_or_create_join_code(
-            self.mass, guest_user, device_name="Party Guest"
-        )
-        return guest_access.build_join_url(self.mass, code)
+        url, _ = await self._get_party_url_and_expiry()
+        return url
 
     async def get_party_player(self) -> str | None:
         """
@@ -1048,3 +1073,86 @@ class PartyPlugin(PluginProvider):
                 tokens_revoked,
                 PARTY_GUEST_USER,
             )
+
+    async def _get_party_url_and_expiry(self) -> tuple[str | None, datetime | None]:
+        """Fetch the party URL and the active join code expiry datetime in one pass."""
+        if not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
+            return None, None
+
+        guest_user = await guest_access.get_or_create_guest_user(
+            self.mass, PARTY_GUEST_USER, PARTY_GUEST_DISPLAY_NAME
+        )
+        code = await guest_access.get_or_create_join_code(
+            self.mass, guest_user, device_name="Party Guest"
+        )
+        expiry = await self.mass.webserver.auth.get_join_code_expiry(code, guest_user)
+        url = guest_access.build_join_url(self.mass, code)
+        return url, expiry
+
+    async def _schedule_join_code_expiry_timer(self, expiry: datetime | None) -> None:
+        """Schedule a task that fires when the active join code expires."""
+        # Cancel any existing timer
+        if self._expiry_task:
+            self._expiry_task.cancel()
+            self._expiry_task = None
+
+        if not expiry or not self.config.get_value(CONF_ENABLE_GUEST_ACCESS):
+            return
+
+        async def _on_code_expired(code_expiry: datetime) -> None:
+            """Handle active join code expiry."""
+            try:
+                now = utc()
+                # Add 1 second buffer so get_active_join_code sees the code as expired
+                delay = max(0, (code_expiry - now).total_seconds() + 1)
+                await asyncio.sleep(delay)
+                # Code has expired; push update which will auto-create a new code
+                await self._push_url_update()
+            except asyncio.CancelledError:
+                pass
+
+        self._expiry_task = self.mass.create_task(_on_code_expired(expiry))
+
+    def _generate_qr_code(self, url: str) -> str:
+        """Generate a QR code SVG for the party URL."""
+        qr = segno.make(url)
+        buffer = io.BytesIO()
+        qr.save(buffer, kind="svg", scale=4, light="white")
+        return buffer.getvalue().decode("utf-8")
+
+    async def _push_url_update(self) -> None:
+        """Push a URL/QR update event to subscribers if the party URL has changed."""
+        try:
+            url, expiry = await self._get_party_url_and_expiry()
+        except Exception as err:
+            self.logger.error("Failed to resolve party URL: %s", err, exc_info=err)
+            return
+
+        qr_code = None
+        if url:
+            try:
+                qr_code = self._generate_qr_code(url)
+            except Exception as err:
+                self.logger.error("Failed to generate QR code SVG: %s", err, exc_info=err)
+
+        # Only push if the URL actually changed
+        if url == self._last_pushed_url:
+            # Still reschedule the expiry timer (url is the same but code might be refreshed)
+            await self._schedule_join_code_expiry_timer(expiry)
+            return
+
+        self._last_pushed_url = url
+        self.signal_provider_event(
+            data={
+                "url": url,
+                "qr_code": qr_code,
+            },
+            sub_scope="url",
+        )
+        self.logger.debug("Pushed party URL and QR update: %s", url)
+
+        await self._schedule_join_code_expiry_timer(expiry)
+
+    async def _on_core_state_updated(self, event: MassEvent) -> None:
+        """Handle core state changes (remote access toggle changes the URL format)."""
+        await self._push_url_update()
