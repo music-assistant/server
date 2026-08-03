@@ -48,7 +48,7 @@ def _make_artist(
         artist.add_external_id(ExternalID.MB_ARTIST, mbid)
     if life_span is not None or artist_entity_type is not None:
         artist.metadata = MediaItemMetadata(
-            life_span=life_span, artist_entity_type=artist_entity_type
+            life_span=life_span, artist_entity_type=artist_entity_type, last_refresh=1
         )
     return artist
 
@@ -114,7 +114,7 @@ def provider_mock() -> Mock:
     provider.mass = Mock()
     provider.mass.create_task = Mock()
     provider.mass.call_later = Mock()
-    provider.mass.music.artists.update_item_in_library = AsyncMock()
+    provider.mass.metadata.schedule_update_metadata = Mock()
     return provider
 
 
@@ -136,9 +136,18 @@ async def test_scan_matches_birthday_in_window(
     """Artists whose birth date falls within the window are returned."""
     today_mmdd = _today_mmdd()
     mbid = "20ff3303-4fe2-4a47-a1b6-291e26aa3438"
-    _set_library(provider_mock, [_make_artist("1", "Birthday Artist", mbid=mbid)])
-    provider_mock.get_artist_details = AsyncMock(
-        return_value=_make_mb_artist(mbid, f"1980-{today_mmdd}", artist_type="person")
+    life_span = LifeSpan(begin=f"1980-{today_mmdd}")
+    _set_library(
+        provider_mock,
+        [
+            _make_artist(
+                "1",
+                "Birthday Artist",
+                mbid=mbid,
+                life_span=life_span,
+                artist_entity_type=ArtistEntityType.PERSON,
+            )
+        ],
     )
 
     artists = await manager._scan_matches()
@@ -152,11 +161,18 @@ async def test_scan_matches_memoriam_in_window(
     """Artists who passed away on a window date (ended=True) are returned."""
     today_mmdd = _today_mmdd()
     mbid = "20ff3303-4fe2-4a47-a1b6-291e26aa3438"
-    _set_library(provider_mock, [_make_artist("1", "Late Artist", mbid=mbid)])
-    provider_mock.get_artist_details = AsyncMock(
-        return_value=_make_mb_artist(
-            mbid, begin="1933-01-01", end=f"2006-{today_mmdd}", ended=True, artist_type="person"
-        )
+    life_span = LifeSpan(begin="1933-01-01", end=f"2006-{today_mmdd}", ended=True)
+    _set_library(
+        provider_mock,
+        [
+            _make_artist(
+                "1",
+                "Late Artist",
+                mbid=mbid,
+                life_span=life_span,
+                artist_entity_type=ArtistEntityType.PERSON,
+            )
+        ],
     )
 
     artists = await manager._scan_matches()
@@ -227,20 +243,66 @@ async def test_scan_matches_excludes_character_and_other(
     mbid_char = "aaaaaaaa-0000-0000-0000-000000000001"
     mbid_other = "aaaaaaaa-0000-0000-0000-000000000002"
     mbid_person = "aaaaaaaa-0000-0000-0000-000000000003"
+    life_span = LifeSpan(begin=f"1980-{today_mmdd}")
     _set_library(
         provider_mock,
         [
-            _make_artist("1", "Character", mbid=mbid_char),
-            _make_artist("2", "Other", mbid=mbid_other),
-            _make_artist("3", "Real Person", mbid=mbid_person),
+            _make_artist(
+                "1",
+                "Character",
+                mbid=mbid_char,
+                life_span=life_span,
+                artist_entity_type=ArtistEntityType.CHARACTER,
+            ),
+            _make_artist(
+                "2",
+                "Other",
+                mbid=mbid_other,
+                life_span=life_span,
+                artist_entity_type=ArtistEntityType.OTHER,
+            ),
+            _make_artist(
+                "3",
+                "Real Person",
+                mbid=mbid_person,
+                life_span=life_span,
+                artist_entity_type=ArtistEntityType.PERSON,
+            ),
         ],
     )
 
-    async def fake_details(mbid: str) -> MusicBrainzArtist:
-        types = {mbid_char: "Character", mbid_other: "Other", mbid_person: "Person"}
-        return _make_mb_artist(mbid, f"1980-{today_mmdd}", artist_type=types[mbid])
+    artists = await manager._scan_matches()
+    assert [a.name for a in artists] == ["Real Person"]
 
-    provider_mock.get_artist_details = fake_details
+
+async def test_scan_matches_excludes_unknown_and_null_types(
+    manager: MusicBrainzRecommendationManager,
+    provider_mock: Mock,
+) -> None:
+    """Artists with UNKNOWN or None entity_type are excluded."""
+    today_mmdd = _today_mmdd()
+    mbid_unknown = "aaaaaaaa-0000-0000-0000-000000000001"
+    mbid_null = "aaaaaaaa-0000-0000-0000-000000000002"
+    mbid_person = "aaaaaaaa-0000-0000-0000-000000000003"
+    life_span = LifeSpan(begin=f"1980-{today_mmdd}")
+    artist_unknown = _make_artist(
+        "1",
+        "Unknown Type",
+        mbid=mbid_unknown,
+        life_span=life_span,
+        artist_entity_type=ArtistEntityType.UNKNOWN,
+    )
+    artist_null = _make_artist("2", "Null Type", mbid=mbid_null, life_span=life_span)
+    artist_null.metadata.last_refresh = 1
+    artist_null.metadata.artist_entity_type = None
+    artist_person = _make_artist(
+        "3",
+        "Real Person",
+        mbid=mbid_person,
+        life_span=life_span,
+        artist_entity_type=ArtistEntityType.PERSON,
+    )
+    _set_library(provider_mock, [artist_unknown, artist_null, artist_person])
 
     artists = await manager._scan_matches()
     assert [a.name for a in artists] == ["Real Person"]
@@ -257,39 +319,38 @@ async def test_scan_matches_no_mbid_skipped(
     assert await manager._scan_matches() == []
 
 
-async def test_scan_matches_api_error_skipped(
+async def test_scan_matches_no_enrichment_schedules_metadata_update(
     manager: MusicBrainzRecommendationManager,
     provider_mock: Mock,
 ) -> None:
-    """API errors for individual artists are swallowed; remaining artists still checked."""
+    """Artists without metadata enrichment (last_refresh=None) are skipped and enrichment is scheduled."""
     today_mmdd = _today_mmdd()
-    mbid_error = "20ff3303-4fe2-4a47-a1b6-291e26aa3438"
-    mbid_ok = "f59c5520-5f46-4d2c-b2c4-822eabf53419"
-    _set_library(
-        provider_mock,
-        [
-            _make_artist("1", "Error Artist", mbid=mbid_error),
-            _make_artist("2", "OK Artist", mbid=mbid_ok),
-        ],
+    mbid_not_enriched = "20ff3303-4fe2-4a47-a1b6-291e26aa3438"
+    mbid_enriched = "f59c5520-5f46-4d2c-b2c4-822eabf53419"
+    artist_not_enriched = _make_artist("1", "Not Enriched", mbid=mbid_not_enriched)
+    artist_not_enriched.metadata = MediaItemMetadata()
+    life_span = LifeSpan(begin=f"1985-{today_mmdd}")
+    artist_enriched = _make_artist(
+        "2",
+        "Enriched Artist",
+        mbid=mbid_enriched,
+        life_span=life_span,
+        artist_entity_type=ArtistEntityType.PERSON,
     )
-
-    async def fake_details(mbid: str) -> MusicBrainzArtist:
-        if mbid == mbid_error:
-            msg = "MB API unavailable"
-            raise RuntimeError(msg)
-        return _make_mb_artist(mbid, f"1985-{today_mmdd}", artist_type="person")
-
-    provider_mock.get_artist_details = fake_details
+    _set_library(provider_mock, [artist_not_enriched, artist_enriched])
 
     artists = await manager._scan_matches()
-    assert [a.name for a in artists] == ["OK Artist"]
+    assert [a.name for a in artists] == ["Enriched Artist"]
+    provider_mock.mass.metadata.schedule_update_metadata.assert_called_once_with(
+        artist_not_enriched
+    )
 
 
 async def test_scan_matches_uses_metadata_when_available(
     manager: MusicBrainzRecommendationManager,
     provider_mock: Mock,
 ) -> None:
-    """Artists with pre-populated life_span metadata skip the API call."""
+    """Artists with enriched metadata (last_refresh set) are processed directly."""
     today_mmdd = _today_mmdd()
     mbid = "20ff3303-4fe2-4a47-a1b6-291e26aa3438"
     life_span = LifeSpan(begin=f"1980-{today_mmdd}")
@@ -305,7 +366,6 @@ async def test_scan_matches_uses_metadata_when_available(
             )
         ],
     )
-    provider_mock.get_artist_details = AsyncMock(side_effect=AssertionError("should not call"))
 
     artists = await manager._scan_matches()
     assert [a.name for a in artists] == ["Cached Artist"]
@@ -407,9 +467,18 @@ async def test_refresh_caches_artist_dicts(
     """_refresh caches a list of serialized artist dicts."""
     today_mmdd = _today_mmdd()
     mbid = "20ff3303-4fe2-4a47-a1b6-291e26aa3438"
-    _set_library(provider_mock, [_make_artist("1", "Birthday Star", mbid=mbid)])
-    provider_mock.get_artist_details = AsyncMock(
-        return_value=_make_mb_artist(mbid, f"1990-{today_mmdd}", artist_type="person")
+    life_span = LifeSpan(begin=f"1990-{today_mmdd}")
+    _set_library(
+        provider_mock,
+        [
+            _make_artist(
+                "1",
+                "Birthday Star",
+                mbid=mbid,
+                life_span=life_span,
+                artist_entity_type=ArtistEntityType.PERSON,
+            )
+        ],
     )
     provider_mock.mass.cache.set = AsyncMock()
 

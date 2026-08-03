@@ -8,11 +8,9 @@ from typing import TYPE_CHECKING
 from music_assistant_models.enums import ArtistEntityType, ExternalID, RecommendationFolderType
 from music_assistant_models.media_items import (
     Artist,
-    MediaItemMetadata,
     RecommendationFolder,
     UniqueList,
 )
-from music_assistant_models.media_items.metadata import LifeSpan
 
 from music_assistant.helpers.datetime import utc as datetime_utc
 
@@ -131,30 +129,14 @@ class MusicBrainzRecommendationManager:
             if not mbid:
                 continue
             scanned += 1
-            entity_type: ArtistEntityType | None = (
-                artist.metadata.artist_entity_type if artist.metadata else None
-            )
+            last_refresh = artist.metadata.last_refresh if artist.metadata else None
+            if last_refresh is None:
+                self.mass.metadata.schedule_update_metadata(artist)
+                continue
             life_span = artist.metadata.life_span if artist.metadata else None
-            if life_span is None or entity_type is None:
-                try:
-                    mb_artist = await self.provider.get_artist_details(mbid)
-                except Exception as err:
-                    self.logger.debug("Skipping artist %s: %s", mbid, err)
-                    continue
-                if entity_type is None and mb_artist.type:
-                    entity_type = ArtistEntityType(mb_artist.type.lower())
-                if life_span is None and mb_artist.life_span:
-                    mb_ls = mb_artist.life_span
-                    life_span = LifeSpan(begin=mb_ls.begin, end=mb_ls.end, ended=mb_ls.ended)
-                metadata = artist.metadata or MediaItemMetadata()
-                metadata.life_span = life_span
-                metadata.artist_entity_type = entity_type
-                artist.metadata = metadata
-                await self.mass.music.artists.update_item_in_library(
-                    artist.item_id, artist, overwrite=False
-                )
             if not life_span:
                 continue
+            entity_type = artist.metadata.artist_entity_type if artist.metadata else None
             # Only process known artist types with date-based events (whitelist approach)
             if entity_type not in (
                 ArtistEntityType.PERSON,
