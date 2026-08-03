@@ -51,7 +51,6 @@ class ClockReadiness(StrEnum):
     UNREPORTED = "unreported"
 
 
-CONF_VOLUME_START: Final[str] = "volume_start"
 CONF_PASSWORD: Final[str] = "password"
 # Storage-only marker (no config entry) set when the device rejected the stored
 # password, so the player keeps asking for setup across restarts until a working
@@ -211,8 +210,6 @@ CONF_PAIRING_PASSWORD: Final[str] = "pairing_password"
 CONF_COMPANION_PAIRING_PIN: Final[str] = "companion_pairing_pin"
 CONF_MRP_PAIRING_PIN: Final[str] = "mrp_pairing_pin"
 CONF_PAIR_NOW: Final[str] = "pair_now"
-BACKOFF_TIME_LOWER_LIMIT: Final[int] = 15  # seconds
-BACKOFF_TIME_UPPER_LIMIT: Final[int] = 300  # Five minutes
 
 FALLBACK_VOLUME: Final[int] = 20
 AIRPLAY_VOLUME_MUTE: Final[float] = -144.0
