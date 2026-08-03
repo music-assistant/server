@@ -824,6 +824,25 @@ async def test_tracks_without_an_isrc_are_not_looked_up() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("release_year", [0, 999, 9999])
+async def test_musicbrainz_years_outside_the_accepted_range_are_ignored(release_year: int) -> None:
+    """Keep the library year when MusicBrainz reports a year the timeline cannot use."""
+    tracks = [
+        _with_isrc(_track("one", "Teardrop", "Massive Attack", album_year=1998), "ISRC-ONE"),
+        _with_isrc(_track("two", "Genesis", "Justice", album_year=2007), "ISRC-TWO"),
+    ]
+    quiz, mass = _quiz(tracks)
+    _with_musicbrainz(mass, {"ISRC-ONE": release_year, "ISRC-TWO": release_year})
+
+    await quiz.initialize()
+    game_round = await _prepare_round_with_tracks(quiz, tracks)
+
+    assert isinstance(game_round.answer_state, TimelineRoundState)
+    assert game_round.answer_state.placement_snapshot[0].release_year == 1998
+    assert game_round.answer_state.candidate.entry.release_year == 2007
+
+
+@pytest.mark.asyncio
 async def test_failing_musicbrainz_lookups_keep_the_library_year() -> None:
     """Start the game on library years when the MusicBrainz lookup fails."""
     tracks = [

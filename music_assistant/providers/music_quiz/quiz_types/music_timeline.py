@@ -16,6 +16,7 @@ from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import Artist, ItemMapping, Track
 
 from music_assistant.helpers.compare import compare_artist
+from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import json_dumps
 from music_assistant.providers.music_quiz.ai_distractors import (
     AI_QUERY_TIMEOUT_SECONDS,
@@ -41,6 +42,7 @@ from music_assistant.providers.music_quiz.models import (
     TimelineRoundState,
 )
 from music_assistant.providers.music_quiz.quiz_types.base import (
+    MIN_RELEASE_YEAR,
     PLAYBACK_REPLACEMENT_RESERVE,
     QuizType,
     get_track_release_year,
@@ -330,7 +332,9 @@ class MusicTimelineQuizType(QuizType):
                     ).get_release_year_by_isrc(isrc)
                 except Exception as err:
                     LOGGER.debug("Could not date Music Quiz track %s: %s", track.uri, err)
-        if release_year is None:
+        # a year outside this range is rejected by get_track_release_year anyway, and a year
+        # below 1 cannot be expressed as a datetime at all
+        if release_year is None or not MIN_RELEASE_YEAR <= release_year <= utc().year:
             return track
         release_date = track.metadata.release_date
         if release_date is not None and release_date.year <= release_year:
