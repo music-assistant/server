@@ -284,7 +284,9 @@ class PluginProvider(Provider):
         :param language: Optional language code.
         :param engine_id: The provider-scoped id of the engine to use (``TTSEngine.id``,
             not its ``uid``). Omit or pass None to use the plugin's own default engine.
-        :return: StreamDetails for the generated audio.
+        :return: StreamDetails for the generated audio. ``path`` must be either a
+            fetchable http(s)/rtsp/rtmp URL or the absolute path of an existing local
+            file, and must stay resolvable for as long as consumers may play the clip.
         """
         raise NotImplementedError
 
