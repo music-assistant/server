@@ -197,6 +197,11 @@ class DSPConfigMixin:
                 "file",
                 "-i",
                 upload_path,
+                # bound the decoded output so a small but very long input cannot fill
+                # the disk before the duration check below runs. the extra second keeps
+                # an over-long response above the cap, so that check still rejects it
+                "-t",
+                str(MAX_IR_SECONDS + 1),
                 "-c:a",
                 "pcm_f32le",
                 ir_path,

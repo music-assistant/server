@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import re
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -190,6 +191,29 @@ def _wav_bytes(tmp_path: Path, channels: int = 2, duration: float = 0.1) -> byte
     return wav_path.read_bytes()
 
 
+def _silent_flac_bytes(tmp_path: Path, duration: float) -> bytes:
+    """Generate a silent flac of the given length, which compresses to very little."""
+    flac_path = tmp_path / f"silence_{duration}s.flac"
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=r=48000:cl=stereo",
+            "-t",
+            str(duration),
+            "-c:a",
+            "flac",
+            str(flac_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return flac_path.read_bytes()
+
+
 async def test_upload_list_and_remove_ir(tmp_path: Path) -> None:
     """An uploaded impulse response is stored, listed and then removed."""
     config = _DSPConfigStore()
@@ -276,6 +300,23 @@ async def test_upload_ir_rejects_long_file(tmp_path: Path) -> None:
         await config.upload_dsp_ir("too long", data)
 
     assert config.get_dsp_irs() == []
+    assert list((tmp_path / "dsp_irs").glob("*")) == []
+
+
+async def test_upload_ir_transcode_is_length_bounded(tmp_path: Path) -> None:
+    """A tiny but very long upload is truncated on the way in, not written out in full."""
+    config = _DSPConfigStore()
+    config.mass.storage_path = str(tmp_path)
+
+    data = base64.b64encode(_silent_flac_bytes(tmp_path, duration=3600)).decode()
+    with pytest.raises(InvalidDataError) as excinfo:
+        await config.upload_dsp_ir("very long", data)
+
+    # an unbounded transcode would report the source length, after writing gigabytes
+    reported = re.search(r"is ([\d.]+) seconds", str(excinfo.value))
+    assert reported is not None
+    assert float(reported.group(1)) <= MAX_IR_SECONDS + 1
+
     assert list((tmp_path / "dsp_irs").glob("*")) == []
 
 
