@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from aiohttp import ClientError, web
 from music_assistant_models.enums import ContentType, MediaType, ProviderType, StreamType
 
@@ -78,13 +79,22 @@ async def test_get_tts_message_returns_http_streamdetails() -> None:
     assert streamdetails.path == f"http://mass.local:8095/{INSTANCE_ID}_speech?id={file_id}"
 
 
-async def test_handle_speech_request_rejects_invalid_id() -> None:
-    """A missing or non-hash id is rejected before the filesystem is touched."""
+async def test_handle_speech_request_rejects_missing_id() -> None:
+    """A request without an id is rejected."""
     provider = create_provider()
-    for query in ({}, {"id": "../../../etc/passwd"}, {"id": "NOTAHASH"}):
+    provider._clips = {}
+    request = MagicMock(spec=web.Request)
+    request.query = {}
+    response = await provider._handle_speech_request(request)
+    assert response.status == 400
+
+
+async def test_handle_speech_request_serves_indexed_clips_only() -> None:
+    """An id that this instance did not render never reaches the filesystem."""
+    provider = create_provider()
+    provider._clips = {}
+    for query in ({"id": "../../../etc/passwd"}, {"id": "NOTAHASH"}, {"id": "a" * 64}):
         request = MagicMock(spec=web.Request)
         request.query = query
-        # _cache_dir is unset without handle_async_init, so any filesystem
-        # access in the handler would raise instead of returning a response
-        response = await provider._handle_speech_request(request)
-        assert response.status == 400
+        with pytest.raises(web.HTTPNotFound):
+            await provider._handle_speech_request(request)

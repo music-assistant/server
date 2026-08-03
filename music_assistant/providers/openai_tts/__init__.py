@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
-import re
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -64,9 +63,6 @@ CACHE_MAX_AGE = 24 * 3600
 VOICES_TIMEOUT = ClientTimeout(total=10)
 SPEECH_TIMEOUT = ClientTimeout(total=120)
 
-# file ids are sha256 hexdigests; anything else must never reach the filesystem
-FILE_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
-
 SUPPORTED_FEATURES = {ProviderFeature.TTS}
 
 
@@ -83,6 +79,9 @@ class OpenAITTSProvider(PluginProvider):
     _cache_dir: str
     _render_lock: asyncio.Lock
     _voices: list[str]
+    # index of the clips in the cache directory, keyed by file id; the route serves paths
+    # from here only, so a crafted id can never reach the filesystem
+    _clips: dict[str, str]
     _unregister_route: Callable[[], None] | None = None
 
     async def handle_async_init(self) -> None:
@@ -90,6 +89,8 @@ class OpenAITTSProvider(PluginProvider):
         self._cache_dir = os.path.join(self.mass.cache_path, self.domain)
         self._render_lock = asyncio.Lock()
         self._voices = await self._resolve_voices()
+        # clips rendered before a restart stay playable
+        self._clips = await self._index_cache()
         self._unregister_route = self.mass.streams.register_dynamic_route(
             self._route_path, self._handle_speech_request
         )
@@ -166,12 +167,12 @@ class OpenAITTSProvider(PluginProvider):
         """Serve a rendered speech clip by its file id."""
         if not (file_id := request.query.get("id")):
             return web.Response(status=400, text="Missing id")
-        # the id comes straight from the url: only the exact hash shape may hit the
-        # filesystem, so a crafted id can never traverse out of the cache directory
-        if not FILE_ID_PATTERN.match(file_id):
-            return web.Response(status=400, text="Invalid id")
-        file_path = os.path.join(self._cache_dir, f"{file_id}.{RESPONSE_FORMAT}")
+        # the id from the url is only ever a lookup key: the path served comes from our
+        # own index, so it can never point outside the cache directory
+        if not (file_path := self._clips.get(file_id)):
+            raise web.HTTPNotFound
         if not await aiopath.isfile(file_path):
+            self._clips.pop(file_id, None)
             raise web.HTTPNotFound
         return web.FileResponse(file_path)
 
@@ -191,6 +192,7 @@ class OpenAITTSProvider(PluginProvider):
                 # reused long after it was first rendered, but is played right away
                 with suppress(OSError):
                     await asyncio.to_thread(os.utime, file_path, None)
+                self._clips[file_id] = file_path
                 return file_id
             await makedirs(self._cache_dir, exist_ok=True)
             audio_data = await self._request_speech(message, voice)
@@ -205,6 +207,7 @@ class OpenAITTSProvider(PluginProvider):
                 with suppress(OSError):
                     await remove(tmp_path)
                 raise
+            self._clips[file_id] = file_path
         await self._reap_cache()
         return file_id
 
@@ -237,17 +240,38 @@ class OpenAITTSProvider(PluginProvider):
     async def _reap_cache(self) -> None:
         """Remove rendered clips that are older than the maximum cache age."""
 
-        def _reap() -> None:
+        def _reap() -> list[str]:
+            reaped: list[str] = []
             cutoff = time.time() - CACHE_MAX_AGE
             with os.scandir(self._cache_dir) as entries:
                 for entry in entries:
                     with suppress(OSError):
                         if entry.is_file() and entry.stat().st_mtime < cutoff:
                             Path(entry.path).unlink()
+                            reaped.append(Path(entry.name).stem)
+            return reaped
 
         # reaping is opportunistic housekeeping and must never break playback
         with suppress(OSError):
-            await asyncio.to_thread(_reap)
+            for file_id in await asyncio.to_thread(_reap):
+                self._clips.pop(file_id, None)
+
+    async def _index_cache(self) -> dict[str, str]:
+        """Return the clips present in the cache directory, keyed by file id."""
+
+        def _index() -> dict[str, str]:
+            with os.scandir(self._cache_dir) as entries:
+                return {
+                    Path(entry.name).stem: entry.path
+                    for entry in entries
+                    if entry.is_file() and entry.name.endswith(f".{RESPONSE_FORMAT}")
+                }
+
+        try:
+            return await asyncio.to_thread(_index)
+        except OSError:
+            # nothing rendered yet: the cache directory is created on the first render
+            return {}
 
     async def _resolve_voices(self) -> list[str]:
         """Return the voices to expose, from the config override, the backend or the defaults."""
