@@ -1534,21 +1534,6 @@ async def test_join_code_length_at_least_12() -> None:
     assert JOIN_CODE_LENGTH >= 12
 
 
-def _lower_join_code_ceiling(auth_manager: AuthenticationManager, ceiling: int = 3) -> None:
-    """
-    Swap in a join code rate limiter with a low ceiling so throttling is reachable in a test.
-
-    :param auth_manager: AuthenticationManager instance to patch.
-    :param ceiling: Failure count at which the cooldown starts applying.
-    """
-    auth_manager._join_code_rate_limiter = LoginRateLimiter(
-        delay_tiers=((ceiling, JOIN_CODE_COOLDOWN_SECONDS),),
-        warn_threshold=ceiling,
-        alert_threshold=ceiling * 2,
-        subject="join code",
-    )
-
-
 async def test_exchange_join_code_party_burst_not_throttled(
     auth_manager: AuthenticationManager,
 ) -> None:
@@ -1685,3 +1670,18 @@ async def test_default_login_delay_tiers_ascending() -> None:
     delays = [delay for _, delay in DEFAULT_LOGIN_DELAY_TIERS]
     assert counts == sorted(counts)
     assert delays == sorted(delays)
+
+
+def _lower_join_code_ceiling(auth_manager: AuthenticationManager, ceiling: int = 3) -> None:
+    """
+    Swap in a join code rate limiter with a low ceiling so throttling is reachable in a test.
+
+    :param auth_manager: AuthenticationManager instance to patch.
+    :param ceiling: Failure count at which the cooldown starts applying.
+    """
+    auth_manager._join_code_rate_limiter = LoginRateLimiter(
+        delay_tiers=((ceiling, JOIN_CODE_COOLDOWN_SECONDS),),
+        warn_threshold=ceiling,
+        alert_threshold=ceiling * 2,
+        subject="rate limit key",
+    )

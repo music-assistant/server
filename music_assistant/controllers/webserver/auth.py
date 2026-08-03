@@ -100,7 +100,7 @@ class AuthenticationManager:
             delay_tiers=((JOIN_CODE_FAILURE_CEILING, JOIN_CODE_COOLDOWN_SECONDS),),
             warn_threshold=JOIN_CODE_FAILURE_CEILING,
             alert_threshold=JOIN_CODE_FAILURE_CEILING * 2,
-            subject="join code",
+            subject="rate limit key",
         )
         # Stops concurrent exchanges from passing the rate limit check before failures land
         self._join_code_exchange_lock = asyncio.Lock()

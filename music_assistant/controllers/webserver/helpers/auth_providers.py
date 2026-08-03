@@ -137,7 +137,8 @@ class LoginRateLimiter:
         :param alert_threshold: Failure count at which a stronger warning is logged.
         :param subject: Noun describing what a key identifies, used in log messages.
         """
-        # Track failed attempts per username: {username: [timestamp1, timestamp2, ...]}
+        # Track failed attempts per key: {key: [timestamp1, timestamp2, ...]}. A key is a
+        # username on the interactive login path, but callers may group attempts differently.
         self._failed_attempts: dict[str, list[datetime]] = {}
         # Time window for tracking attempts (30 minutes)
         self._tracking_window = timedelta(minutes=30)
@@ -241,7 +242,7 @@ class LoginRateLimiter:
             elif attempt_count == self._alert_threshold:
                 LOGGER.warning(
                     "High suspicious login activity: %d failed attempts for %s '%s'. "
-                    "Consider blocking this source.",
+                    "Consider disabling the account or blocking the source at the network edge.",
                     attempt_count,
                     self._subject,
                     username,
