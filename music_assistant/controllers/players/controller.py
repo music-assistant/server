@@ -914,6 +914,16 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         player = self.get_player(player_id, True)
         assert player
 
+        mute_control = player.mute_control
+        # a mute command needs a mute control; fake mute is simulated by
+        # setting the volume to zero, so it also needs a volume control
+        if mute_control == PLAYER_CONTROL_NONE or (
+            mute_control == PLAYER_CONTROL_FAKE and player.volume_control == PLAYER_CONTROL_NONE
+        ):
+            raise UnsupportedFeaturedException(
+                f"Player {player.state.name} does not support muting"
+            )
+
         # Set/clear mute lock for players in a group
         # This prevents auto-unmute when group volume changes
         is_in_group = bool(player.state.synced_to or player.state.active_group)
@@ -922,15 +932,11 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         elif not muted:
             player.extra_data.pop(ATTR_MUTE_LOCK, None)
 
-        if player.volume_control == PLAYER_CONTROL_NONE:
-            raise UnsupportedFeaturedException(
-                f"Player {player.state.name} does not support muting"
-            )
-        if player.mute_control == PLAYER_CONTROL_NATIVE:
+        if mute_control == PLAYER_CONTROL_NATIVE:
             # player supports mute command natively: forward to player
             await player.volume_mute(muted)
             return
-        if player.mute_control == PLAYER_CONTROL_FAKE:
+        if mute_control == PLAYER_CONTROL_FAKE:
             # user wants to use fake mute control - so we use volume instead
             self.logger.debug(
                 "Using volume for muting for player %s",
@@ -953,7 +959,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             return
 
         # handle external player control
-        if player_control := self._controls.get(player.mute_control):
+        if player_control := self._controls.get(mute_control):
             control_name = player_control.name
             self.logger.debug("Redirecting mute command to PlayerControl %s", control_name)
             if not player_control.supports_mute:
@@ -965,7 +971,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             return
 
         # handle to protocol player as volume_mute control
-        if protocol_player := self.get_player(player.mute_control):
+        if protocol_player := self.get_player(mute_control):
             self.logger.debug(
                 "Redirecting mute command to protocol player %s",
                 protocol_player.provider.manifest.name,
