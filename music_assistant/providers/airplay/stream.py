@@ -97,7 +97,6 @@ class AirPlayStream:
         self.mass = player.provider.mass
         self.player = player
         self.pcm_format = pcm_format or AIRPLAY_PCM_FORMAT
-        self.logger = player.provider.logger.getChild("stream")
         mac_address = self.player.device_info.mac_address or self.player.player_id
         self.active_remote_id: str = generate_active_remote_id(mac_address)
         self._stream_id = uuid4().hex

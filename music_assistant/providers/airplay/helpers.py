@@ -20,7 +20,6 @@ if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.mass import MusicAssistant
-    from music_assistant.providers.airplay.player import AirPlayPlayer
 
 _LOGGER = logging.getLogger(__name__)
 _COMPANION_PAIRING_DISABLED = 0x04
@@ -345,12 +344,9 @@ def serialize_txt_records(discovery_info: AsyncServiceInfo) -> str:
     return " ".join(pairs)
 
 
-def get_final_output_format(
-    audio_format: AudioFormat,
-    airplay_player: AirPlayPlayer,  # noqa: ARG001
-) -> AudioFormat:
+def get_final_output_format(audio_format: AudioFormat) -> AudioFormat:
     """
-    Determine final output format for display purposes.
+    Determine the output format ffmpeg must encode to for the cliairplay binary.
 
     The cliairplay binary always uses ALAC encoding internally.
     """
