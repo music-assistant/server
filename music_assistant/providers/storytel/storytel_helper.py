@@ -995,7 +995,7 @@ class StorytelHelper:
         # AES-128-CBC encrypt password, hex encoded (PKCS#7 padding).
         # Source for key and IV: https://github.com/MauritsWilke/storytel-api/blob/v1_archive/src/utils/encryptPassword.ts
         cipher = AES.new(self._KEY, AES.MODE_CBC, self._IV)
-        enc = cipher.encrypt(pad(password.encode("utf-8"), AES.block_size))
+        enc: bytes = cipher.encrypt(pad(password.encode("utf-8"), AES.block_size))
         return enc.hex()
 
     def _abook_is_released(self, formats_data: list[dict[str, Any]]) -> bool:
