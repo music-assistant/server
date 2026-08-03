@@ -195,6 +195,9 @@ class RemoteAccessManager:
             self.mass.storage_path
         )
 
+        # resolved once, at gateway start: changing the base URL restarts neither the
+        # webserver nor this gateway, and the address it advertises is not necessarily
+        # reachable from this host
         base_url = self.mass.webserver.base_url
         local_ws_url = base_url.replace("http", "ws")
         if not local_ws_url.endswith("/"):
@@ -211,6 +214,8 @@ class RemoteAccessManager:
         mode = "optimized" if using_ha_cloud else "basic"
         self.logger.info("Starting remote access in %s mode", mode)
 
+        # resolved once, at gateway start: the Sendspin server binds at provider load, so a
+        # later streams reload moves this address without rebinding the socket behind it
         sendspin_url = self.webserver.internal_sendspin_url
 
         gateway = WebRTCGateway(
