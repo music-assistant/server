@@ -368,12 +368,21 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
         :param is_playing: True if the item is currently playing.
         """
         consumable_id = prov_item_id
-        # TODO: Consider whether to remove bookmark on fully_played=True or keep it at end position for potential re-listening.
         if media_type not in {MediaType.AUDIOBOOK, MediaType.PODCAST_EPISODE}:
             self.logger.error("Unsupported media type for bookmark update: %s", media_type)
             return
+        # Set bookmark position to the media duration if the item was fully played and the duration is known. Otherwise, use the provided position.
+        bookmark_position = position
+        if fully_played:
+            media_duration = getattr(media_item, "duration", None)
+            if isinstance(media_duration, int) and media_duration > 0:
+                bookmark_position = media_duration
         try:
-            await self.api.set_bookmark(consumable_id, position, kids_mode=self._kids_mode)
+            await self.api.set_bookmark(
+                consumable_id,
+                bookmark_position,
+                kids_mode=self._kids_mode,
+            )
         except Exception as err:
             if isinstance(err, (LoginFailed, ProviderUnavailableError, SetupFailedError)):
                 raise
