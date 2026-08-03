@@ -966,4 +966,10 @@ def _is_advertisable_address(address: str) -> bool:
         parsed = IPv4Address(address)
     except AddressValueError:
         return False
-    return not (parsed.is_loopback or parsed.is_unspecified or parsed.is_link_local)
+    return not (
+        parsed.is_loopback
+        or parsed.is_unspecified
+        or parsed.is_link_local
+        or parsed.is_multicast
+        or parsed.is_reserved
+    )
