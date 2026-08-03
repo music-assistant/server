@@ -14,7 +14,7 @@
     },
     "voices": {
       "label": "Voices",
-      "description": "Comma separated list of voices to expose, overriding the voices that are normally detected automatically or fall back to the standard OpenAI voices (alloy, echo, fable, nova, onyx, shimmer)."
+      "description": "Voices to expose as engines, overriding the voices that are normally detected automatically or fall back to the standard OpenAI voices (alloy, echo, fable, nova, onyx, shimmer)."
     }
   },
   "setup_flow": {

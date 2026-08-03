@@ -47,6 +47,12 @@ def create_provider(**config_values: ConfigValueType) -> OpenAITTSProvider:
 
 async def test_resolve_voices_honours_config_override() -> None:
     """The config override wins, stripped and de-duplicated with empty entries dropped."""
+    provider = create_provider(**{CONF_VOICES: [" nova ", "alloy", "", " nova", "echo "]})
+    assert await provider._resolve_voices() == ["nova", "alloy", "echo"]
+
+
+async def test_resolve_voices_accepts_a_single_string_override() -> None:
+    """A comma separated string is accepted next to the stored list of values."""
     provider = create_provider(**{CONF_VOICES: " nova ,alloy,, nova,echo "})
     assert await provider._resolve_voices() == ["nova", "alloy", "echo"]
 
