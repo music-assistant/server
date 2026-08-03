@@ -15,6 +15,8 @@ from music_assistant_models.errors import InsufficientPermissions, InvalidDataEr
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.webserver.auth import (
+    JOIN_CODE_COOLDOWN_SECONDS,
+    JOIN_CODE_FAILURE_CEILING,
     JOIN_CODE_LENGTH,
     TOKEN_ABSOLUTE_MAX_EXPIRATION,
     TOKEN_GUEST_EXPIRATION,
@@ -30,7 +32,11 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     set_current_token,
     set_current_user,
 )
-from music_assistant.controllers.webserver.helpers.auth_providers import BuiltinLoginProvider
+from music_assistant.controllers.webserver.helpers.auth_providers import (
+    DEFAULT_LOGIN_DELAY_TIERS,
+    BuiltinLoginProvider,
+    LoginRateLimiter,
+)
 from music_assistant.helpers.datetime import utc
 from music_assistant.mass import MusicAssistant
 
@@ -1528,13 +1534,54 @@ async def test_join_code_length_at_least_12() -> None:
     assert JOIN_CODE_LENGTH >= 12
 
 
-async def test_exchange_join_code_rate_limited(auth_manager: AuthenticationManager) -> None:
+def _lower_join_code_ceiling(auth_manager: AuthenticationManager, ceiling: int = 3) -> None:
     """
-    Verify repeated failed join code exchanges get throttled (security finding 7.3.2).
+    Swap in a join code rate limiter with a low ceiling so throttling is reachable in a test.
+
+    :param auth_manager: AuthenticationManager instance to patch.
+    :param ceiling: Failure count at which the cooldown starts applying.
+    """
+    auth_manager._join_code_rate_limiter = LoginRateLimiter(
+        delay_tiers=((ceiling, JOIN_CODE_COOLDOWN_SECONDS),),
+        warn_threshold=ceiling,
+        alert_threshold=ceiling * 2,
+        subject="join code",
+    )
+
+
+async def test_exchange_join_code_party_burst_not_throttled(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Verify a party-scale burst of bad codes does not throttle the shared bucket.
+
+    All guests share one rate limit key, so a handful of mistyped or stale codes must
+    never lock out the guests holding a valid one.
 
     :param auth_manager: AuthenticationManager instance.
     """
-    # Three failures trip the progressive delay threshold.
+    user = await auth_manager.create_user(username="partyguest", role=UserRole.GUEST)
+    code, _ = await auth_manager.generate_join_code(user=user, expires_in_hours=24, max_uses=0)
+
+    for _ in range(30):
+        result = await auth_manager.exchange_join_code("WRONGCODE123")
+        assert result["success"] is False
+        assert "invalid" in result["error"].lower()
+
+    # A guest with a valid code still gets in.
+    assert (await auth_manager.exchange_join_code(code))["success"] is True
+
+
+async def test_exchange_join_code_rate_limited_at_ceiling(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Verify failed join code exchanges are still throttled once the ceiling is reached.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    _lower_join_code_ceiling(auth_manager)
+
     for _ in range(3):
         result = await auth_manager.exchange_join_code("WRONGCODE123")
         assert result["success"] is False
@@ -1543,6 +1590,12 @@ async def test_exchange_join_code_rate_limited(auth_manager: AuthenticationManag
     result = await auth_manager.exchange_join_code("WRONGCODE123")
     assert result["success"] is False
     assert "too many" in result["error"].lower()
+
+
+async def test_join_code_ceiling_far_above_party_scale() -> None:
+    """Verify the shipped ceiling leaves room for a large party's worth of failures."""
+    # 100 devices retrying 5 times each must stay well inside the ceiling.
+    assert JOIN_CODE_FAILURE_CEILING >= 2 * 100 * 5
 
 
 async def test_exchange_join_code_rate_limit_concurrent_burst(
@@ -1556,6 +1609,8 @@ async def test_exchange_join_code_rate_limit_concurrent_burst(
 
     :param auth_manager: AuthenticationManager instance.
     """
+    _lower_join_code_ceiling(auth_manager)
+
     results = await asyncio.gather(
         *(auth_manager.exchange_join_code("WRONGCODE123") for _ in range(10))
     )
@@ -1574,11 +1629,12 @@ async def test_exchange_join_code_success_does_not_reset_rate_limit(
     """
     Verify a successful exchange does not clear the failed-attempt counter.
 
-    The rate limit key is global, so clearing on success would let an attacker
-    holding any valid code reset the counter at will and bypass throttling.
+    The rate limit key is shared by every caller, so clearing on success would let an
+    attacker holding any valid code reset the counter at will and bypass throttling.
 
     :param auth_manager: AuthenticationManager instance.
     """
+    _lower_join_code_ceiling(auth_manager)
     user = await auth_manager.create_user(username="norstuser", role=UserRole.GUEST)
     code, _ = await auth_manager.generate_join_code(user=user, expires_in_hours=24, max_uses=0)
 
@@ -1594,3 +1650,38 @@ async def test_exchange_join_code_success_does_not_reset_rate_limit(
     result = await auth_manager.exchange_join_code(code)
     assert result["success"] is False
     assert "too many" in result["error"].lower()
+
+
+async def test_login_rate_limiter_default_tiers_unchanged() -> None:
+    """Verify the interactive login path keeps its progressive delays."""
+    limiter = LoginRateLimiter()
+
+    expected = {2: 0, 3: 30, 5: 30, 6: 60, 9: 60, 10: 120, 14: 120, 15: 300, 40: 300}
+    recorded = 0
+    for count, delay in sorted(expected.items()):
+        while recorded < count:
+            await limiter.record_failed_attempt("someuser")
+            recorded += 1
+        assert limiter.get_delay("someuser") == delay
+
+
+async def test_login_rate_limiter_single_tier_is_a_flat_ceiling() -> None:
+    """Verify a one-tier limiter stays free below the ceiling, then applies a flat delay."""
+    limiter = LoginRateLimiter(delay_tiers=((4, 60),))
+
+    for _ in range(3):
+        await limiter.record_failed_attempt("shared")
+        assert limiter.get_delay("shared") == 0
+
+    await limiter.record_failed_attempt("shared")
+    assert limiter.get_delay("shared") == 60
+    await limiter.record_failed_attempt("shared")
+    assert limiter.get_delay("shared") == 60
+
+
+async def test_default_login_delay_tiers_ascending() -> None:
+    """Verify the default tiers are ordered, since get_delay takes the highest match."""
+    counts = [count for count, _ in DEFAULT_LOGIN_DELAY_TIERS]
+    delays = [delay for _, delay in DEFAULT_LOGIN_DELAY_TIERS]
+    assert counts == sorted(counts)
+    assert delays == sorted(delays)

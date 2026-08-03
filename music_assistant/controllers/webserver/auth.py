@@ -70,8 +70,14 @@ HA_TOKEN_NAME = "Home Assistant Integration"
 JOIN_CODE_LENGTH = 12
 JOIN_CODE_CHARSET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # No I/O/0/1 for readability
 JOIN_CODE_DEFAULT_EXPIRY_HOURS = 8
-# No source IP available here, so throttle failed exchanges globally under one key.
+# No source IP available here, so failed exchanges all share one key. That makes the threshold
+# a room-wide one: at a party a handful of mistyped or stale codes must not lock out the guests
+# holding a valid one, so it sits far above any plausible burst of legitimate failures and drips
+# at a flat cooldown instead of escalating. Guessing is made infeasible by the code itself
+# (12 chars over a 32 symbol alphabet is ~2^60, valid for hours), not by this throttle.
 JOIN_CODE_RATE_LIMIT_KEY = "join_code_exchange"
+JOIN_CODE_FAILURE_CEILING = 1000
+JOIN_CODE_COOLDOWN_SECONDS = 60
 
 
 class AuthenticationManager:
@@ -90,7 +96,12 @@ class AuthenticationManager:
         self.logger = LOGGER
         self._has_users: bool = False
         self.jwt_helper: JWTHelper = None  # type: ignore[assignment]
-        self._join_code_rate_limiter = LoginRateLimiter()
+        self._join_code_rate_limiter = LoginRateLimiter(
+            delay_tiers=((JOIN_CODE_FAILURE_CEILING, JOIN_CODE_COOLDOWN_SECONDS),),
+            warn_threshold=JOIN_CODE_FAILURE_CEILING,
+            alert_threshold=JOIN_CODE_FAILURE_CEILING * 2,
+            subject="join code",
+        )
         # Stops concurrent exchanges from passing the rate limit check before failures land
         self._join_code_exchange_lock = asyncio.Lock()
 

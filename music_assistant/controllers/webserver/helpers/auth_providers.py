@@ -29,6 +29,9 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
+# Progressive delay tiers for interactive logins: (failure count, delay in seconds).
+DEFAULT_LOGIN_DELAY_TIERS = ((3, 30), (6, 60), (10, 120), (15, 300))
+
 
 def normalize_username(username: str) -> str:
     """
@@ -118,14 +121,32 @@ async def get_ha_user_role(
 class LoginRateLimiter:
     """Rate limiter for login attempts to prevent brute force attacks."""
 
-    def __init__(self) -> None:
-        """Initialize the rate limiter."""
+    def __init__(
+        self,
+        delay_tiers: tuple[tuple[int, int], ...] = DEFAULT_LOGIN_DELAY_TIERS,
+        warn_threshold: int = 10,
+        alert_threshold: int = 20,
+        subject: str = "username",
+    ) -> None:
+        """
+        Initialize the rate limiter.
+
+        :param delay_tiers: Ascending (failure count, delay in seconds) pairs. The highest
+            tier the failure count has reached sets the delay; below the lowest there is none.
+        :param warn_threshold: Failure count at which suspicious activity is logged.
+        :param alert_threshold: Failure count at which a stronger warning is logged.
+        :param subject: Noun describing what a key identifies, used in log messages.
+        """
         # Track failed attempts per username: {username: [timestamp1, timestamp2, ...]}
         self._failed_attempts: dict[str, list[datetime]] = {}
         # Time window for tracking attempts (30 minutes)
         self._tracking_window = timedelta(minutes=30)
         # Lock for thread-safe access to _failed_attempts
         self._lock = asyncio.Lock()
+        self._delay_tiers = delay_tiers
+        self._warn_threshold = warn_threshold
+        self._alert_threshold = alert_threshold
+        self._subject = subject
 
     def _cleanup_old_attempts(self, username: str) -> None:
         """
@@ -149,13 +170,6 @@ class LoginRateLimiter:
         """
         Get the delay in seconds before next login attempt is allowed.
 
-        Progressive delays based on failed attempts:
-        - 1-2 attempts: no delay
-        - 3-5 attempts: 30 seconds
-        - 6-9 attempts: 60 seconds
-        - 10-14 attempts: 120 seconds
-        - 15+ attempts: 300 seconds (5 minutes)
-
         :param username: The username attempting to log in.
         :return: Delay in seconds (0 if no delay needed).
         """
@@ -165,16 +179,11 @@ class LoginRateLimiter:
             return 0
 
         attempt_count = len(self._failed_attempts[username])
-
-        if attempt_count < 3:
-            return 0
-        if attempt_count < 6:
-            return 30
-        if attempt_count < 10:
-            return 60
-        if attempt_count < 15:
-            return 120
-        return 300  # 5 minutes max delay
+        delay = 0
+        for tier_count, tier_delay in self._delay_tiers:
+            if attempt_count >= tier_count:
+                delay = tier_delay
+        return delay
 
     async def check_rate_limit(self, username: str) -> tuple[bool, int]:
         """
@@ -222,14 +231,19 @@ class LoginRateLimiter:
 
             # Log warning for suspicious activity
             attempt_count = len(self._failed_attempts[username])
-            if attempt_count == 10:
+            if attempt_count == self._warn_threshold:
                 LOGGER.warning(
-                    "Suspicious login activity: 10 failed attempts for username '%s'", username
+                    "Suspicious login activity: %d failed attempts for %s '%s'",
+                    attempt_count,
+                    self._subject,
+                    username,
                 )
-            elif attempt_count == 20:
+            elif attempt_count == self._alert_threshold:
                 LOGGER.warning(
-                    "High suspicious login activity: 20 failed attempts for username '%s'. "
-                    "Consider manually disabling this account.",
+                    "High suspicious login activity: %d failed attempts for %s '%s'. "
+                    "Consider blocking this source.",
+                    attempt_count,
+                    self._subject,
                     username,
                 )
 
