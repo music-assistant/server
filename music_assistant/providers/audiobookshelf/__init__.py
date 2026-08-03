@@ -9,6 +9,7 @@ import time
 from collections.abc import AsyncGenerator, Callable, Coroutine, Sequence
 from contextlib import suppress
 from datetime import datetime
+from itertools import cycle
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import aioaudiobookshelf as aioabs
@@ -221,6 +222,8 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
         self._on_unload_callbacks: list[Callable[[], None]] = []
         self.sessions: dict[str, SessionHelper] = {}  # key is the mass_item_id
         self.create_session_lock = asyncio.Lock()
+        # see _get_playback_session for explanation
+        self.session_cycle = cycle(range(5))
         base_url = str(self.get_setup_value(CONF_URL))
         username = str(self.get_setup_value(CONF_USERNAME))
         password = str(self.get_setup_value(CONF_PASSWORD))
@@ -354,6 +357,9 @@ for more details.
         # run the unload chain first: RecommendationPayloadMixin cancels and awaits its
         # payload tasks, so no fetch is still running against the clients logging out below
         await super().unload(is_removed)
+        for session_helper in self.sessions.values():
+            with suppress(AbsError, AbsSessionNotFoundError):
+                await self._client.close_open_session(session_id=session_helper.abs_session_id)
         try:
             await self._client.logout()
             await self._client_socket.logout()
@@ -984,9 +990,22 @@ for more details.
             abs_item_id = item_ids[0]
             episode_id = item_ids[1] if len(item_ids) == 2 else None
 
-            client_name = f"Music Assistant {self.instance_id}"
+            # Abs allows a single session per device id. MA may load another item into
+            # the queue if autoplay is enabled. This then deletes the previous open session.
+            # We cycle through self.session_cycle to prevent this
+            session_cycle_count = next(self.session_cycle)
+            obsolete_session_id: str | None = None
+            for id_, session_helper in self.sessions.items():
+                if session_helper.cycle_count == session_cycle_count:
+                    obsolete_session_id = id_
+                    break
+            if obsolete_session_id:
+                self.sessions.pop(obsolete_session_id)
+
+            client_name = f"Music Assistant {self.instance_id} {session_cycle_count}"
+            device_id = f"{self.instance_id}_{session_cycle_count}"
             device_info = AbsDeviceInfo(
-                device_id=self.instance_id,
+                device_id=device_id,
                 client_name=client_name,
                 client_version=self.mass.version,
                 manufacturer="",
@@ -1014,6 +1033,7 @@ for more details.
             self.sessions[mass_item_id] = SessionHelper(
                 abs_session_id=session.id_,
                 last_sync_time=time.time(),
+                cycle_count=session_cycle_count,
             )
             return session
 
