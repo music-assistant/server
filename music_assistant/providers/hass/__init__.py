@@ -14,7 +14,7 @@ import logging
 import os
 from functools import partial
 from itertools import batched
-from typing import TYPE_CHECKING, Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict, cast
 
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
@@ -102,6 +102,14 @@ class HassRegistryEntity(TypedDict):
     device_id: str | None
 
 
+class _ControlCapabilities(NamedTuple):
+    """The player control roles a Home Assistant entity can serve."""
+
+    power: bool = False
+    volume: bool = False
+    mute: bool = False
+
+
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
@@ -118,41 +126,16 @@ async def _get_config_entries(hass_prov: HomeAssistantProvider) -> tuple[ConfigE
         return ()
     states = await hass_prov.get_states(domains=CONTROL_DOMAINS)
     for state in states:
-        entity_platform = state["entity_id"].split(".")[0]
-        if "friendly_name" not in state["attributes"]:
-            name = state["entity_id"]
-        else:
-            name = f"{state['attributes']['friendly_name']} ({state['entity_id']})"
-
-        if entity_platform in ("switch", "input_boolean"):
-            # simple on/off controls are suitable as power and mute controls
-            all_power_entities.append(ConfigValueOption(state["entity_id"], title=name))
-            all_mute_entities.append(ConfigValueOption(state["entity_id"], title=name))
-            continue
-        if entity_platform in ("number", "input_number"):
-            # number and input_number are very similar, both are suitable for volume control
-            all_volume_entities.append(ConfigValueOption(state["entity_id"], title=name))
-            continue
-        # media player can be used as control, depending on features
-        if entity_platform != "media_player":
-            continue
-        if "mass_player_type" in state["attributes"]:
-            # filter out mass players
-            continue
-        supported_features = parse_supported_features(
-            state["attributes"].get("supported_features"),
-            state["entity_id"],
-            hass_prov.logger,
+        capabilities = _get_control_capabilities(state, hass_prov.logger)
+        option = ConfigValueOption(
+            state["entity_id"], title=_get_control_name(state["entity_id"], state)
         )
-        if MediaPlayerEntityFeature.VOLUME_MUTE in supported_features:
-            all_mute_entities.append(ConfigValueOption(state["entity_id"], title=name))
-        if MediaPlayerEntityFeature.VOLUME_SET in supported_features:
-            all_volume_entities.append(ConfigValueOption(state["entity_id"], title=name))
-        if (
-            MediaPlayerEntityFeature.TURN_ON in supported_features
-            and MediaPlayerEntityFeature.TURN_OFF in supported_features
-        ):
-            all_power_entities.append(ConfigValueOption(state["entity_id"], title=name))
+        if capabilities.power:
+            all_power_entities.append(option)
+        if capabilities.volume:
+            all_volume_entities.append(option)
+        if capabilities.mute:
+            all_mute_entities.append(option)
     all_power_entities.sort(key=lambda x: x.title or "")
     all_mute_entities.sort(key=lambda x: x.title or "")
     all_volume_entities.sort(key=lambda x: x.title or "")
@@ -203,6 +186,8 @@ class HomeAssistantProvider(PluginProvider):
     _entity_registry: dict[str, HassRegistryEntity] | None = None
     _entity_registry_generation: int = 0
     _entity_registry_lock: asyncio.Lock
+    _wanted_controls: dict[str, _ControlCapabilities] | None = None
+    _control_reconcile_lock: asyncio.Lock
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -296,6 +281,8 @@ class HomeAssistantProvider(PluginProvider):
             raise SetupFailedError(msg)
         self._startup_complete = False
         self._player_controls = {}
+        self._wanted_controls = None
+        self._control_reconcile_lock = asyncio.Lock()
         self._ai_engines = []
         self._tts_engines = []
         url = get_websocket_url(cast("str", self.get_setup_value(CONF_URL)))
@@ -346,6 +333,31 @@ class HomeAssistantProvider(PluginProvider):
                 self.mass.players.remove_player_control(entity_id)
         self._startup_complete = False
         await self._disconnect_hass()
+
+    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
+        """
+        Handle logic when the config is updated.
+
+        A change limited to the player control selection is applied in place, so adding or
+        removing a control does not drop and re-establish the Home Assistant connection.
+        Any other change reloads the provider as usual.
+
+        Raises when the in place update fails (because Home Assistant is unreachable, for
+        example); the controls are then left as they were and a later update retries.
+
+        :param config: The updated provider config.
+        :param changed_keys: The keys that changed in the given config.
+        """
+        control_keys = {
+            f"values/{conf_key}"
+            for conf_key in (CONF_POWER_CONTROLS, CONF_VOLUME_CONTROLS, CONF_MUTE_CONTROLS)
+        }
+        if not changed_keys or not changed_keys <= control_keys:
+            await super().update_config(config, changed_keys)
+            return
+        # store the new config before reconciling: the control lists are read back from it
+        self.config = config
+        await self._register_player_controls()
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
@@ -684,67 +696,94 @@ class HomeAssistantProvider(PluginProvider):
                 self._update_control_from_state_msg(entity_id, state_diff["+"])
 
     async def _register_player_controls(self) -> None:
-        """Register all player controls."""
-        power_controls = cast("list[str]", self.config.get_value(CONF_POWER_CONTROLS))
-        mute_controls = cast("list[str]", self.config.get_value(CONF_MUTE_CONTROLS))
-        volume_controls = cast("list[str]", self.config.get_value(CONF_VOLUME_CONTROLS))
-        control_entity_ids: set[str] = {
-            *power_controls,
-            *mute_controls,
-            *volume_controls,
-        }
-        hass_states = {
-            state["entity_id"]: state
-            for state in await self.get_states(entity_ids=list(control_entity_ids))
-        }
+        """Bring the registered player controls in line with the current configuration."""
         assert self._player_controls is not None  # for type checking
-        for entity_id in control_entity_ids:
-            entity_platform = entity_id.split(".")[0]
-            hass_state = hass_states.get(entity_id)
-            if hass_state and (friendly_name := hass_state["attributes"].get("friendly_name")):
-                name = f"{friendly_name} ({entity_id})"
+        # the wanted selection is determined inside the lock, so a reconcile that had to
+        # wait for another one cannot apply a selection that was already superseded
+        async with self._control_reconcile_lock:
+            power_controls = cast("list[str]", self.config.get_value(CONF_POWER_CONTROLS))
+            mute_controls = cast("list[str]", self.config.get_value(CONF_MUTE_CONTROLS))
+            volume_controls = cast("list[str]", self.config.get_value(CONF_VOLUME_CONTROLS))
+            wanted_controls: dict[str, _ControlCapabilities] = {
+                entity_id: _ControlCapabilities(
+                    power=entity_id in power_controls,
+                    volume=entity_id in volume_controls,
+                    mute=entity_id in mute_controls,
+                )
+                for entity_id in (*power_controls, *mute_controls, *volume_controls)
+            }
+            if wanted_controls == self._wanted_controls:
+                # the selection is unchanged, so there is no need to consult Home Assistant
+                return
+            hass_states = {
+                state["entity_id"]: state
+                for state in await self.get_states(entity_ids=list(wanted_controls))
+            }
+            for entity_id in set(self._player_controls) - set(wanted_controls):
+                del self._player_controls[entity_id]
+                self.mass.players.remove_player_control(entity_id)
+            for entity_id, capabilities in wanted_controls.items():
+                control = self._create_player_control(
+                    entity_id, hass_states.get(entity_id), capabilities
+                )
+                self._player_controls[entity_id] = control
+                await self.mass.players.register_or_update_player_control(control)
+            await self._subscribe_control_states()
+            self._wanted_controls = wanted_controls
+
+    def _create_player_control(
+        self,
+        entity_id: str,
+        hass_state: State | None,
+        capabilities: _ControlCapabilities,
+    ) -> PlayerControl:
+        """
+        Return a ready to use PlayerControl for a Home Assistant entity.
+
+        :param entity_id: The entity to base the control on.
+        :param hass_state: The entity's current state, if known.
+        :param capabilities: The control roles the entity should serve.
+        """
+        entity_platform = entity_id.split(".", maxsplit=1)[0]
+        control = PlayerControl(
+            id=entity_id,
+            provider=self.instance_id,
+            name=_get_control_name(entity_id, hass_state),
+        )
+        if capabilities.power:
+            control.supports_power = True
+            control.power_state = hass_state["state"] not in OFF_STATES if hass_state else False
+            control.power_on = partial(self._handle_player_control_power_on, entity_id)
+            control.power_off = partial(self._handle_player_control_power_off, entity_id)
+        if capabilities.volume:
+            control.supports_volume = True
+            if not hass_state:
+                control.volume_level = 0
+            elif entity_platform == "media_player":
+                control.volume_level = int(hass_state["attributes"].get("volume_level", 0) * 100)
             else:
-                name = entity_id
-            control = PlayerControl(
-                id=entity_id,
-                provider=self.instance_id,
-                name=name,
-            )
-            if entity_id in power_controls:
-                control.supports_power = True
-                control.power_state = hass_state["state"] not in OFF_STATES if hass_state else False
-                control.power_on = partial(self._handle_player_control_power_on, entity_id)
-                control.power_off = partial(self._handle_player_control_power_off, entity_id)
-            if entity_id in volume_controls:
-                control.supports_volume = True
-                if not hass_state:
-                    control.volume_level = 0
-                elif entity_platform == "media_player":
-                    control.volume_level = int(
-                        hass_state["attributes"].get("volume_level", 0) * 100
-                    )
-                else:
-                    control.volume_level = try_parse_int(hass_state["state"]) or 0
-                control.volume_set = partial(self._handle_player_control_volume_set, entity_id)
-            if entity_id in mute_controls:
-                control.supports_mute = True
-                if not hass_state:
-                    control.volume_muted = False
-                elif entity_platform == "media_player":
-                    control.volume_muted = hass_state["attributes"].get("volume_muted")
-                elif hass_state:
-                    control.volume_muted = hass_state["state"] not in OFF_STATES
-                else:
-                    control.volume_muted = False
-                control.mute_set = partial(self._handle_player_control_mute_set, entity_id)
-            self._player_controls[entity_id] = control
-            await self.mass.players.register_player_control(control)
+                control.volume_level = try_parse_int(hass_state["state"]) or 0
+            control.volume_set = partial(self._handle_player_control_volume_set, entity_id)
+        if capabilities.mute:
+            control.supports_mute = True
+            if not hass_state:
+                control.volume_muted = False
+            elif entity_platform == "media_player":
+                control.volume_muted = hass_state["attributes"].get("volume_muted")
+            else:
+                control.volume_muted = hass_state["state"] not in OFF_STATES
+            control.mute_set = partial(self._handle_player_control_mute_set, entity_id)
+        return control
+
+    async def _subscribe_control_states(self) -> None:
+        """Subscribe to the Home Assistant state of all currently tracked controls."""
+        assert self._player_controls is not None  # for type checking
         # register for entity state updates, replacing any earlier subscription
         if unsubscribe := self._unsubscribe_controls:
             self._unsubscribe_controls = None
             unsubscribe()
         self._unsubscribe_controls = await self.hass.subscribe_entities(
-            self._on_entity_state_update, list(control_entity_ids)
+            self._on_entity_state_update, list(self._player_controls)
         )
 
     async def _handle_player_control_power_on(self, entity_id: str) -> None:
@@ -999,6 +1038,54 @@ class HomeAssistantProvider(PluginProvider):
             )
             for entry in result["entities"]
         }
+
+
+def _get_control_capabilities(state: State, logger: logging.Logger) -> _ControlCapabilities:
+    """
+    Return the player control roles the given Home Assistant entity can serve.
+
+    :param state: The current state of the entity to inspect.
+    :param logger: Logger to report an unparsable supported_features attribute on.
+    :return: The supported roles; all False when the entity is unusable as a player control.
+    """
+    entity_platform = state["entity_id"].split(".")[0]
+    if entity_platform in ("switch", "input_boolean"):
+        # simple on/off controls are suitable as power and mute controls
+        return _ControlCapabilities(power=True, mute=True)
+    if entity_platform in ("number", "input_number"):
+        # number and input_number are very similar, both are suitable for volume control
+        return _ControlCapabilities(volume=True)
+    # media player can be used as control, depending on features
+    if entity_platform != "media_player":
+        return _ControlCapabilities()
+    if "mass_player_type" in state["attributes"]:
+        # filter out mass players
+        return _ControlCapabilities()
+    supported_features = parse_supported_features(
+        state["attributes"].get("supported_features"),
+        state["entity_id"],
+        logger,
+    )
+    return _ControlCapabilities(
+        power=(
+            MediaPlayerEntityFeature.TURN_ON in supported_features
+            and MediaPlayerEntityFeature.TURN_OFF in supported_features
+        ),
+        volume=MediaPlayerEntityFeature.VOLUME_SET in supported_features,
+        mute=MediaPlayerEntityFeature.VOLUME_MUTE in supported_features,
+    )
+
+
+def _get_control_name(entity_id: str, state: State | None) -> str:
+    """
+    Return the human readable name to present a Home Assistant entity control under.
+
+    :param entity_id: The entity the control is based on.
+    :param state: The entity's current state, if known.
+    """
+    if state and (friendly_name := state["attributes"].get("friendly_name")):
+        return f"{friendly_name} ({entity_id})"
+    return entity_id
 
 
 def _decompress_state(entity_id: str, compressed_state: CompressedState) -> State:

@@ -82,7 +82,7 @@ def _mass() -> MagicMock:
     mass.http_session = MagicMock()
     mass.http_session_no_ssl = MagicMock()
     mass.create_task.side_effect = asyncio.create_task
-    mass.players.register_player_control = AsyncMock()
+    mass.players.register_or_update_player_control = AsyncMock()
     # get_setup_value reads the (empty, here) live setup_data blob from the store, then
     # falls through to the provider config mock's get_value for the persisted test values
     mass.config.get = MagicMock(return_value={})
@@ -996,6 +996,13 @@ async def test_player_control_subscription_is_replaced() -> None:
         await provider.loaded_in_mass()
         assert hass.active_subscriptions == 1
 
+        # only a changed selection results in a new subscription
+        provider.config = _config(
+            **{
+                CONF_POWER_CONTROLS: ["media_player.kitchen"],
+                CONF_MUTE_CONTROLS: ["switch.kitchen_amp"],
+            }
+        )
         await provider._register_player_controls()
 
         assert len(hass.subscriptions) == 4
@@ -1006,3 +1013,83 @@ async def test_player_control_subscription_is_replaced() -> None:
         await provider.unload()
 
         assert hass.active_subscriptions == 0
+
+
+async def test_unchanged_control_selection_skips_home_assistant() -> None:
+    """Reconciling an unchanged selection does not talk to Home Assistant at all."""
+    states = [_state("media_player.kitchen", "Kitchen")]
+    async with _start_provider(states, **{CONF_POWER_CONTROLS: ["media_player.kitchen"]}) as (
+        provider,
+        hass,
+    ):
+        await provider.loaded_in_mass()
+        calls_after_load = list(hass.calls)
+
+        await provider._register_player_controls()
+
+        assert hass.calls == calls_after_load
+
+
+async def test_control_list_change_reconciles_without_reload() -> None:
+    """A change confined to the control lists is applied without reloading the provider."""
+    states = [_state("media_player.kitchen", "Kitchen"), _state("switch.amp", "Amp")]
+    async with _start_provider(states, **{CONF_POWER_CONTROLS: ["media_player.kitchen"]}) as (
+        provider,
+        _hass,
+    ):
+        mass = cast("MagicMock", provider.mass)
+        await provider.loaded_in_mass()
+        assert set(provider._player_controls or {}) == {"media_player.kitchen"}
+        mass.call_later.reset_mock()
+
+        await provider.update_config(
+            _config(**{CONF_POWER_CONTROLS: ["switch.amp"]}),
+            {f"values/{CONF_POWER_CONTROLS}"},
+        )
+
+        mass.call_later.assert_not_called()
+        assert set(provider._player_controls or {}) == {"switch.amp"}
+        mass.players.remove_player_control.assert_called_once_with("media_player.kitchen")
+        registered = mass.players.register_or_update_player_control.call_args[0][0]
+        assert registered.id == "switch.amp"
+        assert registered.supports_power is True
+
+
+async def test_control_role_change_is_applied() -> None:
+    """Moving an already selected entity to another role re-registers it in that role."""
+    states = [_state("media_player.kitchen", "Kitchen")]
+    async with _start_provider(states, **{CONF_POWER_CONTROLS: ["media_player.kitchen"]}) as (
+        provider,
+        _hass,
+    ):
+        await provider.loaded_in_mass()
+
+        await provider.update_config(
+            _config(**{CONF_VOLUME_CONTROLS: ["media_player.kitchen"]}),
+            {f"values/{CONF_POWER_CONTROLS}", f"values/{CONF_VOLUME_CONTROLS}"},
+        )
+
+        control = (provider._player_controls or {})["media_player.kitchen"]
+        assert control.supports_volume is True
+        assert control.supports_power is False
+
+
+@pytest.mark.parametrize(
+    "changed_keys",
+    [
+        {f"values/{CONF_URL}"},
+        # a control list changing alongside another value still needs the reload
+        {f"values/{CONF_POWER_CONTROLS}", f"values/{CONF_URL}"},
+    ],
+)
+async def test_other_config_change_reloads_provider(changed_keys: set[str]) -> None:
+    """Any change beyond the control lists reloads the provider."""
+    async with _start_provider([]) as (provider, _hass):
+        mass = cast("MagicMock", provider.mass)
+        await provider.loaded_in_mass()
+        mass.call_later.reset_mock()
+
+        await provider.update_config(_config(**{CONF_POWER_CONTROLS: ["switch.amp"]}), changed_keys)
+
+        mass.call_later.assert_called_once()
+        assert mass.call_later.call_args[0][1] is mass.load_provider_config
