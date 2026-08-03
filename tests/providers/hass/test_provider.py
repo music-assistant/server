@@ -1007,12 +1007,41 @@ async def test_player_control_subscription_is_replaced() -> None:
 
         assert len(hass.subscriptions) == 4
         assert hass.active_subscriptions == 1
-        # the previous control subscription is released before the new one is created
-        assert hass.calls[-2:] == ["unsubscribe_entities", "subscribe_entities"]
+        # the previous control subscription is only released once its replacement is live
+        assert hass.calls[-2:] == ["subscribe_entities", "unsubscribe_entities"]
 
         await provider.unload()
 
         assert hass.active_subscriptions == 0
+
+
+async def test_failed_control_subscription_keeps_the_previous_one() -> None:
+    """A failed subscription attempt leaves the controls watched by the earlier one."""
+    states = [_state("media_player.kitchen", "Kitchen"), _state("switch.amp", "Amp")]
+    async with _start_provider(states, **{CONF_POWER_CONTROLS: ["media_player.kitchen"]}) as (
+        provider,
+        hass,
+    ):
+        await provider.loaded_in_mass()
+        unsubscribe_before = provider._unsubscribe_controls
+        assert hass.active_subscriptions == 1
+
+        async def _failing_subscribe(*_args: Any, **_kwargs: Any) -> Callable[[], None]:
+            raise BaseHassClientError("connection lost")
+
+        hass.subscribe_entities = _failing_subscribe  # type: ignore[method-assign]
+        provider.config = _config(
+            **{
+                CONF_POWER_CONTROLS: ["media_player.kitchen"],
+                CONF_MUTE_CONTROLS: ["switch.amp"],
+            }
+        )
+
+        with pytest.raises(BaseHassClientError):
+            await provider._register_player_controls()
+
+        assert provider._unsubscribe_controls is unsubscribe_before
+        assert hass.active_subscriptions == 1
 
 
 async def test_unchanged_control_selection_skips_home_assistant() -> None:
