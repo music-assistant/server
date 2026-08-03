@@ -14,7 +14,7 @@ import logging
 import os
 from functools import partial
 from itertools import batched
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
@@ -52,6 +52,7 @@ if TYPE_CHECKING:
         CompressedState,
         Context,
         Device,
+        Entity,
         EntityStateEvent,
         Event,
         State,
@@ -91,6 +92,14 @@ class DeviceMediaPlayerInfo(TypedDict):
     name: str | None
     # first enabled media_player entity of the device that supports announcements
     announce_entity_id: str | None
+
+
+class HassRegistryEntity(TypedDict):
+    """Home Assistant entity registry entry, limited to the fields Music Assistant uses."""
+
+    entity_id: str
+    platform: str
+    device_id: str | None
 
 
 async def setup(
@@ -191,6 +200,9 @@ class HomeAssistantProvider(PluginProvider):
     _ai_engines: list[AIEngine]
     _tts_engines: list[TTSEngine]
     _startup_complete: bool = False
+    _entity_registry: dict[str, HassRegistryEntity] | None = None
+    _entity_registry_generation: int = 0
+    _entity_registry_lock: asyncio.Lock
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -292,6 +304,8 @@ class HomeAssistantProvider(PluginProvider):
         ssl = bool(self.get_setup_value(CONF_VERIFY_SSL, True))
         http_session = self.mass.http_session if ssl else self.mass.http_session_no_ssl
         self.hass = HomeAssistantClient(url, token, http_session)
+        self._entity_registry = None
+        self._entity_registry_lock = asyncio.Lock()
         try:
             await self.hass.connect()
         except BaseHassClientError as err:
@@ -300,6 +314,10 @@ class HomeAssistantProvider(PluginProvider):
             raise SetupFailedError(err_msg) from err
         self._listen_task = self.mass.create_task(self._hass_listener())
         try:
+            # the registry subscription must be live before the first registry read, so no
+            # registry change can slip through unnoticed; _disconnect_hass tears the
+            # subscription down again on the failure paths below
+            await self._subscribe_entity_registry()
             await self._resolve_startup_features()
         except asyncio.CancelledError:
             await self._cleanup_failed_init()
@@ -315,7 +333,6 @@ class HomeAssistantProvider(PluginProvider):
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         await self._register_player_controls()
-        await self._subscribe_entity_registry()
 
     async def unload(self, is_removed: bool = False) -> None:
         """
@@ -338,6 +355,43 @@ class HomeAssistantProvider(PluginProvider):
             "listener_active": self._listen_task is not None and not self._listen_task.done(),
             "player_controls": len(self._player_controls) if self._player_controls else 0,
         }
+
+    async def get_entity_registry(self) -> dict[str, HassRegistryEntity]:
+        """
+        Return the Home Assistant entity registry, keyed by entity ID.
+
+        Entities that are disabled in Home Assistant are absent from the result, and so are
+        entities without a unique ID: those are not part of Home Assistant's registry at all.
+        """
+        if (registry := self._entity_registry) is not None:
+            return registry
+        async with self._entity_registry_lock:
+            if (registry := self._entity_registry) is None:
+                generation = self._entity_registry_generation
+                registry = await self._fetch_entity_registry()
+                # a registry change while the fetch was in flight leaves the listing stale
+                # on arrival, so serve it to this caller but keep it out of the cache
+                if generation == self._entity_registry_generation:
+                    self._entity_registry = registry
+            return registry
+
+    async def get_entity_registry_entries(self, entity_ids: Collection[str]) -> dict[str, Entity]:
+        """
+        Return the full Home Assistant entity registry entries of the given entities.
+
+        :param entity_ids: The entity IDs to look up.
+        :return: The registry entries keyed by entity ID; entities unknown to
+            Home Assistant are absent from the result.
+        """
+        if not entity_ids:
+            return {}
+        result = cast(
+            "dict[str, Entity | None]",
+            await self.hass.send_command(
+                "config/entity_registry/get_entries", entity_ids=list(entity_ids)
+            ),
+        )
+        return {entity_id: entry for entity_id, entry in result.items() if entry is not None}
 
     async def get_media_player_device_infos(
         self,
@@ -371,15 +425,13 @@ class HomeAssistantProvider(PluginProvider):
         if not device_by_mac:
             return {}
         media_players_by_device: dict[str, list[str]] = {}
-        for entry in await self.hass.get_entity_registry():
+        for entry in (await self.get_entity_registry()).values():
             if (
                 entry["platform"] == platform
                 and entry["entity_id"].startswith("media_player.")
-                and entry.get("disabled_by") is None
+                and (device_id := entry["device_id"])
             ):
-                media_players_by_device.setdefault(entry["device_id"], []).append(
-                    entry["entity_id"]
-                )
+                media_players_by_device.setdefault(device_id, []).append(entry["entity_id"])
         candidates_by_mac = {
             mac: media_players_by_device.get(device["id"], [])
             for mac, device in device_by_mac.items()
@@ -503,12 +555,8 @@ class HomeAssistantProvider(PluginProvider):
         if domains:
             # resolve domains to entity_ids via the registry, which is far smaller
             # than a full state dump (it carries no attributes)
-            registry = await self.hass.get_entity_registry()
-            ids.update(
-                entry["entity_id"]
-                for entry in registry
-                if entry["entity_id"].split(".", 1)[0] in domains
-            )
+            registry = await self.get_entity_registry()
+            ids.update(entity_id for entity_id in registry if entity_id.split(".", 1)[0] in domains)
         if not ids:
             return []
         states: list[State] = []
@@ -912,6 +960,9 @@ class HomeAssistantProvider(PluginProvider):
 
     def _on_entity_registry_update(self, event: Event) -> None:
         """Handle an entity registry update event."""
+        # any registry change invalidates the cached registry, whatever domain it concerns
+        self._entity_registry = None
+        self._entity_registry_generation += 1
         entity_id = event["data"].get("entity_id", "")
         if not entity_id.startswith(FEATURE_DOMAIN_PREFIXES):
             return
@@ -931,6 +982,23 @@ class HomeAssistantProvider(PluginProvider):
             await self._refresh_engines()
         except Exception as err:
             self.logger.warning("Failed to refresh Home Assistant engines: %s", err)
+
+    async def _fetch_entity_registry(self) -> dict[str, HassRegistryEntity]:
+        """Fetch the entity registry from Home Assistant, keyed by entity ID."""
+        # the display variant of the registry listing carries abbreviated keys and only the
+        # fields the Home Assistant frontend needs, making it several times smaller
+        result = cast(
+            "dict[str, Any]",
+            await self.hass.send_command("config/entity_registry/list_for_display"),
+        )
+        return {
+            entry["ei"]: HassRegistryEntity(
+                entity_id=entry["ei"],
+                platform=entry["pl"],
+                device_id=entry.get("di"),
+            )
+            for entry in result["entities"]
+        }
 
 
 def _decompress_state(entity_id: str, compressed_state: CompressedState) -> State:
