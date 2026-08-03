@@ -45,8 +45,12 @@ from .models import MsxContent, MsxItem, MsxTemplate
 from .player import MSXPlayer
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from multidict import MultiMapping
     from music_assistant_models.player import PlayerMedia
+
+    from music_assistant.helpers.dsp import ComplexFilter
 
     from .provider import MSXBridgeProvider
 
@@ -1785,7 +1789,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         audio_source: Any,
         pcm_format: AudioFormat,
         out_format: AudioFormat,
-        filter_params: list[str],
+        filter_params: Sequence[str | ComplexFilter],
     ) -> None:
         """Pre-buffer audio chunks, then send HTTP headers and stream remaining data."""
         player_id = player.player_id
