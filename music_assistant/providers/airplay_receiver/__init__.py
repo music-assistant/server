@@ -209,7 +209,7 @@ class AirPlayReceiverProvider(PluginProvider):
         """Return the AudioSources this plugin currently exposes."""
         return [self._audio_source]
 
-    async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
         Return StreamDetails for streaming the AirPlay audio to a queue.
 
@@ -221,8 +221,8 @@ class AirPlayReceiverProvider(PluginProvider):
 
         Raises AudioError when no AirPlay client is currently connected.
         """
-        if source_id != AUDIO_SOURCE_ID:
-            raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
+        if item_id != AUDIO_SOURCE_ID:
+            raise MediaNotFoundError(f"Unknown AudioSource: {item_id}")
         if not self._active_player_id:
             raise AudioError(
                 "AirPlay receiver has no active client — start playback from your "
@@ -230,7 +230,7 @@ class AirPlayReceiverProvider(PluginProvider):
             )
         return StreamDetails(
             provider=self.instance_id,
-            item_id=source_id,
+            item_id=item_id,
             audio_format=self._audio_format,
             decoded_audio_format=self._decoded_audio_format,
             media_type=MediaType.AUDIO_SOURCE,

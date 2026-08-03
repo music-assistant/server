@@ -139,15 +139,16 @@ class _FakePluginProvider:
     async def get_audio_sources(self) -> list[AudioSource]:
         return [self._audio_source]
 
-    async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         # Side-effect-free: ownership is claimed in on_source_selected. This
         # mirrors the contract every real plugin implements so preload paths
         # can fetch streamdetails without blocking a later handoff.
-        if source_id != self._audio_source.item_id:
-            raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
+        del media_type
+        if item_id != self._audio_source.item_id:
+            raise MediaNotFoundError(f"Unknown AudioSource: {item_id}")
         return StreamDetails(
             provider=self.instance_id,
-            item_id=source_id,
+            item_id=item_id,
             audio_format=_audio_format(),
             media_type=MediaType.AUDIO_SOURCE,
             stream_type=StreamType.CUSTOM,
@@ -231,14 +232,14 @@ class TestAudioSourceContract:
         # without blocking a later cross-queue handoff at the actual stream
         # request. See PluginProvider.get_stream_details docstring.
         prov = _FakePluginProvider(_audio_source())
-        sd = await prov.get_stream_details("main", "queue_a")
+        sd = await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         assert sd.media_type == MediaType.AUDIO_SOURCE
         assert sd.stream_type == StreamType.CUSTOM
         assert sd.stream_metadata is not None
         assert prov._in_use_by_queue is None
         # Calling it again from a different queue must also be side-effect-free
         # — no busy raise, no claim — so preload from any queue is safe.
-        sd2 = await prov.get_stream_details("main", "queue_b")
+        sd2 = await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         assert sd2.media_type == MediaType.AUDIO_SOURCE
         assert prov._in_use_by_queue is None
 
@@ -252,17 +253,17 @@ class TestAudioSourceContract:
 
     @pytest.mark.asyncio
     async def test_get_stream_details_unknown_source_raises_not_found(self) -> None:
-        """An unknown source_id should surface as MediaNotFoundError."""
+        """An unknown item_id should surface as MediaNotFoundError."""
         prov = _FakePluginProvider(_audio_source())
         with pytest.raises(MediaNotFoundError):
-            await prov.get_stream_details("bogus", "queue_a")
+            await prov.get_stream_details("bogus", MediaType.AUDIO_SOURCE)
 
     @pytest.mark.asyncio
     async def test_get_audio_stream_releases_lock_in_finally(self) -> None:
         """When the audio generator exits, the queue lock should be released."""
         prov = _FakePluginProvider(_audio_source())
         await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
-        sd = await prov.get_stream_details("main", "queue_a")
+        sd = await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         gen = prov.get_audio_stream(sd)
         await gen.__anext__()
         await gen.aclose()
@@ -287,13 +288,13 @@ class TestAudioSourceContract:
         # the previous queue's state because it does not claim or check.
         prov = _FakePluginProvider(_audio_source())
         await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
-        await prov.get_stream_details("main", "queue_a")
+        await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         assert prov._in_use_by_queue == "queue_a"
         # Different queue selects the source (cross-queue handoff).
         await prov.on_source_selected("main", "player_b", "queue_b", "session_2")
         assert prov._in_use_by_queue == "queue_b"
         # get_stream_details for the new queue still succeeds — no busy raise.
-        sd = await prov.get_stream_details("main", "queue_b")
+        sd = await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         assert sd.media_type == MediaType.AUDIO_SOURCE
 
     @pytest.mark.asyncio
@@ -301,7 +302,7 @@ class TestAudioSourceContract:
         """on_source_unselected releases the claim when the session id matches."""
         prov = _FakePluginProvider(_audio_source())
         await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
-        await prov.get_stream_details("main", "queue_a")
+        await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         await prov.on_source_unselected("main", "queue_a", "session_1")
         assert prov._in_use_by_queue is None
         assert prov._active_session_id is None
@@ -313,10 +314,10 @@ class TestAudioSourceContract:
         # has already taken over. The session-id guard must reject it.
         prov = _FakePluginProvider(_audio_source())
         await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
-        await prov.get_stream_details("main", "queue_a")
+        await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         # Handoff: B selects the source with a fresh session id, releasing A's claim
         await prov.on_source_selected("main", "player_b", "queue_b", "session_2")
-        await prov.get_stream_details("main", "queue_b")
+        await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         assert prov._in_use_by_queue == "queue_b"
         # Now queue A's late unselect (with the OLD session id) fires — must no-op
         await prov.on_source_unselected("main", "queue_a", "session_1")
@@ -335,7 +336,7 @@ class TestAudioSourceContract:
         prov = _FakePluginProvider(_audio_source())
         # Stream 1 starts
         await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
-        sd = await prov.get_stream_details("main", "queue_a")
+        sd = await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         gen1 = prov.get_audio_stream(sd)
         await gen1.__anext__()
         # Same-queue reconnect arrives before stream 1's generator finishes
@@ -362,7 +363,7 @@ class TestAudioSourceContract:
         prov = _FakePluginProvider(_audio_source())
         # Request 1 — full lifecycle
         await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
-        await prov.get_stream_details("main", "queue_a")
+        await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         await prov.on_source_unselected("main", "queue_a", "session_1")
         # Read into a locally-typed var so mypy's literal narrowing doesn't
         # chain across the next await (which mutates the attribute it can't see).
@@ -389,11 +390,11 @@ class TestAudioSourceContract:
         prov = _FakePluginProvider(_audio_source())
         # Queue A is actively streaming
         await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
-        await prov.get_stream_details("main", "queue_a")
+        await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         assert prov._in_use_by_queue == "queue_a"
         # Queue B's preload fetches streamdetails — must NOT raise busy, must
         # NOT alter ownership.
-        sd = await prov.get_stream_details("main", "queue_b")
+        sd = await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         assert sd.media_type == MediaType.AUDIO_SOURCE
         assert prov._in_use_by_queue == "queue_a"
         # Queue B's actual stream request fires on_source_selected, which
@@ -413,7 +414,7 @@ class TestAudioSourceContract:
         prov = _FakePluginProvider(_audio_source())
         # Request 1 starts streaming
         await prov.on_source_selected("main", "player_a", "queue_a", "session_1")
-        await prov.get_stream_details("main", "queue_a")
+        await prov.get_stream_details("main", MediaType.AUDIO_SOURCE)
         # Request 2 (reconnect) arrives BEFORE request 1's finally runs.
         # Same queue + same player → no handoff branch, just a fresh session id.
         await prov.on_source_selected("main", "player_a", "queue_a", "session_2")

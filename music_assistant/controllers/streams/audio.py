@@ -318,21 +318,14 @@ class StreamsAudio:
                     if not provider:
                         self.logger.debug(f"Skipping {prov_media} - provider not available")
                         continue  # provider not available ?
-                    # get streamdetails from provider; AudioSource items come from a
-                    # PluginProvider which carries a different signature (queue-scoped
-                    # context rather than media_type) — branch on provider type.
+                    # get streamdetails from provider; music and plugin providers
+                    # share this signature, so either type can own the item.
                     try:
                         BYPASS_THROTTLER.set(True)
-                        if media_item.media_type == MediaType.AUDIO_SOURCE:
-                            plugin_prov = cast("PluginProvider", provider)
-                            streamdetails = await plugin_prov.get_stream_details(
-                                prov_media.item_id, queue_item.queue_id
-                            )
-                        else:
-                            music_prov = cast("MusicProvider", provider)
-                            streamdetails = await music_prov.get_stream_details(
-                                prov_media.item_id, media_item.media_type
-                            )
+                        stream_prov = cast("MusicProvider | PluginProvider", provider)
+                        streamdetails = await stream_prov.get_stream_details(
+                            prov_media.item_id, media_item.media_type
+                        )
                     except AudioError as err:
                         last_audio_error = err
                         self.logger.warning(str(err))
@@ -3424,8 +3417,8 @@ class StreamsAudio:
             provider = self.mass.get_provider(mapping.provider)
             if provider is None:
                 raise MediaNotFoundError(f"Provider {mapping.provider} is not available")
-            provider = cast("MusicProvider", provider)
-            streamdetails = await provider.get_stream_details(
+            stream_prov = cast("MusicProvider | PluginProvider", provider)
+            streamdetails = await stream_prov.get_stream_details(
                 mapping.item_id, MediaType.SOUND_EFFECT
             )
         except Exception as err:

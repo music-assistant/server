@@ -88,11 +88,12 @@ class PluginProvider(Provider):
             raise NotImplementedError
         return []
 
-    async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
-        Return StreamDetails for streaming the given AudioSource.
+        Return StreamDetails for a streamable item owned by this plugin.
 
-        Will only be called if ProviderFeature.AUDIO_SOURCE is declared.
+        Called for a playable item this plugin exposes; ``media_type`` says which kind.
+        AudioSource items require ProviderFeature.AUDIO_SOURCE to be declared.
 
         MUST be side-effect-free. MA calls this from both the streaming path
         and from queue preload (``_load_item``); claiming ownership here would
@@ -124,9 +125,9 @@ class PluginProvider(Provider):
           binary actually stops writing, the consuming ffmpeg will block and
           the player will eventually disconnect.
 
-        :param source_id: The AudioSource.item_id requested for playback.
-        :param queue_id: The queue that owns this playback session. For groups this is
-            the group's queue_id; the streams controller fans the stream out to members.
+        :param item_id: The provider-scoped id of the item requested for playback:
+            an ``AudioSource.item_id`` or the id of another item this plugin owns.
+        :param media_type: The media type of the requested item.
         """
         raise NotImplementedError
 

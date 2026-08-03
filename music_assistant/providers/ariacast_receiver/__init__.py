@@ -226,10 +226,10 @@ class AriaCastReceiver(PluginProvider):
         """Return the single AriaCast audio source."""
         return [self._audio_source]
 
-    async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """Return stream details for the given audio source."""
-        if source_id != AUDIO_SOURCE_ID:
-            raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
+        if item_id != AUDIO_SOURCE_ID:
+            raise MediaNotFoundError(f"Unknown AudioSource: {item_id}")
         # Allow through if currently playing OR if a player has played before (resume path)
         if not self._is_playing and not self._active_player_id:
             raise AudioError(
@@ -237,7 +237,7 @@ class AriaCastReceiver(PluginProvider):
             )
         return StreamDetails(
             provider=self.instance_id,
-            item_id=source_id,
+            item_id=item_id,
             audio_format=self._audio_format,
             media_type=MediaType.AUDIO_SOURCE,
             stream_type=StreamType.CUSTOM,
