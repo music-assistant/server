@@ -2020,8 +2020,6 @@
   "provider.sendspin.setup_flow.enter_token.title": "Enter the pairing token",
   "provider.sendspin.setup_flow.select_method.description": "Choose how to pair with this device. PIN pairing uses a code the device shows while pairing (or a static PIN printed on it); token pairing uses a pairing token you copy from the device.",
   "provider.sendspin.setup_flow.select_method.title": "Pair this device",
-  "provider.siriusxm.config_entries.sxm_email_address.label": "Username",
-  "provider.siriusxm.config_entries.sxm_password.label": "Password",
   "provider.siriusxm.config_entries.sxm_region.label": "Region",
   "provider.siriusxm.config_entries.sxm_region.options.CA": "Canada",
   "provider.siriusxm.config_entries.sxm_region.options.US": "United States",

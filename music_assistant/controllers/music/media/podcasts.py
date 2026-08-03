@@ -344,23 +344,36 @@ class PodcastsController(MediaControllerBase[Podcast]):
             # based on configured provider filter we can try to find a user
             user = provider_user
 
-        async def set_resume_position(episode: PodcastEpisode) -> None:
-            if episode.fully_played is not None or episode.resume_position_ms:
-                # provider supports resume info, we can skip
-                return
-            # for providers that do not natively support providing resume info,
-            # we fallback to the playlog db table
-            match = {
-                "item_id": episode.item_id,
+        # fetched in one query on first use instead of one per episode: a podcast can have
+        # thousands of them
+        resume_rows: dict[str, Mapping[str, Any]] | None = None
+
+        async def load_resume_rows() -> dict[str, Mapping[str, Any]]:
+            match: dict[str, Any] = {
                 "provider": prov.instance_id,
                 "media_type": MediaType.PODCAST_EPISODE,
             }
             if user is not None:
                 match["userid"] = user.user_id
-            resume_info_db_row = await self.mass.music.database.get_row(
-                DB_TABLE_PLAYLOG,
-                match=match,
+            # limit=0 lifts get_rows' 500 row default, which combined with the ascending sort
+            # would drop the newest rows - the part-played episodes this lookup is for. That
+            # sort also picks the newest row per item_id in the map below, where without a
+            # userid filter several users can hold one
+            rows = await self.mass.music.database.get_rows(
+                DB_TABLE_PLAYLOG, match=match, order_by="timestamp", limit=0
             )
+            return {row["item_id"]: row for row in rows}
+
+        async def set_resume_position(episode: PodcastEpisode) -> None:
+            nonlocal resume_rows
+            if episode.fully_played is not None or episode.resume_position_ms:
+                # provider supports resume info, we can skip
+                return
+            # for providers that do not natively support providing resume info,
+            # we fallback to the playlog db table
+            if resume_rows is None:
+                resume_rows = await load_resume_rows()
+            resume_info_db_row = resume_rows.get(episode.item_id)
             if resume_info_db_row is None:
                 return
             if resume_info_db_row["seconds_played"]:
@@ -368,9 +381,8 @@ class PodcastsController(MediaControllerBase[Podcast]):
             if resume_info_db_row["fully_played"] is not None:
                 episode.fully_played = bool(resume_info_db_row["fully_played"])
 
-        # grab the episodes from the provider
-        # note that we do not cache any of this because its
-        # always a rather small list and we want fresh resume info
+        # grab the episodes from the provider. Providers cache their own listing, so resume
+        # info is applied here to keep per-user progress out of those caches
         async for item in prov.get_podcast_episodes(item_id):
             await set_resume_position(item)
             await self._restore_probed_duration(item)

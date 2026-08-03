@@ -40,6 +40,7 @@ from music_assistant.helpers.plugin_engines import select_ai_engine
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
 from music_assistant.models.plugin import AIEngine, PluginProvider
 from music_assistant.providers.music_quiz import (
+    ASSUMED_AUDIO_START_LATENCY,
     CONF_AI_ENGINE,
     MUSIC_QUIZ_GUEST_USER,
     PLAYBACK_PREFERENCE_CACHE_EXPIRATION,
@@ -355,6 +356,23 @@ def _mock_playback_session(player_id: str, queue_id: str) -> SharedPlaybackSessi
     session.player_id = player_id
     session.queue_id = queue_id
     return cast("SharedPlaybackSession", session)
+
+
+def _install_reported_playback(
+    plugin: MusicQuizPlugin,
+    elapsed_time: float | None,
+    elapsed_time_last_updated: float | None,
+    *,
+    flow_mode: bool = False,
+) -> None:
+    """Attach a playback session whose venue target reports the given position anchor."""
+    plugin._playback_session = _mock_playback_session("venue_player", "venue_player")
+    venue_player = cast("MagicMock", plugin.mass.players.all_players).return_value[0]
+    venue_player.state.elapsed_time = elapsed_time
+    venue_player.state.elapsed_time_last_updated = elapsed_time_last_updated
+    cast("MagicMock", plugin.mass.player_queues).get = MagicMock(
+        return_value=SimpleNamespace(flow_mode=flow_mode)
+    )
 
 
 def _configure_venue_listener_playback(
@@ -3777,6 +3795,7 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
         "track_uri",
         "image_url",
         "duration",
+        "audio_started_at",
         "ended_at",
     }
     assert current_round["correct_suggestion_id"] == "correct_0"
@@ -3785,6 +3804,113 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
     alice = next(player for player in state["players"] if player["name"] == "Alice")
     assert set(alice) == {*public_player_keys, "last_answer"}
     assert set(alice["last_answer"]) == {"suggestion_id", "correct", "points"}
+
+
+@pytest.mark.asyncio
+async def test_reveal_anchors_audio_start_on_the_reported_playback_position() -> None:
+    """Derive the round's audible start from the playback target's reported position."""
+    plugin = _create_plugin()
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=1000.0):
+        await _create_started_game(plugin, player_names=("Alice",), round_count=1)
+    game = plugin._game
+    assert game is not None
+    assert game.rounds[0].started_at == 1000.0
+    _install_reported_playback(plugin, 2.0, 1003.5)
+
+    await plugin.reveal()
+
+    assert game.rounds[0].audio_started_at == 1001.5
+    revealed = cast("MagicMock", plugin.signal_provider_event).call_args.args[0]["state"]
+    assert revealed["current_round"]["audio_started_at"] == 1001.5
+    host_state = await plugin.get_game()
+    assert host_state is not None
+    assert host_state["rounds"][0]["audio_started_at"] == 1001.5
+
+
+@pytest.mark.asyncio
+async def test_reveal_assumes_audio_start_latency_without_a_reported_position() -> None:
+    """Assume the startup latency when the playback target reports no position."""
+    plugin = _create_plugin()
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=1000.0):
+        await _create_started_game(plugin, player_names=("Alice",), round_count=1)
+    game = plugin._game
+    assert game is not None
+    _install_reported_playback(plugin, None, 1003.5)
+
+    await plugin.reveal()
+
+    assert game.rounds[0].audio_started_at == 1000.0 + ASSUMED_AUDIO_START_LATENCY
+
+
+@pytest.mark.asyncio
+async def test_reveal_discards_an_implausible_reported_playback_position() -> None:
+    """Fall back to the assumed latency when the reported start is out of bounds."""
+    plugin = _create_plugin()
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=1000.0):
+        await _create_started_game(plugin, player_names=("Alice",), round_count=1)
+    game = plugin._game
+    assert game is not None
+    # a stale anchor from before this round's track: 29.5s after the play command
+    _install_reported_playback(plugin, 0.5, 1030.0)
+
+    await plugin.reveal()
+
+    assert game.rounds[0].audio_started_at == 1000.0 + ASSUMED_AUDIO_START_LATENCY
+
+
+@pytest.mark.asyncio
+async def test_reveal_never_anchors_audio_before_the_round_started() -> None:
+    """Clamp a reported start that slightly predates the play command to the round start."""
+    plugin = _create_plugin()
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=1000.0):
+        await _create_started_game(plugin, player_names=("Alice",), round_count=1)
+    game = plugin._game
+    assert game is not None
+    _install_reported_playback(plugin, 2.0, 1001.5)
+
+    await plugin.reveal()
+
+    assert game.rounds[0].audio_started_at == 1000.0
+
+
+@pytest.mark.asyncio
+async def test_reveal_ignores_the_reported_position_of_a_flow_stream() -> None:
+    """Fall back to the assumed latency when the queue reports a whole-queue position."""
+    plugin = _create_plugin()
+    with patch("music_assistant.providers.music_quiz.time.time", return_value=1000.0):
+        await _create_started_game(plugin, player_names=("Alice",), round_count=1)
+    game = plugin._game
+    assert game is not None
+    _install_reported_playback(plugin, 2.0, 1003.5, flow_mode=True)
+
+    await plugin.reveal()
+
+    assert game.rounds[0].audio_started_at == 1000.0 + ASSUMED_AUDIO_START_LATENCY
+
+
+@pytest.mark.asyncio
+async def test_trivia_reveal_leaves_the_audio_start_unresolved() -> None:
+    """Skip the audible-start anchor for quiz types that only play a track on reveal."""
+    plugin = _create_plugin()
+    with (
+        patch.object(TriviaQuizType, "initialize", new=AsyncMock()),
+        patch.object(
+            TriviaQuizType,
+            "prepare_round",
+            new=AsyncMock(side_effect=_make_trivia_round),
+        ),
+    ):
+        with patch("music_assistant.providers.music_quiz.time.time", return_value=1000.0):
+            await _create_started_trivia_game(plugin, round_count=1)
+        game = plugin._game
+        assert game is not None
+        _install_reported_playback(plugin, 2.0, 1003.5)
+
+        await plugin.reveal()
+
+    assert game.rounds[0].audio_started_at is None
+    revealed = cast("MagicMock", plugin.signal_provider_event).call_args.args[0]["state"]
+    assert revealed["current_round"]["audio_started_at"] is None
 
 
 @pytest.mark.asyncio
@@ -3965,6 +4091,7 @@ async def test_host_rounds_preserve_flat_wire_shape() -> None:
             "image_url": game_round.image_url,
             "duration": game_round.duration,
             "started_at": game_round.started_at,
+            "audio_started_at": game_round.audio_started_at,
             "ended_at": game_round.ended_at,
             "auto_advance_at": game_round.auto_advance_at,
         }

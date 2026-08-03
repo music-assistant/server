@@ -685,6 +685,13 @@ class MusicDatabaseSetupMixin:
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAYLOG}_userid_timestamp_idx "
             f"on {DB_TABLE_PLAYLOG}(userid,timestamp);"
         )
+        # serves the podcast episode resume lookup, which no existing index can: they all
+        # lead with item_id or userid, neither of which that query filters on. Column order
+        # matches its filter, so with a userid it needs no sort for the ORDER BY either
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PLAYLOG}_provider_media_type_idx "
+            f"on {DB_TABLE_PLAYLOG}(provider,media_type,userid,timestamp);"
+        )
         await self.database.commit()
 
     async def __create_database_triggers(self) -> None:
