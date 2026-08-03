@@ -11,6 +11,10 @@
     "languages": {
       "label": "Content Languages",
       "description": "Select which languages to include in recommendations and search results."
+    },
+    "kids_mode": {
+      "label": "Enable Kids Mode",
+      "description": "Hides non-children's books from search and recommendations."
     }
   },
   "recommendations": {

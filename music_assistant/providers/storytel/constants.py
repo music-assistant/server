@@ -43,7 +43,7 @@ API_DEFAULT_RESOURCE_VERSION = (
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
 CONF_LANGUAGES = "languages"
-CONF_TOKEN = "token"
+CONF_KIDS_MODE = "kids_mode"
 
 
 # LANGUAGES - Available languages for discovery features (recommendations, search)

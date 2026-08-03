@@ -47,6 +47,7 @@ from .constants import (
     CACHE_CATEGORY_PODCAST,
     CACHE_CATEGORY_PODCAST_EPISODE,
     CACHE_CATEGORY_PODCAST_EPISODES,
+    CONF_KIDS_MODE,
     CONF_LANGUAGES,
     CONF_PASSWORD,
     CONF_USERNAME,
@@ -112,6 +113,12 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
                 required=False,
                 default_value=default_languages,
                 options=[ConfigValueOption(name, name) for name in sorted(ALL_LANGUAGES.keys())],
+            ),
+            ConfigEntry(
+                key=CONF_KIDS_MODE,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=False,
             ),
         )
 
@@ -185,7 +192,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
         super().__init__(mass=mass, manifest=manifest, config=config)
         self._api: StorytelHelper | None = None
         # Whether to use Kids mode for bookmarks
-        self._kids_mode: bool = False
+        self._kids_mode: bool = bool(self.get_setup_value(CONF_KIDS_MODE))
         # Selected languages for discovery features (recommendations, search)
         self._languages: dict[str, str] = DEFAULT_LANGUAGES.copy()
 
@@ -224,6 +231,8 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
             }
         if not self._languages:
             self._languages = DEFAULT_LANGUAGES.copy()
+
+        self._kids_mode = bool(self.get_setup_value(CONF_KIDS_MODE))
 
         self._api = StorytelHelper(
             session=self.mass.http_session,

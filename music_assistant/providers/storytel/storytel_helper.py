@@ -149,6 +149,11 @@ class StorytelHelper:
         return ",".join(iso_values)
 
     @property
+    def kids_mode_query(self) -> str:
+        """Return the Storytel kids-mode query value."""
+        return "true" if self._kids_mode else "false"
+
+    @property
     def resource_version(self) -> str:
         """Return the current Storytel resource version or the default fallback."""
         if self._resource_version:
@@ -303,7 +308,7 @@ class StorytelHelper:
         """
         payload = {
             "consumableId": consumable_id,
-            "kidsMode": bool(kids_mode),
+            "kidsMode": "true" if kids_mode else "false",
             # MA provides seconds; Storytel expects milliseconds
             "position": int(position * 1000),
             "secondsSinceCreated": 0,
@@ -518,7 +523,7 @@ class StorytelHelper:
                 "?configVariant=voice-switcher-enabled"
                 "&includeFormats=ebook%2Cabook%2Cpodcast"
                 f"&includeLanguages={quote(self.languages_query, safe='')}"
-                f"&kidsMode={quote(str(self._kids_mode), safe='')}"
+                f"&kidsMode={self.kids_mode_query}"
                 "&orderBy=default"
             )
             if token != "":
@@ -746,7 +751,7 @@ class StorytelHelper:
         chip_url += (
             "?includeFormats=abook%2Cpodcast"
             f"&includeLanguages={quote(self.languages_query, safe='')}"
-            f"&kidsMode={quote(str(self._kids_mode), safe='')}"
+            f"&kidsMode={self.kids_mode_query}"
             "&onboarding=false&version=2"
         )
 
@@ -765,7 +770,7 @@ class StorytelHelper:
                 "&configVariant=voice-switcher-enabled"
                 "&includeFormats=abook%2Cpodcast"
                 f"&includeLanguages={quote(self.languages_query, safe='')}"
-                f"&kidsMode={quote(str(self._kids_mode), safe='')}"
+                f"&kidsMode={self.kids_mode_query}"
                 "&onboarding=false&version=2"
             )
             if folder := await self._recommendation_folder_from_block_url(
@@ -1248,7 +1253,7 @@ class StorytelHelper:
             f"&searchFor={quote(search_for, safe='')}"
             "&includeFormats=abook"
             f"&includeLanguages={quote(self.languages_query, safe='')}"
-            f"&kidsMode={quote(str(self._kids_mode), safe='')}"
+            f"&kidsMode={self.kids_mode_query}"
             f"&query={quote(query, safe='')}"
             "&v2=true"
         )
