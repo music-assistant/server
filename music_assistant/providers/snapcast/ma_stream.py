@@ -36,6 +36,8 @@ from .constants import (
 if TYPE_CHECKING:
     from music_assistant_models.player import PlayerMedia
 
+    from music_assistant.helpers.dsp import ComplexFilter
+
     from .provider import SnapCastProvider
     from .snap_cntrl_proto import SnapstreamProto
 
@@ -104,7 +106,7 @@ class SnapcastMAStream:
         self._streamer_started_evt = asyncio.Event()
         self._stop_timer: asyncio.Handle | None = None
         self._stop_timer_started_at: float | None = None
-        self._filter_settings: list[str] | None = None
+        self._filter_settings: list[str | ComplexFilter] | None = None
 
     @property
     def source_id(self) -> str | None:

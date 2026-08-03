@@ -1,6 +1,7 @@
 """Unit tests for AirPlay stream session late-join logic."""
 
 import asyncio
+import logging
 import time
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -10,12 +11,16 @@ import pytest
 from music_assistant_models.errors import PlayerCommandFailed
 
 from music_assistant.providers.airplay.constants import (
+    AIRPLAY_CLOCK_READY_LEAD_MS,
+    AIRPLAY_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_COLD_GROUP_START_LEAD_MS,
     AIRPLAY_GROUP_START_LEAD_MS,
-    AIRPLAY_JOIN_CLOCK_READY_LEAD_MS,
-    AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
+    AIRPLAY_LATE_JOIN_RING_MARGIN_SECONDS,
+    AIRPLAY_LATE_JOIN_RING_MAX_BYTES,
+    AIRPLAY_LATE_JOIN_RING_MIN_SECONDS,
     AIRPLAY_START_LEAD_MS,
+    ClockReadiness,
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
@@ -31,7 +36,7 @@ def _stream_defaults(stream: MagicMock) -> MagicMock:
     matching an older binary, so the tests assert the commanded values directly.
     """
     stream.start = AsyncMock(return_value=None)
-    stream.wait_clock_ready = AsyncMock(return_value=None)
+    stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.UNREPORTED, 0))
     stream.warm_lead_ms = 0
     stream.flushed_head_unix_ms = 0
     return stream
@@ -204,6 +209,77 @@ async def test_initial_group_waits_for_every_member_before_shared_start(
 
 
 @pytest.mark.asyncio
+async def test_group_start_never_anchors_before_every_receiver_clock_is_usable() -> None:
+    """A member whose clock lands past the group lead pushes the shared anchor out."""
+    now = 100.0
+    session = _make_session(0, 0)
+    first: Any = session.sync_clients[0]
+    first.protocol = StreamingProtocol.AIRPLAY2
+    first.config.get_value = MagicMock(return_value=0)
+    second = MagicMock(player_id="second", protocol=StreamingProtocol.AIRPLAY2)
+    second.config.get_value = MagicMock(return_value=0)
+    session.sync_clients.append(second)
+    # The slower member's clock lands past the cold group lead, so anchoring on
+    # that lead alone would leave it seated at a different instant to the first.
+    ready_at = int(now * 1000) + AIRPLAY_COLD_GROUP_START_LEAD_MS + 400
+
+    async def start_client(player: MagicMock, _use_shared_ptp: bool) -> None:
+        stream = _stream_defaults(MagicMock(running=True))
+        stream.wait_for_connection = AsyncMock()
+        stream.wait_audio_present = AsyncMock(return_value=True)
+        stream.wait_clock_ready = AsyncMock(
+            return_value=(
+                ClockReadiness.PROJECTED,
+                ready_at if player is second else int(now * 1000),
+            )
+        )
+        player.stream = stream
+
+    with (
+        patch.object(session, "_start_client", side_effect=start_client),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch.object(session, "_resolve_shared_ptp", new_callable=AsyncMock, return_value=False),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        await session.start(MagicMock())
+
+    expected = ready_at + AIRPLAY_CLOCK_READY_LEAD_MS
+    for player in (first, second):
+        assert player.stream.start.await_args.args[0] == expected
+
+
+@pytest.mark.asyncio
+async def test_solo_start_does_not_wait_for_a_clock_projection() -> None:
+    """A lone receiver seats itself, so its start keeps the short lead."""
+    now = 100.0
+    session = _make_session(0, 0)
+    player: Any = session.sync_clients[0]
+    player.protocol = StreamingProtocol.AIRPLAY2
+    player.config.get_value = MagicMock(return_value=0)
+
+    async def start_client(_player: MagicMock, _use_shared_ptp: bool) -> None:
+        stream = _stream_defaults(MagicMock(running=True))
+        stream.wait_for_connection = AsyncMock()
+        stream.wait_audio_present = AsyncMock(return_value=True)
+        # A projection far in the future must not delay a solo start.
+        stream.wait_clock_ready = AsyncMock(
+            return_value=(ClockReadiness.PROJECTED, int(now * 1000) + 5_000)
+        )
+        player.stream = stream
+
+    with (
+        patch.object(session, "_start_client", side_effect=start_client),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch.object(session, "_resolve_shared_ptp", new_callable=AsyncMock, return_value=False),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        await session.start(MagicMock())
+
+    assert player.stream.start.await_args.args[0] == int(now * 1000) + AIRPLAY_START_LEAD_MS
+    player.stream.wait_clock_ready.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_group_start_that_never_converges_anchors_where_members_landed() -> None:
     """A group that keeps correcting is anchored at the members' own last instant."""
     session = _make_session(0, 0)
@@ -294,6 +370,63 @@ async def test_initial_connection_failure_never_starts_partial_group() -> None:
         stream: Any = player.stream
         stream.start.assert_not_awaited()
     stop_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_connection_failure_names_the_member_that_failed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The log has to say WHICH speaker failed, and what its binary reported."""
+    session = _make_session(0, 0)
+    prov_logger = logging.getLogger("test.airplay.session")
+    session.prov.logger = prov_logger
+    first_player: Any = session.sync_clients[0]
+    first_player.display_name = "Player A"
+    first_player.protocol = StreamingProtocol.RAOP
+    second_player = MagicMock(player_id="second", display_name="Player B")
+    second_player.protocol = StreamingProtocol.RAOP
+    session.sync_clients.append(second_player)
+
+    async def start_client(player: MagicMock, _use_shared_ptp: bool) -> None:
+        stream = _stream_defaults(MagicMock(running=True))
+        if player is second_player:
+            stream.wait_for_connection = AsyncMock(
+                side_effect=TimeoutError("cliairplay did not connect to Player B: no route")
+            )
+        else:
+            stream.wait_for_connection = AsyncMock()
+        player.stream = stream
+
+    with (
+        caplog.at_level(logging.WARNING),
+        patch.object(session, "_start_client", side_effect=start_client),
+        patch.object(session, "_audio_streamer", new_callable=AsyncMock),
+        patch.object(session, "stop", new_callable=AsyncMock),
+        pytest.raises(PlayerCommandFailed),
+    ):
+        await session.start(MagicMock())
+
+    assert "Player B failed to connect to its device" in caplog.text
+    assert "no route" in caplog.text
+    assert "Player A failed" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_audio_feed_names_the_silent_members() -> None:
+    """A member whose binary never reported audio flowing is named in the failure."""
+    session = _make_session(0, 0)
+    first_player: Any = session.sync_clients[0]
+    first_player.display_name = "Player A"
+    first_player.protocol = StreamingProtocol.RAOP
+    first_player.stream.wait_audio_present = AsyncMock(return_value=True)
+    second_player = MagicMock(player_id="second", display_name="Player B")
+    second_player.protocol = StreamingProtocol.RAOP
+    second_player.stream = _stream_defaults(MagicMock(running=True))
+    second_player.stream.wait_audio_present = AsyncMock(return_value=False)
+    session.sync_clients.append(second_player)
+
+    with pytest.raises(PlayerCommandFailed, match="not confirmed by Player B"):
+        await session._wait_members_audio_present()
 
 
 @pytest.mark.asyncio
@@ -930,7 +1063,9 @@ async def test_late_join_anchors_on_the_reported_clock_readiness() -> None:
 
     def setup_with_projection(*_args: Any, **_kwargs: Any) -> None:
         _setup_stream(player)()
-        player.stream.wait_clock_ready = AsyncMock(return_value=ready_at_unix_ms)
+        player.stream.wait_clock_ready = AsyncMock(
+            return_value=(ClockReadiness.PROJECTED, ready_at_unix_ms)
+        )
 
     with (
         patch.object(session, "_start_client", side_effect=setup_with_projection),
@@ -939,10 +1074,10 @@ async def test_late_join_anchors_on_the_reported_clock_readiness() -> None:
     ):
         await session.add_client(player)
 
-    expected_lead = AIRPLAY_JOIN_CLOCK_READY_LEAD_MS / 1000
+    expected_lead = AIRPLAY_CLOCK_READY_LEAD_MS / 1000
     assert _captured_start_at(player) - now == pytest.approx(3.0 + expected_lead, abs=0.01)
     player.stream.wait_clock_ready.assert_awaited_once_with(
-        timeout=AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS / 1000
+        timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
     )
 
 
@@ -959,7 +1094,9 @@ async def test_late_join_floor_wins_over_a_clock_that_is_already_ready() -> None
 
     def setup_with_projection(*_args: Any, **_kwargs: Any) -> None:
         _setup_stream(player)()
-        player.stream.wait_clock_ready = AsyncMock(return_value=ready_at_unix_ms)
+        player.stream.wait_clock_ready = AsyncMock(
+            return_value=(ClockReadiness.PROJECTED, ready_at_unix_ms)
+        )
 
     with (
         patch.object(session, "_start_client", side_effect=setup_with_projection),
@@ -991,11 +1128,63 @@ async def test_late_join_falls_back_to_the_floor_without_a_clock_projection() ->
 
     # every fallback shape surfaces as "no projection" to the session
     player.stream.wait_clock_ready.assert_awaited_once_with(
-        timeout=AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS / 1000
+        timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
     )
     expected_headroom = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000
     assert _captured_start_at(player) - now == pytest.approx(expected_headroom, abs=0.01)
     assert player in session.sync_clients
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "readiness",
+    [ClockReadiness.UNREPORTED, ClockReadiness.NOT_APPLICABLE],
+    ids=["unreported", "ntp"],
+)
+async def test_late_join_without_a_projection_still_joins(readiness: ClockReadiness) -> None:
+    """A device with no clock to wait for is a fallback, not a reason to refuse it."""
+    now = 1_000_000.0
+    session = _make_session(now - 5.0, 5.0)
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 5)
+    player = _make_late_joiner()
+
+    def setup_without_projection(*_args: Any, **_kwargs: Any) -> None:
+        _setup_stream(player)()
+        player.stream.wait_clock_ready = AsyncMock(return_value=(readiness, 0))
+
+    with (
+        patch.object(session, "_start_client", side_effect=setup_without_projection),
+        patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        await session.add_client(player)
+
+    assert player in session.sync_clients
+
+
+@pytest.mark.asyncio
+async def test_late_joiner_with_a_stalled_clock_is_not_added() -> None:
+    """A receiver that never answered our clock renders silence, so keep it out of the group."""
+    now = 1_000_000.0
+    session = _make_session(now - 5.0, 5.0)
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 5)
+    player = _make_late_joiner()
+
+    def setup_stalled(*_args: Any, **_kwargs: Any) -> None:
+        _setup_stream(player)()
+        player.stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.STALLED, 0))
+
+    with (
+        patch.object(session, "_start_client", side_effect=setup_stalled),
+        patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
+        patch.object(session, "stop_client", new_callable=AsyncMock) as stop_client,
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        await session.add_client(player)
+
+    player.stream.start.assert_not_awaited()
+    assert player not in session.sync_clients
+    stop_client.assert_awaited_once_with(player, reason="receiver clock stalled")
 
 
 @pytest.mark.asyncio
@@ -1009,9 +1198,10 @@ async def test_late_join_feed_keeps_flowing_while_waiting_for_clock_readiness() 
     def setup_pending_projection(*_args: Any, **_kwargs: Any) -> None:
         _setup_stream(player)()
 
-        async def wait_clock_ready(*_args: Any, **_kwargs: Any) -> None:
+        async def wait_clock_ready(*_args: Any, **_kwargs: Any) -> tuple[ClockReadiness, int]:
             readiness_pending.set()
             await readiness_released.wait()
+            return (ClockReadiness.UNREPORTED, 0)
 
         player.stream.wait_clock_ready = AsyncMock(side_effect=wait_clock_ready)
 
@@ -1262,3 +1452,194 @@ async def test_cleanup_after_removal_skips_idle_when_player_has_new_session_stre
         await session._cleanup_after_removal(player)
 
     player.set_state_from_stream.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_late_join_pads_with_silence_when_the_ring_ran_out_under_a_committed_anchor() -> None:
+    """A due position lost to the ring after the START is covered with silence, not a moved anchor."""
+    # Freeze time so both the test and the code under test agree on `now`.
+    now = 1_000_000.0
+    start_time = now - 100.0
+    session = _make_session(start_time, 110.0)
+    session._pcm_total_fed = int(110.0 * PCM_SAMPLE_SIZE)
+    # An 8s ring against a 10s write-head lead: wide enough when the anchor is
+    # planned, too narrow by the time the binary owns the instant.
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 8)
+    session._pcm_buffer_max = PCM_SAMPLE_SIZE * 8
+    # Freeze the adaptive sizing so this test covers the cap, not the growth.
+    session._peak_lead_seconds = 1e6
+    logger = MagicMock()
+    session.prov.logger = logger
+    player = _make_late_joiner()
+
+    written: list[tuple[str, bytes]] = []
+
+    async def capture_write(target: Any, chunk: bytes) -> None:
+        written.append((target.player_id, chunk))
+
+    def setup_with_feed(*_args: Any, **_kwargs: Any) -> None:
+        _setup_stream(player)()
+
+        async def start(_start_unix_ms: int, _position_ms: int, *, join: bool = False) -> None:
+            assert join is True
+            # The group keeps being fed while the START ack is outstanding: this
+            # is what pushes the joiner's due position off the back of the ring.
+            await session._write_chunk_to_all_players(b"\x02" * int(2.0 * PCM_SAMPLE_SIZE))
+
+        player.stream.start = AsyncMock(side_effect=start)
+
+    with (
+        patch.object(session, "_start_client", side_effect=setup_with_feed),
+        patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        await session.add_client(player)
+
+    # The anchor is the one that was commanded: an acked instant is never moved.
+    headroom = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS / 1000
+    assert _captured_start_at(player) == pytest.approx(now + headroom, abs=0.001)
+    prime = next(chunk for pid, chunk in written if pid == player.player_id)
+    # due is 102.5s of feed and the write head reached 112.0s, so 9.5s is owed
+    # while only 8s survives in the ring: the missing 1.5s opens as silence.
+    assert len(prime) / PCM_SAMPLE_SIZE == pytest.approx(9.5, abs=0.001)
+    pad = int(1.5 * PCM_SAMPLE_SIZE)
+    assert prime[:pad] == bytes(pad), "the missing head must be silence"
+    assert set(prime[pad:]) == {1, 2}, "the rest must be the buffered feed"
+    assert pad % session._pcm_frame_size == 0
+    assert session._client_skip_bytes[player.player_id] == 0
+    # Position still reports where the GROUP is at that instant, because the
+    # real content lands exactly where it would have without the shortfall.
+    player.stream.rebase_position.assert_not_called()
+    logger.warning.assert_called_once()
+    assert "silence" in logger.warning.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_late_join_ring_shortfall_keeps_a_misaligned_ring_head_frame_aligned() -> None:
+    """A silence pad over a mid-frame ring head still lands the feed on frame boundaries."""
+    now = 1_000_000.0
+    session = _make_session(now - 100.0, 110.0)
+    # Both the write head and the ring head sit mid-frame.
+    session._pcm_total_fed = int(110.0 * PCM_SAMPLE_SIZE) + 3
+    session._pcm_buffer = bytearray(b"\x01" * (PCM_SAMPLE_SIZE * 8 + 2))
+    session._pcm_buffer_max = len(session._pcm_buffer)
+    session._peak_lead_seconds = 1e6
+    player = _make_late_joiner()
+
+    written: list[tuple[str, bytes]] = []
+
+    async def capture_write(target: Any, chunk: bytes) -> None:
+        written.append((target.player_id, chunk))
+
+    def setup_with_feed(*_args: Any, **_kwargs: Any) -> None:
+        _setup_stream(player)()
+
+        async def start(_start_unix_ms: int, _position_ms: int, *, join: bool = False) -> None:
+            assert join is True
+            await session._write_chunk_to_all_players(b"\x02" * (int(2.0 * PCM_SAMPLE_SIZE) + 1))
+
+        player.stream.start = AsyncMock(side_effect=start)
+
+    with (
+        patch.object(session, "_start_client", side_effect=setup_with_feed),
+        patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        await session.add_client(player)
+
+    prime = next(chunk for pid, chunk in written if pid == player.player_id)
+    frame_size = session._pcm_frame_size
+    # The prime ends exactly at the write head, so its start - and therefore the
+    # whole padded prime - has to sit on an absolute frame boundary.
+    assert (session._pcm_total_fed - len(prime)) % frame_size == 0
+    pad_len = len(prime) - len(prime.lstrip(b"\x00"))
+    assert pad_len % frame_size == 0
+
+
+def test_ring_grows_to_the_observed_write_head_lead() -> None:
+    """The ring tracks the largest lead a session shows, above a floor and under a byte cap."""
+    now = 1_000_000.0
+    session = _make_session(now - 100.0, 100.0)
+    assert session._pcm_buffer_max == int(AIRPLAY_LATE_JOIN_RING_MIN_SECONDS * PCM_SAMPLE_SIZE)
+
+    with patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now):
+        # A 4s lead stays under the floor, which keeps the ring where it was.
+        session.seconds_streamed = 104.0
+        session._observe_write_head_lead()
+        assert session._pcm_buffer_max == int(AIRPLAY_LATE_JOIN_RING_MIN_SECONDS * PCM_SAMPLE_SIZE)
+
+        # A 15s lead carries the ring past the floor, with the margin on top.
+        session.seconds_streamed = 115.0
+        session._observe_write_head_lead()
+        assert session._peak_lead_seconds == pytest.approx(15.0, abs=0.001)
+        expected = int((15.0 + AIRPLAY_LATE_JOIN_RING_MARGIN_SECONDS) * PCM_SAMPLE_SIZE)
+        assert session._pcm_buffer_max == expected
+
+        # A lead that falls back never shrinks the ring: the history a joiner
+        # still needs is already in it.
+        session.seconds_streamed = 108.0
+        session._observe_write_head_lead()
+        assert session._pcm_buffer_max == expected
+
+        # Growth is bounded in bytes, so a hi-res rate cannot multiply it out.
+        session.seconds_streamed = 100.0 + 3600.0
+        session._observe_write_head_lead()
+        assert session._pcm_buffer_max == AIRPLAY_LATE_JOIN_RING_MAX_BYTES
+
+
+def test_write_head_lead_is_not_measured_before_the_anchor_arrives() -> None:
+    """Audio fed inside the start lead is not counted as pipeline depth."""
+    now = 1_000_000.0
+    # Anchored 2.5s into the future: nothing is audible yet.
+    session = _make_session(now + 2.5, 8.0)
+    with patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now):
+        session._observe_write_head_lead()
+    assert session._peak_lead_seconds == 0.0
+    assert session._pcm_buffer_max == int(AIRPLAY_LATE_JOIN_RING_MIN_SECONDS * PCM_SAMPLE_SIZE)
+
+    unanchored = _make_session(0.0, 8.0)
+    with patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now):
+        unanchored._observe_write_head_lead()
+    assert unanchored._peak_lead_seconds == 0.0
+
+
+@pytest.mark.asyncio
+async def test_late_join_silence_pad_is_bounded_and_reports_the_residual() -> None:
+    """An implausible ack is padded only up to the ring bound, and says so."""
+    now = 1_000_000.0
+    session = _make_session(now - 400.0, 420.0)
+    session._pcm_total_fed = int(420.0 * PCM_SAMPLE_SIZE)
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 2)
+    session._pcm_buffer_max = PCM_SAMPLE_SIZE * 2
+    session._peak_lead_seconds = 1e6
+    logger = MagicMock()
+    session.prov.logger = logger
+    player = _make_late_joiner()
+
+    written: list[tuple[str, bytes]] = []
+
+    async def capture_write(target: Any, chunk: bytes) -> None:
+        written.append((target.player_id, chunk))
+
+    def setup_with_stale_ack(*_args: Any, **_kwargs: Any) -> None:
+        _setup_stream(player)()
+        # The binary reports an instant far behind the commanded one, mapping
+        # the joiner back near the start of the session. 320s of head is owed.
+        player.stream.start = AsyncMock(return_value=int((now - 300.0) * 1000))
+
+    with (
+        patch.object(session, "_start_client", side_effect=setup_with_stale_ack),
+        patch.object(session, "_write_chunk_to_player", side_effect=capture_write),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        await session.add_client(player)
+
+    prime = next(chunk for pid, chunk in written if pid == player.player_id)
+    # Bounded at one ring of silence plus the ring itself - never the 320s owed.
+    assert len(prime) / PCM_SAMPLE_SIZE == pytest.approx(4.0, abs=0.01)
+    assert (session._pcm_total_fed - len(prime)) % session._pcm_frame_size == 0
+    # The joiner cannot be placed exactly, so the log must not claim sync.
+    logger.warning.assert_called_once()
+    tail = logger.warning.call_args.args[-1]
+    assert "ahead of the group" in tail
+    assert "in sync" not in tail

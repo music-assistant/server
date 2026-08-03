@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Coroutine
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.errors import MusicAssistantError, PlayerCommandFailed
@@ -16,13 +16,17 @@ from music_assistant.controllers.streams.audio_processing import get_media_sessi
 from music_assistant.helpers.ffmpeg import FFMpeg
 
 from .constants import (
+    AIRPLAY_CLOCK_READY_LEAD_MS,
+    AIRPLAY_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_COLD_GROUP_START_LEAD_MS,
     AIRPLAY_GROUP_START_LEAD_MS,
-    AIRPLAY_JOIN_CLOCK_READY_LEAD_MS,
-    AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
+    AIRPLAY_LATE_JOIN_RING_MARGIN_SECONDS,
+    AIRPLAY_LATE_JOIN_RING_MAX_BYTES,
+    AIRPLAY_LATE_JOIN_RING_MIN_SECONDS,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
     AIRPLAY_START_LEAD_MS,
+    ClockReadiness,
     StreamingProtocol,
 )
 from .helpers import get_final_output_format
@@ -35,6 +39,18 @@ if TYPE_CHECKING:
 
     from .player import AirPlayPlayer
     from .provider import AirPlayProvider
+
+# What each readiness outcome means for the join anchor. They all end up
+# anchoring on the join floor, so only the reason distinguishes a device that
+# needs longer from one that will not play at all.
+_CLOCK_READINESS_NOTES: dict[ClockReadiness, str] = {
+    ClockReadiness.PROJECTED: "usable in {out:.2f}s; anchoring just past that",
+    ClockReadiness.NOT_APPLICABLE: "runs on NTP timing, so there is none to wait for; "
+    "anchoring on the join floor",
+    ClockReadiness.STALLED: "never answered ours; anchoring on the join floor",
+    ClockReadiness.UNREPORTED: "was not reported within {timeout:.1f}s (a slow device, or a "
+    "binary too old to report it); anchoring on the join floor",
+}
 
 
 class AirPlayStreamSession:
@@ -77,10 +93,16 @@ class AirPlayStreamSession:
         # Raw PCM ring buffer for late joiners. When a late joiner arrives we
         # send this buffer to prime its pipeline so it starts playing quickly
         # instead of waiting for the full pipeline to fill from scratch.
-        # Must cover how far the feed runs ahead of the audible position
-        # (the binary's ring cap of latency+2s plus the ~2s receiver buffer)
-        # with enough slack left to prime the joiner.
+        # It must cover the write-head lead - how far the feed runs ahead of the
+        # audible position - because that is exactly the span a joiner's anchor
+        # maps into. The lead is not a constant of the protocol: it is the sum
+        # of every buffer downstream of this counter (see
+        # AIRPLAY_LATE_JOIN_RING_MIN_SECONDS), so it is measured per session and
+        # the ring is grown to match.
         self._pcm_buffer = bytearray()
+        # Largest write-head lead this session has shown, and the ring size
+        # derived from it.
+        self._peak_lead_seconds: float = 0.0
         # Raw byte sizes of the PCM actually on the wire. At 24-bit the binary
         # is fed s32le carriers (bit_depth stays 24 for the ALAC encode), so
         # sizes MUST come from the content type: bit_depth-derived sizes are
@@ -95,7 +117,7 @@ class AirPlayStreamSession:
         }.get(pcm_format.content_type, pcm_format.bit_depth // 8)
         self._pcm_frame_size = bytes_per_sample * pcm_format.channels
         self._pcm_byte_rate = self._pcm_frame_size * pcm_format.sample_rate
-        self._pcm_buffer_max = self._pcm_byte_rate * 10  # 10 seconds
+        self._pcm_buffer_max = self._ring_bytes_for(0.0)
         # Bytes still to skip off the head of the live feed for a late joiner
         # whose anchor lands ahead of the current write head, keyed by player id.
         self._client_skip_bytes: dict[str, int] = {}
@@ -147,9 +169,19 @@ class AirPlayStreamSession:
         try:
             async with asyncio.TaskGroup() as task_group:
                 for player in self.sync_clients:
-                    task_group.create_task(self._start_client(player, self.use_shared_ptp))
+                    task_group.create_task(
+                        self._member_start_step(
+                            player, "spawn its cli", self._start_client(player, self.use_shared_ptp)
+                        )
+                    )
             await asyncio.gather(
-                *[p.stream.wait_for_connection() for p in self.sync_clients if p.stream]
+                *[
+                    self._member_start_step(
+                        player, "connect to its device", player.stream.wait_for_connection()
+                    )
+                    for player in self.sync_clients
+                    if player.stream
+                ]
             )
             # The binary buffers stdin into its ring from process start; feed
             # audio first and wait for every member to confirm it flowing, then
@@ -158,12 +190,29 @@ class AirPlayStreamSession:
             # binary bursts the receiver pre-fill after START.
             self._audio_source_task = asyncio.create_task(self._audio_streamer(audio_source))
             await self._wait_members_audio_present()
-            await self._start_members(position_ms, self._anchor_start_unix_ms())
+            # Members of a group have to agree on one instant, and a freshly
+            # connected receiver needs about a second before it even starts
+            # probing — too late for the binary to raise its own commit floor,
+            # and a first start is the one case it will not correct afterwards.
+            # So a group anchor waits for the receivers to say when they can
+            # play, rather than trusting the lead to have covered it.
+            ready_at_unix_ms = await self._wait_members_clock_ready()
+            await self._start_members(
+                position_ms, self._anchor_start_unix_ms(ready_at_unix_ms=ready_at_unix_ms)
+            )
         except asyncio.CancelledError:
             await self.stop()
             raise
         except Exception as err:
-            # playback failed to start, cleanup
+            # playback failed to start, cleanup. This runs for every failure. A
+            # per-member one has already been named where it happened, so here
+            # the line says the whole session went down with it; for a failure
+            # no single member owns, it is the only line there is.
+            self.prov.logger.warning(
+                "AirPlay start failed for a session of %d member(s): %s",
+                len(self.sync_clients),
+                err,
+            )
             await self.stop()
             # A member can fail for a specific, user-actionable reason (a device
             # that needs its password configured, for example). That error must
@@ -384,8 +433,8 @@ class AirPlayStreamSession:
             # for that projection here — outside the session lock, so the rest
             # of the group keeps being fed — lets the join anchor on the
             # device's own readiness instead of a fixed guess.
-            ready_at_unix_ms = await stream.wait_clock_ready(
-                timeout=AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS / 1000
+            readiness, ready_at_unix_ms = await stream.wait_clock_ready(
+                timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
             )
         except asyncio.CancelledError:
             await self.stop_client(airplay_player, reason="late joiner start cancelled")
@@ -399,23 +448,43 @@ class AirPlayStreamSession:
             await self.stop_client(airplay_player, reason="late joiner connection failed")
             return
 
+        if readiness is ClockReadiness.STALLED:
+            # The receiver never answered our clock, so it would render silence
+            # for as long as it stayed in the group while every other signal
+            # said it was playing. Better to leave it out: the group keeps
+            # playing and the player stays idle, which is the visible truth.
+            # The binary's own report names the device and the ports to check.
+            self.prov.logger.warning(
+                "Late joiner %s: not adding it to the group - its receiver never answered "
+                "the server's PTP clock, so it would render silence",
+                airplay_player.player_id,
+            )
+            await self.stop_client(airplay_player, reason="receiver clock stalled")
+            return
+
         pcm_sample_size = self._pcm_byte_rate
         frame_size = self._pcm_frame_size
 
-        def map_to(anchor_at: float) -> tuple[float, float, bytes, int]:
+        def map_to(anchor_at: float, *, committed: bool) -> tuple[float, float, bytes, int]:
             """
             Map an anchor instant onto the live feed (call under the lock).
 
             Snapshots the ring and derives which stream position the group
-            plays at ``anchor_at``, returning the (possibly ring-capped)
-            anchor, the due feed position, the prime slice and the live skip.
+            plays at ``anchor_at``, returning the anchor, the due feed
+            position, the prime slice and the live skip.
+
+            :param anchor_at: Instant at which the joiner's first delivered
+                sample becomes audible.
+            :param committed: True once the binary has acked the instant, which
+                fixes it. A due position the ring can no longer reach is then
+                covered with silence rather than by moving the anchor, because
+                moving an instant the binary already owns would offset the
+                joiner from the group by exactly that much.
             """
-            # Snapshot the ring and map its span onto stream positions:
-            # it covers [seconds_streamed - buffer_seconds, seconds_streamed].
+            # Snapshot the ring, which ends at the write head: it covers the
+            # stream positions [seconds_streamed - len(ring)/rate, seconds_streamed].
             effective_start_time = self.effective_start_time
             buffered_pcm = bytes(self._pcm_buffer)
-            buffer_seconds = len(buffered_pcm) / pcm_sample_size
-            ring_floor = self.seconds_streamed - buffer_seconds
             due = anchor_at - effective_start_time
             skip = 0
             prime_slice = b""
@@ -423,20 +492,6 @@ class AirPlayStreamSession:
                 # The due position is at or behind the write head: prime
                 # the joiner from the ring so the live feed then continues
                 # seamlessly.
-                if due < ring_floor:
-                    # The due position predates the ring (an unusually
-                    # large lead). Cap the prime at the whole buffer and
-                    # grow the headroom so the anchor still maps to the
-                    # prime's first sample exactly.
-                    self.prov.logger.debug(
-                        "Late joiner %s: due position %.2fs predates the "
-                        "%.2fs ring; capping prime at the whole buffer",
-                        airplay_player.player_id,
-                        due,
-                        buffer_seconds,
-                    )
-                    due = ring_floor
-                    anchor_at = effective_start_time + due
                 keep_bytes = int((self.seconds_streamed - due) * pcm_sample_size)
                 # Frame-align the prime START in ABSOLUTE stream
                 # coordinates. The prime must end exactly at the write head
@@ -453,8 +508,61 @@ class AirPlayStreamSession:
                         airplay_player.player_id,
                         realign,
                     )
-                if keep_bytes > 0:
-                    prime_slice = buffered_pcm[len(buffered_pcm) - keep_bytes :]
+                # The ring's own head is frame-aligned only by accident - it is
+                # trimmed on byte overflow - so align it too before measuring
+                # how much of the requested prime it can really serve.
+                ring_head_abs = self._pcm_total_fed - len(buffered_pcm)
+                ring_realign = (frame_size - ring_head_abs % frame_size) % frame_size
+                servable = buffered_pcm[ring_realign:]
+                if keep_bytes > len(servable):
+                    # The due position predates the ring: the write head ran
+                    # further ahead of the audible position than the ring was
+                    # sized for. Those samples are gone, so the join either
+                    # starts a little later (anchor still free to move) or opens
+                    # with that much silence (anchor already acked) - both keep
+                    # the real content on the instant the group plays it, which
+                    # dropping the missing head would not.
+                    missing = keep_bytes - len(servable)
+                    lead = self.seconds_streamed - (time.time() - effective_start_time)
+                    if committed:
+                        # One ring's worth is already far past any real
+                        # shortfall, so it bounds what an implausible ack (one
+                        # mapping back near the session start) can allocate.
+                        pad = min(missing, self._pcm_buffer_max)
+                        prime_slice = bytes(pad) + servable
+                        # A clamped pad cannot reach the due position, so the
+                        # joiner really does end up ahead of the group by the
+                        # remainder. Say which of the two happened.
+                        residual = (missing - pad) / pcm_sample_size
+                        self.prov.logger.warning(
+                            "Late joiner %s: the feed runs %.2fs ahead of the audible "
+                            "position, past the %.2fs of audio kept for a join; opening "
+                            "with %.2fs of silence to cover the missing head. %s Please "
+                            "report this with a debug log.",
+                            airplay_player.player_id,
+                            lead,
+                            len(servable) / pcm_sample_size,
+                            pad / pcm_sample_size,
+                            f"That still leaves it {residual:.2f}s ahead of the group."
+                            if residual
+                            else "The content itself still lands in sync; the joiner is "
+                            "only audible that much late.",
+                        )
+                    else:
+                        due += missing / pcm_sample_size
+                        anchor_at = effective_start_time + due
+                        prime_slice = servable
+                        self.prov.logger.debug(
+                            "Late joiner %s: due position predates the %.2fs ring "
+                            "(feed runs %.2fs ahead); anchoring %.2fs later, on the "
+                            "ring's oldest sample",
+                            airplay_player.player_id,
+                            len(servable) / pcm_sample_size,
+                            lead,
+                            missing / pcm_sample_size,
+                        )
+                elif keep_bytes > 0:
+                    prime_slice = servable[len(servable) - keep_bytes :]
             else:
                 # The due position is ahead of the write head: skip that
                 # many bytes off the head of the live feed so the joiner's
@@ -469,11 +577,12 @@ class AirPlayStreamSession:
 
         now = time.time()
         self.prov.logger.debug(
-            "Late joiner %s: receiver clock readiness %s",
+            "Late joiner %s: receiver clock %s",
             airplay_player.player_id,
-            f"projected {ready_at_unix_ms / 1000 - now:.2f}s out"
-            if ready_at_unix_ms
-            else "not reported; anchoring on the join floor",
+            _CLOCK_READINESS_NOTES.get(readiness, "").format(
+                out=ready_at_unix_ms / 1000 - now,
+                timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000,
+            ),
         )
         async with self._lock:
             if not self._session_is_live():
@@ -489,9 +598,9 @@ class AirPlayStreamSession:
             if ready_at_unix_ms:
                 anchor_at = max(
                     anchor_at,
-                    (ready_at_unix_ms + AIRPLAY_JOIN_CLOCK_READY_LEAD_MS) / 1000,
+                    (ready_at_unix_ms + AIRPLAY_CLOCK_READY_LEAD_MS) / 1000,
                 )
-            requested_at, fed_pos_due = map_to(anchor_at)[:2]
+            requested_at, fed_pos_due = map_to(anchor_at, committed=False)[:2]
             start_unix_ms = int(requested_at * 1000)
             sync_adjust = airplay_player.config.get_value(CONF_SYNC_ADJUST, 0)
             adjust_ms = sync_adjust if isinstance(sync_adjust, int) else 0
@@ -536,7 +645,7 @@ class AirPlayStreamSession:
                 # the mapping covers whatever the group was fed while the ack was
                 # outstanding.
                 acked_at = (actual - adjust_ms) / 1000 if actual is not None else requested_at
-                start_at, fed_pos_due, prime, skip_bytes = map_to(acked_at)
+                start_at, fed_pos_due, prime, skip_bytes = map_to(acked_at, committed=True)
                 self._client_skip_bytes[airplay_player.player_id] = skip_bytes
                 # An instant that moved carries the content mapped onto it
                 # further into the stream than the position sent with the
@@ -549,7 +658,8 @@ class AirPlayStreamSession:
                 self.prov.logger.debug(
                     "Late joiner %s: priming %.2fs, skipping %.2fs, stream_pos=%.2fs, "
                     "fed_pos_due=%.2fs, start_at is %.2fs from now, acked %+d ms off the "
-                    "commanded instant (min_headroom=%.2fs, effective_shift=%.2fs)",
+                    "commanded instant (min_headroom=%.2fs, effective_shift=%.2fs, "
+                    "write_head_lead=%.2fs, peak=%.2fs, ring=%.2fs)",
                     airplay_player.player_id,
                     len(prime) / pcm_sample_size,
                     skip_bytes / pcm_sample_size,
@@ -559,6 +669,9 @@ class AirPlayStreamSession:
                     int(acked_at * 1000) - start_unix_ms,
                     min_headroom,
                     self.effective_start_time - self.start_time,
+                    self.seconds_streamed - (time.time() - self.effective_start_time),
+                    self._peak_lead_seconds,
+                    self._pcm_buffer_max / pcm_sample_size,
                 )
 
                 if prime:
@@ -598,6 +711,46 @@ class AirPlayStreamSession:
             airplay_player.player_id,
             time.time() - now,
         )
+
+    def _ring_bytes_for(self, lead_seconds: float) -> int:
+        """
+        Return the late-join ring size that covers a given write-head lead.
+
+        :param lead_seconds: Lead the ring has to span, before margin.
+        """
+        seconds = max(
+            lead_seconds + AIRPLAY_LATE_JOIN_RING_MARGIN_SECONDS,
+            AIRPLAY_LATE_JOIN_RING_MIN_SECONDS,
+        )
+        size = min(int(seconds * self._pcm_byte_rate), AIRPLAY_LATE_JOIN_RING_MAX_BYTES)
+        # Keep it a whole number of frames so it can bound a silence pad without
+        # knocking the prime off its frame boundaries.
+        return size - size % self._pcm_frame_size
+
+    def _observe_write_head_lead(self) -> None:
+        """
+        Track how far the feed runs ahead of the audible position (call under the lock).
+
+        A joiner's anchor maps into exactly this span, so the ring is grown to
+        the largest lead the session has shown. It only ever grows: shrinking it
+        mid-session would discard history a joiner still needs, and the lead is
+        at its largest right after the anchor is placed - the whole downstream
+        pipeline is full by then - so the ring is sized long before any late
+        join can arrive.
+        """
+        if self.start_time <= 0:
+            return  # not anchored yet, so there is no audible position to measure against
+        now = time.time()
+        if now < self.effective_start_time:
+            # Still inside the start lead: everything fed is ahead of an anchor
+            # that has not arrived, which would read as a lead seconds larger
+            # than the pipeline really holds.
+            return
+        lead = self.seconds_streamed - (now - self.effective_start_time)
+        if lead <= self._peak_lead_seconds:
+            return
+        self._peak_lead_seconds = lead
+        self._pcm_buffer_max = self._ring_bytes_for(lead)
 
     def _session_is_live(self) -> bool:
         """Return whether the session still has a running reference member (call under the lock)."""
@@ -740,6 +893,7 @@ class AirPlayStreamSession:
             # add_client always reads consistent values.
             self.seconds_streamed += len(chunk) / self._pcm_byte_rate
             self._pcm_total_fed += len(chunk)
+            self._observe_write_head_lead()
             self._pcm_buffer.extend(chunk)
             overflow = len(self._pcm_buffer) - self._pcm_buffer_max
             if overflow > 0:
@@ -808,6 +962,34 @@ class AirPlayStreamSession:
             if airplay_player.stream:
                 await airplay_player.stream.write_audio_eof()
 
+    async def _member_start_step(
+        self, airplay_player: AirPlayPlayer, step: str, awaitable: Coroutine[Any, Any, None]
+    ) -> None:
+        """
+        Run one per-member step of a group start, naming the member if it fails.
+
+        A group start fans its members out over a task group and a gather, both
+        of which collapse into a single exception at the caller - so with five
+        speakers connecting, nothing in the log says which one failed. That,
+        with whatever reason its binary reported, is the whole diagnostic.
+
+        :param airplay_player: The member the step belongs to.
+        :param step: What the member was doing, for the failure message.
+        :param awaitable: The step to run.
+        """
+        try:
+            await awaitable
+        except asyncio.CancelledError:
+            raise
+        except Exception as err:
+            self.prov.logger.warning(
+                "AirPlay group start: %s failed to %s: %s",
+                airplay_player.display_name,
+                step,
+                err,
+            )
+            raise
+
     async def _start_client(self, airplay_player: AirPlayPlayer, use_shared_ptp: bool) -> None:
         """
         Connect a CLI process and start its ffmpeg for a single client.
@@ -828,7 +1010,7 @@ class AirPlayStreamSession:
         await airplay_player.stream.connect(use_shared_ptp)
         await self._start_player_ffmpeg(airplay_player, self.media)
 
-    def _anchor_start_unix_ms(self, *, warm: bool = False) -> int:
+    def _anchor_start_unix_ms(self, *, warm: bool = False, ready_at_unix_ms: int = 0) -> int:
         """
         Return the shared audible-start instant for a readiness-confirmed start.
 
@@ -837,6 +1019,10 @@ class AirPlayStreamSession:
             minimum warm lead — their queued audio plays out before the new
             content can begin — and the shared anchor must sit beyond the
             largest member value so every member splices at the same instant.
+        :param ready_at_unix_ms: Latest instant at which a member's receiver
+            clock becomes usable, as the binaries reported it. The anchor never
+            lands before it. 0 when no member reported a projection, leaving the
+            lead below as the whole anchor.
         """
         if len(self.sync_clients) == 1:
             lead_ms = AIRPLAY_START_LEAD_MS
@@ -847,6 +1033,8 @@ class AirPlayStreamSession:
             # acquisition (see AIRPLAY_COLD_GROUP_START_LEAD_MS).
             lead_ms = AIRPLAY_COLD_GROUP_START_LEAD_MS
         anchor = int(time.time() * 1000) + lead_ms
+        if ready_at_unix_ms:
+            anchor = max(anchor, ready_at_unix_ms + AIRPLAY_CLOCK_READY_LEAD_MS)
         if not warm:
             return anchor
         # Splice-timeline members honor the commanded instant only when that
@@ -884,11 +1072,62 @@ class AirPlayStreamSession:
 
     async def _wait_members_audio_present(self) -> None:
         """Wait until every member's binary reports the new audio flowing."""
+        members = [(p, p.stream) for p in self.sync_clients if p.stream]
+        results = await asyncio.gather(*[stream.wait_audio_present() for _, stream in members])
+        if all(results):
+            return
+        # Name the members that never reported audio: they are what has to be
+        # looked at, and the group start below is abandoned for all of them.
+        silent = [
+            player.display_name
+            for (player, _), present in zip(members, results, strict=True)
+            if not present
+        ]
+        raise PlayerCommandFailed(f"audio feed was not confirmed by {', '.join(silent)}")
+
+    async def _wait_members_clock_ready(self) -> int:
+        """
+        Return the latest receiver-clock readiness any member reported.
+
+        Members that report nothing are not represented in the result; the
+        caller anchors those on its lead alone.
+
+        :return: Unix epoch ms of the latest projection any member reported, or 0
+            when there is nothing to wait for — a solo start, a receiver on NTP
+            timing, one that never answered, or a binary too old to report. The
+            caller then anchors on its lead alone.
+        """
+        if len(self.sync_clients) == 1:
+            # A lone receiver seats a fresh session by itself within ~20 ms and
+            # has no partner to be late against, so waiting only delays it. The
+            # instant matters once members have to agree on one.
+            return 0
         results = await asyncio.gather(
-            *[p.stream.wait_audio_present() for p in self.sync_clients if p.stream]
+            *[
+                p.stream.wait_clock_ready(timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000)
+                for p in self.sync_clients
+                if p.stream
+            ]
         )
-        if not all(results):
-            raise PlayerCommandFailed("audio feed was not confirmed")
+        ready_at_unix_ms = max(
+            (at for readiness, at in results if readiness is ClockReadiness.PROJECTED), default=0
+        )
+        # A group start does not drop a member that stalled - the rest of the
+        # group would still be started, and the member is already warned about
+        # by name, with the ports to check, where the binary reported it. Say
+        # which outcomes were seen so the anchor decision is readable.
+        unprojected = [
+            readiness for readiness, _ in results if readiness is not ClockReadiness.PROJECTED
+        ]
+        if unprojected:
+            self.prov.logger.debug(
+                "AirPlay start: %d of %d member(s) reported no receiver clock projection (%s); "
+                "anchoring those on the start lead alone",
+                len(unprojected),
+                len(results),
+                ", ".join(sorted({readiness.value for readiness in unprojected})),
+            )
+        return ready_at_unix_ms
 
     async def _start_members(
         self,
