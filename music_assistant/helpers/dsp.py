@@ -209,7 +209,10 @@ def filter_to_ffmpeg_params(
         # user placed safety limiter; level=false keeps it a transparent
         # ceiling (no auto make-up)
         filter_params.append(f"alimiter=limit={dsp_filter.ceiling}dB:level=false:asc=true")
-    if isinstance(dsp_filter, CompressorFilter):
+    # a unity ratio compresses nothing, leaving the make-up gain as the only effect
+    if isinstance(dsp_filter, CompressorFilter) and (
+        dsp_filter.ratio != 1.0 or dsp_filter.makeup != 0
+    ):
         # acompressor knee is threshold/sqrt(knee)..threshold*sqrt(knee), so a knee
         # width of N dB maps to a linear knee factor of 10**(N/20)
         knee = 10 ** (dsp_filter.knee / 20)

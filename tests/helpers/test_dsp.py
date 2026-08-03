@@ -319,6 +319,21 @@ def test_compressor_filter() -> None:
     assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT, ir_dir=IR_DIR) == [expected]
 
 
+def test_compressor_unity_ratio_is_passthrough() -> None:
+    """Test that a compressor which compresses nothing and adds no gain emits no filter."""
+    dsp_filter = CompressorFilter(enabled=True, ratio=1.0, makeup=0.0)
+    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT, ir_dir=IR_DIR) == []
+
+
+def test_compressor_unity_ratio_keeps_makeup_gain() -> None:
+    """Test that make-up gain still applies at unity ratio, rather than being dropped."""
+    dsp_filter = CompressorFilter(enabled=True, ratio=1.0, makeup=6.0)
+    params = filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT, ir_dir=IR_DIR)
+    assert len(params) == 1
+    assert isinstance(params[0], str)
+    assert ":makeup=6.0dB" in params[0]
+
+
 def test_compressor_knee_db_maps_to_linear_factor() -> None:
     """Test that a knee width in dB maps to acompressor's linear knee factor."""
     # 0 dB is a hard knee, acompressor's minimum knee factor of 1.0
