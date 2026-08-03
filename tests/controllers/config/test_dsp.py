@@ -453,10 +453,56 @@ async def test_upload_ir_rejects_oversized_file(tmp_path: Path) -> None:
     assert config.get_dsp_irs() == []
 
 
+async def test_save_dsp_config_rejects_unknown_ir() -> None:
+    """A player config naming an impulse response this server does not hold is refused."""
+    config = _DSPConfigStore()
+
+    with pytest.raises(InvalidDataError, match="Unknown impulse response"):
+        await config.save_dsp_config(
+            "player-1",
+            DSPConfig(enabled=True, filters=[ConvolutionFilter(enabled=True, ir_id="gone")]),
+        )
+
+    assert config.get_player_dsp_config("player-1").filters == []
+
+
+async def test_save_dsp_preset_rejects_unknown_ir() -> None:
+    """A preset naming an impulse response this server does not hold is refused."""
+    config = _DSPConfigStore()
+
+    with pytest.raises(InvalidDataError, match="Unknown impulse response"):
+        await config.save_dsp_presets(
+            DSPConfigPreset(
+                name="Room",
+                preset_id="room",
+                config=DSPConfig(
+                    enabled=True, filters=[ConvolutionFilter(enabled=True, ir_id="gone")]
+                ),
+            )
+        )
+
+    assert await config.get_dsp_presets() == []
+
+
+async def test_save_dsp_config_allows_blank_ir() -> None:
+    """A convolution filter with nothing selected yet still saves, as removal leaves it blank."""
+    config = _DSPConfigStore()
+
+    saved = await config.save_dsp_config(
+        "player-1",
+        DSPConfig(enabled=True, filters=[ConvolutionFilter(enabled=True, ir_id="")]),
+    )
+
+    saved_filter = saved.filters[0]
+    assert isinstance(saved_filter, ConvolutionFilter)
+    assert saved_filter.ir_id == ""
+
+
 async def test_remove_ir_clears_references(tmp_path: Path) -> None:
     """Removing an IR blanks its id from any player config or preset that used it."""
     config = _DSPConfigStore()
     config.mass.storage_path = str(tmp_path)
+    config.set("player_dsp_irs", {"abc123": {"ir_id": "abc123", "name": "Room"}})
     await config.save_dsp_config(
         "player-1",
         DSPConfig(
@@ -490,6 +536,7 @@ async def test_remove_ir_rebuilds_the_stream_of_an_affected_player(tmp_path: Pat
     """Blanking a convolution filter reapplies the DSP, as a saved config change would."""
     config = _DSPConfigStore()
     config.mass.storage_path = str(tmp_path)
+    config.set("player_dsp_irs", {"abc123": {"ir_id": "abc123", "name": "Room"}})
     await config.save_dsp_config(
         "player-1",
         DSPConfig(enabled=True, filters=[ConvolutionFilter(enabled=True, ir_id="abc123")]),
@@ -506,6 +553,7 @@ async def test_remove_ir_leaves_a_disabled_player_dsp_alone(tmp_path: Path) -> N
     """A player with DSP switched off hears nothing different, so it is not restarted."""
     config = _DSPConfigStore()
     config.mass.storage_path = str(tmp_path)
+    config.set("player_dsp_irs", {"abc123": {"ir_id": "abc123", "name": "Room"}})
     await config.save_dsp_config(
         "player-1",
         DSPConfig(enabled=False, filters=[ConvolutionFilter(enabled=True, ir_id="abc123")]),

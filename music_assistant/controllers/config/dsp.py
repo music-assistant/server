@@ -113,6 +113,7 @@ class DSPConfigMixin:
         preset = deepcopy(preset)
         preset.config.preset_id = None
         preset.validate()
+        self._validate_dsp_ir_refs(preset.config)
 
         previous = self._get_dsp_preset(preset.preset_id) if preset.preset_id else None
         if preset.preset_id is None:
@@ -293,6 +294,7 @@ class DSPConfigMixin:
     async def _save_dsp_config(self, player_id: str, config: DSPConfig) -> DSPConfig:
         """Persist and apply a validated DSP configuration."""
         config.validate()
+        self._validate_dsp_ir_refs(config)
         previous = self.get_player_dsp_config(player_id)
         self.set(f"{CONF_PLAYER_DSP}/{player_id}", config.to_dict())
         if previous.enabled or config.enabled:
@@ -357,6 +359,20 @@ class DSPConfigMixin:
             self.set(f"{CONF_PLAYER_DSP_PRESETS}/{preset_key}", preset.to_dict())
             cleared = True
         return cleared
+
+    def _validate_dsp_ir_refs(self, config: DSPConfig) -> None:
+        """
+        Reject a config naming an impulse response this server does not hold.
+
+        :param config: The DSP configuration to check.
+        """
+        stored: dict[str, dict[str, Any]] = self.get(CONF_PLAYER_DSP_IRS, {})
+        for dsp_filter in config.filters:
+            # an empty id is the "none selected yet" value, which stays allowed
+            if not isinstance(dsp_filter, ConvolutionFilter) or not dsp_filter.ir_id:
+                continue
+            if dsp_filter.ir_id not in stored:
+                raise InvalidDataError(f"Unknown impulse response: {dsp_filter.ir_id!r}")
 
     def _dsp_irs_dir(self) -> str:
         """Return the directory holding convolution impulse response files."""
