@@ -987,7 +987,9 @@ class MusicAssistant:
 
     async def unload_provider(self, instance_id: str, is_removed: bool = False) -> None:
         """Unload a provider."""
-        self.music.unschedule_provider_sync(instance_id, clear_persisted_state=is_removed)
+        # this waits (bounded) for a running sync to unwind: provider.unload() below tears
+        # down state the sync may still be using, such as the mount of a network share
+        await self.music.unschedule_provider_sync(instance_id, clear_persisted_state=is_removed)
         if provider := self._providers.get(instance_id):
             if isinstance(provider, PlayerProvider):
                 await self.players.on_provider_unload(provider)

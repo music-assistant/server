@@ -39,6 +39,7 @@ async def test_daemon_runner_reselects_api_port_when_taken() -> None:
     """An API port taken while the daemon was down is replaced before (re)starting."""
     provider = object.__new__(SpotifyConnectProvider)
     provider.mass = MagicMock()
+    provider.mass.streams.get_source_ip = AsyncMock(return_value="192.168.1.5")
     provider.logger = MagicMock()
     provider.config = MagicMock()
     provider.config.name = "Spotify Test"
@@ -75,4 +76,5 @@ async def test_daemon_runner_reselects_api_port_when_taken() -> None:
     port_probe.assert_awaited_once_with(38800, host="127.0.0.1")
     assert provider._api_port == 38801
     assert provider._client.base_url == "http://127.0.0.1:38801"
-    write_config.assert_called_once()
+    # the daemon config pins the advertisement to the player-facing interface
+    write_config.assert_called_once_with("192.168.1.5")

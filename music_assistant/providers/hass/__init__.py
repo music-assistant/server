@@ -13,13 +13,13 @@ import asyncio
 import logging
 import os
 from functools import partial
+from itertools import batched
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from aiohttp import ClientError
 from hass_client import HomeAssistantClient
 from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import get_websocket_url
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
@@ -37,17 +37,25 @@ from music_assistant_models.player_control import PlayerControl
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.helpers.datetime import iso_from_utc_timestamp
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.util import try_parse_int
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
 
-from .constants import OFF_STATES, MediaPlayerEntityFeature
+from .constants import OFF_STATES, MediaPlayerEntityFeature, parse_supported_features
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Callable, Collection
 
     from aiohttp import ClientSession
-    from hass_client.models import CompressedState, Device, EntityStateEvent, State
+    from hass_client.models import (
+        CompressedState,
+        Context,
+        Device,
+        EntityStateEvent,
+        Event,
+        State,
+    )
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.player import PlayerMedia
     from music_assistant_models.provider import ProviderManifest
@@ -62,16 +70,18 @@ CONF_VERIFY_SSL = "verify_ssl"
 CONF_POWER_CONTROLS = "power_controls"
 CONF_MUTE_CONTROLS = "mute_controls"
 CONF_VOLUME_CONTROLS = "volume_controls"
-CONF_TTS_ENTITY = "tts_entity"
-CONF_AI_TASK_ENTITY = "ai_task_entity"
 FEATURE_DISCOVERY_TIMEOUT = 30
 STATE_FETCH_TIMEOUT = 30
-STATE_FETCH_CONCURRENCY = 8
+STATE_FETCH_BATCH_SIZE = 500
+# window to collect entity registry updates in, so an integration registering a
+# batch of entities results in a single rebuild of the engine lists
+ENGINE_REFRESH_DEBOUNCE = 2
 
 # Home Assistant entity domains Music Assistant can offer as player controls.
 CONTROL_DOMAINS = ("media_player", "switch", "input_boolean", "number", "input_number")
 # Home Assistant entity domains that back the TTS and AI Task features.
 FEATURE_DOMAINS = ("tts", "ai_task")
+FEATURE_DOMAIN_PREFIXES = tuple(f"{domain}." for domain in FEATURE_DOMAINS)
 
 
 class DeviceMediaPlayerInfo(TypedDict):
@@ -97,12 +107,9 @@ async def _get_config_entries(hass_prov: HomeAssistantProvider) -> tuple[ConfigE
     all_volume_entities: list[ConfigValueOption] = []
     if not hass_prov.hass.connected:
         return ()
-    states = await hass_prov.get_states(domains=(*CONTROL_DOMAINS, *FEATURE_DOMAINS))
-    tts_entities, ai_task_entities = _get_feature_entity_options(states)
+    states = await hass_prov.get_states(domains=CONTROL_DOMAINS)
     for state in states:
         entity_platform = state["entity_id"].split(".")[0]
-        if entity_platform in ("tts", "ai_task"):
-            continue
         if "friendly_name" not in state["attributes"]:
             name = state["entity_id"]
         else:
@@ -123,7 +130,11 @@ async def _get_config_entries(hass_prov: HomeAssistantProvider) -> tuple[ConfigE
         if "mass_player_type" in state["attributes"]:
             # filter out mass players
             continue
-        supported_features = MediaPlayerEntityFeature(state["attributes"]["supported_features"])
+        supported_features = parse_supported_features(
+            state["attributes"].get("supported_features"),
+            state["entity_id"],
+            hass_prov.logger,
+        )
         if MediaPlayerEntityFeature.VOLUME_MUTE in supported_features:
             all_mute_entities.append(ConfigValueOption(state["entity_id"], title=name))
         if MediaPlayerEntityFeature.VOLUME_SET in supported_features:
@@ -164,22 +175,6 @@ async def _get_config_entries(hass_prov: HomeAssistantProvider) -> tuple[ConfigE
             default_value=[],
             category="player_controls",
         ),
-        ConfigEntry(
-            key=CONF_TTS_ENTITY,
-            type=ConfigEntryType.STRING,
-            required=False,
-            options=tts_entities,
-            default_value=tts_entities[0].value if tts_entities else None,
-            category="features",
-        ),
-        ConfigEntry(
-            key=CONF_AI_TASK_ENTITY,
-            type=ConfigEntryType.STRING,
-            required=False,
-            options=ai_task_entities,
-            default_value=ai_task_entities[0].value if ai_task_entities else None,
-            category="features",
-        ),
     ]
     return tuple(entries)
 
@@ -190,8 +185,11 @@ class HomeAssistantProvider(PluginProvider):
     hass: HomeAssistantClient
     _listen_task: asyncio.Task[None] | None = None
     _player_controls: dict[str, PlayerControl] | None = None
-    _tts_entity_id: str | None = None
-    _ai_task_entity_id: str | None = None
+    _unsubscribe_controls: Callable[[], None] | None = None
+    _unsubscribe_entity_registry: Callable[[], None] | None = None
+    _engine_refresh_task: asyncio.Task[None] | None = None
+    _ai_engines: list[AIEngine]
+    _tts_engines: list[TTSEngine]
     _startup_complete: bool = False
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
@@ -277,18 +275,6 @@ class HomeAssistantProvider(PluginProvider):
                 label=CONF_MUTE_CONTROLS,
                 default_value=[],
             ),
-            ConfigEntry(
-                key=CONF_TTS_ENTITY,
-                type=ConfigEntryType.STRING,
-                label=CONF_TTS_ENTITY,
-                required=False,
-            ),
-            ConfigEntry(
-                key=CONF_AI_TASK_ENTITY,
-                type=ConfigEntryType.STRING,
-                label=CONF_AI_TASK_ENTITY,
-                required=False,
-            ),
         )
 
     async def handle_async_init(self) -> None:
@@ -298,6 +284,8 @@ class HomeAssistantProvider(PluginProvider):
             raise SetupFailedError(msg)
         self._startup_complete = False
         self._player_controls = {}
+        self._ai_engines = []
+        self._tts_engines = []
         url = get_websocket_url(cast("str", self.get_setup_value(CONF_URL)))
         token = self.get_setup_value(CONF_AUTH_TOKEN)
         logging.getLogger("hass_client").setLevel(self.logger.level + 10)
@@ -327,6 +315,7 @@ class HomeAssistantProvider(PluginProvider):
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         await self._register_player_controls()
+        await self._subscribe_entity_registry()
 
     async def unload(self, is_removed: bool = False) -> None:
         """
@@ -409,8 +398,8 @@ class HomeAssistantProvider(PluginProvider):
         def _supports_announce(entity_id: str) -> bool:
             if (state := states.get(entity_id)) is None:
                 return False
-            supported_features = MediaPlayerEntityFeature(
-                state["attributes"].get("supported_features") or 0
+            supported_features = parse_supported_features(
+                state["attributes"].get("supported_features"), entity_id, self.logger
             )
             return MediaPlayerEntityFeature.MEDIA_ANNOUNCE in supported_features
 
@@ -522,38 +511,13 @@ class HomeAssistantProvider(PluginProvider):
             )
         if not ids:
             return []
-        # fetch each state via the REST api rather than the websocket: it is not subject
-        # to the websocket message size limit and lets us request individual entities
-        ha_url, headers, http_session = self._get_ha_http()
-        semaphore = asyncio.Semaphore(STATE_FETCH_CONCURRENCY)
-
-        async def _fetch_state(entity_id: str) -> State | None:
-            try:
-                async with (
-                    semaphore,
-                    http_session.get(
-                        f"{ha_url}/api/states/{entity_id}", headers=headers
-                    ) as response,
-                ):
-                    if response.status == 404:
-                        # entity currently has no state (e.g. not available)
-                        return None
-                    if response.status != 200:
-                        self.logger.warning(
-                            "Unexpected status %s fetching state for %s",
-                            response.status,
-                            entity_id,
-                        )
-                        return None
-                    return cast("State", await response.json())
-            except (ClientError, ValueError) as err:
-                # ValueError covers a malformed JSON body
-                self.logger.warning("Failed to fetch state for %s: %s", entity_id, err)
-                return None
-
+        states: list[State] = []
         async with asyncio.timeout(STATE_FETCH_TIMEOUT):
-            states = await asyncio.gather(*(_fetch_state(entity_id) for entity_id in ids))
-        return [state for state in states if state is not None]
+            # exceeding hass_client's 16MB websocket message limit drops the entire
+            # connection, so bound the state dump by construction and fetch in batches
+            for batch in batched(sorted(ids), STATE_FETCH_BATCH_SIZE, strict=False):
+                states.extend(await self._fetch_states(list(batch)))
+        return states
 
     async def resolve_image(self, path: str) -> bytes:
         """Resolve an image from an image path."""
@@ -562,10 +526,19 @@ class HomeAssistantProvider(PluginProvider):
             response.raise_for_status()
             return await response.read()
 
-    async def ai_query(self, query: str) -> str:
+    async def get_ai_engines(self) -> list[AIEngine]:
+        """Return the Home Assistant AI Task entities as AI engines."""
+        return self._ai_engines
+
+    async def get_tts_engines(self) -> list[TTSEngine]:
+        """Return the Home Assistant TTS entities as TTS engines."""
+        return self._tts_engines
+
+    async def ai_query(self, query: str, engine_id: str | None = None) -> str:
         """Handle an AI query via Home Assistant's ai_task service."""
-        if self._ai_task_entity_id is None:
-            raise UnsupportedFeaturedException("AI Task entity is not configured")
+        entity_id = engine_id or next((engine.id for engine in self._ai_engines), None)
+        if entity_id is None:
+            raise UnsupportedFeaturedException("AI Task entity is not available")
         result = await self.hass.send_command(
             "call_service",
             domain="ai_task",
@@ -573,7 +546,7 @@ class HomeAssistantProvider(PluginProvider):
             service_data={
                 "task_name": "music_assistant",
                 "instructions": query,
-                "entity_id": self._ai_task_entity_id,
+                "entity_id": entity_id,
             },
             return_response=True,
         )
@@ -610,12 +583,16 @@ class HomeAssistantProvider(PluginProvider):
         duration = await self.mass.streams.get_announcement_duration(announcement)
         await asyncio.sleep(duration or 5)
 
-    async def get_tts_message(self, message: str, language: str | None = None) -> StreamDetails:
+    async def get_tts_message(
+        self, message: str, language: str | None = None, engine_id: str | None = None
+    ) -> StreamDetails:
         """Handle text-to-speech via Home Assistant's REST API."""
-        if self._tts_entity_id is None:
-            raise UnsupportedFeaturedException("TTS entity is not configured")
+        entity_id = engine_id or next((engine.id for engine in self._tts_engines), None)
+        if entity_id is None:
+            raise UnsupportedFeaturedException("TTS entity is not available")
         ha_url, headers, http_session = self._get_ha_http()
-        payload: dict[str, str] = {"engine_id": self._tts_entity_id, "message": message}
+        # the tts_get_url payload field is called engine_id but takes a tts entity_id
+        payload: dict[str, str] = {"engine_id": entity_id, "message": message}
         if language:
             payload["language"] = language
         async with http_session.post(
@@ -714,8 +691,13 @@ class HomeAssistantProvider(PluginProvider):
                 control.mute_set = partial(self._handle_player_control_mute_set, entity_id)
             self._player_controls[entity_id] = control
             await self.mass.players.register_player_control(control)
-        # register for entity state updates
-        await self.hass.subscribe_entities(self._on_entity_state_update, list(control_entity_ids))
+        # register for entity state updates, replacing any earlier subscription
+        if unsubscribe := self._unsubscribe_controls:
+            self._unsubscribe_controls = None
+            unsubscribe()
+        self._unsubscribe_controls = await self.hass.subscribe_entities(
+            self._on_entity_state_update, list(control_entity_ids)
+        )
 
     async def _handle_player_control_power_on(self, entity_id: str) -> None:
         """Handle powering on the playercontrol."""
@@ -792,6 +774,33 @@ class HomeAssistantProvider(PluginProvider):
                 player_control.volume_muted = attributes.get("is_volume_muted")
         self.mass.players.update_player_control(entity_id)
 
+    async def _fetch_states(self, entity_ids: list[str]) -> list[State]:
+        """
+        Return the current Home Assistant state of the given entities.
+
+        :param entity_ids: The entity IDs to fetch the current state for.
+        :return: The states of the requested entities; entities that currently have
+            no state are absent from the result.
+        """
+        initial_states: asyncio.Future[dict[str, CompressedState]]
+        initial_states = asyncio.get_running_loop().create_future()
+
+        def _on_initial_states(event: EntityStateEvent) -> None:
+            # only the first message of a subscription carries the full state under "a";
+            # a state change racing in ahead of it must not resolve the fetch
+            if (added := event.get("a")) is not None and not initial_states.done():
+                initial_states.set_result(added)
+
+        unsubscribe = await self.hass.subscribe_entities(_on_initial_states, entity_ids)
+        try:
+            compressed_states = await initial_states
+        finally:
+            unsubscribe()
+        return [
+            _decompress_state(entity_id, compressed_state)
+            for entity_id, compressed_state in compressed_states.items()
+        ]
+
     def _get_ha_http(self) -> tuple[str, dict[str, str], ClientSession]:
         """Return HA base URL (without trailing /api), auth headers, and the HTTP session."""
         ha_url = cast("str", self.get_setup_value(CONF_URL)).rstrip("/")
@@ -804,6 +813,15 @@ class HomeAssistantProvider(PluginProvider):
 
     async def _disconnect_hass(self) -> None:
         """Stop listening for Home Assistant events and disconnect the client."""
+        if unsubscribe := self._unsubscribe_controls:
+            self._unsubscribe_controls = None
+            unsubscribe()
+        if unsubscribe := self._unsubscribe_entity_registry:
+            self._unsubscribe_entity_registry = None
+            unsubscribe()
+        if refresh_task := self._engine_refresh_task:
+            self._engine_refresh_task = None
+            refresh_task.cancel()
         if listen_task := self._listen_task:
             self._listen_task = None
             if not listen_task.done():
@@ -826,7 +844,7 @@ class HomeAssistantProvider(PluginProvider):
     async def _resolve_startup_features(self) -> None:
         """Resolve Home Assistant features while the listener remains active."""
         assert self._listen_task is not None
-        feature_task = asyncio.create_task(self._resolve_feature_entities())
+        feature_task = asyncio.create_task(self._refresh_engines())
         try:
             try:
                 async with asyncio.timeout(FEATURE_DISCOVERY_TIMEOUT):
@@ -856,48 +874,86 @@ class HomeAssistantProvider(PluginProvider):
                 feature_task.cancel()
                 await asyncio.gather(feature_task, return_exceptions=True)
 
-    async def _resolve_feature_entities(self) -> None:
-        """Resolve configured or default Home Assistant feature entities."""
-        states = await self.get_states(domains=FEATURE_DOMAINS)
-        tts_entities, ai_task_entities = _get_feature_entity_options(states)
-        self._tts_entity_id = _select_feature_entity(
-            self.config.get_value(CONF_TTS_ENTITY), tts_entities
-        )
-        self._ai_task_entity_id = _select_feature_entity(
-            self.config.get_value(CONF_AI_TASK_ENTITY), ai_task_entities
-        )
+    async def _refresh_engines(self) -> None:
+        """Rebuild the TTS/AI engine lists from the Home Assistant feature entities."""
+        tts_engines: list[TTSEngine] = []
+        ai_engines: list[AIEngine] = []
+        for state in await self.get_states(domains=FEATURE_DOMAINS):
+            entity_id = state["entity_id"]
+            entity_platform = entity_id.split(".", 1)[0]
+            if friendly_name := state["attributes"].get("friendly_name"):
+                name = f"{friendly_name} ({entity_id})"
+            else:
+                name = entity_id
+            if entity_platform == "tts":
+                tts_engines.append(TTSEngine(id=entity_id, name=name, provider=self))
+            elif entity_platform == "ai_task":
+                ai_engines.append(AIEngine(id=entity_id, name=name, provider=self))
+        tts_engines.sort(key=lambda engine: engine.name)
+        ai_engines.sort(key=lambda engine: engine.name)
+        self._tts_engines = tts_engines
+        self._ai_engines = ai_engines
         self._supported_features.discard(ProviderFeature.TTS)
         self._supported_features.discard(ProviderFeature.AI_QUERY)
-        if self._tts_entity_id:
+        if tts_engines:
             self._supported_features.add(ProviderFeature.TTS)
-        if self._ai_task_entity_id:
+        if ai_engines:
             self._supported_features.add(ProviderFeature.AI_QUERY)
 
+    async def _subscribe_entity_registry(self) -> None:
+        """Watch the Home Assistant entity registry to keep the engine lists up to date."""
+        # register for entity registry updates, replacing any earlier subscription
+        if unsubscribe := self._unsubscribe_entity_registry:
+            self._unsubscribe_entity_registry = None
+            unsubscribe()
+        self._unsubscribe_entity_registry = await self.hass.subscribe_events(
+            self._on_entity_registry_update, "entity_registry_updated"
+        )
 
-def _get_feature_entity_options(
-    states: list[State],
-) -> tuple[list[ConfigValueOption], list[ConfigValueOption]]:
-    """Return sorted TTS and AI Task entity options."""
-    feature_entities: dict[str, list[ConfigValueOption]] = {"tts": [], "ai_task": []}
-    for state in states:
-        entity_platform = state["entity_id"].split(".", 1)[0]
-        if entity_platform not in feature_entities:
-            continue
-        friendly_name = state["attributes"].get("friendly_name")
-        name = f"{friendly_name} ({state['entity_id']})" if friendly_name else state["entity_id"]
-        feature_entities[entity_platform].append(ConfigValueOption(state["entity_id"], title=name))
-    for entities in feature_entities.values():
-        entities.sort(key=lambda option: option.title or "")
-    return feature_entities["tts"], feature_entities["ai_task"]
+    def _on_entity_registry_update(self, event: Event) -> None:
+        """Handle an entity registry update event."""
+        entity_id = event["data"].get("entity_id", "")
+        if not entity_id.startswith(FEATURE_DOMAIN_PREFIXES):
+            return
+        self._schedule_engine_refresh()
+
+    def _schedule_engine_refresh(self) -> None:
+        """(Re)schedule the debounced rebuild of the engine lists."""
+        if refresh_task := self._engine_refresh_task:
+            self._engine_refresh_task = None
+            refresh_task.cancel()
+        self._engine_refresh_task = self.mass.create_task(self._delayed_engine_refresh())
+
+    async def _delayed_engine_refresh(self) -> None:
+        """Rebuild the engine lists once the debounce window has passed."""
+        await asyncio.sleep(ENGINE_REFRESH_DEBOUNCE)
+        try:
+            await self._refresh_engines()
+        except Exception as err:
+            self.logger.warning("Failed to refresh Home Assistant engines: %s", err)
 
 
-def _select_feature_entity(
-    configured_entity: ConfigValueType, options: list[ConfigValueOption]
-) -> str | None:
-    """Return the configured available entity or the first available entity."""
-    available_entity_ids = {str(option.value) for option in options}
-    if configured_entity:
-        if not isinstance(configured_entity, str):
-            return None
-        return configured_entity if configured_entity in available_entity_ids else None
-    return str(options[0].value) if options else None
+def _decompress_state(entity_id: str, compressed_state: CompressedState) -> State:
+    """
+    Return the full state representation of a compressed state message.
+
+    :param entity_id: The entity the compressed state belongs to.
+    :param compressed_state: The compressed state as received over the websocket.
+    """
+    raw_context = compressed_state.get("c")
+    context: Context = (
+        raw_context
+        if isinstance(raw_context, dict)
+        else {"id": raw_context or "", "parent_id": None, "user_id": None}
+    )
+    last_changed = compressed_state.get("lc")
+    # Home Assistant omits last_updated when it is identical to last_changed
+    last_updated = compressed_state.get("lu", last_changed)
+    return {
+        "entity_id": entity_id,
+        "state": compressed_state.get("s", ""),
+        "attributes": compressed_state.get("a", {}),
+        "last_changed": iso_from_utc_timestamp(last_changed) if last_changed else "",
+        "last_updated": iso_from_utc_timestamp(last_updated) if last_updated else "",
+        "context": context,
+    }

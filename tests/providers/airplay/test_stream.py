@@ -5,7 +5,7 @@ import errno
 import logging
 import os
 import threading
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable, Coroutine
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -18,13 +18,16 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter, open_named_pipe_writer
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
+    AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
+    AIRPLAY_START_ACK_TIMEOUT_MS,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_ENCRYPTION,
     CONF_PASSWORD,
     AirPlayRemoteCommand,
+    ClockReadiness,
     StreamingProtocol,
 )
-from music_assistant.providers.airplay.stream import AirPlayStream, ConnectError
+from music_assistant.providers.airplay.stream import AirPlayStream, CliError
 
 START_UNIX_MS = 1_750_000_000_000
 AP2_FEATURES = "0x4A7FDFD5,0x3C177FDE"
@@ -66,7 +69,11 @@ def _make_player() -> MagicMock:
     prov.dacp_id = "ABCDEF0123456789"
     prov.ptp_daemon_running = True
     prov.logger = logging.getLogger("test.airplay.prov")
+    # auto-detected publish ip: reachable address of this host, but not the interface
+    # the stream to this device leaves from - so it is never handed to the binary
     prov.mass.streams.publish_ip = "192.168.1.99"
+    prov.mass.streams.get_source_ip = AsyncMock(return_value="192.168.1.5")
+    prov.mass.streams.get_publish_ip = MagicMock(return_value=None)
     player.provider = prov
     return player
 
@@ -74,15 +81,9 @@ def _make_player() -> MagicMock:
 async def _build_args(player: MagicMock) -> list[str]:
     """Build the CLI args for the given player with the externals patched out."""
     stream = AirPlayStream(player)
-    with (
-        patch(
-            "music_assistant.providers.airplay.stream.get_cli_binary",
-            return_value="/fake/cliairplay",
-        ),
-        patch(
-            "music_assistant.providers.airplay.stream.resolve_if_ip",
-            return_value="192.168.1.5",
-        ),
+    with patch(
+        "music_assistant.providers.airplay.stream.get_cli_binary",
+        return_value="/fake/cliairplay",
     ):
         return await stream._build_cli_args()
 
@@ -90,6 +91,31 @@ async def _build_args(player: MagicMock) -> list[str]:
 def _arg_value(args: list[str], flag: str) -> Any:
     """Return the value following the given flag in the argument list."""
     return args[args.index(flag) + 1]
+
+
+def _acking_write_cli_command(
+    stream: AirPlayStream, at_unix_ms: int | None = None
+) -> Callable[[str], Coroutine[Any, Any, bool]]:
+    """
+    Build a ``_write_cli_command`` replacement that acks a START like the binary.
+
+    :param stream: The stream whose START commands are answered.
+    :param at_unix_ms: Scheduled audible instant to report back; defaults to the
+        commanded instant, i.e. the binary found it feasible.
+    """
+
+    async def write_command(command: str) -> bool:
+        # A START nothing acks otherwise pays the real ack timeout in wall clock;
+        # feeding the ack here leaves start()'s wait already released.
+        if "ACTION=START" in command:
+            requested = int(command.split("START_UNIX_MS=")[1].split("\n", 1)[0])
+            stream._handle_status_line(
+                f"[STATUS] started requested_unix_ms={requested} "
+                f"at_unix_ms={requested if at_unix_ms is None else at_unix_ms}"
+            )
+        return True
+
+    return write_command
 
 
 @pytest.mark.asyncio
@@ -123,13 +149,99 @@ async def test_cli_args_default_auto() -> None:
     assert "--latency" not in args
     # PTP daemon is running: stream attaches to the shared clock
     assert "--ptp-shared" in args
-    # networking
+    # networking: the interface the timing packets leave from is pinned
     assert _arg_value(args, "--if") == "192.168.1.5"
-    assert _arg_value(args, "--publish-ip") == "192.168.1.99"
+    assert "--publish-ip" not in args
     # the target is the only positional argument; PREPARE selects stdin
     assert args[-1] == "192.168.1.50"
     assert "-" not in args
     assert "--cmdpipe" in args
+
+
+@pytest.mark.asyncio
+async def test_cli_args_auto_publish_ip_is_never_advertised() -> None:
+    """
+    An auto-detected publish IP must not reach --publish-ip.
+
+    The binary treats it as authoritative for the PTP timing-peer list, while the
+    timing packets leave from the resolved --if interface. A peer list naming any
+    other address makes the receiver discard our clock and play silence.
+    """
+    player = _make_player()
+    player.provider.mass.streams.publish_ip = "10.45.0.20"
+
+    args = await _build_args(player)
+
+    assert _arg_value(args, "--if") == "192.168.1.5"
+    assert "--publish-ip" not in args
+    assert "10.45.0.20" not in args
+
+
+@pytest.mark.asyncio
+async def test_cli_args_configured_publish_ip_is_advertised() -> None:
+    """An explicitly configured publish IP is a reachability statement and is passed on."""
+    player = _make_player()
+    player.provider.mass.streams.get_publish_ip = MagicMock(return_value="10.45.0.20")
+
+    args = await _build_args(player)
+
+    assert _arg_value(args, "--publish-ip") == "10.45.0.20"
+    player.provider.mass.streams.get_publish_ip.assert_called_once_with("192.168.1.50")
+
+
+@pytest.mark.asyncio
+async def test_cli_args_publish_ip_omitted_when_it_matches_the_interface() -> None:
+    """A publish IP identical to the bound interface adds nothing to the peer list."""
+    player = _make_player()
+    player.provider.mass.streams.get_publish_ip = MagicMock(return_value="192.168.1.5")
+
+    args = await _build_args(player)
+
+    assert _arg_value(args, "--if") == "192.168.1.5"
+    assert "--publish-ip" not in args
+
+
+@pytest.mark.asyncio
+async def test_cli_args_no_interface_pin_leaves_routing_to_the_binary() -> None:
+    """With no interface to pin, --if is dropped so the routing table decides."""
+    player = _make_player()
+    player.provider.mass.streams.get_source_ip = AsyncMock(return_value=None)
+
+    args = await _build_args(player)
+
+    assert "--if" not in args
+
+
+@pytest.mark.asyncio
+async def test_cli_args_log_the_pinned_interface(caplog: pytest.LogCaptureFixture) -> None:
+    """The resolved interface is stated outright, so a user's log shows what it bound to."""
+    player = _make_player()
+
+    with caplog.at_level(logging.DEBUG):
+        await _build_args(player)
+
+    assert (
+        "cliairplay network binding for player apaabbccddeeff: "
+        "if=192.168.1.5 publish_ip=<not configured>" in caplog.text
+    )
+
+
+@pytest.mark.asyncio
+async def test_cli_args_log_the_unpinned_interface_and_publish_ip(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unpinned interface and a configured publish IP are named for what they are."""
+    player = _make_player()
+    player.provider.mass.streams.get_source_ip = AsyncMock(return_value=None)
+    player.provider.mass.streams.get_publish_ip = MagicMock(return_value="10.45.0.20")
+
+    with caplog.at_level(logging.DEBUG):
+        await _build_args(player)
+
+    assert (
+        "cliairplay network binding for player apaabbccddeeff: "
+        "if=<all interfaces> publish_ip=10.45.0.20" in caplog.text
+    )
 
 
 @pytest.mark.asyncio
@@ -184,15 +296,9 @@ async def test_cli_args_hires_pcm_format() -> None:
     player = _make_player()
     hires_format = AudioFormat(content_type=ContentType.PCM_S32LE, sample_rate=48000, bit_depth=24)
     stream = AirPlayStream(player, pcm_format=hires_format)
-    with (
-        patch(
-            "music_assistant.providers.airplay.stream.get_cli_binary",
-            return_value="/fake/cliairplay",
-        ),
-        patch(
-            "music_assistant.providers.airplay.stream.resolve_if_ip",
-            return_value="192.168.1.5",
-        ),
+    with patch(
+        "music_assistant.providers.airplay.stream.get_cli_binary",
+        return_value="/fake/cliairplay",
     ):
         args = await stream._build_cli_args()
 
@@ -261,16 +367,153 @@ async def test_cli_args_featureless_ap2_only_device_forces_airplay2() -> None:
     assert _arg_value(args, "--port") == "7000"
 
 
+@pytest.mark.parametrize(
+    ("line", "expected_route"),
+    [
+        (
+            "[STATUS] route protocol=airplay2 flow=realtime timing=ptp buffered=0",
+            "AirPlay 2 (realtime, PTP)",
+        ),
+        # a buffered stream is named by its delivery, whatever flow it was requested as
+        (
+            "[STATUS] route protocol=airplay2 flow=realtime timing=ntp buffered=1",
+            "AirPlay 2 (buffered, NTP)",
+        ),
+        (
+            "[STATUS] route protocol=raop flow=realtime timing=ntp buffered=0",
+            "RAOP",
+        ),
+    ],
+    ids=["airplay2-realtime", "airplay2-buffered", "raop"],
+)
+def test_parse_route_status(
+    line: str, expected_route: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The [STATUS] route line resolves the route this stream took and reports it."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+
+    with caplog.at_level(logging.INFO):
+        stream._parse_route_status(line)
+
+    assert stream.active_route == expected_route
+    assert f"Streaming to Player A via {expected_route}" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_stdout_reader_dispatches_the_route_line() -> None:
+    """The CLI stdout reader hands the [STATUS] route line to the route parser."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    process = MagicMock()
+    process.read = AsyncMock(
+        side_effect=[
+            b"[STATUS] route protocol=airplay2 flow=realtime timing=ptp buffered=0\n",
+            b"",
+        ]
+    )
+    stream._cli_proc = process
+
+    await stream._stdout_reader()
+
+    assert stream.active_route == "AirPlay 2 (realtime, PTP)"
+
+
 def test_parse_latency_status() -> None:
     """The [STATUS] latency line is parsed into the stream's latency attributes."""
     player = _make_player()
     stream = AirPlayStream(player)
     stream._parse_latency_status(
-        "[STATUS] latency lead_ms=1750 device_min_frames=11025 device_max_frames=88200"
+        "[STATUS] latency lead_ms=1750 device_min_frames=11025 device_max_frames=88200 "
+        "warm_lead_ms=1200"
     )
     assert stream.latency_lead_ms == 1750
     assert stream.device_min_frames == 11025
     assert stream.device_max_frames == 88200
+    assert stream.warm_lead_ms == 1200
+
+
+def test_parse_latency_status_reads_every_field_on_its_own() -> None:
+    """One unusable value must not leave the fields after it stale from the last report."""
+    player = _make_player()
+    stream = AirPlayStream(player)
+    stream._parse_latency_status(
+        "[STATUS] latency lead_ms=1750 device_min_frames=11025 device_max_frames=88200 "
+        "warm_lead_ms=1200"
+    )
+
+    stream._parse_latency_status(
+        "[STATUS] latency lead_ms=900 device_min_frames=garbage device_max_frames=44100 "
+        "warm_lead_ms=300"
+    )
+
+    assert stream.latency_lead_ms == 900
+    assert stream.device_min_frames == 0  # unusable, so unreported
+    assert stream.device_max_frames == 44100
+    assert stream.warm_lead_ms == 300
+
+
+def test_parse_latency_status_logs_the_warm_lead(caplog: pytest.LogCaptureFixture) -> None:
+    """The warm lead drives every warm group anchor, so it belongs in the line."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.DEBUG):
+        stream._parse_latency_status(
+            "[STATUS] latency lead_ms=1750 device_min_frames=11025 device_max_frames=88200 "
+            "warm_lead_ms=1200"
+        )
+
+    assert "warm lead=1200ms" in caplog.text
+
+
+def test_mrp_push_accepted_is_not_logged_at_info(caplog: pytest.LogCaptureFixture) -> None:
+    """A push the device accepted is bookkeeping, not something to act on."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.INFO):
+        stream._parse_mrp_status("[STATUS] mrp path=command status=200")
+
+    assert caplog.text == ""
+
+
+@pytest.mark.parametrize("status", [302, 403, 500], ids=["redirect", "forbidden", "server-error"])
+def test_mrp_push_rejection_is_reported(status: int, caplog: pytest.LogCaptureFixture) -> None:
+    """Anything but a 2xx is the device not taking the push, so it is reported."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.WARNING):
+        stream._parse_mrp_status(f"[STATUS] mrp path=command status={status}")
+
+    assert "Player A" in caplog.text
+    assert str(status) in caplog.text
+
+
+def test_mrp_artwork_rejection_is_reported(caplog: pytest.LogCaptureFixture) -> None:
+    """An artwork rejection carries no path= or status=, and must not read as a plain push."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.WARNING):
+        stream._parse_mrp_status(
+            "[STATUS] mrp artwork=rejected reason=progressive_jpeg bytes=48123 "
+            "width=512 height=512 precision=8 sof=0xc2 components=3 progressive=1 "
+            "clear_status=200 staging_max_bytes=131072"
+        )
+
+    assert "rejected the now-playing artwork" in caplog.text
+    assert "progressive_jpeg" in caplog.text
+    assert "HTTP ?" not in caplog.text
+
+
+def test_mrp_channel_status_is_not_read_as_an_http_status(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The data-channel line reports 0/1, which must not be warned about as a failed push."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.WARNING):
+        stream._parse_mrp_status("[STATUS] mrp path=channel status=0")
+
+    assert caplog.text == ""
 
 
 @pytest.mark.parametrize(
@@ -646,8 +889,13 @@ async def test_start_sends_command_and_stamps_position() -> None:
     stream._cli_proc = MagicMock(closed=False)
     stream._connected.set()
 
-    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command:
-        await stream.start(START_UNIX_MS, 12_000)
+    with patch.object(
+        stream,
+        "_write_cli_command",
+        new_callable=AsyncMock,
+        side_effect=_acking_write_cli_command(stream),
+    ) as write_command:
+        assert await stream.start(START_UNIX_MS, 12_000) == START_UNIX_MS
 
     write_command.assert_awaited_once_with(f"START_UNIX_MS={START_UNIX_MS}\nACTION=START")
     assert stream._start_position == 12.0
@@ -662,8 +910,13 @@ async def test_start_join_marks_the_command() -> None:
     stream._cli_proc = MagicMock(closed=False)
     stream._connected.set()
 
-    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock) as write_command:
-        await stream.start(START_UNIX_MS, 0, join=True)
+    with patch.object(
+        stream,
+        "_write_cli_command",
+        new_callable=AsyncMock,
+        side_effect=_acking_write_cli_command(stream),
+    ) as write_command:
+        assert await stream.start(START_UNIX_MS, 0, join=True) == START_UNIX_MS
 
     write_command.assert_awaited_once_with(
         f"START_UNIX_MS={START_UNIX_MS}\nSTART_JOIN=1\nACTION=START"
@@ -718,7 +971,7 @@ async def test_start_transition_artwork_settled_or_retried(complete_before_start
             stream,
             "_write_cli_command",
             new_callable=AsyncMock,
-            return_value=True,
+            side_effect=_acking_write_cli_command(stream),
         ) as write_command,
         patch.object(
             stream,
@@ -731,7 +984,7 @@ async def test_start_transition_artwork_settled_or_retried(complete_before_start
         await render_started.wait()
         if complete_before_start:
             await pretransition_task
-        await stream.start(START_UNIX_MS, 0)
+        assert await stream.start(START_UNIX_MS, 0) == START_UNIX_MS
         await asyncio.gather(*metadata_tasks)
         release_render.set()
         await pretransition_task
@@ -823,6 +1076,131 @@ async def test_start_raises_when_command_not_delivered() -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_fails_fast_on_reported_start_failure() -> None:
+    """A reported start failure ends the ack wait at once instead of timing out."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
+        start_task = asyncio.create_task(stream.start(START_UNIX_MS, 0, join=True))
+        await asyncio.sleep(0)
+        stream._handle_status_line(
+            '[STATUS] error code=start_failed http=0 detail="no live session to start"'
+        )
+        with pytest.raises(PlayerCommandFailed, match="no live session to start"):
+            await start_task
+
+    # a command failure must not poison how a NEW connection is reported
+    assert stream._connect_error is None
+
+
+@pytest.mark.asyncio
+async def test_flush_fails_fast_on_reported_flush_failure() -> None:
+    """A reported flush failure resolves the ack wait as a failure, not a timeout."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
+        flush_task = asyncio.create_task(stream.flush())
+        await asyncio.sleep(0)
+        stream._handle_status_line(
+            '[STATUS] error code=flush_failed http=0 detail="session rejected the flush"'
+        )
+        assert await flush_task is False
+
+    assert stream._connect_error is None
+
+
+@pytest.mark.asyncio
+async def test_start_failure_does_not_outlive_its_command() -> None:
+    """A failed START leaves no error behind that would fail the next one."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+    stream._handle_status_line("[STATUS] error code=start_failed")
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
+        start_task = asyncio.create_task(stream.start(START_UNIX_MS, 0))
+        await asyncio.sleep(0)
+        stream._handle_status_line(
+            f"[STATUS] started requested_unix_ms={START_UNIX_MS} at_unix_ms={START_UNIX_MS}"
+        )
+        assert await start_task == START_UNIX_MS
+
+
+@pytest.mark.asyncio
+async def test_start_returns_the_instant_the_binary_scheduled() -> None:
+    """A corrected ack, not the commanded instant, is what the caller maps content onto."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+    corrected = START_UNIX_MS + 700
+
+    with patch.object(
+        stream,
+        "_write_cli_command",
+        new_callable=AsyncMock,
+        side_effect=_acking_write_cli_command(stream, corrected),
+    ):
+        assert await stream.start(START_UNIX_MS, 0) == corrected
+
+
+@pytest.mark.asyncio
+async def test_start_reports_no_instant_when_the_ack_never_arrives(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An unacknowledged START reports no instant and says the commanded one is assumed."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with (
+        patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True),
+        patch("music_assistant.providers.airplay.stream.AIRPLAY_START_ACK_TIMEOUT_MS", 10),
+        caplog.at_level(logging.WARNING),
+    ):
+        assert await stream.start(START_UNIX_MS, 0) is None
+
+    assert "did not acknowledge its start" in caplog.text
+    assert str(START_UNIX_MS) in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("join", "expected_timeout"),
+    [
+        (True, AIRPLAY_JOIN_START_ACK_TIMEOUT_MS / 1000),
+        (False, AIRPLAY_START_ACK_TIMEOUT_MS / 1000),
+    ],
+    ids=["join", "plain"],
+)
+async def test_start_ack_window_matches_the_arm(join: bool, expected_timeout: float) -> None:
+    """A join's ack is held for clock verification, so it waits far longer than a plain start."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+    timeouts: list[float] = []
+
+    async def record_timeout(awaitable: Any, timeout: float) -> None:
+        timeouts.append(timeout)
+        awaitable.close()
+        raise TimeoutError
+
+    with (
+        patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True),
+        patch(
+            "music_assistant.providers.airplay.stream.asyncio.wait_for",
+            side_effect=record_timeout,
+        ),
+    ):
+        assert await stream.start(START_UNIX_MS, 0, join=join) is None
+
+    assert timeouts == [expected_timeout]
+
+
+@pytest.mark.asyncio
 async def test_flush_returns_false_when_not_connected() -> None:
     """FLUSH is a no-op returning False before the device connects."""
     stream = AirPlayStream(_make_player())
@@ -896,6 +1274,126 @@ def test_flushed_status_sets_flush_event() -> None:
     assert stream._handle_status_line("[STATUS] flushed") is False
 
     assert stream._flushed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_clock_ready_projection_resolves_the_wait() -> None:
+    """A probing receiver reports when its clock becomes usable, from its first probe."""
+    stream = AirPlayStream(_make_player())
+
+    assert (
+        stream._handle_status_line(
+            "[STATUS] clock_ready mode=ptp state=probing streak_ms=0 exchanges=1 "
+            f"ready_in_ms=2300 ready_at_unix_ms={START_UNIX_MS}"
+        )
+        is False
+    )
+
+    assert await stream.wait_clock_ready(timeout=0.01) == (
+        ClockReadiness.PROJECTED,
+        START_UNIX_MS,
+    )
+
+
+@pytest.mark.asyncio
+async def test_clock_ready_cold_line_keeps_waiting_for_a_projection() -> None:
+    """A receiver that has not probed yet carries no projection, so the wait goes on."""
+    stream = AirPlayStream(_make_player())
+
+    stream._handle_status_line(
+        "[STATUS] clock_ready mode=ptp state=cold streak_ms=0 exchanges=0 "
+        "ready_in_ms=0 ready_at_unix_ms=0"
+    )
+
+    assert await stream.wait_clock_ready(timeout=0.01) == (ClockReadiness.UNREPORTED, 0)
+    assert not stream._clock_ready.is_set()
+
+    stream._handle_status_line(
+        "[STATUS] clock_ready mode=ptp state=ready streak_ms=2400 exchanges=9 "
+        f"ready_in_ms=0 ready_at_unix_ms={START_UNIX_MS}"
+    )
+
+    assert await stream.wait_clock_ready(timeout=0.01) == (
+        ClockReadiness.PROJECTED,
+        START_UNIX_MS,
+    )
+
+
+@pytest.mark.asyncio
+async def test_clock_ready_ntp_resolves_without_a_projection() -> None:
+    """NTP timing has no receiver clock to wait for, so the wait ends with nothing."""
+    stream = AirPlayStream(_make_player())
+
+    stream._handle_status_line(
+        "[STATUS] clock_ready mode=ntp state=ready streak_ms=0 exchanges=0 "
+        f"ready_in_ms=0 ready_at_unix_ms={START_UNIX_MS}"
+    )
+
+    assert stream._clock_ready.is_set()
+    assert await stream.wait_clock_ready(timeout=0.01) == (ClockReadiness.NOT_APPLICABLE, 0)
+
+
+@pytest.mark.asyncio
+async def test_wait_clock_ready_times_out_for_a_binary_that_never_reports() -> None:
+    """A binary that does not report readiness is told apart from one that answered."""
+    stream = AirPlayStream(_make_player())
+
+    assert await stream.wait_clock_ready(timeout=0.01) == (ClockReadiness.UNREPORTED, 0)
+
+
+@pytest.mark.asyncio
+async def test_clock_ready_stalled_state_warns_once(caplog: pytest.LogCaptureFixture) -> None:
+    """A receiver that never answers our clock is reported loudly once and carries no projection."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.DEBUG):
+        ended = stream._handle_status_line(
+            "[STATUS] clock_ready mode=ptp state=stalled streak_ms=0 exchanges=0 "
+            "ready_in_ms=0 ready_at_unix_ms=0"
+        )
+        stream._handle_status_line(
+            "[STATUS] clock_ready mode=ptp state=stalled streak_ms=0 exchanges=0 "
+            "ready_in_ms=0 ready_at_unix_ms=0"
+        )
+
+    warnings = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert ended is False
+    assert len(warnings) == 1
+    assert "Player A" in warnings[0].getMessage()
+    assert "319/320" in warnings[0].getMessage()
+    assert stream._clock_ready.is_set()
+    assert await stream.wait_clock_ready(timeout=0.01) == (ClockReadiness.STALLED, 0)
+
+
+def test_clock_ready_stall_warning_is_ptp_only(caplog: pytest.LogCaptureFixture) -> None:
+    """An NTP-timed session has no clock of ours to answer, so it never reads as a stall."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.DEBUG):
+        stream._handle_status_line(
+            "[STATUS] clock_ready mode=ntp state=stalled streak_ms=0 exchanges=0 "
+            f"ready_in_ms=0 ready_at_unix_ms={START_UNIX_MS}"
+        )
+
+    assert [record for record in caplog.records if record.levelno >= logging.WARNING] == []
+    assert stream._clock_ready_at_unix_ms == 0
+
+
+@pytest.mark.parametrize("state", ["cold", "probing", "ready"])
+def test_clock_ready_handshake_states_do_not_warn(
+    state: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Any state but a stall is a normal step of the clock handshake and stays quiet."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.DEBUG):
+        ended = stream._handle_status_line(
+            f"[STATUS] clock_ready mode=ptp state={state} streak_ms=900 exchanges=4 "
+            f"ready_in_ms=940 ready_at_unix_ms={START_UNIX_MS}"
+        )
+
+    assert ended is False
+    assert [record for record in caplog.records if record.levelno >= logging.WARNING] == []
 
 
 def test_elapsed_includes_start_position() -> None:
@@ -1008,8 +1506,13 @@ async def test_start_resets_reanchor_shift() -> None:
     stream.cumulative_shift_seconds = 3.078
     stream._reanchor_status_seen = True
 
-    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
-        await stream.start(START_UNIX_MS, 0)
+    with patch.object(
+        stream,
+        "_write_cli_command",
+        new_callable=AsyncMock,
+        side_effect=_acking_write_cli_command(stream),
+    ):
+        assert await stream.start(START_UNIX_MS, 0) == START_UNIX_MS
 
     assert stream.cumulative_shift_seconds == 0.0
     assert stream._reanchor_status_seen is False
@@ -1699,7 +2202,7 @@ async def test_connect_error_status_line_is_parsed() -> None:
         '[STATUS] error code=auth_required http=401 detail="RTSP setup rejected"'
     )
 
-    assert stream._connect_error == ConnectError("auth_required", 401, "RTSP setup rejected")
+    assert stream._connect_error == CliError("auth_required", 401, "RTSP setup rejected")
 
 
 @pytest.mark.asyncio
@@ -1762,6 +2265,82 @@ def test_anchor_corrected_status_line_tolerates_malformed_line() -> None:
     assert stream._start_position == 12.0
 
 
+def test_content_cut_short_rebases_the_position_and_warns(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A cut that ended early gives back the ms the correction over-advanced the base by."""
+    stream = AirPlayStream(_make_player())
+    stream._start_position = 12.0
+    stream._handle_status_line(
+        "[STATUS] anchor_corrected requested_unix_ms=1750000000000 "
+        "from_unix_ms=1750000000400 at_unix_ms=1750000000900 content_cut_ms=500"
+    )
+    assert stream._start_position == 12.5
+
+    with caplog.at_level(logging.WARNING):
+        ended = stream._handle_status_line(
+            "[STATUS] content_cut requested_ms=500 cut_ms=180 cut_bytes=31752 drain_ms=210"
+        )
+
+    assert ended is False
+    assert stream._start_position == pytest.approx(12.18)
+    assert "AirPlay content cut" in caplog.text
+    assert "Player A" in caplog.text
+    assert "320 ms short" in caplog.text
+
+
+def test_content_cut_in_full_leaves_the_position_alone(caplog: pytest.LogCaptureFixture) -> None:
+    """A cut that took what it asked for needs no correction and stays quiet."""
+    stream = AirPlayStream(_make_player())
+    stream._start_position = 12.0
+    stream._handle_status_line(
+        "[STATUS] anchor_corrected requested_unix_ms=1750000000000 "
+        "from_unix_ms=1750000000400 at_unix_ms=1750000000900 content_cut_ms=500"
+    )
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        # a few ms below the request is byte quantization, not a short cut
+        stream._handle_status_line(
+            "[STATUS] content_cut requested_ms=500 cut_ms=498 cut_bytes=87887 drain_ms=505"
+        )
+
+    assert stream._start_position == 12.5
+    assert caplog.text == ""
+
+
+def test_content_cut_after_a_new_anchor_is_not_reconciled() -> None:
+    """A cut settling after a START must not be taken off that START's absolute base."""
+    stream = AirPlayStream(_make_player())
+    stream._start_position = 12.0
+    stream._handle_status_line(
+        "[STATUS] anchor_corrected requested_unix_ms=1750000000000 "
+        "from_unix_ms=1750000000400 at_unix_ms=1750000000900 content_cut_ms=500"
+    )
+    stream.rebase_position(30_000)
+
+    stream._handle_status_line(
+        "[STATUS] content_cut requested_ms=500 cut_ms=0 cut_bytes=0 drain_ms=12"
+    )
+
+    assert stream._start_position == 30.0
+
+
+def test_content_cut_status_line_tolerates_malformed_line() -> None:
+    """A malformed content_cut line is dropped instead of raising or rebasing."""
+    stream = AirPlayStream(_make_player())
+    stream._start_position = 12.0
+    stream._handle_status_line(
+        "[STATUS] anchor_corrected requested_unix_ms=1750000000000 "
+        "from_unix_ms=1750000000400 at_unix_ms=1750000000900 content_cut_ms=500"
+    )
+
+    ended = stream._handle_status_line("[STATUS] content_cut requested_ms=500 cut_ms=garbage")
+
+    assert ended is False
+    assert stream._start_position == 12.5
+
+
 def test_clock_verified_status_line_is_debug_logged(caplog: pytest.LogCaptureFixture) -> None:
     """A clock_verified line needs no server action beyond a debug note of the margin."""
     stream = AirPlayStream(_make_player())
@@ -1780,7 +2359,7 @@ async def test_connect_error_status_line_tolerates_missing_fields() -> None:
 
     stream._handle_status_line("[STATUS] error code=connect_failed")
 
-    assert stream._connect_error == ConnectError("connect_failed", 0, "")
+    assert stream._connect_error == CliError("connect_failed", 0, "")
 
 
 @pytest.mark.asyncio

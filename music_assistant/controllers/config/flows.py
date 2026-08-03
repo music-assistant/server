@@ -357,6 +357,7 @@ class SetupFlowMixin:
             session=session, target_key=target_key, required_scope=required_scope
         )
         self._setup_flows[flow_id] = flow
+        LOGGER.debug("Starting setup flow %s for %s", flow_id, target_key)
         flow.task = self.mass.create_task(self._run_flow(flow, flow_coro))
         self._schedule_flow_sweep()
         if session.current_step is None:
@@ -394,6 +395,7 @@ class SetupFlowMixin:
                 )
                 session.publish_abort("internal_error")
         finally:
+            LOGGER.debug("Setup flow %s ended", session.flow_id)
             session.close()
             self._pop_flow(flow)
 
