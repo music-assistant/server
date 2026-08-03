@@ -15,13 +15,10 @@ from music_assistant_models.errors import (
 from music_assistant.models.plugin import AIEngine, PluginProvider
 
 from .constants import (
+    CHAT_REQUEST_TIMEOUT,
     CONF_API_KEY,
     CONF_BASE_URL,
     CONF_MODELS,
-    CONF_REQUEST_TIMEOUT,
-    DEFAULT_REQUEST_TIMEOUT,
-    MAX_REQUEST_TIMEOUT,
-    MIN_REQUEST_TIMEOUT,
     MODELS_REQUEST_TIMEOUT,
 )
 from .helpers import chat_completion, list_models
@@ -77,16 +74,6 @@ class OpenAICompatibleProvider(PluginProvider):
                 options=[ConfigValueOption(model, title=model) for model in models],
                 category="features",
             ),
-            ConfigEntry(
-                key=CONF_REQUEST_TIMEOUT,
-                type=ConfigEntryType.INTEGER,
-                required=False,
-                default_value=DEFAULT_REQUEST_TIMEOUT,
-                # bounded on purpose: aiohttp reads a total of 0 as "wait forever", and
-                # two of the consumers apply no deadline of their own
-                range=(MIN_REQUEST_TIMEOUT, MAX_REQUEST_TIMEOUT),
-                advanced=True,
-            ),
         )
 
     async def get_ai_engines(self) -> list[AIEngine]:
@@ -109,9 +96,7 @@ class OpenAICompatibleProvider(PluginProvider):
             self._api_key,
             model=model,
             prompt=query,
-            timeout=self.get_config_value(
-                CONF_REQUEST_TIMEOUT, DEFAULT_REQUEST_TIMEOUT, return_type=int
-            ),
+            timeout=CHAT_REQUEST_TIMEOUT,
         )
 
     def _configured_models(self) -> list[str]:

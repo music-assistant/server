@@ -22,7 +22,11 @@ from music_assistant.providers.openai_compatible import (
     helpers,
     setup_flow,
 )
-from music_assistant.providers.openai_compatible.constants import CONF_MODELS
+from music_assistant.providers.openai_compatible.constants import (
+    CONF_MODELS,
+    SERVICE_BASE_URLS,
+    SERVICE_CUSTOM,
+)
 
 if TYPE_CHECKING:
     from music_assistant.models.setup_flow import SetupSession
@@ -339,48 +343,98 @@ async def test_probe_succeeds_when_endpoint_has_no_model_listing() -> None:
     assert result is None
 
 
-async def test_run_setup_keeps_the_stored_api_key_when_the_field_is_left_empty() -> None:
-    """The stored key is never sent to the client, so an empty field must not wipe it."""
+async def test_run_setup_prefills_the_address_of_the_chosen_service() -> None:
+    """Picking a known service fills in its address so it need not be looked up."""
+    session = _FakeSession(setup_data={}, submissions=[{"service": "groq"}, {}])
+
+    await _run_setup(session)
+
+    assert _entry_value(session, "base_url") == SERVICE_BASE_URLS["groq"]
+
+
+async def test_run_setup_leaves_the_address_empty_for_a_custom_service() -> None:
+    """There is nothing to prefill for a service we do not know the address of."""
+    session = _FakeSession(setup_data={}, submissions=[{"service": SERVICE_CUSTOM}, {}])
+
+    await _run_setup(session)
+
+    assert _entry_value(session, "base_url") == ""
+
+
+async def test_run_setup_prefers_the_new_services_address_when_switching() -> None:
+    """Moving an instance to another service must not keep the previous address."""
     session = _FakeSession(
-        setup_data={"base_url": BASE_URL, "api_key": "sk-existing"},
-        submissions=[{"base_url": BASE_URL, "api_key": ""}],
+        setup_data={"service": "openai", "base_url": SERVICE_BASE_URLS["openai"]},
+        submissions=[{"service": "ollama"}, {}],
     )
 
     await _run_setup(session)
 
-    assert session.finished == {"base_url": BASE_URL, "api_key": "sk-existing"}
+    assert _entry_value(session, "base_url") == SERVICE_BASE_URLS["ollama"]
+
+
+async def test_run_setup_keeps_an_edited_address_for_the_same_service() -> None:
+    """A hand-corrected address survives a reconfigure that keeps the same service."""
+    edited = "http://nas.local:11434/v1"
+    session = _FakeSession(
+        setup_data={"service": "ollama", "base_url": edited},
+        submissions=[{"service": "ollama"}, {}],
+    )
+
+    await _run_setup(session)
+
+    assert _entry_value(session, "base_url") == edited
+
+
+async def test_run_setup_keeps_the_stored_api_key_when_the_field_is_left_empty() -> None:
+    """The stored key is never sent to the client, so an empty field must not wipe it."""
+    session = _FakeSession(
+        setup_data={"service": "openai", "base_url": BASE_URL, "api_key": "sk-existing"},
+        submissions=[{"service": "openai"}, {"base_url": BASE_URL, "api_key": ""}],
+    )
+
+    await _run_setup(session)
+
+    assert session.finished == {
+        "service": "openai",
+        "base_url": BASE_URL,
+        "api_key": "sk-existing",
+    }
 
 
 async def test_run_setup_replaces_the_stored_api_key_when_a_new_one_is_given() -> None:
     """A freshly typed key overwrites the stored one."""
     session = _FakeSession(
-        setup_data={"base_url": BASE_URL, "api_key": "sk-existing"},
-        submissions=[{"base_url": BASE_URL, "api_key": "sk-new"}],
+        setup_data={"service": "openai", "base_url": BASE_URL, "api_key": "sk-existing"},
+        submissions=[{"service": "openai"}, {"base_url": BASE_URL, "api_key": "sk-new"}],
     )
 
     await _run_setup(session)
 
-    assert session.finished == {"base_url": BASE_URL, "api_key": "sk-new"}
+    assert session.finished == {"service": "openai", "base_url": BASE_URL, "api_key": "sk-new"}
 
 
 async def test_run_setup_clears_the_stored_api_key_on_request() -> None:
     """Ticking the clear option removes the key, for a move to a keyless server."""
     session = _FakeSession(
-        setup_data={"base_url": BASE_URL, "api_key": "sk-existing"},
-        submissions=[{"base_url": BASE_URL, "api_key": "", "clear_api_key": True}],
+        setup_data={"service": "openai", "base_url": BASE_URL, "api_key": "sk-existing"},
+        submissions=[
+            {"service": "ollama"},
+            {"base_url": BASE_URL, "api_key": "", "clear_api_key": True},
+        ],
     )
 
     await _run_setup(session)
 
-    assert session.finished == {"base_url": BASE_URL, "api_key": ""}
+    assert session.finished == {"service": "ollama", "base_url": BASE_URL, "api_key": ""}
 
 
 async def test_run_setup_offers_the_clear_option_only_when_a_key_is_stored() -> None:
     """A first-time setup has nothing to clear, so the option stays out of the form."""
-    fresh = _FakeSession(setup_data={}, submissions=[{"base_url": BASE_URL, "api_key": "sk-new"}])
+    fresh = _FakeSession(setup_data={}, submissions=[{"service": "openai"}, {}])
     stored = _FakeSession(
-        setup_data={"base_url": BASE_URL, "api_key": "sk-existing"},
-        submissions=[{"base_url": BASE_URL, "api_key": ""}],
+        setup_data={"service": "openai", "base_url": BASE_URL, "api_key": "sk-existing"},
+        submissions=[{"service": "openai"}, {"base_url": BASE_URL, "api_key": ""}],
     )
 
     await _run_setup(fresh)
@@ -547,6 +601,11 @@ def _provider_for_setup(setup_data: dict[str, Any]) -> OpenAICompatibleProvider:
     # the log level is read during construction; past that nothing is stored in the options
     config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
     return provider
+
+
+def _entry_value(session: _FakeSession, key: str) -> Any:
+    """Return the prefilled value of an entry on the last form the flow rendered."""
+    return next(entry.value for entry in session.entries if entry.key == key)
 
 
 async def _run_setup(session: _FakeSession) -> None:

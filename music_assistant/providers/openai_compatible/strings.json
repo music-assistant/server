@@ -1,8 +1,20 @@
 {
   "config_entries": {
+    "service": {
+      "label": "Service",
+      "options": {
+        "openai": "OpenAI",
+        "groq": "Groq",
+        "openrouter": "OpenRouter",
+        "together": "Together AI",
+        "ollama": "Ollama",
+        "lmstudio": "LM Studio",
+        "custom": "Something else"
+      }
+    },
     "base_url": {
       "label": "API base URL",
-      "description": "Address of the API, including the version path. For example https://api.openai.com/v1 for OpenAI, or http://localhost:11434/v1 for Ollama."
+      "description": "Address of the API, including the version path. Adjust this if the service does not run where it normally would, for example on another machine than Music Assistant."
     },
     "api_key": {
       "label": "API key",
@@ -15,16 +27,16 @@
     "models": {
       "label": "Models",
       "description": "Pick the models you want to use. Each one becomes a separate choice for the AI features, so you can use a fast model for simple tasks and a smarter one where it matters."
-    },
-    "request_timeout": {
-      "label": "Request timeout",
-      "description": "How long to wait for an answer, in seconds. A local server running without a graphics card may need considerably longer than a hosted service."
     }
   },
   "setup_flow": {
-    "user": {
-      "title": "Connect to an AI service",
-      "description": "Works with any service that speaks the OpenAI API, such as OpenAI, Groq, OpenRouter and Together, as well as local servers like Ollama and LM Studio. Once connected, choose the models you want in the provider settings."
+    "service": {
+      "title": "Choose a service",
+      "description": "Anything that speaks the OpenAI API works here. Pick one of the services below to fill in its address for you, or choose \"Something else\" to enter your own."
+    },
+    "connection": {
+      "title": "Connection details",
+      "description": "Once connected, choose the models you want to use in the provider settings."
     }
   },
   "errors": {
