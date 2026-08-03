@@ -20,6 +20,7 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_LATE_JOIN_RING_MAX_BYTES,
     AIRPLAY_LATE_JOIN_RING_MIN_SECONDS,
     AIRPLAY_START_LEAD_MS,
+    ClockReadiness,
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.stream_session import AirPlayStreamSession
@@ -35,7 +36,7 @@ def _stream_defaults(stream: MagicMock) -> MagicMock:
     matching an older binary, so the tests assert the commanded values directly.
     """
     stream.start = AsyncMock(return_value=None)
-    stream.wait_clock_ready = AsyncMock(return_value=None)
+    stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.UNREPORTED, 0))
     stream.warm_lead_ms = 0
     stream.flushed_head_unix_ms = 0
     return stream
@@ -227,7 +228,10 @@ async def test_group_start_never_anchors_before_every_receiver_clock_is_usable()
         stream.wait_for_connection = AsyncMock()
         stream.wait_audio_present = AsyncMock(return_value=True)
         stream.wait_clock_ready = AsyncMock(
-            return_value=ready_at if player is second else int(now * 1000)
+            return_value=(
+                ClockReadiness.PROJECTED,
+                ready_at if player is second else int(now * 1000),
+            )
         )
         player.stream = stream
 
@@ -258,7 +262,9 @@ async def test_solo_start_does_not_wait_for_a_clock_projection() -> None:
         stream.wait_for_connection = AsyncMock()
         stream.wait_audio_present = AsyncMock(return_value=True)
         # A projection far in the future must not delay a solo start.
-        stream.wait_clock_ready = AsyncMock(return_value=int(now * 1000) + 5_000)
+        stream.wait_clock_ready = AsyncMock(
+            return_value=(ClockReadiness.PROJECTED, int(now * 1000) + 5_000)
+        )
         player.stream = stream
 
     with (
@@ -1057,7 +1063,9 @@ async def test_late_join_anchors_on_the_reported_clock_readiness() -> None:
 
     def setup_with_projection(*_args: Any, **_kwargs: Any) -> None:
         _setup_stream(player)()
-        player.stream.wait_clock_ready = AsyncMock(return_value=ready_at_unix_ms)
+        player.stream.wait_clock_ready = AsyncMock(
+            return_value=(ClockReadiness.PROJECTED, ready_at_unix_ms)
+        )
 
     with (
         patch.object(session, "_start_client", side_effect=setup_with_projection),
@@ -1086,7 +1094,9 @@ async def test_late_join_floor_wins_over_a_clock_that_is_already_ready() -> None
 
     def setup_with_projection(*_args: Any, **_kwargs: Any) -> None:
         _setup_stream(player)()
-        player.stream.wait_clock_ready = AsyncMock(return_value=ready_at_unix_ms)
+        player.stream.wait_clock_ready = AsyncMock(
+            return_value=(ClockReadiness.PROJECTED, ready_at_unix_ms)
+        )
 
     with (
         patch.object(session, "_start_client", side_effect=setup_with_projection),
@@ -1126,6 +1136,58 @@ async def test_late_join_falls_back_to_the_floor_without_a_clock_projection() ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "readiness",
+    [ClockReadiness.UNREPORTED, ClockReadiness.NOT_APPLICABLE],
+    ids=["unreported", "ntp"],
+)
+async def test_late_join_without_a_projection_still_joins(readiness: ClockReadiness) -> None:
+    """A device with no clock to wait for is a fallback, not a reason to refuse it."""
+    now = 1_000_000.0
+    session = _make_session(now - 5.0, 5.0)
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 5)
+    player = _make_late_joiner()
+
+    def setup_without_projection(*_args: Any, **_kwargs: Any) -> None:
+        _setup_stream(player)()
+        player.stream.wait_clock_ready = AsyncMock(return_value=(readiness, 0))
+
+    with (
+        patch.object(session, "_start_client", side_effect=setup_without_projection),
+        patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        await session.add_client(player)
+
+    assert player in session.sync_clients
+
+
+@pytest.mark.asyncio
+async def test_late_joiner_with_a_stalled_clock_is_not_added() -> None:
+    """A receiver that never answered our clock renders silence, so keep it out of the group."""
+    now = 1_000_000.0
+    session = _make_session(now - 5.0, 5.0)
+    session._pcm_buffer = bytearray(b"\x01" * PCM_SAMPLE_SIZE * 5)
+    player = _make_late_joiner()
+
+    def setup_stalled(*_args: Any, **_kwargs: Any) -> None:
+        _setup_stream(player)()
+        player.stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.STALLED, 0))
+
+    with (
+        patch.object(session, "_start_client", side_effect=setup_stalled),
+        patch.object(session, "_write_chunk_to_player", new_callable=AsyncMock),
+        patch.object(session, "stop_client", new_callable=AsyncMock) as stop_client,
+        patch("music_assistant.providers.airplay.stream_session.time.time", return_value=now),
+    ):
+        await session.add_client(player)
+
+    player.stream.start.assert_not_awaited()
+    assert player not in session.sync_clients
+    stop_client.assert_awaited_once_with(player, reason="receiver clock stalled")
+
+
+@pytest.mark.asyncio
 async def test_late_join_feed_keeps_flowing_while_waiting_for_clock_readiness() -> None:
     """The group keeps being fed while a joiner's receiver clock projection is pending."""
     session = _make_session(time.time() - 5, 5.0)
@@ -1136,9 +1198,10 @@ async def test_late_join_feed_keeps_flowing_while_waiting_for_clock_readiness() 
     def setup_pending_projection(*_args: Any, **_kwargs: Any) -> None:
         _setup_stream(player)()
 
-        async def wait_clock_ready(*_args: Any, **_kwargs: Any) -> None:
+        async def wait_clock_ready(*_args: Any, **_kwargs: Any) -> tuple[ClockReadiness, int]:
             readiness_pending.set()
             await readiness_released.wait()
+            return (ClockReadiness.UNREPORTED, 0)
 
         player.stream.wait_clock_ready = AsyncMock(side_effect=wait_clock_ready)
 

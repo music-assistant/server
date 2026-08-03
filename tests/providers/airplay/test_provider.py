@@ -15,6 +15,7 @@ from music_assistant.providers.airplay.constants import (
     PTP_DAEMON_WARN_BURST,
     PTP_DAEMON_WARN_WINDOW,
     AirPlayRemoteCommand,
+    ClockReadiness,
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.player import AirPlayPlayer
@@ -651,7 +652,7 @@ async def test_raop_session_resolves_ptp_for_first_ap2_late_joiner() -> None:
         # and no receiver clock projection (an older binary), so the test
         # asserts the commanded values directly.
         player.stream.start = AsyncMock(return_value=None)
-        player.stream.wait_clock_ready = AsyncMock(return_value=None)
+        player.stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.UNREPORTED, 0))
         player.stream.warm_lead_ms = 0
         player.stream.flushed_head_unix_ms = 0
 
@@ -677,7 +678,7 @@ async def test_session_start_applies_uniform_ptp_decision_to_all_members() -> No
         player.stream = MagicMock()
         player.stream.wait_for_connection = AsyncMock()
         player.stream.wait_audio_present = AsyncMock(return_value=True)
-        player.stream.wait_clock_ready = AsyncMock(return_value=None)
+        player.stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.UNREPORTED, 0))
         player.stream.start = AsyncMock(return_value=None)
     session = _make_ptp_session(prov, players)
 
@@ -702,7 +703,7 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
         player.stream = MagicMock()
         player.stream.wait_for_connection = AsyncMock()
         player.stream.wait_audio_present = AsyncMock(return_value=True)
-        player.stream.wait_clock_ready = AsyncMock(return_value=None)
+        player.stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.UNREPORTED, 0))
         player.stream.start = AsyncMock(return_value=None)
         player.config.get_value = MagicMock(return_value=0)
     session = _make_ptp_session(prov, players)

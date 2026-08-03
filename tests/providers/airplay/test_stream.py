@@ -22,6 +22,7 @@ from music_assistant.providers.airplay.constants import (
     CONF_ENCRYPTION,
     CONF_PASSWORD,
     AirPlayRemoteCommand,
+    ClockReadiness,
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.stream import AirPlayStream, CliError
@@ -1097,7 +1098,10 @@ async def test_clock_ready_projection_resolves_the_wait() -> None:
         is False
     )
 
-    assert await stream.wait_clock_ready(timeout=0.01) == START_UNIX_MS
+    assert await stream.wait_clock_ready(timeout=0.01) == (
+        ClockReadiness.PROJECTED,
+        START_UNIX_MS,
+    )
 
 
 @pytest.mark.asyncio
@@ -1110,7 +1114,7 @@ async def test_clock_ready_cold_line_keeps_waiting_for_a_projection() -> None:
         "ready_in_ms=0 ready_at_unix_ms=0"
     )
 
-    assert await stream.wait_clock_ready(timeout=0.01) is None
+    assert await stream.wait_clock_ready(timeout=0.01) == (ClockReadiness.UNREPORTED, 0)
     assert not stream._clock_ready.is_set()
 
     stream._handle_status_line(
@@ -1118,7 +1122,10 @@ async def test_clock_ready_cold_line_keeps_waiting_for_a_projection() -> None:
         f"ready_in_ms=0 ready_at_unix_ms={START_UNIX_MS}"
     )
 
-    assert await stream.wait_clock_ready(timeout=0.01) == START_UNIX_MS
+    assert await stream.wait_clock_ready(timeout=0.01) == (
+        ClockReadiness.PROJECTED,
+        START_UNIX_MS,
+    )
 
 
 @pytest.mark.asyncio
@@ -1132,15 +1139,15 @@ async def test_clock_ready_ntp_resolves_without_a_projection() -> None:
     )
 
     assert stream._clock_ready.is_set()
-    assert await stream.wait_clock_ready(timeout=0.01) is None
+    assert await stream.wait_clock_ready(timeout=0.01) == (ClockReadiness.NOT_APPLICABLE, 0)
 
 
 @pytest.mark.asyncio
 async def test_wait_clock_ready_times_out_for_a_binary_that_never_reports() -> None:
-    """A binary that does not report readiness leaves the caller with no projection."""
+    """A binary that does not report readiness is told apart from one that answered."""
     stream = AirPlayStream(_make_player())
 
-    assert await stream.wait_clock_ready(timeout=0.01) is None
+    assert await stream.wait_clock_ready(timeout=0.01) == (ClockReadiness.UNREPORTED, 0)
 
 
 @pytest.mark.asyncio
@@ -1164,7 +1171,7 @@ async def test_clock_ready_stalled_state_warns_once(caplog: pytest.LogCaptureFix
     assert "Player A" in warnings[0].getMessage()
     assert "319/320" in warnings[0].getMessage()
     assert stream._clock_ready.is_set()
-    assert await stream.wait_clock_ready(timeout=0.01) is None
+    assert await stream.wait_clock_ready(timeout=0.01) == (ClockReadiness.STALLED, 0)
 
 
 def test_clock_ready_stall_warning_is_ptp_only(caplog: pytest.LogCaptureFixture) -> None:
