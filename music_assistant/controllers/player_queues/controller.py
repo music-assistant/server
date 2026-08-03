@@ -862,6 +862,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             raise InvalidCommand("Can not seek outside of duration range.")
         if queue.current_index is None:
             raise InvalidCommand(f"Queue {queue_player.state.name} has no current index.")
+        # Publish the seek target before rebuilding the stream to prevent progress snapback.
+        queue.elapsed_time = position
+        queue.elapsed_time_last_updated = time.time()
+        self.signal_update(queue_id)
         await self.play_index(queue_id, queue.current_index, seek_position=position)
 
     @api_command("player_queues/resume", required_scope=Scope.QUEUES_CONTROL)
