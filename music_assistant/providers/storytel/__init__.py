@@ -248,7 +248,13 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
             raise SetupFailedError("Invalid Storytel username or password")
         except (ClientError, ConnectionError) as err:
             raise SetupFailedError(f"Storytel login failed: {err}") from err
-        await self._api.fetch_resource_version()
+        try:
+            await self._api.fetch_resource_version()
+        except (ClientError, ConnectionError, ProviderUnavailableError) as err:
+            self.logger.warning(
+                "Storytel resource version refresh failed during setup; using default: %s",
+                err,
+            )
 
     @property
     def is_streaming_provider(self) -> bool:
