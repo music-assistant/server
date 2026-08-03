@@ -842,12 +842,13 @@ class SendspinAirPlayBridge:
 
         if self._airplay_stream_start_task is None:
             # Provisionally anchor byte 0 to the instant Sendspin scheduled for the
-            # first chunk it actually delivered -- the shared timeline, rather than a
-            # start of our own invention. Sendspin schedules that first sample the
-            # bridge lead ahead because that is what _refresh_bridge_timing reports as
+            # first chunk it actually delivered, which keeps the bridge on the group's
+            # shared timeline. That instant is at least the bridge lead ahead of now,
+            # because that is what _refresh_bridge_timing reports as
             # required_lead_time_ms:
-            #   * fresh track  -> the first chunk IS file position 0, so the intro is
-            #     kept;
+            #   * fresh track  -> the first chunk IS file position 0, so an anchor on
+            #     its own scheduled instant has no audio ahead of it to discard and
+            #     the intro is kept;
             #   * late join     -> the first chunk is the catch-up target, i.e. the
             #     group's current playback position, so the joiner lands in sync.
             # _anchor_stream re-bases this onto the instant the binary acks.
