@@ -165,8 +165,11 @@ class OpenAITTSProvider(PluginProvider):
             ConfigEntry(
                 key=CONF_VOICES,
                 type=ConfigEntryType.STRING,
+                # no options: the override exists to name voices we could not discover,
+                # and a populated options list would render as a strict select
+                multi_value=True,
                 required=False,
-                default_value=None,
+                default_value=[],
                 category="features",
                 requires_reload=True,
             ),
@@ -327,14 +330,26 @@ class OpenAITTSProvider(PluginProvider):
 
     async def _resolve_voices(self) -> list[str]:
         """Return the voices to expose, from the config override, the backend or the defaults."""
-        if override := self.get_config_value(CONF_VOICES):
-            voices = [voice.strip() for voice in str(override).split(",") if voice.strip()]
-            if voices := list(dict.fromkeys(voices)):
-                self.logger.debug("Using %s voice(s) from the config override", len(voices))
-                return voices
+        if voices := self._voice_override():
+            self.logger.debug("Using %s voice(s) from the config override", len(voices))
+            return voices
         api_key = str(self.get_setup_value(CONF_API_KEY) or "")
         if voices := await fetch_backend_voices(self.mass.http_session, self._base_url, api_key):
             self.logger.debug("Discovered %s voice(s) on the backend", len(voices))
             return voices
         self.logger.debug("Falling back to the default voices")
         return list(DEFAULT_VOICES)
+
+    def _voice_override(self) -> list[str]:
+        """Return the configured voices, empty when the override is unset."""
+        configured = self.get_config_value(CONF_VOICES)
+        # tolerate a single comma separated string next to the stored list of values
+        values: list[object]
+        if isinstance(configured, str):
+            values = list(configured.split(","))
+        elif isinstance(configured, list):
+            values = list(configured)
+        else:
+            return []
+        names = [str(value).strip() for value in values if str(value).strip()]
+        return list(dict.fromkeys(names))
