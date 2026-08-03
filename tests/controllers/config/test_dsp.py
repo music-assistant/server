@@ -321,6 +321,25 @@ async def test_upload_ir_transcode_is_length_bounded(tmp_path: Path) -> None:
     assert list((tmp_path / "dsp_irs").glob("*")) == []
 
 
+async def test_upload_ir_cleans_up_after_an_unexpected_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failure the upload does not anticipate still leaves no orphaned file behind."""
+    config = _DSPConfigStore()
+    config.mass.storage_path = str(tmp_path)
+    monkeypatch.setattr(
+        "music_assistant.controllers.config.dsp.async_parse_tags",
+        AsyncMock(side_effect=RuntimeError("boom")),
+    )
+
+    data = base64.b64encode(_wav_bytes(tmp_path)).decode()
+    with pytest.raises(RuntimeError):
+        await config.upload_dsp_ir("broken", data)
+
+    assert config.get_dsp_irs() == []
+    assert list((tmp_path / "dsp_irs").glob("*")) == []
+
+
 async def test_remove_ir_drops_record_with_unusable_id(tmp_path: Path) -> None:
     """A stored id that no longer passes validation can still be removed from the library."""
     config = _DSPConfigStore()

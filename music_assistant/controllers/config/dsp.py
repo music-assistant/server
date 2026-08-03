@@ -208,19 +208,16 @@ class DSPConfigMixin:
                 timeout=IR_TRANSCODE_TIMEOUT,
             )
             if returncode != 0:
-                await self._remove_file(ir_path)
                 raise InvalidDataError(
                     f"Uploaded file is not valid audio: {output.decode().strip()}"
                 )
             tags = await async_parse_tags(ir_path)
             if tags.channels > MAX_IR_CHANNELS:
-                await self._remove_file(ir_path)
                 raise InvalidDataError(
                     f"Impulse response has {tags.channels} channels: "
                     "only mono and stereo files are supported"
                 )
             if tags.duration is not None and tags.duration > MAX_IR_SECONDS:
-                await self._remove_file(ir_path)
                 raise InvalidDataError(
                     f"Impulse response is {tags.duration:.1f} seconds long: "
                     f"the limit is {MAX_IR_SECONDS:.0f} seconds"
@@ -228,6 +225,10 @@ class DSPConfigMixin:
         except TimeoutError:
             await self._remove_file(ir_path)
             raise InvalidDataError("Impulse response took too long to convert") from None
+        except BaseException:
+            # drop the IR if any upload error happened
+            await self._remove_file(ir_path)
+            raise
         finally:
             await self._remove_file(upload_path)
 
