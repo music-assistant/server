@@ -1338,12 +1338,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             If None, any previously stored speed for the item is preserved.
         """
         timestamp = utc_timestamp()
+        # we deliberately skip one-off items: sound effects and live inputs whoever owns
+        # them, and everything the builtin provider plays (except playlists) is a one-off url
+        if media_item.media_type in (MediaType.SOUND_EFFECT, MediaType.AUDIO_SOURCE):
+            return
         if (
             media_item.provider.startswith("builtin")
             and media_item.media_type != MediaType.PLAYLIST
         ):
-            # we deliberately skip builtin provider items as those are often
-            # one-off items like TTS or some sound effect etc.
             return
 
         params = {
