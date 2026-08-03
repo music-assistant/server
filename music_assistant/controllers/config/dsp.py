@@ -14,7 +14,7 @@ import aiofiles
 import shortuuid
 from music_assistant_models.auth import Scope
 from music_assistant_models.dsp import ConvolutionFilter, DSPConfig, DSPConfigPreset
-from music_assistant_models.enums import ContentType, EventType
+from music_assistant_models.enums import EventType
 from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import (
@@ -211,13 +211,6 @@ class DSPConfigMixin:
             if returncode != 0:
                 msg = output.decode(errors="replace").strip()
                 raise InvalidDataError(f"Uploaded file is not valid audio: {msg}")
-            # a lossy codec smears the impulse across neighbouring samples, which
-            # corrupts the very measurement the response is supposed to apply
-            source_format = ContentType.try_parse((await async_parse_tags(upload_path)).format)
-            if not source_format.is_lossless():
-                raise InvalidDataError(
-                    f"Impulse response is {source_format} encoded: only lossless files can be used"
-                )
             tags = await async_parse_tags(ir_path)
             if tags.channels > MAX_IR_CHANNELS:
                 raise InvalidDataError(
