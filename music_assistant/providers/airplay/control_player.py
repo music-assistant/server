@@ -678,7 +678,26 @@ class AirPlayControlPlayer(AirPlayPlayer):
     @property
     def _stream_active(self) -> bool:
         """Return whether Music Assistant is actively streaming to this device."""
-        return bool((stream := getattr(self, "stream", None)) and stream.running)
+        active = bool((stream := getattr(self, "stream", None)) and stream.running)
+        if active:
+            self._stream_last_active = time.monotonic()
+        return active
+
+    @property
+    def _external_state_blocked(self) -> bool:
+        """
+        Return whether externally observed playback state must be ignored.
+
+        While Music Assistant streams to this device, the stream is the SOLE
+        authority on player state. The check extends a grace period past a
+        stream's end because a warm-to-cold fallback briefly tears the stream
+        down mid-playback: a Companion/MRP update slipping through that window
+        applies the device's view of our own dying session as an "external
+        source", freezing the UI on a stale snapshot.
+        """
+        if self._stream_active:
+            return True
+        return time.monotonic() - getattr(self, "_stream_last_active", 0.0) < 15.0
 
     @property
     def _mrp_endpoint(self) -> tuple[AsyncServiceInfo, Protocol] | None:
@@ -1052,7 +1071,7 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     def _handle_playing_update(self, playing: Playing) -> None:
         """Apply external playback state received over the MRP tunnel."""
-        if self._stream_active:
+        if self._external_state_blocked:
             return
         app = self._mrp_device.metadata.app if self._mrp_device else None
         playback_state = {
@@ -1111,6 +1130,11 @@ class AirPlayControlPlayer(AirPlayPlayer):
 
     def _ensure_source(self, source_id: str, source_name: str) -> None:
         """Add a passive source reported by MRP playback monitoring."""
+        # Track external ids so the stream can reclaim the device state from a
+        # leaked external snapshot (see AirPlayPlayer.set_state_from_stream).
+        if not hasattr(self, "_external_source_ids"):
+            self._external_source_ids: set[str] = set()
+        self._external_source_ids.add(source_id)
         can_play_pause = bool(
             self._device_for_feature(FeatureName.Play)
             or self._device_for_feature(FeatureName.Pause)

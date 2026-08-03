@@ -607,6 +607,9 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
             #  Ignore items that had a stream error
             return
 
+        # a preloaded item is only probed once it actually streams
+        self._apply_probed_duration(item_to_report)
+
         if item_to_report.streamdetails and item_to_report.streamdetails.duration:
             duration = int(item_to_report.streamdetails.duration)
         else:

@@ -50,6 +50,7 @@ from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
 from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES,
     MANAGED_POOL_MAX,
+    PROBED_DURATION_MEDIA_TYPES,
 )
 from music_assistant.controllers.player_queues.helpers import (
     build_queue_item,
@@ -62,6 +63,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     set_current_user,
 )
+from music_assistant.helpers.audio import get_probed_duration, store_probed_duration
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 
 if TYPE_CHECKING:
@@ -380,9 +382,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             prefer_album_loudness=bool(playing_album_tracks),
         )
         # update queue_item.duration from streamdetails if we got a better value
-        if queue_item.streamdetails.duration and not queue_item.duration:
-            queue_item.duration = queue_item.streamdetails.duration
-            self.signal_update(queue_id, items_changed=True)
+        self._apply_probed_duration(queue_item)
 
         # pre-initialize the AudioBuffer so audio is ready
         # when the player requests it. For the current/first track this ensures
@@ -397,6 +397,62 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 wait_ready=True,
                 reason="prepare",
             )
+            # the first chunk is in, so the source has been probed and a duration the
+            # provider did not report is known before playback starts
+            self._apply_probed_duration(queue_item)
+
+    def _apply_probed_duration(self, queue_item: QueueItem) -> None:
+        """
+        Apply a duration determined while streaming to the queue item and its media item.
+
+        :param queue_item: The queue item whose streamdetails to take the duration from.
+        """
+        streamdetails = queue_item.streamdetails
+        if streamdetails is None or not streamdetails.duration:
+            return
+        duration = int(streamdetails.duration)
+        if not self._set_missing_duration(queue_item, duration):
+            return
+        if uri := getattr(queue_item.media_item, "uri", None):
+            # store it so listings and later playbacks have it up front
+            self.mass.create_task(store_probed_duration(self.mass, uri, duration))
+
+    async def _restore_probed_duration(self, queue_item: QueueItem) -> None:
+        """
+        Apply the duration determined during an earlier playback to an item that lacks one.
+
+        :param queue_item: The queue item to fill the duration of.
+        """
+        if queue_item.media_type not in PROBED_DURATION_MEDIA_TYPES:
+            return
+        if not (uri := getattr(queue_item.media_item, "uri", None)):
+            return
+        if queue_item.duration and getattr(queue_item.media_item, "duration", None):
+            return
+        if duration := await get_probed_duration(self.mass, uri):
+            self._set_missing_duration(queue_item, duration)
+
+    def _set_missing_duration(self, queue_item: QueueItem, duration: int) -> bool:
+        """
+        Fill in the duration of a queue item and its media item, leaving known ones alone.
+
+        :param queue_item: The queue item to fill the duration of.
+        :param duration: The duration in seconds.
+        :return: True if the item (or its media item) did not have a duration yet.
+        """
+        if queue_item.media_type not in PROBED_DURATION_MEDIA_TYPES:
+            return False
+        media_item = queue_item.media_item
+        # an ItemMapping or any other reference without a duration is left untouched
+        media_item_duration = getattr(media_item, "duration", None)
+        if queue_item.duration and media_item_duration != 0:
+            return False
+        if not queue_item.duration:
+            queue_item.duration = duration
+        if media_item_duration == 0:
+            media_item.duration = duration  # type: ignore[union-attr]
+        self.signal_update(queue_item.queue_id, items_changed=True)
+        return True
 
     def _get_next_index(
         self,

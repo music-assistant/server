@@ -27,9 +27,10 @@ The public game state is guest-safe by construction. Common state contains:
 - always: ``phase`` (lobby/answering/reveal/finished), ``name``, ``quiz_type``,
   ``answer_type``, ``mode`` (venue/remote), ``round_count``, ``answer_duration``,
   ``include_similar_music`` and public player progress. ``auto_start_at`` contains
-  the authoritative replay deadline while a lobby countdown is active. Private
-  player IDs never appear in broadcasts. Trivia additionally exposes its canonical
-  ``language`` and ``play_reveal_audio`` setting.
+  the authoritative replay deadline while a lobby countdown is active.
+  ``preparing`` is true while a reset loads the sources and first round of the
+  next run. Private player IDs never appear in broadcasts. Trivia additionally
+  exposes its canonical ``language`` and ``play_reveal_audio`` setting.
 - answering rounds expose common timing and question fields plus a strategy
   fragment. Multiple-choice exposes opaque ``suggestions``. Timeline exposes
   the revealed shared ``timeline`` and redacted ``bonus_definitions``; the
@@ -80,6 +81,11 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers import guest_access
 from music_assistant.helpers.json import SerializableType
+from music_assistant.helpers.plugin_engines import (
+    create_ai_engine_config_entries,
+    get_ai_engines,
+    select_ai_engine,
+)
 from music_assistant.helpers.shared_playback import (
     SENDSPIN_DOMAIN,
     SharedPlaybackMode,
@@ -163,6 +169,7 @@ CONF_MODE = "mode"
 CONF_PLAYER = "player"
 CONF_PLAYER_AUTO = "__auto__"
 CONF_USE_AI_DISTRACTORS = "use_ai_distractors"
+CONF_AI_ENGINE = "ai_engine"
 
 PLAYBACK_PREFERENCE_CACHE_KEY = "playback_preference"
 PLAYBACK_PREFERENCE_CACHE_EXPIRATION = 86400 * 3650
@@ -231,25 +238,18 @@ class MusicQuizPlugin(PluginProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
-        ai_available = any(
-            isinstance(provider, PluginProvider)
-            for provider in self.mass.get_providers_supporting_feature(ProviderFeature.AI_QUERY)
-        )
-        ai_setting = ConfigEntry(
-            key=CONF_USE_AI_DISTRACTORS,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            default_value=False,
-            read_only=not ai_available,
-        )
-        if ai_available:
-            return (ai_setting,)
+        ai_available = bool(await get_ai_engines(self.mass))
         return (
-            ai_setting,
             ConfigEntry(
-                key="ai_unavailable",
-                type=ConfigEntryType.ALERT,
+                key=CONF_USE_AI_DISTRACTORS,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=False,
+                read_only=not ai_available,
             ),
+            # ungated: the Trivia quiz type needs an AI engine regardless of the
+            # distractor toggle, so pinning one must stay reachable with it off
+            *await create_ai_engine_config_entries(self.mass, CONF_AI_ENGINE),
         )
 
     async def loaded_in_mass(self) -> None:
@@ -327,7 +327,7 @@ class MusicQuizPlugin(PluginProvider):
 
     async def available_quiz_types(self) -> list[str]:
         """Return quiz types currently available for game creation."""
-        return get_available_quiz_types(self.mass)
+        return await get_available_quiz_types(self.mass)
 
     async def playback_options(self) -> MusicQuizPlaybackOptions:
         """Return the host's available and recommended playback options."""
@@ -398,6 +398,11 @@ class MusicQuizPlugin(PluginProvider):
                 venue_player_name=effective_player_name,
                 difficulty=difficulty,
                 use_ai_distractors=bool(self.config.get_value(CONF_USE_AI_DISTRACTORS)),
+                # selected on first use rather than at init: providers load concurrently,
+                # so the plugin supplying the engines may not have been available back then
+                ai_engine=(
+                    engine.uid if (engine := await select_ai_engine(self, CONF_AI_ENGINE)) else None
+                ),
                 language=language,
                 play_reveal_audio=play_reveal_audio,
                 artist_bonus_mode=parsed_artist_bonus_mode,
@@ -502,22 +507,31 @@ class MusicQuizPlugin(PluginProvider):
                 game,
                 recent_track_uris=self._recent_track_uris_for_game(game),
             )
-            initial_round_task = await self._prepare_initial_round(quiz_strategy)
-            self._cancel_timers()
-            self._cancel_next_round_task()
-            await self._cancel_reveal_playback_task()
-            if quiz_strategy.uses_audio:
-                await self._stop_playback()
-            now = time.time()
-            reset_game(game)
-            self._game_generation += 1
-            self._quiz_type = quiz_strategy
-            self._answer_type = answer_strategy
-            self._next_round_task = initial_round_task
-            self._schedule_presence_expiry(now)
-            if auto_start and _has_active_players(game, now):
-                self._schedule_replay_auto_start(game, now)
-            self._signal_game_updated()
+            try:
+                # announce the preparation up front so clients stop rendering the
+                # previous run while the sources and first round load
+                game.preparing = True
+                self._signal_game_updated()
+                initial_round_task = await self._prepare_initial_round(quiz_strategy)
+                self._cancel_timers()
+                self._cancel_next_round_task()
+                await self._cancel_reveal_playback_task()
+                if quiz_strategy.uses_audio:
+                    await self._stop_playback()
+                now = time.time()
+                reset_game(game)
+                self._game_generation += 1
+                self._quiz_type = quiz_strategy
+                self._answer_type = answer_strategy
+                self._next_round_task = initial_round_task
+                self._schedule_presence_expiry(now)
+                if auto_start and _has_active_players(game, now):
+                    self._schedule_replay_auto_start(game, now)
+            finally:
+                # a failed preparation keeps the previous game, so clear and
+                # broadcast here too or clients wait on the preparing state forever
+                game.preparing = False
+                self._signal_game_updated()
             return await self._host_state()
 
     async def delete_game(self) -> None:
@@ -2081,6 +2095,7 @@ def _public_state(game: MusicQuizGame, answer_type: QuizAnswerType) -> dict[str,
         "round_count": game.config.round_count,
         "answer_duration": game.config.answer_duration,
         "auto_start_at": game.auto_start_at,
+        "preparing": game.preparing,
         **answer_type.serialize_game_config(game),
         **get_quiz_type(game.quiz_type).serialize_game_config(game),
         "players": players,

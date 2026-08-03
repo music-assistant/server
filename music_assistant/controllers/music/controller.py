@@ -224,8 +224,12 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         await self.schedule_provider_sync(provider.instance_id)
 
     async def on_provider_unload(self, provider: MusicProvider) -> None:
-        """Handle logic when a provider is (about to get) unloaded."""
-        self.unschedule_provider_sync(provider.instance_id)
+        """
+        Handle logic when a provider is (about to get) unloaded.
+
+        Sync tasks are unscheduled by MusicAssistant.unload_provider itself, which also
+        decides whether their persisted state is kept (reload) or cleared (removal).
+        """
 
     @property
     def providers(self) -> list[MusicProvider]:
@@ -939,9 +943,14 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             # backwards compatibility - to remove when 2.0 stable is released
             provider_instance_id_or_domain = "library"
         provider = self.mass.get_provider(provider_instance_id_or_domain)
-        if media_type in (MediaType.TRACK, MediaType.RADIO, MediaType.SOUND_EFFECT) and (
+        if media_type in (
+            MediaType.TRACK,
+            MediaType.RADIO,
+            MediaType.SOUND_EFFECT,
+            MediaType.UNKNOWN,  # e.g. plain (HA) URLs, see helpers/uri.py
+        ) and (
             provider_instance_id_or_domain == "builtin"
-            or (provider and getattr(provider, "domain", None) == "builtin")
+            or (provider and provider.domain == "builtin")
         ):
             # handle special case of 'builtin' MusicProvider which allows us to play regular url's
             builtin_prov = cast("BuiltinProvider", provider or self.mass.get_provider("builtin"))
@@ -1927,26 +1936,34 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             provider := self.mass.get_provider(provider_instance_id, provider_type=MusicProvider)
         ):
             return
-        self.unschedule_provider_sync(provider.instance_id, clear_persisted_state=False)
+        await self.unschedule_provider_sync(provider.instance_id, clear_persisted_state=False)
         for media_type in MediaType:
             if not self.library_supported(provider, media_type):
                 continue
             await self._schedule_provider_mediatype_sync(provider, media_type, True)
 
-    def unschedule_provider_sync(
+    async def unschedule_provider_sync(
         self, provider_instance_id: str, clear_persisted_state: bool = True
     ) -> None:
         """
-        Unschedule Library sync for given provider.
+        Unschedule Library sync for given provider and wait for a running sync to stop.
+
+        Callers tear down provider state right after this (unloading the provider, or
+        rescheduling its syncs), so all media types are cancelled first and then awaited
+        together, keeping the bounded wait to one timeout instead of one per media type.
 
         :param provider_instance_id: The provider instance id to unschedule.
         :param clear_persisted_state: Whether to remove persisted schedule state from config.
         """
-        for media_type in MediaType:
-            self.mass.tasks.unregister_scheduled_task(
-                self._get_sync_task_id(provider_instance_id, media_type),
-                clear_persisted_state=clear_persisted_state,
+        await asyncio.gather(
+            *(
+                self.mass.tasks.unregister_scheduled_task_and_wait(
+                    self._get_sync_task_id(provider_instance_id, media_type),
+                    clear_persisted_state=clear_persisted_state,
+                )
+                for media_type in MediaType
             )
+        )
 
     def get_provider_sync_schedule(
         self, provider_instance_id: str, media_type: MediaType
@@ -2801,7 +2818,8 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
                 allow_update_metadata=False,  # no need trigger more methods
             )
-        except MediaNotFoundError:
+        except MediaNotFoundError, NotImplementedError:
+            # NotImplementedError: the uri has a valid format, but specifies an unknown media type
             return False
 
         # non library item handling for users with no filter, or no user at all

@@ -11,6 +11,7 @@ import pytest
 from music_assistant.helpers import util
 from music_assistant.helpers.util import (
     get_source_ip_for_target,
+    import_module_in_thread,
     is_port_in_use,
     load_provider_module,
     sanitize_http_header_value,
@@ -19,46 +20,25 @@ from music_assistant.helpers.util import (
 
 
 class TestGetSourceIpForTarget:
-    """get_source_ip_for_target resolves a bindable, device-reachable source IP."""
+    """get_source_ip_for_target reports the interface the routing table egresses from."""
 
     @pytest.mark.asyncio
-    async def test_prefers_explicit_bind_ip(self) -> None:
-        """A concrete (non-wildcard) bind_ip is honoured as-is."""
-        result = await get_source_ip_for_target(
-            "10.10.20.31", bind_ip="10.0.0.5", publish_ip="10.45.0.20"
-        )
-        assert result == "10.0.0.5"
-
-    @pytest.mark.asyncio
-    async def test_uses_routing_lookup_when_bind_ip_wildcard(self) -> None:
-        """With a wildcard bind_ip, the per-device routing lookup result wins."""
+    async def test_returns_routing_lookup_result(self) -> None:
+        """The address the kernel picks for the target is handed back as-is."""
         with patch("music_assistant.helpers.util.socket.socket") as mock_socket:
             sock = mock_socket.return_value.__enter__.return_value
             sock.getsockname.return_value = ("10.10.20.106", 0)
-            result = await get_source_ip_for_target(
-                "10.10.20.31", bind_ip="0.0.0.0", publish_ip="10.45.0.20"
-            )
+            result = await get_source_ip_for_target("10.10.20.31")
         assert result == "10.10.20.106"
 
     @pytest.mark.asyncio
-    async def test_falls_back_to_publish_ip_on_lookup_failure(self) -> None:
-        """If the routing lookup cannot resolve, fall back to publish_ip."""
+    async def test_returns_empty_string_when_unroutable(self) -> None:
+        """A target with no route resolves to nothing rather than a guess."""
         with patch("music_assistant.helpers.util.socket.socket") as mock_socket:
             sock = mock_socket.return_value.__enter__.return_value
             sock.connect.side_effect = OSError("no route to host")
-            result = await get_source_ip_for_target(
-                "10.10.20.31", bind_ip="0.0.0.0", publish_ip="10.45.0.20"
-            )
-        assert result == "10.45.0.20"
-
-    @pytest.mark.asyncio
-    async def test_falls_back_to_bind_ip_when_no_publish_ip(self) -> None:
-        """With no publish_ip and an inconclusive lookup, return the bind_ip as last resort."""
-        with patch("music_assistant.helpers.util.socket.socket") as mock_socket:
-            sock = mock_socket.return_value.__enter__.return_value
-            sock.connect.side_effect = OSError("no route to host")
-            result = await get_source_ip_for_target("10.10.20.31", bind_ip="0.0.0.0", publish_ip="")
-        assert result == "0.0.0.0"
+            result = await get_source_ip_for_target("10.10.20.31")
+        assert result == ""
 
 
 class TestSelectFreePort:
@@ -121,6 +101,64 @@ class TestIsPortInUse:
             await is_port_in_use(38800, host=host)
         socket_mock.assert_called_once_with(family, socket.SOCK_STREAM)
         socket_mock.return_value.__enter__.return_value.bind.assert_called_once_with((host, 38800))
+
+
+class TestImportModuleInThread:
+    """import_module_in_thread imports off the event loop, one import at a time."""
+
+    @pytest.mark.asyncio
+    async def test_module_is_returned(self) -> None:
+        """A relative module name is resolved against the given package."""
+        assert await import_module_in_thread(".util", "music_assistant.helpers") is util
+
+    @pytest.mark.asyncio
+    async def test_concurrent_imports_are_serialized(self) -> None:
+        """Concurrent calls never have two imports in flight (which can deadlock)."""
+        in_flight = 0
+        max_in_flight = 0
+
+        def _slow_import(*_args: object) -> MagicMock:
+            nonlocal in_flight, max_in_flight
+            in_flight += 1
+            max_in_flight = max(max_in_flight, in_flight)
+            time.sleep(0.05)
+            in_flight -= 1
+            return MagicMock()
+
+        with patch("music_assistant.helpers.util.importlib.import_module", _slow_import):
+            await asyncio.gather(*(import_module_in_thread(f"module_{idx}") for idx in range(5)))
+
+        assert max_in_flight == 1
+
+    @pytest.mark.asyncio
+    async def test_module_lock_collision_is_retried_once(self) -> None:
+        """A deadlock reported by the import machinery is retried, not passed on."""
+        module = MagicMock()
+        attempts = 0
+
+        def _import(*_args: object) -> MagicMock:
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise RuntimeError("deadlock detected by _ModuleLock('requests.structures')")
+            return module
+
+        with patch("music_assistant.helpers.util.importlib.import_module", _import):
+            assert await import_module_in_thread("some_module") is module
+        assert attempts == 2
+
+    @pytest.mark.asyncio
+    async def test_other_runtime_errors_are_not_retried(self) -> None:
+        """An unrelated RuntimeError from the module body is passed on as-is."""
+        with (
+            patch(
+                "music_assistant.helpers.util.importlib.import_module",
+                side_effect=RuntimeError("boom"),
+            ) as import_mock,
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            await import_module_in_thread("some_module")
+        assert import_mock.call_count == 1
 
 
 class TestLoadProviderModule:

@@ -30,7 +30,13 @@ from music_assistant_models.audio_processing import (
     AudioOutputDetails,
     AudioQueueProcessing,
 )
-from music_assistant_models.dsp import AudioChannel, DSPConfig, DSPFilter, DSPState
+from music_assistant_models.dsp import (
+    AudioChannel,
+    ConvolutionFilter,
+    DSPConfig,
+    DSPFilter,
+    DSPState,
+)
 from music_assistant_models.enums import (
     ContentType,
     CrossfadeMode,
@@ -68,6 +74,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TARGET,
     CONF_VOLUME_NORMALIZATION_TRACKS,
+    DSP_IRS_DIRNAME,
     FLOW_MODE_SAMPLE_RATE_48000,
     FLOW_MODE_SAMPLE_RATE_96000,
     FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
@@ -113,7 +120,7 @@ from music_assistant.helpers.audio import (
     resample_pcm_audio,
     resolve_output_player_ids,
 )
-from music_assistant.helpers.dsp import filter_to_ffmpeg_params
+from music_assistant.helpers.dsp import ComplexFilter, filter_to_ffmpeg_params
 from music_assistant.helpers.ffmpeg import (
     FFMpeg,
     get_ffmpeg_overlay_stream,
@@ -361,12 +368,16 @@ class StreamsAudio:
                     )
                     streamdetails.stream_metadata_update_interval = 5
 
-        if streamdetails.duration is None:
+        # providers report an unknown duration as either None or 0
+        if not streamdetails.duration:
             if queue_item.media_item and queue_item.media_item.duration:
                 streamdetails.duration = queue_item.media_item.duration
             elif queue_item.duration:
                 streamdetails.duration = queue_item.duration
-        if seek_position and (not streamdetails.allow_seek or not streamdetails.duration):
+        if seek_position and not streamdetails.allow_seek:
+            self.logger.warning("seeking is not possible on this stream!")
+            seek_position = 0
+        elif seek_position and not streamdetails.duration:
             self.logger.warning("seeking is not possible on duration-less streams!")
             seek_position = 0
 
@@ -1150,7 +1161,7 @@ class StreamsAudio:
         :param session_id: Explicit queue session identifier for the processing snapshot.
         :param queue_item_id: Queue item for a single-item output path.
         """
-        filter_params: list[str] = []
+        filter_params: list[str | ComplexFilter] = []
         player = self.mass.players.get_player(player_id)
         destination_player_id = (
             player.protocol_parent_id if player and player.protocol_parent_id else player_id
@@ -1181,8 +1192,21 @@ class StreamsAudio:
         if dsp.enabled:
             if dsp.input_gain != 0:
                 filter_params.append(f"volume={dsp.input_gain}dB")
+            ir_dir = os.path.join(self.mass.storage_path, DSP_IRS_DIRNAME)
+            known_ir_ids = {record["ir_id"] for record in self.mass.config.get_dsp_irs()}
             for dsp_filter in enabled_filters:
-                params = filter_to_ffmpeg_params(dsp_filter, input_format)
+                if isinstance(dsp_filter, ConvolutionFilter) and dsp_filter.ir_id:
+                    # ffmpeg fails to open the graph if the impulse response file is gone,
+                    # which costs the player all audio, so drop the filter instead
+                    if dsp_filter.ir_id not in known_ir_ids:
+                        self.logger.warning(
+                            "Skipping the convolution filter of player %s: "
+                            "impulse response %s is not stored",
+                            player_id,
+                            dsp_filter.ir_id,
+                        )
+                        continue
+                params = filter_to_ffmpeg_params(dsp_filter, input_format, ir_dir=ir_dir)
                 if not params:
                     continue
                 filter_params.extend(params)

@@ -17,7 +17,7 @@ from __future__ import annotations
 import time
 from collections.abc import AsyncGenerator
 from datetime import datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
 from music_assistant_models.enums import (
@@ -38,11 +38,12 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.helpers.datetime import from_utc_timestamp
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
-    get_podcastparser_dict,
+    find_episode_stream_url,
+    get_cached_podcast,
     get_stream_url_and_guid_from_episode,
-    get_stream_url_from_episode,
     parse_podcast,
     parse_podcast_episode,
+    refresh_cached_podcast,
 )
 from music_assistant.models.music_provider import MusicProvider
 
@@ -69,7 +70,7 @@ CONF_VERIFY_SSL = "verify_ssl"
 CONF_MAX_NUM_EPISODES = "max_num_episodes"
 
 
-CACHE_CATEGORY_PODCAST_ITEMS = 0  # the individual parsed podcast (dict from podcastparser)
+# category 0 holds the individual parsed podcasts, see CACHE_CATEGORY_PODCAST_FEED
 CACHE_CATEGORY_OTHER = 1
 CACHE_KEY_TIMESTAMP = (
     "timestamp"  # tuple of two ints, timestamp_subscriptions and timestamp_actions
@@ -118,7 +119,7 @@ class GPodder(MusicProvider):
         nc_token = self.get_setup_value(CONF_TOKEN_NC)
         verify_ssl = bool(self.get_setup_value(CONF_VERIFY_SSL, True))
 
-        self.max_episodes = int(float(str(self.config.get_value(CONF_MAX_NUM_EPISODES))))
+        self.max_episodes = cast("int", self.config.get_value(CONF_MAX_NUM_EPISODES, 0))
 
         self._client = GPodderClient(
             session=self.mass.http_session, logger=self.logger, verify_ssl=verify_ssl
@@ -206,15 +207,15 @@ class GPodder(MusicProvider):
             self.logger.debug("Adding podcast with feed %s to library", feed_url)
             # parse podcast
             try:
-                parsed_podcast = await get_podcastparser_dict(
-                    session=self.mass.http_session,
+                parsed_podcast = await refresh_cached_podcast(
+                    mass=self.mass,
+                    provider_instance_id=self.instance_id,
                     feed_url=feed_url,
                     max_episodes=self.max_episodes,
                 )
             except MediaNotFoundError:
                 self.logger.warning(f"Was unable to obtain podcast with feed {feed_url}")
                 continue
-            await self._cache_set_podcast(feed_url, parsed_podcast)
 
             # playlog
             # be safe, if there should be multiple episodeactions. client already sorts
@@ -479,49 +480,18 @@ class GPodder(MusicProvider):
                 return
 
     async def _get_episode_stream_url(self, podcast_id: str, guid_or_stream_url: str) -> str | None:
-        podcast = await self._cache_get_podcast(podcast_id)
-        episodes = podcast.get("episodes", [])
-        for episode in episodes:
-            stream_url = get_stream_url_from_episode(episode=episode)
-            if stream_url is None:
-                # episode without a playable enclosure carries no stream; skip it instead of
-                # aborting the lookup for the (potentially later) requested episode
-                continue
-            guid = episode.get("guid")
-            if guid is not None and len(guid.split(" ")) == 1:
-                _guid_or_stream_url_compare = guid
-            else:
-                _guid_or_stream_url_compare = stream_url
-            if guid_or_stream_url == _guid_or_stream_url_compare:
-                return stream_url
-        return None
+        parsed_podcast = await self._cache_get_podcast(podcast_id)
+        return find_episode_stream_url(
+            parsed_feed=parsed_podcast, guid_or_stream_url=guid_or_stream_url
+        )
 
     async def _cache_get_podcast(self, prov_podcast_id: str) -> dict[str, Any]:
-        parsed_podcast = await self.mass.cache.get(
-            key=prov_podcast_id,
-            provider=self.instance_id,
-            category=CACHE_CATEGORY_PODCAST_ITEMS,
-            default=None,
-        )
-        if parsed_podcast is None:
-            # raises MediaNotFoundError
-            parsed_podcast = await get_podcastparser_dict(
-                session=self.mass.http_session,
-                feed_url=prov_podcast_id,
-                max_episodes=self.max_episodes,
-            )
-            await self._cache_set_podcast(feed_url=prov_podcast_id, parsed_podcast=parsed_podcast)
-
-        # this is a dictionary from podcastparser
-        return parsed_podcast  # type: ignore[no-any-return]
-
-    async def _cache_set_podcast(self, feed_url: str, parsed_podcast: dict[str, Any]) -> None:
-        await self.mass.cache.set(
-            key=feed_url,
-            provider=self.instance_id,
-            category=CACHE_CATEGORY_PODCAST_ITEMS,
-            data=parsed_podcast,
-            expiration=60 * 60 * 24,  # 1 day
+        # raises MediaNotFoundError when the feed is gone
+        return await get_cached_podcast(
+            mass=self.mass,
+            provider_instance_id=self.instance_id,
+            feed_url=prov_podcast_id,
+            max_episodes=self.max_episodes,
         )
 
     async def _cache_set_timestamps(self) -> None:

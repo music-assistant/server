@@ -293,19 +293,12 @@ for more details.
         )
         if cached_libraries is None:
             self.libraries = LibrariesHelper()
-            # We need the library ids for recommendations. If the cache got cleared e.g. by a db
-            # migration, we might end up with empty library helpers on a configured provider. Note,
-            # that the lib item ids are not synced, still only on full provider sync, instead the
-            # sets are empty. Full sync is expensive.
-            # See warning in browse_lib_podcasts / _browse_books
-            libraries = await self._client.get_all_libraries()
-            for library in libraries:
-                if library.media_type == AbsLibraryMediaType.BOOK:
-                    self.libraries.audiobooks[library.id_] = LibraryHelper(name=library.name)
-                elif library.media_type == AbsLibraryMediaType.PODCAST:
-                    self.libraries.podcasts[library.id_] = LibraryHelper(name=library.name)
         else:
             self.libraries = LibrariesHelper.from_dict(cached_libraries)
+
+        libraries = await self._client.get_all_libraries()
+        if libraries:
+            self._sync_library_keys(libraries)
 
         # cache username
         self.abs_username = (await self._client.get_my_user()).username
@@ -397,6 +390,18 @@ for more details.
     @handle_refresh_token
     async def sync_library(self, media_type: MediaType) -> None:
         """Obtain audiobook library ids and podcast library ids."""
+        if media_type == MediaType.AUDIOBOOK:
+            self.libraries.audiobooks.clear()
+            self.libraries.audiobook_narrators.clear()
+        elif media_type == MediaType.PODCAST:
+            self.libraries.podcasts.clear()
+        elif media_type == MediaType.PLAYLIST:
+            self.libraries.playlists_audiobooks.clear()
+            self.libraries.playlists_podcasts.clear()
+        elif media_type == MediaType.ARTIST:
+            self.libraries.authors.clear()
+            self.libraries.narrators.clear()
+
         libraries = await self._client.get_all_libraries()
         if len(libraries) == 0:
             self._log_no_libraries()
@@ -1240,12 +1245,19 @@ for more details.
                     ),
                 )
                 session_helper.last_sync_time = now
+                session_helper.failed_sync_count = 0
                 self.logger.debug("Synced playback session, position %s s.", position)
                 return True
             except AbsSessionSyncError:
-                self.logger.debug(
-                    "Was unable to sync session. Falling back to non-session approach."
-                )
+                session_helper.failed_sync_count += 1
+                if session_helper.failed_sync_count >= 5:
+                    self.logger.warning(
+                        "Unable to sync session %s after %s attempts - "
+                        "falling back to non-session approach.",
+                        session_helper.abs_session_id,
+                        session_helper.failed_sync_count,
+                    )
+                    self.sessions.pop(prov_item_id, None)
             return False
 
         if media_type == MediaType.PODCAST_EPISODE:
@@ -2037,6 +2049,24 @@ for more details.
             category=CACHE_CATEGORY_LIBRARIES,
             data=self.libraries.to_dict(),
         )
+
+    def _sync_library_keys(self, libraries: list[Any]) -> None:
+        """Prune deleted and add new library keys, preserving cached item_ids."""
+        current_book_ids = {
+            lib.id_ for lib in libraries if lib.media_type == AbsLibraryMediaType.BOOK
+        }
+        current_podcast_ids = {
+            lib.id_ for lib in libraries if lib.media_type == AbsLibraryMediaType.PODCAST
+        }
+        for stale_id in set(self.libraries.audiobooks) - current_book_ids:
+            del self.libraries.audiobooks[stale_id]
+        for stale_id in set(self.libraries.podcasts) - current_podcast_ids:
+            del self.libraries.podcasts[stale_id]
+        for library in libraries:
+            if library.media_type == AbsLibraryMediaType.BOOK:
+                self.libraries.audiobooks.setdefault(library.id_, LibraryHelper(name=library.name))
+            elif library.media_type == AbsLibraryMediaType.PODCAST:
+                self.libraries.podcasts.setdefault(library.id_, LibraryHelper(name=library.name))
 
     def _log_no_libraries(self) -> None:
         self.logger.error("There are no libraries visible to the Audiobookshelf provider.")
