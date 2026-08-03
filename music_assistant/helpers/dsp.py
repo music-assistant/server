@@ -67,14 +67,11 @@ def filter_to_ffmpeg_params(
     """
     Convert a DSP filter model to FFmpeg filter parameters.
 
-    Args:
-        dsp_filter: DSP filter configuration
-        input_format: Audio format containing sample rate
-        ir_dir: Directory holding convolution impulse response files, used to
-            resolve a ConvolutionFilter's ir_id to a file path
-
-    Returns:
-        List of FFmpeg filter parameter strings
+    :param dsp_filter: DSP filter configuration.
+    :param input_format: Input audio format (sample rate/channels).
+    :param ir_dir: Directory holding convolution impulse responses, used to resolve a
+        ConvolutionFilter's ir_id to a file path.
+    :return: Ordered chain of FFmpeg filter strings and/or ComplexFilter fragments.
     """
     filter_params: list[str | ComplexFilter] = []
 
