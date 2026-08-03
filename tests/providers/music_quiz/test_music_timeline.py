@@ -24,7 +24,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.controllers.music.recency import RecencySnapshot
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import AIEngine, PluginProvider
 from music_assistant.providers.music_quiz.ai_distractors import AI_QUERY_TIMEOUT_SECONDS
 from music_assistant.providers.music_quiz.models import (
     MusicQuizConfig,
@@ -164,10 +164,13 @@ def _ai_provider(
     response: object = None,
     error: Exception | None = None,
 ) -> MagicMock:
-    """Return a mock AI-query plugin provider."""
+    """Return a mock AI-query plugin provider exposing a single engine."""
     provider = MagicMock(spec=PluginProvider)
     provider.instance_id = "ai--test"
     provider.ai_query = AsyncMock(return_value=response, side_effect=error)
+    provider.get_ai_engines = AsyncMock(
+        return_value=[AIEngine(id="engine", name="ai--test", provider=provider)]
+    )
     return provider
 
 
@@ -1611,7 +1614,7 @@ async def test_invalid_primary_ai_provider_does_not_try_another_provider() -> No
     invalid.instance_id = "ai--a"
     later = _ai_provider()
     later.instance_id = "ai--b"
-    mass.get_providers_supporting_feature.return_value = [later, invalid]
+    mass.get_providers_supporting_feature.return_value = [invalid, later]
 
     options = await quiz._create_bonus_options(current, TimelineBonusType.ARTIST)
 

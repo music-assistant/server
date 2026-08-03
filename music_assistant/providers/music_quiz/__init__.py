@@ -81,6 +81,10 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
 )
 from music_assistant.helpers import guest_access
 from music_assistant.helpers.json import SerializableType
+from music_assistant.helpers.plugin_engines import (
+    create_ai_engine_config_entries,
+    get_ai_engines,
+)
 from music_assistant.helpers.shared_playback import (
     SENDSPIN_DOMAIN,
     SharedPlaybackMode,
@@ -164,6 +168,7 @@ CONF_MODE = "mode"
 CONF_PLAYER = "player"
 CONF_PLAYER_AUTO = "__auto__"
 CONF_USE_AI_DISTRACTORS = "use_ai_distractors"
+CONF_AI_ENGINE = "ai_engine"
 
 PLAYBACK_PREFERENCE_CACHE_KEY = "playback_preference"
 PLAYBACK_PREFERENCE_CACHE_EXPIRATION = 86400 * 3650
@@ -232,25 +237,18 @@ class MusicQuizPlugin(PluginProvider):
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to configure this provider."""
-        ai_available = any(
-            isinstance(provider, PluginProvider)
-            for provider in self.mass.get_providers_supporting_feature(ProviderFeature.AI_QUERY)
-        )
-        ai_setting = ConfigEntry(
-            key=CONF_USE_AI_DISTRACTORS,
-            type=ConfigEntryType.BOOLEAN,
-            required=False,
-            default_value=False,
-            read_only=not ai_available,
-        )
-        if ai_available:
-            return (ai_setting,)
+        ai_available = bool(await get_ai_engines(self.mass))
         return (
-            ai_setting,
             ConfigEntry(
-                key="ai_unavailable",
-                type=ConfigEntryType.ALERT,
+                key=CONF_USE_AI_DISTRACTORS,
+                type=ConfigEntryType.BOOLEAN,
+                required=False,
+                default_value=False,
+                read_only=not ai_available,
             ),
+            # ungated: the Trivia quiz type needs an AI engine regardless of the
+            # distractor toggle, so pinning one must stay reachable with it off
+            *await create_ai_engine_config_entries(self.mass, CONF_AI_ENGINE),
         )
 
     async def loaded_in_mass(self) -> None:
@@ -328,7 +326,7 @@ class MusicQuizPlugin(PluginProvider):
 
     async def available_quiz_types(self) -> list[str]:
         """Return quiz types currently available for game creation."""
-        return get_available_quiz_types(self.mass)
+        return await get_available_quiz_types(self.mass)
 
     async def playback_options(self) -> MusicQuizPlaybackOptions:
         """Return the host's available and recommended playback options."""
@@ -399,6 +397,7 @@ class MusicQuizPlugin(PluginProvider):
                 venue_player_name=effective_player_name,
                 difficulty=difficulty,
                 use_ai_distractors=bool(self.config.get_value(CONF_USE_AI_DISTRACTORS)),
+                ai_engine=cast("str | None", self.config.get_value(CONF_AI_ENGINE)),
                 language=language,
                 play_reveal_audio=play_reveal_audio,
                 artist_bonus_mode=parsed_artist_bonus_mode,

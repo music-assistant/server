@@ -556,6 +556,7 @@ class MusicTimelineQuizType(QuizType):
         response = await request_ai_distractors(
             self.mass,
             prompt,
+            engine_uid=self.config.ai_engine,
             timeout=AI_QUERY_TIMEOUT_SECONDS,
         )
         if response is None:

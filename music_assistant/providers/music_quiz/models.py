@@ -95,6 +95,8 @@ class MusicQuizConfig(DataClassDictMixin):
     # difficulty is guess-the-song specific; AI distractors also apply to timeline bonuses
     difficulty: str = MusicQuizDifficulty.NORMAL.value
     use_ai_distractors: bool = False
+    # the AI engine uid selected in the provider config, or None/"auto" for any available engine
+    ai_engine: str | None = None
     # trivia specific; other quiz types ignore this
     language: str = DEFAULT_TRIVIA_LANGUAGE
     play_reveal_audio: bool = True

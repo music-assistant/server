@@ -25,7 +25,7 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.controllers.music.recency import RecencySnapshot
 from music_assistant.helpers.json import json_dumps, json_loads
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import AIEngine, PluginProvider
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import (
     DEFAULT_TRIVIA_LANGUAGE,
@@ -38,7 +38,7 @@ from music_assistant.providers.music_quiz.models import (
 from music_assistant.providers.music_quiz.quiz_types import get_quiz_type
 from music_assistant.providers.music_quiz.quiz_types.base import MAX_SUGGESTION_COUNT
 from music_assistant.providers.music_quiz.quiz_types.trivia import (
-    AI_ATTEMPTS_PER_PROVIDER,
+    AI_ATTEMPTS_PER_ENGINE,
     AI_QUERY_TIMEOUT_SECONDS,
     MAX_AI_PROMPT_BYTES,
     MAX_AI_RESPONSE_BYTES,
@@ -173,10 +173,13 @@ def _ai_provider(
     instance_id: str = "ai--1",
     error: Exception | None = None,
 ) -> MagicMock:
-    """Return a mock AI_QUERY-capable plugin provider."""
+    """Return a mock AI_QUERY-capable plugin provider exposing a single engine."""
     provider = MagicMock(spec=PluginProvider)
     provider.instance_id = instance_id
     provider.ai_query = AsyncMock(return_value=response, side_effect=error)
+    provider.get_ai_engines = AsyncMock(
+        return_value=[AIEngine(id="engine", name=instance_id, provider=provider)]
+    )
     return provider
 
 
@@ -1244,7 +1247,7 @@ async def test_generation_retries_when_grounded_repair_is_insufficient() -> None
     result = await quiz._generate_question(_artist_fact())
 
     assert result.wrong_answers == ("Portishead", "Radiohead", "Air")
-    assert provider.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
+    assert provider.ai_query.await_count == AI_ATTEMPTS_PER_ENGINE
 
 
 @pytest.mark.asyncio
@@ -1267,7 +1270,7 @@ async def test_generation_fails_when_all_grounded_repairs_are_insufficient() -> 
         await quiz._generate_question(_artist_fact())
 
     assert error.value.translation_key == "music_quiz_trivia_generation_failed"
-    assert provider.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
+    assert provider.ai_query.await_count == AI_ATTEMPTS_PER_ENGINE
 
 
 @pytest.mark.parametrize(
@@ -1482,34 +1485,34 @@ async def test_generation_retries_invalid_response_then_accepts_valid_response()
     result = await quiz._generate_question(_artist_fact())
 
     assert result.question == "Which artist recorded this selected track?"
-    assert provider.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
+    assert provider.ai_query.await_count == AI_ATTEMPTS_PER_ENGINE
 
 
 @pytest.mark.asyncio
-async def test_generation_uses_deterministic_provider_fallback() -> None:
-    """Try plugin providers by instance ID and fall back after bounded invalid output."""
+async def test_generation_uses_deterministic_engine_fallback() -> None:
+    """Try engines in the offered order and fall back after bounded invalid output."""
     first = _ai_provider("invalid", instance_id="ai--a")
     second = _ai_provider(_valid_response(), instance_id="ai--b")
-    quiz, _ = _quiz([], providers=[second, first])
+    quiz, _ = _quiz([], providers=[first, second])
 
     result = await quiz._generate_question(_artist_fact())
 
     assert result.question == "Which artist recorded this selected track?"
-    assert first.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
+    assert first.ai_query.await_count == AI_ATTEMPTS_PER_ENGINE
     second.ai_query.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_generation_falls_back_after_provider_exception() -> None:
-    """Continue to the next AI plugin when a provider query raises."""
+    """Continue to the next AI engine when a query raises."""
     failing = _ai_provider(error=RuntimeError("provider failed"), instance_id="ai--a")
     working = _ai_provider(_valid_response(), instance_id="ai--b")
-    quiz, _ = _quiz([], providers=[working, failing])
+    quiz, _ = _quiz([], providers=[failing, working])
 
     result = await quiz._generate_question(_artist_fact())
 
     assert result.question == "Which artist recorded this selected track?"
-    assert failing.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
+    assert failing.ai_query.await_count == AI_ATTEMPTS_PER_ENGINE
     working.ai_query.assert_awaited_once()
 
 
@@ -1517,14 +1520,14 @@ async def test_generation_falls_back_after_provider_exception() -> None:
 async def test_generation_times_out_stalled_provider_before_fallback() -> None:
     """Bound each AI attempt so a stalled provider cannot block game management."""
 
-    async def _stall(_prompt: str) -> str:
+    async def _stall(_prompt: str, **_kwargs: Any) -> str:
         await asyncio.Event().wait()
         raise AssertionError
 
     stalled = _ai_provider(instance_id="ai--a")
     stalled.ai_query.side_effect = _stall
     working = _ai_provider(_valid_response(), instance_id="ai--b")
-    quiz, _ = _quiz([], providers=[working, stalled])
+    quiz, _ = _quiz([], providers=[stalled, working])
 
     with patch(
         "music_assistant.providers.music_quiz.quiz_types.trivia.AI_QUERY_TIMEOUT_SECONDS",
@@ -1533,7 +1536,7 @@ async def test_generation_times_out_stalled_provider_before_fallback() -> None:
         result = await quiz._generate_question(_artist_fact())
 
     assert result.question == "Which artist recorded this selected track?"
-    assert stalled.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
+    assert stalled.ai_query.await_count == AI_ATTEMPTS_PER_ENGINE
     working.ai_query.assert_awaited_once()
 
 
@@ -1548,5 +1551,5 @@ async def test_generation_surfaces_localized_failure_after_all_providers() -> No
         await quiz._generate_question(_artist_fact())
 
     assert error.value.translation_key == "music_quiz_trivia_generation_failed"
-    assert invalid.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
-    assert failing.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
+    assert invalid.ai_query.await_count == AI_ATTEMPTS_PER_ENGINE
+    assert failing.ai_query.await_count == AI_ATTEMPTS_PER_ENGINE

@@ -6,18 +6,24 @@ import asyncio
 from collections.abc import Callable
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.enums import EventType
+from music_assistant_models.errors import InvalidDataError, SetupFailedError
 
+from music_assistant.helpers.plugin_engines import resolve_ai_engines, resolve_tts_engines
 from music_assistant.models.plugin import PluginProvider
 
 from .constants import (
+    CONF_AI_ENGINE,
+    CONF_TTS_ENGINE,
     DEFAULT_MAX_CONCURRENT_RUNS,
+    ENGINE_DISCOVERY_TIMEOUT,
     MAX_FINISHED_SESSIONS,
     SUPPORTED_FEATURES,
+    TRANSLATION_OWNER,
 )
 from .helpers import utc_now_iso
 from .models import SessionState
@@ -72,6 +78,7 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
         await asyncio.to_thread(self._storage_dir.mkdir, parents=True, exist_ok=True)
         await self._load_sections()
         await self._load_stations()
+        await self._wait_for_engines()
         self.logger.info(
             "AI Radio initialized for instance '%s' with %d stations and %d sections",
             self.instance_id,
@@ -344,6 +351,48 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
             return {"sessions": [self._sessions[session_id].as_dict()]}
         sessions = sorted(self._sessions.values(), key=lambda item: item.created_at, reverse=True)
         return {"sessions": [session.as_dict() for session in sessions]}
+
+    async def _wait_for_engines(self) -> None:
+        """
+        Wait (bounded) for the configured AI and TTS engines to become available.
+
+        :raises SetupFailedError: When either engine is still unavailable at the deadline.
+        """
+        engines_changed = asyncio.Event()
+        unsubscribe = self.mass.subscribe(
+            lambda _event: engines_changed.set(), EventType.PROVIDERS_UPDATED
+        )
+        try:
+            async with asyncio.timeout(ENGINE_DISCOVERY_TIMEOUT):
+                while (error := await self._missing_engine_error()) is not None:
+                    await engines_changed.wait()
+                    # clearing only after the wait keeps an update that lands during the
+                    # probe above signalled, so that wakeup is never lost
+                    engines_changed.clear()
+        except TimeoutError:
+            error = await self._missing_engine_error()
+        finally:
+            unsubscribe()
+        if error is not None:
+            raise error
+
+    async def _missing_engine_error(self) -> SetupFailedError | None:
+        """Return the error for the first engine that does not resolve, if any."""
+        selected_ai = cast("str | None", self.get_setup_value(CONF_AI_ENGINE))
+        if not await resolve_ai_engines(self.mass, selected_ai):
+            return SetupFailedError(
+                "AI Radio has no AI engine available",
+                translation_key="ai_radio_no_ai_engine",
+                translation_owner=TRANSLATION_OWNER,
+            )
+        selected_tts = cast("str | None", self.get_setup_value(CONF_TTS_ENGINE))
+        if not await resolve_tts_engines(self.mass, selected_tts):
+            return SetupFailedError(
+                "AI Radio has no text-to-speech engine available",
+                translation_key="ai_radio_no_tts_engine",
+                translation_owner=TRANSLATION_OWNER,
+            )
+        return None
 
     def _prune_finished_sessions(self) -> None:
         """Drop the oldest finished sessions beyond the retention limit."""
