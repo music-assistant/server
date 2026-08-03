@@ -1,7 +1,7 @@
 {
   "config_entries": {
     "username": {
-      "label": "Email",
+      "label": "[%key:common::config_entries::email::label%]",
       "description": "Your Overcast account email address."
     },
     "password": {

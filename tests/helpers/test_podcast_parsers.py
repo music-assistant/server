@@ -10,15 +10,20 @@ from music_assistant_models.enums import LinkType
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
     find_episode_stream_url,
+    get_cached_podcast,
+    get_podcastparser_dict,
     get_stream_url_from_episode,
     parse_chapters_from_json,
     parse_podcast_episode,
     parse_podcast_persons,
+    refresh_cached_podcast,
 )
 
 if TYPE_CHECKING:
     import aiohttp
     from music_assistant_models.media_items import PodcastEpisode
+
+    from music_assistant.mass import MusicAssistant
 
 
 def _episode(**overrides: Any) -> dict[str, Any]:
@@ -498,3 +503,143 @@ def test_find_episode_stream_url_skips_episodes_without_enclosure() -> None:
 def test_find_episode_stream_url_unknown_returns_none() -> None:
     """An unknown identifier yields None rather than raising."""
     assert find_episode_stream_url(parsed_feed={"episodes": []}, guid_or_stream_url="x") is None
+
+
+# --- feed retrieval and caching ----------------------------------------------------------------
+
+
+FEED_URL = "https://example.com/feed.xml"
+FEED_XML = b"""<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel>
+<title>Feed One</title>
+<item>
+<title>Episode 1</title>
+<guid>ep-1</guid>
+<enclosure url="https://example.com/ep1.mp3" type="audio/mpeg" length="1"/>
+</item>
+</channel></rss>
+"""
+
+
+class _FakeFeedResponse:
+    """Minimal stand-in for an aiohttp response yielding raw feed bytes."""
+
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    async def read(self) -> bytes:
+        return self._body
+
+
+class _FakeFeedGetContext:
+    """Request context manager recording whether the response was released again."""
+
+    def __init__(self, session: _FakeFeedSession) -> None:
+        self._session = session
+
+    async def __aenter__(self) -> _FakeFeedResponse:
+        error = self._session.errors.pop(0) if self._session.errors else None
+        if error is not None:
+            raise error
+        return _FakeFeedResponse(self._session.body)
+
+    async def __aexit__(self, *exc_info: object) -> bool:
+        self._session.released += 1
+        return False
+
+
+class _FakeFeedSession:
+    """Session stand-in serving a fixed feed body, optionally failing the first attempts."""
+
+    def __init__(self, *, body: bytes = FEED_XML, errors: list[Exception] | None = None) -> None:
+        self.body = body
+        self.errors = errors or []
+        self.calls = 0
+        self.released = 0
+        self.headers: list[dict[str, str]] = []
+
+    def get(self, url: str, headers: dict[str, str], **kwargs: Any) -> _FakeFeedGetContext:
+        self.calls += 1
+        self.headers.append(headers)
+        return _FakeFeedGetContext(self)
+
+
+class _FakeCache:
+    """In-memory stand-in for the cache controller, keyed like the real one."""
+
+    def __init__(self) -> None:
+        self.store: dict[tuple[str, str, int], Any] = {}
+        self.sets = 0
+
+    async def get(self, key: str, provider: str, category: int, default: Any = None) -> Any:
+        return self.store.get((key, provider, category), default)
+
+    async def set(self, key: str, provider: str, category: int, data: Any, expiration: int) -> None:
+        self.sets += 1
+        self.store[(key, provider, category)] = data
+
+
+class _FakeMass:
+    """Stand-in exposing only what the podcast cache helpers use."""
+
+    def __init__(self, session: _FakeFeedSession) -> None:
+        self.http_session = session
+        self.cache = _FakeCache()
+
+
+def _fake_mass(session: _FakeFeedSession) -> MusicAssistant:
+    return cast("MusicAssistant", _FakeMass(session))
+
+
+async def test_get_podcastparser_dict_releases_the_response() -> None:
+    """The feed response is released again, on the retry path as well."""
+    session = _FakeFeedSession(errors=[ClientError("no user agent allowed")])
+    parsed_feed = await get_podcastparser_dict(
+        session=cast("aiohttp.ClientSession", session), feed_url=FEED_URL
+    )
+    assert parsed_feed["title"] == "Feed One"
+    # the first attempt failed on entering the context, so only the second one is released
+    assert session.calls == 2
+    assert session.released == 1
+    assert session.headers[0] == {"User-Agent": "Mozilla/5.0"}
+
+
+async def test_get_cached_podcast_stores_and_reuses_the_feed() -> None:
+    """A miss retrieves and caches the feed, a subsequent call is served from the cache."""
+    session = _FakeFeedSession()
+    mass = _fake_mass(session)
+    parsed_feed = await get_cached_podcast(
+        mass=mass, provider_instance_id="podcastfeed--test", feed_url=FEED_URL
+    )
+    assert parsed_feed["title"] == "Feed One"
+    assert session.calls == 1
+    await get_cached_podcast(mass=mass, provider_instance_id="podcastfeed--test", feed_url=FEED_URL)
+    assert session.calls == 1
+
+
+async def test_refresh_cached_podcast_always_updates_the_cache() -> None:
+    """A sync must refresh the cached feed, also when a valid entry exists."""
+    session = _FakeFeedSession()
+    mass = _fake_mass(session)
+    await get_cached_podcast(mass=mass, provider_instance_id="podcastfeed--test", feed_url=FEED_URL)
+    assert session.calls == 1
+    session.body = FEED_XML.replace(b"Feed One", b"Feed Renamed")
+    parsed_feed = await refresh_cached_podcast(
+        mass=mass, provider_instance_id="podcastfeed--test", feed_url=FEED_URL
+    )
+    assert session.calls == 2
+    assert parsed_feed["title"] == "Feed Renamed"
+    # the refreshed feed is what subsequent (cached) reads see
+    cached_feed = await get_cached_podcast(
+        mass=mass, provider_instance_id="podcastfeed--test", feed_url=FEED_URL
+    )
+    assert cached_feed["title"] == "Feed Renamed"
+    assert session.calls == 2
+
+
+def test_find_episode_stream_url_matches_empty_guid() -> None:
+    """An empty guid is used as episode id by the parser, so it must resolve as one."""
+    feed = {"episodes": [_episode(guid=""), _episode(guid="ep-2", enclosures=[{"url": "b"}])]}
+    assert find_episode_stream_url(parsed_feed=feed, guid_or_stream_url="") == (
+        "https://example.com/ep1.mp3"
+    )

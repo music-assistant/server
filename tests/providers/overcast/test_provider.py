@@ -353,8 +353,7 @@ def _sync_provider(applied: datetime, monkeypatch: pytest.MonkeyPatch) -> MagicM
             raise MediaNotFoundError("feed is down")
         return {"title": "Feed One", "episodes": []}
 
-    monkeypatch.setattr(overcast_provider, "get_podcastparser_dict", _parsed_feed)
-    monkeypatch.setattr(overcast_provider, "set_cached_podcast", AsyncMock())
+    monkeypatch.setattr(overcast_provider, "refresh_cached_podcast", _parsed_feed)
     monkeypatch.setattr(overcast_provider, "parse_podcast", Mock(return_value=MagicMock()))
     return provider
 
