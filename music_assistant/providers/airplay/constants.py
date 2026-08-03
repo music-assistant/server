@@ -106,6 +106,11 @@ AIRPLAY_CLOCK_READY_TIMEOUT_MS: Final[int] = 2500
 # for the command reaching the binary and for the convergence error of a
 # projection made from the receiver's very first probe.
 AIRPLAY_CLOCK_READY_LEAD_MS: Final[int] = 500
+# How long a plain (non-join) START waits for the binary's [STATUS] started ack.
+# Nothing holds that ack back, so the window only has to cover the command's trip
+# down the pipe and the answer coming back - unlike a join's ack below, which is
+# withheld until the receiver clock verification resolves.
+AIRPLAY_START_ACK_TIMEOUT_MS: Final[int] = 2000
 # How long a join START waits for the binary's [STATUS] started ack. That ack is
 # held back until the clock verification above resolves, so the window must
 # cover the verification arm window plus a poll round on top of the commanded

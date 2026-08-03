@@ -30,6 +30,7 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_CONTENT_CUT_TOLERANCE_MS,
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
     AIRPLAY_PCM_FORMAT,
+    AIRPLAY_START_ACK_TIMEOUT_MS,
     CLI_PROBLEM_MARKERS,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_ENCRYPTION,
@@ -516,7 +517,9 @@ class AirPlayStream:
         # failure answers the wait immediately; no ack within the timeout means
         # an older binary, so fall back to trusting the commanded instant
         # (legacy clamp semantics).
-        ack_timeout = AIRPLAY_JOIN_START_ACK_TIMEOUT_MS / 1000 if join else 2.0
+        ack_timeout = (
+            AIRPLAY_JOIN_START_ACK_TIMEOUT_MS if join else AIRPLAY_START_ACK_TIMEOUT_MS
+        ) / 1000
         try:
             await asyncio.wait_for(self._started.wait(), ack_timeout)
         except TimeoutError:
