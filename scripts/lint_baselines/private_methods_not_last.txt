@@ -23,7 +23,6 @@ music_assistant/providers/deezer/media.py	27
 music_assistant/providers/deezer/streaming.py	2
 music_assistant/providers/digitally_incorporated/__init__.py	2
 music_assistant/providers/emby/__init__.py	16
-music_assistant/providers/filesystem_nfs/provider.py	1
 music_assistant/providers/gpodder/client.py	4
 music_assistant/providers/heos/player.py	11
 music_assistant/providers/heos/provider.py	5

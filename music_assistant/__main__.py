@@ -85,7 +85,10 @@ def setup_logger(data_path: str, level: str = "DEBUG") -> logging.Logger:
     # define log formatter
     log_fmt = "%(asctime)s.%(msecs)03d %(levelname)s (%(threadName)s) [%(name)s] %(message)s"
 
-    # base logging config for the root logger
+    # base logging config for the root logger.
+    # The root level doubles as the gate for third-party libraries that never get an
+    # explicit level of their own, so it is kept separate from the Music Assistant log
+    # level below: a verbose MA (or provider) level stays scoped to MA's own loggers.
     logging.basicConfig(level=logging.INFO)
 
     colorfmt = f"%(log_color)s{log_fmt}%(reset)s"

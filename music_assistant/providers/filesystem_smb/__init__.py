@@ -9,10 +9,11 @@ from urllib.parse import quote
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import ConfigEntryType
-from music_assistant_models.errors import LoginFailed
+from music_assistant_models.errors import LoginFailed, SetupFailedError, UnsupportedSystemError
 
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.json import SerializableType
+from music_assistant.helpers.mount import error_summary, unmount
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.util import get_ip_from_host
 from music_assistant.providers.filesystem_local import (
@@ -44,6 +45,19 @@ CONF_SHARE = "share"
 CONF_SUBFOLDER = "subfolder"
 CONF_SMB_VERSION = "smb_version"
 CONF_CACHE_MODE = "cache_mode"
+
+# lowercase fragments that both mount tools (Linux mount.cifs and macOS mount_smbfs) emit when
+# the server rejected the credentials - only those must be reported back as an auth problem
+_AUTH_FAILURE_MARKERS = (
+    "permission denied",
+    "authentication error",
+    "nt_status_logon_failure",
+    "nt_status_access_denied",
+    "nt_status_account_disabled",
+    "nt_status_account_locked_out",
+    "nt_status_password_expired",
+    "nt_status_wrong_password",
+)
 
 
 async def setup(
@@ -110,7 +124,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         server = str(self.get_setup_value(CONF_HOST))
         if not await get_ip_from_host(server):
             msg = f"Unable to resolve {server}, make sure the address is resolvable."
-            raise LoginFailed(
+            raise SetupFailedError(
                 msg,
                 translation_key="host_unresolvable",
                 translation_args=[server],
@@ -118,16 +132,16 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         share = str(self.get_setup_value(CONF_SHARE))
         if not share or "/" in share or "\\" in share:
             msg = "Invalid share name"
-            raise LoginFailed(msg)
+            raise SetupFailedError(msg)
         if not await exists(self.base_path):
             await makedirs(self.base_path)
         try:
             # do unmount first to cleanup any unexpected state
-            await self.unmount(ignore_error=True)
+            await unmount(self.base_path, self.logger)
             await self.mount()
         except OSError as err:
             msg = f"Connection failed for the given details: {err}"
-            raise LoginFailed(msg) from err
+            raise SetupFailedError(msg) from err
         await self.check_write_access()
 
     async def unload(self, is_removed: bool = False) -> None:
@@ -136,7 +150,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
 
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
-        await self.unmount(ignore_error=True)
+        await unmount(self.base_path, self.logger)
 
     async def get_diagnostics(self) -> dict[str, SerializableType]:
         """Return diagnostics info for this provider to include in diagnostics reports."""
@@ -174,20 +188,13 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             )
         else:
             msg = f"SMB provider is not supported on {platform.system()}"
-            raise LoginFailed(msg)
+            raise UnsupportedSystemError(msg)
 
         self.logger.debug("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
         self.logger.log(VERBOSE_LOG_LEVEL, "Using mount command: %s", " ".join(mount_cmd))
         returncode, output = await check_output(*mount_cmd, env=env_vars)
         if returncode != 0:
-            msg = f"SMB mount failed with error: {output.decode()}"
-            raise LoginFailed(msg)
-
-    async def unmount(self, ignore_error: bool = False) -> None:
-        """Unmount the remote share."""
-        returncode, output = await check_output("umount", self.base_path)
-        if returncode != 0 and not ignore_error:
-            self.logger.warning("SMB unmount failed with error: %s", output.decode())
+            raise _mount_error(output.decode().strip())
 
     def _build_macos_mount_cmd(
         self, server: str, username: str, password: str | None, share: str, subfolder: str
@@ -291,3 +298,19 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             self.base_path,
         ]
         return mount_cmd, env_vars
+
+
+def _mount_error(output: str) -> SetupFailedError | LoginFailed:
+    """
+    Return the error to raise for a failed mount command.
+
+    :param output: The (combined) output of the mount command.
+    """
+    lowered = output.lower()
+    if any(marker in lowered for marker in _AUTH_FAILURE_MARKERS):
+        return LoginFailed(f"SMB mount failed with error: {output}")
+    return SetupFailedError(
+        f"SMB mount failed with error: {output}",
+        translation_key="mount_failed",
+        translation_args=[error_summary(output)],
+    )

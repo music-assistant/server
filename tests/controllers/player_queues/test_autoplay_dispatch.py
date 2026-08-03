@@ -429,8 +429,8 @@ def test_live_source_queue_survives_a_manual_stop() -> None:
         tracker.mass.create_task.assert_not_called()
 
 
-def test_finished_track_queue_is_cleared_on_stop() -> None:
-    """A queue that ran out of music is still cleared (or resumed) as before."""
+def test_finished_track_queue_is_settled_on_stop() -> None:
+    """A queue that ran out of music is still settled (resumed, ended or cleared) as before."""
     tracker = _tracker()
     prev_state, new_state = _stop_states(
         SimpleNamespace(media_type=MediaType.TRACK, streamdetails=None, duration=3600)
