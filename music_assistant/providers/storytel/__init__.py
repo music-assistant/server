@@ -543,7 +543,16 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
         failed_provider_error: ProviderUnavailableError | None = None
         yielded_any = False
         for podcast_data in podcasts.values():
-            podcast_id = (podcast_data.get("model") or {}).get("id") or ""
+            model = podcast_data.get("model") or {}
+            podcast_id = model.get("id") or ""
+            result_type = str(model.get("resultType") or podcast_data.get("resultType") or "")
+            if result_type and result_type.lower() != "podcast":
+                self.logger.debug(
+                    "Skipping Storytel followed item %s with result type %s",
+                    podcast_id,
+                    result_type,
+                )
+                continue
             try:
                 podcast = await self.get_podcast(podcast_id)
                 yielded_any = True
