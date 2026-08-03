@@ -29,10 +29,11 @@ if TYPE_CHECKING:
 CONSUMER_INSTANCE = "consumer--test"
 
 
-def _create_plugin(instance_id: str) -> MagicMock:
+def _create_plugin(instance_id: str, name: str | None = None) -> MagicMock:
     """Create a mock plugin provider exposing no engines."""
     provider = MagicMock(spec=PluginProvider)
     provider.instance_id = instance_id
+    provider.name = name or instance_id
     provider.get_ai_engines = AsyncMock(return_value=[])
     provider.get_tts_engines = AsyncMock(return_value=[])
     return provider
@@ -253,7 +254,23 @@ async def test_config_entries_list_the_concrete_engines() -> None:
     assert entry.category == "features"
     assert entry.read_only is False
     assert [(option.value, option.title) for option in entry.options] == [
-        ("plugin_a/alpha", "Alpha"),
+        ("plugin_a/alpha", "plugin_a | Alpha"),
+    ]
+
+
+async def test_config_entries_name_the_plugin_each_engine_came_from() -> None:
+    """Engines from different plugins stay distinguishable even when named the same."""
+    first = _create_plugin("plugin_a", name="Home Assistant")
+    second = _create_plugin("plugin_b", name="Chatterbox")
+    first.get_ai_engines.return_value = [AIEngine(id="shared", name="Shared", provider=first)]
+    second.get_ai_engines.return_value = [AIEngine(id="shared", name="Shared", provider=second)]
+    mass = _create_mass(first, second)
+
+    entries = await create_ai_engine_config_entries(mass, "ai_engine")
+
+    assert [(option.value, option.title) for option in entries[0].options] == [
+        ("plugin_a/shared", "Home Assistant | Shared"),
+        ("plugin_b/shared", "Chatterbox | Shared"),
     ]
 
 

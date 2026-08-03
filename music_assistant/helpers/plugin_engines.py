@@ -213,7 +213,12 @@ def _create_engine_config_entries(
         # a concrete default would make the seeded selection equal to it and therefore
         # not persisted (to_raw only stores values differing from the default)
         default_value=None,
-        options=[ConfigValueOption(engine.uid, title=engine.name) for engine in engines],
+        # the picker aggregates engines from every plugin, so each option names the
+        # plugin it came from - engine names alone are ambiguous across providers
+        options=[
+            ConfigValueOption(engine.uid, title=f"{engine.provider.name} | {engine.name}")
+            for engine in engines
+        ],
         depends_on=depends_on,
         category="features",
         read_only=not engines,
