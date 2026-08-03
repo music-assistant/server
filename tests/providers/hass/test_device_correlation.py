@@ -40,6 +40,8 @@ def _provider(
     )
     provider._entity_registry = None
     provider._entity_registry_lock = asyncio.Lock()
+    provider._device_registry = None
+    provider._device_registry_lock = asyncio.Lock()
     provider.get_states = AsyncMock(return_value=states)  # type: ignore[method-assign]
     provider.logger = logging.getLogger("test.hass")
     return provider

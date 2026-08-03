@@ -33,6 +33,7 @@ LAST_CHANGED_ISO = "2023-05-11T19:18:36.072648+00:00"
 CONTEXT_ID = "01H0640ES8JCY1NGTNW3V41T5T"
 REGISTRY_LIST_COMMAND = "config/entity_registry/list_for_display"
 REGISTRY_ENTRIES_COMMAND = "config/entity_registry/get_entries"
+DEVICE_REGISTRY_LIST = "get_device_registry"
 
 
 def _state(entity_id: str, friendly_name: str) -> dict[str, Any]:
@@ -122,6 +123,10 @@ class _HomeAssistantClient:
         self.compressed_states = {state["entity_id"]: _compressed(state) for state in states}
         # entities Home Assistant reports as disabled, so leaves out of the registry listing
         self.disabled_entities: set[str] = set()
+        # devices as returned in full by the device registry listing
+        self.devices: list[dict[str, Any]] = []
+        # set to hold back the device registry listing until the test releases it
+        self.device_registry_result: asyncio.Future[None] | None = None
         # events delivered ahead of a subscription's initial state message
         self.leading_events: list[dict[str, Any]] = []
         self.deliver_initial_states = True
@@ -196,6 +201,13 @@ class _HomeAssistantClient:
             self.active_event_subscriptions -= 1
 
         return _unsubscribe
+
+    async def get_device_registry(self) -> list[dict[str, Any]]:
+        """Return the full device registry listing."""
+        self.calls.append(DEVICE_REGISTRY_LIST)
+        if self.device_registry_result:
+            await self.device_registry_result
+        return list(self.devices)
 
     def fire_event(self, event_type: str, data: dict[str, Any]) -> None:
         """Deliver an event to every subscriber of the given event type."""
@@ -300,9 +312,11 @@ async def test_feature_resolution_starts_listener_first() -> None:
     ]
 
     async with _start_provider(states) as (provider, hass):
-        assert hass.calls[:4] == [
+        assert hass.calls[:5] == [
             "connect",
             "start_listening",
+            # the entity- and device registry subscriptions
+            "subscribe_events",
             "subscribe_events",
             REGISTRY_LIST_COMMAND,
         ]
@@ -331,7 +345,9 @@ async def test_feature_resolution_failure_cleans_up_connection() -> None:
         "connect",
         "start_listening",
         "subscribe_events",
+        "subscribe_events",
         REGISTRY_LIST_COMMAND,
+        "unsubscribe_events",
         "unsubscribe_events",
         "disconnect",
     ]
@@ -729,6 +745,81 @@ async def test_registry_changed_during_the_fetch_is_not_cached() -> None:
         assert hass.calls.count(REGISTRY_LIST_COMMAND) == registry_fetches + 1
 
 
+async def test_device_registry_is_fetched_once_per_connection() -> None:
+    """Serve repeated device lookups from a device registry that is fetched only once."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        hass.devices = [{"id": "dev1"}]
+
+        assert await provider.get_device_registry() == {"dev1": {"id": "dev1"}}
+        await provider.get_device_registry()
+
+        assert hass.calls.count(DEVICE_REGISTRY_LIST) == 1
+
+
+async def test_device_registry_update_invalidates_the_device_registry() -> None:
+    """Refetch the device registry after Home Assistant reports a device registry change."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        hass.devices = [{"id": "dev1"}]
+        await provider.get_device_registry()
+        hass.devices = [{"id": "dev1"}, {"id": "dev2"}]
+
+        hass.fire_event("device_registry_updated", {"action": "create", "device_id": "dev2"})
+
+        assert list(await provider.get_device_registry()) == ["dev1", "dev2"]
+        assert hass.calls.count(DEVICE_REGISTRY_LIST) == 2
+
+
+async def test_entity_registry_update_leaves_the_device_registry_cached() -> None:
+    """Keep the cached device registry when only the entity registry changed."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        hass.devices = [{"id": "dev1"}]
+        await provider.get_device_registry()
+
+        hass.fire_event(
+            "entity_registry_updated", {"action": "create", "entity_id": "light.kitchen"}
+        )
+        await provider.get_device_registry()
+
+        assert hass.calls.count(DEVICE_REGISTRY_LIST) == 1
+
+
+async def test_concurrent_device_lookups_share_one_registry_fetch() -> None:
+    """Let concurrent device lookups share a single device registry fetch."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        hass.devices = [{"id": "dev1"}]
+        # hold back the registry response until both lookups are waiting for it
+        hass.device_registry_result = asyncio.get_running_loop().create_future()
+
+        lookups = asyncio.gather(provider.get_device_registry(), provider.get_device_registry())
+        await asyncio.sleep(0)
+        hass.device_registry_result.set_result(None)
+        async with asyncio.timeout(1):
+            results = await lookups
+
+        assert all(list(result) == ["dev1"] for result in results)
+        assert hass.calls.count(DEVICE_REGISTRY_LIST) == 1
+
+
+async def test_device_registry_changed_during_the_fetch_is_not_cached() -> None:
+    """Keep a device listing out of the cache when a registry update outdated it in flight."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        hass.devices = [{"id": "dev1"}]
+        # hold back the registry response until the update has been delivered
+        hass.device_registry_result = asyncio.get_running_loop().create_future()
+        lookup = asyncio.ensure_future(provider.get_device_registry())
+        await asyncio.sleep(0)
+
+        hass.fire_event("device_registry_updated", {"action": "create", "device_id": "dev2"})
+        hass.device_registry_result.set_result(None)
+        async with asyncio.timeout(1):
+            # the stale listing is still served to the caller that asked for it
+            assert list(await lookup) == ["dev1"]
+
+        assert provider._device_registry is None
+        hass.devices = [{"id": "dev1"}, {"id": "dev2"}]
+        assert list(await provider.get_device_registry()) == ["dev1", "dev2"]
+
+
 async def test_disabled_entity_is_never_requested() -> None:
     """Leave an entity that Home Assistant disabled out of the state fetch."""
     states = [_state("media_player.kitchen", "Kitchen"), _state("media_player.spare", "Spare")]
@@ -775,12 +866,28 @@ async def test_registry_entries_of_nothing_skips_the_round_trip() -> None:
 async def test_entity_registry_subscription_is_replaced() -> None:
     """Replace the entity registry subscription instead of stacking a second one."""
     async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
-        assert hass.active_event_subscriptions == 1
+        assert hass.active_event_subscriptions == 2
         assert hass.event_subscriptions[0][0] == "entity_registry_updated"
 
         await provider._subscribe_entity_registry()
 
-        assert hass.active_event_subscriptions == 1
+        assert hass.active_event_subscriptions == 2
+        assert hass.calls[-2:] == ["unsubscribe_events", "subscribe_events"]
+
+        await provider.unload()
+
+        assert hass.active_event_subscriptions == 0
+
+
+async def test_device_registry_subscription_is_replaced() -> None:
+    """Replace the device registry subscription instead of stacking a second one."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        assert hass.active_event_subscriptions == 2
+        assert hass.event_subscriptions[1][0] == "device_registry_updated"
+
+        await provider._subscribe_device_registry()
+
+        assert hass.active_event_subscriptions == 2
         assert hass.calls[-2:] == ["unsubscribe_events", "subscribe_events"]
 
         await provider.unload()

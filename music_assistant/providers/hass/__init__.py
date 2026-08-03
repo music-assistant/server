@@ -196,6 +196,7 @@ class HomeAssistantProvider(PluginProvider):
     _player_controls: dict[str, PlayerControl] | None = None
     _unsubscribe_controls: Callable[[], None] | None = None
     _unsubscribe_entity_registry: Callable[[], None] | None = None
+    _unsubscribe_device_registry: Callable[[], None] | None = None
     _engine_refresh_task: asyncio.Task[None] | None = None
     _ai_engines: list[AIEngine]
     _tts_engines: list[TTSEngine]
@@ -203,6 +204,9 @@ class HomeAssistantProvider(PluginProvider):
     _entity_registry: dict[str, HassRegistryEntity] | None = None
     _entity_registry_generation: int = 0
     _entity_registry_lock: asyncio.Lock
+    _device_registry: dict[str, Device] | None = None
+    _device_registry_generation: int = 0
+    _device_registry_lock: asyncio.Lock
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -306,6 +310,8 @@ class HomeAssistantProvider(PluginProvider):
         self.hass = HomeAssistantClient(url, token, http_session)
         self._entity_registry = None
         self._entity_registry_lock = asyncio.Lock()
+        self._device_registry = None
+        self._device_registry_lock = asyncio.Lock()
         try:
             await self.hass.connect()
         except BaseHassClientError as err:
@@ -314,10 +320,11 @@ class HomeAssistantProvider(PluginProvider):
             raise SetupFailedError(err_msg) from err
         self._listen_task = self.mass.create_task(self._hass_listener())
         try:
-            # the registry subscription must be live before the first registry read, so no
+            # the registry subscriptions must be live before the first registry read, so no
             # registry change can slip through unnoticed; _disconnect_hass tears the
-            # subscription down again on the failure paths below
+            # subscriptions down again on the failure paths below
             await self._subscribe_entity_registry()
+            await self._subscribe_device_registry()
             await self._resolve_startup_features()
         except asyncio.CancelledError:
             await self._cleanup_failed_init()
@@ -393,6 +400,25 @@ class HomeAssistantProvider(PluginProvider):
         )
         return {entity_id: entry for entity_id, entry in result.items() if entry is not None}
 
+    async def get_device_registry(self) -> dict[str, Device]:
+        """
+        Return the Home Assistant device registry, keyed by device ID.
+
+        Home Assistant offers no abbreviated variant of the device registry listing, so the
+        entries carry all of their fields.
+        """
+        if (registry := self._device_registry) is not None:
+            return registry
+        async with self._device_registry_lock:
+            if (registry := self._device_registry) is None:
+                generation = self._device_registry_generation
+                registry = await self._fetch_device_registry()
+                # a registry change while the fetch was in flight leaves the listing stale
+                # on arrival, so serve it to this caller but keep it out of the cache
+                if generation == self._device_registry_generation:
+                    self._device_registry = registry
+            return registry
+
     async def get_media_player_device_infos(
         self,
         mac_addresses: Collection[str],
@@ -413,10 +439,10 @@ class HomeAssistantProvider(PluginProvider):
         wanted_macs = {mac.lower() for mac in mac_addresses}
         if not wanted_macs:
             return {}
-        device_registry = await self.hass.get_device_registry()
+        device_registry = await self.get_device_registry()
         device_by_mac: dict[str, Device] = {
             connection[1].lower(): device
-            for device in device_registry
+            for device in device_registry.values()
             for connection in device.get("connections", [])
             if len(connection) == 2
             and connection[0] == "mac"
@@ -867,6 +893,9 @@ class HomeAssistantProvider(PluginProvider):
         if unsubscribe := self._unsubscribe_entity_registry:
             self._unsubscribe_entity_registry = None
             unsubscribe()
+        if unsubscribe := self._unsubscribe_device_registry:
+            self._unsubscribe_device_registry = None
+            unsubscribe()
         if refresh_task := self._engine_refresh_task:
             self._engine_refresh_task = None
             refresh_task.cancel()
@@ -968,6 +997,21 @@ class HomeAssistantProvider(PluginProvider):
             return
         self._schedule_engine_refresh()
 
+    async def _subscribe_device_registry(self) -> None:
+        """Watch the Home Assistant device registry to keep the cached registry up to date."""
+        # register for device registry updates, replacing any earlier subscription
+        if unsubscribe := self._unsubscribe_device_registry:
+            self._unsubscribe_device_registry = None
+            unsubscribe()
+        self._unsubscribe_device_registry = await self.hass.subscribe_events(
+            self._on_device_registry_update, "device_registry_updated"
+        )
+
+    def _on_device_registry_update(self, event: Event) -> None:
+        """Handle a device registry update event."""
+        self._device_registry = None
+        self._device_registry_generation += 1
+
     def _schedule_engine_refresh(self) -> None:
         """(Re)schedule the debounced rebuild of the engine lists."""
         if refresh_task := self._engine_refresh_task:
@@ -999,6 +1043,10 @@ class HomeAssistantProvider(PluginProvider):
             )
             for entry in result["entities"]
         }
+
+    async def _fetch_device_registry(self) -> dict[str, Device]:
+        """Fetch the device registry from Home Assistant, keyed by device ID."""
+        return {device["id"]: device for device in await self.hass.get_device_registry()}
 
 
 def _decompress_state(entity_id: str, compressed_state: CompressedState) -> State:
