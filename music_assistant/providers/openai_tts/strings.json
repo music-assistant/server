@@ -1,0 +1,34 @@
+{
+  "config_entries": {
+    "base_url": {
+      "label": "API endpoint",
+      "description": "The base URL of the speech API, e.g. https://api.openai.com/v1 for the OpenAI cloud API or the address of your own server, such as http://localhost:8880/v1 for Kokoro-FastAPI."
+    },
+    "api_key": {
+      "label": "API key",
+      "description": "The API key to authenticate with. Required for the OpenAI cloud API, most self-hosted servers need no key at all."
+    },
+    "model": {
+      "label": "Model",
+      "description": "The speech model to use, for example tts-1 or the higher quality gpt-4o-mini-tts on the OpenAI cloud API. Self-hosted servers use their own model names."
+    },
+    "voices": {
+      "label": "Voices",
+      "description": "Comma separated list of voices to expose, overriding the voices that are normally detected automatically or fall back to the standard OpenAI voices (alloy, echo, fable, nova, onyx, shimmer)."
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Connect to the speech API",
+      "description": "Enter the API endpoint and the model to use. For the OpenAI cloud API you also need an API key; self-hosted servers that implement the same endpoint usually work without one."
+    }
+  },
+  "errors": {
+    "invalid_auth": "The API rejected the given API key.",
+    "endpoint_not_found": "No speech endpoint was found at this address. Please check the API endpoint.",
+    "cannot_connect": "Could not reach the speech API. Please check the address and try again."
+  },
+  "manifest": {
+    "description": "Turns text into speech using the OpenAI speech API, and works with self-hostable servers that implement the same endpoint such as Kokoro-FastAPI, LocalAI and Speaches."
+  }
+}
