@@ -1,0 +1,33 @@
+{
+  "config_entries": {
+    "base_url": {
+      "label": "API base URL",
+      "description": "Address of the API, including the version path. For example https://api.openai.com/v1 for OpenAI, or http://localhost:11434/v1 for Ollama."
+    },
+    "api_key": {
+      "label": "API key",
+      "description": "Leave empty for a local server that does not ask for a key."
+    },
+    "models": {
+      "label": "Models",
+      "description": "Pick the models you want to use. Each one becomes a separate choice for the AI features, so you can use a fast model for simple tasks and a smarter one where it matters."
+    },
+    "request_timeout": {
+      "label": "Request timeout",
+      "description": "How long to wait for an answer, in seconds. A local server running without a graphics card may need considerably longer than a hosted service."
+    }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Connect to an AI service",
+      "description": "Works with any service that speaks the OpenAI API, such as OpenAI, Groq, OpenRouter and Together, as well as local servers like Ollama and LM Studio. Once connected, choose the models you want in the provider settings."
+    }
+  },
+  "errors": {
+    "invalid_api_key": "The service did not accept this API key. Check the key and try again.",
+    "cannot_connect": "Could not reach the service. Check the base URL and make sure the service is running."
+  },
+  "manifest": {
+    "description": "Use any service that speaks the OpenAI API for Music Assistant's AI features, including OpenAI, Groq, OpenRouter, Together and local servers such as Ollama or LM Studio."
+  }
+}
