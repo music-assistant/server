@@ -257,6 +257,7 @@ class DSPConfigMixin:
         known = stored.pop(ir_id, None) is not None
         if known:
             self.set(CONF_PLAYER_DSP_IRS, stored)
+        removed_file = False
         try:
             ir_path = self._dsp_ir_path(ir_id)
         except InvalidDataError:
@@ -264,8 +265,10 @@ class DSPConfigMixin:
             if not known:
                 raise
         else:
-            await self._remove_file(ir_path)
-        await self._clear_dsp_ir_assignments(ir_id)
+            removed_file = await self._remove_file(ir_path)
+        cleared = await self._clear_dsp_ir_assignments(ir_id)
+        if not (known or removed_file or cleared):
+            return
 
         self.mass.signal_event(
             EventType.DSP_IRS_UPDATED,
@@ -315,14 +318,21 @@ class DSPConfigMixin:
                 data=config,
             )
 
-    async def _clear_dsp_ir_assignments(self, ir_id: str) -> None:
-        """Blank a removed impulse response from any player config or preset using it."""
+    async def _clear_dsp_ir_assignments(self, ir_id: str) -> bool:
+        """
+        Blank a removed impulse response from any player config or preset using it.
+
+        :param ir_id: The impulse response identifier to clear.
+        :return: True if any config or preset was changed.
+        """
+        cleared = False
         raw_configs: dict[str, dict[str, Any]] = self.get(CONF_PLAYER_DSP, {})
         for player_id, raw_config in tuple(raw_configs.items()):
             config = DSPConfig.from_dict(raw_config)
             if not _blank_convolution_ir(config, ir_id):
                 continue
             self.set(f"{CONF_PLAYER_DSP}/{player_id}", config.to_dict())
+            cleared = True
             if config.enabled:
                 # dropping the convolution changes what the player should hear, so the
                 # stream has to be rebuilt the same way a saved config change does it
@@ -338,6 +348,8 @@ class DSPConfigMixin:
             if not _blank_convolution_ir(preset.config, ir_id):
                 continue
             self.set(f"{CONF_PLAYER_DSP_PRESETS}/{preset_key}", preset.to_dict())
+            cleared = True
+        return cleared
 
     def _dsp_irs_dir(self) -> str:
         """Return the directory holding convolution impulse response files."""
@@ -355,10 +367,12 @@ class DSPConfigMixin:
             raise InvalidDataError(f"Invalid impulse response id: {ir_id!r}")
         return ir_path
 
-    async def _remove_file(self, path: str) -> None:
-        """Delete a file if it exists, ignoring a missing file."""
+    async def _remove_file(self, path: str) -> bool:
+        """Delete a file if it exists, reporting whether it was there."""
         with suppress(FileNotFoundError):
             await asyncio.to_thread(os.remove, path)
+            return True
+        return False
 
 
 def _blank_convolution_ir(config: DSPConfig, ir_id: str) -> bool:

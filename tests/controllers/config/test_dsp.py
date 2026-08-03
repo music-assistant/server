@@ -340,6 +340,16 @@ async def test_upload_ir_cleans_up_after_an_unexpected_failure(
     assert list((tmp_path / "dsp_irs").glob("*")) == []
 
 
+async def test_remove_ir_with_nothing_to_remove_is_a_no_op(tmp_path: Path) -> None:
+    """An id with neither a record nor a file leaves the library untouched and silent."""
+    config = _DSPConfigStore()
+    config.mass.storage_path = str(tmp_path)
+
+    await config.remove_dsp_ir("abc123")
+
+    config.signal_event.assert_not_called()
+
+
 async def test_remove_ir_drops_record_with_unusable_id(tmp_path: Path) -> None:
     """A stored id that no longer passes validation can still be removed from the library."""
     config = _DSPConfigStore()
