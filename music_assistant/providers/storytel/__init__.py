@@ -407,7 +407,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
         ) as err:
             if isinstance(err, (LoginFailed, ProviderUnavailableError)):
                 raise
-            self.logger.debug("Failed to update Storytel bookmark: %s", err)
+            self.logger.warning("Failed to update Storytel bookmark: %s", err)
 
     @handle_login_failed
     async def get_podcast(self, prov_podcast_id: str, use_cache: bool = True) -> Podcast:
