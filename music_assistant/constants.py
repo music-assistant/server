@@ -208,7 +208,6 @@ def _default_background_scan_concurrency() -> int:
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
-DEFAULT_PORT: Final[int] = 8095
 DEFAULT_BACKGROUND_SCAN_CONCURRENCY: Final[int] = _default_background_scan_concurrency()
 
 
