@@ -207,8 +207,10 @@ def filter_to_ffmpeg_params(
         )
     if isinstance(dsp_filter, SafetyLimiterFilter):
         # user placed safety limiter; level=false keeps it a transparent
-        # ceiling (no auto make-up)
-        filter_params.append(f"alimiter=limit={dsp_filter.ceiling}dB:level=false:asc=true")
+        # ceiling (no auto make-up), latency=true realigns the lookahead buffer
+        filter_params.append(
+            f"alimiter=limit={dsp_filter.ceiling}dB:level=false:asc=true:latency=true"
+        )
     # a unity ratio compresses nothing, leaving the make-up gain as the only effect
     if isinstance(dsp_filter, CompressorFilter) and (
         dsp_filter.ratio != 1.0 or dsp_filter.makeup != 0

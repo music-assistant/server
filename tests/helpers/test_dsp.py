@@ -297,7 +297,7 @@ def test_safety_limiter_filter() -> None:
     """Test that a safety limiter maps to an in-chain alimiter at the given ceiling."""
     dsp_filter = SafetyLimiterFilter(enabled=True, ceiling=-2.0)
     assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT, ir_dir=IR_DIR) == [
-        "alimiter=limit=-2.0dB:level=false:asc=true"
+        "alimiter=limit=-2.0dB:level=false:asc=true:latency=true"
     ]
 
 
