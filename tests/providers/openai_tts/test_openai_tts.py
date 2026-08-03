@@ -14,6 +14,7 @@ from music_assistant.providers.openai_tts import (
     DEFAULT_VOICES,
     SUPPORTED_FEATURES,
     OpenAITTSProvider,
+    fetch_backend_voices,
 )
 
 if TYPE_CHECKING:
@@ -77,6 +78,40 @@ async def test_get_tts_message_returns_http_streamdetails() -> None:
     assert streamdetails.media_type == MediaType.SOUND_EFFECT
     assert streamdetails.item_id == file_id
     assert streamdetails.path == f"http://mass.local:8095/{INSTANCE_ID}_speech?id={file_id}"
+
+
+def create_voices_session(payload: object) -> MagicMock:
+    """Return an http session whose voices endpoint responds with the given payload."""
+    response = MagicMock()
+    response.raise_for_status = MagicMock()
+    response.json = AsyncMock(return_value=payload)
+    session = MagicMock()
+    session.get = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=response), __aexit__=AsyncMock(return_value=False)
+        )
+    )
+    return session
+
+
+async def test_fetch_backend_voices_accepts_known_payload_shapes() -> None:
+    """A voices listing may be wrapped or bare, holding plain names or objects."""
+    for payload, expected in (
+        ({"voices": ["af_bella", "am_adam"]}, ["af_bella", "am_adam"]),
+        (["af_bella"], ["af_bella"]),
+        ({"voices": [{"id": "af_bella"}, {"name": "am_adam"}]}, ["af_bella", "am_adam"]),
+        ({"voices": [{"unexpected": "shape"}, "af_bella"]}, ["af_bella"]),
+        ({"voices": []}, []),
+    ):
+        session = create_voices_session(payload)
+        assert await fetch_backend_voices(session, "http://localhost:8880/v1") == expected
+
+
+async def test_fetch_backend_voices_never_raises() -> None:
+    """A backend without a voice listing yields no voices instead of an error."""
+    session = MagicMock()
+    session.get = MagicMock(side_effect=ClientError("no connection"))
+    assert await fetch_backend_voices(session, "https://api.openai.com/v1") == []
 
 
 async def test_handle_speech_request_rejects_missing_id() -> None:

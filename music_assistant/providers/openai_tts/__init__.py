@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import shutil
 import time
 from contextlib import suppress
 from pathlib import Path
@@ -38,6 +39,7 @@ from music_assistant.models.plugin import PluginProvider, TTSEngine
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from aiohttp import ClientSession
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
@@ -73,6 +75,36 @@ async def setup(
     return OpenAITTSProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
+async def fetch_backend_voices(
+    http_session: ClientSession, base_url: str, api_key: str = ""
+) -> list[str]:
+    """
+    Return the voices the backend advertises, empty when it does not advertise any.
+
+    Only some of the self-hostable servers implement a voice listing; the OpenAI cloud
+    API does not. Never raises: an unreachable or silent backend yields an empty list.
+
+    :param http_session: The HTTP session to request with.
+    :param base_url: The API endpoint, without trailing slash.
+    :param api_key: The API key to authenticate with, empty for backends without auth.
+    """
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    try:
+        async with http_session.get(
+            f"{base_url}/audio/voices", headers=headers, timeout=VOICES_TIMEOUT
+        ) as response:
+            response.raise_for_status()
+            data = await response.json()
+        items = data.get("voices") if isinstance(data, dict) else data
+        voices = [
+            item if isinstance(item, str) else item.get("id") or item.get("name")
+            for item in items or []
+        ]
+        return [voice for voice in voices if voice]
+    except Exception:
+        return []
+
+
 class OpenAITTSProvider(PluginProvider):
     """Text-to-speech provider backed by the OpenAI (compatible) speech API."""
 
@@ -86,7 +118,9 @@ class OpenAITTSProvider(PluginProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self._cache_dir = os.path.join(self.mass.cache_path, self.domain)
+        # scoped per instance: instances can point at different endpoints, so the same
+        # model, voice and message can still render to different audio
+        self._cache_dir = os.path.join(self.mass.cache_path, self.domain, self.instance_id)
         self._render_lock = asyncio.Lock()
         self._voices = await self._resolve_voices()
         # clips rendered before a restart stay playable
@@ -106,6 +140,8 @@ class OpenAITTSProvider(PluginProvider):
         if unregister := self._unregister_route:
             self._unregister_route = None
             unregister()
+        if is_removed:
+            await asyncio.to_thread(shutil.rmtree, self._cache_dir, ignore_errors=True)
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -184,7 +220,10 @@ class OpenAITTSProvider(PluginProvider):
         :param voice: The voice to render with.
         """
         model = str(self.get_setup_value(CONF_MODEL, DEFAULT_MODEL))
-        file_id = hashlib.sha256(f"{model}\0{voice}\0{message}".encode()).hexdigest()
+        # the endpoint is part of the identity: repointing an instance at another backend
+        # must not reuse clips rendered by the previous one
+        digest = f"{self._base_url}\0{model}\0{voice}\0{message}"
+        file_id = hashlib.sha256(digest.encode()).hexdigest()
         file_path = os.path.join(self._cache_dir, f"{file_id}.{RESPONSE_FORMAT}")
         async with self._render_lock:
             if await aiopath.isfile(file_path):
@@ -280,24 +319,9 @@ class OpenAITTSProvider(PluginProvider):
             if voices := list(dict.fromkeys(voices)):
                 self.logger.debug("Using %s voice(s) from the config override", len(voices))
                 return voices
-        try:
-            # only some self-hosted backends expose a voice listing, the cloud API does not
-            async with self.mass.http_session.get(
-                f"{self._base_url}/audio/voices", timeout=VOICES_TIMEOUT
-            ) as response:
-                response.raise_for_status()
-                data = await response.json()
-            items = data.get("voices") if isinstance(data, dict) else data
-            voices = [
-                item
-                if isinstance(item, str)
-                else item.get("id") or item.get("name") or item.get("voice")
-                for item in items or []
-            ]
-            if voices := [voice for voice in voices if voice]:
-                self.logger.debug("Discovered %s voice(s) on the backend", len(voices))
-                return voices
-        except Exception as err:
-            self.logger.debug("Voice discovery failed: %s", err)
+        api_key = str(self.get_setup_value(CONF_API_KEY) or "")
+        if voices := await fetch_backend_voices(self.mass.http_session, self._base_url, api_key):
+            self.logger.debug("Discovered %s voice(s) on the backend", len(voices))
+            return voices
         self.logger.debug("Falling back to the default voices")
         return list(DEFAULT_VOICES)

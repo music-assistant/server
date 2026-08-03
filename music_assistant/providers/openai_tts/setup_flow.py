@@ -18,6 +18,7 @@ from . import (
     DEFAULT_MODEL,
     DEFAULT_VOICES,
     RESPONSE_FORMAT,
+    fetch_backend_voices,
 )
 
 if TYPE_CHECKING:
@@ -107,9 +108,12 @@ async def _validate_credentials(
     :param model: The speech model to validate.
     """
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    # self-hosted backends often serve their own voice names, so validating with a
+    # standard OpenAI voice would fail on a perfectly good endpoint
+    advertised = await fetch_backend_voices(session.mass.http_session, base_url, api_key)
     payload = {
         "model": model,
-        "voice": DEFAULT_VOICES[0],
+        "voice": advertised[0] if advertised else DEFAULT_VOICES[0],
         "input": VALIDATION_MESSAGE,
         "response_format": RESPONSE_FORMAT,
     }
