@@ -6,7 +6,11 @@
     },
     "api_key": {
       "label": "API key",
-      "description": "Leave empty for a local server that does not ask for a key."
+      "description": "Leave empty for a local server that does not ask for a key. When changing these settings later, leave it empty to keep the key you already saved."
+    },
+    "clear_api_key": {
+      "label": "Remove the saved API key",
+      "description": "Tick this when moving to a service that does not use a key."
     },
     "models": {
       "label": "Models",

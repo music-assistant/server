@@ -33,6 +33,8 @@ _ENTRIES = (
     ConfigEntry(key=CONF_API_KEY, type=ConfigEntryType.SECURE_STRING, required=False),
 )
 
+CONF_CLEAR_API_KEY = "clear_api_key"
+
 
 async def run_setup(session: SetupSession) -> None:
     """Run the setup flow: collect the endpoint details and create the provider."""
@@ -42,10 +44,22 @@ async def run_setup(session: SetupSession) -> None:
         entries = [
             replace(entry, value=setup_data.get(entry.key, entry.value)) for entry in _ENTRIES
         ]
+        if setup_data.get(CONF_API_KEY):
+            entries.append(
+                ConfigEntry(
+                    key=CONF_CLEAR_API_KEY,
+                    type=ConfigEntryType.BOOLEAN,
+                    required=False,
+                    default_value=False,
+                )
+            )
         submitted = await session.form(entries, step_id="user", errors=errors, last_step=True)
-        if not submitted.get(CONF_API_KEY):
+        if submitted.pop(CONF_CLEAR_API_KEY, False):
+            setup_data[CONF_API_KEY] = ""
+            submitted.pop(CONF_API_KEY, None)
+        elif not submitted.get(CONF_API_KEY):
             # the stored key is never sent to the client, so an empty field on a
-            # reconfigure means "keep the current one" rather than "clear it"
+            # reconfigure means "keep the current one"; clearing it is explicit
             submitted.pop(CONF_API_KEY, None)
         setup_data.update(submitted)
         if error := await _probe(session, setup_data):
