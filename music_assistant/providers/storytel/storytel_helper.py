@@ -509,21 +509,26 @@ class StorytelHelper:
         return podcast
 
     async def get_podcast_episodes(
-        self, prov_podcast_id: str, total_episodes: int | None = None
+        self,
+        prov_podcast_id: str,
+        total_episodes: int | None = None,
+        include_languages: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get all podcast episodes for a specific podcast.
 
         :param prov_podcast_id: the provider podcast id.
         :param total_episodes: the total number of episodes for the podcast.
+        :param include_languages: optional comma-separated language filter for the episode list.
         """
+        languages_query = include_languages or self.languages_query
 
         async def fetch_page(token: str = "") -> dict[str, Any]:
             url = URL_PODCAST_DETAILS.replace("{CONSUMABLE_ID}", prov_podcast_id)
             url += (
                 "?configVariant=voice-switcher-enabled"
                 "&includeFormats=ebook%2Cabook%2Cpodcast"
-                f"&includeLanguages={quote(self.languages_query, safe='')}"
+                f"&includeLanguages={quote(languages_query, safe='')}"
                 f"&kidsMode={self.kids_mode_query}"
                 "&orderBy=default"
             )

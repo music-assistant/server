@@ -512,8 +512,16 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
                     raise failed_provider_error
                 return
         podcast = await self.get_podcast(prov_podcast_id, use_cache=use_cache)
+        episode_languages = {lang for lang in self.api.languages_query.split(",") if lang}
+        podcast_languages = getattr(getattr(podcast, "metadata", None), "languages", None)
+        if podcast_languages:
+            episode_languages.update(
+                str(language).strip() for language in podcast_languages if str(language).strip()
+            )
         podcast_episodes = await self.api.get_podcast_episodes(
-            prov_podcast_id, total_episodes=podcast.total_episodes or 0
+            prov_podcast_id,
+            total_episodes=podcast.total_episodes or 0,
+            include_languages=",".join(sorted(episode_languages)) or None,
         )
 
         if podcast_episodes is not None:
