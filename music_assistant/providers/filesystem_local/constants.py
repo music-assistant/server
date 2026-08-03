@@ -160,5 +160,10 @@ CACHE_CATEGORY_AUDIOBOOK_CHAPTERS: Final[int] = 4
 CACHE_CATEGORY_PODCAST_METADATA: Final[int] = 5
 CACHE_CATEGORY_CUE_SHEETS: Final[int] = 6
 CACHE_CATEGORY_SOUND_EFFECTS: Final[int] = 7
+CACHE_CATEGORY_PODCAST_EPISODES: Final[int] = 8
+
+# how long a podcast episode listing that lost a file to a parse failure is cached for:
+# the missing episode cannot reappear any sooner than this
+PARTIAL_LISTING_CACHE_EXPIRATION: Final[int] = 300
 
 DEFAULT_AUDIOBOOK_PODCAST_GENRE: Final[str] = "Spoken Word"

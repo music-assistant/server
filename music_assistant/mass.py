@@ -8,6 +8,7 @@ import logging
 import os
 import pathlib
 import threading
+import time
 from base64 import b64encode
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
@@ -410,6 +411,18 @@ class MusicAssistant:
             status=self._state,
         )
 
+    @api_command("time", authenticated=False)
+    def get_server_time(self) -> float:
+        """
+        Return the current server time as UTC timestamp (seconds since epoch).
+
+        Clients compare server-provided timestamps (such as `elapsed_time_last_updated`)
+        against their own clock. Round-tripping this command lets a client estimate the
+        offset between the two clocks and correct for it, so a device with an unsynced
+        clock still renders playback progress and countdowns correctly.
+        """
+        return time.time()
+
     @api_command("providers/manifests", required_scope=Scope.PROVIDERS_READ)
     def get_provider_manifests(self) -> list[ProviderManifest]:
         """Return all Provider manifests."""
@@ -723,12 +736,11 @@ class MusicAssistant:
 
         def task_done_callback(_task: asyncio.Task[Any]) -> None:
             self._tracked_tasks.pop(task_id, None)
-            # log unhandled exceptions
-            if (
-                LOGGER.isEnabledFor(logging.DEBUG)
-                and not _task.cancelled()
-                and (err := _task.exception())
-            ):
+            if _task.cancelled():
+                return
+            # always retrieve the exception, otherwise asyncio logs a noisy
+            # "Task exception was never retrieved" error at garbage collection time
+            if err := _task.exception():
                 task_name = _task.get_name() if hasattr(_task, "get_name") else str(_task)
                 LOGGER.warning(
                     "Exception in task %s - target: %s: %s",
@@ -857,8 +869,23 @@ class MusicAssistant:
             )
             raise
 
-        # (re)load any dependants
-        prov_configs = await self.config.get_provider_configs(include_values=True)
+        # (re)load any dependents. The provider itself is loaded at this point, so a problem
+        # in this scan belongs to a dependent (or to nothing at all) and must never be
+        # recorded against - and thus flag - the provider we just loaded successfully.
+        try:
+            # resolving option values here would call get_config_entries() on every loaded
+            # provider (some of which do network i/o), for values _load_provider does not
+            # read: it seeds the stored raw values itself and rehydrates once the instance
+            # exists. Only the manifest-related fields below are needed to spot a dependent.
+            prov_configs = await self.config.get_provider_configs()
+        except Exception as exc:
+            LOGGER.warning(
+                "Error looking up dependents of provider(instance) %s: %s",
+                prov_conf.name or prov_conf.instance_id,
+                str(exc) or exc.__class__.__name__,
+                exc_info=_provider_error_traceback(exc),
+            )
+            return
         for dep_prov_conf in prov_configs:
             if not dep_prov_conf.enabled:
                 continue
@@ -868,7 +895,15 @@ class MusicAssistant:
             if manifest.depends_on != prov_conf.domain:
                 continue
             try:
-                await self._load_provider(dep_prov_conf)
+                # the scan above skipped the config values, but the load path does need them:
+                # a provider reads config (e.g. its log level) while it is being constructed.
+                # Resolve them here, for this single dependent instead of for every provider.
+                dep_conf = await self.config.get_provider_config(dep_prov_conf.instance_id)
+            except KeyError:
+                # config was removed while we were scanning
+                continue
+            try:
+                await self._load_provider(dep_conf)
             except Exception as exc:
                 # record the failure against the provider that hit it: attributing it to the
                 # provider we just loaded (which is fine) flags the wrong one in the UI
@@ -965,7 +1000,9 @@ class MusicAssistant:
 
     async def unload_provider(self, instance_id: str, is_removed: bool = False) -> None:
         """Unload a provider."""
-        self.music.unschedule_provider_sync(instance_id, clear_persisted_state=is_removed)
+        # this waits (bounded) for a running sync to unwind: provider.unload() below tears
+        # down state the sync may still be using, such as the mount of a network share
+        await self.music.unschedule_provider_sync(instance_id, clear_persisted_state=is_removed)
         if provider := self._providers.get(instance_id):
             if isinstance(provider, PlayerProvider):
                 await self.players.on_provider_unload(provider)
@@ -1122,7 +1159,8 @@ class MusicAssistant:
             await self.config.create_builtin_provider_config(prov_manifest.domain)
 
         # load all configured (and enabled) builtin providers
-        prov_configs = await self.config.get_provider_configs(include_values=True)
+        # (only manifest-related fields are read here, so the option values are not resolved)
+        prov_configs = await self.config.get_provider_configs()
         builtin_configs: list[ProviderConfig] = [
             prov_conf
             for prov_conf in prov_configs
@@ -1181,7 +1219,8 @@ class MusicAssistant:
             self.config.set(CONF_DEFAULT_PROVIDERS_SETUP, default_providers_setup)
             self.config.save(True)
         # load all configured (and enabled) regular (non-builtin) providers
-        prov_configs = await self.config.get_provider_configs(include_values=True)
+        # (only manifest-related fields are read here, so the option values are not resolved)
+        prov_configs = await self.config.get_provider_configs()
         other_configs: list[ProviderConfig] = [
             prov_conf
             for prov_conf in prov_configs

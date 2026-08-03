@@ -862,6 +862,10 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             raise InvalidCommand("Can not seek outside of duration range.")
         if queue.current_index is None:
             raise InvalidCommand(f"Queue {queue_player.state.name} has no current index.")
+        # Publish the seek target before rebuilding the stream to prevent progress snapback.
+        queue.elapsed_time = position
+        queue.elapsed_time_last_updated = time.time()
+        self.signal_update(queue_id)
         await self.play_index(queue_id, queue.current_index, seek_position=position)
 
     @api_command("player_queues/resume", required_scope=Scope.QUEUES_CONTROL)
@@ -968,7 +972,17 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
                 and (queue_item := self.get_item(queue_id, index))
                 and (resume_position_ms := getattr(queue_item.media_item, "resume_position_ms", 0))
             ):
-                seek_position = max(0, int((resume_position_ms - 500) / 1000))
+                # the client may have fetched the item before its duration was known
+                await self._restore_probed_duration(queue_item)
+                if queue_item.duration or getattr(queue_item.media_item, "duration", 0):
+                    seek_position = max(0, int((resume_position_ms - 500) / 1000))
+                else:
+                    # seeking needs a duration, which is determined while streaming
+                    self.logger.debug(
+                        "Can not resume %s at %ss: its duration is not known (yet)",
+                        queue_item.name,
+                        int(resume_position_ms / 1000),
+                    )
 
             # restore the persisted playback speed for a freshly queued audiobook/episode
             # (an in-session item already carries its speed in extra_attributes)
@@ -1573,12 +1587,16 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
         :param queue_item: The queue item to create media from.
         """
         queue_data = self._queue_data[queue_item.queue_id]
+        stream_duration: int | None = None
         if queue_item.streamdetails:
             # prefer netto duration
-            # when seeking, the player only receives the remaining duration
             duration = queue_item.streamdetails.duration or queue_item.duration
             if duration and queue_item.streamdetails.seek_position:
-                duration = int(duration - queue_item.streamdetails.seek_position)
+                # the audio handed to the player starts at the seek position, so it is
+                # shorter than the media item itself. seeking to (or past) the end
+                # leaves no stream to describe, so the full length is kept instead.
+                remaining = int(duration - queue_item.streamdetails.seek_position)
+                stream_duration = remaining if remaining > 0 else None
         else:
             duration = queue_item.duration
         if queue_data.session_id is None:
@@ -1589,6 +1607,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             title=queue_item.name,
             image_url=MASS_LOGO_ONLINE,
             duration=duration,
+            stream_duration=stream_duration,
             source_id=queue_item.queue_id,
             queue_item_id=queue_item.queue_item_id,
             custom_data={

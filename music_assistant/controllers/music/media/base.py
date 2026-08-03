@@ -181,6 +181,11 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             f"music/{api_base}/get", self.get, required_scope=Scope.LIBRARY_READ
         )
         self.mass.register_api_command(
+            f"music/{api_base}/get_by_external_id",
+            self.get_library_item_by_external_id,
+            required_scope=Scope.LIBRARY_READ,
+        )
+        self.mass.register_api_command(
             f"music/{api_base}/get_collection",
             self.get_collection,
             required_scope=Scope.LIBRARY_READ,
