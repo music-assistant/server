@@ -225,28 +225,21 @@ class TapManager:
                 self.mass.create_task(self._late_join_watchdog(target, tap, viz_client))
             return tap
 
-    async def release(self, target_player_id: str) -> None:
+    def schedule_release(self, target_player_id: str) -> None:
         """
-        Remove a tap once it has been viewerless for the linger window.
+        Start the linger countdown for a tap whose viewer just left.
 
-        The linger keeps the tap in the group across refreshes and track
-        changes during a viewing session, so subsequent streams are covered
-        from their start (avoiding the mid-stream join gap).
+        Keyed per target with abort_existing, so a target never accumulates
+        countdowns: an earlier one would otherwise still be sleeping and could
+        tear down a tap that a later viewer created.
 
         :param target_player_id: The player whose tap may now be idle.
         """
-        tap = self._taps.get(target_player_id)
-        if tap is None or tap.queues:
-            return
-        await asyncio.sleep(TAP_LINGER_SECONDS)
-        async with self._lock:
-            tap = self._taps.get(target_player_id)
-            if tap is None or tap.queues:
-                return
-            self._taps.pop(target_player_id, None)
-            if (sendspin := get_sendspin_provider(self.mass)) is not None:
-                await sendspin.server_api.remove_client(tap.client_id)
-            self.logger.info("Waveform tap %s removed (viewers gone)", tap.client_id)
+        self.mass.create_task(
+            self._linger(target_player_id),
+            task_id=f"milkdrop_linger_{target_player_id}",
+            abort_existing=True,
+        )
 
     async def close(self) -> None:
         """Tear down every live tap."""
@@ -269,6 +262,27 @@ class TapManager:
         now_us = sendspin.server_api.clock.now_us()
         return [frame for ts_us, frame in tap.beats if ts_us > now_us]
 
+    async def _linger(self, target_player_id: str) -> None:
+        """
+        Remove a tap once it has been viewerless for the linger window.
+
+        The linger keeps the tap in the group across refreshes and track
+        changes during a viewing session, so subsequent streams are covered
+        from their start (avoiding the mid-stream join gap).
+        """
+        tap = self._taps.get(target_player_id)
+        if tap is None or tap.queues:
+            return
+        await asyncio.sleep(TAP_LINGER_SECONDS)
+        async with self._lock:
+            tap = self._taps.get(target_player_id)
+            if tap is None or tap.queues:
+                return
+            self._taps.pop(target_player_id, None)
+            if (sendspin := get_sendspin_provider(self.mass)) is not None:
+                await sendspin.server_api.remove_client(tap.client_id)
+            self.logger.info("Waveform tap %s removed (viewers gone)", tap.client_id)
+
     def _register_client(self, tap: Tap) -> SendspinClient:
         """Register the in-process tap client and wire its callbacks."""
 
@@ -279,6 +293,14 @@ class TapManager:
             tap.fan_out(frame)
 
         def on_beats(beats: list[BeatTiming]) -> None:
+            # Once per track, so cheap enough to keep: without it there is no
+            # way to tell a missing beat schedule from a viewer-side problem.
+            self.logger.debug(
+                "Tap %s received a schedule of %s beat(s), %s downbeat(s)",
+                tap.client_id,
+                len(beats),
+                sum(1 for beat in beats if beat.is_downbeat),
+            )
             for beat in beats:
                 frame = struct.pack(">BqB", 17, beat.timestamp_us, 1 if beat.is_downbeat else 0)
                 tap.beats.append((beat.timestamp_us, frame))

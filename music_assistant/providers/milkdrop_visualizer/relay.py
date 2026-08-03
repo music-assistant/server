@@ -106,16 +106,21 @@ class MilkdropRelay:
                     }
                 ).decode()
             )
-            for frame in list(tap.ring):
+            replayed_waves = list(tap.ring)
+            replayed_beats = self.taps.pending_beat_frames(tap)
+            for frame in replayed_waves + replayed_beats:
                 await ws.send_bytes(frame)
-            for frame in self.taps.pending_beat_frames(tap):
-                await ws.send_bytes(frame)
+            self.logger.debug(
+                "Replayed %s waveform frame(s) and %s pending beat(s) to the viewer",
+                len(replayed_waves),
+                len(replayed_beats),
+            )
             await self._serve_session(ws, queue)
         finally:
             # Detach synchronously; the linger runs detached so the request
             # handler (and its socket) is not held open for its duration.
             tap.queues.discard(queue)
-            self.mass.create_task(self.taps.release(target.player_id))
+            self.taps.schedule_release(target.player_id)
             if not ws.closed:
                 await ws.close()
         return ws
