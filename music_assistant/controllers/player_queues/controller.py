@@ -862,9 +862,7 @@ class PlayerQueuesController(QueueLoaderMixin, PlaybackTrackerMixin, StreamFeede
             raise InvalidCommand("Can not seek outside of duration range.")
         if queue.current_index is None:
             raise InvalidCommand(f"Queue {queue_player.state.name} has no current index.")
-        # Publish the requested position before rebuilding the stream so clients do not
-        # snap back to the previous elapsed clock between their optimistic update and
-        # the first player update from the restarted stream.
+        # Publish the seek target before rebuilding the stream to prevent progress snapback.
         queue.elapsed_time = position
         queue.elapsed_time_last_updated = time.time()
         self.signal_update(queue_id)
