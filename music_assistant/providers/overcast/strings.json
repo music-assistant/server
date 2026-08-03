@@ -1,0 +1,19 @@
+{
+  "config_entries": {
+    "username": {
+      "label": "Email",
+      "description": "Your Overcast account email address."
+    },
+    "password": {
+      "label": "[%key:common::config_entries::password::label%]",
+      "description": "[%key:common::config_entries::password::description%]"
+    },
+    "max_num_episodes": {
+      "label": "[%key:common::config_entries::max_num_episodes::label%]",
+      "description": "[%key:common::config_entries::max_num_episodes::description%]"
+    }
+  },
+  "manifest": {
+    "description": "Import your podcast subscriptions and playback progress from Overcast."
+  }
+}

@@ -514,6 +514,15 @@ def _timeline_answer_state(game_round: MusicQuizRound) -> TimelineRoundState:
     return game_round.answer_state
 
 
+def _broadcast_states(plugin: MusicQuizPlugin) -> list[dict[str, Any]]:
+    """Return the state payload of every game_updated broadcast, in order."""
+    return [
+        broadcast.args[0]["state"]
+        for broadcast in cast("MagicMock", plugin.signal_provider_event).call_args_list
+        if broadcast.args[0]["event"] == "game_updated"
+    ]
+
+
 async def _create_started_game(
     plugin: MusicQuizPlugin,
     player_names: tuple[str, ...] = ("Alice", "Bob"),
@@ -3677,10 +3686,12 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
         "answer_duration",
         "include_similar_music",
         "auto_start_at",
+        "preparing",
         "players",
         "current_round",
     }
     assert state["phase"] == "answering"
+    assert state["preparing"] is False
     assert state["quiz_type"] == "guess_the_song"
     assert state["answer_type"] == "multiple_choice"
     assert (state["mode"], state["include_similar_music"]) == ("venue", False)
@@ -4339,6 +4350,79 @@ async def test_reset_preserves_quiz_type_in_state_and_events() -> None:
     payload = cast("MagicMock", plugin.signal_provider_event).call_args[0][0]
     assert payload["state"]["quiz_type"] == "guess_the_song"
     assert payload["state"]["answer_type"] == "multiple_choice"
+
+
+@pytest.mark.asyncio
+async def test_reset_broadcasts_preparing_before_and_after_preparation() -> None:
+    """Announce the replay preparation before it runs and clear it once the lobby is ready."""
+    plugin = _create_plugin()
+    await _create_started_game(plugin)
+    cast("MagicMock", plugin.signal_provider_event).reset_mock()
+    states_during_preparation: list[dict[str, Any]] = []
+    prepare_initial_round = plugin._prepare_initial_round
+
+    async def _prepare(quiz_type: Any) -> Any:
+        states_during_preparation.extend(_broadcast_states(plugin))
+        return await prepare_initial_round(quiz_type)
+
+    plugin._prepare_initial_round = _prepare  # type: ignore[method-assign]
+
+    state = await plugin.reset()
+
+    # the preparing broadcast is already out when the long preparation starts
+    assert [entry["preparing"] for entry in states_during_preparation] == [True]
+    assert [(entry["phase"], entry["preparing"]) for entry in _broadcast_states(plugin)] == [
+        ("answering", True),
+        ("lobby", False),
+    ]
+    assert state["preparing"] is False
+    assert plugin._game is not None
+    assert plugin._game.preparing is False
+
+
+@pytest.mark.asyncio
+async def test_failed_reset_clears_preparing_and_broadcasts_the_recovered_state() -> None:
+    """Leave no client stranded on the preparing state when the replay preparation fails."""
+    plugin = _create_plugin()
+    await _create_started_game(plugin)
+    game = plugin._game
+    assert game is not None
+    cast("MagicMock", plugin.signal_provider_event).reset_mock()
+
+    with (
+        patch.object(
+            MusicQuizPlugin,
+            "_prepare_initial_round",
+            new=AsyncMock(side_effect=InvalidDataError("Sources unavailable")),
+        ),
+        pytest.raises(InvalidDataError, match="Sources unavailable"),
+    ):
+        await plugin.reset()
+
+    assert game.preparing is False
+    assert [(entry["phase"], entry["preparing"]) for entry in _broadcast_states(plugin)] == [
+        ("answering", True),
+        ("answering", False),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_preparing_is_idle_in_host_public_and_personal_state() -> None:
+    """Expose a false preparing flag in host, public, personal and broadcast state."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin, player_names=("Alice",))
+
+    host_state = await plugin.get_game()
+    public_state = await plugin.get_public_state()
+    personal_state = await plugin.get_player_state(player_ids["Alice"])
+    broadcast_state = cast("MagicMock", plugin.signal_provider_event).call_args.args[0]["state"]
+
+    assert host_state is not None
+    assert public_state is not None
+    assert host_state["preparing"] is False
+    assert public_state["preparing"] is False
+    assert personal_state["preparing"] is False
+    assert broadcast_state["preparing"] is False
 
 
 @pytest.mark.asyncio

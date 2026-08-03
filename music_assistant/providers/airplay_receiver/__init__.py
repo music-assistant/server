@@ -453,7 +453,9 @@ class AirPlayReceiverProvider(PluginProvider):
         config_content = config_content.replace("{METADATA_PIPE}", self.metadata_pipe.path)
         config_content = config_content.replace("{AUDIO_PIPE}", self.audio_pipe.path)
         config_content = config_content.replace("{PORT}", str(self.airplay_port))
-        config_content = config_content.replace("{INTERFACE_LINE}", self._get_mdns_interface_line())
+        config_content = config_content.replace(
+            "{INTERFACE_LINE}", await self._get_mdns_interface_line()
+        )
 
         # Set default volume based on default player's current volume if available
         # Convert player volume (0-100) to AirPlay volume (-30.0 to 0.0 dB)
@@ -473,7 +475,7 @@ class AirPlayReceiverProvider(PluginProvider):
 
         await asyncio.to_thread(_write_config)
 
-    def _get_mdns_interface_line(self) -> str:
+    async def _get_mdns_interface_line(self) -> str:
         """
         Build the shairport-sync ``general.interface`` directive, or an empty string.
 
@@ -482,8 +484,8 @@ class AirPlayReceiverProvider(PluginProvider):
         announced on the intended network instead of an unrelated one (e.g. a
         Docker bridge). Returns an empty string to advertise on all interfaces.
         """
-        bind_ip = self.mass.streams.bind_ip
-        if not bind_ip or bind_ip == "0.0.0.0":
+        bind_ip = await self.mass.streams.get_source_ip()
+        if not bind_ip:
             return ""
         iface_name = interface_name_for_ip(bind_ip)
         if not iface_name:
