@@ -992,7 +992,7 @@ for more details.
 
             # Abs allows a single session per device id. MA may load another item into
             # the queue if autoplay is enabled. This then deletes the previous open session.
-            # We cycle through self.session_cycle to prevent this
+            # We cycle through self.session_cycle to prevent this.
             session_cycle_count = next(self.session_cycle)
             obsolete_session_id: str | None = None
             for id_, session_helper in self.sessions.items():
@@ -1000,6 +1000,8 @@ for more details.
                     obsolete_session_id = id_
                     break
             if obsolete_session_id:
+                # Remove old reference. Creating a new session with the same device id in
+                # abs will automatically close the session there, no separate call needed.
                 self.sessions.pop(obsolete_session_id)
 
             client_name = f"Music Assistant {self.instance_id} {session_cycle_count}"
