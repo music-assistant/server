@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from music_assistant_models.enums import ExternalID, RecommendationFolderType
+from music_assistant_models.enums import ArtistEntityType, ExternalID, RecommendationFolderType
 from music_assistant_models.media_items import (
     Artist,
     MediaItemMetadata,
@@ -35,6 +35,7 @@ def _make_artist(
     name: str,
     mbid: str | None = None,
     life_span: LifeSpan | None = None,
+    artist_entity_type: ArtistEntityType | None = None,
 ) -> Artist:
     """Return a minimal library Artist, optionally with an MB external-ID and life_span."""
     pm = ProviderMapping(
@@ -45,8 +46,10 @@ def _make_artist(
     artist = Artist(item_id=item_id, provider="test", name=name, provider_mappings={pm})
     if mbid:
         artist.add_external_id(ExternalID.MB_ARTIST, mbid)
-    if life_span is not None:
-        artist.metadata = MediaItemMetadata(life_span=life_span)
+    if life_span is not None or artist_entity_type is not None:
+        artist.metadata = MediaItemMetadata(
+            life_span=life_span, artist_entity_type=artist_entity_type
+        )
     return artist
 
 
@@ -111,6 +114,7 @@ def provider_mock() -> Mock:
     provider.mass = Mock()
     provider.mass.create_task = Mock()
     provider.mass.call_later = Mock()
+    provider.mass.music.artists.update_item_in_library = AsyncMock()
     return provider
 
 
@@ -134,7 +138,7 @@ async def test_scan_matches_birthday_in_window(
     mbid = "20ff3303-4fe2-4a47-a1b6-291e26aa3438"
     _set_library(provider_mock, [_make_artist("1", "Birthday Artist", mbid=mbid)])
     provider_mock.get_artist_details = AsyncMock(
-        return_value=_make_mb_artist(mbid, f"1980-{today_mmdd}")
+        return_value=_make_mb_artist(mbid, f"1980-{today_mmdd}", artist_type="person")
     )
 
     artists = await manager._scan_matches()
@@ -150,7 +154,9 @@ async def test_scan_matches_memoriam_in_window(
     mbid = "20ff3303-4fe2-4a47-a1b6-291e26aa3438"
     _set_library(provider_mock, [_make_artist("1", "Late Artist", mbid=mbid)])
     provider_mock.get_artist_details = AsyncMock(
-        return_value=_make_mb_artist(mbid, begin="1933-01-01", end=f"2006-{today_mmdd}", ended=True)
+        return_value=_make_mb_artist(
+            mbid, begin="1933-01-01", end=f"2006-{today_mmdd}", ended=True, artist_type="person"
+        )
     )
 
     artists = await manager._scan_matches()
@@ -271,7 +277,7 @@ async def test_scan_matches_api_error_skipped(
         if mbid == mbid_error:
             msg = "MB API unavailable"
             raise RuntimeError(msg)
-        return _make_mb_artist(mbid, f"1985-{today_mmdd}")
+        return _make_mb_artist(mbid, f"1985-{today_mmdd}", artist_type="person")
 
     provider_mock.get_artist_details = fake_details
 
@@ -288,7 +294,16 @@ async def test_scan_matches_uses_metadata_when_available(
     mbid = "20ff3303-4fe2-4a47-a1b6-291e26aa3438"
     life_span = LifeSpan(begin=f"1980-{today_mmdd}")
     _set_library(
-        provider_mock, [_make_artist("1", "Cached Artist", mbid=mbid, life_span=life_span)]
+        provider_mock,
+        [
+            _make_artist(
+                "1",
+                "Cached Artist",
+                mbid=mbid,
+                life_span=life_span,
+                artist_entity_type=ArtistEntityType.PERSON,
+            )
+        ],
     )
     provider_mock.get_artist_details = AsyncMock(side_effect=AssertionError("should not call"))
 
@@ -394,7 +409,7 @@ async def test_refresh_caches_artist_dicts(
     mbid = "20ff3303-4fe2-4a47-a1b6-291e26aa3438"
     _set_library(provider_mock, [_make_artist("1", "Birthday Star", mbid=mbid)])
     provider_mock.get_artist_details = AsyncMock(
-        return_value=_make_mb_artist(mbid, f"1990-{today_mmdd}")
+        return_value=_make_mb_artist(mbid, f"1990-{today_mmdd}", artist_type="person")
     )
     provider_mock.mass.cache.set = AsyncMock()
 

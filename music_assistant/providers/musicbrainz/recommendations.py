@@ -135,8 +135,7 @@ class MusicBrainzRecommendationManager:
                 artist.metadata.artist_entity_type if artist.metadata else None
             )
             life_span = artist.metadata.life_span if artist.metadata else None
-            if life_span is None:
-                # Metadata not yet populated; fall back to a direct MusicBrainz API call.
+            if life_span is None or entity_type is None:
                 try:
                     mb_artist = await self.provider.get_artist_details(mbid)
                 except Exception as err:
@@ -144,9 +143,16 @@ class MusicBrainzRecommendationManager:
                     continue
                 if entity_type is None and mb_artist.type:
                     entity_type = ArtistEntityType(mb_artist.type.lower())
-                if mb_artist.life_span:
+                if life_span is None and mb_artist.life_span:
                     mb_ls = mb_artist.life_span
                     life_span = LifeSpan(begin=mb_ls.begin, end=mb_ls.end, ended=mb_ls.ended)
+                metadata = artist.metadata or MediaItemMetadata()
+                metadata.life_span = life_span
+                metadata.artist_entity_type = entity_type
+                artist.metadata = metadata
+                await self.mass.music.artists.update_item_in_library(
+                    artist.item_id, artist, overwrite=False
+                )
             if not life_span:
                 continue
             # Only process known artist types with date-based events (whitelist approach)
@@ -163,12 +169,6 @@ class MusicBrainzRecommendationManager:
             birth_in_window = begin and len(begin) >= 10 and begin[5:10] in window
             death_in_window = life_span.ended and end and len(end) >= 10 and end[5:10] in window
             if birth_in_window or death_in_window:
-                # Ensure life_span and entity_type are stored in the artist metadata
-                # so the frontend can compute event type and date without extra API calls.
-                metadata = artist.metadata or MediaItemMetadata()
-                metadata.life_span = life_span
-                metadata.artist_entity_type = entity_type
-                artist.metadata = metadata
                 matched.append(artist)
 
         self.logger.debug(
