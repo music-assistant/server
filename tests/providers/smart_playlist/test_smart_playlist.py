@@ -9,7 +9,7 @@ from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from music_assistant_models.enums import AlbumType, ImageType, ProviderFeature
+from music_assistant_models.enums import AlbumType, ImageType, ProviderFeature, ProviderType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Genre,
@@ -23,9 +23,10 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
 from music_assistant.helpers.track_filter import track_filter
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import AIEngine, PluginProvider
 from music_assistant.providers.smart_playlist import (
     CONF_AI_DESCRIPTIONS,
+    CONF_AI_ENGINE,
     SmartPlaylistProvider,
 )
 from music_assistant.providers.smart_playlist.helpers import (
@@ -1838,10 +1839,16 @@ async def test_enrich_tracks_with_db_genres_handles_duplicate_item_ids() -> None
 # ---------------------------------------------------------------------------
 
 
-def _make_ai_provider(response: str = "A mellow mix for the evening.") -> MagicMock:
-    """Build a mock plugin provider that supports ai_query and returns the given response."""
+def _make_ai_provider(
+    response: str = "A mellow mix for the evening.", instance_id: str = "ai--1"
+) -> MagicMock:
+    """Build a mock plugin provider exposing one AI engine returning the given response."""
     provider = MagicMock(spec=PluginProvider)
+    provider.instance_id = instance_id
     provider.ai_query = AsyncMock(return_value=response)
+    provider.get_ai_engines = AsyncMock(
+        return_value=[AIEngine(id="engine", name=instance_id, provider=provider)]
+    )
     return provider
 
 
@@ -1850,8 +1857,14 @@ def _make_ai_plugin(
     *,
     ai_enabled: bool = True,
     ai_provider: Any = None,
+    ai_engine: str | None = None,
 ) -> SmartPlaylistProvider:
-    """Build a SmartPlaylistProvider wired for AI-description tests."""
+    """
+    Build a SmartPlaylistProvider wired for AI-description tests.
+
+    :param ai_engine: The stored engine selection; defaults to the given provider's engine,
+        as the load-time seeding would have stored it. Pass "" to start out unseeded.
+    """
     mass = MagicMock()
     mass.storage_path = str(tmp_path)
     mass.cache.clear = AsyncMock()
@@ -1862,8 +1875,18 @@ def _make_ai_plugin(
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
     config = MagicMock()
-    config.get_value.side_effect = lambda key, *_args: (
-        ai_enabled if key == CONF_AI_DESCRIPTIONS else "GLOBAL"
+    if ai_engine is None and ai_provider is not None:
+        ai_engine = f"{ai_provider.instance_id}/engine"
+    config_values: dict[str, Any] = {
+        CONF_AI_DESCRIPTIONS: ai_enabled,
+        CONF_AI_ENGINE: ai_engine or None,
+    }
+    config.get_value.side_effect = lambda key, *_args: config_values.get(key, "GLOBAL")
+    mass.config.get_raw_provider_config_value.side_effect = lambda _instance_id, key, default=None: (
+        config_values.get(key, default)
+    )
+    mass.config.set_raw_provider_config_value.side_effect = (
+        lambda _instance_id, key, value, **_kwargs: config_values.__setitem__(key, value)
     )
     return SmartPlaylistProvider(mass, manifest, config, set())
 
@@ -1939,14 +1962,14 @@ async def test_generate_ai_description_no_provider_returns_none(tmp_path: Any) -
 
     assert result is None
     cast("Any", plugin.mass).get_providers_supporting_feature.assert_called_once_with(
-        ProviderFeature.AI_QUERY
+        ProviderFeature.AI_QUERY, priority=(ProviderType.PLUGIN,)
     )
 
 
 @pytest.mark.asyncio
 async def test_generate_ai_description_provider_error_returns_none(tmp_path: Any) -> None:
     """A failing AI provider falls back to None instead of raising."""
-    ai_provider = MagicMock(spec=PluginProvider)
+    ai_provider = _make_ai_provider()
     ai_provider.ai_query = AsyncMock(side_effect=Exception("boom"))
     plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_provider=ai_provider)
 
@@ -1956,19 +1979,42 @@ async def test_generate_ai_description_provider_error_returns_none(tmp_path: Any
 
 
 @pytest.mark.asyncio
-async def test_generate_ai_description_falls_back_to_next_provider(tmp_path: Any) -> None:
-    """If the first provider errors, the next available provider is tried."""
-    bad = MagicMock(spec=PluginProvider)
-    bad.ai_query = AsyncMock(side_effect=Exception("boom"))
-    good = _make_ai_provider("Second provider result.")
-    plugin = _make_ai_plugin(tmp_path, ai_enabled=True)
-    cast("Any", plugin.mass).get_providers_supporting_feature = MagicMock(return_value=[bad, good])
+async def test_generate_ai_description_stays_on_the_configured_engine(tmp_path: Any) -> None:
+    """A failing selection yields no description instead of asking another engine."""
+    failing = _make_ai_provider(instance_id="ai--bad")
+    failing.ai_query = AsyncMock(side_effect=Exception("boom"))
+    other = _make_ai_provider("Second provider result.", instance_id="ai--good")
+    plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_engine="ai--bad/engine")
+    cast("Any", plugin.mass).get_providers_supporting_feature = MagicMock(
+        return_value=[failing, other]
+    )
 
     result = await plugin._generate_ai_description("X", SmartPlaylistRules(favorites_only=True))
 
-    assert result == "Second provider result."
-    bad.ai_query.assert_awaited_once()
-    good.ai_query.assert_awaited_once()
+    assert result is None
+    failing.ai_query.assert_awaited_once()
+    other.ai_query.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_first_use_adopts_a_concrete_engine_selection(tmp_path: Any) -> None:
+    """An instance without a stored selection adopts one on first use, not at load."""
+    ai_provider = _make_ai_provider("Chill evening vibes.")
+    plugin = _make_ai_plugin(tmp_path, ai_provider=ai_provider, ai_engine="")
+    await plugin.handle_async_init()
+    mass = cast("Any", plugin.mass)
+    mass.config.set_raw_provider_config_value.assert_not_called()
+
+    assert (
+        await plugin._generate_ai_description("Evening Chill", SmartPlaylistRules())
+        == "Chill evening vibes."
+    )
+
+    assert mass.config.set_raw_provider_config_value.call_args.args == (
+        plugin.instance_id,
+        CONF_AI_ENGINE,
+        "ai--1/engine",
+    )
 
 
 @pytest.mark.asyncio

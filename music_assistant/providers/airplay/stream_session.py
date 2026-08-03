@@ -1129,13 +1129,7 @@ class AirPlayStreamSession:
             )
         return ready_at_unix_ms
 
-    async def _start_members(
-        self,
-        position_ms: int,
-        start_unix_ms: int,
-        *,
-        reanchor_session: bool = True,
-    ) -> None:
+    async def _start_members(self, position_ms: int, start_unix_ms: int) -> None:
         """
         Anchor every member's playback at one shared audible instant.
 
@@ -1147,7 +1141,6 @@ class AirPlayStreamSession:
 
         :param position_ms: Media position mapped to the first sample of the anchor.
         :param start_unix_ms: Shared audible-start instant in unix epoch ms.
-        :param reanchor_session: Whether this start becomes the session timeline anchor.
         """
         target_ms = start_unix_ms
         corrected_ms = start_unix_ms
@@ -1199,9 +1192,8 @@ class AirPlayStreamSession:
                 "please report this with a debug log",
                 target_ms,
             )
-        if reanchor_session:
-            self.start_unix_ms = target_ms
-            self.start_time = target_ms / 1000
+        self.start_unix_ms = target_ms
+        self.start_time = target_ms / 1000
 
     async def _flush_member(self, player: AirPlayPlayer) -> bool:
         """Flush one member's live stream in place and report the binary's ack."""
@@ -1236,7 +1228,7 @@ class AirPlayStreamSession:
         output_plan = self.mass.streams.audio.get_player_output_plan(
             player.player_id,
             input_format=self.pcm_format,
-            output_format=get_final_output_format(handoff_format, player),
+            output_format=get_final_output_format(handoff_format),
             handoff_format=handoff_format,
             queue_id=media.source_id,
             session_id=get_media_session_id(media),

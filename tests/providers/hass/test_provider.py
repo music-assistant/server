@@ -12,15 +12,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from hass_client.exceptions import BaseHassClientError
 from music_assistant_models.enums import ProviderFeature
-from music_assistant_models.errors import SetupFailedError
+from music_assistant_models.errors import SetupFailedError, UnsupportedFeaturedException
 
 from music_assistant.constants import CONF_LOG_LEVEL
 from music_assistant.providers.hass import (
-    CONF_AI_TASK_ENTITY,
     CONF_AUTH_TOKEN,
     CONF_MUTE_CONTROLS,
     CONF_POWER_CONTROLS,
-    CONF_TTS_ENTITY,
     CONF_URL,
     CONF_VERIFY_SSL,
     CONF_VOLUME_CONTROLS,
@@ -115,6 +113,9 @@ class _HomeAssistantClient:
         self.subscriptions: list[list[str]] = []
         self.unsubscribed: list[list[str]] = []
         self.active_subscriptions = 0
+        # (event_type, callback) per subscribe_events call
+        self.event_subscriptions: list[tuple[str, Callable[[dict[str, Any]], None]]] = []
+        self.active_event_subscriptions = 0
         # compressed states keyed by entity_id, as delivered over the websocket
         self.compressed_states = {state["entity_id"]: _compressed(state) for state in states}
         # events delivered ahead of a subscription's initial state message
@@ -194,6 +195,26 @@ class _HomeAssistantClient:
 
         return _unsubscribe
 
+    async def subscribe_events(
+        self, cb_func: Callable[[dict[str, Any]], None], event_type: str
+    ) -> Callable[[], None]:
+        """Register the event callback and return the unsubscribe callable."""
+        self.calls.append("subscribe_events")
+        self.event_subscriptions.append((event_type, cb_func))
+        self.active_event_subscriptions += 1
+
+        def _unsubscribe() -> None:
+            self.calls.append("unsubscribe_events")
+            self.active_event_subscriptions -= 1
+
+        return _unsubscribe
+
+    def fire_event(self, event_type: str, data: dict[str, Any]) -> None:
+        """Deliver an event to every subscriber of the given event type."""
+        for subscribed_type, cb_func in self.event_subscriptions:
+            if subscribed_type == event_type:
+                cb_func({"event_type": event_type, "data": data})
+
     async def disconnect(self) -> None:
         """Disconnect the client."""
         self.calls.append("disconnect")
@@ -220,6 +241,17 @@ async def _start_provider(
         yield provider, hass
     finally:
         await provider.unload()
+
+
+async def _fire_registry_update(
+    provider: HomeAssistantProvider, hass: _HomeAssistantClient, entity_id: str
+) -> None:
+    """Deliver an entity registry update and wait for the engine rebuild it schedules."""
+    with patch("music_assistant.providers.hass.ENGINE_REFRESH_DEBOUNCE", 0):
+        hass.fire_event("entity_registry_updated", {"action": "update", "entity_id": entity_id})
+        assert provider._engine_refresh_task is not None
+        async with asyncio.timeout(1):
+            await provider._engine_refresh_task
 
 
 async def test_feature_resolution_starts_listener_first() -> None:
@@ -380,28 +412,47 @@ async def test_connection_failure_cleans_up_client() -> None:
     assert provider._listen_task is None
 
 
-@pytest.mark.parametrize(
-    ("states", "expected_entity"),
-    [
-        ([_state("ai_task.default", "Default")], "ai_task.default"),
-        (
-            [
-                _state("ai_task.first", "First"),
-                _state("ai_task.selected", "Selected"),
-            ],
-            "ai_task.selected",
-        ),
-    ],
-)
-async def test_ai_query_uses_resolved_entity_after_startup(
-    states: list[dict[str, Any]], expected_entity: str
-) -> None:
-    """Advertise AI queries and use the default or explicitly selected entity."""
-    config_values = (
-        {CONF_AI_TASK_ENTITY: expected_entity} if expected_entity == "ai_task.selected" else {}
-    )
+async def test_engines_are_listed_for_every_feature_entity() -> None:
+    """Expose every Home Assistant TTS and AI Task entity as an engine."""
+    states = [
+        _state("tts.piper", "Piper"),
+        _state("tts.cloud", "Home Assistant Cloud"),
+        _state("ai_task.openai", "OpenAI"),
+        _state("sensor.example", "Example"),
+    ]
 
-    async with _start_provider(states, **config_values) as (provider, hass):
+    async with _start_provider(states) as (provider, hass):
+        calls_before = list(hass.calls)
+        tts_engines = await provider.get_tts_engines()
+        ai_engines = await provider.get_ai_engines()
+
+        # listing engines is a hot path for consumers: it must not touch Home Assistant
+        assert hass.calls == calls_before
+        assert [(engine.id, engine.name) for engine in tts_engines] == [
+            ("tts.cloud", "Home Assistant Cloud (tts.cloud)"),
+            ("tts.piper", "Piper (tts.piper)"),
+        ]
+        assert [(engine.id, engine.name) for engine in ai_engines] == [
+            ("ai_task.openai", "OpenAI (ai_task.openai)")
+        ]
+        assert tts_engines[0].uid == "hass--test/tts.cloud"
+
+
+async def test_engine_without_friendly_name_falls_back_to_entity_id() -> None:
+    """Name an engine after its entity_id when Home Assistant has no friendly name."""
+    unnamed = {"entity_id": "tts.unnamed", "state": "idle", "attributes": {}}
+
+    async with _start_provider([unnamed]) as (provider, _):
+        engines = await provider.get_tts_engines()
+
+        assert [engine.name for engine in engines] == ["tts.unnamed"]
+
+
+async def test_ai_query_uses_the_first_engine_by_default() -> None:
+    """Send an AI query to the first available engine when none is requested."""
+    states = [_state("ai_task.first", "First"), _state("ai_task.second", "Second")]
+
+    async with _start_provider(states) as (provider, hass):
         result = await provider.ai_query("What is this song?")
 
         assert ProviderFeature.AI_QUERY in provider.supported_features
@@ -413,49 +464,48 @@ async def test_ai_query_uses_resolved_entity_after_startup(
             service_data={
                 "task_name": "music_assistant",
                 "instructions": "What is this song?",
-                "entity_id": expected_entity,
+                "entity_id": "ai_task.first",
             },
             return_response=True,
         )
 
 
-@pytest.mark.parametrize(
-    "config_values",
-    [{}, {CONF_AI_TASK_ENTITY: "ai_task.missing"}],
-)
-async def test_ai_query_not_advertised_without_entity(config_values: dict[str, str]) -> None:
+async def test_ai_query_uses_the_requested_engine() -> None:
+    """Send an AI query to the requested engine."""
+    states = [_state("ai_task.first", "First"), _state("ai_task.second", "Second")]
+
+    async with _start_provider(states) as (provider, hass):
+        await provider.ai_query("What is this song?", engine_id="ai_task.second")
+
+        service_data = hass.send_command.call_args.kwargs["service_data"]
+        assert service_data["entity_id"] == "ai_task.second"
+
+
+async def test_ai_query_not_advertised_without_entity() -> None:
     """Do not advertise AI queries when Home Assistant has no AI Task entity."""
-    async with _start_provider([_state("sensor.example", "Example")], **config_values) as (
-        provider,
-        _,
-    ):
+    async with _start_provider([_state("sensor.example", "Example")]) as (provider, _):
         assert ProviderFeature.AI_QUERY not in provider.supported_features
 
+        with pytest.raises(UnsupportedFeaturedException):
+            await provider.ai_query("What is this song?")
 
-@pytest.mark.parametrize(
-    ("states", "expected_entity"),
-    [
-        ([_state("tts.default", "Default")], "tts.default"),
-        (
-            [
-                _state("tts.first", "First"),
-                _state("tts.selected", "Selected"),
-            ],
-            "tts.selected",
-        ),
-    ],
-)
-async def test_tts_uses_resolved_entity_after_startup(
-    states: list[dict[str, Any]], expected_entity: str
-) -> None:
-    """Advertise TTS and use the default or explicitly selected entity."""
-    config_values = {CONF_TTS_ENTITY: expected_entity} if expected_entity == "tts.selected" else {}
-    async with _start_provider(states, **config_values) as (provider, _):
-        response = AsyncMock()
-        response.raise_for_status = MagicMock()
-        response.json.return_value = {"url": "http://homeassistant.local/tts.mp3"}
-        post = cast("MagicMock", provider.mass.http_session.post)
-        post.return_value.__aenter__.return_value = response
+
+def _mock_tts_response(provider: HomeAssistantProvider) -> MagicMock:
+    """Let the Home Assistant tts_get_url endpoint return a URL and return the post mock."""
+    response = AsyncMock()
+    response.raise_for_status = MagicMock()
+    response.json.return_value = {"url": "http://homeassistant.local/tts.mp3"}
+    post = cast("MagicMock", provider.mass.http_session.post)
+    post.return_value.__aenter__.return_value = response
+    return post
+
+
+async def test_tts_uses_the_first_engine_by_default() -> None:
+    """Render speech on the first available engine when none is requested."""
+    states = [_state("tts.first", "First"), _state("tts.second", "Second")]
+
+    async with _start_provider(states) as (provider, _):
+        post = _mock_tts_response(provider)
 
         stream = await provider.get_tts_message("Hello")
 
@@ -464,20 +514,106 @@ async def test_tts_uses_resolved_entity_after_startup(
         post.assert_called_once()
         request = post.call_args
         assert request.args == ("http://homeassistant.local:8123/api/tts_get_url",)
-        assert request.kwargs["json"] == {"engine_id": expected_entity, "message": "Hello"}
+        assert request.kwargs["json"] == {"engine_id": "tts.first", "message": "Hello"}
 
 
-@pytest.mark.parametrize(
-    "config_values",
-    [{}, {CONF_TTS_ENTITY: "tts.missing"}],
-)
-async def test_tts_not_advertised_without_entity(config_values: dict[str, str]) -> None:
+async def test_tts_uses_the_requested_engine() -> None:
+    """Render speech on the requested engine."""
+    states = [_state("tts.first", "First"), _state("tts.second", "Second")]
+
+    async with _start_provider(states) as (provider, _):
+        post = _mock_tts_response(provider)
+
+        await provider.get_tts_message("Hello", engine_id="tts.second")
+
+        assert post.call_args.kwargs["json"] == {"engine_id": "tts.second", "message": "Hello"}
+
+
+async def test_tts_not_advertised_without_entity() -> None:
     """Do not advertise TTS when Home Assistant has no TTS entity."""
-    async with _start_provider([_state("sensor.example", "Example")], **config_values) as (
-        provider,
-        _,
-    ):
+    async with _start_provider([_state("sensor.example", "Example")]) as (provider, _):
         assert ProviderFeature.TTS not in provider.supported_features
+
+        with pytest.raises(UnsupportedFeaturedException):
+            await provider.get_tts_message("Hello")
+
+
+async def test_registry_update_refreshes_the_engines() -> None:
+    """Pick up a feature entity that Home Assistant adds after startup."""
+    async with _start_provider([_state("sensor.example", "Example")]) as (provider, hass):
+        await provider.loaded_in_mass()
+        assert ProviderFeature.TTS not in provider.supported_features
+
+        hass.compressed_states["tts.new"] = _compressed(_state("tts.new", "New"))
+        await _fire_registry_update(provider, hass, "tts.new")
+
+        assert [engine.id for engine in await provider.get_tts_engines()] == ["tts.new"]
+        assert ProviderFeature.TTS in provider.supported_features
+
+
+async def test_registry_update_discards_the_feature_of_a_removed_engine() -> None:
+    """Stop advertising a feature once its last Home Assistant entity is gone."""
+    states = [_state("tts.only", "Only"), _state("ai_task.only", "Only")]
+
+    async with _start_provider(states) as (provider, hass):
+        await provider.loaded_in_mass()
+        assert ProviderFeature.TTS in provider.supported_features
+
+        del hass.compressed_states["tts.only"]
+        await _fire_registry_update(provider, hass, "tts.only")
+
+        assert await provider.get_tts_engines() == []
+        assert ProviderFeature.TTS not in provider.supported_features
+        # the AI Task entity is untouched, so its feature stays declared
+        assert ProviderFeature.AI_QUERY in provider.supported_features
+
+
+async def test_registry_update_of_another_domain_is_ignored() -> None:
+    """Ignore registry updates for entities that cannot back a feature."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        await provider.loaded_in_mass()
+
+        hass.fire_event(
+            "entity_registry_updated", {"action": "create", "entity_id": "light.kitchen"}
+        )
+
+        assert provider._engine_refresh_task is None
+
+
+async def test_burst_of_registry_updates_triggers_a_single_refresh() -> None:
+    """Collect a burst of registry updates into one rebuild of the engine lists."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        await provider.loaded_in_mass()
+        registry_fetches = hass.calls.count("get_entity_registry")
+
+        with patch("music_assistant.providers.hass.ENGINE_REFRESH_DEBOUNCE", 0.05):
+            for index in range(3):
+                hass.fire_event(
+                    "entity_registry_updated",
+                    {"action": "create", "entity_id": f"tts.new_{index}"},
+                )
+            assert provider._engine_refresh_task is not None
+            async with asyncio.timeout(1):
+                await provider._engine_refresh_task
+
+        assert hass.calls.count("get_entity_registry") == registry_fetches + 1
+
+
+async def test_entity_registry_subscription_is_replaced() -> None:
+    """Replace the entity registry subscription instead of stacking a second one."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        await provider.loaded_in_mass()
+        assert hass.active_event_subscriptions == 1
+        assert hass.event_subscriptions[0][0] == "entity_registry_updated"
+
+        await provider.loaded_in_mass()
+
+        assert hass.active_event_subscriptions == 1
+        assert hass.calls[-2:] == ["unsubscribe_events", "subscribe_events"]
+
+        await provider.unload()
+
+        assert hass.active_event_subscriptions == 0
 
 
 async def test_config_entries_survive_a_state_fetch_timeout() -> None:
@@ -490,7 +626,6 @@ async def test_config_entries_survive_a_state_fetch_timeout() -> None:
 
     keys = {entry.key for entry in entries}
     assert CONF_POWER_CONTROLS in keys
-    assert CONF_TTS_ENTITY in keys
     assert all(not entry.options for entry in entries)
 
 

@@ -17,7 +17,6 @@ from music_assistant_models.enums import (
     PlaybackState,
     PlayerFeature,
     PlayerType,
-    ProviderFeature,
     QueueOption,
 )
 from music_assistant_models.errors import (
@@ -37,9 +36,11 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user as get_auth_current_user,
 )
 from music_assistant.helpers.api import APICommandHandler, parse_arguments
+from music_assistant.helpers.plugin_engines import select_ai_engine
 from music_assistant.helpers.shared_playback import SharedPlaybackMode, SharedPlaybackSession
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import AIEngine, PluginProvider
 from music_assistant.providers.music_quiz import (
+    CONF_AI_ENGINE,
     MUSIC_QUIZ_GUEST_USER,
     PLAYBACK_PREFERENCE_CACHE_EXPIRATION,
     PLAYBACK_PREFERENCE_CACHE_KEY,
@@ -271,6 +272,16 @@ def _make_text_trivia_round(
     return game_round
 
 
+def _create_ai_plugin(instance_id: str = "ai--test") -> MagicMock:
+    """Create a mock plugin provider exposing a single AI engine."""
+    provider = MagicMock(spec=PluginProvider)
+    provider.instance_id = instance_id
+    provider.get_ai_engines = AsyncMock(
+        return_value=[AIEngine(id="engine", name=instance_id, provider=provider)]
+    )
+    return provider
+
+
 def _create_plugin(
     mode: str | None = "venue",
     player: str | None = "venue_player",
@@ -286,6 +297,7 @@ def _create_plugin(
         "mode": mode,
         "player": player,
         "use_ai_distractors": use_ai_distractors,
+        "ai_engine": "ai--test/engine",
     }
     plugin.config.get_value.side_effect = lambda key, default=None: config_values.get(key, default)
     plugin._game = None
@@ -1817,8 +1829,8 @@ async def test_generic_submit_answer_uses_discriminated_payload() -> None:
 
 
 @pytest.mark.asyncio
-async def test_available_quiz_types_reflect_ai_plugin_availability() -> None:
-    """Expose Trivia only when a loaded AI_QUERY plugin can support it."""
+async def test_available_quiz_types_reflect_ai_engine_availability() -> None:
+    """Expose Trivia only when an available AI engine can support it."""
     plugin = _create_plugin()
     providers = cast("MagicMock", plugin.mass.get_providers_supporting_feature)
 
@@ -1826,7 +1838,7 @@ async def test_available_quiz_types_reflect_ai_plugin_availability() -> None:
     assert await plugin.available_quiz_types() == ["guess_the_song", "music_timeline"]
     providers.return_value = [MagicMock()]
     assert await plugin.available_quiz_types() == ["guess_the_song", "music_timeline"]
-    providers.return_value = [MagicMock(spec=PluginProvider)]
+    providers.return_value = [_create_ai_plugin()]
     assert await plugin.available_quiz_types() == ["guess_the_song", "music_timeline", "trivia"]
 
 
@@ -1926,8 +1938,7 @@ async def test_trivia_creation_rejects_without_ai_plugin(providers: list[object]
 async def test_trivia_creation_initializes_with_ai_plugin() -> None:
     """Create Trivia when an AI plugin and enough selected metadata are available."""
     plugin = _create_plugin()
-    ai_provider = MagicMock(spec=PluginProvider)
-    ai_provider.instance_id = "ai--test"
+    ai_provider = _create_ai_plugin()
     cast("MagicMock", plugin.mass.get_providers_supporting_feature).return_value = [ai_provider]
     eligible_tracks = AsyncMock(return_value={"library://track/1": MagicMock()})
     prepare_round = AsyncMock(side_effect=_make_trivia_round)
@@ -5446,7 +5457,7 @@ async def test_create_game_rejects_invalid_difficulty() -> None:
     ],
 )
 async def test_get_config_entries_reports_unavailable_ai(providers: list[object]) -> None:
-    """Disable AI enhancements and explain when no AI provider is available."""
+    """Disable AI enhancements and explain when no AI engine is available."""
     mass = MagicMock()
     mass.get_providers_supporting_feature.return_value = providers
     plugin = MusicQuizPlugin.__new__(MusicQuizPlugin)
@@ -5454,28 +5465,54 @@ async def test_get_config_entries_reports_unavailable_ai(providers: list[object]
 
     entries = await plugin.get_config_entries()
 
-    assert [entry.key for entry in entries] == ["use_ai_distractors", "ai_unavailable"]
+    assert [entry.key for entry in entries] == [
+        "use_ai_distractors",
+        "ai_engine",
+        "ai_engine_unavailable",
+    ]
     ai_entry = entries[0]
     assert ai_entry.type == ConfigEntryType.BOOLEAN
     assert ai_entry.default_value is False
     assert ai_entry.required is False
     assert ai_entry.read_only is True
-    assert entries[1].type == ConfigEntryType.ALERT
-    mass.get_providers_supporting_feature.assert_called_once_with(ProviderFeature.AI_QUERY)
+    assert entries[1].read_only is True
+    assert entries[2].type == ConfigEntryType.ALERT
 
 
 @pytest.mark.asyncio
 async def test_get_config_entries_reports_available_ai() -> None:
-    """Allow AI enhancements and confirm when an AI provider is available."""
+    """Allow AI enhancements and offer the engine picker when an AI engine is available."""
     mass = MagicMock()
-    mass.get_providers_supporting_feature.return_value = [MagicMock(spec=PluginProvider)]
+    mass.get_providers_supporting_feature.return_value = [_create_ai_plugin()]
     plugin = MusicQuizPlugin.__new__(MusicQuizPlugin)
     plugin.mass = mass
 
     entries = await plugin.get_config_entries()
 
-    assert [entry.key for entry in entries] == ["use_ai_distractors"]
+    assert [entry.key for entry in entries] == ["use_ai_distractors", "ai_engine"]
     assert entries[0].read_only is False
+    # the picker stays reachable with the distractor toggle off (Trivia always needs an engine)
+    assert entries[1].depends_on is None
+    assert [option.value for option in entries[1].options] == ["ai--test/engine"]
+
+
+@pytest.mark.asyncio
+async def test_first_use_adopts_a_concrete_engine_selection() -> None:
+    """An instance without a stored selection adopts a concrete engine uid on first use."""
+    plugin = _create_plugin()
+    mass = cast("MagicMock", plugin.mass)
+    mass.get_providers_supporting_feature.return_value = [_create_ai_plugin()]
+    mass.config.get_raw_provider_config_value.return_value = None
+
+    engine = await select_ai_engine(plugin, CONF_AI_ENGINE)
+
+    assert engine is not None
+    assert engine.uid == "ai--test/engine"
+    assert mass.config.set_raw_provider_config_value.call_args.args == (
+        plugin.instance_id,
+        CONF_AI_ENGINE,
+        "ai--test/engine",
+    )
 
 
 @pytest.mark.asyncio

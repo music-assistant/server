@@ -19,8 +19,6 @@ from music_assistant_models.enums import (
     ImageType,
     MediaType,
     PlaybackState,
-    ProviderFeature,
-    ProviderType,
     QueueOption,
     TaskStatus,
 )
@@ -42,12 +40,15 @@ from music_assistant.helpers.playlists import (
     generate_m3u,
     media_item_to_playlist_item,
 )
+from music_assistant.helpers.plugin_engines import resolve_ai_engine, resolve_tts_engine
 from music_assistant.helpers.tags import async_parse_tags
 from music_assistant.helpers.uri import create_uri
 from music_assistant.providers.builtin import CACHE_CATEGORY_MEDIA_INFO
 
 from .constants import (
+    CONF_AI_ENGINE,
     CONF_TIMEZONE,
+    CONF_TTS_ENGINE,
     CONF_WEATHER_CITY,
     CONF_WEATHER_COUNTRY,
     DEFAULT_DYNAMIC_STALL_TIMEOUT_SECONDS,
@@ -77,11 +78,11 @@ from .models import (
 )
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ProviderConfig
+    from music_assistant_models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant_models.media_items import PlayableMediaItemType
 
     from music_assistant.mass import MusicAssistant
-    from music_assistant.models.plugin import PluginProvider
+    from music_assistant.models.plugin import AIEngine, TTSEngine
 
 
 class AIRadioRuntimeMixin:
@@ -92,6 +93,9 @@ class AIRadioRuntimeMixin:
         config: ProviderConfig
         logger: logging.Logger
         _sessions: dict[str, SessionState]
+
+        def get_setup_value(self, key: str, default: ConfigValueType = None) -> ConfigValueType:
+            """Return a value collected by this provider's setup flow."""
 
     def _set_session_progress(
         self,
@@ -1556,52 +1560,47 @@ class AIRadioRuntimeMixin:
             f"Task: Write one concise spoken radio section.\n\n{prompt}\n\nReturn plain text only."
         )
         query = "\n\n".join(query_parts)
-        plugin = self._get_ai_plugin()
+        engine = await self._get_ai_engine()
         self.logger.debug(
-            "AI query prepared: plugin=%s web_mode=%s query_chars=%d",
-            plugin.instance_id,
+            "AI query prepared: engine=%s web_mode=%s query_chars=%d",
+            engine.uid,
             web_mode,
             len(query),
         )
         try:
-            response = await plugin.ai_query(query)
+            response = await engine.provider.ai_query(query, engine_id=engine.id)
         except Exception as err:
             error_name = err.__class__.__name__
             error_text = str(err).strip()
             if error_name == "NotConnected":
                 raise MusicAssistantError(
-                    "AI provider "
-                    f"'{plugin.instance_id}' is not connected. Reconnect the provider "
+                    "AI engine "
+                    f"'{engine.uid}' is not connected. Reconnect the provider "
                     "(for example Home Assistant) and retry."
                 ) from err
             details = error_text or error_name
-            raise MusicAssistantError(
-                f"AI provider '{plugin.instance_id}' query failed: {details}"
-            ) from err
+            raise MusicAssistantError(f"AI engine '{engine.uid}' query failed: {details}") from err
         if not response or not str(response).strip():
             raise MusicAssistantError(
-                f"AI provider '{plugin.instance_id}' returned an empty response for section text"
+                f"AI engine '{engine.uid}' returned an empty response for section text"
             )
         text = str(response).strip()
         self.logger.debug(
-            "AI query response received: plugin=%s chars=%d",
-            plugin.instance_id,
+            "AI query response received: engine=%s chars=%d",
+            engine.uid,
             len(text),
         )
         return text
 
     async def _render_tts(self, text: str, section_name: str) -> tuple[str, int]:
-        """Render text to a playable URI using the configured TTS plugin feature."""
-        plugin = self._get_tts_plugin()
-        self.logger.debug(
-            "TTS render prepared: plugin=%s text_chars=%d", plugin.instance_id, len(text)
-        )
-        stream_details = await plugin.get_tts_message(text)
+        """Render text to a playable URI using the configured TTS engine."""
+        engine = await self._get_tts_engine()
+        self.logger.debug("TTS render prepared: engine=%s text_chars=%d", engine.uid, len(text))
+        stream_details = await engine.provider.get_tts_message(text, engine_id=engine.id)
         uri = str(getattr(stream_details, "path", "") or "").strip()
         if not uri:
             raise MusicAssistantError(
-                f"TTS provider '{plugin.instance_id}' returned no direct stream path "
-                "in StreamDetails.path"
+                f"TTS engine '{engine.uid}' returned no direct stream path in StreamDetails.path"
             )
         if uri.startswith(("http://", "https://", "rtsp://", "rtmp://")):
             builtin_provider = self.mass.get_provider("builtin")
@@ -1642,21 +1641,15 @@ class AIRadioRuntimeMixin:
         )
         return int(tags.duration or 0)
 
-    def _get_ai_plugin(self) -> PluginProvider:
-        """Return the plugin used for AI_QUERY tasks."""
-        plugins = cast(
-            "list[PluginProvider]",
-            self.mass.get_providers_supporting_feature(
-                ProviderFeature.AI_QUERY,
-                priority=(ProviderType.PLUGIN,),
-            ),
+    async def _get_ai_engine(self) -> AIEngine:
+        """Return the engine used for AI_QUERY tasks, honouring the configured selection."""
+        selected = cast("str | None", self.get_setup_value(CONF_AI_ENGINE))
+        if engine := await resolve_ai_engine(self.mass, selected):
+            return engine
+        raise MusicAssistantError(
+            "No AI engine available. Set up a plugin that provides AI (for example Home "
+            "Assistant with an ai_task entity) and select it in the AI Radio settings."
         )
-        if not plugins:
-            raise MusicAssistantError(
-                "No AI provider available. Configure a plugin with ProviderFeature.AI_QUERY "
-                "(for example Home Assistant with an ai_task entity)."
-            )
-        return plugins[0]
 
     async def _stop_session_queue(self, session: SessionState) -> None:
         """Stop playback of the queue a run was playing on."""
@@ -1671,18 +1664,13 @@ class AIRadioRuntimeMixin:
         except MusicAssistantError as err:
             self.logger.debug("Could not stop queue %s: %s", queue_id, err)
 
-    def _get_tts_plugin(self) -> PluginProvider:
-        """Return the plugin used for TTS tasks."""
-        plugins = cast(
-            "list[PluginProvider]",
-            self.mass.get_providers_supporting_feature(
-                ProviderFeature.TTS,
-                priority=(ProviderType.PLUGIN,),
-            ),
+    async def _get_tts_engine(self) -> TTSEngine:
+        """Return the engine used for TTS tasks, honouring the configured selection."""
+        selected = cast("str | None", self.get_setup_value(CONF_TTS_ENGINE))
+        if engine := await resolve_tts_engine(self.mass, selected):
+            return engine
+        raise MusicAssistantError(
+            "No text-to-speech engine available. Set up a plugin that provides text-to-speech "
+            "(for example Home Assistant with a TTS entity) and select it in the AI Radio "
+            "settings."
         )
-        if not plugins:
-            raise MusicAssistantError(
-                "No TTS provider available. Configure a plugin with ProviderFeature.TTS "
-                "(for example Home Assistant with a TTS entity)."
-            )
-        return plugins[0]
