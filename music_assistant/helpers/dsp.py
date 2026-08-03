@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from music_assistant_models.dsp import (
     AudioChannel,
     BalanceFilter,
+    CompressorFilter,
     ConvolutionFilter,
     CrossfeedFilter,
     DSPFilter,
@@ -16,6 +17,7 @@ from music_assistant_models.dsp import (
     HighLowPassMode,
     ParametricEQBandType,
     ParametricEQFilter,
+    SafetyLimiterFilter,
     StereoWidthFilter,
     ToneControlFilter,
     TransposeFilter,
@@ -202,6 +204,24 @@ def filter_to_ffmpeg_params(
         # these quality options if they prove too costly on low powered hardware
         filter_params.append(
             f"rubberband=pitch={pitch}:formant=preserved:pitchq=quality:window=long"
+        )
+    if isinstance(dsp_filter, SafetyLimiterFilter):
+        # user placed safety limiter; level=false keeps it a transparent
+        # ceiling (no auto make-up), latency=true realigns the lookahead buffer
+        filter_params.append(
+            f"alimiter=limit={dsp_filter.ceiling}dB:level=false:asc=true:latency=true"
+        )
+    # a unity ratio compresses nothing, leaving the make-up gain as the only effect
+    if isinstance(dsp_filter, CompressorFilter) and (
+        dsp_filter.ratio != 1.0 or dsp_filter.makeup != 0
+    ):
+        # acompressor knee is threshold/sqrt(knee)..threshold*sqrt(knee), so a knee
+        # width of N dB maps to a linear knee factor of 10**(N/20)
+        knee = 10 ** (dsp_filter.knee / 20)
+        filter_params.append(
+            f"acompressor=threshold={dsp_filter.threshold}dB:ratio={dsp_filter.ratio}"
+            f":attack={dsp_filter.attack}:release={dsp_filter.release}"
+            f":knee={knee}:makeup={dsp_filter.makeup}dB"
         )
 
     if isinstance(dsp_filter, HighLowPassFilter):

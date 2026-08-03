@@ -5,6 +5,7 @@ import math
 from music_assistant_models.dsp import (
     AudioChannel,
     BalanceFilter,
+    CompressorFilter,
     ConvolutionFilter,
     CrossfeedFilter,
     GainFilter,
@@ -14,6 +15,7 @@ from music_assistant_models.dsp import (
     ParametricEQBand,
     ParametricEQBandType,
     ParametricEQFilter,
+    SafetyLimiterFilter,
     StereoWidthFilter,
     ToneControlFilter,
     TransposeFilter,
@@ -289,6 +291,61 @@ def test_high_low_pass_mode_changes_coefficients() -> None:
     assert filter_to_ffmpeg_params(high, INPUT_FORMAT, ir_dir=IR_DIR) != filter_to_ffmpeg_params(
         low, INPUT_FORMAT, ir_dir=IR_DIR
     )
+
+
+def test_safety_limiter_filter() -> None:
+    """Test that a safety limiter maps to an in-chain alimiter at the given ceiling."""
+    dsp_filter = SafetyLimiterFilter(enabled=True, ceiling=-2.0)
+    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT, ir_dir=IR_DIR) == [
+        "alimiter=limit=-2.0dB:level=false:asc=true:latency=true"
+    ]
+
+
+def test_compressor_filter() -> None:
+    """Test that a compressor maps to acompressor with dB/ms/ratio values."""
+    dsp_filter = CompressorFilter(
+        enabled=True,
+        threshold=-18.0,
+        ratio=2.0,
+        attack=20.0,
+        release=250.0,
+        knee=9.0,
+        makeup=0.0,
+    )
+    expected = (
+        "acompressor=threshold=-18.0dB:ratio=2.0:attack=20.0:release=250.0"
+        f":knee={10 ** (9.0 / 20)}:makeup=0.0dB"
+    )
+    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT, ir_dir=IR_DIR) == [expected]
+
+
+def test_compressor_unity_ratio_is_passthrough() -> None:
+    """Test that a compressor which compresses nothing and adds no gain emits no filter."""
+    dsp_filter = CompressorFilter(enabled=True, ratio=1.0, makeup=0.0)
+    assert filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT, ir_dir=IR_DIR) == []
+
+
+def test_compressor_unity_ratio_keeps_makeup_gain() -> None:
+    """Test that make-up gain still applies at unity ratio, rather than being dropped."""
+    dsp_filter = CompressorFilter(enabled=True, ratio=1.0, makeup=6.0)
+    params = filter_to_ffmpeg_params(dsp_filter, INPUT_FORMAT, ir_dir=IR_DIR)
+    assert len(params) == 1
+    assert isinstance(params[0], str)
+    assert ":makeup=6.0dB" in params[0]
+
+
+def test_compressor_knee_db_maps_to_linear_factor() -> None:
+    """Test that a knee width in dB maps to acompressor's linear knee factor."""
+    # 0 dB is a hard knee, acompressor's minimum knee factor of 1.0
+    hard_knee = CompressorFilter(enabled=True, knee=0.0)
+    hard_params = filter_to_ffmpeg_params(hard_knee, INPUT_FORMAT, ir_dir=IR_DIR)
+    assert isinstance(hard_params[0], str)
+    assert ":knee=1.0:" in hard_params[0]
+    # 18 dB maps to ~7.94, just under acompressor's maximum knee factor of 8
+    soft_knee = CompressorFilter(enabled=True, knee=18.0)
+    soft_params = filter_to_ffmpeg_params(soft_knee, INPUT_FORMAT, ir_dir=IR_DIR)
+    assert isinstance(soft_params[0], str)
+    assert f":knee={10 ** (18.0 / 20)}:" in soft_params[0]
 
 
 def test_convolution_filter() -> None:
