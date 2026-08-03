@@ -158,5 +158,6 @@ def _create_engine_config_entries(
         ConfigEntry(
             key=f"{key}_unavailable",
             type=ConfigEntryType.ALERT,
+            depends_on=depends_on,
         ),
     )

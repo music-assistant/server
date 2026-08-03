@@ -141,3 +141,13 @@ async def test_config_entries_without_engines_are_read_only_with_alert() -> None
     assert [option.value for option in picker.options] == [ENGINE_AUTO]
     assert alert.key == "tts_engine_unavailable"
     assert alert.type == ConfigEntryType.ALERT
+
+
+async def test_create_config_entries_alert_follows_picker_visibility() -> None:
+    """Test the unavailable alert is gated by the same entry as the picker."""
+    mass = _create_mass()
+    picker, alert = await create_ai_engine_config_entries(
+        mass, "ai_engine", depends_on="ai_descriptions"
+    )
+    assert picker.depends_on == "ai_descriptions"
+    assert alert.depends_on == "ai_descriptions"
