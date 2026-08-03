@@ -27,9 +27,10 @@ The public game state is guest-safe by construction. Common state contains:
 - always: ``phase`` (lobby/answering/reveal/finished), ``name``, ``quiz_type``,
   ``answer_type``, ``mode`` (venue/remote), ``round_count``, ``answer_duration``,
   ``include_similar_music`` and public player progress. ``auto_start_at`` contains
-  the authoritative replay deadline while a lobby countdown is active. Private
-  player IDs never appear in broadcasts. Trivia additionally exposes its canonical
-  ``language`` and ``play_reveal_audio`` setting.
+  the authoritative replay deadline while a lobby countdown is active.
+  ``preparing`` is true while a reset loads the sources and first round of the
+  next run. Private player IDs never appear in broadcasts. Trivia additionally
+  exposes its canonical ``language`` and ``play_reveal_audio`` setting.
 - answering rounds expose common timing and question fields plus a strategy
   fragment. Multiple-choice exposes opaque ``suggestions``. Timeline exposes
   the revealed shared ``timeline`` and redacted ``bonus_definitions``; the
@@ -84,6 +85,7 @@ from music_assistant.helpers.shared_playback import (
     SENDSPIN_DOMAIN,
     SharedPlaybackMode,
     SharedPlaybackSession,
+    is_remote_session_host,
 )
 from music_assistant.helpers.uri import parse_uri
 from music_assistant.models.plugin import PluginProvider
@@ -501,22 +503,31 @@ class MusicQuizPlugin(PluginProvider):
                 game,
                 recent_track_uris=self._recent_track_uris_for_game(game),
             )
-            initial_round_task = await self._prepare_initial_round(quiz_strategy)
-            self._cancel_timers()
-            self._cancel_next_round_task()
-            await self._cancel_reveal_playback_task()
-            if quiz_strategy.uses_audio:
-                await self._stop_playback()
-            now = time.time()
-            reset_game(game)
-            self._game_generation += 1
-            self._quiz_type = quiz_strategy
-            self._answer_type = answer_strategy
-            self._next_round_task = initial_round_task
-            self._schedule_presence_expiry(now)
-            if auto_start and _has_active_players(game, now):
-                self._schedule_replay_auto_start(game, now)
-            self._signal_game_updated()
+            try:
+                # announce the preparation up front so clients stop rendering the
+                # previous run while the sources and first round load
+                game.preparing = True
+                self._signal_game_updated()
+                initial_round_task = await self._prepare_initial_round(quiz_strategy)
+                self._cancel_timers()
+                self._cancel_next_round_task()
+                await self._cancel_reveal_playback_task()
+                if quiz_strategy.uses_audio:
+                    await self._stop_playback()
+                now = time.time()
+                reset_game(game)
+                self._game_generation += 1
+                self._quiz_type = quiz_strategy
+                self._answer_type = answer_strategy
+                self._next_round_task = initial_round_task
+                self._schedule_presence_expiry(now)
+                if auto_start and _has_active_players(game, now):
+                    self._schedule_replay_auto_start(game, now)
+            finally:
+                # a failed preparation keeps the previous game, so clear and
+                # broadcast here too or clients wait on the preparing state forever
+                game.preparing = False
+                self._signal_game_updated()
             return await self._host_state()
 
     async def delete_game(self) -> None:
@@ -1716,8 +1727,7 @@ class MusicQuizPlugin(PluginProvider):
         player = self.mass.players.get_player(player_id)
         return player is not None and self._is_eligible_venue_player(player)
 
-    @staticmethod
-    def _is_eligible_venue_player(player: Player) -> bool:
+    def _is_eligible_venue_player(self, player: Player) -> bool:
         """
         Return whether a player is a real venue playback target.
 
@@ -1732,8 +1742,8 @@ class MusicQuizPlugin(PluginProvider):
             and state.synced_to is None
             and state.active_group is None
             and state.type in (PlayerType.PLAYER, PlayerType.STEREO_PAIR, PlayerType.GROUP)
-            and player.is_native_player
-            and player.provider.domain != SENDSPIN_DOMAIN
+            and any(protocol.available for protocol in state.output_protocols)
+            and not is_remote_session_host(self.mass, player.player_id)
         )
 
     def _remote_playback_available(self) -> bool:
@@ -2081,6 +2091,7 @@ def _public_state(game: MusicQuizGame, answer_type: QuizAnswerType) -> dict[str,
         "round_count": game.config.round_count,
         "answer_duration": game.config.answer_duration,
         "auto_start_at": game.auto_start_at,
+        "preparing": game.preparing,
         **answer_type.serialize_game_config(game),
         **get_quiz_type(game.quiz_type).serialize_game_config(game),
         "players": players,

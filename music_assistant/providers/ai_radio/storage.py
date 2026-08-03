@@ -342,7 +342,6 @@ class AIRadioStorageMixin:
                     int,
                 ),
             ),
-            "clear_queue_on_start": bool(station.get("clear_queue_on_start", True)),
             "merge_section_id": merge_section_id,
             "general": general,
             "section_ids": section_ids,
@@ -530,7 +529,6 @@ class AIRadioStorageMixin:
             "dynamic_batch_size": 3,
             "dynamic_poll_seconds": 5,
             "dynamic_prefetch_remaining_tracks": 2,
-            "clear_queue_on_start": True,
             "merge_section_id": "Between_Songs_Smoother",
             "general": {
                 "instructions": DEFAULT_LLM_INSTRUCTIONS,

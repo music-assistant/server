@@ -17,7 +17,11 @@ from aiohttp import ClientError
 from music_assistant_models.errors import LoginFailed, ProviderUnavailableError
 
 from music_assistant.constants import CONF_PROVIDERS
-from music_assistant.helpers.oauth import authorization_code_from_params, hosted_bounce_redirect
+from music_assistant.helpers.oauth import (
+    OAUTH_STEP_TIMEOUT,
+    authorization_code_from_params,
+    hosted_bounce_redirect,
+)
 from music_assistant.models.setup_flow import SetupFlowError
 from music_assistant.providers.filesystem_cloud.base import CONF_REFRESH_TOKEN
 
@@ -47,7 +51,9 @@ async def authorize(session: SetupSession, client_id: str, client_secret: str) -
         "state": state,
     }
     result = await session.external(
-        f"{OAUTH_AUTHORIZE_URL}?{urlencode(params)}", step_id="authenticate"
+        f"{OAUTH_AUTHORIZE_URL}?{urlencode(params)}",
+        step_id="authenticate",
+        expires_in=OAUTH_STEP_TIMEOUT,
     )
     code = authorization_code_from_params(result)
     data = {

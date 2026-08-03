@@ -1,5 +1,6 @@
 """Tests for utility/helper functions."""
 
+import logging
 import os
 import signal
 import subprocess
@@ -9,6 +10,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import (
     MusicAssistantError,
@@ -20,6 +22,47 @@ from zeroconf import InterfaceChoice, IPVersion
 
 from music_assistant.helpers import _ml_inference_probe, uri, util
 from music_assistant.helpers.aiohttp_client import encoded_request_url
+from music_assistant.helpers.webserver import Webserver, redact_sensitive_headers
+
+
+def test_redact_sensitive_headers() -> None:
+    """Credential-bearing request headers are redacted without hiding diagnostics."""
+    headers = {
+        "Accept": "application/json",
+        "Authorization": "Bearer secret-token",
+        "aUtHoRiZaTiOn-Extra": "secret-extra",
+        "PROXY-AUTHORIZATION": "Basic secret-proxy",
+    }
+
+    assert redact_sensitive_headers(headers) == {
+        "Accept": "application/json",
+        "Authorization": "<redacted>",
+        "aUtHoRiZaTiOn-Extra": "<redacted>",
+        "PROXY-AUTHORIZATION": "<redacted>",
+    }
+    assert "secret-token" not in str(redact_sensitive_headers(headers))
+    assert "secret-proxy" not in str(redact_sensitive_headers(headers))
+
+
+async def test_unhandled_request_log_redacts_sensitive_headers(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The catch-all request log never includes an Authorization value."""
+    logger = logging.getLogger("test_webserver")
+    webserver = Webserver(logger, enable_dynamic_routes=True)
+    request = make_mocked_request(
+        "GET",
+        "/unknown",
+        headers={"Authorization": "Bearer secret-token", "Accept": "application/json"},
+    )
+
+    with caplog.at_level(logging.WARNING, logger=logger.name):
+        response = await webserver._handle_catch_all(request)
+
+    assert response.status == 404
+    assert "secret-token" not in caplog.text
+    assert "<redacted>" in caplog.text
+    assert "application/json" in caplog.text
 
 
 def test_version_extract() -> None:

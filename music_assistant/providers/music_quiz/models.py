@@ -408,6 +408,8 @@ class MusicQuizGame(DataClassDictMixin):
     phase: MusicQuizPhase = MusicQuizPhase.LOBBY
     created_at: float = 0
     auto_start_at: float | None = None
+    # set while a reset loads the sources and first round of the next run
+    preparing: bool = False
     players: dict[str, MusicQuizPlayer] = field(default_factory=dict)
     rounds: list[MusicQuizRound] = field(default_factory=list)
     sources: list[MusicQuizSource] = field(default_factory=list)

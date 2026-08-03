@@ -1,5 +1,7 @@
 """Unit tests for AirPlay player."""
 
+import asyncio
+import logging
 import time
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
@@ -11,6 +13,7 @@ from music_assistant_models.enums import (
     ContentType,
     CrossfadeMode,
     MediaType,
+    PlaybackState,
     PlayerFeature,
     VolumeNormalizationMode,
 )
@@ -25,6 +28,8 @@ from music_assistant.providers.airplay.constants import (
     CONF_ENCRYPTION,
     CONF_FORCE_RAOP,
     CONF_IGNORE_VOLUME,
+    CONF_PASSWORD,
+    CONF_PASSWORD_INVALID,
     CONF_RAOP_CREDENTIALS,
     CONF_STORED_VOLUME,
     StreamingProtocol,
@@ -39,11 +44,24 @@ ALAC_44100_24 = 1 << 19
 ALAC_48000_24 = 1 << 21
 
 
+def _stub_raw_config(provider: MagicMock, stored: dict[str, object] | None = None) -> None:
+    """Serve raw player config values from a dict instead of an (always truthy) mock."""
+    values = stored if stored is not None else {}
+    provider.mass.config.get_raw_player_config_value.side_effect = (
+        lambda _player_id, key, default=None: values.get(key, default)
+    )
+    provider.mass.config.set_raw_player_config_value.side_effect = lambda _player_id, key, value: (
+        values.__setitem__(key, value)
+    )
+
+
 @pytest.fixture
 def airplay_player() -> AirPlayPlayer:
     """Create a basic AirPlayPlayer with mock defaults."""
+    provider = MagicMock()
+    _stub_raw_config(provider)
     return AirPlayPlayer(
-        provider=MagicMock(),
+        provider=provider,
         player_id="test_player",
         display_name="Test Player",
         address="127.0.0.1",
@@ -134,6 +152,7 @@ def test_requires_pin_pairing(
         ({b"flags": b"0x4"}, None, False),
         ({b"sf": b"0x80"}, None, True),
         ({b"flags": b"0x90"}, None, True),
+        ({b"flags": b"0x1000"}, None, True),
         (None, {b"flags": "0x80"}, True),
         (None, {b"sf": b"0x81"}, True),
         (None, {b"flags": b"0x4"}, False),
@@ -142,22 +161,24 @@ def test_requires_pin_pairing(
         ({}, {}, False),
     ],
 )
-def test_requires_password_pairing(
+def test_password_required(
     airplay_player: AirPlayPlayer,
     aiplay_properties: dict[bytes, bytes] | None,
     raop_properties: dict[bytes, bytes] | None,
     expected: bool,
 ) -> None:
-    """Test the _requires_pairing method of AirPlayPlayer."""
+    """Test the flags-based password announcements (non-Apple-TV model)."""
     if aiplay_properties is not None:
         aiplay_discovery_info = MagicMock()
         aiplay_discovery_info.properties = aiplay_properties
+        aiplay_discovery_info.decoded_properties = {}
         airplay_player.airplay_discovery_info = aiplay_discovery_info
     if raop_properties is not None:
         raop_discovery_info = MagicMock()
         raop_discovery_info.properties = raop_properties
+        raop_discovery_info.decoded_properties = {}
         airplay_player.raop_discovery_info = raop_discovery_info
-    assert airplay_player._requires_password_pairing() == expected
+    assert airplay_player.password_required == expected
 
 
 def test_build_streaming_pairing_uses_discovered_ipv4_address() -> None:
@@ -727,6 +748,31 @@ def test_sync_volume_level_uses_parent_volume_without_native_parent(
     mock_update.assert_called_once()
 
 
+def test_sync_volume_level_ignores_parent_volume_zero(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """
+    Keep the last known volume when the parent reports volume 0.
+
+    An idle sibling interface (e.g. the cast side of the same device in standby)
+    may feed the parent a volume of 0 that doesn't reflect the real device volume;
+    adopting it would start the stream hard muted.
+    """
+    parent = MagicMock()
+    parent.state.volume_level = 0
+    parent.volume_control = None
+    airplay_player.mass.players.get_player.return_value = parent  # type: ignore[attr-defined]
+    airplay_player.set_protocol_parent_id("parent")
+    airplay_player._attr_volume_level = 48
+
+    with patch.object(AirPlayPlayer, "update_state") as mock_update:
+        airplay_player.sync_volume_level()
+
+    assert airplay_player._attr_volume_level == 48
+    airplay_player.mass.config.set_raw_player_config_value.assert_not_called()  # type: ignore[attr-defined]
+    mock_update.assert_not_called()
+
+
 # --- Pause / stop dispatch tests ---
 
 
@@ -862,3 +908,563 @@ async def test_synced_child_pause_parks_session(airplay_player: AirPlayPlayer) -
     session.standby.assert_awaited_once()
     mock_stop.assert_not_called()
     send_cmd.assert_not_called()
+
+
+# --- Automatic group re-join after unexpected stream loss ---
+
+
+def _make_idle_player(player_id: str = "test_player") -> AirPlayPlayer:
+    """Create an idle, ungrouped AirPlayPlayer wired for the re-join tests."""
+    player = AirPlayPlayer(
+        provider=MagicMock(),
+        player_id=player_id,
+        display_name=f"Player {player_id}",
+        address="127.0.0.1",
+        manufacturer="Test Manufacturer",
+        model="Test Model",
+        raop_discovery_info=None,
+        airplay_discovery_info=None,
+    )
+    # the synced_to property scans all players of the provider
+    _players_mock(player).all_players.return_value = []
+    player._attr_group_members = []
+    player._attr_playback_state = PlaybackState.IDLE
+    player.stream = None
+    return player
+
+
+def _make_playing_leader(player_id: str = "leader") -> AirPlayPlayer:
+    """Create an AirPlayPlayer that looks like the playing leader of a live session."""
+    leader = _make_idle_player(player_id)
+    leader._attr_playback_state = PlaybackState.PLAYING
+    stream = MagicMock()
+    stream.running = True
+    stream.session = MagicMock()
+    leader.stream = stream
+    return leader
+
+
+def _players_mock(player: AirPlayPlayer) -> MagicMock:
+    """Return the mocked players controller of the given player."""
+    return cast("MagicMock", player.mass.players)
+
+
+def _attach_running_session(player: AirPlayPlayer, sync_clients: list[AirPlayPlayer]) -> None:
+    """Attach a mock running stream whose session carries the given members."""
+    stream = MagicMock()
+    stream.running = True
+    stream.session = MagicMock()
+    stream.session.sync_clients = sync_clients
+    player.stream = stream
+
+
+_NO_DELAYS = "music_assistant.providers.airplay.player.AIRPLAY_REJOIN_ATTEMPT_DELAYS"
+
+
+@pytest.mark.asyncio
+async def test_rejoin_succeeds_on_first_attempt() -> None:
+    """A re-join attempt joins the player back to the playing leader's session."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+
+    async def cmd_group(player_id: str, target_id: str) -> None:
+        assert player_id == player.player_id
+        assert target_id == leader.player_id
+        _attach_running_session(player, [leader, player])
+
+    players_mock.cmd_group = AsyncMock(side_effect=cmd_group)
+    players_mock.cmd_ungroup = AsyncMock()
+
+    with patch(_NO_DELAYS, (0, 0, 0)):
+        await player._group_rejoin_attempts(["leader"])
+
+    assert players_mock.cmd_group.await_count == 1
+    players_mock.cmd_ungroup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rejoin_retries_after_failure_then_succeeds() -> None:
+    """A failed attempt (device still unreachable) is retried with backoff."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    attempts: list[int] = []
+
+    async def cmd_group(_player_id: str, _target_id: str) -> None:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise PlayerCommandFailed("device unreachable")
+        _attach_running_session(player, [leader, player])
+
+    players_mock.cmd_group = AsyncMock(side_effect=cmd_group)
+
+    with patch(_NO_DELAYS, (0, 0, 0)):
+        await player._group_rejoin_attempts(["leader"])
+
+    assert len(attempts) == 2
+
+
+@pytest.mark.asyncio
+async def test_rejoin_gives_up_after_all_attempts() -> None:
+    """Without a playing group to re-join, the attempts run out and stop cleanly."""
+    player = _make_idle_player()
+    players_mock = _players_mock(player)
+    players_mock.get_player.return_value = None
+    players_mock.cmd_group = AsyncMock()
+
+    with patch(_NO_DELAYS, (0, 0, 0)):
+        await player._group_rejoin_attempts(["leader"])
+
+    players_mock.cmd_group.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rejoin_aborts_when_player_used_meanwhile() -> None:
+    """A player that was grouped or repurposed meanwhile is left alone."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.cmd_group = AsyncMock()
+    # the user started something else on the player during the backoff
+    stream = MagicMock()
+    stream.running = True
+    player.stream = stream
+
+    with patch(_NO_DELAYS, (0, 0, 0)):
+        await player._group_rejoin_attempts(["leader"])
+
+    players_mock.cmd_group.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rejoin_undoes_dangling_membership() -> None:
+    """A join that yields no running stream is rolled back before the next attempt."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    # cmd_group "succeeds" but the late-join failed internally: no stream appears
+    players_mock.cmd_group = AsyncMock()
+    players_mock.cmd_ungroup = AsyncMock()
+
+    with patch(_NO_DELAYS, (0, 0, 0)):
+        await player._group_rejoin_attempts(["leader"])
+
+    # every attempt rolled its dangling membership back
+    assert players_mock.cmd_group.await_count == 3
+    assert players_mock.cmd_ungroup.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_rejoin_cancelled_when_player_unavailable() -> None:
+    """An offline player abandons the re-join right away instead of attempting."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.cmd_group = AsyncMock()
+    player._attr_available = False
+
+    # the later long delays prove the loop returns on the first pass
+    with patch(_NO_DELAYS, (0, 60, 60)):
+        await asyncio.wait_for(player._group_rejoin_attempts(["leader"]), timeout=5)
+
+    players_mock.cmd_group.assert_not_awaited()
+    players_mock.get_player.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_rejoin_aborts_when_synced_into_foreign_group() -> None:
+    """A player the user grouped elsewhere meanwhile is left alone."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    foreign_leader = MagicMock()
+    foreign_leader.player_id = "other"
+    foreign_leader.group_members = ["other", player.player_id]
+    # the player reports it is now synced to a leader outside the original group
+    _players_mock(player).all_players.return_value = [foreign_leader]
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.cmd_group = AsyncMock()
+
+    with patch(_NO_DELAYS, (0, 60, 60)):
+        await asyncio.wait_for(player._group_rejoin_attempts(["leader"]), timeout=5)
+
+    players_mock.cmd_group.assert_not_awaited()
+
+
+def test_resolve_rejoin_target_finds_promoted_sibling() -> None:
+    """When the old leader is gone, a promoted (now leading) sibling is the target."""
+    player = _make_idle_player()
+    sibling = _make_playing_leader("sibling")
+    sibling._attr_group_members = ["sibling", "other_member"]
+    _players_mock(player).get_player.side_effect = lambda player_id: {"sibling": sibling}.get(
+        player_id
+    )
+
+    assert player._resolve_rejoin_target(["old_leader", "sibling"]) is sibling
+
+
+def test_resolve_rejoin_target_skips_candidate_in_foreign_group() -> None:
+    """A candidate absorbed into another group is never followed there."""
+    player = _make_idle_player()
+    foreign_leader = _make_playing_leader("foreign")
+    foreign_leader._attr_group_members = ["foreign", "old_leader"]
+    old_leader = _make_playing_leader("old_leader")
+    # the old leader reports it is now synced to the foreign leader
+    _players_mock(old_leader).all_players.return_value = [foreign_leader]
+    _players_mock(player).get_player.side_effect = lambda player_id: {
+        "old_leader": old_leader,
+        "foreign": foreign_leader,
+    }.get(player_id)
+
+    assert player._resolve_rejoin_target(["old_leader"]) is None
+
+
+@pytest.mark.parametrize(
+    ("playback_state", "stream_running", "available", "expected"),
+    [
+        (PlaybackState.PLAYING, True, True, True),
+        # a parked (paused) session has no live timeline to late-join
+        (PlaybackState.PAUSED, True, True, False),
+        (PlaybackState.IDLE, False, True, False),
+        # target device itself dropped off the network
+        (PlaybackState.PLAYING, True, False, False),
+    ],
+)
+def test_resolve_rejoin_target_requires_playing_session(
+    playback_state: PlaybackState, stream_running: bool, available: bool, expected: bool
+) -> None:
+    """Only an available target with an actively playing session is accepted."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    leader._attr_playback_state = playback_state
+    cast("MagicMock", leader.stream).running = stream_running
+    leader._attr_available = available
+    _players_mock(player).get_player.side_effect = lambda player_id: {"leader": leader}.get(
+        player_id
+    )
+
+    target = player._resolve_rejoin_target(["leader"])
+    assert (target is leader) is expected
+
+
+@pytest.mark.asyncio
+async def test_rejoin_heals_session_when_membership_survived() -> None:
+    """A player still holding sync membership (static group) heals the session only."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    # the sync membership survived the stream loss: the player is still listed
+    # as a member of (and synced to) the leader
+    leader._attr_group_members = ["leader", player.player_id]
+    _players_mock(player).all_players.return_value = [leader]
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.cmd_group = AsyncMock()
+    players_mock.cmd_ungroup = AsyncMock()
+    session = cast("MagicMock", leader.stream).session
+
+    async def add_client(joiner: AirPlayPlayer) -> None:
+        assert joiner is player
+        _attach_running_session(player, [leader, player])
+
+    session.add_client = AsyncMock(side_effect=add_client)
+
+    with patch(_NO_DELAYS, (0,)):
+        await player._group_rejoin_attempts(["leader"])
+
+    session.add_client.assert_awaited_once()
+    players_mock.cmd_group.assert_not_awaited()
+    players_mock.cmd_ungroup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rejoin_session_heal_failure_keeps_membership() -> None:
+    """A failed session heal never touches the (configured) group membership."""
+    player = _make_idle_player()
+    leader = _make_playing_leader()
+    leader._attr_group_members = ["leader", player.player_id]
+    _players_mock(player).all_players.return_value = [leader]
+    players_mock = _players_mock(player)
+    players_mock.get_player.side_effect = lambda player_id: {"leader": leader}.get(player_id)
+    players_mock.cmd_group = AsyncMock()
+    players_mock.cmd_ungroup = AsyncMock()
+    session = cast("MagicMock", leader.stream).session
+    # the late-join fails internally: no stream appears on the player
+    session.add_client = AsyncMock()
+
+    with patch(_NO_DELAYS, (0,)):
+        await player._group_rejoin_attempts(["leader"])
+
+    session.add_client.assert_awaited_once()
+    players_mock.cmd_ungroup.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_schedule_and_cancel_group_rejoin() -> None:
+    """Scheduling replaces a pending task and cancelling stops it."""
+    player = _make_idle_player()
+    _players_mock(player).get_player.return_value = None
+    cast("MagicMock", player.mass).create_task = lambda coro: (
+        asyncio.get_running_loop().create_task(coro)
+    )
+
+    with patch(_NO_DELAYS, (60, 60, 60)):
+        player.schedule_group_rejoin(["leader"])
+        first_task = player._rejoin_task
+        assert first_task is not None
+        # a second death replaces the pending schedule
+        player.schedule_group_rejoin(["leader"])
+        second_task = player._rejoin_task
+        assert second_task is not None
+        assert second_task is not first_task
+        await asyncio.sleep(0)
+        assert first_task.cancelled()
+        # any deliberate use of the player cancels the pending re-join
+        player.cancel_group_rejoin()
+        assert player._rejoin_task is None
+        await asyncio.sleep(0)
+        assert second_task.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_stop_cancels_pending_rejoin() -> None:
+    """An explicit stop command on the player drops the pending re-join."""
+    player = _make_idle_player()
+    _players_mock(player).get_player.return_value = None
+    cast("MagicMock", player.mass).create_task = lambda coro: (
+        asyncio.get_running_loop().create_task(coro)
+    )
+
+    with (
+        patch(_NO_DELAYS, (60,)),
+        patch.object(AirPlayPlayer, "update_state"),
+    ):
+        player.schedule_group_rejoin(["leader"])
+        rejoin_task = player._rejoin_task
+        assert rejoin_task is not None
+        await player.stop()
+        assert player._rejoin_task is None
+        await asyncio.sleep(0)
+        assert rejoin_task.cancelled()
+
+
+# --- Group membership and the leader's stream session ---
+
+
+@pytest.mark.asyncio
+async def test_set_members_adds_the_child_to_the_running_session() -> None:
+    """A member joining a leader with a live session is added to that session."""
+    leader = _make_playing_leader()
+    child = _make_idle_player("child")
+    _attach_running_session(leader, [leader])
+    session = cast("MagicMock", leader.stream).session
+    session.add_client = AsyncMock()
+    _players_mock(leader).get_player.side_effect = lambda player_id: {"child": child}.get(player_id)
+
+    await leader.set_members(player_ids_to_add=["child"])
+
+    session.add_client.assert_awaited_once_with(child)
+    assert leader.group_members == ["leader", "child"]
+
+
+@pytest.mark.asyncio
+async def test_set_members_warns_when_the_leader_has_no_session(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A member joining a leader that renders through a protocol gets no audio, loudly."""
+    leader = _make_idle_player("leader")
+    leader.logger = logging.getLogger("test.airplay.player")
+    child = _make_idle_player("child")
+    _players_mock(leader).get_player.side_effect = lambda player_id: {"child": child}.get(player_id)
+    # the leader hands its audio to one of its output protocols, so it has no session
+    leader.set_active_output_protocol("bridge_leader")
+
+    with caplog.at_level(logging.WARNING):
+        await leader.set_members(player_ids_to_add=["child"])
+
+    assert leader.group_members == ["leader", "child"]
+    assert "no stream session to join" in caplog.text
+
+
+# --- Device password ---
+
+
+def _set_password_discovery(
+    player: AirPlayPlayer,
+    *,
+    flags: str = "0x0",
+    pw: str = "",
+    password: str | None = None,
+    paired: bool = False,
+) -> None:
+    """
+    Attach an AirPlay 2 + RAOP device announcing password protection.
+
+    :param flags: The _airplay service sf/flags bitmask (0x80 marks a password).
+    :param pw: The legacy ``pw`` boolean published by the _raop service.
+    :param password: The device password stored in the player config, if any.
+    :param paired: Whether AirPlay 2 pairing credentials are stored for the device.
+    """
+    airplay_info = MagicMock()
+    airplay_info.decoded_properties = {"features": AP2_FEATURES, "flags": flags}
+    airplay_info.properties = {b"flags": flags.encode()}
+    player.airplay_discovery_info = airplay_info
+    raop_info = MagicMock()
+    raop_info.decoded_properties = {"pw": pw} if pw else {}
+    raop_info.properties = {}
+    player.raop_discovery_info = raop_info
+    _configure_player(player, {CONF_FORCE_RAOP: False, CONF_PASSWORD: password})
+    credentials = {CONF_AIRPLAY_CREDENTIALS: "a" * 192} if paired else {}
+    player.get_setup_value = (  # type: ignore[method-assign]
+        lambda key, default=None: credentials.get(key, default)
+    )
+
+
+@pytest.mark.asyncio
+async def test_password_entry_is_never_offered_in_the_settings(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """The password is storage only: the setup flow is the sole way to enter it."""
+    _set_password_discovery(airplay_player, flags="0x80")
+    assert airplay_player.password_required is True
+
+    entries = await airplay_player.get_config_entries()
+    entry = next(entry for entry in entries if entry.key == CONF_PASSWORD)
+    assert entry.hidden is True
+
+
+@pytest.mark.parametrize(
+    ("flags", "pw"),
+    [
+        # AirPlay 2 announces password protection through the flags bit...
+        ("0x80", ""),
+        # ...a legacy RAOP receiver through the classic pw boolean
+        ("0x0", "true"),
+    ],
+)
+def test_announced_password_without_one_stored_needs_setup(
+    airplay_player: AirPlayPlayer, flags: str, pw: str
+) -> None:
+    """A device that asks for a password it never got must be set up first."""
+    _set_password_discovery(airplay_player, flags=flags, pw=pw)
+
+    assert airplay_player.password_required is True
+    assert airplay_player.needs_setup is True
+    assert airplay_player.setup_reason == "password_required"
+
+
+def test_apple_tv_password_bit_alone_does_not_need_setup(airplay_player: AirPlayPlayer) -> None:
+    """Apple TVs raise the generic password bit at all times; it means nothing there."""
+    # a paired Apple TV without a password set must not be sent back into setup
+    _set_password_discovery(airplay_player, flags="0x4c4", paired=True)
+    airplay_player.device_info.model = "AppleTV14,1"
+
+    assert airplay_player.password_required is False
+    assert airplay_player.needs_setup is False
+
+
+def test_apple_tv_with_a_password_set_needs_setup(airplay_player: AirPlayPlayer) -> None:
+    """The tvOS-specific flags bit is the Apple TV's only password announcement."""
+    _set_password_discovery(airplay_player, flags="0x14c4")
+    airplay_player.device_info.model = "AppleTV11,1"
+
+    assert airplay_player.password_required is True
+    assert airplay_player.needs_setup is True
+    assert airplay_player.setup_reason == "password_required"
+
+
+@pytest.mark.parametrize(
+    ("flags", "pw", "paired"),
+    [
+        # AirPlay 2 collects the password as part of pairing, so it ends up with both
+        ("0x80", "", True),
+        # a legacy RAOP receiver has no pairing at all: the password is enough
+        ("0x0", "true", False),
+    ],
+)
+def test_stored_password_clears_the_setup_requirement(
+    airplay_player: AirPlayPlayer, flags: str, pw: str, paired: bool
+) -> None:
+    """Once the password is stored the player is ready to use again."""
+    _set_password_discovery(airplay_player, flags=flags, pw=pw, password="hunter2", paired=paired)
+
+    assert airplay_player.needs_setup is False
+    assert airplay_player.setup_reason is None
+
+
+def test_rejected_password_marker_forces_setup(airplay_player: AirPlayPlayer) -> None:
+    """A password the device rejected sends an otherwise ready player back into setup."""
+    # the migration case: a paired device that gained password protection later
+    _set_password_discovery(airplay_player, flags="0x80", password="wrong", paired=True)
+    ready_before = airplay_player.needs_setup
+
+    airplay_player.set_password_invalid(True)
+
+    assert ready_before is False
+    assert airplay_player.password_invalid is True
+    assert airplay_player.needs_setup is True
+    assert airplay_player.setup_reason == "password_required"
+
+
+def test_rejected_password_marker_survives_a_restart(airplay_player: AirPlayPlayer) -> None:
+    """The marker is persisted as a raw player config value, not just in memory."""
+    _set_password_discovery(airplay_player, flags="0x80", password="wrong", paired=True)
+
+    airplay_player.set_password_invalid(True)
+
+    airplay_player.mass.config.set_raw_player_config_value.assert_called_once_with(  # type: ignore[attr-defined]
+        "test_player", CONF_PASSWORD_INVALID, True
+    )
+
+
+def test_clearing_the_marker_only_writes_when_it_was_set(airplay_player: AirPlayPlayer) -> None:
+    """Every successful connect clears the marker, but must not write the config."""
+    _set_password_discovery(airplay_player, flags="0x80", password="hunter2", paired=True)
+    set_raw = airplay_player.mass.config.set_raw_player_config_value
+
+    airplay_player.set_password_invalid(False)
+    set_raw.assert_not_called()  # type: ignore[attr-defined]
+
+    airplay_player.set_password_invalid(True)
+    assert airplay_player.needs_setup is True
+    airplay_player.set_password_invalid(False)
+
+    assert airplay_player.password_invalid is False
+    assert airplay_player.needs_setup is False
+
+
+def test_rejected_password_is_published_to_clients(airplay_player: AirPlayPlayer) -> None:
+    """The new setup requirement must reach the wire state, not just the property."""
+    _set_password_discovery(airplay_player, flags="0x80", password="wrong", paired=True)
+    airplay_player.update_state()
+    before = airplay_player.state
+    assert before.needs_setup is False
+    assert before.available is True
+
+    airplay_player.set_password_invalid(True)
+
+    # needs_setup/setup_reason are part of the player's own state inputs, so the
+    # update is neither short-circuited nor left to the next unrelated update
+    after = airplay_player.state
+    assert after.needs_setup is True
+    assert after.setup_reason == "password_required"
+    assert after.available is False
+    changed = airplay_player.mass.players.signal_player_state_update.call_args[0][1]  # type: ignore[attr-defined]
+    assert "needs_setup" in changed
+
+
+def test_pin_pairing_keeps_its_own_setup_reason(airplay_player: AirPlayPlayer) -> None:
+    """A device that only needs PIN pairing is not reported as a password problem."""
+    airplay_info = MagicMock()
+    airplay_info.decoded_properties = {"features": AP2_FEATURES}
+    airplay_info.properties = {b"flags": b"0x8"}
+    airplay_player.airplay_discovery_info = airplay_info
+    airplay_player.get_setup_value = lambda key, default=None: default  # type: ignore[method-assign]  # noqa: ARG005
+
+    assert airplay_player.needs_setup is True
+    assert airplay_player.setup_reason == "pairing_required"

@@ -34,6 +34,10 @@
     },
     "pair_now": {
       "label": "Set up now"
+    },
+    "verbose_ptp_logging": {
+      "label": "Verbose PTP daemon logging",
+      "description": "Log the shared PTP clock daemon's per-packet timing trace (Announce/Sync/Follow_Up) when verbose logging is active. Only useful when diagnosing multi-room clock sync issues; it floods the log at ~10 lines per second."
     }
   },
   "setup_flow": {
@@ -44,6 +48,10 @@
     "pair_password": {
       "title": "Enter the device password",
       "description": "This device is protected with a password. Enter it below to connect."
+    },
+    "streaming_repair_offer": {
+      "title": "Pair again (optional)",
+      "description": "This device is already paired for streaming. Optionally pair again to replace the stored pairing, for example after the device was reset or its password was changed. You can skip this to keep the current pairing."
     },
     "companion_offer": {
       "title": "Set up remote control (optional)",
@@ -66,12 +74,11 @@
     }
   },
   "errors": {
-    "invalid_pin": "Enter the numeric PIN shown on the screen of your device."
+    "invalid_pin": "Enter the numeric PIN shown on the screen of your device.",
+    "authentication_failed": "The device rejected the saved password. Run the setup for this player to enter it again.",
+    "show_dashboard_failed": "Failed to show the dashboard on {0}."
   },
   "manifest": {
     "description": "Stream to AirPlay-enabled devices on your local network."
-  },
-  "errors": {
-    "show_dashboard_failed": "Failed to show the dashboard on {0}."
   }
 }

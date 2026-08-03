@@ -9,6 +9,7 @@ from music_assistant_models.enums import LinkType
 
 from music_assistant.helpers.podcast_parsers import (
     enrich_episode_chapters,
+    find_episode_stream_url,
     get_stream_url_from_episode,
     parse_chapters_from_json,
     parse_podcast_episode,
@@ -466,3 +467,34 @@ def test_parse_podcast_persons_non_list_returns_empty() -> None:
     """Any non-list input yields no names, so callers need not guard."""
     assert parse_podcast_persons(None) == []
     assert parse_podcast_persons("nope") == []
+
+
+# --- find_episode_stream_url -----------------------------------------------------------------
+
+
+def test_find_episode_stream_url_matches_guid() -> None:
+    """An episode with a usable guid is found by that guid."""
+    feed = {"episodes": [_episode(guid="ep-1"), _episode(guid="ep-2", enclosures=[{"url": "b"}])]}
+    assert find_episode_stream_url(parsed_feed=feed, guid_or_stream_url="ep-2") == "b"
+
+
+def test_find_episode_stream_url_falls_back_to_stream_url() -> None:
+    """A guid containing a space is unusable as an id, so the stream url identifies it."""
+    feed = {"episodes": [_episode(guid="not a guid")]}
+    assert (
+        find_episode_stream_url(parsed_feed=feed, guid_or_stream_url="https://example.com/ep1.mp3")
+        == "https://example.com/ep1.mp3"
+    )
+    # the unusable guid must not match
+    assert find_episode_stream_url(parsed_feed=feed, guid_or_stream_url="not a guid") is None
+
+
+def test_find_episode_stream_url_skips_episodes_without_enclosure() -> None:
+    """An episode without a playable enclosure does not stop the search."""
+    feed = {"episodes": [{"title": "no audio"}, _episode(guid="ep-2", enclosures=[{"url": "b"}])]}
+    assert find_episode_stream_url(parsed_feed=feed, guid_or_stream_url="ep-2") == "b"
+
+
+def test_find_episode_stream_url_unknown_returns_none() -> None:
+    """An unknown identifier yields None rather than raising."""
+    assert find_episode_stream_url(parsed_feed={"episodes": []}, guid_or_stream_url="x") is None

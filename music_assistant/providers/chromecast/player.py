@@ -35,6 +35,7 @@ from .constants import (
     CONF_ENTRY_SAMPLE_RATES_CAST,
     CONF_ENTRY_SAMPLE_RATES_CAST_GROUP,
     CONF_USE_MASS_APP,
+    DASHBOARD_KEEPALIVE_SUFFIXES,
     MASS_APP_ID,
     SENDSPIN_CAST_APP_ID,
 )
@@ -493,6 +494,16 @@ class ChromecastPlayer(Player):
             group_player = player_obj
             status = group_player.cc.media_controller.status
 
+        # never surface the receiver's dashboard keepalive as actual playback
+        if status.content_id and status.content_id.endswith(DASHBOARD_KEEPALIVE_SUFFIXES):
+            self._attr_playback_state = PlaybackState.IDLE
+            self._attr_current_media = None
+            self._attr_active_source = None
+            self._attr_elapsed_time = 0
+            self._attr_elapsed_time_last_updated = time.time()
+            self.update_state()
+            return
+
         # player state
         # pychromecast reports BUFFERING as 'playing', so a Cast group that underruns the
         # LIVE flow stream at EOF never goes idle. Treat that case as idle so the queue
@@ -653,7 +664,7 @@ class ChromecastPlayer(Player):
             "contentType": f"audio/{file_ext}",
             "streamType": stream_type,
             "metadata": metadata,
-            "duration": media.duration,
+            "duration": media.stream_duration or media.duration,
         }
 
     def _flow_stream_underrun(self) -> bool:

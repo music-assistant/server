@@ -364,7 +364,9 @@ class OpenSonicProvider(MusicProvider):
         )
 
         if answer.artist:
-            ar = [parse_artist(self.instance_id, entry) for entry in answer.artist]
+            ar = [
+                parse_artist(self.instance_id, entry, logger=self.logger) for entry in answer.artist
+            ]
         else:
             ar = []
 
@@ -418,7 +420,7 @@ class OpenSonicProvider(MusicProvider):
                 continue
 
             for artist in index.artist:
-                yield parse_artist(self.instance_id, artist)
+                yield parse_artist(self.instance_id, artist, logger=self.logger)
 
     async def get_library_albums(self) -> AsyncGenerator[Album]:
         """
@@ -560,7 +562,7 @@ class OpenSonicProvider(MusicProvider):
         except (ParameterError, DataNotFoundError) as e:
             msg = f"Artist {prov_artist_id} not found"
             raise MediaNotFoundError(msg) from e
-        return parse_artist(self.instance_id, sonic_artist, sonic_info)
+        return parse_artist(self.instance_id, sonic_artist, sonic_info, logger=self.logger)
 
     @use_cache(3600 * 3)  # cache for 3 hours
     async def get_track(self, prov_track_id: str) -> Track:
@@ -955,7 +957,7 @@ class OpenSonicProvider(MusicProvider):
                 faves.items.append(parse_album(self.logger, self.instance_id, sonic_album))
         if starred.artist:
             for sonic_artist in starred.artist[: self._reco_limit]:
-                faves.items.append(parse_artist(self.instance_id, sonic_artist))
+                faves.items.append(parse_artist(self.instance_id, sonic_artist, logger=self.logger))
         if starred.song:
             for sonic_song in starred.song[: self._reco_limit]:
                 self._set_loudness(sonic_song)

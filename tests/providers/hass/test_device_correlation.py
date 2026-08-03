@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from music_assistant_models.player import PlayerMedia
 
 from music_assistant.providers.hass import HomeAssistantProvider
 
@@ -23,6 +26,7 @@ def _provider(
         get_entity_registry=AsyncMock(return_value=entities),
     )
     provider.get_states = AsyncMock(return_value=states)  # type: ignore[method-assign]
+    provider.logger = logging.getLogger("test.hass")
     return provider
 
 
@@ -108,13 +112,11 @@ async def test_play_announcement_on_entity() -> None:
     """An announcement is played via HA's announce feature and awaited for its duration."""
     provider = HomeAssistantProvider.__new__(HomeAssistantProvider)
     provider.hass = SimpleNamespace(call_service=AsyncMock())
-    with patch(
-        "music_assistant.providers.hass.async_parse_tags",
-        AsyncMock(return_value=SimpleNamespace(duration=0.01)),
-    ) as parse_tags:
-        await provider.play_announcement_on_entity(
-            "media_player.kitchen", "http://mass.local/announcement.mp3"
-        )
+    provider.mass = MagicMock()
+    provider.mass.streams.get_announcement_duration = AsyncMock(return_value=7)
+    announcement = PlayerMedia(uri="http://mass.local/announcement.mp3")
+    with patch("music_assistant.providers.hass.asyncio.sleep", AsyncMock()) as sleep:
+        await provider.play_announcement_on_entity("media_player.kitchen", announcement)
     provider.hass.call_service.assert_awaited_once_with(
         domain="media_player",
         service="play_media",
@@ -125,4 +127,6 @@ async def test_play_announcement_on_entity() -> None:
         },
         target={"entity_id": "media_player.kitchen"},
     )
-    parse_tags.assert_awaited_once_with("http://mass.local/announcement.mp3", require_duration=True)
+    # the length is resolved after the announcement was handed to the entity
+    provider.mass.streams.get_announcement_duration.assert_awaited_once_with(announcement)
+    sleep.assert_awaited_once_with(7)

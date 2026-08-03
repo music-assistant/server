@@ -109,7 +109,7 @@ LISTEN_IN_COMMANDS = (
 )
 
 
-def _make_venue_player(
+def _make_venue_player(  # noqa: PLR0913
     player_id: str,
     name: str,
     *,
@@ -121,6 +121,7 @@ def _make_venue_player(
     features: set[PlayerFeature] | None = None,
     provider_domain: str = "test_player",
     playback_state: PlaybackState = PlaybackState.IDLE,
+    linked_protocol: bool = False,
 ) -> SimpleNamespace:
     """Return a player-shaped venue target for tests."""
     supported_features = features if features is not None else {PlayerFeature.PLAY_MEDIA}
@@ -128,6 +129,9 @@ def _make_venue_player(
         PlayerFeature.PLAY_MEDIA in supported_features
         and player_type != PlayerType.PROTOCOL
         and provider_domain != "universal_player"
+    )
+    output_protocols = (
+        [SimpleNamespace(available=True)] if is_native_player or linked_protocol else []
     )
     return SimpleNamespace(
         player_id=player_id,
@@ -145,6 +149,7 @@ def _make_venue_player(
             group_members=[],
             type=player_type,
             supported_features=supported_features,
+            output_protocols=output_protocols,
         ),
         extra_data={},
     )
@@ -296,7 +301,9 @@ def _create_plugin(
     plugin._unregister_handles = []
     plugin.mass.cache.get = AsyncMock(return_value=None)
     plugin.mass.cache.set = AsyncMock()
-    plugin.mass.get_provider.return_value = MagicMock()
+    sendspin_provider = MagicMock()
+    sendspin_provider.is_virtual_player.return_value = False
+    plugin.mass.get_provider.return_value = sendspin_provider
     plugin.mass.players.all_players.return_value = (
         [_make_venue_player(player, "Venue Player")] if player and player != "__auto__" else []
     )
@@ -507,6 +514,15 @@ def _timeline_answer_state(game_round: MusicQuizRound) -> TimelineRoundState:
     return game_round.answer_state
 
 
+def _broadcast_states(plugin: MusicQuizPlugin) -> list[dict[str, Any]]:
+    """Return the state payload of every game_updated broadcast, in order."""
+    return [
+        broadcast.args[0]["state"]
+        for broadcast in cast("MagicMock", plugin.signal_provider_event).call_args_list
+        if broadcast.args[0]["event"] == "game_updated"
+    ]
+
+
 async def _create_started_game(
     plugin: MusicQuizPlugin,
     player_names: tuple[str, ...] = ("Alice", "Bob"),
@@ -673,6 +689,12 @@ async def test_playback_options_filter_and_stably_rank_venue_players() -> None:
     active_group_member = _make_venue_player("group-member", "Active Group Member")
     active_group_member.state.active_group = "group"
     group.state.group_members = ["group-member"]
+    universal = _make_venue_player(
+        "universal", "Universal", provider_domain="universal_player", linked_protocol=True
+    )
+    session_host = _make_venue_player("virtual", "Quiz Session", provider_domain="sendspin")
+    sendspin_provider = cast("MagicMock", plugin.mass.get_provider).return_value
+    sendspin_provider.is_virtual_player.side_effect = lambda player_id: player_id == "virtual"
     excluded = [
         _make_venue_player("unavailable", "Unavailable", available=False),
         _make_venue_player("disabled", "Disabled", enabled=False),
@@ -683,13 +705,14 @@ async def test_playback_options_filter_and_stably_rank_venue_players() -> None:
         _make_venue_player("protocol", "Protocol", player_type=PlayerType.PROTOCOL),
         _make_venue_player("display", "Display", player_type=PlayerType.DISPLAY),
         _make_venue_player("no-play", "No Playback", features=set()),
-        _make_venue_player("browser", "Browser", provider_domain="sendspin"),
-        _make_venue_player("universal", "Universal", provider_domain="universal_player"),
+        _make_venue_player("browser", "Browser", provider_domain="sendspin", hidden=True),
+        session_host,
     ]
     cast("MagicMock", plugin.mass.players.all_players).return_value = [
         playing_bathroom,
         *excluded,
         group,
+        universal,
         alpha,
     ]
 
@@ -713,12 +736,32 @@ async def test_playback_options_filter_and_stably_rank_venue_players() -> None:
         "venue_players": [
             {"player_id": "alpha", "name": "Alpha Room"},
             {"player_id": "group", "name": "House Group"},
+            {"player_id": "universal", "name": "Universal"},
             {"player_id": "bathroom", "name": "Z Bathroom"},
         ],
     }
     create_venue.assert_not_awaited()
     create_remote.assert_not_awaited()
     assert cast("MagicMock", plugin.mass.player_queues).mock_calls == []
+
+
+@pytest.mark.asyncio
+async def test_playback_options_include_protocol_wrapped_speakers() -> None:
+    """Offer speakers that play through a linked protocol, such as a Sendspin CLI client."""
+    plugin = _create_plugin(player="__auto__")
+    cli_speaker = _make_venue_player(
+        "universal_kitchen",
+        "Kitchen",
+        provider_domain="universal_player",
+        linked_protocol=True,
+    )
+    cast("MagicMock", plugin.mass.players.all_players).return_value = [cli_speaker]
+
+    options = await plugin.playback_options()
+
+    assert options["venue_available"] is True
+    assert options["default_venue_player_id"] == "universal_kitchen"
+    assert options["venue_players"] == [{"player_id": "universal_kitchen", "name": "Kitchen"}]
 
 
 @pytest.mark.asyncio
@@ -3643,10 +3686,12 @@ async def test_public_state_redacts_answer_data_before_reveal() -> None:
         "answer_duration",
         "include_similar_music",
         "auto_start_at",
+        "preparing",
         "players",
         "current_round",
     }
     assert state["phase"] == "answering"
+    assert state["preparing"] is False
     assert state["quiz_type"] == "guess_the_song"
     assert state["answer_type"] == "multiple_choice"
     assert (state["mode"], state["include_similar_music"]) == ("venue", False)
@@ -4305,6 +4350,79 @@ async def test_reset_preserves_quiz_type_in_state_and_events() -> None:
     payload = cast("MagicMock", plugin.signal_provider_event).call_args[0][0]
     assert payload["state"]["quiz_type"] == "guess_the_song"
     assert payload["state"]["answer_type"] == "multiple_choice"
+
+
+@pytest.mark.asyncio
+async def test_reset_broadcasts_preparing_before_and_after_preparation() -> None:
+    """Announce the replay preparation before it runs and clear it once the lobby is ready."""
+    plugin = _create_plugin()
+    await _create_started_game(plugin)
+    cast("MagicMock", plugin.signal_provider_event).reset_mock()
+    states_during_preparation: list[dict[str, Any]] = []
+    prepare_initial_round = plugin._prepare_initial_round
+
+    async def _prepare(quiz_type: Any) -> Any:
+        states_during_preparation.extend(_broadcast_states(plugin))
+        return await prepare_initial_round(quiz_type)
+
+    plugin._prepare_initial_round = _prepare  # type: ignore[method-assign]
+
+    state = await plugin.reset()
+
+    # the preparing broadcast is already out when the long preparation starts
+    assert [entry["preparing"] for entry in states_during_preparation] == [True]
+    assert [(entry["phase"], entry["preparing"]) for entry in _broadcast_states(plugin)] == [
+        ("answering", True),
+        ("lobby", False),
+    ]
+    assert state["preparing"] is False
+    assert plugin._game is not None
+    assert plugin._game.preparing is False
+
+
+@pytest.mark.asyncio
+async def test_failed_reset_clears_preparing_and_broadcasts_the_recovered_state() -> None:
+    """Leave no client stranded on the preparing state when the replay preparation fails."""
+    plugin = _create_plugin()
+    await _create_started_game(plugin)
+    game = plugin._game
+    assert game is not None
+    cast("MagicMock", plugin.signal_provider_event).reset_mock()
+
+    with (
+        patch.object(
+            MusicQuizPlugin,
+            "_prepare_initial_round",
+            new=AsyncMock(side_effect=InvalidDataError("Sources unavailable")),
+        ),
+        pytest.raises(InvalidDataError, match="Sources unavailable"),
+    ):
+        await plugin.reset()
+
+    assert game.preparing is False
+    assert [(entry["phase"], entry["preparing"]) for entry in _broadcast_states(plugin)] == [
+        ("answering", True),
+        ("answering", False),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_preparing_is_idle_in_host_public_and_personal_state() -> None:
+    """Expose a false preparing flag in host, public, personal and broadcast state."""
+    plugin = _create_plugin()
+    player_ids = await _create_started_game(plugin, player_names=("Alice",))
+
+    host_state = await plugin.get_game()
+    public_state = await plugin.get_public_state()
+    personal_state = await plugin.get_player_state(player_ids["Alice"])
+    broadcast_state = cast("MagicMock", plugin.signal_provider_event).call_args.args[0]["state"]
+
+    assert host_state is not None
+    assert public_state is not None
+    assert host_state["preparing"] is False
+    assert public_state["preparing"] is False
+    assert personal_state["preparing"] is False
+    assert broadcast_state["preparing"] is False
 
 
 @pytest.mark.asyncio

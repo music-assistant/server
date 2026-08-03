@@ -79,7 +79,7 @@ from music_assistant.helpers import lyrics
 from music_assistant.helpers.compare import compare_strings, create_safe_string
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
-from music_assistant.helpers.tags import AudioTags, async_parse_tags, split_items
+from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid, split_items
 from music_assistant.helpers.util import (
     TaskManager,
     detect_charset,
@@ -1516,8 +1516,8 @@ class LocalFileSystemProvider(MusicProvider):
         explicit_tag = tags.get("itunesadvisory")
         if explicit_tag is not None:
             track.metadata.explicit = explicit_tag == "1"
-        if tags.musicbrainz_recordingid:
-            track.mbid = tags.musicbrainz_recordingid
+        if recording_mbid := clean_mbid(tags.musicbrainz_recordingid, tags.filename):
+            track.mbid = recording_mbid
 
         # handle (optional) loudness measurement tag(s)
         if tags.track_loudness is not None:
@@ -1707,7 +1707,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             },
         )
-        if mbid:
+        if mbid := clean_mbid(mbid, f"tags of artist {name}"):
             artist.mbid = mbid
         if not artist_path or not await self.exists(artist_path):
             return artist
@@ -1724,7 +1724,7 @@ class LocalFileSystemProvider(MusicProvider):
                 artist.name = info.get("title", info.get("name", name))
                 if sort_name := info.get("sortname"):
                     artist.sort_name = sort_name
-                if mbid := info.get("musicbrainzartistid"):
+                if mbid := clean_mbid(info.get("musicbrainzartistid"), nfo_file):
                     artist.mbid = mbid
                 if description := info.get("biography"):
                     artist.metadata.description = description
@@ -1844,8 +1844,8 @@ class LocalFileSystemProvider(MusicProvider):
         explicit_tag = tags.get("itunesadvisory")
         if explicit_tag is not None:
             audio_book.metadata.explicit = explicit_tag == "1"
-        if tags.musicbrainz_recordingid:
-            audio_book.mbid = tags.musicbrainz_recordingid
+        if recording_mbid := clean_mbid(tags.musicbrainz_recordingid, tags.filename):
+            audio_book.mbid = recording_mbid
 
         # try to fetch additional metadata from the folder
         if not audio_book.image or not audio_book.metadata.description:
@@ -2190,10 +2190,12 @@ class LocalFileSystemProvider(MusicProvider):
         if track_tags.barcode:
             album.external_ids.add((ExternalID.BARCODE, track_tags.barcode))
 
-        if track_tags.musicbrainz_albumid:
-            album.mbid = track_tags.musicbrainz_albumid
-        if track_tags.musicbrainz_releasegroupid:
-            album.add_external_id(ExternalID.MB_RELEASEGROUP, track_tags.musicbrainz_releasegroupid)
+        if album_mbid := clean_mbid(track_tags.musicbrainz_albumid, track_tags.filename):
+            album.mbid = album_mbid
+        if releasegroup_mbid := clean_mbid(
+            track_tags.musicbrainz_releasegroupid, track_tags.filename
+        ):
+            album.add_external_id(ExternalID.MB_RELEASEGROUP, releasegroup_mbid)
         if track_tags.year:
             album.year = track_tags.year
         album.album_type = track_tags.album_type
@@ -2212,7 +2214,7 @@ class LocalFileSystemProvider(MusicProvider):
                 try:
                     data = (await self._read_file(nfo_file)).decode("utf-8")
                     info = await asyncio.to_thread(xmltodict.parse, data)
-                    parse_album_nfo(album, info["album"])
+                    parse_album_nfo(album, info["album"], nfo_file)
                 except (ExpatError, KeyError) as err:
                     self.logger.warning(
                         "Failed to parse album NFO file %s: %s",

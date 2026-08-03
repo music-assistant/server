@@ -18,6 +18,7 @@ from music_assistant_models.media_items import (
 
 from music_assistant.constants import DB_TABLE_PLAYLOG, DB_TABLE_PODCASTS
 from music_assistant.controllers.webserver.helpers.auth_middleware import get_current_user
+from music_assistant.helpers.audio import get_probed_duration
 from music_assistant.helpers.compare import (
     compare_media_item,
     compare_podcast,
@@ -163,7 +164,9 @@ class PodcastsController(MediaControllerBase[Podcast]):
         prov = self.mass.get_provider(provider_instance_id_or_domain)
         if not isinstance(prov, MusicProvider):
             raise ProviderUnavailableError("Provider not found")
-        return await prov.get_podcast_episode(item_id)
+        episode = await prov.get_podcast_episode(item_id)
+        await self._restore_probed_duration(episode)
+        return episode
 
     async def versions(
         self,
@@ -382,7 +385,19 @@ class PodcastsController(MediaControllerBase[Podcast]):
         # info is applied here to keep per-user progress out of those caches
         async for item in prov.get_podcast_episodes(item_id):
             await set_resume_position(item)
+            await self._restore_probed_duration(item)
             yield item
+
+    async def _restore_probed_duration(self, episode: PodcastEpisode) -> None:
+        """
+        Fill in the duration determined during an earlier playback, for feeds that omit it.
+
+        :param episode: The episode to fill the duration of, left untouched when it has one.
+        """
+        if episode.duration or not (uri := episode.uri):
+            return
+        if probed_duration := await get_probed_duration(self.mass, uri):
+            episode.duration = probed_duration
 
     def _parse_summary_row(self, db_row: Mapping[str, Any]) -> PodcastSummary:
         """Parse a raw summary db row into a PodcastSummary object."""
