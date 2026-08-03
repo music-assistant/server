@@ -859,8 +859,16 @@ class StorytelHelper:
                         break
                 else:
                     raise UnplayableMediaError("Too many redirects while resolving Storytel stream")
-        except Exception as err:
-            if isinstance(err, LoginFailed):
+        except (
+            ClientError,
+            ConnectionError,
+            TimeoutError,
+            LoginFailed,
+            MediaNotFoundError,
+            ProviderUnavailableError,
+            UnplayableMediaError,
+        ) as err:
+            if isinstance(err, (LoginFailed, MediaNotFoundError, UnplayableMediaError)):
                 raise
             self.logger.error("Failed to fetch stream details for %s: %s", item_id, err)
             raise UnplayableMediaError(f"Failed to fetch stream details: {err}") from err
@@ -1038,7 +1046,7 @@ class StorytelHelper:
             formats = data.get("formats") or []
             audiobook_format = next((f for f in formats if f.get("type") == "abook"), None)
             chapters = audiobook_format.get("chapters") or [] if audiobook_format else []
-        except (ClientError, KeyError, TypeError, ValueError) as err:
+        except (ClientError, TimeoutError, KeyError, TypeError, ValueError) as err:
             self.logger.debug("Failed to fetch chapters for %s: %s", consumable_id, err)
 
         return list(chapters)

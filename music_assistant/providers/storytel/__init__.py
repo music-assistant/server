@@ -357,7 +357,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
         if updated_ts:
             try:
                 bookmark_updated_dt = datetime.fromisoformat(str(updated_ts)).astimezone(UTC)
-            except Exception:
+            except ValueError:
                 bookmark_updated_dt = None
 
         return False, pos, bookmark_updated_dt
@@ -398,8 +398,14 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
                 bookmark_position,
                 kids_mode=self._kids_mode,
             )
-        except Exception as err:
-            if isinstance(err, (LoginFailed, ProviderUnavailableError, SetupFailedError)):
+        except (
+            ClientError,
+            ConnectionError,
+            TimeoutError,
+            LoginFailed,
+            ProviderUnavailableError,
+        ) as err:
+            if isinstance(err, (LoginFailed, ProviderUnavailableError)):
                 raise
             self.logger.debug("Failed to update Storytel bookmark: %s", err)
 
