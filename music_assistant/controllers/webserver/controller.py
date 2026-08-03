@@ -310,8 +310,8 @@ class WebserverController(CoreController):
             app_state={"mass": self.mass},
             ssl_context=ssl_context,
         )
-        # adopt the port the server ended up on, which differs from the configured one
-        # when that asked the OS for a free port
+        # adopt the port the server actually bound to: a configured port of 0 is only
+        # resolved by the OS at bind time
         self.publish_port = cast("int", self._server.port)
         self._auto_base_url = self._server.base_url
         base_url = self.base_url

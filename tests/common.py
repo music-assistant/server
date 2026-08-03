@@ -74,10 +74,8 @@ def use_ephemeral_server_ports() -> Iterator[None]:
     """
     Bind a full-server test fixture's web and stream servers to a free loopback port.
 
-    Port 0 has the kernel pick the port during the bind itself, which is the only way
-    to be sure nothing else holds it: a port that is merely observed to be free can be
-    handed to any outgoing connection - of this test run or of another job on the same
-    runner - before the server gets to claim it.
+    Port 0 has the kernel pick the port during the bind itself, so nothing else can
+    claim it in the meantime.
 
     Binding loopback keeps a test run off the host's other interfaces and gives each
     server a single socket, so it has one assigned port: asyncio binds a wildcard

@@ -473,15 +473,15 @@ class StreamsController(CoreController):
                 ("*", "/announcement/{player_id}.{fmt}", self.serve_announcement_stream),
             ],
         )
-        # adopt the port the server ended up on, which differs from the configured
-        # one when that asked the OS for a free port
-        self.publish_port = self._server.port
+        # adopt the port the server actually bound to: a configured port of 0 is only
+        # resolved by the OS at bind time
+        self.publish_port = cast("int", self._server.port)
         # print a big fat message in the log where the streamserver is running
         # because this is a common source of issues for people with more complex setups
         self.logger.log(
             logging.INFO if self.mass.config.onboard_done else logging.WARNING,
             "\n\n################################################################################\n"
-            "Started streamserver on  %s:%s\n"
+            "Started streamserver on %s:%s\n"
             "This is the IP address that is communicated to players.\n"
             "If this is incorrect, audio will not play!\n"
             "See the documentation for how to configure the publish IP for the Streamserver\n"

@@ -5,7 +5,7 @@ import logging
 import pathlib
 import threading
 from collections.abc import AsyncGenerator, Generator
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 
 import pytest
@@ -112,10 +112,8 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
             # also stop after a failed boot: pytest holds on to the setup traceback,
             # which keeps the half-started server (and the non-daemon threads of its
             # open database connections) alive until the interpreter exits, where
-            # joining those threads then hangs the whole test process. A boot that
-            # failed before the controllers were created has nothing to stop.
-            with suppress(AttributeError):
-                await mass_instance.stop()
+            # joining those threads then hangs the whole test process
+            await mass_instance.stop()
 
 
 @pytest.fixture

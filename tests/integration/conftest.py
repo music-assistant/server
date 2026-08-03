@@ -13,7 +13,6 @@ import asyncio
 import logging
 import pathlib
 from collections.abc import AsyncGenerator, Callable
-from contextlib import suppress
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 
@@ -143,5 +142,4 @@ async def e2e_mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
             # also stop after a failed boot, or the half-started server's open database
             # connections keep their non-daemon threads alive and hang the interpreter
             # at exit (see the same note in tests/conftest.py)
-            with suppress(AttributeError):
-                await mass_instance.stop()
+            await mass_instance.stop()

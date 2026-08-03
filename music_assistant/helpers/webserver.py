@@ -78,8 +78,9 @@ class Webserver:
         Async initialize of module.
 
         :param bind_ip: IP address to bind to.
-        :param bind_port: Port to bind to, or 0 to let the OS assign a free one. The
-            assigned port is available as ``port`` and replaces the port in ``base_url``.
+        :param bind_port: Port to bind to, or 0 to let the OS assign a free one, which
+            requires a specific ``bind_ip``. The assigned port is available as the
+            ``port`` property and replaces the port in ``base_url``.
         :param base_url: Base URL for the server.
         :param static_routes: List of static routes to register.
         :param static_content: Tuple of (path, directory, name) for static content.
@@ -117,6 +118,11 @@ class Webserver:
         await self._apprunner.setup()
         # set host to None to bind to all addresses on both IPv4 and IPv6
         host = None if bind_ip in WILDCARD_BIND_IPS else bind_ip
+        if bind_port == 0 and host is None:
+            # a wildcard bind gets one socket per address family, each with its own
+            # OS-assigned port, so there is no single port to publish
+            msg = "An OS-assigned port requires a specific bind address"
+            raise ValueError(msg)
         try:
             self._tcp_site = web.TCPSite(
                 self._apprunner, host=host, port=bind_port, ssl_context=ssl_context
@@ -124,6 +130,9 @@ class Webserver:
             await self._tcp_site.start()
         except OSError:
             if host is None:
+                raise
+            if bind_port == 0:
+                # binding all interfaces is no fallback for an OS-assigned port
                 raise
             # the configured interface is not available, retry on all interfaces
             self.logger.error(
