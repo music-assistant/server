@@ -43,10 +43,11 @@ from music_assistant.providers.sendspin.bridge_role import (
 from music_assistant.providers.sendspin.helpers import bridge_client_id_from_mac
 
 from .constants import (
-    AIRPLAY_JOIN_CLOCK_READY_LEAD_MS,
-    AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS,
+    AIRPLAY_CLOCK_READY_LEAD_MS,
+    AIRPLAY_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
+    ClockReadiness,
 )
 from .helpers import player_id_to_mac_address
 from .stream import AirPlayStream
@@ -640,9 +641,18 @@ class SendspinAirPlayBridge:
             queued audio the new anchor has to clear.
         :return: True when the stream is anchored, False when superseded.
         """
-        ready_at_unix_ms = await stream.wait_clock_ready(
-            timeout=AIRPLAY_JOIN_CLOCK_READY_TIMEOUT_MS / 1000
+        readiness, ready_at_unix_ms = await stream.wait_clock_ready(
+            timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
         )
+        if readiness is ClockReadiness.STALLED:
+            # A bridged device that never answered our clock renders silence,
+            # and unlike a group member it is the whole playback: say so where
+            # the anchor is decided rather than letting it look anchored.
+            self.logger.warning(
+                "%s never answered the server's PTP clock, so this stream will be silent "
+                "until it does; anchoring anyway",
+                self.airplay_player.display_name,
+            )
         sendspin_now_us = self.sendspin_server.clock.now_us()
         unix_now = time.time()
         now_ms = int(unix_now * 1000)
@@ -653,7 +663,7 @@ class SendspinAirPlayBridge:
         )
         anchor_ms = max(now_ms + AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS, first_chunk_unix_ms)
         if ready_at_unix_ms:
-            anchor_ms = max(anchor_ms, ready_at_unix_ms + AIRPLAY_JOIN_CLOCK_READY_LEAD_MS)
+            anchor_ms = max(anchor_ms, ready_at_unix_ms + AIRPLAY_CLOCK_READY_LEAD_MS)
         sync_adjust = self.airplay_player.config.get_value(CONF_SYNC_ADJUST, 0)
         adjust_ms = sync_adjust if isinstance(sync_adjust, int) else 0
         if warm:
@@ -842,12 +852,13 @@ class SendspinAirPlayBridge:
 
         if self._airplay_stream_start_task is None:
             # Provisionally anchor byte 0 to the instant Sendspin scheduled for the
-            # first chunk it actually delivered -- the shared timeline, rather than a
-            # start of our own invention. Sendspin schedules that first sample the
-            # bridge lead ahead because that is what _refresh_bridge_timing reports as
+            # first chunk it actually delivered, which keeps the bridge on the group's
+            # shared timeline. That instant is at least the bridge lead ahead of now,
+            # because that is what _refresh_bridge_timing reports as
             # required_lead_time_ms:
-            #   * fresh track  -> the first chunk IS file position 0, so the intro is
-            #     kept;
+            #   * fresh track  -> the first chunk IS file position 0, so an anchor on
+            #     its own scheduled instant has no audio ahead of it to discard and
+            #     the intro is kept;
             #   * late join     -> the first chunk is the catch-up target, i.e. the
             #     group's current playback position, so the joiner lands in sync.
             # _anchor_stream re-bases this onto the instant the binary acks.

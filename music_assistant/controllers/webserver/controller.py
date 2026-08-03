@@ -63,6 +63,7 @@ from .helpers.auth_middleware import (
     has_scope,
     is_request_from_ingress,
     resolve_command_impersonation,
+    set_current_peer_address,
     set_current_token,
     set_current_user,
     set_impersonated_user,
@@ -545,6 +546,9 @@ class WebserverController(CoreController):
 
     async def _handle_jsonrpc_api_command(self, request: web.Request) -> web.Response:
         """Handle incoming JSON RPC API command."""
+        # These requests carry no connection identity, so the peer address is all an
+        # unauthenticated handler has to tell one caller apart from another.
+        set_current_peer_address(request.remote)
         # Fail early if we don't have any users yet
         if not self.auth.has_users:
             return web.Response(status=503, text="Setup required")

@@ -105,7 +105,7 @@ from music_assistant.helpers.util import (
     get_source_ip_for_target,
     sanitize_http_header_value,
 )
-from music_assistant.helpers.webserver import Webserver
+from music_assistant.helpers.webserver import Webserver, redact_sensitive_headers
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider
@@ -1606,7 +1606,7 @@ class StreamsController(CoreController):
                 request.method,
                 request.path,
                 request.remote,
-                request.headers,
+                redact_sensitive_headers(request.headers),
             )
         else:
             self.logger.debug(
