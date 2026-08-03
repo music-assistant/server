@@ -31,7 +31,7 @@ from music_assistant_models.media_items import (
 )
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
-from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
+from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW, WILDCARD_BIND_IPS
 from music_assistant.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
@@ -181,7 +181,9 @@ class AriaCastReceiver(PluginProvider):
         self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         bind_ip = self.mass.streams.bind_ip
-        site = web.TCPSite(self._runner, bind_ip, ARIACAST_PORT, reuse_address=True)
+        # a wildcard string binds one address family only, None binds both
+        host = None if bind_ip in WILDCARD_BIND_IPS else bind_ip
+        site = web.TCPSite(self._runner, host, ARIACAST_PORT, reuse_address=True)
         try:
             await site.start()
         except OSError as err:
