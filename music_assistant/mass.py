@@ -8,6 +8,7 @@ import logging
 import os
 import pathlib
 import threading
+import time
 from base64 import b64encode
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine
 from contextlib import asynccontextmanager
@@ -409,6 +410,18 @@ class MusicAssistant:
             onboard_done=self.config.onboard_done,
             status=self._state,
         )
+
+    @api_command("time", authenticated=False)
+    def get_server_time(self) -> float:
+        """
+        Return the current server time as UTC timestamp (seconds since epoch).
+
+        Clients compare server-provided timestamps (such as `elapsed_time_last_updated`)
+        against their own clock. Round-tripping this command lets a client estimate the
+        offset between the two clocks and correct for it, so a device with an unsynced
+        clock still renders playback progress and countdowns correctly.
+        """
+        return time.time()
 
     @api_command("providers/manifests", required_scope=Scope.PROVIDERS_READ)
     def get_provider_manifests(self) -> list[ProviderManifest]:
