@@ -37,6 +37,7 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_CLOCK_READY_LEAD_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
+    ClockReadiness,
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.sendspin_bridge import (
@@ -462,7 +463,7 @@ def _make_anchor_stream(
     stream.wait_for_connection = AsyncMock()
     stream.stop = AsyncMock()
     stream.flush = AsyncMock(return_value=True)
-    stream.wait_clock_ready = AsyncMock(return_value=ready_at_unix_ms)
+    stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.PROJECTED, ready_at_unix_ms))
     stream.start = AsyncMock(return_value=ack)
     stream.warm_lead_ms = warm_lead_ms
     stream.flushed_head_unix_ms = flushed_head_unix_ms

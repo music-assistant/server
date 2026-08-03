@@ -47,6 +47,7 @@ from .constants import (
     AIRPLAY_CLOCK_READY_TIMEOUT_MS,
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
+    ClockReadiness,
 )
 from .helpers import player_id_to_mac_address
 from .stream import AirPlayStream
@@ -640,9 +641,18 @@ class SendspinAirPlayBridge:
             queued audio the new anchor has to clear.
         :return: True when the stream is anchored, False when superseded.
         """
-        ready_at_unix_ms = await stream.wait_clock_ready(
+        readiness, ready_at_unix_ms = await stream.wait_clock_ready(
             timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
         )
+        if readiness is ClockReadiness.STALLED:
+            # A bridged device that never answered our clock renders silence,
+            # and unlike a group member it is the whole playback: say so where
+            # the anchor is decided rather than letting it look anchored.
+            self.logger.warning(
+                "%s never answered the server's PTP clock, so this stream will be silent "
+                "until it does; anchoring anyway",
+                self.airplay_player.display_name,
+            )
         sendspin_now_us = self.sendspin_server.clock.now_us()
         unix_now = time.time()
         now_ms = int(unix_now * 1000)

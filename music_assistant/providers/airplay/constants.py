@@ -31,6 +31,26 @@ class AirPlayRemoteCommand(StrEnum):
     PREVIOUS = "previous"
 
 
+class ClockReadiness(StrEnum):
+    """
+    How a receiver's clock readiness resolved for an anchor decision.
+
+    Only PROJECTED carries an instant; the rest all mean "anchor on the lead
+    alone", but for very different reasons - one is a device that will not play
+    at all, and treating them alike hides it.
+    """
+
+    # The binary projected when the receiver's clock becomes usable.
+    PROJECTED = "projected"
+    # NTP timing: there is no receiver clock to wait for.
+    NOT_APPLICABLE = "not_applicable"
+    # The receiver never answered our PTP clock and will render silence.
+    STALLED = "stalled"
+    # Nothing arrived within the wait: a slow device (retryable) or a binary
+    # too old to report readiness at all.
+    UNREPORTED = "unreported"
+
+
 CONF_VOLUME_START: Final[str] = "volume_start"
 CONF_PASSWORD: Final[str] = "password"
 # Storage-only marker (no config entry) set when the device rejected the stored
