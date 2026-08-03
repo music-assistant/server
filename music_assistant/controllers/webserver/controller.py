@@ -38,6 +38,7 @@ from music_assistant.constants import (
     CONF_VALUE_AUTO,
     INGRESS_SERVER_PORT,
     RESOURCES_DIR,
+    SENDSPIN_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
     WILDCARD_BIND_IPS,
 )
@@ -163,6 +164,20 @@ class WebserverController(CoreController):
         if base_url == CONF_VALUE_AUTO:
             return self._auto_base_url
         return base_url.removesuffix("/")
+
+    @property
+    def internal_sendspin_url(self) -> str:
+        """Return the URL to reach the in-process Sendspin server from this host."""
+        # the advertised address is not necessarily dialable here (e.g. a container or
+        # NAT setup), so derive the address from what the Sendspin server actually binds to
+        bind_ip = self.mass.streams.bind_ip
+        if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
+            # bound to one specific interface, so loopback would not reach the server
+            connect_ip = bind_ip
+        else:
+            # Use IPv6 loopback if publish_ip is IPv6 (indicates IPv6-only host)
+            connect_ip = "::1" if ":" in str(self.mass.streams.publish_ip) else "127.0.0.1"
+        return f"ws://{format_ip_for_url(connect_ip)}:{SENDSPIN_SERVER_PORT}/sendspin"
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
