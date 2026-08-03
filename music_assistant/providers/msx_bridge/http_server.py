@@ -46,6 +46,7 @@ from .player import MSXPlayer
 
 if TYPE_CHECKING:
     from multidict import MultiMapping
+    from music_assistant_models.player import PlayerMedia
 
     from .provider import MSXBridgeProvider
 
@@ -1427,8 +1428,26 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         if not media:
             return web.Response(status=504, text="Playback setup timeout")
 
-        # Resolve duration from media or queue item for Content-Length header
-        duration = media.duration or 0
+        return await self._serve_audio_stream(
+            request,
+            player,
+            media,
+            duration=self._resolve_served_duration(media),
+        )
+
+    # --- Audio Streaming Infrastructure ---
+
+    def _resolve_served_duration(self, media: PlayerMedia) -> int:
+        """
+        Return the length in seconds of the audio served for the given media, or 0 if unknown.
+
+        This is what the Content-Length header is derived from, so it describes
+        the audio we actually serve rather than the media item: starting
+        playback at a seek position yields a shorter stream.
+
+        :param media: The media being served.
+        """
+        duration = media.stream_duration or media.duration or 0
         if not duration and media.source_id and media.queue_item_id:
             queue_item = self.provider.mass.player_queues.get_item(
                 media.source_id, media.queue_item_id
@@ -1438,15 +1457,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
                     duration = getattr(queue_item.media_item, "duration", None) or duration
                 if not duration and queue_item.duration:
                     duration = queue_item.duration
-
-        return await self._serve_audio_stream(
-            request,
-            player,
-            media,
-            duration=duration,
-        )
-
-    # --- Audio Streaming Infrastructure ---
+        return int(duration)
 
     @staticmethod
     def _build_audio_params(
@@ -2022,22 +2033,11 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         if not media:
             return web.Response(status=404, text="No active stream")
 
-        duration = media.duration or 0
-        if media.source_id and media.queue_item_id:
-            queue_item = self.provider.mass.player_queues.get_item(
-                media.source_id, media.queue_item_id
-            )
-            if queue_item:
-                if queue_item.media_item:
-                    duration = getattr(queue_item.media_item, "duration", None) or duration
-                if not duration and queue_item.duration:
-                    duration = queue_item.duration
-
         return await self._serve_audio_stream(
             request,
             player,
             media,
-            duration=duration,
+            duration=self._resolve_served_duration(media),
         )
 
     # --- Library API Routes ---

@@ -13,9 +13,8 @@ from aiohttp import ClientError, ClientTimeout
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.constants import CONF_ZEROCONF_INTERFACES
 from music_assistant.helpers.process import check_output
-from music_assistant.helpers.util import format_ip_for_url, get_source_ip_for_target
+from music_assistant.helpers.util import format_ip_for_url
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
@@ -34,30 +33,6 @@ _CLI_BINARY_CHECK_TIMEOUT = 15.0
 # Bound the /info capability probe: it runs in the discovery path, and a receiver
 # that is slow to answer must not hold up player registration.
 _INFO_PROBE_TIMEOUT = 5.0
-
-
-async def resolve_if_ip(mass: MusicAssistant, target_ip: str) -> str:
-    """
-    Resolve best local interface IP for cliairplay's --if argument.
-
-    :param mass: The MusicAssistant instance.
-    :param target_ip: The IP address of the target AirPlay device.
-    """
-    # 1. Prefer an explicitly configured zeroconf interface. The setting may be a
-    #    comma-separated list; pick the first non-empty, non-default/all entry.
-    zc_iface = str(mass.discovery.config.get_value(CONF_ZEROCONF_INTERFACES, "default"))
-    for candidate in zc_iface.split(","):
-        iface = candidate.strip()
-        if iface and iface not in ("default", "all"):
-            return iface
-    # 2. Otherwise resolve a bindable, device-reachable source IP: an explicit
-    #    stream bind_ip, else a routing-table lookup to this specific device,
-    #    else publish_ip. Shared with the other providers that need this.
-    return await get_source_ip_for_target(
-        target_ip,
-        bind_ip=str(mass.streams.bind_ip),
-        publish_ip=str(mass.streams.publish_ip or ""),
-    )
 
 
 def convert_airplay_volume(value: float) -> int:

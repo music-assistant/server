@@ -607,6 +607,7 @@ async def test_play_media_non_queue_sends_broadcast_play(
     media.artist = "Artist 1"
     media.image_url = "http://ma-server/image.png"
     media.duration = 180
+    media.stream_duration = None
     media.source_id = None
     media.queue_item_id = None
 

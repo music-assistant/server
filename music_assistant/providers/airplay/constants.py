@@ -57,29 +57,63 @@ MRP_DISCOVERY_TYPE: Final[str] = "_mediaremotetv._tcp.local."
 RAOP_DISCOVERY_TYPE: Final[str] = "_raop._tcp.local."
 DACP_DISCOVERY_TYPE: Final[str] = "_dacp._tcp.local."
 
-# Setup lead (ms) advertised to externally timed sources such as Sendspin.
-# It covers process spawn, connect/session setup and receiver pre-fill before
-# the commanded audible instant. Native AirPlay 2 needs a larger budget than
-# RAOP because its pre-fill is paced.
-AIRPLAY_RAOP_SETUP_LEAD_MS: Final[int] = 1500
-AIRPLAY_AP2_SETUP_LEAD_MS: Final[int] = 2500
-# Late joiners keep a much more conservative headroom: besides connecting and
-# priming from the session's history buffer, the receiver must re-acquire the
-# shared PTP clock before it can render its anchor. Its Delay_Req exchange
-# only resumes ~0.7-1.5 s after the join's START is acked (measured on a
-# Sonos Era 100 pair, 2026-07-31) and the servo needs a further ~1.7-2.3 s to
-# lock — and a missed anchor is permanent on the splice timeline (the frozen
-# line is never re-announced), heard as a constant echo on the joined member.
-# The anchor therefore sits beyond exchange-resume plus lock plus margin.
-AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 4000
-# Anchor lead for a readiness-confirmed START (cold and warm alike): the
-# session only anchors after the binary confirmed the connection ([STATUS]
-# connected) and the new audio flowing ([STATUS] audio), so the lead no longer
-# guesses at setup or transcoder spin-up time. It covers just the receiver
-# re-anchor (accepted down to ~150 ms in the flush-ladder measurements; the
-# binary clamps below its own 250 ms floor) plus, for groups, fanning the
-# shared instant out to every member.
-AIRPLAY_START_LEAD_MS: Final[int] = 250
+# Lower bound for a late joiner's anchor, and the whole anchor whenever the
+# binary reports no readiness projection ([STATUS] clock_ready). It has to keep
+# the binary's own clock verification viable without any device evidence: that
+# verification gives up 850 ms before the anchor, and a cold receiver was
+# measured taking 1078 ms after connect to send its first clock probe, so an
+# anchor below 1078 + 850 = ~1.93 s can close the window before a single probe
+# arrives - the joiner then seats on a cold clock and lands audibly behind.
+# 2500 ms clears that by ~570 ms, the margin the field-proven value carried.
+AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS: Final[int] = 2500
+# How long a group start, a join or the Sendspin bridge waits for the binary's
+# first receiver-clock projection ([STATUS] clock_ready with state=probing|
+# ready). The binary emits its first line right after [STATUS] connected and
+# refreshes it about every 250 ms, and the projection exists from the receiver's
+# first probe (~1078 ms after connect on a cold device), so this only has to
+# cover a slower device before giving up and anchoring on the lead alone.
+# Independent of the binary's own stall report (state=stalled), which is a
+# slower, higher-confidence diagnosis of a receiver that never answers at all: a
+# wait that times out here has simply run out of planning time and falls back,
+# while a stall says the speaker will not play. Keep them apart - tightening the
+# stall report to meet this deadline would trade the margin that keeps it free
+# of false alarms.
+AIRPLAY_CLOCK_READY_TIMEOUT_MS: Final[int] = 2500
+# Lead added on top of a reported readiness instant, wherever one is waited for.
+# The binary refuses to place an anchor inside its own 250 ms floor, measured
+# from when IT reads the START command rather than when the server sends it (the
+# same trap as AIRPLAY_START_LEAD_MS), so the lead carries that floor plus 250 ms
+# for the command reaching the binary and for the convergence error of a
+# projection made from the receiver's very first probe.
+AIRPLAY_CLOCK_READY_LEAD_MS: Final[int] = 500
+# How long a join START waits for the binary's [STATUS] started ack. That ack is
+# held back until the clock verification above resolves, so the window must
+# cover the verification arm window plus a poll round on top of the commanded
+# anchor (which bounds the verification), where a plain START acks within the
+# command round-trip. On timeout the server falls back to trusting the commanded
+# instant, so a window shorter than the binary's verification silently maps the
+# joiner's content onto an instant the binary never used.
+AIRPLAY_JOIN_START_ACK_TIMEOUT_MS: Final[int] = 5000
+# How far the content a corrected anchor actually cut may fall short of the cut
+# it asked for before the reported media position is re-based and the shortfall
+# reported. The binary derives the cut it took from the bytes it discarded, so a
+# few ms of byte quantization is expected and correcting for it would only
+# jitter the base; anything larger means the cut really did end early (the input
+# ran out inside it, or a teardown settled it) and the position is over-advanced
+# by that much for the rest of the anchor.
+AIRPLAY_CONTENT_CUT_TOLERANCE_MS: Final[int] = 20
+# Anchor leads for a readiness-confirmed START (cold and warm alike), solo and
+# group: the session only anchors after the binary confirmed the connection
+# ([STATUS] connected) and the new audio flowing ([STATUS] audio), so a lead no
+# longer guesses at setup or transcoder spin-up time. Both cover the receiver
+# re-anchor (accepted down to ~150 ms in the flush-ladder measurements) plus
+# the command's trip down the pipe; the group one also covers fanning the
+# shared instant out to every member. The pipe margin is what keeps them
+# workable: the binary rejects any instant inside its own 250 ms floor,
+# measured from when IT reads the command, and corrects a miss to that floor
+# plus another full lead — so a lead sitting exactly on the floor misses by the
+# delivery time every time and turns a start into a group-wide re-anchor ladder.
+AIRPLAY_START_LEAD_MS: Final[int] = 400
 AIRPLAY_GROUP_START_LEAD_MS: Final[int] = 500
 # Cold GROUP starts anchor further out: a receiver on a brand-new session
 # still acquires its PTP slave lock (~1.7-2.3 s measured on Sonos) and cannot
@@ -92,6 +126,37 @@ AIRPLAY_COLD_GROUP_START_LEAD_MS: Final[int] = 2500
 # command round-trips between the flush acks and the shared START so every
 # member's skip target lands beyond its queued audio.
 AIRPLAY_SPLICE_LEAD_MARGIN_MS: Final[int] = 150
+
+# Floor for the late-join PCM ring, which has to hold every sample between the
+# audible position and the write head: a joiner's anchor maps onto content the
+# group was already fed but has not played yet. That distance - the write-head
+# lead - is the sum of every buffer between the session's byte counter and the
+# speaker, and it is far larger than the binary's own ring alone:
+#   ~5.7 s  the per-member ffmpeg and the pipes around it (measured 5.2 s
+#           steady / 5.7 s peak at 44.1 kHz/16-bit, which is the worst case in
+#           SECONDS - the same buffers hold ~4.3 s at the 32-bit hi-res carrier
+#           rate, and low-delay ffmpeg flags do not shrink them)
+#   ~4.0 s  the cliairplay ring: the binary's own lead (2000 ms default,
+#           clamped to the device-reported window) plus its 2 s of slack
+#   ~2.0 s  the receiver's own buffer
+# ~11.7 s in total, against 8.9-11.0 s measured across native AirPlay 2
+# sessions (Apple TV and Sonos, joining in both directions). This floor is that
+# sum rounded up, and it is only a floor: the lead is measured per session and
+# the ring grows to match, because a receiver that reports a wider lead window
+# or buffers more deeply moves the sum with nothing to announce it.
+AIRPLAY_LATE_JOIN_RING_MIN_SECONDS: Final[float] = 12.0
+# Grown on top of the largest lead a session has actually shown, so a lead that
+# drifts up between two joins cannot clip the oldest sample a joiner needs.
+AIRPLAY_LATE_JOIN_RING_MARGIN_SECONDS: Final[float] = 2.0
+# Hard bound on the ring, which is per session (one ring feeds every member) and
+# costs byte_rate x seconds. Bounded in BYTES rather than seconds on purpose:
+# the seconds the ring must hold are largest at the LOWEST byte rate (see the
+# measurements above), so a single byte bound buys ~35 s at 44.1 kHz/16-bit -
+# three times the measured lead, where the seconds are actually needed - and
+# still ~16 s at the 32-bit hi-res carrier, where the pipeline holds fewer
+# seconds anyway. 6 MiB per playing group is a few percent of the server's idle
+# footprint.
+AIRPLAY_LATE_JOIN_RING_MAX_BYTES: Final[int] = 6 * 1024 * 1024
 
 # Delay (seconds) before automatically re-joining a group member whose
 # cliairplay process died unexpectedly mid-session (e.g. the device rode out a
@@ -168,3 +233,15 @@ ATV_PASSWORD_BIT = 0x1000
 # (Announce/Sync/Follow_Up) when verbose logging is active. Off by default —
 # the trace floods the log and only matters for clock-sync debugging.
 CONF_VERBOSE_PTP_LOGGING: Final[str] = "verbose_ptp_logging"
+
+# The cliairplay binary tags no log levels on its output, so a genuine problem is
+# recognised by keyword and promoted to a warning that stays visible at normal levels.
+CLI_PROBLEM_MARKERS: Final[tuple[str, ...]] = ("error", "cannot", "failed", "unable")
+# Bound on how many of those promoted lines the shared PTP daemon may produce per
+# window before the rest are counted instead of logged. The markers above are
+# deliberately broad, and "error" is ordinary vocabulary in clock telemetry
+# (offset error, path delay error), so with the daemon's per-packet trace running
+# at ~10 lines/s a single matching line would otherwise fill the log at WARNING.
+# A burst still gets through, which is what a real one-shot daemon failure is.
+PTP_DAEMON_WARN_BURST: Final[int] = 5
+PTP_DAEMON_WARN_WINDOW: Final[float] = 60.0

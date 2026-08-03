@@ -191,7 +191,7 @@ class MediaAssistantPlayer(Player):
                 ),
                 "albumArt": ("" if self.flow_mode else media.image_url or ""),
                 "songFormat": "flac",
-                "duration": media.duration or "",
+                "duration": media.stream_duration or media.duration or "",
                 "isLive": (
                     "true"
                     if media.media_type == MediaType.RADIO
@@ -243,7 +243,7 @@ class MediaAssistantPlayer(Player):
                         "artistName": media.artist,
                         "albumArt": media.image_url,
                         "songFormat": "flac",
-                        "duration": media.duration,
+                        "duration": media.stream_duration or media.duration,
                         "enqueue": "true",
                     },
                 )

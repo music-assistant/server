@@ -25,10 +25,16 @@ from music_assistant_models.media_items import (
 if TYPE_CHECKING:
     import aiohttp
 
+    from music_assistant.mass import MusicAssistant
+
 LOGGER = logging.getLogger(__name__)
 
 # best-effort enrichment must never stall episode resolution, so cap the chapter fetch
 _CHAPTERS_FETCH_TIMEOUT = ClientTimeout(total=10)
+
+# defaults for the parsed-feed cache shared by the podcast providers
+CACHE_CATEGORY_PODCAST_FEED = 0
+PODCAST_FEED_CACHE_EXPIRATION = 24 * 3600
 
 
 async def get_podcastparser_dict(
@@ -63,6 +69,76 @@ async def get_podcastparser_dict(
         return podcastparser.parse(feed_url, feed_stream, max_episodes=max_episodes)  # type: ignore[no-any-return]
     except podcastparser.FeedParseError:
         raise MediaNotFoundError(f"The url at {feed_url} returns invalid RSS data.")
+
+
+async def get_cached_podcast(
+    *,
+    mass: MusicAssistant,
+    provider_instance_id: str,
+    feed_url: str,
+    max_episodes: int = 0,
+    cache_category: int = CACHE_CATEGORY_PODCAST_FEED,
+    cache_expiration: int = PODCAST_FEED_CACHE_EXPIRATION,
+) -> dict[str, Any]:
+    """
+    Return a podcast's parsed feed, retrieving and caching it when not cached yet.
+
+    :param mass: The MusicAssistant instance holding the cache.
+    :param provider_instance_id: Provider instance the cache entry belongs to.
+    :param feed_url: The podcast's feed url, also used as the cache key.
+    :param max_episodes: Maximum number of episodes to parse, 0 for unlimited.
+    :param cache_category: Cache category to store the parsed feed under.
+    :param cache_expiration: Time in seconds the cached feed stays valid.
+    :raises MediaNotFoundError: If the feed could not be retrieved or parsed.
+    """
+    parsed_feed = await mass.cache.get(
+        key=feed_url,
+        provider=provider_instance_id,
+        category=cache_category,
+        default=None,
+    )
+    if parsed_feed is None:
+        parsed_feed = await get_podcastparser_dict(
+            session=mass.http_session, feed_url=feed_url, max_episodes=max_episodes
+        )
+        await set_cached_podcast(
+            mass=mass,
+            provider_instance_id=provider_instance_id,
+            feed_url=feed_url,
+            parsed_feed=parsed_feed,
+            cache_category=cache_category,
+            cache_expiration=cache_expiration,
+        )
+    # this is a dictionary from podcastparser
+    return parsed_feed  # type: ignore[no-any-return]
+
+
+async def set_cached_podcast(
+    *,
+    mass: MusicAssistant,
+    provider_instance_id: str,
+    feed_url: str,
+    parsed_feed: dict[str, Any],
+    cache_category: int = CACHE_CATEGORY_PODCAST_FEED,
+    cache_expiration: int = PODCAST_FEED_CACHE_EXPIRATION,
+) -> None:
+    """
+    Store a podcast's parsed feed in the cache.
+
+    :param mass: The MusicAssistant instance holding the cache.
+    :param provider_instance_id: Provider instance the cache entry belongs to.
+    :param feed_url: The podcast's feed url, also used as the cache key.
+    :param parsed_feed: The podcastparser dict to store.
+    :param cache_category: Cache category to store the parsed feed under.
+    :param cache_expiration: Time in seconds the cached feed stays valid.
+    """
+    await mass.cache.set(
+        key=feed_url,
+        provider=provider_instance_id,
+        category=cache_category,
+        data=parsed_feed,
+        expiration=cache_expiration,
+    )
 
 
 def parse_podcast(
@@ -162,6 +238,25 @@ def get_stream_url_and_guid_from_episode(*, episode: dict[str, Any]) -> tuple[st
         # do not follow the standard.
         guid = None if len(guid.split(" ")) > 1 else guid
     return stream_url, guid
+
+
+def find_episode_stream_url(*, parsed_feed: dict[str, Any], guid_or_stream_url: str) -> str | None:
+    """
+    Return the stream url of the episode identified by the item_id's episode part.
+
+    :param parsed_feed: The podcastparser dict of the feed holding the episode.
+    :param guid_or_stream_url: Episode part of the item_id, see parse_podcast_episode.
+    """
+    for episode in parsed_feed.get("episodes", []):
+        try:
+            stream_url, guid = get_stream_url_and_guid_from_episode(episode=episode)
+        except ValueError:
+            # episode without a playable enclosure carries no stream; skip it instead of
+            # aborting the lookup for the (potentially later) requested episode
+            continue
+        if guid_or_stream_url == (guid or stream_url):
+            return stream_url
+    return None
 
 
 def parse_podcast_episode(
