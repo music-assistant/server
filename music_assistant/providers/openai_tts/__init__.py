@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import re
 import shutil
 import time
 from contextlib import suppress
@@ -62,6 +63,9 @@ CACHE_MAX_AGE = 24 * 3600
 # it must give up quickly, while rendering can legitimately be slow on a cpu-bound backend
 VOICES_TIMEOUT = ClientTimeout(total=10)
 SPEECH_TIMEOUT = ClientTimeout(total=120)
+
+# clip file names are sha256 hexdigests; anything else in the cache directory is not ours
+FILE_ID_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 SUPPORTED_FEATURES = {ProviderFeature.TTS}
 
@@ -287,7 +291,10 @@ class OpenAITTSProvider(PluginProvider):
             with os.scandir(self._cache_dir) as entries:
                 for entry in entries:
                     with suppress(OSError):
-                        if entry.is_file() and entry.stat().st_mtime < cutoff:
+                        if (
+                            entry.is_file(follow_symlinks=False)
+                            and entry.stat(follow_symlinks=False).st_mtime < cutoff
+                        ):
                             Path(entry.path).unlink()
                             reaped.append(Path(entry.name).stem)
             return reaped
@@ -301,11 +308,15 @@ class OpenAITTSProvider(PluginProvider):
         """Return the clips present in the cache directory, keyed by file id."""
 
         def _index() -> dict[str, str]:
+            # only adopt what this provider could have written itself: anything else that
+            # ended up in the directory must never become reachable through the route
             with os.scandir(self._cache_dir) as entries:
                 return {
                     Path(entry.name).stem: entry.path
                     for entry in entries
-                    if entry.is_file() and entry.name.endswith(f".{RESPONSE_FORMAT}")
+                    if entry.is_file(follow_symlinks=False)
+                    and entry.name.endswith(f".{RESPONSE_FORMAT}")
+                    and FILE_ID_PATTERN.match(Path(entry.name).stem)
                 }
 
         try:

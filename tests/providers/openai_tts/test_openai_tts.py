@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -119,6 +120,19 @@ async def test_fetch_backend_voices_never_raises() -> None:
     session = MagicMock()
     session.get = MagicMock(side_effect=ClientError("no connection"))
     assert await fetch_backend_voices(session, "https://api.openai.com/v1") == []
+
+
+async def test_index_cache_adopts_only_rendered_clips(tmp_path: Path) -> None:
+    """Anything this provider did not write itself stays unreachable through the route."""
+    provider = create_provider()
+    provider._cache_dir = str(tmp_path)
+    clip = tmp_path / f"{'b' * 64}.mp3"
+    clip.write_bytes(b"clip")
+    (tmp_path / "not-a-hash.mp3").write_bytes(b"clip")
+    (tmp_path / f"{'b' * 64}.txt").write_bytes(b"clip")
+    (tmp_path / f"{'c' * 64}.mp3").symlink_to(clip)
+
+    assert await provider._index_cache() == {"b" * 64: str(clip)}
 
 
 async def test_handle_speech_request_rejects_missing_id() -> None:
