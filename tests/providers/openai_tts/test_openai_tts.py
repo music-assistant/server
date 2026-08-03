@@ -27,6 +27,8 @@ def create_provider(**config_values: ConfigValueType) -> OpenAITTSProvider:
     """Construct an openai_tts provider with stubbed mass/manifest/config."""
     mass = MagicMock()
     mass.streams.base_url = "http://mass.local:8095"
+    # no setup data, so every read resolves through the config values below
+    mass.config.get = MagicMock(return_value={})
     # no voice listing endpoint available in these tests
     mass.http_session.get = MagicMock(side_effect=ClientError("no connection"))
     manifest = MagicMock()
