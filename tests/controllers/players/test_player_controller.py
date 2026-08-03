@@ -41,6 +41,7 @@ from music_assistant_models.player_control import PlayerControl
 
 from music_assistant.constants import (
     ATTR_FAKE_MUTE,
+    ATTR_MUTE_LOCK,
     ATTR_PREVIOUS_VOLUME,
     CONF_MUTE_CONTROL,
     CONF_VOLUME_CONTROL,
@@ -1128,6 +1129,7 @@ class TestVolumeScalingOnRedirect:
             protocol_parent_id=None,
             extra_data={},
             volume_control=volume_control,
+            mute_control=PLAYER_CONTROL_NONE,
             volume_set=volume_set or AsyncMock(),
             update_state=MagicMock(),
             provider=MagicMock(),
@@ -1447,6 +1449,55 @@ class TestMuteControlGuard:
             await controller.cmd_volume_mute("player_1", True)
         assert ATTR_PREVIOUS_VOLUME not in player.extra_data
         assert ATTR_FAKE_MUTE not in player.extra_data
+
+    async def test_unmute_clears_mute_lock_without_mute_control(self, mock_mass: MagicMock) -> None:
+        """Unmuting clears a mute lock left behind by a since-removed mute control."""
+        controller, player = self._make_player(
+            mock_mass,
+            mute_control=PLAYER_CONTROL_NONE,
+            volume_control=PLAYER_CONTROL_NATIVE,
+        )
+        player.extra_data[ATTR_MUTE_LOCK] = True
+
+        with pytest.raises(UnsupportedFeaturedException):
+            await controller.cmd_volume_mute("player_1", False)
+        assert ATTR_MUTE_LOCK not in player.extra_data
+
+
+class TestGroupMuteMemberFilter:
+    """Group mute skips members that have no mute control of their own."""
+
+    async def test_member_without_mute_control_is_skipped(self, mock_mass: MagicMock) -> None:
+        """A member without a mute control must not fail the whole group command."""
+
+        def _conf(player_id: str, key: str, default: object = None) -> object:
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            if key == CONF_MUTE_CONTROL and player_id == "member":
+                return PLAYER_CONTROL_NONE
+            return default if default is not None else "auto"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_supported_features = {PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE}
+        leader._attr_group_members = ["leader", "member"]
+        member = MockPlayer(provider, "member", "Member")
+        member._attr_supported_features = {PlayerFeature.VOLUME_SET}
+        controller._players = {"leader": leader, "member": member}
+        mock_mass.players = controller
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        for player in (leader, member):
+            player.set_initialized()
+            player.update_state(signal_event=False)
+        leader_mute = AsyncMock()
+        leader.volume_mute = leader_mute  # type: ignore[method-assign]
+
+        await controller.cmd_group_volume_mute("leader", True)
+        leader_mute.assert_awaited_once_with(True)
 
 
 class TestCurrentMediaTimeUpdates:

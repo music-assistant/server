@@ -899,6 +899,10 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             for child_player in self.iter_group_members(
                 player, only_powered=True, exclude_self=False
             ):
+                if child_player.mute_control == PLAYER_CONTROL_NONE:
+                    # members without a mute control are left alone, just like the
+                    # group mute state itself is calculated from the capable members only
+                    continue
                 coros.append(self.cmd_volume_mute(child_player.player_id, muted))
             await asyncio.gather(*coros)
 
@@ -914,6 +918,11 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         player = self.get_player(player_id, True)
         assert player
 
+        # clearing the mute lock may not depend on mute support, otherwise a lock set
+        # while the player still had a mute control would outlive a control change
+        if not muted:
+            player.extra_data.pop(ATTR_MUTE_LOCK, None)
+
         mute_control = player.mute_control
         # a mute command needs a mute control; fake mute is simulated by
         # setting the volume to zero, so it also needs a volume control
@@ -924,13 +933,11 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 f"Player {player.state.name} does not support muting"
             )
 
-        # Set/clear mute lock for players in a group
+        # Set mute lock for players in a group
         # This prevents auto-unmute when group volume changes
         is_in_group = bool(player.state.synced_to or player.state.active_group)
         if muted and is_in_group:
             player.extra_data[ATTR_MUTE_LOCK] = True
-        elif not muted:
-            player.extra_data.pop(ATTR_MUTE_LOCK, None)
 
         if mute_control == PLAYER_CONTROL_NATIVE:
             # player supports mute command natively: forward to player
@@ -3459,7 +3466,9 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 has_mute_lock = parent.extra_data.get(ATTR_MUTE_LOCK, False)
         if (
             not has_mute_lock
-            and player.state.mute_control not in (PLAYER_CONTROL_NONE, PLAYER_CONTROL_FAKE)
+            # the live value is what cmd_volume_mute checks, so a control change that
+            # has not reached the player state yet may not send us into a failing unmute
+            and player.mute_control not in (PLAYER_CONTROL_NONE, PLAYER_CONTROL_FAKE)
             and player.state.volume_muted
         ):
             # if player is muted and not locked, we unmute it first
