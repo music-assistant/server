@@ -130,7 +130,6 @@ class PartyConfig(DataClassDictMixin):
     # Custom party settings
     party_name: str | None
     qr_text: str | None
-    party_duration: int
     hide_back_button: bool
     show_progress_bar: bool
     prevent_duplicate_tracks: bool
@@ -192,6 +191,7 @@ class PartyPlugin(PluginProvider):
                 key=CONF_PARTY_DURATION,
                 type=ConfigEntryType.INTEGER,
                 default_value=guest_access.DEFAULT_JOIN_CODE_EXPIRY_HOURS,
+                range=(1, 168),
                 advanced=True,
             ),
             ConfigEntry(
@@ -597,7 +597,6 @@ class PartyPlugin(PluginProvider):
             anti_burn_in=cast("bool", self.config.get_value(CONF_ANTI_BURN_IN)),
             party_name=cast("str | None", self.config.get_value(CONF_PARTY_NAME)),
             qr_text=cast("str | None", self.config.get_value(CONF_PARTY_QR_TEXT)),
-            party_duration=cast("int", self.config.get_value(CONF_PARTY_DURATION)),
             hide_back_button=cast("bool", self.config.get_value(CONF_HIDE_BACK_BUTTON)),
             show_progress_bar=cast("bool", self.config.get_value(CONF_SHOW_PROGRESS_BAR)),
             prevent_duplicate_tracks=cast(
