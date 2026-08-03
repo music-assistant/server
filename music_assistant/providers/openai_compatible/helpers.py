@@ -31,19 +31,16 @@ async def list_models(mass: MusicAssistant, base_url: str, api_key: str, timeout
     """
     Return the model ids the endpoint advertises, sorted.
 
-    Returns an empty list when the endpoint has no usable listing: it is optional in
-    the OpenAI API and several compatible servers do not implement it. Bad credentials
-    and an unreachable host are raised instead, so a caller can tell them apart.
+    Raises when the endpoint cannot be asked at all, so that a wrong address is caught
+    rather than mistaken for a service that simply has nothing to offer. An endpoint
+    that answers without a usable list yields an empty list.
 
     :param mass: The Music Assistant instance, for its shared HTTP session.
     :param base_url: Base URL of the API, without a trailing slash.
     :param api_key: API key to authenticate with, empty for an endpoint without auth.
     :param timeout: Maximum request duration in seconds.
     """
-    try:
-        payload = await _request(mass, "get", f"{base_url}/models", api_key, timeout=timeout)
-    except InvalidDataError:
-        return []
+    payload = await _request(mass, "get", f"{base_url}/models", api_key, timeout=timeout)
     data = payload.get("data")
     if not isinstance(data, list):
         return []

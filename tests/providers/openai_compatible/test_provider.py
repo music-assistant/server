@@ -94,12 +94,22 @@ async def test_list_models_skips_entries_without_a_usable_id(mass: AsyncMock) ->
     assert await helpers.list_models(mass, BASE_URL, "", timeout=10) == ["good-model"]
 
 
-async def test_list_models_returns_empty_list_when_endpoint_has_no_listing(
-    mass: AsyncMock,
-) -> None:
-    """The listing endpoint is optional in the OpenAI API, so a 404 is not an error."""
+async def test_list_models_raises_on_an_http_error(mass: AsyncMock) -> None:
+    """A 404 usually means a wrong address, so it must not pass as "nothing to offer"."""
     mass.http_session.request = MagicMock(
         return_value=_response_cm(response=_json_response(404, {}))
+    )
+
+    with pytest.raises(InvalidDataError):
+        await helpers.list_models(mass, BASE_URL, "", timeout=10)
+
+
+async def test_list_models_returns_empty_list_when_the_answer_carries_no_list(
+    mass: AsyncMock,
+) -> None:
+    """An endpoint answering at the right address without a list has nothing to offer."""
+    mass.http_session.request = MagicMock(
+        return_value=_response_cm(response=_json_response(200, {}))
     )
 
     assert await helpers.list_models(mass, BASE_URL, "", timeout=10) == []
@@ -343,6 +353,15 @@ async def test_probe_succeeds_when_endpoint_has_no_model_listing() -> None:
     assert result is None
 
 
+async def test_probe_reports_an_address_that_answers_with_an_error() -> None:
+    """A wrong address must be caught during setup, not on the first AI query."""
+    session = cast("SetupSession", SimpleNamespace(mass=MagicMock()))
+    with patch.object(setup_flow, "list_models", AsyncMock(side_effect=InvalidDataError("404"))):
+        result = await setup_flow._probe(session, {"base_url": BASE_URL})
+
+    assert result == "cannot_connect"
+
+
 async def test_run_setup_prefills_the_address_of_the_chosen_service() -> None:
     """Picking a known service fills in its address so it need not be looked up."""
     session = _FakeSession(setup_data={}, submissions=[{"service": "groq"}, {}])
@@ -558,6 +577,21 @@ async def test_get_config_entries_options_empty_when_discovery_fails(
 
     models_entry = next(entry for entry in entries if entry.key == CONF_MODELS)
     assert models_entry.options == []
+
+
+async def test_get_config_entries_survives_an_endpoint_without_a_listing(
+    provider: OpenAICompatibleProvider, mass: AsyncMock
+) -> None:
+    """Setup rejects a listing error, but an already-configured provider must still load."""
+    _configure_models(provider, ["typed-by-hand"])
+    mass.http_session.request = MagicMock(
+        return_value=_response_cm(response=_json_response(404, {}))
+    )
+
+    entries = await provider.get_config_entries()
+
+    models_entry = next(entry for entry in entries if entry.key == CONF_MODELS)
+    assert [option.value for option in models_entry.options] == ["typed-by-hand"]
 
 
 def _response_cm(*, response: MagicMock | None = None, exc: Exception | None = None) -> MagicMock:

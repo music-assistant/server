@@ -113,8 +113,8 @@ async def _probe(session: SetupSession, setup_data: dict[str, ConfigValueType]) 
     base_url = str(setup_data.get(CONF_BASE_URL) or "").strip().rstrip("/")
     api_key = str(setup_data.get(CONF_API_KEY) or "").strip()
     try:
-        # an endpoint without a model listing still answers here, so only a refused
-        # key or an unreachable host stops the setup
+        # a mistyped address is the easiest thing to get wrong here, so anything short
+        # of a real answer from the listing endpoint stops the setup
         await list_models(session.mass, base_url, api_key, MODELS_REQUEST_TIMEOUT)
     except LoginFailed:
         return "invalid_api_key"
