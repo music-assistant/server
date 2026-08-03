@@ -45,25 +45,26 @@ async def get_podcastparser_dict(
 
     max_episodes = 0 does not limit the returned episodes.
     """
-    response: aiohttp.ClientResponse | None = None
+    feed_data: bytes | None = None
     # without user agent, some feeds can not be retrieved
     # https://github.com/music-assistant/support/issues/3596
     # but, reports on discord show, that also the opposite may be true
     for headers in [{"User-Agent": "Mozilla/5.0"}, {}]:
         # raises ClientError on status failure
         # ClientError is the base class of all possible Error, i.e. not authorized,
-        # url doesn't exist etc.
+        # url doesn't exist etc. The body is read inside the context manager, so a
+        # connection is never left open when a feed fails midway.
         try:
-            response = await session.get(feed_url, headers=headers, raise_for_status=True)
+            async with session.get(feed_url, headers=headers, raise_for_status=True) as response:
+                feed_data = await response.read()
         except ClientError:
             continue
         break
-    if response is None:
+    if feed_data is None:
         # we did not get a single acceptable response
         raise MediaNotFoundError(
             f"Did not get acceptable response while trying to access {feed_url}."
         )
-    feed_data = await response.read()
     feed_stream = BytesIO(feed_data)
     try:
         return podcastparser.parse(feed_url, feed_stream, max_episodes=max_episodes)  # type: ignore[no-any-return]
@@ -98,14 +99,11 @@ async def get_cached_podcast(
         default=None,
     )
     if parsed_feed is None:
-        parsed_feed = await get_podcastparser_dict(
-            session=mass.http_session, feed_url=feed_url, max_episodes=max_episodes
-        )
-        await set_cached_podcast(
+        return await refresh_cached_podcast(
             mass=mass,
             provider_instance_id=provider_instance_id,
             feed_url=feed_url,
-            parsed_feed=parsed_feed,
+            max_episodes=max_episodes,
             cache_category=cache_category,
             cache_expiration=cache_expiration,
         )
@@ -113,25 +111,32 @@ async def get_cached_podcast(
     return parsed_feed  # type: ignore[no-any-return]
 
 
-async def set_cached_podcast(
+async def refresh_cached_podcast(
     *,
     mass: MusicAssistant,
     provider_instance_id: str,
     feed_url: str,
-    parsed_feed: dict[str, Any],
+    max_episodes: int = 0,
     cache_category: int = CACHE_CATEGORY_PODCAST_FEED,
     cache_expiration: int = PODCAST_FEED_CACHE_EXPIRATION,
-) -> None:
+) -> dict[str, Any]:
     """
-    Store a podcast's parsed feed in the cache.
+    Retrieve a podcast's feed and store it in the cache, replacing any cached copy.
+
+    Use this on the library sync path: the sync must always refresh the cached feed,
+    regardless of whether a (still valid) cache entry exists.
 
     :param mass: The MusicAssistant instance holding the cache.
     :param provider_instance_id: Provider instance the cache entry belongs to.
     :param feed_url: The podcast's feed url, also used as the cache key.
-    :param parsed_feed: The podcastparser dict to store.
+    :param max_episodes: Maximum number of episodes to parse, 0 for unlimited.
     :param cache_category: Cache category to store the parsed feed under.
     :param cache_expiration: Time in seconds the cached feed stays valid.
+    :raises MediaNotFoundError: If the feed could not be retrieved or parsed.
     """
+    parsed_feed = await get_podcastparser_dict(
+        session=mass.http_session, feed_url=feed_url, max_episodes=max_episodes
+    )
     await mass.cache.set(
         key=feed_url,
         provider=provider_instance_id,
@@ -139,6 +144,7 @@ async def set_cached_podcast(
         data=parsed_feed,
         expiration=cache_expiration,
     )
+    return parsed_feed
 
 
 def parse_podcast(
@@ -254,7 +260,9 @@ def find_episode_stream_url(*, parsed_feed: dict[str, Any], guid_or_stream_url: 
             # episode without a playable enclosure carries no stream; skip it instead of
             # aborting the lookup for the (potentially later) requested episode
             continue
-        if guid_or_stream_url == (guid or stream_url):
+        # only a guid rejected as unusable (None) falls back to the stream url, so an
+        # empty guid resolves the same way it was turned into an item_id
+        if guid_or_stream_url == (stream_url if guid is None else guid):
             return stream_url
     return None
 
