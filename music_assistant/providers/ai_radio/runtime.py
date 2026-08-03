@@ -1597,21 +1597,27 @@ class AIRadioRuntimeMixin:
         engine = await self._get_tts_engine()
         self.logger.debug("TTS render prepared: engine=%s text_chars=%d", engine.uid, len(text))
         stream_details = await engine.provider.get_tts_message(text, engine_id=engine.id)
-        uri = str(getattr(stream_details, "path", "") or "").strip()
-        if not uri:
+        source = str(getattr(stream_details, "path", "") or "").strip()
+        if not source:
             raise MusicAssistantError(
                 f"TTS engine '{engine.uid}' returned no direct stream path in StreamDetails.path"
             )
-        if uri.startswith(("http://", "https://", "rtsp://", "rtmp://")):
-            builtin_provider = self.mass.get_provider("builtin")
-            builtin_instance_id = str(getattr(builtin_provider, "instance_id", "") or "").strip()
-            duration = await self._warm_builtin_duration_cache(builtin_provider, uri, section_name)
-            wrapped = create_uri(MediaType.SOUND_EFFECT, builtin_instance_id or "builtin", uri)
-            return wrapped, duration
-        return uri, 0
+        if not source.startswith(("http://", "https://", "rtsp://", "rtmp://")) and not (
+            Path(source).is_absolute() and await asyncio.to_thread(Path(source).is_file)
+        ):
+            raise MusicAssistantError(
+                f"TTS engine '{engine.uid}' returned an unusable stream path: {source}. "
+                "StreamDetails.path must be a fetchable http(s)/rtsp/rtmp URL or the "
+                "absolute path of an existing local file."
+            )
+        builtin_provider = self.mass.get_provider("builtin")
+        builtin_instance_id = str(getattr(builtin_provider, "instance_id", "") or "").strip()
+        duration = await self._warm_builtin_duration_cache(builtin_provider, source, section_name)
+        wrapped = create_uri(MediaType.SOUND_EFFECT, builtin_instance_id or "builtin", source)
+        return wrapped, duration
 
     async def _warm_builtin_duration_cache(
-        self, builtin_provider: Any, url: str, section_name: str
+        self, builtin_provider: Any, source: str, section_name: str
     ) -> int:
         """
         Force-decode duration, set a friendly title, prefill builtin's cache.
@@ -1623,9 +1629,11 @@ class AIRadioRuntimeMixin:
         if builtin_provider is None:
             return 0
         try:
-            tags = await async_parse_tags(url, require_duration=True)
+            tags = await async_parse_tags(source, require_duration=True)
         except (InvalidDataError, OSError) as err:
-            self.logger.warning("Could not pre-compute TTS section duration for %s: %s", url, err)
+            self.logger.warning(
+                "Could not pre-compute TTS section duration for %s: %s", source, err
+            )
             return 0
         format_block = tags.raw.setdefault("format", {})
         if tags.duration:
@@ -1634,7 +1642,7 @@ class AIRadioRuntimeMixin:
         format_tags.setdefault("title", section_name)
         format_tags.setdefault("artist", "AI Radio")
         await self.mass.cache.set(
-            url,
+            source,
             tags.raw,
             provider=str(getattr(builtin_provider, "instance_id", "") or "builtin"),
             category=CACHE_CATEGORY_MEDIA_INFO,
