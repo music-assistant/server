@@ -36,9 +36,10 @@ async def test_proxy_dials_the_webserver_url(
     handler: SendspinProxyHandler, mock_webserver: MagicMock
 ) -> None:
     """Verify the proxy connects to the URL resolved by the webserver controller."""
+    internal_url = "ws://127.0.0.1:8927/sendspin"
     mock_ws_response = AsyncMock(spec=web.WebSocketResponse)
     mock_ws_response.closed = False
-    mock_webserver.internal_sendspin_url = "ws://127.0.0.1:8927/sendspin"
+    mock_webserver.internal_sendspin_url = internal_url
 
     mock_internal_ws = AsyncMock()
     mock_internal_ws.closed = False
@@ -58,7 +59,7 @@ async def test_proxy_dials_the_webserver_url(
         request = make_mocked_request("GET", "/sendspin")
         await handler.handle_sendspin_proxy(request)
 
-    mock_ws_connect.assert_awaited_once_with("ws://127.0.0.1:8927/sendspin")
+    mock_ws_connect.assert_awaited_once_with(internal_url)
 
 
 class TestSendspinProxyRetry:

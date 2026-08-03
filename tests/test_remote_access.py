@@ -194,10 +194,11 @@ async def test_remote_access_gateway_uses_internal_sendspin_url(
     cert_pems: tuple[str, str],
 ) -> None:
     """Bridge the Sendspin data channel to the locally reachable Sendspin server."""
+    internal_url = "ws://127.0.0.1:8927/sendspin"
     manager = _create_remote_access_manager()
     manager._remote_id = "TEST-REMOTE-ID"
     cast("Mock", manager.mass).webserver.base_url = "http://192.168.1.5:8095"
-    cast("Mock", manager.webserver).internal_sendspin_url = "ws://127.0.0.1:8927/sendspin"
+    cast("Mock", manager.webserver).internal_sendspin_url = internal_url
 
     with (
         patch(
@@ -211,7 +212,7 @@ async def test_remote_access_gateway_uses_internal_sendspin_url(
         await manager._start_gateway_locked()
 
     assert manager.gateway is not None
-    assert manager.gateway.sendspin_url == "ws://127.0.0.1:8927/sendspin"
+    assert manager.gateway.sendspin_url == internal_url
 
 
 async def test_webrtc_gateway_initialization(cert_pems: tuple[str, str]) -> None:
