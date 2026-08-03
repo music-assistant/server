@@ -304,6 +304,71 @@ async def test_upload_ir_rejects_long_file(tmp_path: Path) -> None:
     assert list((tmp_path / "dsp_irs").glob("*")) == []
 
 
+def _encoded_bytes(tmp_path: Path, name: str, *codec_args: str) -> bytes:
+    """Re-encode a short sine with the given ffmpeg codec arguments."""
+    out_path = tmp_path / name
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:duration=0.5:sample_rate=48000",
+            "-ac",
+            "2",
+            *codec_args,
+            str(out_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return out_path.read_bytes()
+
+
+@pytest.mark.parametrize(
+    ("name", "codec_args"),
+    [
+        ("ir.mp3", ("-c:a", "libmp3lame")),
+        ("ir.m4a", ("-c:a", "aac")),
+        ("ir.ogg", ("-c:a", "libvorbis")),
+    ],
+)
+async def test_upload_ir_rejects_lossy_codec(
+    tmp_path: Path, name: str, codec_args: tuple[str, ...]
+) -> None:
+    """A lossy encode smears the impulse, so it is refused rather than silently applied."""
+    config = _DSPConfigStore()
+    config.mass.storage_path = str(tmp_path)
+
+    data = base64.b64encode(_encoded_bytes(tmp_path, name, *codec_args)).decode()
+    with pytest.raises(InvalidDataError, match="only lossless"):
+        await config.upload_dsp_ir("lossy", data)
+
+    assert config.get_dsp_irs() == []
+    assert list((tmp_path / "dsp_irs").glob("*")) == []
+
+
+@pytest.mark.parametrize(
+    ("name", "codec_args"),
+    [
+        ("ir.flac", ("-c:a", "flac")),
+        ("ir.aiff", ("-c:a", "pcm_s16be")),
+    ],
+)
+async def test_upload_ir_accepts_lossless_container(
+    tmp_path: Path, name: str, codec_args: tuple[str, ...]
+) -> None:
+    """A lossless container other than wav is accepted, so the check is not wav-only."""
+    config = _DSPConfigStore()
+    config.mass.storage_path = str(tmp_path)
+
+    data = base64.b64encode(_encoded_bytes(tmp_path, name, *codec_args)).decode()
+    record = await config.upload_dsp_ir("Room", data)
+
+    assert config.get_dsp_irs() == [record]
+
+
 async def test_upload_ir_transcode_is_length_bounded(tmp_path: Path) -> None:
     """A tiny but very long upload is truncated on the way in, not written out in full."""
     config = _DSPConfigStore()
