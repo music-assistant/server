@@ -176,6 +176,48 @@ def test_traversal_subfolder_is_rejected_before_mounting() -> None:
     assert MOUNT_PATH not in str(exc_info.value)
 
 
+@pytest.mark.parametrize(
+    "cleanup_error",
+    [
+        # the mountpoint turned out to be busy
+        SetupFailedError("Unable to unmount"),
+        # umount itself is missing or not executable
+        FileNotFoundError("umount"),
+        PermissionError("umount"),
+    ],
+)
+async def test_failed_cleanup_never_masks_the_missing_subfolder(
+    cleanup_error: Exception,
+) -> None:
+    """The best-effort unmount must not replace the one error the user can act on."""
+    provider = _provider("Music")
+    with (
+        patch(
+            "music_assistant.providers.filesystem_nfs.provider.get_ip_from_host",
+            AsyncMock(return_value="192.0.2.10"),
+        ),
+        patch.object(provider, "mount", AsyncMock()),
+        patch(
+            "music_assistant.providers.filesystem_nfs.provider.unmount",
+            # the pre-mount cleanup must succeed; only the post-mount one fails, since a
+            # mountpoint that cannot be freed *before* mounting is a real setup failure
+            AsyncMock(side_effect=[None, cleanup_error]),
+        ),
+        patch(
+            "music_assistant.providers.filesystem_nfs.provider.exists",
+            AsyncMock(return_value=True),
+        ),
+        patch(
+            "music_assistant.providers.filesystem_nfs.provider.isdir",
+            AsyncMock(return_value=False),
+        ),
+        pytest.raises(SetupFailedError) as exc_info,
+    ):
+        await provider.handle_async_init()
+
+    assert exc_info.value.translation_key == "subfolder_not_found"
+
+
 async def test_missing_subfolder_fails_setup_instead_of_an_empty_library() -> None:
     """A subfolder that does not exist inside the mount surfaces a translated setup error."""
     provider = _provider("Music")

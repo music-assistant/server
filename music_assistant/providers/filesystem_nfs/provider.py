@@ -142,8 +142,10 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
         # the sync then just reports an empty library.
         if self._subfolder and not await isdir(self.base_path):
             # a failed handle_async_init never gets unload() called, so drop the mount here
-            # rather than leaving it behind; a failure to do so must not mask the real cause
-            with suppress(SetupFailedError):
+            # rather than leaving it behind. Best-effort: whether the mountpoint turns out to
+            # be busy (SetupFailedError) or umount itself is unusable (OSError), the missing
+            # subfolder below is the actionable cause and must not be masked by the cleanup.
+            with suppress(SetupFailedError, OSError):
                 await unmount(self.mount_path, self.logger)
             msg = f"Subfolder {self._subfolder} does not exist in the NFS export"
             raise SetupFailedError(
