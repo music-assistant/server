@@ -6,6 +6,7 @@ from collections.abc import Callable, Coroutine, Mapping
 from typing import TYPE_CHECKING, Any, Final
 
 from aiohttp import web
+from yarl import URL
 
 from music_assistant.constants import WILDCARD_BIND_IPS
 
@@ -77,7 +78,8 @@ class Webserver:
         Async initialize of module.
 
         :param bind_ip: IP address to bind to.
-        :param bind_port: Port to bind to.
+        :param bind_port: Port to bind to, or 0 to let the OS assign a free one. The
+            assigned port is available as ``port`` and replaces the port in ``base_url``.
         :param base_url: Base URL for the server.
         :param static_routes: List of static routes to register.
         :param static_content: Tuple of (path, directory, name) for static content.
@@ -131,6 +133,10 @@ class Webserver:
                 self._apprunner, host=None, port=bind_port, ssl_context=ssl_context
             )
             await self._tcp_site.start()
+        # port 0 asks the OS for a free port, which it only picks at bind time
+        if bind_port == 0:
+            self._bind_port = self._apprunner.addresses[0][1]
+            self._base_url = str(URL(self._base_url).with_port(self._bind_port))
         # start additional ingress TCP site if configured
         # this is only used if we're running in the context of an HA add-on
         # which proxies our frontend and api through ingress

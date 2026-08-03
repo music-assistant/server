@@ -58,6 +58,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TRACKS,
     DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
+    DEFAULT_HOST,
     DEFAULT_STREAM_HEADERS,
     DLNA_CONTENT_FEATURES,
     DLNA_CONTENT_FEATURES_REALTIME,
@@ -405,8 +406,8 @@ class StreamsController(CoreController):
             ConfigEntry(
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
-                default_value="0.0.0.0",
-                options=[ConfigValueOption(x, title=x) for x in {"0.0.0.0", *ip_addresses}],
+                default_value=DEFAULT_HOST,
+                options=[ConfigValueOption(x, title=x) for x in {DEFAULT_HOST, *ip_addresses}],
                 category="generic",
                 advanced=True,
                 required=False,
@@ -453,20 +454,6 @@ class StreamsController(CoreController):
         self.publish_addresses = _get_publish_addresses(
             bind_ip, self._configured_publish_ip, all_ip_addresses
         )
-        # print a big fat message in the log where the streamserver is running
-        # because this is a common source of issues for people with more complex setups
-        self.logger.log(
-            logging.INFO if self.mass.config.onboard_done else logging.WARNING,
-            "\n\n################################################################################\n"
-            "Starting streamserver on  %s:%s\n"
-            "This is the IP address that is communicated to players.\n"
-            "If this is incorrect, audio will not play!\n"
-            "See the documentation for how to configure the publish IP for the Streamserver\n"
-            "in Settings --> System --> Streams\n"
-            "################################################################################\n",
-            self.publish_ip,
-            self.publish_port,
-        )
         await self._server.setup(
             bind_ip=bind_ip,
             bind_port=cast("int", self.publish_port),
@@ -485,6 +472,23 @@ class StreamsController(CoreController):
                 ("*", "/command/{queue_id}/{command}.mp3", self.serve_command_request),
                 ("*", "/announcement/{player_id}.{fmt}", self.serve_announcement_stream),
             ],
+        )
+        # adopt the port the server ended up on, which differs from the configured
+        # one when that asked the OS for a free port
+        self.publish_port = self._server.port
+        # print a big fat message in the log where the streamserver is running
+        # because this is a common source of issues for people with more complex setups
+        self.logger.log(
+            logging.INFO if self.mass.config.onboard_done else logging.WARNING,
+            "\n\n################################################################################\n"
+            "Started streamserver on  %s:%s\n"
+            "This is the IP address that is communicated to players.\n"
+            "If this is incorrect, audio will not play!\n"
+            "See the documentation for how to configure the publish IP for the Streamserver\n"
+            "in Settings --> System --> Streams\n"
+            "################################################################################\n",
+            self.publish_ip,
+            self.publish_port,
         )
 
     async def close(self) -> None:

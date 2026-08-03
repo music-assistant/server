@@ -4,8 +4,8 @@ import asyncio
 import logging
 import pathlib
 import threading
-from collections.abc import AsyncGenerator, Callable, Generator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncGenerator, Generator
+from contextlib import asynccontextmanager, suppress
 from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 
 import pytest
@@ -66,10 +66,7 @@ def _create_mock_zeroconf() -> MagicMock:
 
 
 @pytest.fixture
-async def mass(
-    tmp_path: pathlib.Path,
-    unused_tcp_port_factory: Callable[[], int],
-) -> AsyncGenerator[MusicAssistant]:
+async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
     """
     Start a Music Assistant in test mode.
 
@@ -89,7 +86,7 @@ async def mass(
     mock_browser = NonCallableMagicMock()  # Use NonCallable to avoid api_cmd issues
 
     with (
-        use_ephemeral_server_ports(unused_tcp_port_factory),
+        use_ephemeral_server_ports(),
         patch(
             "music_assistant.controllers.discovery.controller.AsyncZeroconf",
             return_value=mock_zc,
@@ -108,12 +105,17 @@ async def mass(
         # providers and no local_audio bridging the host's sound devices as players
         suppress_auto_loaded_providers(),
     ):
-        await mass_instance.start()
-
         try:
+            await mass_instance.start()
             yield mass_instance
         finally:
-            await mass_instance.stop()
+            # also stop after a failed boot: pytest holds on to the setup traceback,
+            # which keeps the half-started server (and the non-daemon threads of its
+            # open database connections) alive until the interpreter exits, where
+            # joining those threads then hangs the whole test process. A boot that
+            # failed before the controllers were created has nothing to stop.
+            with suppress(AttributeError):
+                await mass_instance.stop()
 
 
 @pytest.fixture

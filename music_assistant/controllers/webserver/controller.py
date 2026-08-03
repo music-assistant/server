@@ -36,6 +36,7 @@ from music_assistant.constants import (
     CONF_BIND_IP,
     CONF_BIND_PORT,
     CONF_VALUE_AUTO,
+    DEFAULT_HOST,
     INGRESS_SERVER_PORT,
     RESOURCES_DIR,
     SENDSPIN_SERVER_PORT,
@@ -287,6 +288,32 @@ class WebserverController(CoreController):
         self._auto_base_url = (
             f"{protocol}://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
         )
+
+        # Create SSL context if SSL is enabled
+        ssl_context = None
+        if ssl_enabled:
+            ssl_context = await create_server_ssl_context(
+                str(config.get_value(CONF_SSL_CERTIFICATE) or ""),
+                str(config.get_value(CONF_SSL_PRIVATE_KEY) or ""),
+                logger=self.logger,
+            )
+
+        await self._server.setup(
+            bind_ip=bind_ip,
+            bind_port=self.publish_port,
+            base_url=self._auto_base_url,
+            static_routes=routes,
+            # add assets subdir as static_content
+            static_content=("/assets", os.path.join(frontend_dir, "assets"), "assets"),
+            ingress_tcp_site_params=ingress_tcp_site_params,
+            # Add mass object to app for use by the auth helpers
+            app_state={"mass": self.mass},
+            ssl_context=ssl_context,
+        )
+        # adopt the port the server ended up on, which differs from the configured one
+        # when that asked the OS for a free port
+        self.publish_port = cast("int", self._server.port)
+        self._auto_base_url = self._server.base_url
         base_url = self.base_url
         # print a big fat message in the log where the webserver is running
         # because this is a common source of issues for people with more complex setups
@@ -317,28 +344,6 @@ class WebserverController(CoreController):
                 "################################################################################\n",
                 base_url,
             )
-
-        # Create SSL context if SSL is enabled
-        ssl_context = None
-        if ssl_enabled:
-            ssl_context = await create_server_ssl_context(
-                str(config.get_value(CONF_SSL_CERTIFICATE) or ""),
-                str(config.get_value(CONF_SSL_PRIVATE_KEY) or ""),
-                logger=self.logger,
-            )
-
-        await self._server.setup(
-            bind_ip=bind_ip,
-            bind_port=self.publish_port,
-            base_url=base_url,
-            static_routes=routes,
-            # add assets subdir as static_content
-            static_content=("/assets", os.path.join(frontend_dir, "assets"), "assets"),
-            ingress_tcp_site_params=ingress_tcp_site_params,
-            # Add mass object to app for use by the auth helpers
-            app_state={"mass": self.mass},
-            ssl_context=ssl_context,
-        )
 
         # Setup remote access after webserver is running
         await self.remote_access.setup()
@@ -516,8 +521,8 @@ class WebserverController(CoreController):
             ConfigEntry(
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
-                default_value="0.0.0.0",
-                options=[ConfigValueOption(x, title=x) for x in {"0.0.0.0", *ip_addresses}],
+                default_value=DEFAULT_HOST,
+                options=[ConfigValueOption(x, title=x) for x in {DEFAULT_HOST, *ip_addresses}],
                 category="generic",
                 advanced=True,
                 requires_reload=True,
