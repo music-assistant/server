@@ -155,17 +155,16 @@ async def radio_mass_fixture(
 async def test_export_import_round_trip_restores_stations(radio_mass: MusicAssistant) -> None:
     """An untouched export must restore names, favourites, artwork and provider ownership."""
     mass = radio_mass
-    await mass.music.add_item_to_library(
+    jazz_item = await mass.music.add_item_to_library(
         _make_radio(
             item_id=BUILTIN_STREAM_URL,
             provider="builtin",
             domain="builtin",
             name="Jazz FM",
-            favorite=True,
             image_url=BUILTIN_IMAGE_URL,
         )
     )
-    await mass.music.add_item_to_library(
+    owned_item = await mass.music.add_item_to_library(
         _make_radio(
             item_id="station-123",
             provider=FAKE_INSTANCE,
@@ -173,12 +172,16 @@ async def test_export_import_round_trip_restores_stations(radio_mass: MusicAssis
             name="Provider Owned Radio",
         )
     )
+    # favourite both through the library, the way a user does
+    await mass.music.radio.set_favorite(jazz_item.item_id, True)
+    await mass.music.radio.set_favorite(owned_item.item_id, True)
 
     m3u_data = await mass.music.radio.export_radios()
     # the name must travel in an #EXTINF line even though a station has no duration
     assert "#EXTINF:-1,Jazz FM" in m3u_data
     assert f"#EXTIMG:thumb||{BUILTIN_IMAGE_URL}||builtin||true" in m3u_data
     assert f"#EXTPROV:builtin||{BUILTIN_STREAM_URL}||builtin" in m3u_data
+    assert m3u_data.count("favorite=true") == 2
 
     await _clear_radio_library(mass)
     assert await mass.music.radio.library_count() == 0
@@ -200,9 +203,12 @@ async def test_export_import_round_trip_restores_stations(radio_mass: MusicAssis
     assert jazz_mapping.item_id == BUILTIN_STREAM_URL
 
     # the provider-owned station is restored against its own provider, not as a builtin row
-    owned_mappings = library["Provider Owned Radio"].provider_mappings
-    assert {mapping.provider_domain for mapping in owned_mappings} == {FAKE_DOMAIN}
-    assert next(iter(owned_mappings)).item_id == "station-123"
+    owned = library["Provider Owned Radio"]
+    assert {mapping.provider_domain for mapping in owned.provider_mappings} == {FAKE_DOMAIN}
+    assert next(iter(owned.provider_mappings)).item_id == "station-123"
+    # a provider-owned item is refetched from its provider, so the favorite flag has to be
+    # reapplied to the library item rather than set on the object handed to the library
+    assert owned.favorite is True
 
     stored_radios = mass.config.get(CONF_KEY_RADIOS, [])
     assert [item["item_id"] for item in stored_radios] == [BUILTIN_STREAM_URL]
@@ -253,6 +259,18 @@ async def test_import_reports_unresolvable_station(radio_mass: MusicAssistant) -
     failures = mass.tasks.get_task(task.id).failure_messages
     assert len(failures) == 1
     assert "Gone Radio" in failures[0]
+    assert await mass.music.radio.library_count() == 0
+
+
+async def test_import_reports_non_url_entry(radio_mass: MusicAssistant) -> None:
+    """A radio station is a stream url, so a bare local path is rejected and reported."""
+    mass = radio_mass
+    await _clear_radio_library(mass)
+
+    task = await mass.music.radio.import_radios("#EXTM3U\n#EXTINF:-1,Local\nsome/file.mp3\n")
+    await _wait_for_task_status(mass.tasks, task.id, TaskStatus.PARTIAL_SUCCESS)
+
+    assert len(mass.tasks.get_task(task.id).failure_messages) == 1
     assert await mass.music.radio.library_count() == 0
 
 

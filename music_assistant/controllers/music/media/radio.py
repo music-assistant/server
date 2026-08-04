@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.auth import Scope
@@ -87,7 +88,13 @@ class RadioController(MediaControllerBase[Radio]):
 
     async def export_radios(self) -> str:
         """Export all library radio stations to M3U8 format."""
-        items = [media_item_to_playlist_item(radio) async for radio in self.iter_library_items()]
+        items: list[PlaylistItem] = []
+        async for radio in self.iter_library_items():
+            entry = media_item_to_playlist_item(radio)
+            if radio.favorite and entry.metadata is not None:
+                # favorite is library-level user state, so only a library export carries it
+                entry.metadata["favorite"] = "true"
+            items.append(entry)
         return generate_m3u("Radio Stations", items)
 
     async def import_radios(self, m3u_data: str) -> BackgroundTask:
@@ -100,10 +107,7 @@ class RadioController(MediaControllerBase[Radio]):
         :param m3u_data: The M3U8 data as a string.
         :return: Managed background task performing the import.
         :raises InvalidDataError: The M3U data holds no entries.
-        :raises ProviderUnavailableError: The builtin provider is not available.
         """
-        if not self.mass.get_provider("builtin", provider_type=MusicProvider):
-            raise ProviderUnavailableError("Builtin provider is not available")
         parsed_items = parse_m3u(m3u_data)
         if not parsed_items:
             msg = "No items found in M3U data"
@@ -303,6 +307,9 @@ class RadioController(MediaControllerBase[Radio]):
         if not item.providers:
             # a plain third-party M3U carries no #EXTPROV, so recover the mapping from the
             # path, which parse_uri normalises into a provider and its native item_id
+            if not item.is_url:
+                msg = f"{item.path} is not a stream url"
+                raise InvalidDataError(msg)
             media_type, prov_lookup, prov_item_id = await parse_uri(item.path)
             if media_type not in (MediaType.RADIO, MediaType.UNKNOWN):
                 msg = f"{item.path} is not a radio station"
@@ -311,13 +318,17 @@ class RadioController(MediaControllerBase[Radio]):
             if not provider:
                 msg = f"Provider {prov_lookup} is not available"
                 raise ProviderUnavailableError(msg)
-            item.providers = [
-                ProviderMappingInfo(
-                    domain=provider.domain,
-                    item_id=prov_item_id,
-                    instance_id=provider.instance_id,
-                )
-            ]
+            # replace instead of mutate: a retry re-runs the handler over the same parsed items
+            item = replace(
+                item,
+                providers=[
+                    ProviderMappingInfo(
+                        domain=provider.domain,
+                        item_id=prov_item_id,
+                        instance_id=provider.instance_id,
+                    )
+                ],
+            )
         radio = construct_media_item_from_playlist_item(item, self.mass, MediaType.RADIO)
         if not isinstance(radio, Radio):
             msg = f"{item.path} is not a radio station"
@@ -325,8 +336,8 @@ class RadioController(MediaControllerBase[Radio]):
         if not any(mapping.available for mapping in radio.provider_mappings):
             msg = f"No available provider for radio station {radio.name}"
             raise ProviderUnavailableError(msg)
-        # apply the exported favorite flag here rather than in the shared construction
-        # helper, whose other consumer must not start reporting favorite state
+        library_item = await self.mass.music.add_item_to_library(radio)
+        # a station owned by another provider is refetched from it, discarding anything set
+        # on the object passed in, so the exported favorite goes onto the library item
         if (item.metadata or {}).get("favorite") == "true":
-            radio.favorite = True
-        await self.mass.music.add_item_to_library(radio)
+            await self.set_favorite(library_item.item_id, True)

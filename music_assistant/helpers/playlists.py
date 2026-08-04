@@ -428,7 +428,7 @@ def construct_media_item_from_playlist_item(
     duration = try_parse_int(item.length, default=None) if item.length else None
 
     provider_mappings = _resolve_provider_mappings(item, mass)
-    if not provider_mappings and item.path:
+    if not provider_mappings and item.is_url:
         provider_mappings = _builtin_fallback_mappings(item.path, mass)
     external_ids = _collect_external_ids(metadata)
 
@@ -553,11 +553,10 @@ def _resolve_provider_mappings(item: PlaylistItem, mass: MusicAssistant) -> set[
 
 def _builtin_fallback_mappings(path: str, mass: MusicAssistant) -> set[ProviderMapping]:
     """
-    Build the builtin provider mapping for an entry that carries no #EXTPROV.
+    Return the builtin provider mapping for a stream URL that carries no #EXTPROV.
 
-    A plain third-party M3U lists bare stream URLs, which is exactly what the
-    builtin provider uses as its item_id. Without a mapping the constructed item
-    never reaches ``library_add`` and would end up an unplayable library entry.
+    An item left without any mapping never reaches ``library_add``, so it would
+    become a permanently unplayable library entry.
     """
     prov = mass.get_provider("builtin")
     return {
@@ -733,8 +732,6 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
         "media_type": full_item.media_type.value,
         "name": full_item.name,
     }
-    if full_item.favorite:
-        metadata["favorite"] = "true"
     if hasattr(full_item, "authors") and full_item.authors:
         metadata["authors"] = "; ".join(full_item.authors)
     if hasattr(full_item, "narrators") and full_item.narrators:

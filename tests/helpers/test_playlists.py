@@ -753,29 +753,6 @@ def test_media_item_to_playlist_item_multiple_providers() -> None:
     assert result.path == "tidal://track/t2"
 
 
-def test_media_item_to_playlist_item_favorite() -> None:
-    """Test that a favorited item carries the flag so a restore can reapply it."""
-    radio = Radio(
-        item_id="radio1",
-        provider="builtin",
-        name="Test FM",
-        favorite=True,
-        provider_mappings={
-            ProviderMapping(
-                item_id="radio1", provider_domain="builtin", provider_instance="builtin"
-            ),
-        },
-    )
-
-    result = media_item_to_playlist_item(radio)
-
-    assert result.metadata is not None
-    assert result.metadata["favorite"] == "true"
-    # a non-favorited item must not carry the key at all
-    radio.favorite = False
-    assert "favorite" not in (media_item_to_playlist_item(radio).metadata or {})
-
-
 def test_zero_duration_track_round_trips_unknown_length() -> None:
     """Test that a zero-duration track gets an #EXTINF:-1 line that parses back to None."""
     track = Track(
@@ -835,6 +812,19 @@ def test_construct_plain_url_gets_builtin_mapping() -> None:
     # builtin's item_id *is* the stream URL, so it must not be truncated to its last segment
     assert mapping.item_id == "http://stream.example.com/radio1"
     assert media_item.item_id == "http://stream.example.com/radio1"
+
+
+def test_construct_non_url_path_gets_no_fallback_mapping() -> None:
+    """A bare relative path is not something builtin can stream, so it stays unmapped."""
+    item = PlaylistItem(path="some/relative/file.mp3")
+
+    media_item = construct_media_item_from_playlist_item(
+        item, cast("Any", _mass_with_builtin()), MediaType.RADIO
+    )
+
+    assert media_item is not None
+    # claiming builtin availability here would mask an entry that cannot be played
+    assert media_item.provider_mappings == set()
 
 
 def test_construct_defaults_to_requested_media_type() -> None:
