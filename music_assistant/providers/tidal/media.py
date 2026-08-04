@@ -157,6 +157,11 @@ class TidalMediaManager:
                 include=["items.artists", "items.albums.coverArt"],
             ):
                 for item in doc.data_list:
+                    # The items relationship is mixed-type: an album's music
+                    # videos appear here too, and parsing one as a track would
+                    # yield an id that 404s on playback and shift trackNumber.
+                    if item.get("type") != "tracks":
+                        continue
                     if not (resource := doc.resolve(item)):
                         continue
                     track = parse_track_v2(self.provider, doc, resource)

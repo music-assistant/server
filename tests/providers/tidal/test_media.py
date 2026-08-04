@@ -16,9 +16,14 @@ from music_assistant.providers.tidal.media import TidalMediaManager
 FIXTURES_DIR = pathlib.Path(__file__).parent / "fixtures" / "v2"
 
 
-def _load_doc(name: str) -> JsonApiDocument:
+def _load_raw(name: str) -> dict[str, Any]:
     with open(FIXTURES_DIR / name) as f:
-        return JsonApiDocument(json.load(f))
+        data: dict[str, Any] = json.load(f)
+        return data
+
+
+def _load_doc(name: str) -> JsonApiDocument:
+    return JsonApiDocument(_load_raw(name))
 
 
 @pytest.fixture
@@ -200,6 +205,30 @@ async def test_get_album_tracks(media_manager: TidalMediaManager, provider_mock:
     assert tracks[0].track_number == 1
     assert tracks[0].disc_number == 1
     assert tracks[0].album is not None
+
+
+async def test_get_album_tracks_skips_videos(
+    media_manager: TidalMediaManager, provider_mock: Mock
+) -> None:
+    """Test a music video in the items relationship is not parsed as a track."""
+    raw = _load_raw("album_items.json")
+    raw["data"].insert(
+        0, {"id": "99999", "type": "videos", "meta": {"volumeNumber": 1, "trackNumber": 1}}
+    )
+    raw["included"].append(
+        {"id": "99999", "type": "videos", "attributes": {"title": "Bonus Video"}}
+    )
+    doc = JsonApiDocument(raw)
+
+    async def _pages(*_a: Any, **_k: Any) -> Any:
+        yield doc
+
+    provider_mock.api.paginate_jsonapi = _pages
+
+    tracks = await media_manager.get_album_tracks("58756127")
+
+    assert len(tracks) == 11
+    assert all(track.item_id != "99999" for track in tracks)
 
 
 async def test_get_artist_albums(media_manager: TidalMediaManager, provider_mock: Mock) -> None:

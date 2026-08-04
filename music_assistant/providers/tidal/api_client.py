@@ -15,7 +15,7 @@ from music_assistant_models.errors import (
 
 from music_assistant.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 
-from .constants import BASE_URL, BASE_URL_V2, JSONAPI_CONTENT_TYPE, OPEN_API_URL
+from .constants import BASE_URL, JSONAPI_CONTENT_TYPE, OPEN_API_URL
 from .jsonapi import JsonApiDocument
 
 if TYPE_CHECKING:
@@ -52,10 +52,6 @@ class TidalAPIClient:
         """Get data from Tidal API."""
         data, _ = await self._request("GET", endpoint, **kwargs)
         return data
-
-    async def get_with_etag(self, endpoint: str, **kwargs: Any) -> tuple[dict[str, Any], str]:
-        """Get data from Tidal API, returning the response ETag as well."""
-        return await self._request("GET", endpoint, **kwargs)
 
     async def get_jsonapi(
         self,
@@ -117,52 +113,6 @@ class TidalAPIClient:
         self.logger.warning(
             "Stopped paginating %s after %d pages; results may be truncated", endpoint, max_pages
         )
-
-    async def post(
-        self,
-        endpoint: str,
-        data: dict[str, Any] | None = None,
-        as_form: bool = False,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        """Send POST data to Tidal API."""
-        if as_form:
-            kwargs.setdefault("headers", {})["Content-Type"] = "application/x-www-form-urlencoded"
-            kwargs["data"] = data
-        else:
-            kwargs["json"] = data
-
-        result, _ = await self._request("POST", endpoint, **kwargs)
-        return result
-
-    async def put(
-        self,
-        endpoint: str,
-        data: dict[str, Any] | None = None,
-        as_form: bool = False,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        """Send PUT data to Tidal API."""
-        # Special handling for mixes which use V2
-        if "mixes" in endpoint and "base_url" not in kwargs:
-            kwargs["base_url"] = BASE_URL_V2
-
-        if as_form:
-            kwargs.setdefault("headers", {})["Content-Type"] = "application/x-www-form-urlencoded"
-            kwargs["data"] = data
-        else:
-            kwargs["json"] = data
-
-        result, _ = await self._request("PUT", endpoint, **kwargs)
-        return result
-
-    async def delete(
-        self, endpoint: str, data: dict[str, Any] | None = None, **kwargs: Any
-    ) -> dict[str, Any]:
-        """Delete data from Tidal API."""
-        kwargs["json"] = data
-        result, _ = await self._request("DELETE", endpoint, **kwargs)
-        return result
 
     @throttle_with_retries
     async def _request(

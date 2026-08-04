@@ -180,20 +180,6 @@ async def test_get_429_error(api_client: TidalAPIClient, provider_mock: Mock) ->
         await api_client.get("test/endpoint")
 
 
-async def test_post_success(api_client: TidalAPIClient, provider_mock: Mock) -> None:
-    """Test successful POST request."""
-    response = AsyncMock(spec=ClientResponse)
-    response.status = 200
-    response.json.return_value = {"success": True}
-
-    request_ctx = AsyncMock()
-    request_ctx.__aenter__.return_value = response
-    provider_mock.mass.http_session.request = MagicMock(return_value=request_ctx)
-
-    result = await api_client.post("test/endpoint", data={"key": "value"})
-    assert result == {"success": True}
-
-
 async def test_write_jsonapi(api_client: TidalAPIClient, provider_mock: Mock) -> None:
     """Test write_jsonapi sends the JSON:API content type and serialized body."""
     response = AsyncMock(spec=ClientResponse)
@@ -268,73 +254,3 @@ def test_pagination_ceiling_covers_large_libraries() -> None:
     # The endpoints expose no page-size control, so this cap is the only guard
     # against truncating real collections; it must stay generous.
     assert MAX_PAGINATION_PAGES >= 1000
-
-
-async def test_delete_success(api_client: TidalAPIClient, provider_mock: Mock) -> None:
-    """Test successful DELETE request."""
-    response = AsyncMock(spec=ClientResponse)
-    response.status = 204
-
-    request_ctx = AsyncMock()
-    request_ctx.__aenter__.return_value = response
-    provider_mock.mass.http_session.request = MagicMock(return_value=request_ctx)
-
-    await api_client.delete("test/endpoint/123")
-
-    # Verify DELETE was called
-    provider_mock.mass.http_session.request.assert_called_once()
-    call_args = provider_mock.mass.http_session.request.call_args
-    assert call_args[0][0] == "DELETE"
-
-
-async def test_delete_with_headers(api_client: TidalAPIClient, provider_mock: Mock) -> None:
-    """Test DELETE request with custom headers."""
-    response = AsyncMock(spec=ClientResponse)
-    response.status = 204
-
-    request_ctx = AsyncMock()
-    request_ctx.__aenter__.return_value = response
-    provider_mock.mass.http_session.request = MagicMock(return_value=request_ctx)
-
-    await api_client.delete("test/endpoint/123", headers={"If-Match": "etag123"})
-
-    # Verify headers were passed
-    call_args = provider_mock.mass.http_session.request.call_args
-    assert "If-Match" in call_args[1]["headers"]
-    assert call_args[1]["headers"]["If-Match"] == "etag123"
-
-
-async def test_put_success(api_client: TidalAPIClient, provider_mock: Mock) -> None:
-    """Test successful PUT request."""
-    response = AsyncMock(spec=ClientResponse)
-    response.status = 200
-    response.json.return_value = {"updated": True}
-
-    request_ctx = AsyncMock()
-    request_ctx.__aenter__.return_value = response
-    provider_mock.mass.http_session.request = MagicMock(return_value=request_ctx)
-
-    result = await api_client.put("test/endpoint", data={"key": "value"})
-    assert result == {"updated": True}
-
-    # Verify PUT was called
-    call_args = provider_mock.mass.http_session.request.call_args
-    assert call_args[0][0] == "PUT"
-
-
-async def test_put_with_form_data(api_client: TidalAPIClient, provider_mock: Mock) -> None:
-    """Test PUT request with form data."""
-    response = AsyncMock(spec=ClientResponse)
-    response.status = 200
-    response.json.return_value = {"success": True}
-
-    request_ctx = AsyncMock()
-    request_ctx.__aenter__.return_value = response
-    provider_mock.mass.http_session.request = MagicMock(return_value=request_ctx)
-
-    result = await api_client.put("test/endpoint", data={"key": "value"}, as_form=True)
-    assert result == {"success": True}
-
-    # Verify form data was used
-    call_args = provider_mock.mass.http_session.request.call_args
-    assert "data" in call_args[1]

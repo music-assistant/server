@@ -4,7 +4,6 @@
 from typing import Final
 
 BASE_URL = "https://api.tidal.com/v1"
-BASE_URL_V2 = "https://api.tidal.com/v2"
 OPEN_API_URL = "https://openapi.tidal.com/v2"
 BROWSE_URL = "https://tidal.com/browse"
 RESOURCES_URL = "https://resources.tidal.com/images"

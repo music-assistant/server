@@ -92,7 +92,10 @@ class TidalPlaylistManager:
             async for doc in self.api.paginate_jsonapi(
                 f"playlists/{prov_playlist_id}/relationships/items"
             ):
-                entries.extend(doc.data_list)
+                # Videos share this relationship, but MA's positions come from
+                # the track listing, so counting anything else here would shift
+                # the index and delete the wrong track.
+                entries.extend(item for item in doc.data_list if item.get("type") == "tracks")
                 if len(entries) >= max_needed:
                     break
 

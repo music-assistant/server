@@ -222,6 +222,27 @@ async def test_remove_playlist_tracks(
     )
 
 
+async def test_remove_playlist_tracks_ignores_videos(
+    playlist_manager: TidalPlaylistManager, provider_mock: Mock
+) -> None:
+    """Test remove_tracks counts only tracks, as MA's positions come from the track listing."""
+    entries = [
+        {"type": "tracks", "id": "track_1", "meta": {"itemId": "uuid-1"}},
+        {"type": "videos", "id": "video_1", "meta": {"itemId": "uuid-video"}},
+        {"type": "tracks", "id": "track_2", "meta": {"itemId": "uuid-2"}},
+    ]
+    provider_mock.api.paginate_jsonapi = _entries_page(entries)
+
+    # Position 2 is the second TRACK, not the video sitting at relationship index 2.
+    await playlist_manager.remove_tracks("1", (2,))
+
+    provider_mock.api.write_jsonapi.assert_called_with(
+        "DELETE",
+        "playlists/1/relationships/items",
+        {"data": [{"type": "tracks", "id": "track_2", "meta": {"itemId": "uuid-2"}}]},
+    )
+
+
 async def test_remove_playlist_tracks_duplicate_track_ids(
     playlist_manager: TidalPlaylistManager, provider_mock: Mock
 ) -> None:
