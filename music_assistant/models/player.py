@@ -940,9 +940,10 @@ class Player(ABC):
         Run the one-shot side effect for a pressed action button from this player's config.
 
         Override to run the side effect for each ``ConfigEntryType.ACTION`` entry this
-        player declares. Raise to report failure to the caller. Return None when there
-        is nothing to re-render; returning config entries re-renders the config form
-        with those entries instead.
+        player declares. Raise to report failure to the caller. Return None when there is
+        nothing to re-render. Returning entries re-renders the config form from the owning
+        player's freshly resolved entries; the returned entries themselves are not shown,
+        so they serve only as the signal that a re-render is needed.
 
         :param action: The action id of the pressed button (an entry's ``action`` key).
         """
