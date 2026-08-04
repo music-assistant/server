@@ -389,7 +389,7 @@ def migrate_provider_setup_data(data: dict[str, Any], encrypt: Callable[[str], s
     return changed
 
 
-# TODO: remove after 2.13 release
+# TODO: remove after 2.10 release
 def migrate_nfs_subfolder_into_export_path(
     data: dict[str, Any],
     encrypt: Callable[[str], str],

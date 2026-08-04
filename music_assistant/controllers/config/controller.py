@@ -85,7 +85,7 @@ class ConfigController(
         setup_data_migrated = migrate_provider_setup_data(self._data, self.encrypt_string)
         # one-off: fold a stored NFS subfolder into its export path. Same phase and reason as
         # above, and after it so a legacy install's keys have landed in setup_data by now.
-        # TODO: remove after 2.13 release
+        # TODO: remove after 2.10 release
         nfs_subfolder_migrated = migrate_nfs_subfolder_into_export_path(
             self._data, self.encrypt_string, self.decrypt_string
         )
