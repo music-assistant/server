@@ -357,9 +357,16 @@ for more details.
         # run the unload chain first: RecommendationPayloadMixin cancels and awaits its
         # payload tasks, so no fetch is still running against the clients logging out below
         await super().unload(is_removed)
-        for session_helper in self.sessions.values():
-            with suppress(AbsError, AbsSessionNotFoundError):
-                await self._client.close_open_session(session_id=session_helper.abs_session_id)
+        # close the tracked sessions concurrently, so an unreachable server can neither
+        # stall nor abort the unload below
+        await asyncio.gather(
+            *(
+                self._client.close_open_session(session_id=x.abs_session_id)
+                for x in self.sessions.values()
+            ),
+            return_exceptions=True,
+        )
+        self.sessions.clear()
         try:
             await self._client.logout()
             await self._client_socket.logout()
