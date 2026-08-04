@@ -828,16 +828,21 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 result: ItemCls | None = None
                 match self.media_type:
                     case MediaType.TRACK:
-                        result = await prov.get_track_by_external_id(
-                            external_id, str(external_id_type)
+                        result = cast(
+                            "ItemCls | None",
+                            await prov.get_track_by_external_id(external_id, str(external_id_type)),
                         )
                     case MediaType.ALBUM:
-                        result = await prov.get_album_by_external_id(
-                            external_id, str(external_id_type)
+                        result = cast(
+                            "ItemCls | None",
+                            await prov.get_album_by_external_id(external_id, str(external_id_type)),
                         )
                     case MediaType.ARTIST:
-                        result = await prov.get_artist_by_external_id(
-                            external_id, str(external_id_type)
+                        result = cast(
+                            "ItemCls | None",
+                            await prov.get_artist_by_external_id(
+                                external_id, str(external_id_type)
+                            ),
                         )
 
                 if result:
