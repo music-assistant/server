@@ -76,10 +76,37 @@ def _config(**values: Any) -> MagicMock:
     return config
 
 
+class _Cache:
+    """Provide the slice of the cache controller that @use_cache relies on."""
+
+    def __init__(self) -> None:
+        self.entries: dict[str, Any] = {}
+        self.fresh = True
+
+    async def get_with_freshness(self, key: str, **kwargs: Any) -> tuple[Any, bool, bool]:
+        """Return the (data, is_fresh, found) triplet for the given key."""
+        # the real controller reads the cache database here, so yield like it does:
+        # @use_cache stores in the background, and only a yield lets that store land
+        await asyncio.sleep(0)
+        if key not in self.entries:
+            return None, False, False
+        if not self.fresh and not kwargs.get("include_expired"):
+            return None, False, False
+        return self.entries[key], self.fresh, True
+
+    async def set(self, key: str, data: Any, **kwargs: Any) -> None:
+        """Store data under the given key."""
+        self.entries[key] = data
+
+    def expire_all(self) -> None:
+        """Mark every stored entry as no longer fresh."""
+        self.fresh = False
+
+
 def _mass() -> MagicMock:
     """Return the Music Assistant dependencies used during provider startup."""
     mass = MagicMock()
-    mass.cache = MagicMock()
+    mass.cache = _Cache()
     mass.http_session = MagicMock()
     mass.http_session_no_ssl = MagicMock()
     mass.create_task.side_effect = asyncio.create_task
@@ -312,11 +339,9 @@ async def test_feature_resolution_starts_listener_first() -> None:
     ]
 
     async with _start_provider(states) as (provider, hass):
-        assert hass.calls[:5] == [
+        assert hass.calls[:4] == [
             "connect",
             "start_listening",
-            # the entity- and device registry subscriptions
-            "subscribe_events",
             "subscribe_events",
             REGISTRY_LIST_COMMAND,
         ]
@@ -345,9 +370,7 @@ async def test_feature_resolution_failure_cleans_up_connection() -> None:
         "connect",
         "start_listening",
         "subscribe_events",
-        "subscribe_events",
         REGISTRY_LIST_COMMAND,
-        "unsubscribe_events",
         "unsubscribe_events",
         "disconnect",
     ]
@@ -745,8 +768,8 @@ async def test_registry_changed_during_the_fetch_is_not_cached() -> None:
         assert hass.calls.count(REGISTRY_LIST_COMMAND) == registry_fetches + 1
 
 
-async def test_device_registry_is_fetched_once_per_connection() -> None:
-    """Serve repeated device lookups from a device registry that is fetched only once."""
+async def test_device_registry_is_fetched_once_within_the_cache_window() -> None:
+    """Serve repeated device lookups from a listing that is fetched only once."""
     async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
         hass.devices = [{"id": "dev1"}]
 
@@ -756,41 +779,48 @@ async def test_device_registry_is_fetched_once_per_connection() -> None:
         assert hass.calls.count(DEVICE_REGISTRY_LIST) == 1
 
 
-async def test_device_registry_update_invalidates_the_device_registry() -> None:
-    """Refetch the device registry after Home Assistant reports a device registry change."""
+async def test_device_registry_is_refetched_once_the_cache_window_passed() -> None:
+    """Fetch the device listing again once the cached entry is no longer fresh."""
     async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
         hass.devices = [{"id": "dev1"}]
         await provider.get_device_registry()
         hass.devices = [{"id": "dev1"}, {"id": "dev2"}]
 
-        hass.fire_event("device_registry_updated", {"action": "create", "device_id": "dev2"})
+        cast("_Cache", provider.mass.cache).expire_all()
 
         assert list(await provider.get_device_registry()) == ["dev1", "dev2"]
         assert hass.calls.count(DEVICE_REGISTRY_LIST) == 2
 
 
-async def test_entity_registry_update_leaves_the_device_registry_cached() -> None:
-    """Keep the cached device registry when only the entity registry changed."""
+async def test_device_entries_survive_the_cache_round_trip() -> None:
+    """Return a cached device entry with all of its fields intact."""
+    device = {
+        "id": "dev1",
+        "name": "Kitchen Speaker",
+        "name_by_user": None,
+        "connections": [["mac", "aa:bb:cc:dd:ee:ff"]],
+        "manufacturer": "ESPHome",
+    }
     async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
-        hass.devices = [{"id": "dev1"}]
-        await provider.get_device_registry()
+        hass.devices = [device]
 
-        hass.fire_event(
-            "entity_registry_updated", {"action": "create", "entity_id": "light.kitchen"}
-        )
-        await provider.get_device_registry()
+        fetched = await provider.get_device_registry()
+        cached = await provider.get_device_registry()
 
         assert hass.calls.count(DEVICE_REGISTRY_LIST) == 1
+        # the cached read is reconstructed from the return annotation, so it must not
+        # drop or reshape any of the device fields
+        assert cached == fetched == {"dev1": device}
 
 
 async def test_concurrent_device_lookups_share_one_registry_fetch() -> None:
-    """Let concurrent device lookups share a single device registry fetch."""
+    """Collapse a burst of concurrent device lookups into a single fetch."""
     async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
         hass.devices = [{"id": "dev1"}]
-        # hold back the registry response until both lookups are waiting for it
+        # hold back the listing until all three lookups are waiting for it
         hass.device_registry_result = asyncio.get_running_loop().create_future()
 
-        lookups = asyncio.gather(provider.get_device_registry(), provider.get_device_registry())
+        lookups = asyncio.gather(*(provider.get_device_registry() for _ in range(3)))
         await asyncio.sleep(0)
         hass.device_registry_result.set_result(None)
         async with asyncio.timeout(1):
@@ -798,26 +828,6 @@ async def test_concurrent_device_lookups_share_one_registry_fetch() -> None:
 
         assert all(list(result) == ["dev1"] for result in results)
         assert hass.calls.count(DEVICE_REGISTRY_LIST) == 1
-
-
-async def test_device_registry_changed_during_the_fetch_is_not_cached() -> None:
-    """Keep a device listing out of the cache when a registry update outdated it in flight."""
-    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
-        hass.devices = [{"id": "dev1"}]
-        # hold back the registry response until the update has been delivered
-        hass.device_registry_result = asyncio.get_running_loop().create_future()
-        lookup = asyncio.ensure_future(provider.get_device_registry())
-        await asyncio.sleep(0)
-
-        hass.fire_event("device_registry_updated", {"action": "create", "device_id": "dev2"})
-        hass.device_registry_result.set_result(None)
-        async with asyncio.timeout(1):
-            # the stale listing is still served to the caller that asked for it
-            assert list(await lookup) == ["dev1"]
-
-        assert provider._device_registry is None
-        hass.devices = [{"id": "dev1"}, {"id": "dev2"}]
-        assert list(await provider.get_device_registry()) == ["dev1", "dev2"]
 
 
 async def test_disabled_entity_is_never_requested() -> None:
@@ -866,28 +876,12 @@ async def test_registry_entries_of_nothing_skips_the_round_trip() -> None:
 async def test_entity_registry_subscription_is_replaced() -> None:
     """Replace the entity registry subscription instead of stacking a second one."""
     async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
-        assert hass.active_event_subscriptions == 2
+        assert hass.active_event_subscriptions == 1
         assert hass.event_subscriptions[0][0] == "entity_registry_updated"
 
         await provider._subscribe_entity_registry()
 
-        assert hass.active_event_subscriptions == 2
-        assert hass.calls[-2:] == ["unsubscribe_events", "subscribe_events"]
-
-        await provider.unload()
-
-        assert hass.active_event_subscriptions == 0
-
-
-async def test_device_registry_subscription_is_replaced() -> None:
-    """Replace the device registry subscription instead of stacking a second one."""
-    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
-        assert hass.active_event_subscriptions == 2
-        assert hass.event_subscriptions[1][0] == "device_registry_updated"
-
-        await provider._subscribe_device_registry()
-
-        assert hass.active_event_subscriptions == 2
+        assert hass.active_event_subscriptions == 1
         assert hass.calls[-2:] == ["unsubscribe_events", "subscribe_events"]
 
         await provider.unload()
