@@ -723,11 +723,10 @@ class _FakeHassProvider:
     def __init__(self, url: str | None) -> None:
         self._url = url
 
-    def get_setup_value(self, key: str, default: Any = None) -> Any:
-        """Return the setup flow value for the given key."""
-        if key == "url":
-            return self._url if self._url is not None else default
-        return default
+    @property
+    def url(self) -> str | None:
+        """Return the configured Home Assistant URL, or None if not configured."""
+        return self._url
 
 
 async def test_get_login_providers_with_ha_provider(

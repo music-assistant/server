@@ -10,7 +10,7 @@ import secrets
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from sqlite3 import IntegrityError, OperationalError
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import jwt as pyjwt
 from music_assistant_models.auth import (
@@ -53,6 +53,7 @@ from music_assistant.helpers.jwt_auth import JWTHelper
 
 if TYPE_CHECKING:
     from music_assistant.controllers.webserver import WebserverController
+    from music_assistant.providers.hass import HomeAssistantProvider
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.auth")
 
@@ -1793,10 +1794,9 @@ class AuthenticationManager:
                 break
 
         if ha_provider:
-            # the connection URL is collected by the HA provider's setup flow
-            # (with fallback to a config entry value for add-on installs)
-            ha_url = ha_provider.get_setup_value("url")
-            if not isinstance(ha_url, str) or not ha_url:
+            ha_provider = cast("HomeAssistantProvider", ha_provider)
+            ha_url = ha_provider.url
+            if not ha_url:
                 self.logger.warning(
                     "Home Assistant provider has no URL configured, "
                     "Home Assistant OAuth login is not available"
@@ -1827,10 +1827,9 @@ class AuthenticationManager:
         if ha_provider:
             # HA provider exists and is available - ensure OAuth provider is registered
             if "homeassistant" not in self.login_providers:
-                # the connection URL is collected by the HA provider's setup flow
-                # (with fallback to a config entry value for add-on installs)
-                ha_url = ha_provider.get_setup_value("url")
-                if not isinstance(ha_url, str) or not ha_url:
+                ha_provider = cast("HomeAssistantProvider", ha_provider)
+                ha_url = ha_provider.url
+                if not ha_url:
                     # missing URL must never break the login providers endpoint,
                     # simply leave the HA OAuth provider unregistered
                     self.logger.debug(
