@@ -678,13 +678,12 @@ def test_migrate_nfs_subfolder_folds_into_export_path() -> None:
     assert migrate_nfs_subfolder_into_export_path(data, _fake_encrypt, _fake_decrypt) is True
 
     setup_data = data["providers"]["filesystem_nfs--1"]["setup_data"]
-    # the folded path reproduces the mount source this instance used before the fix
     assert setup_data["export_path"] == ENCRYPT_SUFFIX + "/mnt/vault/Music"
     assert "subfolder" not in setup_data
     assert setup_data["host"] == ENCRYPT_SUFFIX + "nas.local"
     assert setup_data["nfs_version"] == ENCRYPT_SUFFIX + "3"
     assert data["providers"]["filesystem_nfs--1"]["values"] == {"sync_tracks": True}
-    # idempotent: the one-shot marker stops a second pass dead
+    # the marker stops a second pass
     assert data[CONF_NFS_SUBFOLDER_MIGRATED] is True
     assert migrate_nfs_subfolder_into_export_path(data, _fake_encrypt, _fake_decrypt) is False
     assert setup_data["export_path"] == ENCRYPT_SUFFIX + "/mnt/vault/Music"
@@ -758,13 +757,7 @@ def test_migrate_nfs_subfolder_noop_cases() -> None:
 
 
 def test_migrate_nfs_subfolder_never_folds_a_post_fix_config() -> None:
-    """
-    A subfolder configured after the fix must survive a restart untouched.
-
-    The fold cannot recognise its own output, and these migrations re-run on every boot, so
-    without the one-shot marker the next startup would fold a freshly configured subfolder
-    into the export path and silently restore the bug this migration exists to paper over.
-    """
+    """A subfolder stored after the marker is set is never folded, however often this runs."""
     data: dict[str, Any] = {
         CONF_NFS_SUBFOLDER_MIGRATED: True,
         "providers": {
@@ -802,12 +795,7 @@ def test_migrate_nfs_subfolder_handles_plaintext_values() -> None:
 
 
 def test_migrate_nfs_subfolder_skips_an_undecryptable_instance() -> None:
-    """
-    An unreadable stored value costs that instance its migration, not the server its startup.
-
-    decrypt_string raises InvalidDataError on a bad token (reachable when the encryption key
-    was regenerated), and this runs inside ConfigController.setup().
-    """
+    """An unreadable value costs that instance its migration, not the server its startup."""
 
     def _failing_decrypt(_value: str) -> str:
         raise InvalidDataError("Password decryption failed")
@@ -826,7 +814,7 @@ def test_migrate_nfs_subfolder_skips_an_undecryptable_instance() -> None:
 
     assert migrate_nfs_subfolder_into_export_path(data, _fake_encrypt, _failing_decrypt) is True
 
-    # left exactly as it was, but the one-shot marker is still claimed
+    # left as it was, but the marker is still claimed
     assert data["providers"]["broken"]["setup_data"] == {
         "export_path": ENCRYPT_SUFFIX + "unreadable",
         "subfolder": ENCRYPT_SUFFIX + "unreadable",
@@ -835,12 +823,7 @@ def test_migrate_nfs_subfolder_skips_an_undecryptable_instance() -> None:
 
 
 def test_migrate_nfs_subfolder_round_trips_through_real_encryption(tmp_path: Path) -> None:
-    """
-    The folded export path is re-encrypted with the live key, so it decrypts back cleanly.
-
-    Guards the one thing the fake callbacks above cannot: that a migrated config still loads,
-    i.e. get_setup_value(CONF_EXPORT_PATH) yields the folded plaintext path.
-    """
+    """The folded export path is re-encrypted with the live key, so a migrated config loads."""
     mass = SimpleNamespace(storage_path=str(tmp_path))
     controller = ConfigController(mass)  # type: ignore[arg-type]
     controller.initialized = True

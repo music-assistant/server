@@ -396,21 +396,16 @@ def migrate_nfs_subfolder_into_export_path(
     decrypt: Callable[[str], str],
 ) -> bool:
     """
-    Fold a stored NFS `subfolder` into the `export_path` it used to be joined onto, once.
+    Fold a stored NFS `subfolder` into its `export_path`, once.
 
-    The NFS provider used to mount `<export_path>/<subfolder>` and now mounts the export
-    exactly as configured, treating the subfolder as a path inside the mount. Folding the
-    two keys into one reproduces the mount source that instance used before, so an install
-    whose subfolder happened to be a separate export of its own keeps working untouched.
-    Like migrate_provider_setup_data this runs after encryption is initialized, because both
-    keys live encrypted in `setup_data`.
+    The provider mounts the export as configured and scans the subfolder inside that mount, so
+    folding the two keys into one keeps an existing instance mounting what it already mounts.
+    Runs after encryption is initialized, like migrate_provider_setup_data, because both keys
+    live encrypted in `setup_data`.
 
-    Runs exactly once, guarded by CONF_NFS_SUBFOLDER_MIGRATED. Every other migration in this
-    file is safe to re-run because it recognises its own output; this one cannot - a subfolder
-    stored after the fix means "scan this path inside the mount" and is indistinguishable from
-    a legacy one, so folding it again would reintroduce the bug it migrates away from.
-    Returns True when the settings were modified, which on the first run includes claiming
-    that marker even if no instance needed folding.
+    Guarded by CONF_NFS_SUBFOLDER_MIGRATED so it cannot run twice: a subfolder stored
+    afterwards means "scan this path inside the mount" and must never be folded. Returns True
+    when the settings were modified, including the first run's marker.
 
     :param data: The persistent settings data to migrate in-place.
     :param encrypt: Callback that encrypts a string value at rest.
@@ -436,26 +431,23 @@ def migrate_nfs_subfolder_into_export_path(
             subfolder = decrypt(stored_subfolder).strip()
             export_path = decrypt(stored_export_path)
         except InvalidDataError:
-            # an undecryptable value (e.g. the encryption key was regenerated) must not take
-            # the whole config controller - and with it the server - down over one instance;
-            # that provider still fails visibly at its own setup. Never log the values.
+            # one unreadable instance must not fail config setup for the whole server; it
+            # still surfaces the problem at its own setup. Name it without its values.
             LOGGER.warning(
                 "Could not read the stored NFS paths of %s; skipping its subfolder migration",
                 instance_id,
             )
             continue
         if not subfolder or not export_path:
-            # nothing was joined onto the export path, so there is nothing to fold; an
-            # empty export path is broken either way and must not be turned into a path
+            # an empty export path is broken either way and must not become a relative one
             continue
-        # mirrors the join the provider used to do, so the mount source stays byte-identical
+        # must come out as <export_path>/<subfolder> so the mount source is unchanged
         setup_data["export_path"] = encrypt(str(PurePosixPath(export_path) / subfolder.lstrip("/")))
         del setup_data["subfolder"]
         changed = True
     if changed:
         LOGGER.info("Migrated NFS provider subfolder into the export path")
-    # claim the marker even when nothing needed folding, so an NFS subfolder configured
-    # later - with the new, fixed meaning - is never mistaken for a legacy one
+    # claim the marker even when nothing was folded, so a subfolder stored later is safe
     data[CONF_NFS_SUBFOLDER_MIGRATED] = True
     return True
 

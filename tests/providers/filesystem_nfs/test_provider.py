@@ -21,7 +21,7 @@ SETUP_VALUES = {
 def _make_provider() -> NFSFileSystemProvider:
     provider = NFSFileSystemProvider.__new__(NFSFileSystemProvider)
     provider.base_path = f"/tmp/{INSTANCE_ID}"  # noqa: S108
-    # no subfolder configured above, so the scan root is the mountpoint itself
+    # no subfolder configured, so the scan root is the mountpoint itself
     provider.mount_path = provider.base_path
     provider._subfolder = ""
     provider.logger = MagicMock()

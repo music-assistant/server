@@ -34,9 +34,7 @@ def _provider(
         setup_data["subfolder"] = subfolder
     config = ProviderConfig(
         values={
-            # required: _set_log_level_from_config would choke on a missing value. CRITICAL is
-            # the one setting that cannot lower the root logger's level for the rest of the
-            # session, which "GLOBAL" (-> NOTSET) and the usual levels all do.
+            # required, and CRITICAL is the only value that cannot lower the root logger
             CONF_LOG_LEVEL: ConfigEntry(
                 key=CONF_LOG_LEVEL, type=ConfigEntryType.STRING, value="CRITICAL"
             )
@@ -67,7 +65,7 @@ def test_scan_root_is_the_mountpoint_without_subfolder(subfolder: str | None) ->
     ("subfolder", "expected"),
     [
         ("Music", "Music"),
-        # a leading slash is tolerated, matching what the joined mount source used to accept
+        # a leading slash is tolerated
         ("/Music", "Music"),
         ("Music/", "Music"),
         ("albums/A-K", "albums/A-K"),
@@ -140,8 +138,7 @@ async def test_only_the_mountpoint_is_ever_created() -> None:
     ):
         await provider.handle_async_init()
 
-    # a subfolder created before the mount would be masked by it; one created after would
-    # mean MA silently making a directory on the user's share
+    # created before the mount it would be masked; after it, MA writes to the user's share
     mock_makedirs.assert_awaited_once_with(MOUNT_PATH)
 
 
@@ -167,7 +164,6 @@ async def test_diagnostics_report_the_mountpoint_mount_state() -> None:
 
 def test_traversal_subfolder_is_rejected_before_mounting() -> None:
     """A subfolder escaping the mount is refused while deriving the scan root."""
-    # rejecting in __init__ means there is no instance to mount with, so no mount can follow
     with pytest.raises(SetupFailedError) as exc_info:
         _provider("../../etc")
 
@@ -199,8 +195,7 @@ async def test_failed_cleanup_never_masks_the_missing_subfolder(
         patch.object(provider, "mount", AsyncMock()),
         patch(
             "music_assistant.providers.filesystem_nfs.provider.unmount",
-            # the pre-mount cleanup must succeed; only the post-mount one fails, since a
-            # mountpoint that cannot be freed *before* mounting is a real setup failure
+            # only the post-mount cleanup fails; a blocked pre-mount unmount is a real error
             AsyncMock(side_effect=[None, cleanup_error]),
         ),
         patch(
@@ -247,5 +242,4 @@ async def test_missing_subfolder_fails_setup_instead_of_an_empty_library() -> No
     assert err.translation_args == ["Music"]
     # the internal mountpoint must not leak into user-facing text
     assert MOUNT_PATH not in str(err)
-    # the aborted setup leaves no mount behind
     mock_unmount.assert_awaited()

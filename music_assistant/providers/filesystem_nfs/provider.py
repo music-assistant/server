@@ -67,11 +67,9 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
         :raises SetupFailedError: If the configured subfolder would escape the mountpoint.
         """
         super().__init__(mass, manifest, config, base_path)
-        # the export is mounted exactly as configured and the optional subfolder is a path
-        # *inside* that mount, because NFSv3's rpc.mountd only hands out a filehandle for a
-        # path that is itself exported. That splits the incoming base_path into two roles:
-        # mount_path owns the mount lifecycle, base_path stays the scan/serve root the base
-        # class works from.
+        # NFSv3's rpc.mountd only hands out a filehandle for a path that is itself exported,
+        # so the subfolder can only be a path inside the mount: mount_path owns the mount
+        # lifecycle, base_path is the scan/serve root the base class works from.
         self.mount_path: str = self.base_path
         self._subfolder: str = str(self.get_setup_value(CONF_SUBFOLDER) or "").strip().lstrip("/")
         if not self._subfolder:
@@ -137,14 +135,12 @@ class NFSFileSystemProvider(LocalFileSystemProvider):
         except OSError as err:
             msg = f"NFS mount failed: {err}"
             raise SetupFailedError(msg) from err
-        # the subfolder lives on the remote share, so it can only be checked once mounted.
-        # without this the failure is silent: check_write_access swallows every error and
-        # the sync then just reports an empty library.
+        # the subfolder lives on the share, so it can only be checked once mounted. Raise
+        # rather than leave it to check_write_access, which logs and lets the sync report an
+        # empty library instead.
         if self._subfolder and not await isdir(self.base_path):
-            # a failed handle_async_init never gets unload() called, so drop the mount here
-            # rather than leaving it behind. Best-effort: whether the mountpoint turns out to
-            # be busy (SetupFailedError) or umount itself is unusable (OSError), the missing
-            # subfolder below is the actionable cause and must not be masked by the cleanup.
+            # a failed handle_async_init never gets unload(), so drop the mount here; failing
+            # to must not mask the missing subfolder
             with suppress(SetupFailedError, OSError):
                 await unmount(self.mount_path, self.logger)
             msg = f"Subfolder {self._subfolder} does not exist in the NFS export"
