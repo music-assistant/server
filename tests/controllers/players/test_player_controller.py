@@ -1984,5 +1984,45 @@ async def _skip_player_update_wait(
     yield
 
 
+class TestRemovePlayerControl:
+    """Test removing a registered player control."""
+
+    def test_removal_refreshes_the_players_that_used_it(self, mock_mass: MagicMock) -> None:
+        """Test that only the players configured to use the removed control are refreshed."""
+        mock_mass.loop = MagicMock()
+        controller = PlayerController(mock_mass)
+        using_control = MagicMock()
+        using_control.state.power_control = "switch.amp"
+        using_control.state.volume_control = PLAYER_CONTROL_NATIVE
+        using_control.state.mute_control = PLAYER_CONTROL_NATIVE
+        unrelated = MagicMock()
+        unrelated.state.power_control = PLAYER_CONTROL_NATIVE
+        unrelated.state.volume_control = PLAYER_CONTROL_NATIVE
+        unrelated.state.mute_control = PLAYER_CONTROL_NATIVE
+        controller._players = {"using_control": using_control, "unrelated": unrelated}
+        controller._controls = {
+            "switch.amp": PlayerControl(id="switch.amp", provider="test_prov", name="Amp")
+        }
+
+        controller.remove_player_control("switch.amp")
+
+        assert controller.player_controls() == []
+        mock_mass.loop.call_soon.assert_called_once_with(using_control.refresh_state)
+
+    def test_removing_an_unknown_control_does_nothing(self, mock_mass: MagicMock) -> None:
+        """Test that removing a control that was never registered is a no-op."""
+        mock_mass.loop = MagicMock()
+        controller = PlayerController(mock_mass)
+        player = MagicMock()
+        player.state.power_control = PLAYER_CONTROL_NATIVE
+        player.state.volume_control = PLAYER_CONTROL_NATIVE
+        player.state.mute_control = PLAYER_CONTROL_NATIVE
+        controller._players = {"player": player}
+
+        controller.remove_player_control("switch.gone")
+
+        mock_mass.loop.call_soon.assert_not_called()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

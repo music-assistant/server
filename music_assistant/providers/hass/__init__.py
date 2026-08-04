@@ -792,13 +792,14 @@ class HomeAssistantProvider(PluginProvider):
     async def _subscribe_control_states(self) -> None:
         """Subscribe to the Home Assistant state of all currently tracked controls."""
         assert self._player_controls is not None  # for type checking
-        # register for entity state updates, replacing any earlier subscription
-        if unsubscribe := self._unsubscribe_controls:
-            self._unsubscribe_controls = None
-            unsubscribe()
+        # the earlier subscription is only released once the new one is live, so a failure
+        # to subscribe leaves the controls watched by the subscription they already had
+        previous_unsubscribe = self._unsubscribe_controls
         self._unsubscribe_controls = await self.hass.subscribe_entities(
             self._on_entity_state_update, list(self._player_controls)
         )
+        if previous_unsubscribe:
+            previous_unsubscribe()
 
     async def _handle_player_control_power_on(self, entity_id: str) -> None:
         """Handle powering on the playercontrol."""
