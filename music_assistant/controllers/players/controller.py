@@ -954,9 +954,9 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
         # handle external player control
         if player_control := self._controls.get(player.mute_control):
-            control_name = player_control.name if player_control else player.mute_control
+            control_name = player_control.name
             self.logger.debug("Redirecting mute command to PlayerControl %s", control_name)
-            if not player_control or not player_control.supports_mute:
+            if not player_control.supports_mute:
                 raise UnsupportedFeaturedException(
                     f"Player control {control_name} is not available"
                 )
@@ -3394,9 +3394,9 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 )
         # handle external player control
         elif player_control := self._controls.get(player.state.power_control):
-            control_name = player_control.name if player_control else player.state.power_control
+            control_name = player_control.name
             self.logger.debug("Redirecting power command to PlayerControl %s", control_name)
-            if not player_control or not player_control.supports_power:
+            if not player_control.supports_power:
                 raise UnsupportedFeaturedException(
                     f"Player control {control_name} is not available"
                 )
@@ -3499,9 +3499,9 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             )
         # handle external player control
         if player_control := self._controls.get(player.state.volume_control):
-            control_name = player_control.name if player_control else player.state.volume_control
+            control_name = player_control.name
             self.logger.debug("Redirecting volume command to PlayerControl %s", control_name)
-            if not player_control or not player_control.supports_volume:
+            if not player_control.supports_volume:
                 raise UnsupportedFeaturedException(
                     f"Player control {control_name} is not available"
                 )
