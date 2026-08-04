@@ -1014,8 +1014,9 @@ class HomeAssistantProvider(PluginProvider):
             for entry in result["entities"]
         }
 
-    # the lock sits outside the cache so a burst of lookups collapses into a single
-    # fetch: without it every caller misses the cold cache and fetches its own listing
+    # the lock sits outside the cache to keep a burst of lookups from fetching once per
+    # caller. use_cache stores in the background, so the callers that reach a still-cold
+    # cache can overlap: the burst costs a couple of fetches instead of one per player
     @lock
     @use_cache(expiration=DEVICE_REGISTRY_CACHE_TTL)
     async def _fetch_device_registry(self) -> dict[str, Any]:
