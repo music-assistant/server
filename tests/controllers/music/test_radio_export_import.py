@@ -40,8 +40,10 @@ if TYPE_CHECKING:
     from music_assistant.controllers.tasks import TasksController
     from music_assistant.mass import MusicAssistant
 
-FAKE_DOMAIN = "fake_radio"
-FAKE_INSTANCE = "fake_radio--instance"
+# the instance sorts before "builtin", so a station mapped to both resolves against this
+# provider and exercises the refetch that add_item_to_library performs for other providers
+FAKE_DOMAIN = "beatstream"
+FAKE_INSTANCE = "beatstream--instance"
 BUILTIN_STREAM_URL = "http://stream.example.com/jazz"
 BUILTIN_IMAGE_URL = "http://img.example.com/jazz.jpg"
 
@@ -216,6 +218,47 @@ async def test_export_import_round_trip_restores_stations(radio_mass: MusicAssis
     assert [item["item_id"] for item in stored_radios] == [BUILTIN_STREAM_URL]
     assert stored_radios[0]["name"] == "Jazz FM"
     assert stored_radios[0]["image_url"] == BUILTIN_IMAGE_URL
+
+
+async def test_export_import_keeps_every_provider_mapping(radio_mass: MusicAssistant) -> None:
+    """A station linked to several providers keeps all of those links across a round trip."""
+    mass = radio_mass
+    await _clear_radio_library(mass)
+    await mass.music.add_item_to_library(
+        Radio(
+            item_id=BUILTIN_STREAM_URL,
+            provider="builtin",
+            name="Dual Mapped Station",
+            provider_mappings={
+                ProviderMapping(
+                    item_id=BUILTIN_STREAM_URL,
+                    provider_domain="builtin",
+                    provider_instance="builtin",
+                ),
+                ProviderMapping(
+                    item_id="station-123",
+                    provider_domain=FAKE_DOMAIN,
+                    provider_instance=FAKE_INSTANCE,
+                ),
+            },
+        )
+    )
+
+    m3u_data = await mass.music.radio.export_radios()
+    await _clear_radio_library(mass)
+    task = await mass.music.radio.import_radios(m3u_data)
+    await _wait_for_task_status(mass.tasks, task.id, TaskStatus.SUCCESS)
+
+    items = await mass.music.radio.library_items(summary=False)
+    assert len(items) == 1
+    station = items[0]
+    # the name proves the station was refetched from its provider rather than taken from
+    # the file, which is the path that used to return only that provider's mapping
+    assert station.name == "Provider Owned Radio"
+    assert {(pm.provider_domain, pm.item_id) for pm in station.provider_mappings} == {
+        ("builtin", BUILTIN_STREAM_URL),
+        (FAKE_DOMAIN, "station-123"),
+    }
 
 
 async def test_import_plain_url_m3u_yields_playable_radios(radio_mass: MusicAssistant) -> None:

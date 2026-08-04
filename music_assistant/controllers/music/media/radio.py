@@ -349,7 +349,13 @@ class RadioController(MediaControllerBase[Radio]):
             msg = f"No available provider for radio station {radio.name}"
             raise ProviderUnavailableError(msg)
         library_item = await self.mass.music.add_item_to_library(radio)
-        # a station owned by another provider is refetched from it, discarding anything set
-        # on the object passed in, so the exported favorite goes onto the library item
+        # a station owned by another provider is refetched from it, so the library item comes
+        # back with only that provider's mapping; reattach the ones the file recorded for the
+        # other providers it is loaded on, which the refetch has no way to know about
+        await self.add_provider_mappings(
+            library_item.item_id, [pm for pm in radio.provider_mappings if pm.available]
+        )
+        # the refetch also discards anything set on the object passed in, so the exported
+        # favorite goes onto the library item
         if (item.metadata or {}).get("favorite") == "true":
             await self.set_favorite(library_item.item_id, True)
