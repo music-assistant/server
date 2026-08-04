@@ -197,7 +197,7 @@ async def test_remote_access_gateway_uses_internal_sendspin_url(
     internal_url = "ws://127.0.0.1:8927/sendspin"
     manager = _create_remote_access_manager()
     manager._remote_id = "TEST-REMOTE-ID"
-    cast("Mock", manager.mass).webserver.base_url = "http://192.168.1.5:8095"
+    cast("Mock", manager.webserver).internal_base_url = "http://127.0.0.1:8095"
     cast("Mock", manager.webserver).internal_sendspin_url = internal_url
 
     with (
@@ -213,6 +213,40 @@ async def test_remote_access_gateway_uses_internal_sendspin_url(
 
     assert manager.gateway is not None
     assert manager.gateway.sendspin_url == internal_url
+
+
+@pytest.mark.parametrize(
+    ("internal_base_url", "expected"),
+    [
+        ("http://127.0.0.1:8095", "ws://127.0.0.1:8095/ws"),
+        ("https://127.0.0.1:8095", "wss://127.0.0.1:8095/ws"),
+    ],
+)
+async def test_remote_access_gateway_uses_internal_base_url(
+    cert_pems: tuple[str, str],
+    internal_base_url: str,
+    expected: str,
+) -> None:
+    """Bridge the API data channel to the locally reachable webserver."""
+    manager = _create_remote_access_manager()
+    manager._remote_id = "TEST-REMOTE-ID"
+    # an external base URL must never be dialed back into this host
+    cast("Mock", manager.mass).webserver.base_url = "https://ma.example.com"
+    cast("Mock", manager.webserver).internal_base_url = internal_base_url
+
+    with (
+        patch(
+            "music_assistant.controllers.webserver.remote_access"
+            ".get_or_create_webrtc_certificate_pems",
+            return_value=cert_pems,
+        ),
+        patch.object(manager, "_get_ha_cloud_status", new=AsyncMock(return_value=(False, None))),
+        patch.object(WebRTCGateway, "start", new=AsyncMock()),
+    ):
+        await manager._start_gateway_locked()
+
+    assert manager.gateway is not None
+    assert manager.gateway.local_ws_url == expected
 
 
 async def test_webrtc_gateway_initialization(cert_pems: tuple[str, str]) -> None:
