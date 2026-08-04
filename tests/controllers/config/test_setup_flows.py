@@ -1594,6 +1594,8 @@ async def test_tidal_flow_device_login(
         assert step.type == FlowStepType.EXTERNAL
         assert step.step_id == "device_login"
         assert step.url == "https://link.tidal.com/ABCDE"
+        # the code is also shown on the step, so it can be typed on another device
+        assert step.translation_params == ["ABCDE"]
         session = flow_mass.config._setup_flows[step.flow_id].session
         # approval resolves the poll and the flow finishes on its own
         release.set()

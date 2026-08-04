@@ -2211,7 +2211,7 @@
   "provider.tidal.manifest.description": "Stream music, playlists, and exclusives in lossless FLAC quality.",
   "provider.tidal.media.playlist.favorite_tracks.name": "Favorite Tracks",
   "provider.tidal.setup_flow.abort.login_failed": "Could not link your Tidal account. Please start the setup again.",
-  "provider.tidal.setup_flow.device_login.description": "Open Tidal to approve Music Assistant, the code is filled in for you. This screen updates automatically once you approve. A fresh code appears if it expires.",
+  "provider.tidal.setup_flow.device_login.description": "Your code is {0}. Use the button below to open Tidal with the code already filled in, or go to link.tidal.com on another device and enter it there. This screen updates automatically once you approve.",
   "provider.tidal.setup_flow.device_login.title": "Link your Tidal account",
   "provider.tunein.manifest.description": "Listen to global radio stations, sports, and podcasts through TuneIn.",
   "provider.universal_group.config_entries.dynamic_members.description": "Allow members to (temporary) join/leave the group dynamically.",
