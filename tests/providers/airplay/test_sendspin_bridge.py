@@ -1,7 +1,7 @@
 """
 Unit tests for the Sendspin -> AirPlay bridge timing.
 
-Cover seven things, with the Sendspin clock mocked via ``ManualClock`` so the
+Cover eight things, with the Sendspin clock mocked via ``ManualClock`` so the
 tests are deterministic and independent of the host wall-clock:
 
 * the clock-domain conversion turning a Sendspin audible instant (Sendspin's own
@@ -16,6 +16,8 @@ tests are deterministic and independent of the host wall-clock:
 * the timeline alignment that keeps every chunk at the byte offset its timestamp
   claims, so a discontinuity in the Sendspin timeline does not shift the device
   off the group's clock for the rest of the stream;
+* the playout shift the binary reports after a PCM starvation, which moves the
+  anchor so the device does not stay behind the group once it re-anchors itself;
 * the write pacing that keeps the device buffered a bounded amount ahead of real
   time so a late-join catch-up backlog is not dumped into the CLI;
 * the warm handover: a running, connected stream is kept (not torn down) across
@@ -47,6 +49,8 @@ from music_assistant.providers.airplay.sendspin_bridge import (
     MAX_DEVICE_BUFFER_SECONDS,
     MAX_HELD_AUDIO_US,
     MAX_HELD_CHUNKS,
+    PAD_BLOCK_FRAMES,
+    SILENCE_BLOCK,
     SendspinAirPlayBridge,
     device_buffer_ahead_seconds,
     sendspin_audible_instant_to_unix_ms,
@@ -455,10 +459,13 @@ def _make_anchor_stream(
     """
     Build an AirPlayStream mock the anchor math can run against.
 
-    ``warm_lead_ms`` / ``flushed_head_unix_ms`` must be real ints: the anchor
-    compares them with ``> 0``, which a bare MagicMock cannot answer.
+    The bridge reads these off the stream and does arithmetic on them, so they
+    must be real numbers: the anchor compares ``warm_lead_ms`` /
+    ``flushed_head_unix_ms`` with ``> 0`` and the shift fold subtracts
+    ``cumulative_shift_seconds``, none of which a bare MagicMock can answer.
     """
     stream = MagicMock()
+    stream.cumulative_shift_seconds = 0.0
     stream.connect = AsyncMock()
     stream.wait_for_connection = AsyncMock()
     stream.stop = AsyncMock()
@@ -842,6 +849,192 @@ def test_first_chunk_after_an_anchor_is_not_reported_as_drift() -> None:
     cast("MagicMock", bridge.logger).warning.assert_called_once()
 
 
+def test_a_long_timeline_gap_is_padded_from_one_shared_block() -> None:
+    """
+    A long hole is queued as repeats of one silence block, not as a single buffer.
+
+    Sendspin rebases the shared timeline forward when audio production stalls,
+    which can open a hole of tens of seconds. Building that as one bytes object
+    puts megabytes on the event loop in a single synchronous allocation.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    first_ts = SENDSPIN_EPOCH_US + 250_000
+    _start_stream_at(bridge, first_ts)
+    _drain_queued_bytes(bridge)
+
+    gap_us = 60_000_000
+    next_ts = first_ts + 100_000 + gap_us
+    bridge._on_audio_chunk(_pcm_chunk(next_ts))
+
+    queued: list[bytes] = []
+    while not bridge._write_queue.empty():
+        block = bridge._write_queue.get_nowait()
+        assert block is not None
+        queued.append(block)
+
+    pad, data = queued[:-1], queued[-1]
+    gap_frames = round(gap_us * BRIDGE_SAMPLE_RATE / 1_000_000)
+    assert len(pad) == gap_frames // PAD_BLOCK_FRAMES
+    # Identity, not equality: the whole hole costs one allocation.
+    assert all(block is SILENCE_BLOCK for block in pad)
+    # The hole is still filled exactly, so the device stays on the group's clock.
+    assert sum(len(block) for block in pad) == gap_frames * BRIDGE_BYTES_PER_FRAME
+    assert len(data) == 100_000 * BRIDGE_BYTES_PER_SECOND // 1_000_000
+
+
+# --- Playout shift: the binary's own mid-stream re-anchors move the mapping ---
+
+
+def _shifted_bridge(shift_seconds: float) -> tuple[SendspinAirPlayBridge, MagicMock, int]:
+    """
+    Start a streaming bridge whose CLI reports a mid-stream playout shift.
+
+    :param shift_seconds: Cumulative shift the binary reports since its START.
+    :return: The bridge, its stream mock and the first chunk's timestamp.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    first_ts = SENDSPIN_EPOCH_US + 250_000
+    _start_stream_at(bridge, first_ts)
+    bridge._start_unix_ms = UNIX_NOW_MS
+    _drain_queued_bytes(bridge)
+    stream = MagicMock()
+    # A real float: the fold subtracts it from the applied baseline, which a bare
+    # MagicMock cannot answer.
+    stream.cumulative_shift_seconds = shift_seconds
+    bridge._airplay_stream = stream
+    return bridge, stream, first_ts
+
+
+def test_reported_reanchor_moves_the_anchor_and_the_pacing_start() -> None:
+    """
+    A starvation re-anchor makes every byte audible later, so the anchor follows it.
+
+    cliairplay shifts its playout forward when it runs out of PCM on stdin.
+    Leaving the bridge's mapping where it was would place all following content
+    ahead of where the device actually plays it, for the rest of the stream.
+    """
+    shift_s = 1.5
+    bridge, _, first_ts = _shifted_bridge(shift_s)
+    anchor_before = bridge._drop_until_us
+
+    bridge._on_audio_chunk(_pcm_chunk(first_ts + 100_000))
+
+    assert bridge._drop_until_us == anchor_before + round(shift_s * 1_000_000)
+    # The write pacing measures from the same instant, so it moves with it.
+    assert bridge._start_unix_ms == UNIX_NOW_MS + round(shift_s * 1000)
+
+
+def test_reported_reanchor_skips_content_until_the_device_catches_up() -> None:
+    """The device plays the shift late, so exactly that much content is dropped."""
+    shift_s = 0.5
+    bridge, _, first_ts = _shifted_bridge(shift_s)
+
+    fed_us = 1_000_000
+    for index in range(fed_us // 100_000):
+        bridge._on_audio_chunk(_pcm_chunk(first_ts + 100_000 * (index + 1)))
+
+    assert bridge._queued_frames == _expected_frames(bridge, first_ts + 100_000 + fed_us)
+    assert _drain_queued_bytes(bridge) == round(
+        (fed_us / 1_000_000 - shift_s) * BRIDGE_BYTES_PER_SECOND
+    )
+
+
+def test_absorbing_a_reanchor_is_not_reported_as_timeline_drift() -> None:
+    """The trim that works a folded shift off is a correction, not Sendspin drift."""
+    bridge, _, first_ts = _shifted_bridge(0.5)
+    logger = cast("MagicMock", bridge.logger)
+
+    # Straddles the shifted anchor, so it is trimmed rather than dropped outright.
+    bridge._on_audio_chunk(_pcm_chunk(first_ts + 550_000))
+
+    assert bridge._queued_frames == _expected_frames(bridge, first_ts + 650_000)
+    # Only the re-anchor itself is reported; the trim it caused stays quiet.
+    logger.warning.assert_called_once()
+    logger.warning.reset_mock()
+
+    # Back on the timeline: the shift is worked off and nothing is realigned.
+    bridge._on_audio_chunk(_pcm_chunk(first_ts + 650_000))
+    assert not bridge._absorbing_shift
+    logger.warning.assert_not_called()
+
+    # A real discontinuity is reported again.
+    bridge._on_audio_chunk(_pcm_chunk(first_ts + 1_500_000))
+    logger.warning.assert_called_once()
+
+
+def test_a_cursor_off_the_frame_grid_still_absorbs_quietly() -> None:
+    """
+    The trim stays quiet however the cursor happens to sit when the shift lands.
+
+    ``_align_chunk`` re-targets each chunk against the anchor independently, so
+    the cursor routinely rests a frame either side of the timeline. The trim a
+    fold asks for is a correction at any of those offsets, never Sendspin drift.
+    """
+    bridge, stream, first_ts = _shifted_bridge(0.0)
+    logger = cast("MagicMock", bridge.logger)
+
+    # Play on a while first, so the cursor sits well past the anchor the way it
+    # does mid-stream when a starvation hits.
+    for index in range(1, 11):
+        bridge._on_audio_chunk(_pcm_chunk(first_ts + 100_000 * index))
+    logger.warning.assert_not_called()
+
+    # A frame past the timeline: the trim the fold asks for then runs one frame
+    # deeper than the shift itself.
+    bridge._queued_frames += 1
+    stream.cumulative_shift_seconds = 0.5
+    bridge._on_audio_chunk(_pcm_chunk(first_ts + 1_100_000))
+
+    # Only the re-anchor itself is reported.
+    logger.warning.assert_called_once()
+
+
+def test_an_unchanged_reanchor_total_is_folded_only_once() -> None:
+    """The binary reports a running total, so only what is new moves the anchor."""
+    bridge, _, first_ts = _shifted_bridge(0.5)
+    bridge._on_audio_chunk(_pcm_chunk(first_ts + 600_000))
+    anchor_after_fold = bridge._drop_until_us
+    assert anchor_after_fold == first_ts + 500_000
+
+    bridge._on_audio_chunk(_pcm_chunk(first_ts + 700_000))
+
+    assert bridge._drop_until_us == anchor_after_fold
+
+
+def test_a_reset_reanchor_total_rebaselines_without_moving_the_anchor() -> None:
+    """
+    A total that went backwards means a START already replaced the mapping.
+
+    The binary zeroes its running total on every START, so the drop is not the
+    device un-shifting: the bridge takes the new baseline and leaves the anchor
+    to the START that set it.
+    """
+    bridge, stream, first_ts = _shifted_bridge(0.5)
+    bridge._on_audio_chunk(_pcm_chunk(first_ts + 600_000))
+    anchor_after_fold = bridge._drop_until_us
+    assert anchor_after_fold == first_ts + 500_000
+
+    stream.cumulative_shift_seconds = 0.0
+    bridge._on_audio_chunk(_pcm_chunk(first_ts + 700_000))
+
+    assert bridge._drop_until_us == anchor_after_fold
+    assert bridge._applied_shift_seconds == 0.0
+
+
+async def test_anchoring_clears_the_folded_shift_baseline() -> None:
+    """A START re-anchors the binary from scratch, so the fold starts over with it."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    stream = _make_anchor_stream(ack=UNIX_NOW_MS + COLD_LEAD_MS)
+    _prepare_anchor(bridge, stream, COLD_LEAD_MS)
+    bridge._applied_shift_seconds = 1.5
+    bridge._absorbing_shift = True
+
+    assert await _anchor(bridge, stream)
+
+    assert bridge._applied_shift_seconds == 0.0
+    assert not bridge._absorbing_shift
+
+
 @pytest.mark.parametrize(
     ("warm_lead_ms", "flushed_head_offset_ms", "adjust_ms", "expected_anchor_offset_ms"),
     [
@@ -935,6 +1128,9 @@ def _make_kept_stream(*, running: bool = True, connected: bool = True) -> MagicM
     stream = MagicMock()
     stream.running = running
     stream.connected = connected
+    # A real float: the shift fold subtracts it from the applied baseline, which
+    # a bare MagicMock cannot answer.
+    stream.cumulative_shift_seconds = 0.0
     return stream
 
 
