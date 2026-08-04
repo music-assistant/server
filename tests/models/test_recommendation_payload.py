@@ -433,11 +433,11 @@ async def test_refresh_single_flight_concurrent_calls_fetch_once() -> None:
 @pytest.mark.asyncio
 async def test_cancelled_waiter_does_not_cancel_shared_fetch() -> None:
     """
-    A timed-out caller is shielded from the shared fetch: other waiters still get the payload.
+    A timed-out caller leaves the shared fetch alone: other waiters still get the payload.
 
-    Regression test: the controller's asyncio.timeout cancels the calling task; without
-    asyncio.shield that cancellation would propagate into the shared single-flight task,
-    raising CancelledError in every other waiter and preventing the cache from warming.
+    Regression test: the controller's asyncio.timeout cancels the calling task; if that
+    cancellation propagated into the shared single-flight task it would raise
+    CancelledError in every other waiter and prevent the cache from warming.
     """
     payload = _make_payload()
     gate = asyncio.Event()
@@ -486,7 +486,7 @@ async def test_sole_cancelled_waiter_fetch_still_warms_memory_and_cache() -> Non
     gate.set()
     await _drain_background(provider)
 
-    # the shielded fetch completed anyway: memory and cache are warm, no second fetch
+    # the fetch completed anyway: memory and cache are warm, no second fetch
     assert await provider._recommendation_payload() == payload
     fetch.assert_awaited_once()
     assert provider._cache_store[_PAYLOAD_CACHE_KEY] == _payload_dicts(payload)
@@ -517,6 +517,39 @@ async def test_failed_fetch_propagates_to_all_waiters_and_retries() -> None:
     fetch.return_value = payload
     assert await provider._recommendation_payload() == payload
     assert fetch.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_cancelled_waiter_of_a_failing_fetch_logs_no_loop_error() -> None:
+    """A fetch failing after a caller timed out is not reported to the loop handler."""
+    gate = asyncio.Event()
+
+    async def _failing_fetch() -> list[RecommendationFolder]:
+        await gate.wait()
+        raise RuntimeError("backend down")
+
+    provider = _PayloadProvider(AsyncMock(side_effect=_failing_fetch))
+
+    loop = asyncio.get_running_loop()
+    reported: list[dict[str, Any]] = []
+    loop.set_exception_handler(lambda _loop, context: reported.append(context))
+    try:
+        fast_caller = asyncio.create_task(provider._recommendation_payload())
+        slow_caller = asyncio.create_task(provider._recommendation_payload())
+        await asyncio.sleep(0)
+        # simulate the rows call timing out before the fetch fails
+        fast_caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await fast_caller
+        gate.set()
+        with pytest.raises(RuntimeError, match="backend down"):
+            await slow_caller
+        # let any done callback left on the fetch run before asserting
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(None)
+
+    assert reported == []
 
 
 @pytest.mark.asyncio

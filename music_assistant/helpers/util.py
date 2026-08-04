@@ -958,9 +958,14 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
     if not (pending := _ip_addresses_pending.get(include_ipv6)):
         pending = asyncio.create_task(_probe())
         _ip_addresses_pending[include_ipv6] = pending
-    # shield the shared probe: a caller awaiting a task holds it as its fut_waiter,
-    # so cancelling that caller would otherwise cancel the probe for all other callers
-    return await asyncio.shield(pending)
+    # wait for the shared probe instead of awaiting it directly: a caller awaiting a task
+    # holds it as its fut_waiter, so cancelling that caller would otherwise cancel the probe
+    # for all other callers. asyncio.shield achieves the same, but as of Python 3.14 a
+    # cancelled caller makes it report the probe's exception through
+    # loop.call_exception_handler, even when another caller already handled it.
+    if not pending.done():
+        await asyncio.wait((pending,))
+    return pending.result()
 
 
 def _enumerate_ip_addresses(include_ipv6: bool) -> tuple[str, ...]:

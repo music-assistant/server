@@ -320,6 +320,38 @@ class TestGetIpAddresses:
             assert await task_b == ("192.168.1.10",)
         assert enumerate_mock.call_count == 1
 
+    @pytest.mark.asyncio
+    async def test_cancelled_caller_of_a_failing_probe_logs_no_loop_error(self) -> None:
+        """A probe failing after a caller gave up is not reported to the loop handler."""
+
+        def failing_enumerate(_include_ipv6: bool) -> tuple[str, ...]:
+            time.sleep(0.1)
+            raise OSError("probe failed")
+
+        loop = asyncio.get_running_loop()
+        reported: list[dict[str, object]] = []
+        loop.set_exception_handler(lambda _loop, context: reported.append(context))
+        try:
+            with patch(
+                "music_assistant.helpers.util._enumerate_ip_addresses",
+                side_effect=failing_enumerate,
+            ):
+                task_a = asyncio.create_task(util.get_ip_addresses())
+                task_b = asyncio.create_task(util.get_ip_addresses())
+                # let both callers await the (same) in-flight probe, then cancel one
+                await asyncio.sleep(0.02)
+                task_a.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task_a
+                with pytest.raises(OSError, match="probe failed"):
+                    await task_b
+            # let any done callback left on the probe run before asserting
+            await asyncio.sleep(0)
+        finally:
+            loop.set_exception_handler(None)
+
+        assert reported == []
+
 
 class TestSanitizeHttpHeaderValue:
     """sanitize_http_header_value strips characters aiohttp forbids in response headers."""
