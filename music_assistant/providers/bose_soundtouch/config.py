@@ -67,7 +67,7 @@ SEARCHABLE_MEDIA_TYPES = (
 )
 DEFAULT_MEDIA_TYPE = MediaType.PLAYLIST
 MEDIA_TYPE_OPTIONS = [
-    ConfigValueOption(value=media_type.value)
+    ConfigValueOption(title=media_type.value.lower(), value=media_type.value)
     for media_type in SEARCHABLE_MEDIA_TYPES
 ]
 PRESET_TARGET_OPTIONS = [
