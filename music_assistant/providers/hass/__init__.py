@@ -37,9 +37,10 @@ from music_assistant_models.player_control import PlayerControl
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
+from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.datetime import iso_from_utc_timestamp
 from music_assistant.helpers.json import SerializableType
-from music_assistant.helpers.util import try_parse_int
+from music_assistant.helpers.util import lock, try_parse_int
 from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
 
 from .constants import OFF_STATES, MediaPlayerEntityFeature, parse_supported_features
@@ -77,6 +78,9 @@ STATE_FETCH_BATCH_SIZE = 500
 # window to collect entity registry updates in, so an integration registering a
 # batch of entities results in a single rebuild of the engine lists
 ENGINE_REFRESH_DEBOUNCE = 2
+# window in which repeated device lookups reuse one listing, so a burst of players
+# connecting does not fetch the (unfilterable) device registry once per player
+DEVICE_REGISTRY_CACHE_TTL = 60
 
 # Home Assistant entity domains Music Assistant can offer as player controls.
 CONTROL_DOMAINS = ("media_player", "switch", "input_boolean", "number", "input_number")
@@ -405,6 +409,16 @@ class HomeAssistantProvider(PluginProvider):
         )
         return {entity_id: entry for entity_id, entry in result.items() if entry is not None}
 
+    async def get_device_registry(self) -> dict[str, Device]:
+        """
+        Return the Home Assistant device registry, keyed by device ID.
+
+        Home Assistant offers no abbreviated variant of the device registry listing, so the
+        entries carry all of their fields. The listing is reused for a short while, so a
+        device change may take up to DEVICE_REGISTRY_CACHE_TTL seconds to be reflected.
+        """
+        return await self._fetch_device_registry()
+
     async def get_media_player_device_infos(
         self,
         mac_addresses: Collection[str],
@@ -425,10 +439,10 @@ class HomeAssistantProvider(PluginProvider):
         wanted_macs = {mac.lower() for mac in mac_addresses}
         if not wanted_macs:
             return {}
-        device_registry = await self.hass.get_device_registry()
+        device_registry = await self.get_device_registry()
         device_by_mac: dict[str, Device] = {
             connection[1].lower(): device
-            for device in device_registry
+            for device in device_registry.values()
             for connection in device.get("connections", [])
             if len(connection) == 2
             and connection[0] == "mac"
@@ -1038,6 +1052,17 @@ class HomeAssistantProvider(PluginProvider):
             )
             for entry in result["entities"]
         }
+
+    # the lock sits outside the cache to keep a burst of lookups from fetching once per
+    # caller. use_cache stores in the background, so the callers that reach a still-cold
+    # cache can overlap: the burst costs a couple of fetches instead of one per player
+    @lock
+    @use_cache(expiration=DEVICE_REGISTRY_CACHE_TTL)
+    async def _fetch_device_registry(self) -> dict[str, Any]:
+        """Fetch the device registry from Home Assistant, keyed by device ID."""
+        # use_cache rebuilds the cached value from this return annotation, which rules out
+        # the Device TypedDict; get_device_registry restores the type for callers
+        return {device["id"]: device for device in await self.hass.get_device_registry()}
 
 
 def _get_control_capabilities(state: State, logger: logging.Logger) -> _ControlCapabilities:

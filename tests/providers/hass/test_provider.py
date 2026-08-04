@@ -33,6 +33,7 @@ LAST_CHANGED_ISO = "2023-05-11T19:18:36.072648+00:00"
 CONTEXT_ID = "01H0640ES8JCY1NGTNW3V41T5T"
 REGISTRY_LIST_COMMAND = "config/entity_registry/list_for_display"
 REGISTRY_ENTRIES_COMMAND = "config/entity_registry/get_entries"
+DEVICE_REGISTRY_LIST = "get_device_registry"
 
 
 def _state(entity_id: str, friendly_name: str) -> dict[str, Any]:
@@ -75,10 +76,41 @@ def _config(**values: Any) -> MagicMock:
     return config
 
 
+class _Cache:
+    """Provide the slice of the cache controller that @use_cache relies on."""
+
+    def __init__(self) -> None:
+        self.entries: dict[str, Any] = {}
+        self.fresh = True
+
+    async def get_with_freshness(self, key: str, **kwargs: Any) -> tuple[Any, bool, bool]:
+        """Return the (data, is_fresh, found) triplet for the given key."""
+        # the real controller reads the cache database here, so yield like it does:
+        # @use_cache stores in the background, and only a yield lets that store land
+        await asyncio.sleep(0)
+        if key not in self.entries:
+            return None, False, False
+        if not self.fresh and not kwargs.get("include_expired"):
+            return None, False, False
+        return self.entries[key], self.fresh, True
+
+    async def set(self, key: str, data: Any, **kwargs: Any) -> None:
+        """Store data under the given key."""
+        # the real controller serializes on a worker thread and then writes the cache
+        # database, so a store lands well after the call that scheduled it returned
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        self.entries[key] = data
+
+    def expire_all(self) -> None:
+        """Mark every stored entry as no longer fresh."""
+        self.fresh = False
+
+
 def _mass() -> MagicMock:
     """Return the Music Assistant dependencies used during provider startup."""
     mass = MagicMock()
-    mass.cache = MagicMock()
+    mass.cache = _Cache()
     mass.http_session = MagicMock()
     mass.http_session_no_ssl = MagicMock()
     mass.create_task.side_effect = asyncio.create_task
@@ -122,6 +154,8 @@ class _HomeAssistantClient:
         self.compressed_states = {state["entity_id"]: _compressed(state) for state in states}
         # entities Home Assistant reports as disabled, so leaves out of the registry listing
         self.disabled_entities: set[str] = set()
+        # devices as returned in full by the device registry listing
+        self.devices: list[dict[str, Any]] = []
         # events delivered ahead of a subscription's initial state message
         self.leading_events: list[dict[str, Any]] = []
         self.deliver_initial_states = True
@@ -196,6 +230,11 @@ class _HomeAssistantClient:
             self.active_event_subscriptions -= 1
 
         return _unsubscribe
+
+    async def get_device_registry(self) -> list[dict[str, Any]]:
+        """Return the full device registry listing."""
+        self.calls.append(DEVICE_REGISTRY_LIST)
+        return list(self.devices)
 
     def fire_event(self, event_type: str, data: dict[str, Any]) -> None:
         """Deliver an event to every subscriber of the given event type."""
@@ -279,6 +318,14 @@ async def _start_provider(
         yield provider, hass
     finally:
         await provider.unload()
+
+
+async def _wait_for_stored(provider: HomeAssistantProvider) -> None:
+    """Wait until the background store of the device listing has landed in the cache."""
+    cache = cast("_Cache", provider.mass.cache)
+    async with asyncio.timeout(1):
+        while not cache.entries:
+            await asyncio.sleep(0)
 
 
 async def _fire_registry_update(
@@ -727,6 +774,68 @@ async def test_registry_changed_during_the_fetch_is_not_cached() -> None:
         registry_fetches = hass.calls.count(REGISTRY_LIST_COMMAND)
         await provider.get_states(domains=("tts",))
         assert hass.calls.count(REGISTRY_LIST_COMMAND) == registry_fetches + 1
+
+
+async def test_device_registry_is_reused_within_the_cache_window() -> None:
+    """Serve a later device lookup from the cached listing."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        hass.devices = [{"id": "dev1"}]
+
+        assert await provider.get_device_registry() == {"dev1": {"id": "dev1"}}
+        await _wait_for_stored(provider)
+        await provider.get_device_registry()
+
+        assert hass.calls.count(DEVICE_REGISTRY_LIST) == 1
+
+
+async def test_device_registry_is_refetched_once_the_cache_window_passed() -> None:
+    """Fetch the device listing again once the cached entry is no longer fresh."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        hass.devices = [{"id": "dev1"}]
+        await provider.get_device_registry()
+        hass.devices = [{"id": "dev1"}, {"id": "dev2"}]
+
+        cast("_Cache", provider.mass.cache).expire_all()
+
+        assert list(await provider.get_device_registry()) == ["dev1", "dev2"]
+        assert hass.calls.count(DEVICE_REGISTRY_LIST) == 2
+
+
+async def test_device_entries_survive_the_cache_round_trip() -> None:
+    """Return a cached device entry with all of its fields intact."""
+    device = {
+        "id": "dev1",
+        "name": "Kitchen Speaker",
+        "name_by_user": None,
+        "connections": [["mac", "aa:bb:cc:dd:ee:ff"]],
+        "manufacturer": "ESPHome",
+    }
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        hass.devices = [device]
+
+        fetched = await provider.get_device_registry()
+        await _wait_for_stored(provider)
+        cached = await provider.get_device_registry()
+
+        assert hass.calls.count(DEVICE_REGISTRY_LIST) == 1
+        # the cached read is reconstructed from the return annotation, so it must not
+        # drop or reshape any of the device fields
+        assert cached == fetched == {"dev1": device}
+
+
+async def test_concurrent_device_lookups_do_not_fetch_per_caller() -> None:
+    """Keep a burst of concurrent device lookups off a fetch-per-caller path."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        hass.devices = [{"id": "dev1"}]
+
+        async with asyncio.timeout(1):
+            results = await asyncio.gather(*(provider.get_device_registry() for _ in range(20)))
+
+        assert all(list(result) == ["dev1"] for result in results)
+        # the lock keeps the fetch count flat instead of growing with the burst; it does
+        # not reach one, because use_cache stores in the background and the caller right
+        # behind the first one still finds the cache cold
+        assert hass.calls.count(DEVICE_REGISTRY_LIST) <= 2
 
 
 async def test_disabled_entity_is_never_requested() -> None:
