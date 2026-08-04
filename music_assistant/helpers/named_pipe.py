@@ -59,12 +59,15 @@ class AsyncNamedPipeWriter:
         """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        while not self._ensure_write_fd():
+        while True:
+            # a concurrent write opens the same descriptor from its worker thread
+            async with self._write_lock:
+                if self._ensure_write_fd():
+                    return True
             remaining = deadline - loop.time()
             if remaining <= 0:
                 return False
             await asyncio.sleep(min(0.05, remaining))
-        return True
 
     async def write(self, data: bytes) -> bool:
         """

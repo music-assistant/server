@@ -805,6 +805,29 @@ async def test_command_pipe_wait_for_reader_uses_no_worker_thread(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_command_pipe_wait_for_reader_defers_to_an_in_flight_write(tmp_path: Path) -> None:
+    """The reader wait leaves the descriptor to a write that is already under way."""
+    pipe_path = tmp_path / "commands"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+    read_fd = os.open(pipe_path, os.O_RDONLY | os.O_NONBLOCK)
+
+    try:
+        await writer._write_lock.acquire()
+        wait = asyncio.create_task(writer.wait_for_reader(timeout=1))
+        await asyncio.sleep(0)
+
+        # a reader is attached the whole time, so only the write lock holds this up
+        assert not wait.done()
+
+        writer._write_lock.release()
+        assert await wait is True
+    finally:
+        os.close(read_fd)
+        await writer.remove()
+
+
+@pytest.mark.asyncio
 async def test_command_pipe_write_reuses_the_fd_from_the_reader_wait(tmp_path: Path) -> None:
     """A command written after the reader wait rides the descriptor that wait opened."""
     pipe_path = tmp_path / "commands"
