@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -52,6 +52,33 @@ from music_assistant.controllers.players import PlayerController
 from tests.common import MockPlayer, MockProvider
 
 
+def _player_config_stub(
+    values: dict[str, object] | None = None,
+    *,
+    min_volume: int = 0,
+    max_volume: int = 100,
+) -> Callable[..., object]:
+    """
+    Build a ``get_raw_player_config_value`` side effect.
+
+    :param values: Extra config keys to answer, e.g. ``{CONF_MUTE_CONTROL: PLAYER_CONTROL_FAKE}``.
+    :param min_volume: Value returned for the ``min_volume`` key.
+    :param max_volume: Value returned for the ``max_volume`` key.
+    """
+    config: dict[str, object] = {
+        "min_volume": min_volume,
+        "max_volume": max_volume,
+        **(values or {}),
+    }
+
+    def _conf(_player_id: str, key: str, default: object = None) -> object:
+        if key in config:
+            return config[key]
+        return default if default is not None else "auto"
+
+    return _conf
+
+
 @pytest.fixture
 def mock_mass() -> MagicMock:
     """Create a mock MusicAssistant instance."""
@@ -60,18 +87,7 @@ def mock_mass() -> MagicMock:
     mass.loop = None
     mass.config = MagicMock()
     mass.config.get = MagicMock(return_value=[])
-
-    def _get_raw_player_config_value(
-        _player_id: str, key: str, default: str | int | None = None
-    ) -> str | int | None:
-        """Return appropriate defaults for player config values."""
-        if key == "min_volume":
-            return 0
-        if key == "max_volume":
-            return 100
-        return default if default is not None else "auto"
-
-    mass.config.get_raw_player_config_value = MagicMock(side_effect=_get_raw_player_config_value)
+    mass.config.get_raw_player_config_value = MagicMock(side_effect=_player_config_stub())
     # Return "GLOBAL" for log level config (standard default)
     mass.config.get_raw_core_config_value = MagicMock(return_value="GLOBAL")
     mass.config.set = MagicMock()
@@ -564,16 +580,9 @@ class TestCmdUngroupNewBranches:
         group._attr_supported_features = {PlayerFeature.POWER}
 
         # ensure power_control resolves to NATIVE so cmd_ungroup uses the power path
-        def _conf(_player_id: str, key: str, default: object = None) -> object:
-            if key == "power_control":
-                return "native"
-            if key == "min_volume":
-                return 0
-            if key == "max_volume":
-                return 100
-            return default if default is not None else "auto"
-
-        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub({CONF_POWER_CONTROL: "native"})
+        )
 
         controller._players = {"g1": group}
         mock_mass.players = controller
@@ -1178,15 +1187,9 @@ class TestVolumeScalingOnRedirect:
         self, controller: PlayerController, mock_mass: MagicMock
     ) -> None:
         """A volume command redirected to an external control honors the user-facing max_volume."""
-
-        def _conf(_player_id: str, key: str, default: object = None) -> object:
-            if key == "min_volume":
-                return 0
-            if key == "max_volume":
-                return 50
-            return default if default is not None else "auto"
-
-        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub(max_volume=50)
+        )
 
         volume_set = AsyncMock()
         control = PlayerControl(
@@ -1213,15 +1216,9 @@ class TestVolumeScalingOnRedirect:
         self, controller: PlayerController, mock_mass: MagicMock
     ) -> None:
         """A volume command redirected to a control lacking volume support is rejected."""
-
-        def _conf(_player_id: str, key: str, default: object = None) -> object:
-            if key == "min_volume":
-                return 0
-            if key == "max_volume":
-                return 50
-            return default if default is not None else "auto"
-
-        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub(max_volume=50)
+        )
 
         volume_set = AsyncMock()
         control = PlayerControl(
@@ -1252,17 +1249,9 @@ class TestExternalPowerControl:
         self, mock_mass: MagicMock, control: PlayerControl
     ) -> tuple[PlayerController, MockPlayer]:
         """Build a controller with a single player whose power control is the given control."""
-
-        def _conf(_player_id: str, key: str, default: object = None) -> object:
-            if key == "min_volume":
-                return 0
-            if key == "max_volume":
-                return 100
-            if key == CONF_POWER_CONTROL:
-                return control.id
-            return default if default is not None else "auto"
-
-        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub({CONF_POWER_CONTROL: control.id})
+        )
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         player = MockPlayer(provider, "player_1", "Player 1")
@@ -1376,14 +1365,9 @@ class TestEnforceVolumeLimits:
 
     @staticmethod
     def _set_limits(mock_mass: MagicMock, min_volume: int, max_volume: int) -> None:
-        def _conf(_player_id: str, key: str, default: object = None) -> object:
-            if key == "min_volume":
-                return min_volume
-            if key == "max_volume":
-                return max_volume
-            return default if default is not None else "auto"
-
-        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub(min_volume=min_volume, max_volume=max_volume)
+        )
 
     @staticmethod
     def _player(logical_volume: int | None) -> SimpleNamespace:
@@ -1451,17 +1435,9 @@ class TestFakeMuteControl:
 
     def _make_player(self, mock_mass: MagicMock) -> tuple[PlayerController, MockPlayer, AsyncMock]:
         """Build a controller with a single player using fake mute control."""
-
-        def _conf(_player_id: str, key: str, default: object = None) -> object:
-            if key == "min_volume":
-                return 0
-            if key == "max_volume":
-                return 100
-            if key == CONF_MUTE_CONTROL:
-                return PLAYER_CONTROL_FAKE
-            return default if default is not None else "auto"
-
-        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub({CONF_MUTE_CONTROL: PLAYER_CONTROL_FAKE})
+        )
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         player = MockPlayer(provider, "player_1", "Player 1")
@@ -1535,19 +1511,11 @@ class TestMuteControlGuard:
         controls: dict[str, PlayerControl] | None = None,
     ) -> tuple[PlayerController, MockPlayer]:
         """Build a controller with a single player using the given control config."""
-
-        def _conf(_player_id: str, key: str, default: object = None) -> object:
-            if key == "min_volume":
-                return 0
-            if key == "max_volume":
-                return 100
-            if key == CONF_MUTE_CONTROL:
-                return mute_control
-            if key == CONF_VOLUME_CONTROL:
-                return volume_control
-            return default if default is not None else "auto"
-
-        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub(
+                {CONF_MUTE_CONTROL: mute_control, CONF_VOLUME_CONTROL: volume_control}
+            )
+        )
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         player = MockPlayer(provider, "player_1", "Player 1")
