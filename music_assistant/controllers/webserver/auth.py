@@ -1793,9 +1793,15 @@ class AuthenticationManager:
                 break
 
         if ha_provider:
-            # Get URL from the HA provider config
-            ha_url = ha_provider.config.get_value("url")
-            assert isinstance(ha_url, str)
+            # the connection URL is collected by the HA provider's setup flow
+            # (with fallback to a config entry value for add-on installs)
+            ha_url = ha_provider.get_setup_value("url")
+            if not isinstance(ha_url, str) or not ha_url:
+                self.logger.warning(
+                    "Home Assistant provider has no URL configured, "
+                    "Home Assistant OAuth login is not available"
+                )
+                return
             ha_config: HomeAssistantProviderConfig = {"ha_url": ha_url}
             self.login_providers["homeassistant"] = HomeAssistantOAuthProvider(
                 self.mass, "homeassistant", ha_config
@@ -1821,9 +1827,17 @@ class AuthenticationManager:
         if ha_provider:
             # HA provider exists and is available - ensure OAuth provider is registered
             if "homeassistant" not in self.login_providers:
-                # Get URL from the HA provider config
-                ha_url = ha_provider.config.get_value("url")
-                assert isinstance(ha_url, str)
+                # the connection URL is collected by the HA provider's setup flow
+                # (with fallback to a config entry value for add-on installs)
+                ha_url = ha_provider.get_setup_value("url")
+                if not isinstance(ha_url, str) or not ha_url:
+                    # missing URL must never break the login providers endpoint,
+                    # simply leave the HA OAuth provider unregistered
+                    self.logger.debug(
+                        "Home Assistant provider has no URL configured, "
+                        "Home Assistant OAuth login is not available"
+                    )
+                    return
                 ha_config: HomeAssistantProviderConfig = {"ha_url": ha_url}
                 self.login_providers["homeassistant"] = HomeAssistantOAuthProvider(
                     self.mass, "homeassistant", ha_config
