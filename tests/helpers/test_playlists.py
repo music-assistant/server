@@ -753,6 +753,35 @@ def test_media_item_to_playlist_item_multiple_providers() -> None:
     assert result.path == "tidal://track/t2"
 
 
+def test_radio_entries_round_trip() -> None:
+    """Test that radio entries survive generation and parsing unchanged."""
+    items = [
+        PlaylistItem(
+            path="http://stream.example.com/radio1",
+            title="Jazz FM",
+            length="-1",
+            metadata={"media_type": "radio"},
+        ),
+        PlaylistItem(
+            path="http://stream.example.com/radio2",
+            title="Classic Rock Radio",
+            length="-1",
+            metadata={"media_type": "radio"},
+        ),
+    ]
+    m3u_data = generate_m3u("Radio Stations", items)
+    parsed = parse_m3u(m3u_data)
+
+    assert len(parsed) == 2
+    assert parsed[0].path == "http://stream.example.com/radio1"
+    assert parsed[0].title == "Jazz FM"
+    assert parsed[0].metadata is not None
+    assert parsed[0].metadata["media_type"] == "radio"
+    assert parsed[1].path == "http://stream.example.com/radio2"
+    assert parsed[1].title == "Classic Rock Radio"
+    assert parse_m3u_playlist_name(m3u_data) == "Radio Stations"
+
+
 def test_zero_duration_track_round_trips_unknown_length() -> None:
     """Test that a zero-duration track gets an #EXTINF:-1 line that parses back to None."""
     track = Track(
@@ -814,12 +843,20 @@ def test_construct_plain_url_gets_builtin_mapping() -> None:
     assert media_item.item_id == "http://stream.example.com/radio1"
 
 
-def test_construct_non_url_path_gets_no_fallback_mapping() -> None:
-    """A bare relative path is not something builtin can stream, so it stays unmapped."""
-    item = PlaylistItem(path="some/relative/file.mp3")
-
+@pytest.mark.parametrize(
+    "path",
+    [
+        "some/relative/file.mp3",
+        "/media/library/file.mp3",
+        # an MA-style provider URI is not a stream url; builtin would ffprobe it and fail
+        "radiobrowser://radio/123",
+        "file://host/share/file.mp3",
+    ],
+)
+def test_construct_non_stream_url_gets_no_fallback_mapping(path: str) -> None:
+    """Only a plain stream url falls back to builtin; anything else stays unmapped."""
     media_item = construct_media_item_from_playlist_item(
-        item, cast("Any", _mass_with_builtin()), MediaType.RADIO
+        PlaylistItem(path=path), cast("Any", _mass_with_builtin()), MediaType.RADIO
     )
 
     assert media_item is not None

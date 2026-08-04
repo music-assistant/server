@@ -30,6 +30,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.helpers.aiohttp_client import encoded_request_url
+from music_assistant.helpers.uri import BUILTIN_URL_SCHEMES
 from music_assistant.helpers.util import detect_charset, try_parse_int
 
 if TYPE_CHECKING:
@@ -428,7 +429,7 @@ def construct_media_item_from_playlist_item(
     duration = try_parse_int(item.length, default=None) if item.length else None
 
     provider_mappings = _resolve_provider_mappings(item, mass)
-    if not provider_mappings and item.is_url:
+    if not provider_mappings and item.path.startswith(BUILTIN_URL_SCHEMES):
         provider_mappings = _builtin_fallback_mappings(item.path, mass)
     external_ids = _collect_external_ids(metadata)
 

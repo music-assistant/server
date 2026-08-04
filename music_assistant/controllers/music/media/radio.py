@@ -91,9 +91,9 @@ class RadioController(MediaControllerBase[Radio]):
         items: list[PlaylistItem] = []
         async for radio in self.iter_library_items():
             entry = media_item_to_playlist_item(radio)
-            if radio.favorite and entry.metadata is not None:
+            if radio.favorite:
                 # favorite is library-level user state, so only a library export carries it
-                entry.metadata["favorite"] = "true"
+                entry.metadata = {**(entry.metadata or {}), "favorite": "true"}
             items.append(entry)
         return generate_m3u("Radio Stations", items)
 
