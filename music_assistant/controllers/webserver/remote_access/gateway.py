@@ -501,10 +501,10 @@ class WebRTCGateway:
         async with self._http_proxy_semaphore:
             try:
                 # Use shared HTTP session for this request
-                # TLS verification would fail on the bind address and adds nothing to a dial
-                # that never leaves this host
+                # this dial never leaves the host: TLS verification would fail on the bind
+                # address, and an unfollowed redirect cannot take the unverified dial off-host
                 async with self.http_session.request(
-                    method, local_http_url, headers=headers, ssl=False
+                    method, local_http_url, headers=headers, ssl=False, allow_redirects=False
                 ) as response:
                     body = await response.read()
                     await self._send_http_proxy_response(
@@ -639,7 +639,7 @@ class WebRTCGateway:
             # that never leaves this host
             session.local_ws = await self.http_session.ws_connect(ws_url, ssl=False)
         except Exception:
-            self.logger.exception("Failed to connect to local WebSocket")
+            self.logger.exception("Failed to connect to local WebSocket %s", self.local_ws_url)
             channel.close()
             self._schedule_close(session.session_id)
             return

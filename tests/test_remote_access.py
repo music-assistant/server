@@ -8,7 +8,7 @@ import logging
 from collections.abc import AsyncIterator, Callable, Coroutine
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 from urllib.parse import urlparse
 
 import aiohttp
@@ -710,6 +710,73 @@ async def test_http_proxy_request_cannot_change_host(
     assert parsed.port == 8095
     assert parsed.username is None
     assert "evil.com" not in (parsed.netloc or "")
+
+
+async def test_http_proxy_request_keeps_the_unverified_dial_on_this_host(
+    cert_pems: tuple[str, str],
+) -> None:
+    """The proxy must not carry its unverified TLS dial off this host."""
+    cert_pem, key_pem = cert_pems
+    mock_session = Mock()
+    captured_kwargs: dict[str, object] = {}
+
+    def fake_request(_method: str, _url: str, **kwargs: object) -> AsyncMock:
+        captured_kwargs.update(kwargs)
+        response = AsyncMock()
+        response.status = 200
+        response.headers = {}
+        response.read = AsyncMock(return_value=b"")
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=response)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        return ctx
+
+    mock_session.request = fake_request
+
+    gateway = WebRTCGateway(
+        http_session=mock_session,
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+        local_ws_url="wss://127.0.0.1:8095/ws",
+    )
+    session = WebRTCSession(session_id="s1", pc=Mock())
+
+    await gateway._handle_http_proxy_request(session, {"id": "1", "method": "GET", "path": "/info"})
+
+    assert captured_kwargs["ssl"] is False
+    assert captured_kwargs["allow_redirects"] is False
+
+
+async def test_local_websocket_dial_skips_certificate_verification(
+    cert_pems: tuple[str, str],
+) -> None:
+    """Reach the local API on the bind address, which no certificate is issued for."""
+    cert_pem, key_pem = cert_pems
+    mock_session = Mock()
+    captured_kwargs: dict[str, object] = {}
+
+    async def fake_ws_connect(_url: str, **kwargs: object) -> AsyncMock:
+        captured_kwargs.update(kwargs)
+        return AsyncMock()
+
+    mock_session.ws_connect = fake_ws_connect
+
+    gateway = WebRTCGateway(
+        http_session=mock_session,
+        remote_id="TEST-REMOTE-ID",
+        cert_pem=cert_pem,
+        key_pem=key_pem,
+        local_ws_url="wss://127.0.0.1:8095/ws",
+    )
+    session = WebRTCSession(session_id="s1", pc=Mock())
+    channel = MagicMock()
+    channel.wait_open = AsyncMock()
+
+    with patch.object(gateway, "_schedule_close"):
+        await gateway._bridge_ma_api(session, channel)
+
+    assert captured_kwargs["ssl"] is False
 
 
 # ---- aiolibdatachannel loopback tests --------------------------------------
