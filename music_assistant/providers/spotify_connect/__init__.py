@@ -398,6 +398,11 @@ class SpotifyConnectProvider(PluginProvider):
             if not await self._wait_for_playing():
                 raise self._not_active_error()
 
+        # go-librespot reports 100% volume until told otherwise (with
+        # external_volume it ignores initial_volume); push the player's volume
+        # so the Spotify app's absolute volume commands start from the real level.
+        await self._sync_player_volume_to_spotify()
+
     async def on_source_unselected(
         self, source_id: str, queue_id: str, stream_session_id: str
     ) -> None:
@@ -628,14 +633,6 @@ class SpotifyConnectProvider(PluginProvider):
             advertise the Spotify Connect device on all interfaces.
         """
         os.makedirs(self.cache_dir, exist_ok=True)
-        initial_volume = 50
-        if self._default_player_id != PLAYER_ID_AUTO:
-            # the resolved logical (0-100) volume matches the Spotify volume scale;
-            # clamp it as it can be out of range until volume limit enforcement runs
-            if (player := self.mass.players.get_player(self._default_player_id)) and (
-                player.state.volume_level is not None
-            ):
-                initial_volume = max(0, min(100, player.state.volume_level))
         config: dict[str, Any] = {
             "device_name": self._publish_name,
             "device_type": "speaker",
@@ -651,9 +648,10 @@ class SpotifyConnectProvider(PluginProvider):
             # external_volume: don't let go-librespot attenuate the PCM — MA / the
             # target player owns the actual volume. We still receive 'volume'
             # events and push volume back so the Spotify app slider stays in sync.
+            # No initial_volume: go-librespot ignores it with external_volume set;
+            # _sync_player_volume_to_spotify pushes the player's volume instead.
             "external_volume": True,
             "volume_steps": VOLUME_STEPS,
-            "initial_volume": initial_volume,
             "zeroconf_enabled": True,
             "credentials": {"type": "zeroconf", "zeroconf": {"persist_credentials": True}},
             "server": {"enabled": True, "address": "127.0.0.1", "port": self._api_port},
@@ -767,6 +765,10 @@ class SpotifyConnectProvider(PluginProvider):
             # schedules a new one.
             self._cancel_pending_play_media()
             self.logger.info("Spotify Connect session active for %s", self.name)
+            # A reconnect resets the daemon's volume to its 100% default;
+            # re-push the player's volume if a session is already claimed.
+            if self._active_player_id:
+                await self._sync_player_volume_to_spotify()
         elif event_type == "inactive":
             self.logger.info("Spotify Connect session inactive for %s", self.name)
             self._spotify_session_active = False
@@ -855,3 +857,27 @@ class SpotifyConnectProvider(PluginProvider):
             # deduped, and never let it bubble up and drop the events loop.
             self._last_volume_sent = previous_volume
             self.logger.debug("Could not set volume on %s: %s", self._in_use_by_queue, err)
+
+    async def _sync_player_volume_to_spotify(self) -> None:
+        """Push the active player's current volume to go-librespot (best-effort)."""
+        if not self._active_player_id:
+            return
+        player = self.mass.players.get_player(self._active_player_id)
+        if player is None or player.state.volume_level is None:
+            return
+        # clamp: the logical volume can be out of range until volume limit
+        # enforcement runs
+        volume = max(0, min(100, player.state.volume_level))
+        if self._last_volume_sent == volume:
+            return
+        assert self._client is not None
+        previous_volume = self._last_volume_sent
+        # Record BEFORE the call so _handle_volume_event dedupes the echoed
+        # 'volume' event instead of bouncing it back as a player volume change.
+        self._last_volume_sent = volume
+        try:
+            await self._client.set_volume(round(volume / 100 * VOLUME_STEPS))
+        except Exception as err:
+            # restore on failure so a retry of this value isn't wrongly deduped
+            self._last_volume_sent = previous_volume
+            self.logger.debug("Failed to sync player volume to Spotify: %s", err)
