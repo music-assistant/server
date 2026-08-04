@@ -85,6 +85,15 @@ class TestSelectFreePort:
             port = await select_free_port(38800, 38900, host="127.0.0.1")
         probe.assert_awaited_once_with(port, host="127.0.0.1")
 
+    @pytest.mark.asyncio
+    async def test_exhausted_range_error_mentions_inclusive_range(self) -> None:
+        """The exhausted-range error names the searched range with an inclusive end."""
+        with (
+            patch("music_assistant.helpers.util.is_port_in_use", return_value=True),
+            pytest.raises(OSError, match=r"38800-38809$"),
+        ):
+            await select_free_port(38800, 38810)
+
 
 class TestIsPortInUse:
     """is_port_in_use can probe the exact address a server will bind."""
@@ -96,6 +105,14 @@ class TestIsPortInUse:
             sock.bind(("127.0.0.1", 0))
             sock.listen(1)
             assert await is_port_in_use(sock.getsockname()[1], host="127.0.0.1")
+
+    @pytest.mark.asyncio
+    async def test_released_loopback_port_is_free(self) -> None:
+        """A port without a listener on the probed address is reported free."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        assert not await is_port_in_use(port, host="127.0.0.1")
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
