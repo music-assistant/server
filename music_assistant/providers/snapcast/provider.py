@@ -410,6 +410,9 @@ class SnapCastProvider(PlayerProvider):
             raise RuntimeError("Snapserver is already started!")
         logger = self.logger.getChild("snapserver")
         logger.info("Starting builtin Snapserver...")
+        # the snapserver listens on all interfaces, so advertise every address
+        # we can be reached on and let a client pick one on its own network
+        addresses = [await get_ip_pton(address) for address in self.mass.streams.publish_addresses]
         # register the snapcast mdns services
         for name, port in (
             ("-http", 1780),
@@ -424,12 +427,7 @@ class SnapCastProvider(PlayerProvider):
                     zeroconf_type,
                     name=f"Snapcast.{zeroconf_type}",
                     properties={"is_mass": "true"},
-                    # the snapserver listens on all interfaces, so advertise every address
-                    # we can be reached on and let a client pick one on its own network
-                    addresses=[
-                        await get_ip_pton(address)
-                        for address in self.mass.streams.publish_addresses
-                    ],
+                    addresses=addresses,
                     port=port,
                     server=f"{socket.gethostname()}.local",
                 )
