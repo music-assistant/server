@@ -367,6 +367,56 @@ async def test_generate_text_wraps_not_connected_error() -> None:
     assert "hass_1/ai_task.default" in str(error.value)
 
 
+async def test_generate_text_fails_the_section_when_the_engine_stalls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stalled AI engine fails the section instead of hanging the session."""
+    monkeypatch.setattr("music_assistant.providers.ai_radio.runtime.AI_QUERY_TIMEOUT_SECONDS", 0.01)
+
+    async def _never_returns(*_args: Any, **_kwargs: Any) -> str:
+        await asyncio.Event().wait()
+        return ""
+
+    plugin = _create_ai_plugin("hass_1", "ai_task.default")
+    plugin.ai_query = AsyncMock(side_effect=_never_returns)
+    runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
+    _set_runtime_mass(
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.AI_QUERY, plugin, metadata=SimpleNamespace(locale="en_US")
+        ),
+    )
+
+    with pytest.raises(MusicAssistantError) as error:
+        await runtime._generate_text(
+            station={"general": {"instructions": "test"}},
+            prompt="test prompt",
+            web_mode="disabled",
+        )
+    assert "did not respond within" in str(error.value)
+
+
+async def test_generate_text_reports_an_engine_side_timeout_as_a_query_failure() -> None:
+    """A timeout raised by the engine itself is reported as a query failure, not our cap."""
+    plugin = _create_ai_plugin("hass_1", "ai_task.default")
+    plugin.ai_query = AsyncMock(side_effect=TimeoutError)
+    runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
+    _set_runtime_mass(
+        runtime,
+        _create_engine_mass(
+            ProviderFeature.AI_QUERY, plugin, metadata=SimpleNamespace(locale="en_US")
+        ),
+    )
+
+    with pytest.raises(MusicAssistantError) as error:
+        await runtime._generate_text(
+            station={"general": {"instructions": "test"}},
+            prompt="test prompt",
+            web_mode="disabled",
+        )
+    assert "query failed: TimeoutError" in str(error.value)
+
+
 async def test_generate_text_asks_for_the_system_locale_language() -> None:
     """The AI query states the server locale so sections are written in that language."""
     plugin = _create_ai_plugin("hass_1", "ai_task.default")

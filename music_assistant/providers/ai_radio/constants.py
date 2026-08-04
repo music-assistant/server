@@ -31,6 +31,10 @@ MAX_FINISHED_SESSIONS = 20
 # a show whose playback never starts within this window is declared failed
 SHOW_START_TIMEOUT_SECONDS = 300
 
+# generous, since sections are prose and the engine may be a slow local model,
+# but bounded so a wedged engine fails the clip instead of hanging the session
+AI_QUERY_TIMEOUT_SECONDS = 120
+
 SUPPORTED_FEATURES: set[Any] = set()
 EMPTY_SECTION_ID = "EMPTY_SECTION"
 VALID_WEB_SEARCH_MODES = {"disabled", "allow", "force"}

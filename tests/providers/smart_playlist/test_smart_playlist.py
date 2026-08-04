@@ -1979,6 +1979,26 @@ async def test_generate_ai_description_provider_error_returns_none(tmp_path: Any
 
 
 @pytest.mark.asyncio
+async def test_generate_ai_description_stalled_provider_returns_none(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stalled AI provider gives up instead of leaving the task pending forever."""
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.AI_QUERY_TIMEOUT_SECONDS", 0.01)
+
+    async def _never_returns(*_args: Any, **_kwargs: Any) -> str:
+        await asyncio.Event().wait()
+        return ""
+
+    ai_provider = _make_ai_provider()
+    ai_provider.ai_query = AsyncMock(side_effect=_never_returns)
+    plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_provider=ai_provider)
+
+    result = await plugin._generate_ai_description("X", SmartPlaylistRules(favorites_only=True))
+
+    assert result is None
+
+
+@pytest.mark.asyncio
 async def test_generate_ai_description_stays_on_the_configured_engine(tmp_path: Any) -> None:
     """A failing selection yields no description instead of asking another engine."""
     failing = _make_ai_provider(instance_id="ai--bad")
