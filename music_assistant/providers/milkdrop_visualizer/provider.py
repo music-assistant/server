@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 CONF_SHOW_ON_DASHBOARDS = "show_on_dashboards"
+CONF_COMMAND = "milkdrop_visualizer/config"
 
 
 class MilkdropVisualizerProvider(PluginProvider):
@@ -56,9 +57,13 @@ class MilkdropVisualizerProvider(PluginProvider):
         self._relay.setup()
         # PROVIDERS_READ (held by guests) so a cast dashboard, which runs as the
         # dashboard viewer and has no preferences of its own, can read this.
+        # A provider with depends_on loads twice, and registering a name twice
+        # raises: without dropping the previous handler the command stays bound
+        # to the earlier instance and keeps answering from its stale config.
+        self.mass.command_handlers.pop(CONF_COMMAND, None)
         self._unregister_handles.append(
             self.mass.register_api_command(
-                "milkdrop_visualizer/config",
+                CONF_COMMAND,
                 self.get_visualizer_config,
                 required_scope=Scope.PROVIDERS_READ,
             )
@@ -66,9 +71,12 @@ class MilkdropVisualizerProvider(PluginProvider):
 
     async def get_visualizer_config(self) -> dict[str, bool]:
         """Return the visualizer settings that apply to every viewer."""
-        return {
-            CONF_SHOW_ON_DASHBOARDS: bool(self.config.get_value(CONF_SHOW_ON_DASHBOARDS, False)),
-        }
+        # Read through the config controller rather than this instance's snapshot,
+        # so the answer is current even if an older instance still owns the command.
+        value = await self.mass.config.get_provider_config_value(
+            self.instance_id, CONF_SHOW_ON_DASHBOARDS, default=False
+        )
+        return {CONF_SHOW_ON_DASHBOARDS: bool(value)}
 
     async def unload(self, is_removed: bool = False) -> None:
         """
