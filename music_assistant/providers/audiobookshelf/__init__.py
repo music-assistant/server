@@ -132,6 +132,7 @@ from .constants import (
     CONF_URL,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
+    STREAMDETAILS_EXPIRATION_S,
     AbsBrowseItemsBookTranslationKey,
     AbsBrowseItemsPodcastTranslationKey,
     AbsBrowsePaths,
@@ -340,6 +341,9 @@ for more details.
         self.playlist_lock = asyncio.Lock()
         self.playlist_last = 0.0
 
+        # create close sessions task
+        self._close_sessions_task = self.mass.create_task(self._cleanup_open_sessions_loop())
+
         # register dynamic stream route for audiobook parts
         self._on_unload_callbacks.append(
             self.mass.streams.register_dynamic_route(
@@ -357,6 +361,13 @@ for more details.
         # run the unload chain first: RecommendationPayloadMixin cancels and awaits its
         # payload tasks, so no fetch is still running against the clients logging out below
         await super().unload(is_removed)
+
+        # cancel close sessions task, and close remaining
+        if self._close_sessions_task:
+            self._close_sessions_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._close_sessions_task
+
         # close the tracked sessions concurrently, so an unreachable server can neither
         # stall nor abort the unload below
         await asyncio.gather(
@@ -979,6 +990,7 @@ for more details.
             path=file_parts[0].path if len(file_parts) == 1 else file_parts,
             can_seek=True,
             allow_seek=True,
+            expiration=STREAMDETAILS_EXPIRATION_S,
         )
 
     async def _get_playback_session(self, mass_item_id: str) -> AbsPlaybackSessionExpanded:
@@ -997,22 +1009,10 @@ for more details.
             abs_item_id = item_ids[0]
             episode_id = item_ids[1] if len(item_ids) == 2 else None
 
-            # Abs allows a single session per device id. MA may load another item into
-            # the queue if autoplay is enabled. This then deletes the previous open session.
-            # We cycle through self.session_cycle to prevent this.
-            session_cycle_count = next(self.session_cycle)
-            obsolete_session_id: str | None = None
-            for id_, session_helper in self.sessions.items():
-                if session_helper.cycle_count == session_cycle_count:
-                    obsolete_session_id = id_
-                    break
-            if obsolete_session_id:
-                # Remove old reference. Creating a new session with the same device id in
-                # abs will automatically close the session there, no separate call needed.
-                self.sessions.pop(obsolete_session_id)
+            # Abs allows a single session per device id.
 
-            client_name = f"Music Assistant {self.instance_id} {session_cycle_count}"
-            device_id = f"{self.instance_id}_{session_cycle_count}"
+            client_name = f"Music Assistant {self.instance_id}"
+            device_id = f"{self.instance_id}_{mass_item_id}"
             device_info = AbsDeviceInfo(
                 device_id=device_id,
                 client_name=client_name,
@@ -1042,7 +1042,6 @@ for more details.
             self.sessions[mass_item_id] = SessionHelper(
                 abs_session_id=session.id_,
                 last_sync_time=time.time(),
-                cycle_count=session_cycle_count,
             )
             return session
 
@@ -2194,3 +2193,40 @@ for more details.
         else:
             browse_items = list(self._browse_root())
         return UniqueList(browse_items)
+
+    async def _cleanup_open_sessions_loop(self) -> None:
+        """Close unused open sessions."""
+        while True:
+            await asyncio.sleep(STREAMDETAILS_EXPIRATION_S)
+            current_time = time.time()
+
+            sessions_to_close = [
+                (session_key, session)
+                for session_key, session in self.sessions.items()
+                if current_time - session.last_sync_time > (STREAMDETAILS_EXPIRATION_S * 2)
+            ]
+
+            async with self.create_session_lock:
+                results = await asyncio.gather(
+                    *(
+                        self._client.close_open_session(session_id=session.abs_session_id)
+                        for (_, session) in sessions_to_close
+                    ),
+                    return_exceptions=True,
+                )
+
+                for (session_key, session), result in zip(sessions_to_close, results, strict=True):
+                    if isinstance(result, Exception):
+                        self.logger.warning(
+                            "Failed to close session %s: %s",
+                            session.abs_session_id,
+                            result,
+                        )
+                    else:
+                        self.logger.debug(
+                            "Closed session %s",
+                            session.abs_session_id,
+                        )
+                    # We do not try again after a failure. _get_playback_session verifies if a session
+                    # exists.
+                    self.sessions.pop(session_key, None)

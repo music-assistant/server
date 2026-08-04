@@ -55,7 +55,6 @@ class SessionHelper:
     abs_session_id: str
     last_sync_time: float
     failed_sync_count: int = 0
-    cycle_count: int
 
 
 @dataclass(kw_only=True)

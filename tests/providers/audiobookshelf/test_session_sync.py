@@ -30,9 +30,7 @@ def _install_session(provider: Audiobookshelf) -> SessionHelper:
     provider.progress_guard.guard_ok_mass.return_value = True
     # the non-session fallback path also updates media progress
     provider._client.update_my_media_progress = AsyncMock()  # type: ignore[method-assign]
-    session = SessionHelper(
-        abs_session_id="abs_session_1", last_sync_time=time.time(), cycle_count=0
-    )
+    session = SessionHelper(abs_session_id="abs_session_1", last_sync_time=time.time())
     provider.sessions["pod1 ep1"] = session
     return session
 
