@@ -223,7 +223,7 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
         self.sessions: dict[str, SessionHelper] = {}  # key is the mass_item_id
         self.create_session_lock = asyncio.Lock()
         # see _get_playback_session for explanation
-        self.session_cycle = cycle(range(5))
+        self.session_cycle = cycle(range(10))
         base_url = str(self.get_setup_value(CONF_URL))
         username = str(self.get_setup_value(CONF_USERNAME))
         password = str(self.get_setup_value(CONF_PASSWORD))
@@ -1081,30 +1081,22 @@ for more details.
         self, item_id: str, media_type: MediaType
     ) -> tuple[bool, int, datetime | None]:
         """Return finished:bool, position_ms: int."""
-        # this method is called _before_ get_stream_details, so the playback session
-        # is created here.
-        session = await self._get_playback_session(mass_item_id=item_id)
-
+        # do not create a session here, is this method is called outside of stream acquisition
         item_ids = item_id.split(" ")
         abs_item_id = item_ids[0]
         episode_id = item_ids[1] if len(item_ids) == 2 else None
         progress = await self._client.get_my_media_progress(
             item_id=abs_item_id, episode_id=episode_id
         )
-        # only the progress object has a timestamp of the progress (not the session)
-        # last_update is in ms epoch
-        # If there is an open session, that session might have the old progress time,
-        # whereas the explicit progress call above gives the most recent time.
+        if progress is None:
+            # fallback to internal position
+            raise NotImplementedError
+        # The progress' last_update is in ms epoch
         timestamp = from_utc_timestamp(progress.last_update / 1000) if progress else None
-        current_time = (
-            progress.current_time
-            if progress is not None and progress.current_time is not None
-            else session.current_time
-        )
-        finished = current_time > session.duration - PLAYBACK_REPORT_INTERVAL_SECONDS
+        current_time = progress.current_time if progress.current_time is not None else 0.0
         self.logger.debug("Resume position %s: obtained.", current_time)
         return (
-            finished,
+            progress.is_finished,
             int(current_time * 1000),
             timestamp,
         )
