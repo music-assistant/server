@@ -9,7 +9,6 @@ import time
 from collections.abc import AsyncGenerator, Callable, Coroutine, Sequence
 from contextlib import suppress
 from datetime import datetime
-from itertools import cycle
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import aioaudiobookshelf as aioabs
@@ -223,8 +222,6 @@ class Audiobookshelf(RecommendationPayloadMixin, MusicProvider):
         self._on_unload_callbacks: list[Callable[[], None]] = []
         self.sessions: dict[str, SessionHelper] = {}  # key is the mass_item_id
         self.create_session_lock = asyncio.Lock()
-        # see _get_playback_session for explanation
-        self.session_cycle = cycle(range(10))
         base_url = str(self.get_setup_value(CONF_URL))
         username = str(self.get_setup_value(CONF_USERNAME))
         password = str(self.get_setup_value(CONF_PASSWORD))
