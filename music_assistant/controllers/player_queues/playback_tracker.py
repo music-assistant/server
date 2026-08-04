@@ -323,13 +323,31 @@ class PlaybackTrackerMixin(_PlayerQueuesBase):
         played_time = 0.0
         queue_index: int | None = queue.current_index or 0
         track_time = 0.0
-        for play_log_entry in queue_data.flow_mode_stream_log:
+        flow_log = queue_data.flow_mode_stream_log
+        for log_index, play_log_entry in enumerate(flow_log):
             # seconds_streamed is bytes-derived stream-time, so the boundary check
-            # doesn't need a speed factor. Only the still-streaming tail entry has
-            # seconds_streamed=None; we'll break inside it before the sentinel matters.
+            # doesn't need a speed factor. Normally only the still-streaming tail entry
+            # has seconds_streamed=None (we'll break inside it before the sentinel
+            # matters); an abandoned probe entry is the exception, handled below.
             if play_log_entry.seconds_streamed is not None:
                 # NOTE: 'seconds_streamed' can be 0 if there was a stream error
                 entry_stream_duration = play_log_entry.seconds_streamed
+            elif log_index < len(flow_log) - 1:
+                # Some players open the same flow URL several times while probing the
+                # stream. A probe can leave an unfinished entry behind before the
+                # connection that actually plays the audio appends the next entry.
+                # Recover the completed stream duration from the shared QueueItem;
+                # treating this non-tail entry as the active sentinel would pin the
+                # queue to the previous track and let elapsed time overflow its duration.
+                stale_queue_item = self.get_item(queue.queue_id, play_log_entry.queue_item_id)
+                if (
+                    stale_queue_item
+                    and stale_queue_item.streamdetails
+                    and stale_queue_item.streamdetails.seconds_streamed is not None
+                ):
+                    entry_stream_duration = stale_queue_item.streamdetails.seconds_streamed
+                else:
+                    entry_stream_duration = 0
             else:
                 entry_stream_duration = 3600 * 24 * 7
             if elapsed_time_queue_total > (entry_stream_duration + played_time):

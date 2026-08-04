@@ -1889,8 +1889,10 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         control = self._controls.pop(control_id, None)
         if control is None:
             return
-        self._controls.pop(control_id, None)
         self.logger.info("PlayerControl removed: %s", control.name)
+        # players configured to use this control still resolve to it until they are
+        # refreshed, so let them fall back to their remaining options right away
+        self.update_player_control(control_id)
 
     def get_player_provider(self, player_id: str) -> PlayerProvider:
         """Return PlayerProvider for given player."""

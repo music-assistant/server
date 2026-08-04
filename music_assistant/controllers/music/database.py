@@ -16,7 +16,7 @@ import asyncio
 import os
 import shutil
 import sqlite3
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from music_assistant_models.errors import MusicAssistantError
 
@@ -62,6 +62,9 @@ if TYPE_CHECKING:
     from music_assistant.controllers.music.media.playlists import PlaylistController
     from music_assistant.controllers.music.media.radio import RadioController
     from music_assistant.controllers.music.media.tracks import TracksController
+
+# the playlog's unique constraint: one row per item, per media type, per user
+PLAYLOG_CONFLICT_KEYS: Final[tuple[str, ...]] = ("item_id", "provider", "media_type", "userid")
 
 
 class MusicDatabaseSetupMixin:
