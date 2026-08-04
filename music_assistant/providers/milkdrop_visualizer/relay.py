@@ -85,9 +85,14 @@ class MilkdropRelay:
         query = request.query.get("player")
         target = self._resolve_target(query)
         if target is None:
-            self.logger.warning("Viewer connected but no Sendspin player found (query=%r)", query)
+            self.logger.warning("No Sendspin group to visualize for %s", query or "any player")
             await ws.send_str(
-                dumps({"type": "error", "message": "no sendspin player found"}).decode()
+                dumps(
+                    {
+                        "type": "error",
+                        "message": "this player is not backed by a sendspin group",
+                    }
+                ).decode()
             )
             await ws.close()
             return ws
@@ -138,6 +143,9 @@ class MilkdropRelay:
         """
 
         async def reject(reason: bytes) -> bool:
+            # A rejected viewer closes with 4001 and gives up, so without this the
+            # failure is invisible on both ends: no picture and no explanation.
+            self.logger.warning("Rejected viewer from %s: %s", request.remote, reason.decode())
             await ws.close(code=4001, message=reason)
             return False
 
@@ -198,6 +206,12 @@ class MilkdropRelay:
                             }
                         ).decode()
                     )
+                elif data.get("type") == "client/error":
+                    # Cast displays and kiosks have no reachable console, so a
+                    # renderer that cannot start would otherwise fail in silence.
+                    self.logger.warning(
+                        "Viewer reported a problem: %s", data.get("message", "unknown")
+                    )
                 elif data.get("type") == "client/goodbye":
                     break
         finally:
@@ -207,8 +221,11 @@ class MilkdropRelay:
         """
         Pick the Sendspin player whose group to visualize.
 
-        :param query: MA player id of the viewed player; an unmatched (or
-            missing) id falls back to the playing Sendspin player.
+        :param query: MA player id of the viewed player. A player that resolves to
+            no Sendspin group returns None (the viewer is told so) rather than
+            falling back: guessing once attached a viewer to a silent dummy output,
+            which looks exactly like a broken visualizer. Auto-pick applies only
+            when no player was named at all.
         """
         candidates = [
             player
@@ -234,7 +251,8 @@ class MilkdropRelay:
                         or normalized_id.endswith(normalized_query)
                     ):
                         return player
-            self.logger.debug("Player query %r matched no Sendspin player, using auto-pick", query)
+            self.logger.debug("Player %r is not backed by a Sendspin group", query)
+            return None
         playing = [p for p in candidates if p.playback_state == PlaybackState.PLAYING]
         chosen = (playing or candidates)[:1]
         return chosen[0] if chosen else None
