@@ -70,6 +70,10 @@ _CLI_ERROR_CODE_RE = re.compile(r"\bcode=(\S+)")
 _CLI_ERROR_HTTP_RE = re.compile(r"\bhttp=(\d+)")
 _CLI_ERROR_DETAIL_RE = re.compile(r'\bdetail="([^"]*)"')
 
+# Seconds to wait for the binary's command pipe reader. It attaches right after
+# the connection is reported, so this only bridges the reader thread starting up.
+_COMMAND_PIPE_READER_TIMEOUT: Final[float] = 2.0
+
 
 @dataclass
 class CliError:
@@ -252,7 +256,6 @@ class AirPlayStream:
             await self._cli_proc.start()
             self._cli_proc.attach_stderr_reader(self.mass.create_task(self._stderr_reader()))
             self._stdout_reader_task = self.mass.create_task(self._stdout_reader())
-            await self._send_current_metadata(send_artwork=False)
         except BaseException:
             try:
                 await self._cleanup_failed_start()
@@ -262,7 +265,7 @@ class AirPlayStream:
 
     async def wait_for_connection(self) -> None:
         """
-        Wait for device connection to be established.
+        Wait until the device connection is established and commands can be sent.
 
         :raises PlayerCommandFailed: If the binary reported that the device needs
             a password, or rejected the configured one.
@@ -272,6 +275,25 @@ class AirPlayStream:
         if not self._cli_proc:
             raise RuntimeError("cliairplay process is not running")
         await self._await_connected()
+        # The binary attaches to its command pipe only once it is connected, so
+        # the first command waits for that reader instead of being dropped. A
+        # stream torn down while connecting takes its pipe along, which is not a
+        # fault worth reporting.
+        if not await self.commands_pipe.wait_for_reader(_COMMAND_PIPE_READER_TIMEOUT):
+            if self.running:
+                self.player.logger.warning(
+                    "cliairplay did not open its command pipe for %s; "
+                    "playback commands cannot be delivered",
+                    self.player.display_name,
+                )
+        # Nothing has reached this binary yet, so clear the delivery state to
+        # make sure the pushes below are really sent.
+        async with self._metadata_lock:
+            self._metadata_text_checksum = ""
+            self._metadata_artwork_checksum = ""
+            self._pending_metadata_checksum = ""
+            self._metadata_generation += 1
+        await self._send_current_metadata(send_artwork=False)
         # Send the mute-aware volume right away — audio can start within a
         # second now that metadata goes out immediately — and repeat it after
         # 2 seconds because some players ignore the first volume command
@@ -279,11 +301,6 @@ class AirPlayStream:
         volume = 0 if self.player.volume_muted else self.player.volume_level
         await self.send_cli_command(f"VOLUME={volume}")
         self.mass.call_later(2, self.send_cli_command(f"VOLUME={volume}"))
-        async with self._metadata_lock:
-            self._metadata_text_checksum = ""
-            self._metadata_artwork_checksum = ""
-            self._pending_metadata_checksum = ""
-            self._metadata_generation += 1
         # Push track metadata before START. Some receivers (notably Sonos) hold
         # back audio rendering until they receive track metadata; deferring it
         # can keep them silent past the commanded start.
