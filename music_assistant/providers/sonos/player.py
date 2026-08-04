@@ -14,12 +14,12 @@ import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
-from aiohttp import ClientConnectorError
+from aiohttp import ClientError
 from aiosonos.api.models import Container, ContainerType, MusicService, SonosCapability
 from aiosonos.client import SonosLocalApiClient
 from aiosonos.const import EventType as SonosEventType
 from aiosonos.const import SonosEvent
-from aiosonos.exceptions import ConnectionFailed, FailedCommand
+from aiosonos.exceptions import CannotConnect, ConnectionFailed, FailedCommand
 from music_assistant_models.enums import (
     IdentifierType,
     MediaType,
@@ -736,7 +736,7 @@ class SonosPlayer(Player):
             return
         try:
             await self.client.connect()
-        except (ConnectionFailed, ClientConnectorError) as err:
+        except (ConnectionFailed, CannotConnect, ClientError) as err:
             self.logger.warning("Failed to connect to Sonos player: %s", err)
             if not retry_on_fail or not self.mass.players.get_player(self.player_id):
                 raise
