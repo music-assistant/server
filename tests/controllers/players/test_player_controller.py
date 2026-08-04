@@ -1627,6 +1627,47 @@ class TestMuteControlGuard:
             await controller.cmd_volume_mute("player_1", False)
         assert ATTR_MUTE_LOCK not in player.extra_data
 
+    async def test_failed_mute_sets_no_mute_lock(self, mock_mass: MagicMock) -> None:
+        """A grouped player whose mute command failed is not left holding a mute lock."""
+        control = PlayerControl(
+            id="ext_mute",
+            provider="test",
+            name="External Mute",
+            supports_mute=False,
+        )
+        controller, player = self._make_player(
+            mock_mass,
+            mute_control="ext_mute",
+            volume_control=PLAYER_CONTROL_NONE,
+            controls={"ext_mute": control},
+        )
+        player.state.synced_to = "leader"
+
+        with pytest.raises(UnsupportedFeaturedException):
+            await controller.cmd_volume_mute("player_1", True)
+        assert ATTR_MUTE_LOCK not in player.extra_data
+
+    async def test_failed_mute_keeps_existing_mute_lock(self, mock_mass: MagicMock) -> None:
+        """A failed mute leaves the lock of an earlier successful mute in place."""
+        control = PlayerControl(
+            id="ext_mute",
+            provider="test",
+            name="External Mute",
+            supports_mute=False,
+        )
+        controller, player = self._make_player(
+            mock_mass,
+            mute_control="ext_mute",
+            volume_control=PLAYER_CONTROL_NONE,
+            controls={"ext_mute": control},
+        )
+        player.state.synced_to = "leader"
+        player.extra_data[ATTR_MUTE_LOCK] = True
+
+        with pytest.raises(UnsupportedFeaturedException):
+            await controller.cmd_volume_mute("player_1", True)
+        assert player.extra_data[ATTR_MUTE_LOCK] is True
+
 
 class TestGroupMuteMemberFilter:
     """Group mute skips members that have no mute control of their own."""
