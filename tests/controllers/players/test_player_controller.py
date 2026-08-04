@@ -44,6 +44,8 @@ from music_assistant.constants import (
     ATTR_MUTE_LOCK,
     ATTR_PREVIOUS_VOLUME,
     CONF_AUTO_PLAY,
+    CONF_MAX_VOLUME,
+    CONF_MIN_VOLUME,
     CONF_MUTE_CONTROL,
     CONF_POWER_CONTROL,
     CONF_VOLUME_CONTROL,
@@ -66,8 +68,8 @@ def _player_config_stub(
     :param max_volume: Value returned for the ``max_volume`` key.
     """
     config: dict[str, object] = {
-        "min_volume": min_volume,
-        "max_volume": max_volume,
+        CONF_MIN_VOLUME: min_volume,
+        CONF_MAX_VOLUME: max_volume,
         **(values or {}),
     }
 
@@ -581,7 +583,7 @@ class TestCmdUngroupNewBranches:
 
         # ensure power_control resolves to NATIVE so cmd_ungroup uses the power path
         mock_mass.config.get_raw_player_config_value = MagicMock(
-            side_effect=_player_config_stub({CONF_POWER_CONTROL: "native"})
+            side_effect=_player_config_stub({CONF_POWER_CONTROL: PLAYER_CONTROL_NATIVE})
         )
 
         controller._players = {"g1": group}
@@ -1631,17 +1633,6 @@ class TestGroupMuteMemberFilter:
 
     async def test_member_without_mute_control_is_skipped(self, mock_mass: MagicMock) -> None:
         """A member without a mute control must not fail the whole group command."""
-
-        def _conf(player_id: str, key: str, default: object = None) -> object:
-            if key == "min_volume":
-                return 0
-            if key == "max_volume":
-                return 100
-            if key == CONF_MUTE_CONTROL and player_id == "member":
-                return PLAYER_CONTROL_NONE
-            return default if default is not None else "auto"
-
-        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
         controller = PlayerController(mock_mass)
         provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
         leader = MockPlayer(provider, "leader", "Leader")
