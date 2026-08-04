@@ -6,8 +6,6 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
 import aiohttp
-from aiobosesoundtouch.client import SoundtouchDevice
-from aiobosesoundtouch.client.session_configuration import SessionConfiguration
 from aiohttp import web
 from zeroconf import ServiceStateChange
 
@@ -15,6 +13,7 @@ from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS
 from music_assistant.helpers.util import get_primary_ip_address_from_zeroconf
 from music_assistant.models.player_provider import PlayerProvider
 
+from .client import SessionConfiguration, SoundtouchDevice
 from .config import (
     PRESET_KEY_PREFIX,
     build_preset_config_entries,

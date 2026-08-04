@@ -8,9 +8,6 @@ import time
 from typing import TYPE_CHECKING, cast
 
 import aiohttp
-from aiobosesoundtouch.exceptions import ApiError
-from aiobosesoundtouch.schema.enums import Key, PlayStatus, SourceStatus
-from aiobosesoundtouch.schema.models import Info, NowPlaying, Zone, ZoneMember
 from music_assistant_models.enums import (
     IdentifierType,
     MediaType,
@@ -28,8 +25,10 @@ from music_assistant_models.player import (
 )
 
 from music_assistant.models.player import Player, PlayerMedia
-from music_assistant.providers.musiccast.avt_helpers import avt_play, avt_set_url, avt_stop
 
+from .client.exceptions import ApiError
+from .client.schema.enums import Key, PlayStatus, SourceStatus
+from .client.schema.models import Info, NowPlaying, Zone, ZoneMember
 from .const import (
     CONF_APP_KEY,
     NOTIFICATION_PORT,
@@ -45,8 +44,7 @@ from .const import (
 from .helpers import extract_preset_id, source_id
 
 if TYPE_CHECKING:
-    from aiobosesoundtouch.client import SoundtouchDevice
-
+    from .client import SoundtouchDevice
     from .provider import BoseSoundTouchProvider
 
 IDLE_POLL_INTERVAL = 30
@@ -111,7 +109,6 @@ class BoseSoundTouchPlayer(Player):
             PlayerFeature.SELECT_SOURCE,
             PlayerFeature.SET_MEMBERS,
             PlayerFeature.OPTIONS,
-            PlayerFeature.PLAY_MEDIA,
         }
         if self._app_key:
             self._attr_supported_features.add(PlayerFeature.PLAY_ANNOUNCEMENT)
@@ -196,13 +193,6 @@ class BoseSoundTouchPlayer(Player):
         await self._client.press_key(Key.PLAY)
         self._attr_playback_state = PlaybackState.PLAYING
         self.update_state()
-
-    async def play_media(self, media: PlayerMedia) -> None:
-        """Play media command."""
-        async with self._update_lock:
-            await avt_stop(self.mass.http_session, self.physical_device)
-            await avt_set_url(self.mass.http_session, self.physical_device, player_media=media)
-            await avt_play(self.mass.http_session, self.physical_device)
 
     async def pause(self) -> None:
         """Handle PAUSE command on a native source."""

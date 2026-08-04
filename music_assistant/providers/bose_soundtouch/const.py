@@ -1,6 +1,7 @@
 """Constants for the Bose SoundTouch player provider."""
 
 from __future__ import annotations
+
 from enum import StrEnum
 
 DOMAIN = "bose_soundtouch"
