@@ -114,3 +114,27 @@ async def test_create_task_replacement_stays_tracked(mass_minimal: MusicAssistan
 
     release.set()
     await second
+    assert task_id not in mass_minimal._tracked_tasks
+
+
+async def test_create_task_abort_existing_tracks_replacement(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """Test that a task aborted in favour of a replacement does not untrack it."""
+    task_id = "test_abort_existing"
+
+    async def _blocked() -> None:
+        await asyncio.Event().wait()
+
+    first = mass_minimal.create_task(_blocked(), task_id=task_id)
+    second = mass_minimal.create_task(_blocked(), task_id=task_id, abort_existing=True)
+    assert second is not first
+
+    # the aborted task runs its done callback only once the cancellation is delivered
+    await asyncio.wait((first,))
+    assert first.cancelled()
+    assert mass_minimal._tracked_tasks.get(task_id) is second
+
+    second.cancel()
+    await asyncio.wait((second,))
+    assert task_id not in mass_minimal._tracked_tasks
