@@ -435,11 +435,19 @@ def construct_media_item_from_playlist_item(
         provider_mappings = _builtin_fallback_mappings(item.path, mass)
     external_ids = _collect_external_ids(metadata)
 
+    # a set has no order, so sort to keep the chosen mapping stable across runs
+    sorted_mappings = sorted(provider_mappings, key=lambda pm: (pm.provider_instance, pm.item_id))
     first_provider = next(
-        (pm for pm in provider_mappings if pm.available),
-        next(iter(provider_mappings), None),
+        (pm for pm in sorted_mappings if pm.available),
+        next(iter(sorted_mappings), None),
     )
-    item_provider = first_provider.provider_domain if first_provider else "builtin"
+    # prefer the instance over the domain: a domain resolves to whichever instance of it
+    # happens to be loaded first, which is the wrong one when several are configured
+    item_provider = (
+        (first_provider.provider_instance or first_provider.provider_domain)
+        if first_provider
+        else "builtin"
+    )
     item_id = first_provider.item_id if first_provider else item.path
 
     media_item: MediaItemType

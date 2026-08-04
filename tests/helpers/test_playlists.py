@@ -877,6 +877,36 @@ def test_construct_defaults_to_requested_media_type() -> None:
     assert isinstance(construct_media_item_from_playlist_item(item, mass), Track)
 
 
+def test_construct_keeps_the_provider_instance() -> None:
+    """The entry's own instance is used, not whichever instance of the domain loaded first."""
+
+    class DummyProvider:
+        def __init__(self, domain: str, instance_id: str) -> None:
+            self.domain = domain
+            self.instance_id = instance_id
+
+    first = DummyProvider("radiobrowser", "radiobrowser--AAA")
+    second = DummyProvider("radiobrowser", "radiobrowser--BBB")
+    providers = {
+        # a bare domain lookup resolves to the first configured instance
+        "radiobrowser": first,
+        "radiobrowser--AAA": first,
+        "radiobrowser--BBB": second,
+    }
+    mass = MagicMock()
+    mass.get_provider.side_effect = lambda ref: providers.get(ref)
+    item = PlaylistItem(
+        path="radiobrowser://radio/station-9",
+        metadata={"media_type": MediaType.RADIO.value, "name": "Station Nine"},
+        providers=[ProviderMappingInfo("radiobrowser", "station-9", "radiobrowser--BBB")],
+    )
+
+    media_item = construct_media_item_from_playlist_item(item, cast("Any", mass), MediaType.RADIO)
+
+    assert media_item is not None
+    assert media_item.provider == "radiobrowser--BBB"
+
+
 # --------------------------------------------------------------------------- #
 #  PlaylistController.tracks() — provider-driven pagination                    #
 # --------------------------------------------------------------------------- #
