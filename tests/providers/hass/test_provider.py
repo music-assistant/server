@@ -31,6 +31,8 @@ from music_assistant.providers.hass.constants import MediaPlayerEntityFeature
 LAST_CHANGED = 1683832716.072648
 LAST_CHANGED_ISO = "2023-05-11T19:18:36.072648+00:00"
 CONTEXT_ID = "01H0640ES8JCY1NGTNW3V41T5T"
+REGISTRY_LIST_COMMAND = "config/entity_registry/list_for_display"
+REGISTRY_ENTRIES_COMMAND = "config/entity_registry/get_entries"
 
 
 def _state(entity_id: str, friendly_name: str) -> dict[str, Any]:
@@ -80,7 +82,7 @@ def _mass() -> MagicMock:
     mass.http_session = MagicMock()
     mass.http_session_no_ssl = MagicMock()
     mass.create_task.side_effect = asyncio.create_task
-    mass.players.register_player_control = AsyncMock()
+    mass.players.register_or_update_player_control = AsyncMock()
     # get_setup_value reads the (empty, here) live setup_data blob from the store, then
     # falls through to the provider config mock's get_value for the persisted test values
     mass.config.get = MagicMock(return_value={})
@@ -118,6 +120,8 @@ class _HomeAssistantClient:
         self.active_event_subscriptions = 0
         # compressed states keyed by entity_id, as delivered over the websocket
         self.compressed_states = {state["entity_id"]: _compressed(state) for state in states}
+        # entities Home Assistant reports as disabled, so leaves out of the registry listing
+        self.disabled_entities: set[str] = set()
         # events delivered ahead of a subscription's initial state message
         self.leading_events: list[dict[str, Any]] = []
         self.deliver_initial_states = True
@@ -127,7 +131,7 @@ class _HomeAssistantClient:
         self._registry_result = (
             asyncio.get_running_loop().create_future() if block_registry else None
         )
-        self.send_command = AsyncMock(return_value={"response": {"data": "answer"}})
+        self.send_command = AsyncMock(side_effect=self._send_command)
 
     async def connect(self) -> None:
         """Connect the client."""
@@ -151,23 +155,6 @@ class _HomeAssistantClient:
             if self._registry_result and not self._registry_result.done():
                 self._registry_result.cancel()
             self.listener_stopped.set()
-
-    async def get_entity_registry(self) -> list[dict[str, Any]]:
-        """Return the entity registry after command responses can be received."""
-        await self.listener_started.wait()
-        self.calls.append("get_entity_registry")
-        self.registry_started.set()
-        try:
-            if self._registry_result:
-                await self._registry_result
-            if self._registry_error:
-                raise self._registry_error
-            return [{"entity_id": entity_id} for entity_id in self.compressed_states]
-        except asyncio.CancelledError:
-            self.registry_cancelled.set()
-            raise
-        finally:
-            self.registry_stopped.set()
 
     async def subscribe_entities(
         self, cb_func: Callable[[dict[str, Any]], None], entity_ids: list[str]
@@ -198,7 +185,8 @@ class _HomeAssistantClient:
     async def subscribe_events(
         self, cb_func: Callable[[dict[str, Any]], None], event_type: str
     ) -> Callable[[], None]:
-        """Register the event callback and return the unsubscribe callable."""
+        """Register the event callback after command responses can be received."""
+        await self.listener_started.wait()
         self.calls.append("subscribe_events")
         self.event_subscriptions.append((event_type, cb_func))
         self.active_event_subscriptions += 1
@@ -220,6 +208,56 @@ class _HomeAssistantClient:
         self.calls.append("disconnect")
         self.connected = False
         self.disconnected = True
+
+    async def _send_command(self, command: str, **kwargs: Any) -> Any:
+        """Return the response Home Assistant sends for the given websocket command."""
+        if command == REGISTRY_LIST_COMMAND:
+            return await self._registry_for_display()
+        self.calls.append(command)
+        if command == REGISTRY_ENTRIES_COMMAND:
+            return self._registry_entries(cast("list[str]", kwargs["entity_ids"]))
+        return {"response": {"data": "answer"}}
+
+    async def _registry_for_display(self) -> dict[str, Any]:
+        """Return the entity registry listing after command responses can be received."""
+        await self.listener_started.wait()
+        self.calls.append(REGISTRY_LIST_COMMAND)
+        self.registry_started.set()
+        try:
+            if self._registry_result:
+                await self._registry_result
+            if self._registry_error:
+                raise self._registry_error
+            return {
+                "entity_categories": {},
+                "entities": [
+                    {"ei": entity_id, "pl": "test"}
+                    for entity_id in self.compressed_states
+                    if entity_id not in self.disabled_entities
+                ],
+            }
+        except asyncio.CancelledError:
+            self.registry_cancelled.set()
+            raise
+        finally:
+            self.registry_stopped.set()
+
+    def _registry_entries(self, entity_ids: list[str]) -> dict[str, dict[str, Any] | None]:
+        """Return the full registry entry of every requested entity, None when unknown."""
+        return {
+            entity_id: (
+                {
+                    "entity_id": entity_id,
+                    "id": f"registry_id_{entity_id}",
+                    "platform": "test",
+                    "device_id": "device_id",
+                    "config_entry_id": "config_entry_id",
+                }
+                if entity_id in self.compressed_states
+                else None
+            )
+            for entity_id in entity_ids
+        }
 
 
 @asynccontextmanager
@@ -262,7 +300,12 @@ async def test_feature_resolution_starts_listener_first() -> None:
     ]
 
     async with _start_provider(states) as (provider, hass):
-        assert hass.calls[:3] == ["connect", "start_listening", "get_entity_registry"]
+        assert hass.calls[:4] == [
+            "connect",
+            "start_listening",
+            "subscribe_events",
+            REGISTRY_LIST_COMMAND,
+        ]
         assert ProviderFeature.AI_QUERY in provider.supported_features
         assert ProviderFeature.TTS in provider.supported_features
 
@@ -284,7 +327,14 @@ async def test_feature_resolution_failure_cleans_up_connection() -> None:
     assert hass.listener_started.is_set()
     assert hass.listener_stopped.is_set()
     assert hass.disconnected
-    assert hass.calls == ["connect", "start_listening", "get_entity_registry", "disconnect"]
+    assert hass.calls == [
+        "connect",
+        "start_listening",
+        "subscribe_events",
+        REGISTRY_LIST_COMMAND,
+        "unsubscribe_events",
+        "disconnect",
+    ]
     assert provider._listen_task is None
 
 
@@ -457,7 +507,7 @@ async def test_ai_query_uses_the_first_engine_by_default() -> None:
 
         assert ProviderFeature.AI_QUERY in provider.supported_features
         assert result == "answer"
-        hass.send_command.assert_awaited_once_with(
+        hass.send_command.assert_awaited_with(
             "call_service",
             domain="ai_task",
             service="generate_data",
@@ -584,7 +634,7 @@ async def test_burst_of_registry_updates_triggers_a_single_refresh() -> None:
     """Collect a burst of registry updates into one rebuild of the engine lists."""
     async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
         await provider.loaded_in_mass()
-        registry_fetches = hass.calls.count("get_entity_registry")
+        registry_fetches = hass.calls.count(REGISTRY_LIST_COMMAND)
 
         with patch("music_assistant.providers.hass.ENGINE_REFRESH_DEBOUNCE", 0.05):
             for index in range(3):
@@ -596,17 +646,139 @@ async def test_burst_of_registry_updates_triggers_a_single_refresh() -> None:
             async with asyncio.timeout(1):
                 await provider._engine_refresh_task
 
-        assert hass.calls.count("get_entity_registry") == registry_fetches + 1
+        assert hass.calls.count(REGISTRY_LIST_COMMAND) == registry_fetches + 1
+
+
+async def test_registry_update_of_another_domain_invalidates_the_registry() -> None:
+    """Refresh the cached registry for a registry update of any domain."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        registry_fetches = hass.calls.count(REGISTRY_LIST_COMMAND)
+        hass.compressed_states["light.kitchen"] = _compressed(_state("light.kitchen", "Kitchen"))
+
+        hass.fire_event(
+            "entity_registry_updated", {"action": "create", "entity_id": "light.kitchen"}
+        )
+
+        # an entity that can not back a feature must not trigger an engine rebuild
+        assert provider._engine_refresh_task is None
+        result = await provider.get_states(domains=("light",))
+        assert [state["entity_id"] for state in result] == ["light.kitchen"]
+        assert hass.calls.count(REGISTRY_LIST_COMMAND) == registry_fetches + 1
+
+
+async def test_domains_are_resolved_through_the_display_registry() -> None:
+    """Resolve domains through the compact registry listing only."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        await provider.get_states(domains=("tts",))
+
+        assert REGISTRY_LIST_COMMAND in hass.calls
+        assert "config/entity_registry/list" not in hass.calls
+
+
+async def test_registry_is_fetched_once_per_connection() -> None:
+    """Serve repeated domain lookups from a registry that is fetched only once."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        registry_fetches = hass.calls.count(REGISTRY_LIST_COMMAND)
+
+        await provider.get_states(domains=("tts",))
+        await provider.get_states(domains=("media_player",))
+
+        assert registry_fetches == 1
+        assert hass.calls.count(REGISTRY_LIST_COMMAND) == registry_fetches
+
+
+async def test_concurrent_domain_lookups_share_one_registry_fetch() -> None:
+    """Let concurrent domain lookups share a single registry fetch."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        registry_fetches = hass.calls.count(REGISTRY_LIST_COMMAND)
+        provider._entity_registry = None
+        # hold back the registry response until both lookups are waiting for it
+        hass._registry_result = asyncio.get_running_loop().create_future()
+
+        lookups = asyncio.gather(
+            provider.get_states(domains=("tts",)), provider.get_states(domains=("tts",))
+        )
+        await asyncio.sleep(0)
+        hass._registry_result.set_result(None)
+        async with asyncio.timeout(1):
+            results = await lookups
+
+        assert all(len(result) == 1 for result in results)
+        assert hass.calls.count(REGISTRY_LIST_COMMAND) == registry_fetches + 1
+
+
+async def test_registry_changed_during_the_fetch_is_not_cached() -> None:
+    """Keep a registry listing out of the cache when a registry update outdated it in flight."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        provider._entity_registry = None
+        # hold back the registry response until the update has been delivered
+        hass._registry_result = asyncio.get_running_loop().create_future()
+        lookup = asyncio.ensure_future(provider.get_states(domains=("tts",)))
+        await asyncio.sleep(0)
+
+        hass.fire_event(
+            "entity_registry_updated", {"action": "create", "entity_id": "light.kitchen"}
+        )
+        hass._registry_result.set_result(None)
+        async with asyncio.timeout(1):
+            await lookup
+
+        assert provider._entity_registry is None
+        registry_fetches = hass.calls.count(REGISTRY_LIST_COMMAND)
+        await provider.get_states(domains=("tts",))
+        assert hass.calls.count(REGISTRY_LIST_COMMAND) == registry_fetches + 1
+
+
+async def test_disabled_entity_is_never_requested() -> None:
+    """Leave an entity that Home Assistant disabled out of the state fetch."""
+    states = [_state("media_player.kitchen", "Kitchen"), _state("media_player.spare", "Spare")]
+
+    async with _start_provider(states) as (provider, hass):
+        # Home Assistant omits disabled entities from the registry, their state remains
+        hass.disabled_entities.add("media_player.spare")
+        hass.fire_event(
+            "entity_registry_updated", {"action": "update", "entity_id": "media_player.spare"}
+        )
+        hass.subscriptions.clear()
+
+        result = await provider.get_states(domains=("media_player",))
+
+        assert [state["entity_id"] for state in result] == ["media_player.kitchen"]
+        assert hass.subscriptions == [["media_player.kitchen"]]
+
+
+async def test_registry_entries_are_fetched_for_the_given_entities_only() -> None:
+    """Fetch the full registry entries of exactly the requested entities."""
+    async with _start_provider([_state("media_player.kitchen", "Kitchen")]) as (provider, hass):
+        entries = await provider.get_entity_registry_entries(
+            ["media_player.kitchen", "media_player.unknown"]
+        )
+
+        # an entity Home Assistant does not know is absent from the result
+        assert list(entries) == ["media_player.kitchen"]
+        assert entries["media_player.kitchen"]["config_entry_id"] == "config_entry_id"
+        hass.send_command.assert_awaited_with(
+            REGISTRY_ENTRIES_COMMAND,
+            entity_ids=["media_player.kitchen", "media_player.unknown"],
+        )
+
+
+async def test_registry_entries_of_nothing_skips_the_round_trip() -> None:
+    """Do not contact Home Assistant when no entity is requested."""
+    async with _start_provider([_state("media_player.kitchen", "Kitchen")]) as (provider, hass):
+        calls_before = list(hass.calls)
+
+        assert await provider.get_entity_registry_entries([]) == {}
+        assert hass.calls == calls_before
 
 
 async def test_entity_registry_subscription_is_replaced() -> None:
     """Replace the entity registry subscription instead of stacking a second one."""
     async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
-        await provider.loaded_in_mass()
         assert hass.active_event_subscriptions == 1
         assert hass.event_subscriptions[0][0] == "entity_registry_updated"
 
-        await provider.loaded_in_mass()
+        await provider._subscribe_entity_registry()
 
         assert hass.active_event_subscriptions == 1
         assert hass.calls[-2:] == ["unsubscribe_events", "subscribe_events"]
@@ -824,6 +996,13 @@ async def test_player_control_subscription_is_replaced() -> None:
         await provider.loaded_in_mass()
         assert hass.active_subscriptions == 1
 
+        # only a changed selection results in a new subscription
+        provider.config = _config(
+            **{
+                CONF_POWER_CONTROLS: ["media_player.kitchen"],
+                CONF_MUTE_CONTROLS: ["switch.kitchen_amp"],
+            }
+        )
         await provider._register_player_controls()
 
         assert len(hass.subscriptions) == 4
@@ -834,3 +1013,83 @@ async def test_player_control_subscription_is_replaced() -> None:
         await provider.unload()
 
         assert hass.active_subscriptions == 0
+
+
+async def test_unchanged_control_selection_skips_home_assistant() -> None:
+    """Reconciling an unchanged selection does not talk to Home Assistant at all."""
+    states = [_state("media_player.kitchen", "Kitchen")]
+    async with _start_provider(states, **{CONF_POWER_CONTROLS: ["media_player.kitchen"]}) as (
+        provider,
+        hass,
+    ):
+        await provider.loaded_in_mass()
+        calls_after_load = list(hass.calls)
+
+        await provider._register_player_controls()
+
+        assert hass.calls == calls_after_load
+
+
+async def test_control_list_change_reconciles_without_reload() -> None:
+    """A change confined to the control lists is applied without reloading the provider."""
+    states = [_state("media_player.kitchen", "Kitchen"), _state("switch.amp", "Amp")]
+    async with _start_provider(states, **{CONF_POWER_CONTROLS: ["media_player.kitchen"]}) as (
+        provider,
+        _hass,
+    ):
+        mass = cast("MagicMock", provider.mass)
+        await provider.loaded_in_mass()
+        assert set(provider._player_controls or {}) == {"media_player.kitchen"}
+        mass.call_later.reset_mock()
+
+        await provider.update_config(
+            _config(**{CONF_POWER_CONTROLS: ["switch.amp"]}),
+            {f"values/{CONF_POWER_CONTROLS}"},
+        )
+
+        mass.call_later.assert_not_called()
+        assert set(provider._player_controls or {}) == {"switch.amp"}
+        mass.players.remove_player_control.assert_called_once_with("media_player.kitchen")
+        registered = mass.players.register_or_update_player_control.call_args[0][0]
+        assert registered.id == "switch.amp"
+        assert registered.supports_power is True
+
+
+async def test_control_role_change_is_applied() -> None:
+    """Moving an already selected entity to another role re-registers it in that role."""
+    states = [_state("media_player.kitchen", "Kitchen")]
+    async with _start_provider(states, **{CONF_POWER_CONTROLS: ["media_player.kitchen"]}) as (
+        provider,
+        _hass,
+    ):
+        await provider.loaded_in_mass()
+
+        await provider.update_config(
+            _config(**{CONF_VOLUME_CONTROLS: ["media_player.kitchen"]}),
+            {f"values/{CONF_POWER_CONTROLS}", f"values/{CONF_VOLUME_CONTROLS}"},
+        )
+
+        control = (provider._player_controls or {})["media_player.kitchen"]
+        assert control.supports_volume is True
+        assert control.supports_power is False
+
+
+@pytest.mark.parametrize(
+    "changed_keys",
+    [
+        {f"values/{CONF_URL}"},
+        # a control list changing alongside another value still needs the reload
+        {f"values/{CONF_POWER_CONTROLS}", f"values/{CONF_URL}"},
+    ],
+)
+async def test_other_config_change_reloads_provider(changed_keys: set[str]) -> None:
+    """Any change beyond the control lists reloads the provider."""
+    async with _start_provider([]) as (provider, _hass):
+        mass = cast("MagicMock", provider.mass)
+        await provider.loaded_in_mass()
+        mass.call_later.reset_mock()
+
+        await provider.update_config(_config(**{CONF_POWER_CONTROLS: ["switch.amp"]}), changed_keys)
+
+        mass.call_later.assert_called_once()
+        assert mass.call_later.call_args[0][1] is mass.load_provider_config

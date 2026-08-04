@@ -6,6 +6,7 @@ import asyncio
 import logging
 import random
 from contextlib import suppress
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -24,7 +25,7 @@ from music_assistant_models.media_items import SoundEffect
 
 from music_assistant.helpers.datetime import now as host_now
 from music_assistant.helpers.playlists import PlaylistItem, parse_m3u, parse_m3u_playlist_image
-from music_assistant.helpers.uri import create_uri
+from music_assistant.helpers.uri import create_uri, parse_uri
 from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
 from music_assistant.providers.ai_radio.constants import CONF_AI_ENGINE, CONF_TTS_ENGINE
 from music_assistant.providers.ai_radio.models import AudioSection, SessionState, Slot
@@ -363,6 +364,44 @@ async def test_render_tts_converts_raw_http_path_to_builtin_sound_effect_uri() -
     assert duration == 11
     plugin.get_tts_message.assert_awaited_once_with("hello world", engine_id="tts.cloud")
     runtime._warm_builtin_duration_cache.assert_awaited_once()
+
+
+async def test_render_tts_converts_local_file_path_to_builtin_sound_effect_uri(
+    tmp_path: Path,
+) -> None:
+    """A rendered clip on disk gets the same builtin sound effect treatment as a URL."""
+    clip = tmp_path / "section.mp3"
+    clip.write_bytes(b"")
+    plugin = _create_tts_plugin("local_tts_1", "voice")
+    plugin.get_tts_message = AsyncMock(return_value=SimpleNamespace(path=str(clip)))
+
+    def get_provider(provider: str) -> Any:
+        return SimpleNamespace(instance_id="builtin_1") if provider == "builtin" else None
+
+    runtime = DummyRuntime({CONF_TTS_ENGINE: "local_tts_1/voice"})
+    _set_runtime_mass(
+        runtime, _create_engine_mass(ProviderFeature.TTS, plugin, get_provider=get_provider)
+    )
+    runtime._warm_builtin_duration_cache = AsyncMock(return_value=7)  # type: ignore[method-assign]
+
+    uri, duration = await runtime._render_tts("hello world", "Test Section")
+
+    assert uri == create_uri(MediaType.SOUND_EFFECT, "builtin_1", str(clip))
+    assert await parse_uri(uri) == (MediaType.SOUND_EFFECT, "builtin_1", str(clip))
+    assert duration == 7
+    runtime._warm_builtin_duration_cache.assert_awaited_once()
+
+
+async def test_render_tts_rejects_a_stream_path_that_is_not_playable() -> None:
+    """A path that is neither a URL nor an existing file fails loudly instead of degrading."""
+    plugin = _create_tts_plugin("local_tts_1", "voice")
+    plugin.get_tts_message = AsyncMock(return_value=SimpleNamespace(path="section.mp3"))
+
+    runtime = DummyRuntime({CONF_TTS_ENGINE: "local_tts_1/voice"})
+    _set_runtime_mass(runtime, _create_engine_mass(ProviderFeature.TTS, plugin))
+
+    with pytest.raises(MusicAssistantError, match="unusable stream path"):
+        await runtime._render_tts("hello world", "Test Section")
 
 
 async def test_render_tts_refuses_a_configured_engine_that_disappeared() -> None:

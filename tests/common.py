@@ -4,9 +4,9 @@ import asyncio
 import contextlib
 import logging
 import pathlib
-from collections.abc import AsyncGenerator, Callable, Iterator
+from collections.abc import AsyncGenerator, Iterator
 from typing import TYPE_CHECKING
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiofiles.os
 from music_assistant_models.enums import EventType, IdentifierType, PlayerFeature, PlayerType
@@ -64,20 +64,34 @@ SUPPRESSED_BUILTIN_PROVIDERS = {"local_audio"}
 
 _orig_create_builtin_provider_config = ProviderConfigMixin.create_builtin_provider_config
 
+# the address a fixture's web and stream servers bind to, so a test run never listens
+# on the host's real interfaces
+LOOPBACK_IP = "127.0.0.1"
+
 
 @contextlib.contextmanager
-def use_ephemeral_server_ports(port_factory: Callable[[], int]) -> Iterator[None]:
+def use_ephemeral_server_ports() -> Iterator[None]:
     """
-    Give a full-server test fixture unused web and stream server ports.
+    Bind a full-server test fixture's web and stream servers to a free loopback port.
 
-    :param port_factory: Callable returning an unused TCP port.
+    Port 0 has the kernel pick the port during the bind itself, so nothing else can
+    claim it in the meantime.
+
+    Binding loopback keeps a test run off the host's other interfaces and gives each
+    server a single socket, so it has one assigned port: asyncio binds a wildcard
+    address once per address family, each with its own port.
     """
     with (
+        patch("music_assistant.controllers.webserver.controller.DEFAULT_SERVER_PORT", 0),
+        patch("music_assistant.controllers.streams.controller.DEFAULT_PORT", 0),
+        patch("music_assistant.controllers.webserver.controller.DEFAULT_HOST", LOOPBACK_IP),
+        patch("music_assistant.controllers.streams.controller.DEFAULT_HOST", LOOPBACK_IP),
+        # the streamserver advertises its publish IP independently of the bind IP, so
+        # pin that too to keep the URLs it hands out pointing at the socket it listens on
         patch(
-            "music_assistant.controllers.webserver.controller.DEFAULT_SERVER_PORT",
-            port_factory(),
+            "music_assistant.controllers.streams.controller.get_ip_addresses",
+            AsyncMock(return_value=(LOOPBACK_IP,)),
         ),
-        patch("music_assistant.controllers.streams.controller.DEFAULT_PORT", port_factory()),
     ):
         yield
 

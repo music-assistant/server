@@ -41,6 +41,7 @@ from music_assistant.constants import (
     LIVE_INDICATORS,
     SOUNDTRACK_INDICATORS,
     VERBOSE_LOG_LEVEL,
+    WILDCARD_BIND_IPS,
 )
 from music_assistant.helpers.process import check_output
 
@@ -1154,7 +1155,7 @@ async def get_source_ip_for_target(target_ip: str) -> str:
                 _sock.settimeout(1.0)
                 _sock.connect(route_target)
                 routed_ip = str(_sock.getsockname()[0])
-                if routed_ip and routed_ip not in ("0.0.0.0", "::", ""):
+                if routed_ip and routed_ip not in WILDCARD_BIND_IPS:
                     return routed_ip
             except OSError:
                 pass

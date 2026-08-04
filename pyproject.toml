@@ -82,8 +82,9 @@ mass = "music_assistant.__main__:main"
 # "connexion" is a French word in the MusicMe login URL path
 # "claus" is Santa Claus, in the christmas_music genre description
 # "childrens" is the normalized form of the "Children's" audiobook genre (apostrophe stripped)
+# "speaches" is the name of a self-hostable OpenAI-compatible speech server
 # translations/*.json are machine-translated locale files (Lokalise); foreign words aren't typos
-ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,connexion,claus,childrens,"
+ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,connexion,claus,childrens,speaches,"
 skip = """*.js,*.svg,\
 music_assistant/helpers/resources/countries.json,\
 music_assistant/helpers/resources/genres/genre_mapping.json,\
