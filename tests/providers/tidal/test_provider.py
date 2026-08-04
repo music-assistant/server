@@ -412,6 +412,46 @@ async def test_redirect_cached_id_miss(provider: TidalProvider, mass_mock: Mock)
     assert result == "stale_123"
 
 
+async def test_note_replaced_track_schedules_healing(
+    provider: TidalProvider, mass_mock: Mock
+) -> None:
+    """Test a REPLACED projection is turned into a cached redirect and a mapping heal."""
+    item = {
+        "id": "live_456",
+        "type": "tracks",
+        "meta": {
+            "replacement": {"status": "REPLACED", "original": {"id": "stale_123", "type": "tracks"}}
+        },
+    }
+
+    mass_mock.create_task = Mock(side_effect=lambda coro: coro.close())
+
+    with patch.object(provider, "_apply_replacement", new_callable=AsyncMock) as apply_mock:
+        provider.note_replaced_track(item)
+
+    mass_mock.create_task.assert_called_once()
+    apply_mock.assert_called_once_with("stale_123", "live_456")
+
+
+@pytest.mark.parametrize(
+    "meta",
+    [
+        {},
+        {"replacement": {"status": "ORIGINAL"}},
+        {"replacement": {"status": "NOT_REPLACED", "original": {"id": "live_456"}}},
+        {"replacement": {"status": "REPLACED", "original": {"id": "live_456"}}},
+    ],
+    ids=["no-meta", "original", "not-replaced", "replaced-with-same-id"],
+)
+async def test_note_replaced_track_ignores_non_replacements(
+    provider: TidalProvider, mass_mock: Mock, meta: dict[str, Any]
+) -> None:
+    """Test nothing is scheduled unless the id actually changed."""
+    provider.note_replaced_track({"id": "live_456", "type": "tracks", "meta": meta})
+
+    mass_mock.create_task.assert_not_called()
+
+
 async def test_resolve_live_track_id_cache_hit_different(
     provider: TidalProvider, mass_mock: Mock
 ) -> None:

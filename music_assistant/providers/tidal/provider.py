@@ -295,6 +295,26 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         )
         return cached_id or item_id
 
+    def note_replaced_track(self, item: dict[str, Any]) -> None:
+        """
+        Record a replacement Tidal already resolved for us on a read.
+
+        Reads that pass `replaceMedia` come back with the live id plus the id it
+        replaced, which is the same (stale -> live) pair the ISRC resolver works
+        to reconstruct. Taking it from the response caches the redirect and heals
+        the library mapping without a single extra request.
+
+        :param item: A resource identifier from a replaceMedia-projected read.
+        """
+        replacement = (item.get("meta") or {}).get("replacement") or {}
+        if replacement.get("status") != "REPLACED":
+            return
+        stale_id = str((replacement.get("original") or {}).get("id") or "")
+        live_id = str(item.get("id") or "")
+        if not stale_id or not live_id or stale_id == live_id:
+            return
+        self.mass.create_task(self._apply_replacement(stale_id, live_id))
+
     async def resolve_live_track_id(self, item_id: str) -> str | None:
         """
         Resolve a possibly-stale track id to its live id via ISRC, healing the library DB.
@@ -355,6 +375,22 @@ class TidalProvider(RecommendationPayloadMixin, MusicProvider):
         self.mass.create_task(self._heal_track_mapping(lib_track.item_id, item_id, live_id))
 
         return live_id
+
+    async def _apply_replacement(self, stale_id: str, live_id: str) -> None:
+        """Cache a Tidal-supplied redirect and heal the library mapping behind it."""
+        await self.mass.cache.set(
+            key=stale_id,
+            data=live_id,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_ISRC_MAP,
+            persistent=True,
+            expiration=86400 * 90,
+        )
+        lib_track = await self.mass.music.tracks.get_library_item_by_prov_id(
+            stale_id, self.instance_id
+        )
+        if lib_track:
+            await self._heal_track_mapping(lib_track.item_id, stale_id, live_id)
 
     async def _fetch_recommendation_payload(self) -> list[RecommendationFolder]:
         """Fetch and parse the full recommendations payload (folders WITH items)."""

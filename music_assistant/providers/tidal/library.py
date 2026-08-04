@@ -67,6 +67,7 @@ class TidalLibraryManager:
         async for doc in self.api.paginate_jsonapi(
             "userCollectionAlbums/me/relationships/items",
             include=["items.artists", "items.coverArt"],
+            replace_media="items",
         ):
             for item in doc.data_list:
                 if resource := doc.resolve(item):
@@ -79,11 +80,13 @@ class TidalLibraryManager:
         async for doc in self.api.paginate_jsonapi(
             "userCollectionTracks/me/relationships/items",
             include=["items.artists", "items.albums.coverArt"],
+            replace_media="items",
         ):
             for item in doc.data_list:
                 if resource := doc.resolve(item):
                     track = parse_track_v2(self.provider, doc, resource)
                     _set_date_added(track, item)
+                    self.provider.note_replaced_track(item)
                     yield track
 
     async def get_playlists(self) -> AsyncGenerator[Playlist]:
