@@ -310,6 +310,29 @@ class TestMuteControlExplicitConfig:
         player = _create_player(mock_mass, features={PlayerFeature.VOLUME_MUTE})
         assert player.mute_control == PLAYER_CONTROL_NONE
 
+    def test_explicit_fake(self, mock_mass: MagicMock) -> None:
+        """Mute control returns fake when explicitly configured and a volume control exists."""
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect({CONF_MUTE_CONTROL: PLAYER_CONTROL_FAKE})
+        )
+        player = _create_player(mock_mass, features={PlayerFeature.VOLUME_SET})
+        assert player.mute_control == PLAYER_CONTROL_FAKE
+
+    def test_explicit_fake_degrades_without_volume_control(self, mock_mass: MagicMock) -> None:
+        """Fake mute drives the volume control, so it degrades to NONE without one."""
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_make_config_side_effect(
+                {
+                    CONF_MUTE_CONTROL: PLAYER_CONTROL_FAKE,
+                    CONF_VOLUME_CONTROL: PLAYER_CONTROL_NONE,
+                }
+            )
+        )
+        # a native mute capability is irrelevant here: the user explicitly picked fake
+        player = _create_player(mock_mass, features={PlayerFeature.VOLUME_MUTE})
+        assert player.mute_control == PLAYER_CONTROL_NONE
+        assert PlayerFeature.VOLUME_MUTE not in player.state.supported_features
+
 
 class TestMuteControlAutoSelect:
     """Test mute_control auto-select logic."""

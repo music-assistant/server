@@ -924,11 +924,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             player.extra_data.pop(ATTR_MUTE_LOCK, None)
 
         mute_control = player.mute_control
-        # a mute command needs a mute control; fake mute is simulated by
-        # setting the volume to zero, so it also needs a volume control
-        if mute_control == PLAYER_CONTROL_NONE or (
-            mute_control == PLAYER_CONTROL_FAKE and player.volume_control == PLAYER_CONTROL_NONE
-        ):
+        if mute_control == PLAYER_CONTROL_NONE:
             raise UnsupportedFeaturedException(
                 f"Player {player.state.name} does not support muting"
             )
@@ -985,6 +981,9 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             )
             await protocol_player.volume_mute(muted)
             return
+
+        # the configured control disappeared after the mute control was resolved
+        raise UnsupportedFeaturedException(f"Player {player.state.name} does not support muting")
 
     @handle_player_command
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:

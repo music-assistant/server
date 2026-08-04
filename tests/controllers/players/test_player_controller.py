@@ -1450,6 +1450,29 @@ class TestMuteControlGuard:
         assert ATTR_PREVIOUS_VOLUME not in player.extra_data
         assert ATTR_FAKE_MUTE not in player.extra_data
 
+    async def test_vanished_mute_control_raises(self, mock_mass: MagicMock) -> None:
+        """A mute control that disappeared after being resolved is reported, not ignored."""
+        control = PlayerControl(
+            id="ext_mute",
+            provider="test",
+            name="External Mute",
+            supports_mute=True,
+            mute_set=AsyncMock(),
+        )
+        controller, player = self._make_player(
+            mock_mass,
+            mute_control="ext_mute",
+            volume_control=PLAYER_CONTROL_NONE,
+            controls={"ext_mute": control},
+        )
+        # the resolved control is cached on the player, so removing it here leaves
+        # the player pointing at a control that no longer exists
+        assert player.mute_control == "ext_mute"
+        controller._controls = {}
+
+        with pytest.raises(UnsupportedFeaturedException):
+            await controller.cmd_volume_mute("player_1", True)
+
     async def test_unmute_clears_mute_lock_without_mute_control(self, mock_mass: MagicMock) -> None:
         """Unmuting clears a mute lock left behind by a since-removed mute control."""
         controller, player = self._make_player(

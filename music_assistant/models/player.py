@@ -1372,6 +1372,10 @@ class Player(ABC):
     def mute_control(self) -> str:
         """Return the mute control type."""
         conf = self.mass.config.get_raw_player_config_value(self.player_id, CONF_MUTE_CONTROL)
+        if conf == PLAYER_CONTROL_FAKE and self.volume_control == PLAYER_CONTROL_NONE:
+            # fake mute is simulated by setting the volume to zero, so without a volume
+            # control to drive there is no way to mute this player at all
+            return PLAYER_CONTROL_NONE
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
             # the control type is explicitly set in the config, use that
             return str(conf)
