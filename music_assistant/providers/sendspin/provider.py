@@ -802,17 +802,12 @@ class SendspinProvider(PlayerProvider):
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
         self._remove_orphan_virtual_player_configs()
-        # aiosendspin runs its own IPv4-only zeroconf, so hand it only our IPv4 addresses
-        # and let it fall back to its own detection when we have none to offer
-        ipv4_addresses = [
-            address for address in self.mass.streams.publish_addresses if ":" not in address
-        ]
         # Start server for handling incoming Sendspin connections from clients
         # and mDNS discovery of new clients
         await self.server_api.start_server(
             port=SENDSPIN_SERVER_PORT,
             host=self.mass.streams.bind_ip,
-            advertise_addresses=ipv4_addresses or None,
+            advertise_addresses=self.mass.streams.publish_addresses,
         )
         for address in self._manual_ip_config:
             try:
