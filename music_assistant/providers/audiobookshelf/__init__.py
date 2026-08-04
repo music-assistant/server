@@ -1081,7 +1081,7 @@ for more details.
         self, item_id: str, media_type: MediaType
     ) -> tuple[bool, int, datetime | None]:
         """Return finished:bool, position_ms: int."""
-        # do not create a session here, is this method is called outside of stream acquisition
+        # do not create a session here, as this method is called outside of stream acquisition
         item_ids = item_id.split(" ")
         abs_item_id = item_ids[0]
         episode_id = item_ids[1] if len(item_ids) == 2 else None
@@ -1094,7 +1094,12 @@ for more details.
         # The progress' last_update is in ms epoch
         timestamp = from_utc_timestamp(progress.last_update / 1000) if progress else None
         current_time = progress.current_time if progress.current_time is not None else 0.0
-        self.logger.debug("Resume position %s: obtained.", current_time)
+        self.logger.debug(
+            "Acquired resume position %s for %s with item_id %s.",
+            current_time,
+            media_type.value,
+            item_id,
+        )
         return (
             progress.is_finished,
             int(current_time * 1000),
