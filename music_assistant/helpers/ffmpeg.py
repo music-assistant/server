@@ -684,9 +684,12 @@ def get_ffmpeg_args(
     output_args.append(output_path)
 
     # edge case: source file is not stereo - downmix to stereo
+    # includes BL/BR as well as SL/SR so 5.1 (rear) and 7.1 (side) surrounds both fold in
     if input_format.channels > 2 and output_format.channels == 2:
         filter_params = [
-            "pan=stereo|FL=1.0*FL+0.707*FC+0.707*SL+0.707*LFE|FR=1.0*FR+0.707*FC+0.707*SR+0.707*LFE",
+            "pan=stereo|"
+            "FL=FL+0.707*FC+0.707*LFE+0.707*BL+0.707*SL|"
+            "FR=FR+0.707*FC+0.707*LFE+0.707*BR+0.707*SR",
             *filter_params,
         ]
 
