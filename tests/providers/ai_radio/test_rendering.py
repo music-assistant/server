@@ -1,0 +1,366 @@
+"""Unit tests for AI Radio just-in-time clip rendering."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from music_assistant_models.enums import ContentType, MediaType, StreamType
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
+from music_assistant_models.queue_item import QueueItem
+
+from music_assistant.models.plugin import PluginProvider, TTSEngine
+from music_assistant.providers.ai_radio.constants import (
+    ATTR_MAX_CHARS,
+    ATTR_PROMPT,
+    ATTR_RENDERED_TEXT,
+    ATTR_SESSION_ID,
+    ATTR_STATION_ID,
+    ATTR_WEB_SEARCH_MODE,
+)
+from music_assistant.providers.ai_radio.models import SessionState
+from music_assistant.providers.ai_radio.rendering import AIRadioRenderMixin
+
+
+class DummyRenderer(AIRadioRenderMixin):
+    """Minimal harness exposing the render path."""
+
+    domain = "ai_radio"
+    instance_id = "ai_radio--test"
+
+    def __init__(self) -> None:
+        """Initialize the harness with recording stubs."""
+        self.logger = logging.getLogger("tests.ai_radio.rendering")
+        self._sessions: dict[str, Any] = {}
+        self._stations: dict[str, dict[str, Any]] = {
+            "st": {"id": "st", "general": {"instructions": "be warm"}}
+        }
+        self.llm_prompts: list[str] = []
+        self.tts_texts: list[str] = []
+        self.weather_calls = 0
+        self.fail_generation = False
+
+    def _configured_now(self) -> Any:
+        return __import__("datetime").datetime(2026, 7, 30, 18, 30)
+
+    async def _generate_text(self, station: dict[str, Any], prompt: str, web_mode: str) -> str:
+        # a real suspension point so concurrent callers actually interleave under
+        # asyncio.gather, otherwise the lock in get_stream_details is never exercised
+        await asyncio.sleep(0)
+        if self.fail_generation:
+            raise RuntimeError("llm down")
+        self.llm_prompts.append(prompt)
+        return "Good evening, it is warm out."
+
+    async def _prepare_runtime_tokens(self, station: dict[str, Any]) -> dict[str, str]:
+        self.weather_calls += 1
+        return {"<weather_hourly>": f"fresh weather {self.weather_calls}"}
+
+    async def _render_tts_media(self, text: str) -> tuple[str, StreamType, AudioFormat]:
+        self.tts_texts.append(text)
+        return (
+            f"http://ha.invalid/api/tts_proxy/{len(self.tts_texts)}.mp3",
+            StreamType.HTTP,
+            AudioFormat(content_type=ContentType.MP3),
+        )
+
+    async def _probe_duration(self, path: str) -> int | None:
+        return 9
+
+
+class RealTtsRenderer(DummyRenderer):
+    """Harness that exercises the mixin's real TTS path instead of the DummyRenderer stub."""
+
+    _render_tts_media = AIRadioRenderMixin._render_tts_media
+
+
+def _tts_renderer(path: str, audio_format: AudioFormat | None = None) -> RealTtsRenderer:
+    """Build a renderer whose TTS engine returns StreamDetails carrying the given path."""
+    renderer = RealTtsRenderer()
+    plugin = MagicMock(spec=PluginProvider)
+    plugin.instance_id = "hass_1"
+    plugin.get_tts_message = AsyncMock(
+        return_value=SimpleNamespace(
+            path=path, audio_format=audio_format or AudioFormat(content_type=ContentType.UNKNOWN)
+        )
+    )
+    engine = TTSEngine(id="tts.cloud", name="Cloud", provider=plugin)
+    cast("Any", renderer)._get_tts_engine = AsyncMock(return_value=engine)
+    return renderer
+
+
+def _clip_item(clip_id: str, queue_id: str = "player_a", **overrides: Any) -> QueueItem:
+    """Build a queue item for a pending AI Radio clip."""
+    attributes: dict[str, Any] = {
+        ATTR_SESSION_ID: "sess",
+        ATTR_STATION_ID: "st",
+        ATTR_PROMPT: "It is <timestamp>. Weather: <weather_hourly>.",
+        ATTR_MAX_CHARS: 300,
+        ATTR_WEB_SEARCH_MODE: "disabled",
+    }
+    attributes.update(overrides)
+    media_item = SoundEffect(
+        item_id=clip_id,
+        provider="ai_radio--test",
+        name="Weather",
+        provider_mappings={
+            ProviderMapping(
+                item_id=clip_id,
+                provider_domain="ai_radio",
+                provider_instance="ai_radio--test",
+            )
+        },
+    )
+    return QueueItem(
+        queue_id=queue_id,
+        queue_item_id=f"qi_{clip_id}",
+        name="Weather",
+        duration=None,
+        media_item=media_item,
+        extra_attributes=attributes,
+    )
+
+
+def _attach_queues(renderer: DummyRenderer, queues: dict[str, list[QueueItem]]) -> list[bool]:
+    """Wire a minimal player_queues stub and return the signal_update call log."""
+    signals: list[bool] = []
+    cast("Any", renderer).mass = SimpleNamespace(
+        player_queues=SimpleNamespace(
+            all=lambda: tuple(SimpleNamespace(queue_id=queue_id) for queue_id in queues),
+            items=lambda queue_id, limit=500, offset=0: queues.get(queue_id, [])[
+                offset : offset + limit
+            ],
+            signal_update=lambda _queue_id, items_changed=False: signals.append(items_changed),
+        ),
+        metadata=SimpleNamespace(locale="en_US"),
+    )
+    return signals
+
+
+def _attach_queue(renderer: DummyRenderer, items: list[QueueItem]) -> list[bool]:
+    """Wire a single-queue player_queues stub and return the signal_update call log."""
+    return _attach_queues(renderer, {"player_a": items})
+
+
+async def test_render_resolves_deferred_placeholders_at_render_time() -> None:
+    """The prompt sent to the LLM carries render-time weather, not plan-time."""
+    renderer = DummyRenderer()
+    item = _clip_item("sess_001")
+    _attach_queue(renderer, [item])
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert renderer.weather_calls == 1
+    assert "fresh weather 1" in renderer.llm_prompts[0]
+    assert "<timestamp>" not in renderer.llm_prompts[0]
+    assert streamdetails.media_type == MediaType.SOUND_EFFECT
+    assert streamdetails.stream_type == StreamType.HTTP
+    assert streamdetails.duration == 9
+    assert streamdetails.expiration == 60
+    assert streamdetails.can_seek is False
+    assert streamdetails.allow_seek is False
+
+
+async def test_render_caches_the_script_and_remints_the_url() -> None:
+    """A second render reuses the stored script but mints a fresh URL."""
+    renderer = DummyRenderer()
+    item = _clip_item("sess_001")
+    signals = _attach_queue(renderer, [item])
+
+    first = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+    second = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert len(renderer.llm_prompts) == 1
+    assert renderer.tts_texts == [
+        "Good evening, it is warm out.",
+        "Good evening, it is warm out.",
+    ]
+    assert first.path != second.path
+    assert item.extra_attributes[ATTR_RENDERED_TEXT] == "Good evening, it is warm out."
+    assert signals == [True]
+
+
+async def test_concurrent_renders_call_the_llm_once() -> None:
+    """Two simultaneous requests for one clip render a single script."""
+    renderer = DummyRenderer()
+    _attach_queue(renderer, [_clip_item("sess_001")])
+
+    await asyncio.gather(
+        renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT),
+        renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT),
+    )
+
+    assert len(renderer.llm_prompts) == 1
+
+
+async def test_clip_is_found_in_the_owning_sessions_queue() -> None:
+    """The session registry points the lookup at the queue that holds the clip."""
+    renderer = DummyRenderer()
+    session = SessionState(session_id="sess", station_id="st", queue_id="player_b")
+    renderer._sessions = {"sess": session}
+    _attach_queues(
+        renderer,
+        {"player_a": [], "player_b": [_clip_item("sess_001", queue_id="player_b")]},
+    )
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.item_id == "sess_001"
+
+
+async def test_clip_is_found_by_scanning_every_queue_after_a_restart() -> None:
+    """With the session registry gone, the clip is still located in its persisted queue."""
+    renderer = DummyRenderer()
+    _attach_queues(
+        renderer,
+        {"player_a": [], "player_b": [_clip_item("sess_001", queue_id="player_b")]},
+    )
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.item_id == "sess_001"
+
+
+async def test_unknown_clip_raises_media_not_found() -> None:
+    """A clip id that is not in any queue is reported as missing media."""
+    renderer = DummyRenderer()
+    _attach_queue(renderer, [_clip_item("sess_001")])
+
+    with pytest.raises(MediaNotFoundError):
+        await renderer.get_stream_details("sess_999", MediaType.SOUND_EFFECT)
+
+
+async def test_clip_without_prompt_raises_media_not_found() -> None:
+    """A clip whose attributes were lost is reported as missing media."""
+    renderer = DummyRenderer()
+    item = _clip_item("sess_001")
+    item.extra_attributes.pop(ATTR_PROMPT)
+    _attach_queue(renderer, [item])
+
+    with pytest.raises(MediaNotFoundError):
+        await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+
+async def test_llm_failure_raises_media_not_found() -> None:
+    """An LLM failure surfaces as missing media so the core skips the clip."""
+    renderer = DummyRenderer()
+    renderer.fail_generation = True
+    _attach_queue(renderer, [_clip_item("sess_001")])
+
+    with pytest.raises(MediaNotFoundError):
+        await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+
+async def test_render_failure_increments_the_session_skip_counter() -> None:
+    """A skipped clip is recorded on its session without failing the run."""
+    renderer = DummyRenderer()
+    session = SessionState(session_id="sess", station_id="st")
+    renderer._sessions = {"sess": session}
+    _attach_queue(renderer, [_clip_item("sess_001")])
+    renderer.fail_generation = True
+
+    with pytest.raises(MediaNotFoundError):
+        await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert session.skipped_sections == 1
+    assert session.last_render_error
+
+
+async def test_tts_failure_raises_media_not_found_and_records_skip() -> None:
+    """A TTS failure surfaces as missing media and is recorded on the owning session."""
+
+    class UnspeakableRenderer(DummyRenderer):
+        async def _render_tts_media(self, text: str) -> tuple[str, StreamType, AudioFormat]:
+            raise RuntimeError("tts down")
+
+    renderer = UnspeakableRenderer()
+    session = SessionState(session_id="sess", station_id="st")
+    renderer._sessions = {"sess": session}
+    _attach_queue(renderer, [_clip_item("sess_001")])
+
+    with pytest.raises(MediaNotFoundError):
+        await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert session.skipped_sections == 1
+    assert session.last_render_error
+
+
+async def test_probe_failure_is_not_fatal() -> None:
+    """A failed duration probe yields streamdetails without a duration."""
+
+    class UnprobableRenderer(DummyRenderer):
+        async def _probe_duration(self, path: str) -> int | None:
+            return None
+
+    renderer = UnprobableRenderer()
+    _attach_queue(renderer, [_clip_item("sess_001")])
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.duration is None
+
+
+async def test_render_tts_media_streams_a_url_over_http() -> None:
+    """A TTS engine returning a proxy URL yields an HTTP stream with the MP3 default format."""
+    renderer = _tts_renderer("http://example.test/api/tts_proxy/abc123.mp3")
+
+    path, stream_type, audio_format = await renderer._render_tts_media("hello world")
+
+    assert path == "http://example.test/api/tts_proxy/abc123.mp3"
+    assert stream_type == StreamType.HTTP
+    assert audio_format.content_type == ContentType.MP3
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    # the provider-scoped engine.id, never engine.uid, and never omitted
+    engine.provider.get_tts_message.assert_awaited_once_with("hello world", engine_id="tts.cloud")
+
+
+async def test_render_tts_media_streams_a_local_file_from_disk(tmp_path: Path) -> None:
+    """A TTS engine that renders to disk is played as a local file rather than fetched."""
+    clip = tmp_path / "section.mp3"
+    clip.write_bytes(b"")
+    renderer = _tts_renderer(str(clip))
+    _attach_queue(renderer, [_clip_item("sess_001")])
+
+    path, stream_type, _ = await renderer._render_tts_media("hello world")
+
+    assert path == str(clip)
+    assert stream_type == StreamType.LOCAL_FILE
+
+
+async def test_render_tts_media_keeps_a_declared_audio_format(tmp_path: Path) -> None:
+    """A TTS engine that declares its own format has it carried into the clip streamdetails."""
+    clip = tmp_path / "section.wav"
+    clip.write_bytes(b"")
+    renderer = _tts_renderer(str(clip), AudioFormat(content_type=ContentType.WAV))
+
+    _, _, audio_format = await renderer._render_tts_media("hello world")
+
+    assert audio_format.content_type == ContentType.WAV
+
+
+@pytest.mark.parametrize("path", ["", "section.mp3", "/does/not/exist.mp3"])
+async def test_render_tts_media_rejects_an_unplayable_path(path: str) -> None:
+    """A path that is neither a URL nor an existing file fails loudly instead of degrading."""
+    renderer = _tts_renderer(path)
+
+    with pytest.raises(InvalidDataError, match="unusable stream path"):
+        await renderer._render_tts_media("hello world")
+
+
+async def test_local_file_clip_yields_local_file_streamdetails(tmp_path: Path) -> None:
+    """A disk-rendered clip reaches the core as LOCAL_FILE streamdetails."""
+    clip = tmp_path / "section.mp3"
+    clip.write_bytes(b"")
+    renderer = _tts_renderer(str(clip))
+    _attach_queue(renderer, [_clip_item("sess_001")])
+
+    streamdetails = await renderer.get_stream_details("sess_001", MediaType.SOUND_EFFECT)
+
+    assert streamdetails.stream_type == StreamType.LOCAL_FILE
+    assert streamdetails.path == str(clip)
