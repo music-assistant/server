@@ -109,6 +109,14 @@ MAX_HELD_AUDIO_US: int = 45_000_000
 # bridge role delivers across MAX_HELD_AUDIO_US.
 MAX_HELD_CHUNKS: int = 4_000
 
+# Silence is queued as repeats of one shared block when filling a hole in the
+# Sendspin timeline. A timeline rebase can open a hole of tens of seconds, whose
+# silence as one buffer would be megabytes built on the event loop; repeating an
+# immutable block leaves only the sub-block remainder to allocate, whatever the
+# hole's length.
+PAD_BLOCK_FRAMES: int = BRIDGE_SAMPLE_RATE
+SILENCE_BLOCK: bytes = b"\x00" * (PAD_BLOCK_FRAMES * BRIDGE_CHANNELS * BRIDGE_BYTES_PER_SAMPLE)
+
 
 def get_bridge_client_id(airplay_player: AirPlayPlayer) -> str | None:
     """
@@ -241,6 +249,14 @@ class SendspinAirPlayBridge:
         # counter is also the write cursor's position on the Sendspin timeline.
         self._queued_frames: int = 0
         self._drop_until_us: int = 0
+        # Playout shift (seconds) already folded into the anchor from the binary's
+        # own mid-stream re-anchors. The binary zeroes its running total on every
+        # START, so this baseline is cleared wherever the anchor is (re)established.
+        self._applied_shift_seconds: float = 0.0
+        # Whether a folded playout shift is still being trimmed off the content.
+        # Distinguishes the realignment that correction produces from Sendspin
+        # timeline drift, which is the only one worth reporting.
+        self._absorbing_shift: bool = False
         # Unix-epoch ms at which byte 0 written to the CLI is audible (0 = unset).
         # Used to pace writes so the device buffer stays bounded (see _cli_writer).
         self._start_unix_ms: int = 0
@@ -717,6 +733,10 @@ class SendspinAirPlayBridge:
         self._start_unix_ms = acked_adjusted
         self._drop_until_us = anchor_us
         self._queued_frames = 0
+        # A START re-anchors the binary's playout from scratch and zeroes the
+        # total it reports, so the bridge's baseline starts over with it.
+        self._applied_shift_seconds = 0.0
+        self._absorbing_shift = False
         self._anchor_settled = True
         self._started = True
         # Replay what arrived while the anchor was being settled before yielding
@@ -874,12 +894,51 @@ class SendspinAirPlayBridge:
             self._hold_chunk(chunk)
             return
 
+        self._absorb_playout_shift()
+
         # Drop chunks that end entirely before the target start time.
         chunk_end_us = chunk.timestamp_us + chunk.duration_us
         if self._drop_until_us and chunk_end_us <= self._drop_until_us:
             return
 
         self._align_chunk(chunk)
+
+    def _absorb_playout_shift(self) -> None:
+        """
+        Fold the binary's own mid-stream re-anchors into the bridge's timeline mapping.
+
+        cliairplay re-anchors its playout later when it runs out of PCM on stdin,
+        which makes every byte it was handed audible that much later than the
+        anchor promised. Moving the anchor by the same amount keeps the content
+        the bridge feeds on the group's timeline instead of leaving the device
+        permanently behind the rest of it.
+        """
+        stream = self._airplay_stream
+        if stream is None:
+            return
+        shift_seconds = stream.cumulative_shift_seconds
+        delta_seconds = shift_seconds - self._applied_shift_seconds
+        if delta_seconds < 0:
+            # The binary zeroes its running total on every START, so a total that
+            # went backwards means the stream re-anchored outside _anchor_stream:
+            # take the new baseline rather than walking a mapping that START has
+            # already replaced, and drop a correction that mapping no longer owes.
+            self._applied_shift_seconds = shift_seconds
+            self._absorbing_shift = False
+            return
+        if not delta_seconds:
+            return
+        self._applied_shift_seconds = shift_seconds
+        self._drop_until_us += round(delta_seconds * 1_000_000)
+        self._start_unix_ms += round(delta_seconds * 1000)
+        self._absorbing_shift = True
+        self.logger.warning(
+            "%s re-anchored its playout %.0f ms later after running out of audio; "
+            "re-aligning its content with the group (%.0f ms in total)",
+            self.airplay_player.display_name,
+            delta_seconds * 1000,
+            shift_seconds * 1000,
+        )
 
     def _hold_chunk(self, chunk: AudioChunk) -> None:
         """
@@ -901,12 +960,12 @@ class SendspinAirPlayBridge:
         """
         Queue a chunk at the byte offset its timestamp claims on the CLI stream.
 
-        The device plays the stream at a fixed rate from a start anchor that is
-        never revised, so a chunk only stays on the group's clock when it is
-        written at the offset matching its timestamp. A hole in the Sendspin
-        timeline is filled with silence and an overlapping head is trimmed;
-        without that, the device would run permanently ahead of (or behind) the
-        rest of the group by the size of the discontinuity.
+        The device plays the stream at a fixed rate from the anchor, so a chunk
+        only stays on the group's clock when it is written at the offset matching
+        its timestamp. A hole in the Sendspin timeline is filled with silence and
+        an overlapping head is trimmed; without that, the device would run
+        permanently ahead of (or behind) the rest of the group by the size of the
+        discontinuity.
 
         :param chunk: The audio chunk to queue.
         """
@@ -915,11 +974,17 @@ class SendspinAirPlayBridge:
             (chunk.timestamp_us - self._drop_until_us) * BRIDGE_SAMPLE_RATE / 1_000_000
         )
         drift_frames = target_frames - self._queued_frames
+        if drift_frames >= 0:
+            # The cursor caught back up, so any shift folded into the anchor has
+            # been worked off and a later realignment is timeline drift again.
+            self._absorbing_shift = False
         drift_us = round(drift_frames * 1_000_000 / BRIDGE_SAMPLE_RATE)
         # The first placement after an anchor sits at the gap between the anchor
         # and the chunk by construction, which is not drift; only a cursor that
-        # already advanced can have drifted away from the timeline.
-        if self._queued_frames and abs(drift_us) > 1_000:
+        # already advanced can have drifted away from the timeline. Trimming off a
+        # folded playout shift is a correction the bridge asked for, so it stays
+        # quiet as well until the cursor is back on the timeline.
+        if self._queued_frames and abs(drift_us) > 1_000 and not self._absorbing_shift:
             self.logger.warning(
                 "Realigned %d µs of Sendspin timeline drift for %s",
                 drift_us,
@@ -934,11 +999,24 @@ class SendspinAirPlayBridge:
                 return
             data = data[trim_bytes:]
         elif drift_frames > 0:
-            self._write_queue.put_nowait(b"\x00" * (drift_frames * bytes_per_frame))
+            self._queue_silence(drift_frames)
             self._queued_frames += drift_frames
 
         self._write_queue.put_nowait(data)
         self._queued_frames += len(data) // bytes_per_frame
+
+    def _queue_silence(self, frames: int) -> None:
+        """
+        Hand the CLI a run of silence to fill a hole in the Sendspin timeline.
+
+        :param frames: Number of silent frames to queue.
+        """
+        bytes_per_frame = BRIDGE_CHANNELS * BRIDGE_BYTES_PER_SAMPLE
+        whole_blocks, remainder = divmod(frames, PAD_BLOCK_FRAMES)
+        for _ in range(whole_blocks):
+            self._write_queue.put_nowait(SILENCE_BLOCK)
+        if remainder:
+            self._write_queue.put_nowait(b"\x00" * (remainder * bytes_per_frame))
 
     async def _cli_writer(self) -> None:
         """
@@ -1007,6 +1085,8 @@ class SendspinAirPlayBridge:
         """Stop streaming (internal, called with lock held)."""
         self._is_streaming = False
         self._queued_frames = 0
+        self._applied_shift_seconds = 0.0
+        self._absorbing_shift = False
         self._airplay_stream_ready.clear()
         self._started = False
         self._anchor_settled = False
