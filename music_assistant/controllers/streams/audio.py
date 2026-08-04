@@ -1676,18 +1676,18 @@ class StreamsAudio:
                         streamdetails.uri,
                         asyncio.get_event_loop().time() - stream_started_at,
                     )
-                # trigger pre-buffering of the next track well before end
-                # to ensure the raw PCM is ready when the next track needs to be streamed.
-                # only do this for tracks: live sources (radio, audio_source) open an
-                # upstream connection that would sit idle and likely time out before the
-                # player actually consumes it.
+                # trigger pre-buffering of the next item well before end
+                # to ensure the raw PCM is ready when the next item needs to be streamed.
+                # tracks and sound effects are finite files that fill and close immediately;
+                # live sources (radio, audio_source) open an upstream connection that would
+                # sit idle and likely time out before the player actually consumes it.
                 if (
                     not next_buffer_triggered
                     and streamdetails.duration
                     and (queue := self.mass.player_queues.get_active_queue(queue_item.queue_id))
                     and queue.next_item
                     and queue.next_item.queue_item_id != queue_item.queue_item_id
-                    and queue.next_item.media_type == MediaType.TRACK
+                    and queue.next_item.media_type in (MediaType.TRACK, MediaType.SOUND_EFFECT)
                     and (bytes_received / pcm_format.pcm_sample_size + seek_position)
                     >= streamdetails.duration - 60
                 ):
