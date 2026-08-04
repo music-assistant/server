@@ -56,36 +56,6 @@ DEFAULT_MP3_BIT_RATE: Final[int] = 320
 #   Stream #0:0(eng): Audio: aac (LC) (mp4a / 0x6134706D), 44100 Hz, stereo, fltp, 254 kb/s
 #   Stream #0:0: Audio: flac, 96000 Hz, stereo, s32 (24 bit)
 #   Duration: 00:03:25.78, start: 0.000000, bitrate: 320 kb/s
-_FFMPEG_CHANNEL_LAYOUT_RE: Final = re.compile(r"\d+ Hz,\s*([^,]+)")
-
-# flac is capped to 8 channels hence no solutions for >8
-_LAYOUT_TO_CHANNELS: Final[dict[str, int]] = {
-    "mono": 1,
-    "stereo": 2,
-    "2.1": 3,
-    "3.0": 3,
-    "3.0(back)": 3,
-    "3.1": 4,
-    "quad": 4,
-    "4.0": 4,
-    "5.0": 5,
-    "5.0(side)": 5,
-    "4.1": 5,
-    "5.1": 6,
-    "5.1(side)": 6,
-    "6.0": 6,
-    "6.0(front)": 6,
-    "hexagonal": 6,
-    "6.1": 7,
-    "6.1(back)": 7,
-    "6.1(front)": 7,
-    "7.0": 7,
-    "7.0(front)": 7,
-    "7.1": 8,
-    "7.1(wide)": 8,
-    "7.1(wide-side)": 8,
-    "octagonal": 8,
-}
 _FFMPEG_SAMPLE_RATE_RE: Final = re.compile(r"(\d+) Hz")
 _FFMPEG_BIT_RATE_RE: Final = re.compile(r"(\d+) kb/s")
 _FFMPEG_EXPLICIT_BIT_DEPTH_RE: Final = re.compile(r"\((\d+) bit\)")
@@ -121,7 +91,6 @@ class FFMpegStreamInfo:
     sample_rate: int | None = None
     bit_depth: int | None = None
     bit_rate: int | None = None
-    channels: int | None = None
 
 
 class FFMpeg(AsyncProcess):
@@ -357,19 +326,16 @@ class FFMpeg(AsyncProcess):
             self.input_format.bit_depth = info.bit_depth
         if info.bit_rate:
             self.input_format.bit_rate = info.bit_rate
-        if info.channels:
-            self.input_format.channels = info.channels
 
     def _log_stream_info(self, label: str, info: FFMpegStreamInfo) -> None:
         """Log a parsed FFMpegStreamInfo object at debug level."""
         self.logger.debug(
-            "Detected %s stream info: codec=%s sample_rate=%s bit_depth=%s bit_rate=%s kb/s channels=%s",
+            "Detected %s stream info: codec=%s sample_rate=%s bit_depth=%s bit_rate=%s kb/s",
             label,
             info.codec,
             info.sample_rate,
             info.bit_depth,
             info.bit_rate,
-            info.channels,
         )
 
 
@@ -402,11 +368,6 @@ def parse_ffmpeg_stream_info(line: str) -> FFMpegStreamInfo | None:
         info.bit_depth = int(match.group(1))
     elif codec.is_lossless() and (match := _FFMPEG_SAMPLE_FMT_RE.search(line)):
         info.bit_depth = _SAMPLE_FMT_BIT_DEPTH.get(match.group(1))
-
-    if match := _FFMPEG_CHANNEL_LAYOUT_RE.search(line):
-        layout = match.group(1).strip()
-        if layout in _LAYOUT_TO_CHANNELS:
-            info.channels = _LAYOUT_TO_CHANNELS[layout]
 
     return info
 
