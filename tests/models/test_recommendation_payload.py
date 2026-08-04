@@ -16,6 +16,7 @@ from music_assistant.models.recommendation_payload import (
     _PAYLOAD_CACHE_KEY,
     RecommendationPayloadMixin,
 )
+from tests.common import collect_loop_errors
 
 INSTANCE_ID = "test_payload--instance1"
 
@@ -530,10 +531,7 @@ async def test_cancelled_waiter_of_a_failing_fetch_logs_no_loop_error() -> None:
 
     provider = _PayloadProvider(AsyncMock(side_effect=_failing_fetch))
 
-    loop = asyncio.get_running_loop()
-    reported: list[dict[str, Any]] = []
-    loop.set_exception_handler(lambda _loop, context: reported.append(context))
-    try:
+    with collect_loop_errors() as reported:
         fast_caller = asyncio.create_task(provider._recommendation_payload())
         slow_caller = asyncio.create_task(provider._recommendation_payload())
         await asyncio.sleep(0)
@@ -544,10 +542,6 @@ async def test_cancelled_waiter_of_a_failing_fetch_logs_no_loop_error() -> None:
         gate.set()
         with pytest.raises(RuntimeError, match="backend down"):
             await slow_caller
-        # let any done callback left on the fetch run before asserting
-        await asyncio.sleep(0)
-    finally:
-        loop.set_exception_handler(None)
 
     assert reported == []
 

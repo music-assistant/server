@@ -957,6 +957,7 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
     # so concurrent callers always end up awaiting the same probe
     if not (pending := _ip_addresses_pending.get(include_ipv6)):
         pending = asyncio.create_task(_probe())
+        pending.add_done_callback(_log_ip_probe_failure)
         _ip_addresses_pending[include_ipv6] = pending
     # wait for the shared probe instead of awaiting it directly: a caller awaiting a task
     # holds it as its fut_waiter, so cancelling that caller would otherwise cancel the probe
@@ -966,6 +967,17 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
     if not pending.done():
         await asyncio.wait((pending,))
     return pending.result()
+
+
+def _log_ip_probe_failure(probe: asyncio.Task[tuple[str, ...]]) -> None:
+    """Log (and thereby retrieve) the exception of a finished address probe, if any."""
+    if probe.cancelled():
+        return
+    # every waiter that is still around reports the failure itself, so a debug line is
+    # enough here; retrieving the exception is what keeps asyncio from reporting it as
+    # "Task exception was never retrieved" once the probe is garbage collected
+    if (err := probe.exception()) is not None:
+        LOGGER.debug("Enumerating IP addresses failed: %s", err)
 
 
 def _enumerate_ip_addresses(include_ipv6: bool) -> tuple[str, ...]:

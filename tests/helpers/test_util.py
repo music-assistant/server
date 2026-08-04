@@ -1,7 +1,9 @@
 """Tests for music_assistant.helpers.util helpers."""
 
 import asyncio
+import gc
 import socket
+import threading
 import time
 from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
@@ -21,6 +23,7 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
+from tests.common import collect_loop_errors
 
 GUARDED_PROVIDER_ID = "test_guarded_prov"
 
@@ -323,32 +326,63 @@ class TestGetIpAddresses:
     @pytest.mark.asyncio
     async def test_cancelled_caller_of_a_failing_probe_logs_no_loop_error(self) -> None:
         """A probe failing after a caller gave up is not reported to the loop handler."""
+        release = threading.Event()
 
         def failing_enumerate(_include_ipv6: bool) -> tuple[str, ...]:
-            time.sleep(0.1)
+            release.wait()
             raise OSError("probe failed")
 
-        loop = asyncio.get_running_loop()
-        reported: list[dict[str, object]] = []
-        loop.set_exception_handler(lambda _loop, context: reported.append(context))
-        try:
-            with patch(
+        with (
+            collect_loop_errors() as reported,
+            patch(
                 "music_assistant.helpers.util._enumerate_ip_addresses",
                 side_effect=failing_enumerate,
-            ):
-                task_a = asyncio.create_task(util.get_ip_addresses())
-                task_b = asyncio.create_task(util.get_ip_addresses())
-                # let both callers await the (same) in-flight probe, then cancel one
-                await asyncio.sleep(0.02)
-                task_a.cancel()
-                with pytest.raises(asyncio.CancelledError):
-                    await task_a
-                with pytest.raises(OSError, match="probe failed"):
-                    await task_b
-            # let any done callback left on the probe run before asserting
+            ) as enumerate_mock,
+        ):
+            task_a = asyncio.create_task(util.get_ip_addresses())
+            task_b = asyncio.create_task(util.get_ip_addresses())
+            # let both callers await the (same) in-flight probe, then cancel one
             await asyncio.sleep(0)
-        finally:
-            loop.set_exception_handler(None)
+            task_a.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task_a
+            # release the probe only once the cancellation is fully processed, so the
+            # failure reliably lands after the giving-up caller is gone
+            release.set()
+            with pytest.raises(OSError, match="probe failed"):
+                await task_b
+
+        assert enumerate_mock.call_count == 1
+        assert reported == []
+
+    @pytest.mark.asyncio
+    async def test_sole_cancelled_caller_of_a_failing_probe_logs_no_loop_error(self) -> None:
+        """A probe failing with no caller left to receive it is not reported either."""
+        release = threading.Event()
+
+        def failing_enumerate(_include_ipv6: bool) -> tuple[str, ...]:
+            release.wait()
+            raise OSError("probe failed")
+
+        with (
+            collect_loop_errors() as reported,
+            patch(
+                "music_assistant.helpers.util._enumerate_ip_addresses",
+                side_effect=failing_enumerate,
+            ),
+        ):
+            caller = asyncio.create_task(util.get_ip_addresses())
+            await asyncio.sleep(0)
+            probe = util._ip_addresses_pending[False]
+            caller.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await caller
+            release.set()
+            await asyncio.wait((probe,))
+            # drop the last reference so asyncio would report an unretrieved exception
+            del probe
+            gc.collect()
+            await asyncio.sleep(0)
 
         assert reported == []
 
