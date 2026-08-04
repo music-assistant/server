@@ -115,7 +115,7 @@
   "common.config_entries.http_profile.options.chunked": "Profile 1 - chunked",
   "common.config_entries.http_profile.options.forced_content_length": "Profile 3 - forced content length",
   "common.config_entries.http_profile.options.no_content_length": "Profile 2 - no content length",
-  "common.config_entries.icon.description": "Material design icon for this player.\n\nSee https://pictogrammers.com/library/mdi/.",
+  "common.config_entries.icon.description": "Icon for this player, from the shared Music Assistant icon set.\n\nSee https://github.com/music-assistant/shared-icons.",
   "common.config_entries.icon.label": "Icon",
   "common.config_entries.ignore_album_playlists.description": "A digital album often comes with a playlist file (.m3u) that contains the tracks of the album. \nAdding all these playlists to the library, is not very practical so it's better to just ignore them.\n\nIf this option is enabled, all playlists will be ignored which are more than 1 level deep anywhere in the folder structure. E.g. /music/artistname/albumname/playlist.m3u",
   "common.config_entries.ignore_album_playlists.label": "Ignore playlists with album tracks within album folders",

@@ -21,6 +21,7 @@ from music_assistant.controllers.config.migrations import (
     _migrate_airplay_receiver_ghost_players,
     _migrate_bose_soundtouch_presets,
     _migrate_output_limiter,
+    _migrate_player_icons,
     _migrate_player_setup_data,
     migrate_hass_engine_selection,
     migrate_nfs_subfolder_into_export_path,
@@ -970,3 +971,84 @@ def test_migrate_hass_engine_selection_skips_multiple_hass_configs() -> None:
     assert prov["hass"]["values"]["ai_task_entity"] == "ai_task.google"
     assert prov["music_quiz"]["values"] == {}
     assert "setup_data" not in prov["ai_radio"]
+
+
+def test_migrate_player_icons_rewrites_legacy_values() -> None:
+    """Legacy mdi-* and pre-1.0 picker icon values are rewritten to canonical ids."""
+    data: dict[str, Any] = {
+        "players": {
+            "p1": {"player_id": "p1", "values": {"icon": "mdi-speaker-multiple"}},
+            "p2": {"player_id": "p2", "values": {"icon": "sofa"}},
+            "p3": {"player_id": "p3", "values": {"icon": "mdi-television-classic"}},
+        }
+    }
+    assert _migrate_player_icons(data) is True
+    assert data["players"]["p1"]["values"]["icon"] == "speakers"
+    assert data["players"]["p2"]["values"]["icon"] == "living-room"
+    assert data["players"]["p3"]["values"]["icon"] == "tv"
+
+
+def test_migrate_player_icons_drops_unmappable_mdi_values() -> None:
+    """An mdi-* icon with no close equivalent is dropped so the default applies."""
+    data: dict[str, Any] = {
+        "players": {
+            "p1": {"player_id": "p1", "values": {"icon": "mdi-pac-man", "flow_mode": True}},
+        }
+    }
+    assert _migrate_player_icons(data) is True
+    assert data["players"]["p1"]["values"] == {"flow_mode": True}
+
+
+def test_migrate_player_icons_keeps_canonical_and_unknown_ids() -> None:
+    """Canonical ids are never touched; unknown non-mdi values are left in place."""
+    data: dict[str, Any] = {
+        "players": {
+            "p1": {"player_id": "p1", "values": {"icon": "sonos"}},
+            "p2": {"player_id": "p2", "values": {"icon": "kitchen"}},
+            "p3": {"player_id": "p3", "values": {"icon": "dog"}},
+        }
+    }
+    assert _migrate_player_icons(data) is False
+    assert data["players"]["p1"]["values"]["icon"] == "sonos"
+    assert data["players"]["p2"]["values"]["icon"] == "kitchen"
+    assert data["players"]["p3"]["values"]["icon"] == "dog"
+
+
+def test_migrate_player_icons_noop_when_absent() -> None:
+    """Migration reports no change for players without a stored icon."""
+    data: dict[str, Any] = {
+        "players": {
+            "p1": {"player_id": "p1", "values": {"flow_mode": True}},
+            "p2": {"player_id": "p2"},
+        }
+    }
+    assert _migrate_player_icons(data) is False
+
+
+def test_migrate_player_icons_idempotent() -> None:
+    """A second run over already-migrated data reports no change."""
+    data: dict[str, Any] = {
+        "players": {
+            "p1": {"player_id": "p1", "values": {"icon": "mdi-speaker-multiple"}},
+            "p2": {"player_id": "p2", "values": {"icon": "mdi-pac-man"}},
+        }
+    }
+    assert _migrate_player_icons(data) is True
+    assert _migrate_player_icons(data) is False
+    assert data["players"]["p1"]["values"]["icon"] == "speakers"
+    assert "icon" not in data["players"]["p2"]["values"]
+
+
+def test_migrate_player_icons_tolerates_malformed_data() -> None:
+    """Non-dict player configs/values and non-string icon values are skipped."""
+    data: dict[str, Any] = {
+        "players": {
+            "p1": "not-a-dict",
+            "p2": {"player_id": "p2", "values": "not-a-dict"},
+            "p3": {"player_id": "p3", "values": {"icon": None}},
+            "p4": {"player_id": "p4", "values": {"icon": 123}},
+        }
+    }
+    assert _migrate_player_icons(data) is False
+    assert data["players"]["p3"]["values"]["icon"] is None
+    assert data["players"]["p4"]["values"]["icon"] == 123

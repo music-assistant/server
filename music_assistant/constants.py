@@ -48,7 +48,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 42
+API_SCHEMA_VERSION: Final[int] = 43
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -815,12 +815,12 @@ CONF_ENTRY_LIBRARY_SYNC_DELETIONS = ConfigEntry(
 CONF_ENTRY_PLAYER_ICON = ConfigEntry(
     key=CONF_ICON,
     type=ConfigEntryType.ICON,
-    default_value="mdi-speaker",
+    default_value="speaker",
     category="generic",
 )
 
 CONF_ENTRY_PLAYER_ICON_GROUP = ConfigEntry.from_dict(
-    {**CONF_ENTRY_PLAYER_ICON.to_dict(), "default_value": "mdi-speaker-multiple"}
+    {**CONF_ENTRY_PLAYER_ICON.to_dict(), "default_value": "speakers"}
 )
 
 

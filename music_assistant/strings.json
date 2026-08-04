@@ -116,7 +116,7 @@
     },
     "icon": {
       "label": "Icon",
-      "description": "Material design icon for this player.\n\nSee https://pictogrammers.com/library/mdi/."
+      "description": "Icon for this player, from the shared Music Assistant icon set.\n\nSee https://github.com/music-assistant/shared-icons."
     },
     "ignore_album_playlists": {
       "label": "Ignore playlists with album tracks within album folders",

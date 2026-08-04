@@ -14,6 +14,7 @@ from music_assistant.constants import (
     CONF_CORE,
     CONF_CROSSFADE_DURATION,
     CONF_CROSSFADE_MODE,
+    CONF_ICON,
     CONF_LINKED_PROTOCOL_IDS,
     CONF_NFS_SUBFOLDER_MIGRATED,
     CONF_PLAYER_DSP,
@@ -52,6 +53,269 @@ LEGACY_CONF_AI_TASK_ENTITY = "ai_task_entity"
 # engine selection keys of the providers that consume the plugin engines
 CONF_AI_ENGINE = "ai_engine"
 CONF_TTS_ENGINE = "tts_engine"
+
+
+# Canonical ids of the shared icon set (music-assistant/shared-icons v0.3.0);
+# stored icon values already in this set are never touched by the icon migration.
+_CANONICAL_ICON_IDS: frozenset[str] = frozenset(
+    (
+        "homepod-mini",
+        "sonos",
+        "mac",
+        "apple-tv",
+        "google-nest",
+        "voice-pe",
+        "wiim",
+        "speaker",
+        "speakers",
+        "soundbar",
+        "radio",
+        "tv",
+        "monitor",
+        "laptop",
+        "smartphone",
+        "tablet",
+        "headphones",
+        "bluetooth",
+        "airplay",
+        "cast",
+        "car",
+        "music",
+        "vinyl",
+        "mic",
+        "volume",
+        "living-room",
+        "bedroom",
+        "bathroom",
+        "toilet",
+        "kitchen",
+        "office",
+        "hallway",
+        "garden",
+        "outdoor",
+        "sun",
+        "home",
+        "building",
+    )
+)
+
+# Legacy stored player icon values (mdi-* names and pre-1.0 picker names) mapped to
+# the closest canonical id of the shared icon set. Sourced from
+# https://github.com/music-assistant/shared-icons/blob/main/migration/legacy-map.json
+_LEGACY_ICON_MAP: dict[str, str] = {
+    "apple-homepod-mini": "homepod-mini",
+    "appletv": "apple-tv",
+    "armchair": "living-room",
+    "audio-lines": "volume",
+    "bath": "bathroom",
+    "bed": "bedroom",
+    "bed-double": "bedroom",
+    "bed-single": "bedroom",
+    "bluetooth-speaker": "bluetooth",
+    "boom-box": "radio",
+    "boombox": "radio",
+    "briefcase": "office",
+    "building-2": "building",
+    "cassette-tape": "music",
+    "chef-hat": "kitchen",
+    "cooking-pot": "kitchen",
+    "disc": "vinyl",
+    "disc-2": "vinyl",
+    "disc-3": "vinyl",
+    "disc-album": "vinyl",
+    "door-closed": "hallway",
+    "door-open": "hallway",
+    "drum": "music",
+    "flower": "garden",
+    "flower-2": "garden",
+    "guitar": "music",
+    "headset": "headphones",
+    "homepod": "homepod-mini",
+    "hotel": "building",
+    "house": "home",
+    "lamp-desk": "office",
+    "lamp-floor": "living-room",
+    "laptop-2": "laptop",
+    "laptop-minimal": "laptop",
+    "leaf": "garden",
+    "mdi-airplay": "airplay",
+    "mdi-album": "vinyl",
+    "mdi-amplifier": "speaker",
+    "mdi-antenna": "radio",
+    "mdi-apple": "apple-tv",
+    "mdi-apple-airplay": "airplay",
+    "mdi-audio-video": "speaker",
+    "mdi-audio-video-remote": "speaker",
+    "mdi-balcony": "outdoor",
+    "mdi-bathtub": "bathroom",
+    "mdi-bathtub-outline": "bathroom",
+    "mdi-bed": "bedroom",
+    "mdi-bed-empty": "bedroom",
+    "mdi-bed-king": "bedroom",
+    "mdi-bed-queen": "bedroom",
+    "mdi-bluetooth": "bluetooth",
+    "mdi-bluetooth-audio": "bluetooth",
+    "mdi-bookshelf": "office",
+    "mdi-boombox": "radio",
+    "mdi-briefcase": "office",
+    "mdi-bullhorn": "volume",
+    "mdi-bunk-bed": "bedroom",
+    "mdi-car": "car",
+    "mdi-car-estate": "car",
+    "mdi-car-hatchback": "car",
+    "mdi-car-side": "car",
+    "mdi-cast": "cast",
+    "mdi-cast-audio": "cast",
+    "mdi-cast-connected": "cast",
+    "mdi-cast-variant": "airplay",
+    "mdi-cellphone": "smartphone",
+    "mdi-cellphone-sound": "smartphone",
+    "mdi-cellphone-wireless": "smartphone",
+    "mdi-chair-rolling": "office",
+    "mdi-chef-hat": "kitchen",
+    "mdi-city": "building",
+    "mdi-coat-rack": "hallway",
+    "mdi-coffee": "kitchen",
+    "mdi-coffee-maker": "kitchen",
+    "mdi-countertop": "kitchen",
+    "mdi-desk": "office",
+    "mdi-desk-lamp": "office",
+    "mdi-desktop-classic": "monitor",
+    "mdi-desktop-mac": "mac",
+    "mdi-desktop-tower": "monitor",
+    "mdi-desktop-tower-monitor": "monitor",
+    "mdi-disc": "vinyl",
+    "mdi-disc-player": "vinyl",
+    "mdi-domain": "building",
+    "mdi-door": "hallway",
+    "mdi-door-closed": "hallway",
+    "mdi-door-open": "hallway",
+    "mdi-earbuds": "headphones",
+    "mdi-earbuds-outline": "headphones",
+    "mdi-flower": "garden",
+    "mdi-flower-outline": "garden",
+    "mdi-flower-tulip": "garden",
+    "mdi-forest": "outdoor",
+    "mdi-fridge": "kitchen",
+    "mdi-fridge-outline": "kitchen",
+    "mdi-garage": "car",
+    "mdi-garage-variant": "car",
+    "mdi-google-assistant": "google-nest",
+    "mdi-google-home": "google-nest",
+    "mdi-grass": "garden",
+    "mdi-grill": "outdoor",
+    "mdi-guitar-acoustic": "music",
+    "mdi-guitar-electric": "music",
+    "mdi-headphones": "headphones",
+    "mdi-headset": "headphones",
+    "mdi-home": "home",
+    "mdi-home-city": "building",
+    "mdi-home-modern": "home",
+    "mdi-home-outline": "home",
+    "mdi-home-variant": "home",
+    "mdi-hot-tub": "bathroom",
+    "mdi-karaoke": "mic",
+    "mdi-laptop": "laptop",
+    "mdi-laptop-mac": "mac",
+    "mdi-microphone": "mic",
+    "mdi-microphone-variant": "mic",
+    "mdi-monitor": "monitor",
+    "mdi-monitor-speaker": "speaker",
+    "mdi-music": "music",
+    "mdi-music-box": "music",
+    "mdi-music-circle": "music",
+    "mdi-music-clef-treble": "music",
+    "mdi-music-note": "music",
+    "mdi-nature": "outdoor",
+    "mdi-office-building": "building",
+    "mdi-office-building-outline": "building",
+    "mdi-palm-tree": "outdoor",
+    "mdi-patio-heater": "outdoor",
+    "mdi-piano": "music",
+    "mdi-pine-tree": "outdoor",
+    "mdi-podcast": "mic",
+    "mdi-pool": "outdoor",
+    "mdi-pot-steam": "kitchen",
+    "mdi-projector": "tv",
+    "mdi-projector-screen": "tv",
+    "mdi-radio": "radio",
+    "mdi-radio-tower": "radio",
+    "mdi-record": "vinyl",
+    "mdi-record-player": "vinyl",
+    "mdi-saxophone": "music",
+    "mdi-shower": "bathroom",
+    "mdi-shower-head": "bathroom",
+    "mdi-silverware": "kitchen",
+    "mdi-silverware-fork": "kitchen",
+    "mdi-silverware-fork-knife": "kitchen",
+    "mdi-silverware-variant": "kitchen",
+    "mdi-sofa": "living-room",
+    "mdi-sofa-outline": "living-room",
+    "mdi-sofa-single": "living-room",
+    "mdi-soundbar": "soundbar",
+    "mdi-speaker": "speaker",
+    "mdi-speaker-bluetooth": "bluetooth",
+    "mdi-speaker-multiple": "speakers",
+    "mdi-speaker-wireless": "speaker",
+    "mdi-sprout": "garden",
+    "mdi-stairs": "hallway",
+    "mdi-stove": "kitchen",
+    "mdi-surround-sound": "speakers",
+    "mdi-tablet": "tablet",
+    "mdi-television": "tv",
+    "mdi-television-box": "tv",
+    "mdi-television-classic": "tv",
+    "mdi-television-guide": "tv",
+    "mdi-theater": "tv",
+    "mdi-toilet": "toilet",
+    "mdi-tree": "outdoor",
+    "mdi-tree-outline": "outdoor",
+    "mdi-truck": "car",
+    "mdi-trumpet": "music",
+    "mdi-turntable": "vinyl",
+    "mdi-violin": "music",
+    "mdi-volume-high": "volume",
+    "mdi-volume-low": "volume",
+    "mdi-volume-medium": "volume",
+    "mdi-watering-can": "garden",
+    "mdi-weather-sunny": "sun",
+    "mdi-white-balance-sunny": "sun",
+    "megaphone": "volume",
+    "mic-vocal": "mic",
+    "microphone": "mic",
+    "microwave": "kitchen",
+    "monitor-speaker": "speaker",
+    "music-2": "music",
+    "music-3": "music",
+    "music-4": "music",
+    "piano": "music",
+    "podcast": "mic",
+    "projector": "tv",
+    "radio-receiver": "radio",
+    "radio-tower": "radio",
+    "refrigerator": "kitchen",
+    "screen-share": "cast",
+    "shower-head": "bathroom",
+    "sofa": "living-room",
+    "speaker-group": "speakers",
+    "speaker-loud": "volume",
+    "speaker-multiple": "speakers",
+    "sprout": "garden",
+    "television": "tv",
+    "tent-tree": "outdoor",
+    "toilet": "toilet",
+    "tree": "outdoor",
+    "tree-deciduous": "outdoor",
+    "tree-pine": "outdoor",
+    "trees": "outdoor",
+    "tv-2": "tv",
+    "tv-minimal": "tv",
+    "tv-minimal-play": "tv",
+    "utensils": "kitchen",
+    "utensils-crossed": "kitchen",
+    "volume-1": "volume",
+    "volume-2": "volume",
+}
 
 # Config keys each provider's setup flow owns: the keys it reads back with
 # get_setup_value / get_provider_setup_value (and rotates via _update_setup_data) from
@@ -335,6 +599,13 @@ async def migrate(data: dict[str, Any]) -> bool:  # noqa: PLR0915
     # the provider config and shared by all its speakers.
     # TODO: remove after 2.11 release
     if _migrate_bose_soundtouch_presets(data):
+        changed = True
+
+    # Rewrite stored player icons from legacy values (mdi-* names and pre-1.0 picker
+    # names) to canonical ids of the shared icon set; unmappable mdi-* picks drop
+    # back to the player-type default.
+    # TODO: remove after 2.12 release
+    if _migrate_player_icons(data):
         changed = True
 
     return changed
@@ -1198,4 +1469,34 @@ def _migrate_player_setup_data(data: dict[str, Any]) -> bool:
                 "Migrated credential/pairing values into setup_data for player %s", player_id
             )
             changed = True
+    return changed
+
+
+def _migrate_player_icons(data: dict[str, Any]) -> bool:
+    """Rewrite legacy stored player icon values to canonical shared-icon-set ids."""
+    all_player_configs = data.get(CONF_PLAYERS, {})
+    if not isinstance(all_player_configs, dict):
+        return False
+    changed = False
+    for player_id, player_cfg in all_player_configs.items():
+        if not isinstance(player_cfg, dict):
+            continue
+        values = player_cfg.get("values")
+        if not isinstance(values, dict):
+            continue
+        icon = values.get(CONF_ICON)
+        if not isinstance(icon, str) or icon in _CANONICAL_ICON_IDS:
+            continue
+        if (replacement := _LEGACY_ICON_MAP.get(icon)) is not None:
+            values[CONF_ICON] = replacement
+            LOGGER.info("Migrated icon %s to %s for player %s", icon, replacement, player_id)
+            changed = True
+        elif icon.startswith("mdi-"):
+            # no close equivalent in the shared icon set: drop the stored value
+            # so the player-type default applies
+            del values[CONF_ICON]
+            LOGGER.info("Dropped legacy icon %s for player %s", icon, player_id)
+            changed = True
+        # any other unknown value is left in place: clients render the fallback icon
+        # for unknown ids and the value may become a valid id in a future icon set
     return changed
