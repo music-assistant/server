@@ -51,10 +51,29 @@ async def test_resolve_voices_honours_config_override() -> None:
     assert await provider._resolve_voices() == ["nova", "alloy", "echo"]
 
 
-async def test_resolve_voices_accepts_a_single_string_override() -> None:
-    """A comma separated string is accepted next to the stored list of values."""
+async def test_resolve_voices_splits_values_holding_commas() -> None:
+    """A whole list pasted into one value is split into the separate voices."""
+    provider = create_provider(**{CONF_VOICES: [" nova ,alloy", "echo", " nova"]})
+    assert await provider._resolve_voices() == ["nova", "alloy", "echo"]
+
+
+async def test_resolve_voices_accepts_a_hand_edited_string() -> None:
+    """A raw string in the stored config is read as a list of voices."""
     provider = create_provider(**{CONF_VOICES: " nova ,alloy,, nova,echo "})
     assert await provider._resolve_voices() == ["nova", "alloy", "echo"]
+
+
+async def test_resolve_voices_ignores_an_empty_override() -> None:
+    """An empty override is the shape stored when nothing is configured."""
+    provider = create_provider(**{CONF_VOICES: []})
+    assert await provider._resolve_voices() == list(DEFAULT_VOICES)
+
+
+async def test_voices_config_entry_accepts_a_cleared_field() -> None:
+    """Clearing the field submits no value, which must still parse as a list."""
+    provider = create_provider()
+    entry = next(e for e in await provider.get_config_entries() if e.key == CONF_VOICES)
+    assert entry.parse_value(None) == []
 
 
 async def test_resolve_voices_falls_back_to_defaults() -> None:
