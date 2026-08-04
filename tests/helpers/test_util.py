@@ -7,16 +7,22 @@ from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
 
 import pytest
+from music_assistant_models.media_items import Album, ProviderMapping, Track
 
 from music_assistant.helpers import util
 from music_assistant.helpers.util import (
     get_source_ip_for_target,
+    guard_single_request,
     import_module_in_thread,
     is_port_in_use,
     load_provider_module,
     sanitize_http_header_value,
     select_free_port,
 )
+from music_assistant.mass import MusicAssistant
+from music_assistant.models.music_provider import MusicProvider
+
+GUARDED_PROVIDER_ID = "test_guarded_prov"
 
 
 class TestGetSourceIpForTarget:
@@ -346,3 +352,144 @@ class TestSanitizeHttpHeaderValue:
     def test_leading_trailing_whitespace_stripped(self) -> None:
         """Control chars at the edges don't leave dangling whitespace."""
         assert sanitize_http_header_value("\x00Artist - Track\x1f") == "Artist - Track"
+
+
+class TestGuardSingleRequest:
+    """guard_single_request collapses identical concurrent calls into a single request."""
+
+    @pytest.mark.asyncio
+    async def test_cancelled_caller_does_not_affect_others(
+        self, mass_minimal: MusicAssistant
+    ) -> None:
+        """A caller giving up must not cancel the shared request for the other callers."""
+        caller = _GuardedCaller(mass_minimal)
+        calls = [asyncio.create_task(caller.fetch("123")) for _ in range(3)]
+        # give the callers a chance to line up behind the same in-flight request
+        await asyncio.sleep(0)
+        assert caller.calls == 1
+
+        calls[0].cancel()
+        caller.release.set()
+        results = await asyncio.gather(*calls, return_exceptions=True)
+
+        assert isinstance(results[0], asyncio.CancelledError)
+        assert results[1:] == ["result-123", "result-123"]
+        assert caller.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_instances_get_their_own_request(self, mass_minimal: MusicAssistant) -> None:
+        """Two objects of the same class each issue their own request."""
+        first = _GuardedCaller(mass_minimal)
+        second = _GuardedCaller(mass_minimal)
+        calls = [
+            asyncio.create_task(first.fetch("123")),
+            asyncio.create_task(second.fetch("123")),
+        ]
+        # both requests are in flight before either is released
+        await asyncio.sleep(0)
+        first.release.set()
+        second.release.set()
+
+        assert await asyncio.gather(*calls) == ["result-123", "result-123"]
+        assert first.calls == 1
+        assert second.calls == 1
+
+    # the tasks are created on the fixture's event loop, so the test must run on it too
+    @pytest.mark.asyncio(loop_scope="class")
+    async def test_controllers_sharing_a_method_get_their_own_request(
+        self, music_mass_class: MusicAssistant
+    ) -> None:
+        """The same item id requested on two media controllers resolves per media type."""
+        provider = _GatedMusicProvider()
+        with patch.object(music_mass_class, "get_provider", return_value=provider):
+            album_calls = [
+                asyncio.create_task(
+                    music_mass_class.music.albums.get_provider_item("123", GUARDED_PROVIDER_ID)
+                )
+                for _ in range(2)
+            ]
+            track_call = asyncio.create_task(
+                music_mass_class.music.tracks.get_provider_item("123", GUARDED_PROVIDER_ID)
+            )
+            await asyncio.sleep(0)
+            provider.release.set()
+            first_album, second_album = await asyncio.gather(*album_calls)
+            track = await track_call
+
+        assert isinstance(first_album, Album)
+        assert isinstance(track, Track)
+        # the two album callers shared a single request, the track caller got its own
+        assert first_album is second_album
+        assert provider.album_calls == 1
+        assert provider.track_calls == 1
+
+
+class _GuardedCaller:
+    """Minimal stand-in for a controller exposing a guarded request."""
+
+    def __init__(self, mass: MusicAssistant) -> None:
+        """
+        Initialize the caller.
+
+        :param mass: The MusicAssistant instance tracking the guarded request.
+        """
+        self.mass = mass
+        self.calls = 0
+        self.release = asyncio.Event()
+
+    @guard_single_request
+    async def fetch(self, item_id: str) -> str:
+        """Return the result for the given item id, once released."""
+        self.calls += 1
+        await self.release.wait()
+        return f"result-{item_id}"
+
+
+class _GatedMusicProvider(MusicProvider):
+    """Minimal music provider returning items only once released."""
+
+    def __init__(self) -> None:
+        """Initialize the provider."""
+        self.release = asyncio.Event()
+        self.album_calls = 0
+        self.track_calls = 0
+        self.config = MagicMock()
+        self.config.instance_id = GUARDED_PROVIDER_ID
+        self.manifest = MagicMock()
+        self.manifest.domain = GUARDED_PROVIDER_ID
+        self.logger = MagicMock()
+
+    async def get_album(self, prov_album_id: str) -> Album:
+        """Return the album for the given provider album id."""
+        self.album_calls += 1
+        await self.release.wait()
+        return Album(
+            item_id=prov_album_id,
+            provider=GUARDED_PROVIDER_ID,
+            name="Album",
+            provider_mappings={_provider_mapping(prov_album_id)},
+        )
+
+    async def get_track(self, prov_track_id: str) -> Track:
+        """Return the track for the given provider track id."""
+        self.track_calls += 1
+        await self.release.wait()
+        return Track(
+            item_id=prov_track_id,
+            provider=GUARDED_PROVIDER_ID,
+            name="Track",
+            provider_mappings={_provider_mapping(prov_track_id)},
+        )
+
+
+def _provider_mapping(item_id: str) -> ProviderMapping:
+    """
+    Build a provider mapping for the gated test provider.
+
+    :param item_id: The provider item id to map.
+    """
+    return ProviderMapping(
+        item_id=item_id,
+        provider_domain=GUARDED_PROVIDER_ID,
+        provider_instance=GUARDED_PROVIDER_ID,
+    )

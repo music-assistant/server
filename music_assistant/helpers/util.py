@@ -1970,13 +1970,28 @@ class _SupportsMass(Protocol):
 def guard_single_request[SelfT: _SupportsMass, **P, R](
     func: Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]],
 ) -> Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]]:
-    """Guard single request to a function."""
+    """
+    Ensure concurrent calls with identical arguments result in a single request.
+
+    Callers arriving while an identical call is already in flight await that same call and
+    receive its result. Cancelling one caller leaves the others unaffected; the request
+    itself always runs to completion. Calls count as identical when they are made on the
+    same object with equally represented arguments.
+
+    :param func: The coroutine method to guard.
+    """
 
     @functools.wraps(func)
     async def wrapper(self: SelfT, *args: P.args, **kwargs: P.kwargs) -> R:
         mass = self.mass
-        # create a task_id dynamically based on the function and args/kwargs
-        cache_key_parts = [func.__class__.__name__, func.__name__, *args]
+        # create a task_id dynamically based on the bound method and args/kwargs.
+        # the instance is part of the key because a decorated method may be inherited by
+        # multiple subclasses (all media controllers share
+        # MediaControllerBase.get_provider_item) and a class may have multiple instances
+        # (e.g. a provider set up twice), which must never join each other's flight.
+        # id(self) is stable while a flight is live because the task references self;
+        # the class name only serves to keep the task_id readable while debugging.
+        cache_key_parts = [type(self).__name__, id(self), func.__qualname__, *args]
         for key in sorted(kwargs.keys()):
             cache_key_parts.append(f"{key}{kwargs[key]}")
         task_id = ".".join(map(str, cache_key_parts))
@@ -1989,6 +2004,13 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
             eager_start=True,
             **kwargs,
         )
-        return await task
+        # wait for the shared task instead of awaiting it directly: a caller awaiting a
+        # task holds it as its fut_waiter, so cancelling that caller would cancel the
+        # request for every other caller too. asyncio.shield achieves the same, but hands
+        # the loop an exception to report whenever a cancelled caller leaves behind a
+        # request that ends in an exception another caller already handled.
+        if not task.done():
+            await asyncio.wait((task,))
+        return task.result()
 
     return wrapper
