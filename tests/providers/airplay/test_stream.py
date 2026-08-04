@@ -619,13 +619,23 @@ def test_command_pipe_paths_are_unique_per_stream() -> None:
 
 
 @pytest.mark.asyncio
-async def test_command_pipe_write_returns_false_without_reader(tmp_path: Path) -> None:
-    """A command pipe write reports when no reader can receive the command."""
+async def test_command_pipe_write_returns_false_without_reader(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A command pipe write reports a missing reader without retrying or warning."""
     pipe_path = tmp_path / "commands"
     os.mkfifo(pipe_path)
     writer = AsyncNamedPipeWriter(str(pipe_path))
 
-    assert await writer.write(b"ACTION=STANDBY\n") is False
+    with (
+        caplog.at_level(logging.WARNING),
+        patch("music_assistant.helpers.named_pipe.os.open", wraps=os.open) as open_pipe,
+    ):
+        assert await writer.write(b"ACTION=STANDBY\n") is False
+
+    # the missing reader is reported once, without retrying or crying wolf
+    open_pipe.assert_called_once()
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
 
 
 @pytest.mark.asyncio

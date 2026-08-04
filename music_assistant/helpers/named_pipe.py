@@ -57,17 +57,16 @@ class AsyncNamedPipeWriter:
         :return: True once the pipe can be written to, False if no reader
             attached before the timeout.
         """
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout
-        while True:
-            # a concurrent write opens the same descriptor from its worker thread
-            async with self._write_lock:
-                if self._ensure_write_fd():
-                    return True
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                return False
-            await asyncio.sleep(min(0.05, remaining))
+        try:
+            async with asyncio.timeout(timeout):
+                while True:
+                    # a concurrent write opens the same descriptor from its worker thread
+                    async with self._write_lock:
+                        if self._ensure_write_fd():
+                            return True
+                    await asyncio.sleep(0.05)
+        except TimeoutError:
+            return False
 
     async def write(self, data: bytes) -> bool:
         """
@@ -129,14 +128,17 @@ class AsyncNamedPipeWriter:
 
     async def remove(self) -> None:
         """Close write fd and remove the pipe."""
-        if self._write_fd is not None:
-            with suppress(Exception):
-                os.close(self._write_fd)
-            self._write_fd = None
-        pipe_path = Path(self._pipe_path)
-        if pipe_path.exists():
-            with suppress(Exception):
-                pipe_path.unlink()
+        # the lock keeps a write in flight on its worker thread from reopening
+        # the descriptor between the close and the unlink
+        async with self._write_lock:
+            if self._write_fd is not None:
+                with suppress(Exception):
+                    os.close(self._write_fd)
+                self._write_fd = None
+            pipe_path = Path(self._pipe_path)
+            if pipe_path.exists():
+                with suppress(Exception):
+                    pipe_path.unlink()
 
     def __str__(self) -> str:
         """Return string representation."""

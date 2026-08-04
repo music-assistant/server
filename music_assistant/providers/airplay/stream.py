@@ -265,7 +265,11 @@ class AirPlayStream:
 
     async def wait_for_connection(self) -> None:
         """
-        Wait until the device connection is established and commands can be sent.
+        Wait for device connection to be established.
+
+        Also gives the binary's command pipe a moment to open, so the first
+        commands are not dropped. A pipe that never opens is reported but does
+        not fail the wait.
 
         :raises PlayerCommandFailed: If the binary reported that the device needs
             a password, or rejected the configured one.
@@ -293,6 +297,9 @@ class AirPlayStream:
             self._metadata_artwork_checksum = ""
             self._pending_metadata_checksum = ""
             self._metadata_generation += 1
+        # Push track metadata before START. Some receivers (notably Sonos) hold
+        # back audio rendering until they receive track metadata; deferring it
+        # can keep them silent past the commanded start.
         await self._send_current_metadata(send_artwork=False)
         # Send the mute-aware volume right away — audio can start within a
         # second now that metadata goes out immediately — and repeat it after
@@ -301,9 +308,7 @@ class AirPlayStream:
         volume = 0 if self.player.volume_muted else self.player.volume_level
         await self.send_cli_command(f"VOLUME={volume}")
         self.mass.call_later(2, self.send_cli_command(f"VOLUME={volume}"))
-        # Push track metadata before START. Some receivers (notably Sonos) hold
-        # back audio rendering until they receive track metadata; deferring it
-        # can keep them silent past the commanded start.
+        # settle artwork and the position on top of the identity push above
         self.player._on_player_media_updated()
 
     async def stop(self, force: bool = False) -> None:

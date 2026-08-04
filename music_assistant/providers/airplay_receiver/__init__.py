@@ -69,6 +69,9 @@ SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 # combined with the provider instance_id this forms the persistent uri
 AUDIO_SOURCE_ID = "main"
 
+# seconds the silence nudge waits for the audio pipe's consumer to reattach
+AUDIO_PIPE_READER_TIMEOUT = 1.0
+
 
 def airplay_receiver_port(instance_id: str) -> int:
     """
@@ -533,6 +536,11 @@ class AirPlayReceiverProvider(PluginProvider):
         """
         self.logger.debug("Writing silence to audio pipe to unblock stream")
         silence = b"\x00" * 176400  # 1 second of silence in PCM_S16LE stereo 44.1kHz
+        # the consumer reopens the pipe shortly after shairport-sync drops it, so the
+        # nudge waits for it to come back instead of landing in that gap
+        if not await self.audio_pipe.wait_for_reader(AUDIO_PIPE_READER_TIMEOUT):
+            self.logger.debug("No reader on the audio pipe, skipping the silence write")
+            return
         await self.audio_pipe.write(silence)
 
     def _process_shairport_log_line(self, line: str) -> None:
