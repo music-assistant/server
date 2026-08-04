@@ -17,6 +17,7 @@ from music_assistant.helpers.util import (
     is_port_in_use,
     load_provider_module,
     sanitize_http_header_value,
+    select_announce_addresses,
     select_free_port,
 )
 from music_assistant.mass import MusicAssistant
@@ -319,6 +320,31 @@ class TestGetIpAddresses:
                 await task_a
             assert await task_b == ("192.168.1.10",)
         assert enumerate_mock.call_count == 1
+
+
+class TestSelectAnnounceAddresses:
+    """select_announce_addresses picks the addresses that are safe to announce."""
+
+    def test_ipv6_addresses_are_left_out(self) -> None:
+        """A dual-stack host announces its IPv4 addresses only, in their original order."""
+        assert select_announce_addresses(
+            ["192.168.1.10", "fd00::10", "10.0.0.5", "2001:db8::1"]
+        ) == ["192.168.1.10", "10.0.0.5"]
+
+    def test_ipv6_only_host_announces_ipv6(self) -> None:
+        """A host without any IPv4 address falls back to announcing its IPv6 addresses."""
+        assert select_announce_addresses(["fd00::10", "2001:db8::1"]) == [
+            "fd00::10",
+            "2001:db8::1",
+        ]
+
+    def test_ipv4_only_host_is_unchanged(self) -> None:
+        """The common IPv4-only host announces exactly what it publishes."""
+        assert select_announce_addresses(["192.168.1.10"]) == ["192.168.1.10"]
+
+    def test_empty_input_yields_no_addresses(self) -> None:
+        """Nothing to publish means nothing to announce."""
+        assert select_announce_addresses([]) == []
 
 
 class TestSanitizeHttpHeaderValue:
