@@ -803,7 +803,7 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
     async def get_item_by_external_id(
         self,
         external_id: str,
-        external_id_type: ExternalID,
+        external_id_type: ExternalID | None = None,
     ) -> ItemCls | None:
         """Get item by external ID, querying library then active providers."""
         if library_item := await self.get_library_item_by_external_id(
