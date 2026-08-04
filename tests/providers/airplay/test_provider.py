@@ -735,10 +735,10 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
         assert player.stream.start.await_args.args[0] == expected
 
 
-# --- Session decision reaches the CLI args (overrides bare liveness) ------------
+# --- Session decision reaches the CLI args (overrides bare readiness) ----------
 
 
-def _stream_player(*, ptp_daemon_running: bool) -> MagicMock:
+def _stream_player(*, ptp_daemon_ready: bool) -> MagicMock:
     """Build a minimal AirPlay player mock sufficient for _build_cli_args."""
     player = MagicMock()
     player.player_id = "apaabbccddeeff"
@@ -757,7 +757,7 @@ def _stream_player(*, ptp_daemon_running: bool) -> MagicMock:
 
     prov = MagicMock()
     prov.dacp_id = "ABCDEF0123456789"
-    prov.ptp_daemon_running = ptp_daemon_running
+    prov.wait_ptp_daemon_ready = AsyncMock(return_value=ptp_daemon_ready)
     prov.logger = logging.getLogger("test.airplay.prov")
     prov.mass.streams.publish_ip = "192.168.1.99"
     prov.mass.streams.get_source_ip = AsyncMock(return_value="192.168.1.5")
@@ -776,31 +776,31 @@ async def _build_args(player: MagicMock, use_shared_ptp: bool | None) -> list[st
         return await stream._build_cli_args(use_shared_ptp)
 
 
-async def test_build_cli_args_explicit_shared_ptp_overrides_dead_daemon() -> None:
-    """An explicit True adds --ptp-shared even when the daemon reads as not-live."""
-    player = _stream_player(ptp_daemon_running=False)
+async def test_build_cli_args_explicit_shared_ptp_overrides_unready_daemon() -> None:
+    """An explicit True adds --ptp-shared even when the daemon reads as not-ready."""
+    player = _stream_player(ptp_daemon_ready=False)
 
     args = await _build_args(player, use_shared_ptp=True)
 
     assert "--ptp-shared" in args
 
 
-async def test_build_cli_args_explicit_no_shared_ptp_overrides_live_daemon() -> None:
-    """An explicit False omits --ptp-shared even while the daemon is live."""
-    player = _stream_player(ptp_daemon_running=True)
+async def test_build_cli_args_explicit_no_shared_ptp_overrides_ready_daemon() -> None:
+    """An explicit False omits --ptp-shared even while the daemon is ready."""
+    player = _stream_player(ptp_daemon_ready=True)
 
     args = await _build_args(player, use_shared_ptp=False)
 
     assert "--ptp-shared" not in args
 
 
-async def test_build_cli_args_none_falls_back_to_daemon_liveness() -> None:
-    """Legacy single-stream callers (None) still gate --ptp-shared on daemon liveness."""
+async def test_build_cli_args_none_falls_back_to_daemon_readiness() -> None:
+    """Callers without a group-wide decision (None) gate --ptp-shared on daemon readiness."""
     assert "--ptp-shared" in await _build_args(
-        _stream_player(ptp_daemon_running=True), use_shared_ptp=None
+        _stream_player(ptp_daemon_ready=True), use_shared_ptp=None
     )
     assert "--ptp-shared" not in await _build_args(
-        _stream_player(ptp_daemon_running=False), use_shared_ptp=None
+        _stream_player(ptp_daemon_ready=False), use_shared_ptp=None
     )
 
 
