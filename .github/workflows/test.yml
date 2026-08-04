@@ -12,6 +12,7 @@ on:
     branches:
       - stable
       - dev
+  merge_group:
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -29,6 +30,7 @@ env:
 
 concurrency:
   group: test-${{ github.event_name }}-${{ github.event.pull_request.number || inputs.ref || github.ref }}
+  # Not merge_group: a cancelled run reports no check, hanging the queue entry until timeout.
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
@@ -49,7 +51,8 @@ jobs:
       # On PRs, run only the tests affected by the changed files: a PR touching a
       # single provider runs just that provider's tests. A change to shared code
       # (incl. translations under music_assistant/), dependencies or the CI itself
-      # runs the full suite, as do pushes, manual runs and reusable-workflow calls.
+      # runs the full suite, as do pushes, merge groups, manual runs and
+      # reusable-workflow calls.
       # PRs that only touch docs or other non-code files run nothing.
       - name: Determine test scope
         id: scope
