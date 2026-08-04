@@ -15,11 +15,10 @@ from aiosendspin.models.core import ClientHelloPayload
 from aiosendspin.models.core import DeviceInfo as SendspinDeviceInfo
 from aiosendspin.models.player import ClientHelloPlayerSupport, SupportedAudioFormat
 from aiosendspin.models.types import AudioCodec, PlayerCommand
-from music_assistant_models.constants import PLAYER_CONTROL_NONE
 from music_assistant_models.enums import IdentifierType
 from music_assistant_models.player import DeviceInfo
 
-from music_assistant.constants import CONF_OUTPUT_CHANNELS, CONF_VOLUME_CONTROL
+from music_assistant.constants import CONF_OUTPUT_CHANNELS
 from music_assistant.models.player import Player
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
 from music_assistant.providers.sendspin.bridge_role import (
@@ -258,18 +257,8 @@ class SendspinLocalAudioBridge:
             else VOLUME_CONTROL_SOFTWARE
         )
 
-        # Volume/mute state — owned by the bridge; persisted to MA cache.
-        # With core volume control set to None, MA sends no volume commands, so
-        # _volume_level would stay at DEFAULT_PLAYER_VOLUME and silently
-        # attenuate every chunk. Start at 100 instead: amplitude is exactly 1.0
-        # and _apply_volume_and_format passes the PCM through untouched.
-        self._volume_control_disabled: bool = (
-            self.mass.config.get_raw_player_config_value(
-                _config_client_id, CONF_VOLUME_CONTROL, None
-            )
-            == PLAYER_CONTROL_NONE
-        )
-        self._volume_level: int = 100 if self._volume_control_disabled else DEFAULT_PLAYER_VOLUME
+        # Volume/mute state — owned by the bridge; persisted to MA cache
+        self._volume_level: int = DEFAULT_PLAYER_VOLUME
         self._volume_muted: bool = False
         # Stable UUID for this device — set in start()
         self._device_uuid: str = ""
