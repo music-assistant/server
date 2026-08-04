@@ -16,6 +16,24 @@ MEDIA_ANNOUNCE = 1048576
 MAC = "aa:bb:cc:dd:ee:ff"
 
 
+class _Cache:
+    """Provide the slice of the cache controller that @use_cache relies on."""
+
+    def __init__(self) -> None:
+        self.entries: dict[str, Any] = {}
+
+    async def get_with_freshness(self, key: str, **kwargs: Any) -> tuple[Any, bool, bool]:
+        """Return the (data, is_fresh, found) triplet for the given key."""
+        await asyncio.sleep(0)
+        if key not in self.entries:
+            return None, False, False
+        return self.entries[key], True, True
+
+    async def set(self, key: str, data: Any, **kwargs: Any) -> None:
+        """Store data under the given key."""
+        self.entries[key] = data
+
+
 def _provider(
     devices: list[dict[str, Any]],
     entities: list[dict[str, Any]],
@@ -40,6 +58,12 @@ def _provider(
     )
     provider._entity_registry = None
     provider._entity_registry_lock = asyncio.Lock()
+    # the device registry lookup runs through @use_cache, which needs a cache to talk to
+    provider.config = SimpleNamespace(instance_id="hass--test")  # type: ignore[assignment]
+    provider.manifest = SimpleNamespace(domain="hass")  # type: ignore[assignment]
+    provider.mass = SimpleNamespace(  # type: ignore[assignment]
+        cache=_Cache(), create_task=asyncio.create_task
+    )
     provider.get_states = AsyncMock(return_value=states)  # type: ignore[method-assign]
     provider.logger = logging.getLogger("test.hass")
     return provider

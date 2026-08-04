@@ -957,10 +957,27 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
     # so concurrent callers always end up awaiting the same probe
     if not (pending := _ip_addresses_pending.get(include_ipv6)):
         pending = asyncio.create_task(_probe())
+        pending.add_done_callback(_log_ip_probe_failure)
         _ip_addresses_pending[include_ipv6] = pending
-    # shield the shared probe: a caller awaiting a task holds it as its fut_waiter,
-    # so cancelling that caller would otherwise cancel the probe for all other callers
-    return await asyncio.shield(pending)
+    # wait for the shared probe instead of awaiting it directly: a caller awaiting a task
+    # holds it as its fut_waiter, so cancelling that caller would otherwise cancel the probe
+    # for all other callers. asyncio.shield achieves the same, but as of Python 3.14 a
+    # cancelled caller makes it report the probe's exception through
+    # loop.call_exception_handler, even when another caller already handled it.
+    if not pending.done():
+        await asyncio.wait((pending,))
+    return pending.result()
+
+
+def _log_ip_probe_failure(probe: asyncio.Task[tuple[str, ...]]) -> None:
+    """Log (and thereby retrieve) the exception of a finished address probe, if any."""
+    if probe.cancelled():
+        return
+    # every waiter that is still around reports the failure itself, so a debug line is
+    # enough here; retrieving the exception is what keeps asyncio from reporting it as
+    # "Task exception was never retrieved" once the probe is garbage collected
+    if (err := probe.exception()) is not None:
+        LOGGER.debug("Enumerating IP addresses failed: %s", err)
 
 
 def _enumerate_ip_addresses(include_ipv6: bool) -> tuple[str, ...]:
@@ -1111,7 +1128,7 @@ async def select_free_port(range_start: int, range_end: int, host: str | None = 
             if not await is_port_in_use(port, host=host):
                 _reserved_ports[port] = now + _PORT_RESERVATION_TTL
                 return port
-    msg = "No free port available"
+    msg = f"No free port available in range {range_start}-{range_end - 1}"
     raise OSError(msg)
 
 

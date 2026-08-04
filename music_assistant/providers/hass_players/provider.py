@@ -69,7 +69,7 @@ class HomeAssistantPlayerProvider(PlayerProvider):
             # entities that are already imported must stay selectable,
             # so editing the provider config never drops them
             selected_players = self._selected_players()
-            device_registry = {x["id"]: x for x in await hass_prov.hass.get_device_registry()}
+            device_registry = await hass_prov.get_device_registry()
             native_macs = native_player_macs(self.mass)
             entity_registry = await get_media_player_entity_registry(hass_prov)
             async for state, entity_registry_entry in get_hass_media_players(
@@ -108,7 +108,7 @@ class HomeAssistantPlayerProvider(PlayerProvider):
         await super().loaded_in_mass()
         player_ids = cast("list[str]", self.config.get_value(CONF_PLAYERS))
         # prefetch the device- and entity registry
-        device_registry = {x["id"]: x for x in await self.hass_prov.hass.get_device_registry()}
+        device_registry = await self.hass_prov.get_device_registry()
         entity_registry = await get_media_player_entity_registry(self.hass_prov)
         # setup players from hass entities
         async for state, _ in get_hass_media_players(self.hass_prov, entity_registry):
@@ -232,7 +232,7 @@ class HomeAssistantPlayerProvider(PlayerProvider):
     async def _late_add_player(self, entity_id: str) -> None:
         """Handle setup of Player from HA entity that became available after startup."""
         # prefetch the device- and entity registry
-        device_registry = {x["id"]: x for x in await self.hass_prov.hass.get_device_registry()}
+        device_registry = await self.hass_prov.get_device_registry()
         entity_registry = await get_media_player_entity_registry(self.hass_prov)
         async for state, _ in get_hass_media_players(self.hass_prov, entity_registry):
             if state["entity_id"] != entity_id:
