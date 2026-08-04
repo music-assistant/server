@@ -431,7 +431,7 @@ def construct_media_item_from_playlist_item(
     provider_mappings = _resolve_provider_mappings(item, mass)
     if not provider_mappings and item.path.startswith(BUILTIN_URL_SCHEMES):
         # an item without any mapping never reaches library_add, leaving an unplayable
-        # library entry, so a plain stream url is mapped to the provider that serves it
+        # library entry, so a plain stream URL is mapped to the provider that serves it
         provider_mappings = _builtin_fallback_mappings(item.path, mass)
     external_ids = _collect_external_ids(metadata)
 
@@ -555,7 +555,7 @@ def _resolve_provider_mappings(item: PlaylistItem, mass: MusicAssistant) -> set[
 
 
 def _builtin_fallback_mappings(path: str, mass: MusicAssistant) -> set[ProviderMapping]:
-    """Return the builtin mapping for a stream url, which builtin takes as its item_id."""
+    """Return the builtin mapping for a stream URL, which builtin takes as its item_id."""
     prov = mass.get_provider("builtin")
     return {
         ProviderMapping(

@@ -23,7 +23,9 @@ from music_assistant_models.enums import (
 )
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
+    ItemMapping,
     MediaItemImage,
+    MediaItemType,
     ProviderMapping,
     Radio,
 )
@@ -265,8 +267,8 @@ async def test_import_reports_unresolvable_station(radio_mass: MusicAssistant) -
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
-        # a radio station is a stream url, so a bare local path is not one
-        ("some/file.mp3", "not a stream url"),
+        # a radio station is a stream URL, so a bare local path is not one
+        ("some/file.mp3", "not a stream URL"),
         # an entry that resolves to another media type must not be stored as a station
         ("spotify://track/abc123", "is a track, not a radio station"),
     ],
@@ -285,6 +287,37 @@ async def test_import_reports_entry_that_is_not_a_station(
     assert len(failures) == 1
     assert expected in failures[0]
     assert await mass.music.radio.library_count() == 0
+
+
+async def test_import_continues_after_unexpected_error(radio_mass: MusicAssistant) -> None:
+    """A transient fault on one station is reported and the queue behind it still imports."""
+    mass = radio_mass
+    await _clear_radio_library(mass)
+    m3u_data = "#EXTM3U\n" + "".join(
+        f"#EXTMA:media_type=radio||name=Station {name}\n"
+        f"#EXTINF:-1,Station {name}\nhttp://stream.example.com/{name.lower()}\n"
+        for name in ("One", "Two", "Three")
+    )
+    add_item_to_library = mass.music.add_item_to_library
+
+    async def flaky(
+        item: str | MediaItemType | ItemMapping, overwrite_existing: bool = False
+    ) -> MediaItemType:
+        if isinstance(item, Radio) and item.name == "Station Two":
+            raise TimeoutError("connection timed out")
+        return await add_item_to_library(item, overwrite_existing)
+
+    mass.music.add_item_to_library = flaky  # type: ignore[method-assign]
+
+    task = await mass.music.radio.import_radios(m3u_data)
+    await _wait_for_task_status(mass.tasks, task.id, TaskStatus.PARTIAL_SUCCESS)
+
+    failures = mass.tasks.get_task(task.id).failure_messages
+    assert len(failures) == 1
+    assert "Station Two" in failures[0]
+    # the stations queued behind the failure must still be imported
+    imported = {item.name for item in await mass.music.radio.library_items(summary=False)}
+    assert imported == {"Station One", "Station Three"}
 
 
 async def test_import_radios_rejects_empty_m3u(radio_mass: MusicAssistant) -> None:

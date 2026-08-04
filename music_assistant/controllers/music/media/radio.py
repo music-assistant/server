@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
@@ -101,8 +102,8 @@ class RadioController(MediaControllerBase[Radio]):
         """
         Queue importing radio stations from M3U8 format.
 
-        Stations whose provider can not be resolved are reported as failures on the
-        returned task instead of aborting the import.
+        Any station that can not be imported is reported as a failure on the returned
+        task, and the remaining stations are still imported.
 
         :param m3u_data: The M3U8 data as a string.
         :return: Managed background task performing the import.
@@ -295,10 +296,20 @@ class RadioController(MediaControllerBase[Radio]):
             update_current_task_progress_from_index(
                 index, total, f"Importing station {index + 1}/{total}"
             )
+            label = (item.metadata or {}).get("name") or item.title or item.path
             try:
                 await self._import_radio_item(item)
             except MusicAssistantError as err:
-                label = (item.metadata or {}).get("name") or item.title or item.path
+                report_current_task_failure(f"{label}: {err}")
+            except Exception as err:
+                # a transient fault such as a provider timeout must not abandon the
+                # stations queued behind it, but it is a real fault worth a log line
+                self.logger.warning(
+                    "Error importing radio station %s: %s",
+                    label,
+                    str(err),
+                    exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                )
                 report_current_task_failure(f"{label}: {err}")
         update_current_task_progress_from_index(total, total, "Import complete")
 
@@ -308,7 +319,7 @@ class RadioController(MediaControllerBase[Radio]):
             # a plain third-party M3U carries no #EXTPROV, so recover the mapping from the
             # path, which parse_uri normalises into a provider and its native item_id
             if not item.is_url:
-                msg = f"{item.path} is not a stream url"
+                msg = f"{item.path} is not a stream URL"
                 raise InvalidDataError(msg)
             media_type, prov_lookup, prov_item_id = await parse_uri(item.path)
             if media_type not in (MediaType.RADIO, MediaType.UNKNOWN):

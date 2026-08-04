@@ -848,13 +848,13 @@ def test_construct_plain_url_gets_builtin_mapping() -> None:
     [
         "some/relative/file.mp3",
         "/media/library/file.mp3",
-        # an MA-style provider URI is not a stream url; builtin would ffprobe it and fail
+        # an MA-style provider URI is not a stream URL; builtin would ffprobe it and fail
         "radiobrowser://radio/123",
         "file://host/share/file.mp3",
     ],
 )
 def test_construct_non_stream_url_gets_no_fallback_mapping(path: str) -> None:
-    """Only a plain stream url falls back to builtin; anything else stays unmapped."""
+    """Only a plain stream URL falls back to builtin; anything else stays unmapped."""
     media_item = construct_media_item_from_playlist_item(
         PlaylistItem(path=path), cast("Any", _mass_with_builtin()), MediaType.RADIO
     )
