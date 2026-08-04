@@ -279,6 +279,7 @@
   "common.errors.login_failed": "Login failed. Please check your credentials and try again.",
   "common.errors.media_not_found": "The requested media item could not be found.",
   "common.errors.mount_failed": "Unable to connect to the remote location: {0}",
+  "common.errors.no_playable_items": "There is nothing to play here.",
   "common.errors.password_required": "This device requires a password. Run the setup for this player to enter it.",
   "common.errors.player_command_failed": "The command to the player failed.",
   "common.errors.player_unavailable": "The player is not available.",

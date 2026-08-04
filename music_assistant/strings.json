@@ -1149,6 +1149,7 @@
     "setup_required": "Music Assistant is not set up yet.",
     "provider_unavailable": "The provider is currently unavailable.",
     "media_not_found": "The requested media item could not be found.",
+    "no_playable_items": "There is nothing to play here.",
     "invalid_data": "The data provided is invalid or could not be processed.",
     "already_registered": "This item is already registered.",
     "setup_failed": "Setup failed. Please check the configuration and try again.",
