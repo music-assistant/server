@@ -328,7 +328,7 @@ class WebDAVFileSystemProvider(LocalFileSystemProvider):
                 # once too many happen in a row, matching the local-filesystem walker
                 if not is_root:
                     self.logger.warning("WebDAV error scanning %s: %s", path, err)
-                scan_errors.record_dir_error(err, is_root=is_root)
+                scan_errors.record_dir_error(err, is_root=is_root, path=path)
                 return
             scan_errors.record_dir_read()
             for item in items:

@@ -4,6 +4,7 @@ import errno
 import logging
 import os
 from pathlib import Path
+from typing import Self
 from unittest.mock import patch
 
 import pytest
@@ -331,6 +332,146 @@ def test_recursive_iter_permission_denied_does_not_abort(tmp_path: Path) -> None
     assert errors.consecutive_failures == 0
     # the folders were still missed, so callers must not run deletions
     assert errors.failed_dirs == helpers.MAX_CONSECUTIVE_SCAN_ERRORS + 10
+
+
+class _BrokenEntry:
+    """Directory entry whose type check fails, as on a share that drops mid-listing."""
+
+    def __init__(self, path: str, err: OSError) -> None:
+        self.name = Path(path).name
+        self.path = path
+        self._err = err
+
+    def is_dir(self, follow_symlinks: bool = True) -> bool:
+        """Raise the configured error instead of answering."""
+        raise self._err
+
+    def is_file(self, follow_symlinks: bool = True) -> bool:
+        """Raise the configured error instead of answering."""
+        raise self._err
+
+
+class _FakeScanDir:
+    """Stand-in for the os.scandir iterator, which is also a context manager."""
+
+    def __init__(self, entries: list[_BrokenEntry]) -> None:
+        self._entries = iter(entries)
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        return None
+
+    def __iter__(self) -> Self:
+        return self
+
+    def __next__(self) -> _BrokenEntry:
+        return next(self._entries)
+
+
+def test_recursive_iter_unreadable_file_is_recorded(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Test that files that cannot be read leave the scan incomplete."""
+    _build_music_tree(tmp_path)
+    errors = helpers.ScanErrors()
+    real_from_dir_entry = helpers.FileSystemItem.from_dir_entry
+
+    def fake_from_dir_entry(entry: os.DirEntry[str], base_path: str) -> helpers.FileSystemItem:
+        if entry.name.startswith("track1") or entry.name.startswith("track2"):
+            raise OSError(errno.EIO, "i/o error")
+        return real_from_dir_entry(entry, base_path)
+
+    with (
+        caplog.at_level(logging.DEBUG, logger="test"),
+        patch.object(helpers.FileSystemItem, "from_dir_entry", fake_from_dir_entry),
+    ):
+        items = list(
+            helpers.recursive_iter(
+                str(tmp_path),
+                str(tmp_path),
+                SUPPORTED,
+                logging.getLogger("test"),
+                errors,
+            )
+        )
+
+    assert [item.relative_path for item in items] == ["Artist2/track3.mp3"]
+    assert not errors.aborted
+    assert errors.failed_dirs == 0
+    # the files are still on disk, so callers must not run deletions
+    assert errors.failed_entries == 2
+    assert errors.incomplete
+    # the summary names them so the user does not need the log to find them
+    assert "Artist1/Album1/track1.mp3" in errors.describe()
+    # both files failed in the same folder, so only the first one is a warning
+    warnings = [rec for rec in caplog.records if rec.levelno == logging.WARNING]
+    assert len(warnings) == 1
+
+
+@pytest.mark.parametrize("err", [OSError(errno.ENOENT, "gone"), OSError(errno.EINVAL, "invalid")])
+def test_recursive_iter_vanished_file_is_ignored(tmp_path: Path, err: OSError) -> None:
+    """Test that a file that is really gone does not block deletions."""
+    _build_music_tree(tmp_path)
+    errors = helpers.ScanErrors()
+    real_from_dir_entry = helpers.FileSystemItem.from_dir_entry
+
+    def fake_from_dir_entry(entry: os.DirEntry[str], base_path: str) -> helpers.FileSystemItem:
+        if entry.name == "track1.mp3":
+            raise err
+        return real_from_dir_entry(entry, base_path)
+
+    with patch.object(helpers.FileSystemItem, "from_dir_entry", fake_from_dir_entry):
+        items = list(
+            helpers.recursive_iter(
+                str(tmp_path),
+                str(tmp_path),
+                SUPPORTED,
+                logging.getLogger("test"),
+                errors,
+            )
+        )
+
+    assert "Artist1/Album1/track1.mp3" not in [item.relative_path for item in items]
+    assert not errors.incomplete
+
+
+def test_recursive_iter_unreadable_entry_type_is_recorded(tmp_path: Path) -> None:
+    """Test that an entry of unknown type leaves the scan incomplete."""
+    errors = helpers.ScanErrors()
+    entries = [_BrokenEntry(str(tmp_path / "Album1"), OSError(errno.EIO, "i/o error"))]
+
+    with patch("os.scandir", return_value=_FakeScanDir(entries)):
+        items = list(
+            helpers.recursive_iter(
+                str(tmp_path),
+                str(tmp_path),
+                SUPPORTED,
+                logging.getLogger("test"),
+                errors,
+            )
+        )
+
+    assert items == []
+    assert not errors.aborted
+    # the entry may be a folder full of tracks, so callers must not run deletions
+    assert errors.failed_entries == 1
+
+
+def test_scan_errors_describe_names_examples() -> None:
+    """Test that the summary names the failed paths it kept."""
+    errors = helpers.ScanErrors()
+    errors.record_dir_error(OSError(errno.EIO, "i/o error"), is_root=False, path="Artist1/Album1")
+    for index in range(helpers.MAX_REPORTED_FAILED_PATHS + 5):
+        errors.record_entry_error(OSError(errno.EIO, "i/o error"), f"Artist2/track{index}.mp3")
+
+    summary = errors.describe()
+    assert "1 folder(s)" in summary
+    assert f"{helpers.MAX_REPORTED_FAILED_PATHS + 5} file(s)" in summary
+    assert "Artist1/Album1" in summary
+    # only the first few paths are named, the counts carry the rest
+    assert len(errors.failed_paths) == helpers.MAX_REPORTED_FAILED_PATHS
 
 
 def test_scan_errors_reset_on_successful_read() -> None:
