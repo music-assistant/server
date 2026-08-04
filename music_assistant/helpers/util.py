@@ -1974,9 +1974,9 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
     Ensure concurrent calls with identical arguments result in a single request.
 
     Callers arriving while an identical call is already in flight await that same call and
-    receive its result. Cancelling one caller leaves the others unaffected; the request
-    itself always runs to completion. Calls count as identical when they are made on the
-    same object with equally represented arguments.
+    receive its result. Cancelling one caller leaves both the request and the other callers
+    unaffected. Calls count as identical when they are made on the same object with equally
+    represented arguments.
 
     :param func: The coroutine method to guard.
     """
@@ -2006,9 +2006,9 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
         )
         # wait for the shared task instead of awaiting it directly: a caller awaiting a
         # task holds it as its fut_waiter, so cancelling that caller would cancel the
-        # request for every other caller too. asyncio.shield achieves the same, but hands
-        # the loop an exception to report whenever a cancelled caller leaves behind a
-        # request that ends in an exception another caller already handled.
+        # request for every other caller too. asyncio.shield achieves the same, but as of
+        # Python 3.14 a cancelled caller makes it report the request's exception through
+        # loop.call_exception_handler, even when another caller already handled it.
         if not task.done():
             await asyncio.wait((task,))
         return task.result()

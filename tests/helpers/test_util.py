@@ -394,7 +394,8 @@ class TestGuardSingleRequest:
         assert first.calls == 1
         assert second.calls == 1
 
-    # the tasks are created on the fixture's event loop, so the test must run on it too
+    # mass.create_task pins its tasks to mass.loop, so the test must run on the loop the
+    # class-scoped fixture was created on
     @pytest.mark.asyncio(loop_scope="class")
     async def test_controllers_sharing_a_method_get_their_own_request(
         self, music_mass_class: MusicAssistant
