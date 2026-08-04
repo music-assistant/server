@@ -347,10 +347,10 @@ class OpenAITTSProvider(PluginProvider):
         # a single value can hold a comma separated list of its own, e.g. when the whole
         # list was pasted into one field
         names = [
-            name.strip()
+            name
             for value in values
             if isinstance(value, str)
-            for name in value.split(",")
-            if name.strip()
+            for part in value.split(",")
+            if (name := part.strip())
         ]
         return list(dict.fromkeys(names))
