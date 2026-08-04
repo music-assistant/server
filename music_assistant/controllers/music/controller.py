@@ -1336,6 +1336,9 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         :param userid: The user ID to mark the item as played for (instead of the current user).
         :param queue_id: The queue ID where the item was played.
         :param user_initiated: If True, the playback was initiated by the user (e.g. enqueued).
+            Sticky once set: a later report can promote a playlog row to user-initiated but
+            never demote it, so a writer reporting playback it did not itself initiate
+            (e.g. a provider sync) must pass False.
         :param skip_artist_ids: Library artist ids to skip when crediting an album's artists.
         :param playback_speed: The current playback speed to persist (audiobooks/podcasts).
             If None, any previously stored speed for the item is preserved.

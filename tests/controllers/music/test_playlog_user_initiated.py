@@ -110,3 +110,20 @@ async def test_background_play_is_promoted_by_a_later_explicit_play(
     )
 
     assert (await _playlog_row(mass, track, user.user_id))["user_initiated"] == 1
+
+
+async def test_omitted_user_initiated_defaults_to_an_explicit_play(mass: MusicAssistant) -> None:
+    """
+    A caller that omits ``user_initiated`` records an explicit play.
+
+    ``music/mark_played`` is a public API command and clients back to ``MIN_SCHEMA_VERSION``
+    call it without the flag to report a play the user asked for, so the default is part of
+    the wire contract rather than an implementation detail. Because the flag is sticky, a
+    writer reporting playback it did not initiate must pass ``user_initiated=False`` itself.
+    """
+    user = await mass.webserver.auth.create_user("defaultedtrack")
+    track = await _add_track(mass, "Defaulted")
+
+    await mass.music.mark_item_played(track, userid=user.user_id)
+
+    assert (await _playlog_row(mass, track, user.user_id))["user_initiated"] == 1

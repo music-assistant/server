@@ -410,6 +410,7 @@ class OvercastProvider(MusicProvider):
                 mass_episode,
                 fully_played=state.played,
                 seconds_played=state.progress_s or 0,
+                user_initiated=False,
             )
             if newest_applied is None or state.user_updated_at > newest_applied:
                 newest_applied = state.user_updated_at
