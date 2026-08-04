@@ -209,7 +209,7 @@ class WebserverController(CoreController):
         """Return all Config Entries for this core module (if any)."""
         return await self._build_config_entries()
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
         """Handle a one-shot action button press and re-render the config entries."""
         if action == CONF_ACTION_VERIFY_SSL:
             # the certificate/key are read from the stored config, so they must be saved

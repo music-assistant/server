@@ -143,7 +143,7 @@ class MyDemoMusicprovider(MusicProvider):
         """
         return ()
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
         """
         Handle a one-shot ACTION button press from the options page.
 

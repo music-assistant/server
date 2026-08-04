@@ -273,18 +273,18 @@ class SonicSimilarityPlugin(PluginProvider):
             ),
         )
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
-        """Handle a rebuild button press (fire-and-forget) and re-render the entries."""
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
+        """Handle a rebuild button press (fire-and-forget)."""
         if action == ACTION_REBUILD_18DIM:
             # per-engine locks in _safe_rebuild serialise double-clicks
             self.mass.create_task(self._safe_rebuild("Traits", self._rebuild_search_index))
-            return await self.get_config_entries()
+            return None
         if action == ACTION_REBUILD_CLAP:
             if self._clap_index is not None:
                 self.mass.create_task(
                     self._safe_rebuild("Character", self._rebuild_clap_index_from_database)
                 )
-            return await self.get_config_entries()
+            return None
         return await super().handle_config_action(action)
 
     async def handle_async_init(self) -> None:

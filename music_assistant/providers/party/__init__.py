@@ -67,9 +67,6 @@ CONF_PARTY_DURATION = "party_duration"
 CONF_HIDE_BACK_BUTTON = "hide_back_button"
 CONF_SHOW_PROGRESS_BAR = "show_progress_bar"
 CONF_PREVENT_DUPLICATE_TRACKS = "prevent_duplicate_tracks"
-# Actions
-CONF_ACTION_ENABLE_GUEST_ACCESS = "action_enable_guest_access"
-CONF_ACTION_DISABLE_GUEST_ACCESS = "action_disable_guest_access"
 
 # Color options for badges (name, hex value)
 # Green and Orange are listed first as they are the defaults
@@ -198,7 +195,6 @@ class PartyPlugin(PluginProvider):
                 key=CONF_ENABLE_GUEST_ACCESS,
                 type=ConfigEntryType.BOOLEAN,
                 default_value=False,
-                hidden=True,
                 immediate_apply=True,
             ),
             # Guest access disabled state
@@ -208,26 +204,12 @@ class PartyPlugin(PluginProvider):
                 required=False,
                 hidden=guest_access_enabled,
             ),
-            ConfigEntry(
-                key=CONF_ACTION_ENABLE_GUEST_ACCESS,
-                type=ConfigEntryType.ACTION,
-                action=CONF_ACTION_ENABLE_GUEST_ACCESS,
-                hidden=guest_access_enabled,
-                immediate_apply=True,
-            ),
             # Guest access enabled state
             ConfigEntry(
                 key="guest_enabled_note",
                 type=ConfigEntryType.ALERT,
                 required=False,
                 hidden=not guest_access_enabled,
-            ),
-            ConfigEntry(
-                key=CONF_ACTION_DISABLE_GUEST_ACCESS,
-                type=ConfigEntryType.ACTION,
-                action=CONF_ACTION_DISABLE_GUEST_ACCESS,
-                hidden=not guest_access_enabled,
-                immediate_apply=True,
             ),
             ConfigEntry(
                 key=CONF_PARTY_QR_TEXT,
@@ -388,20 +370,6 @@ class PartyPlugin(PluginProvider):
                 advanced=True,
             ),
         )
-
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
-        """Handle a guest-access toggle button press and re-render the entries."""
-        if action == CONF_ACTION_ENABLE_GUEST_ACCESS:
-            await self.mass.config.save_provider_config(
-                self.domain, {CONF_ENABLE_GUEST_ACCESS: True}, instance_id=self.instance_id
-            )
-            return await self.get_config_entries()
-        if action == CONF_ACTION_DISABLE_GUEST_ACCESS:
-            await self.mass.config.save_provider_config(
-                self.domain, {CONF_ENABLE_GUEST_ACCESS: False}, instance_id=self.instance_id
-            )
-            return await self.get_config_entries()
-        return await super().handle_config_action(action)
 
     def __init__(
         self,

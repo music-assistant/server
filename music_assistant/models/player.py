@@ -935,12 +935,14 @@ class Player(ABC):
         """
         return []
 
-    async def handle_config_action(self, action: str) -> list[ConfigEntry]:
+    async def handle_config_action(self, action: str) -> list[ConfigEntry] | None:
         """
-        Handle a one-shot action button press from this player's config and re-render.
+        Run the one-shot side effect for a pressed action button from this player's config.
 
         Override to run the side effect for each ``ConfigEntryType.ACTION`` entry this
-        player declares, then return the (possibly refreshed) config entries to display.
+        player declares. Raise to report failure to the caller. Return None when there
+        is nothing to re-render; some actions still return the (refreshed) config entries
+        to display, but that is being phased out.
 
         :param action: The action id of the pressed button (an entry's ``action`` key).
         """

@@ -153,13 +153,16 @@ class CoreConfigMixin:
         """
         Run a one-shot action button from a core module's config and return the entries.
 
+        An empty list means the action ran with nothing to re-render: the frontend
+        shows a confirmation toast and leaves the config form as-is.
+
         :param domain: The core controller domain.
         :param action: The action id of the pressed button.
         """
         controller: CoreController = getattr(self.mass, domain)
-        return await self._resolve_core_config_entries(
-            domain, await controller.handle_config_action(action)
-        )
+        if (result := await controller.handle_config_action(action)) is None:
+            return []
+        return await self._resolve_core_config_entries(domain, result)
 
     @api_command("config/core/save", required_scope=Scope.CONFIG_CORE_WRITE)
     async def save_core_config(

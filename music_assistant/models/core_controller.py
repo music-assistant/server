@@ -64,12 +64,14 @@ class CoreController:
         """
         return ()
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
         """
-        Handle a one-shot action button press from this module's config and re-render.
+        Run the one-shot side effect for a pressed action button from this module's config.
 
         Override to run the side effect for each ``ConfigEntryType.ACTION`` entry this
-        module declares, then return the (possibly refreshed) config entries to display.
+        module declares. Raise to report failure to the caller. Return None when there
+        is nothing to re-render; some actions still return the (refreshed) config entries
+        to display, but that is being phased out.
 
         :param action: The action id of the pressed button (an entry's ``action`` key).
         """

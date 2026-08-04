@@ -272,7 +272,9 @@ class PlayerConfigMixin:
 
         A protocol-prefixed action (``<protocol_player_id>||protocol||<action>``) is routed to
         the linked protocol player; the parent player's entries are then re-rendered so the
-        injected protocol entries pick up any state change.
+        injected protocol entries pick up any state change. An empty list means the action
+        ran with nothing to re-render: the frontend shows a confirmation toast and leaves the
+        config form as-is.
 
         :param player_id: The player whose config surface holds the action.
         :param action: The action id of the pressed button (may be protocol-prefixed).
@@ -285,9 +287,11 @@ class PlayerConfigMixin:
             if not (target := self.mass.players.get_player(protocol_player_id, False)):
                 msg = f"Player {protocol_player_id} not found"
                 raise KeyError(msg)
-            await target.handle_config_action(protocol_action)
+            result = await target.handle_config_action(protocol_action)
         else:
-            await player.handle_config_action(action)
+            result = await player.handle_config_action(action)
+        if result is None:
+            return []
         # re-render the full (parent) player entries so injected protocol entries refresh
         return await self.get_player_config_entries(player_id)
 

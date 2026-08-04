@@ -120,14 +120,14 @@ class TestConfigEntriesActions:
     async def test_action_rebuild_18dim_dispatches_to_provider(
         self, mock_mass: MagicMock, make_plugin: Callable[..., Any]
     ) -> None:
-        """The 18-dim rebuild action fires create_task once and still returns entries."""
+        """The 18-dim rebuild action fires create_task once and returns None (nothing to re-render)."""
         plugin = make_plugin(signatures={("spotify", "a"): [0.1] * 18})
         plugin._rebuild_search_index = AsyncMock()
 
-        entries = await plugin.handle_config_action(ACTION_REBUILD_18DIM)
+        result = await plugin.handle_config_action(ACTION_REBUILD_18DIM)
 
         assert mock_mass.create_task.call_count == 1
-        assert entries
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_action_rebuild_clap_dispatches_when_clap_enabled(

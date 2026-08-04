@@ -220,6 +220,9 @@ class ProviderConfigMixin:
         """
         Run a one-shot action button from a provider's options and return the entries.
 
+        An empty list means the action ran with nothing to re-render: the frontend
+        shows a confirmation toast and leaves the config form as-is.
+
         :param instance_id: The provider instance id (must be loaded).
         :param action: The action id of the pressed button.
         """
@@ -227,9 +230,9 @@ class ProviderConfigMixin:
         if provider is None:
             msg = f"Provider {instance_id} is not loaded"
             raise ActionUnavailable(msg)
-        return self._wrap_provider_config_entries(
-            provider, await provider.handle_config_action(action)
-        )
+        if (result := await provider.handle_config_action(action)) is None:
+            return []
+        return self._wrap_provider_config_entries(provider, result)
 
     def seed_stored_config_values(self, config: ProviderConfig) -> None:
         """
