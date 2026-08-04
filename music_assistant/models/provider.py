@@ -79,8 +79,8 @@ class Provider:
 
         Override to run the side effect for each ``ConfigEntryType.ACTION`` entry this
         provider declares. Raise to report failure to the caller. Return None when there
-        is nothing to re-render; some actions still return the (refreshed) config entries
-        to display, but that is being phased out.
+        is nothing to re-render; returning config entries re-renders the options page
+        with those entries instead.
 
         :param action: The action id of the pressed button (an entry's ``action`` key).
         """

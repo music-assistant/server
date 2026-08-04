@@ -148,8 +148,10 @@ class MyDemoMusicprovider(MusicProvider):
         Handle a one-shot ACTION button press from the options page.
 
         Run the side effect for the pressed ``action`` (the ``action`` id of one of the
-        ``ConfigEntryType.ACTION`` entries returned by ``get_config_entries``), then
-        return the (possibly refreshed) config entries so the options page re-renders.
+        ``ConfigEntryType.ACTION`` entries returned by ``get_config_entries``) and return
+        None: the action is a one-off, with nothing to re-render. Raise (typically
+        ``ActionUnavailable``) to report that the action could not run. Return config
+        entries only when the options page must re-render with different entries.
         Delegate unknown actions to ``super()`` (which raises ``ActionUnavailable``).
 
         Remove this method entirely when your provider declares no ACTION entries.

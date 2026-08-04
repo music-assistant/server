@@ -253,3 +253,52 @@ async def test_handle_config_action_rejects_former_guest_access_actions() -> Non
 
     with pytest.raises(ActionUnavailable):
         await plugin.handle_config_action("action_enable_guest_access")
+
+
+def _create_unload_plugin(*, guest_access_enabled: bool) -> PartyPlugin:
+    """Create a party plugin wired for a bare unload() call, with no session and no handles."""
+    plugin = PartyPlugin.__new__(PartyPlugin)
+    plugin.mass = MagicMock()
+    plugin.mass.config.get_raw_provider_config_value.return_value = guest_access_enabled
+    plugin.logger = MagicMock()
+    plugin.config = MagicMock()
+    plugin.config.instance_id = "party--test"
+    plugin._unregister_handles = []
+    plugin._session = None
+    plugin._session_lock = asyncio.Lock()
+    plugin._revoke_guest_tokens = AsyncMock()  # type: ignore[method-assign]
+    return plugin
+
+
+@pytest.mark.asyncio
+async def test_unload_revokes_guest_tokens_when_guest_access_is_off() -> None:
+    """Switching guest access off makes the ensuing unload revoke the guest tokens."""
+    plugin = _create_unload_plugin(guest_access_enabled=False)
+
+    await plugin.unload()
+
+    cast("AsyncMock", plugin._revoke_guest_tokens).assert_awaited_once()
+    # the live stored value is what decides, not the config snapshot taken at init
+    cast("MagicMock", plugin.mass.config.get_raw_provider_config_value).assert_called_once_with(
+        "party--test", CONF_ENABLE_GUEST_ACCESS, default=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_unload_keeps_guest_tokens_while_guest_access_is_on() -> None:
+    """A plain reload with guest access still on leaves the guest tokens intact."""
+    plugin = _create_unload_plugin(guest_access_enabled=True)
+
+    await plugin.unload()
+
+    cast("AsyncMock", plugin._revoke_guest_tokens).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unload_revokes_guest_tokens_on_removal() -> None:
+    """Removing the plugin revokes the guest tokens even with guest access still on."""
+    plugin = _create_unload_plugin(guest_access_enabled=True)
+
+    await plugin.unload(is_removed=True)
+
+    cast("AsyncMock", plugin._revoke_guest_tokens).assert_awaited_once()

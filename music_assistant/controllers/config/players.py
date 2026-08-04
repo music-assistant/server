@@ -268,13 +268,13 @@ class PlayerConfigMixin:
     @api_command("config/players/invoke_action", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def invoke_player_config_action(self, player_id: str, action: str) -> list[ConfigEntry]:
         """
-        Run a one-shot action button from a player's config and return the (re-rendered) entries.
+        Run a one-shot action button from a player's config.
 
         A protocol-prefixed action (``<protocol_player_id>||protocol||<action>``) is routed to
         the linked protocol player; the parent player's entries are then re-rendered so the
         injected protocol entries pick up any state change. An empty list means the action
-        ran with nothing to re-render: the frontend shows a confirmation toast and leaves the
-        config form as-is.
+        ran with nothing to re-render; a non-empty list holds the parent player's entries
+        the config form should re-render with.
 
         :param player_id: The player whose config surface holds the action.
         :param action: The action id of the pressed button (may be protocol-prefixed).

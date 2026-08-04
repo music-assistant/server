@@ -151,10 +151,10 @@ class CoreConfigMixin:
     @api_command("config/core/invoke_action", required_scope=Scope.CONFIG_CORE_WRITE)
     async def invoke_core_config_action(self, domain: str, action: str) -> list[ConfigEntry]:
         """
-        Run a one-shot action button from a core module's config and return the entries.
+        Run a one-shot action button from a core module's config.
 
-        An empty list means the action ran with nothing to re-render: the frontend
-        shows a confirmation toast and leaves the config form as-is.
+        An empty list means the action ran with nothing to re-render; a non-empty list
+        holds the entries the config form should re-render with.
 
         :param domain: The core controller domain.
         :param action: The action id of the pressed button.

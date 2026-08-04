@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
+from music_assistant.constants import CONF_PROTOCOL_KEY_SPLITTER
 from music_assistant.controllers.config.controller import ConfigController
 
 
@@ -120,6 +121,55 @@ async def test_player_action_returning_entries_still_rerenders() -> None:
         controller, "get_player_config_entries", AsyncMock(return_value=rerendered)
     ) as mock_rerender:
         result = await controller.invoke_player_config_action("player_1", "some_action")
+
+    assert result == rerendered
+    mock_rerender.assert_awaited_once_with("player_1")
+
+
+async def test_protocol_action_returning_none_yields_empty_list_without_rerender() -> None:
+    """A protocol-prefixed action returning None surfaces as [] without re-rendering the parent."""
+    mock_mass = MagicMock()
+    parent = MagicMock()
+    parent.handle_config_action = AsyncMock()
+    protocol_player = MagicMock()
+    protocol_player.handle_config_action = AsyncMock(return_value=None)
+    mock_mass.players.get_player.side_effect = lambda player_id, *_args: {
+        "player_1": parent,
+        "protocol_1": protocol_player,
+    }[player_id]
+    controller = _controller(mock_mass)
+    action = f"protocol_1{CONF_PROTOCOL_KEY_SPLITTER}some_action"
+
+    with patch.object(controller, "get_player_config_entries", AsyncMock()) as mock_rerender:
+        result = await controller.invoke_player_config_action("player_1", action)
+
+    assert result == []
+    protocol_player.handle_config_action.assert_awaited_once_with("some_action")
+    parent.handle_config_action.assert_not_awaited()
+    mock_rerender.assert_not_awaited()
+
+
+async def test_protocol_action_returning_entries_rerenders_the_parent() -> None:
+    """A protocol-prefixed action returning entries re-renders the parent, not the target."""
+    mock_mass = MagicMock()
+    parent = MagicMock()
+    parent.handle_config_action = AsyncMock()
+    protocol_player = MagicMock()
+    protocol_player.handle_config_action = AsyncMock(
+        return_value=[ConfigEntry(key="foo", type=ConfigEntryType.LABEL)]
+    )
+    mock_mass.players.get_player.side_effect = lambda player_id, *_args: {
+        "player_1": parent,
+        "protocol_1": protocol_player,
+    }[player_id]
+    controller = _controller(mock_mass)
+    rerendered = [ConfigEntry(key="bar", type=ConfigEntryType.LABEL)]
+    action = f"protocol_1{CONF_PROTOCOL_KEY_SPLITTER}some_action"
+
+    with patch.object(
+        controller, "get_player_config_entries", AsyncMock(return_value=rerendered)
+    ) as mock_rerender:
+        result = await controller.invoke_player_config_action("player_1", action)
 
     assert result == rerendered
     mock_rerender.assert_awaited_once_with("player_1")
