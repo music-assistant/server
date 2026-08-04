@@ -13,6 +13,7 @@ from music_assistant_models.enums import ConfigEntryType
 from music_assistant.helpers.app_vars import app_var
 from music_assistant.helpers.oauth import (
     HOSTED_CALLBACK_URL,
+    OAUTH_STEP_TIMEOUT,
     authorization_code_from_params,
     hosted_bounce_redirect,
 )
@@ -105,7 +106,7 @@ async def _pkce_authenticate(session: SetupSession, client_id: str, step_id: str
         "state": state,
     }
     callback_params = await session.external(
-        f"{AUTHORIZE_URL}?{urlencode(params)}", step_id=step_id
+        f"{AUTHORIZE_URL}?{urlencode(params)}", step_id=step_id, expires_in=OAUTH_STEP_TIMEOUT
     )
     code = authorization_code_from_params(callback_params)
     token_params = {

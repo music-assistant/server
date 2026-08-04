@@ -1,0 +1,11 @@
+{
+  "type": "music",
+  "domain": "overcast",
+  "stage": "beta",
+  "name": "Overcast",
+  "description": "Import your podcast subscriptions and playback progress from Overcast.",
+  "codeowners": ["@music-assistant"],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/overcast",
+  "multi_instance": true
+}

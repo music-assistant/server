@@ -4,9 +4,17 @@ from __future__ import annotations
 
 from typing import Any
 
+CONF_AI_ENGINE = "ai_engine"
+CONF_TTS_ENGINE = "tts_engine"
 CONF_TIMEZONE = "timezone"
 CONF_WEATHER_CITY = "weather_city"
 CONF_WEATHER_COUNTRY = "weather_country"
+
+# providers load concurrently, so the plugin supplying the engines may still be
+# loading when AI Radio initializes: wait this long for it before giving up
+ENGINE_DISCOVERY_TIMEOUT = 30
+
+TRANSLATION_OWNER = "provider.ai_radio"
 
 DEFAULT_LLM_INSTRUCTIONS = (
     "Host personality: warm, sharp, music-literate, and slightly premium "

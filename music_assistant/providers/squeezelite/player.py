@@ -482,7 +482,7 @@ class SqueezelitePlayer(Player):
             "album": media.album,
             "artist": media.artist,
             "image_url": media.image_url,
-            "duration": media.duration,
+            "duration": media.stream_duration or media.duration,
             "source_id": media.source_id,
             "queue_item_id": media.queue_item_id,
         }

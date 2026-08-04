@@ -52,8 +52,8 @@ class RecommendationPayloadMixin(_MixinBase):
       read; a stale persisted payload is likewise served while one refresh runs.
 
     Concurrent callers share one in-flight fetch (single-flight); the shared fetch is
-    shielded so a timed-out caller cannot cancel it for the other waiters and its
-    result still lands in memory and cache.
+    isolated from caller cancellation, so a timed-out caller cannot cancel it for the
+    other waiters and its result still lands in memory and cache.
 
     All background work runs in tasks created via mass.create_task, so it is cancelled
     on server stop; the mixin's unload() additionally cancels any in-flight fetch or
@@ -136,9 +136,14 @@ class RecommendationPayloadMixin(_MixinBase):
                 task_id=f"recommendation_payload_fetch.{self.instance_id}",
             )
             self._recommendation_payload_task = task
-        # shield: a timed-out caller must not cancel the shared load out from under
-        # the other waiters (and the load must still complete to warm memory + cache)
-        return await asyncio.shield(task)
+        # wait for the shared load instead of awaiting it directly: a timed-out caller must
+        # not cancel it out from under the other waiters (and the load must still complete
+        # to warm memory + cache). asyncio.shield achieves the same, but as of Python 3.14 a
+        # cancelled caller makes it report the load's exception through
+        # loop.call_exception_handler, even when another caller already handled it.
+        if not task.done():
+            await asyncio.wait((task,))
+        return task.result()
 
     async def _refresh_recommendation_payload(self) -> list[RecommendationFolder]:
         """
@@ -148,8 +153,11 @@ class RecommendationPayloadMixin(_MixinBase):
         cached payload is known to be outdated (e.g. after detecting rotated backend ids).
         Subsequent _recommendation_payload calls serve the refreshed payload.
         """
-        # shield: see _recommendation_payload
-        return await asyncio.shield(self._schedule_recommendation_refresh())
+        # wait for the shared refresh rather than awaiting it: see _recommendation_payload
+        task = self._schedule_recommendation_refresh()
+        if not task.done():
+            await asyncio.wait((task,))
+        return task.result()
 
     def _schedule_recommendation_refresh(self) -> asyncio.Task[list[RecommendationFolder]]:
         """Return the in-flight refresh task, starting one if none is running."""

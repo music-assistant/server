@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import AIEngine, PluginProvider
 from music_assistant.providers.music_quiz.ai_distractors import (
     MAX_AI_LABEL_LENGTH,
     MAX_AI_PROMPT_BYTES,
@@ -406,14 +406,36 @@ def test_parse_ai_distractor_response_enforces_size_line_and_label_limits() -> N
 
 @pytest.mark.asyncio
 async def test_ai_distractor_request_rejects_oversized_prompt_before_provider_lookup() -> None:
-    """Do not discover or call an AI provider for an oversized prompt."""
+    """Do not discover or call an AI engine for an oversized prompt."""
     mass = MagicMock()
     provider = MagicMock(spec=PluginProvider)
+    provider.instance_id = "ai--1"
     provider.ai_query = AsyncMock(return_value="")
+    provider.get_ai_engines = AsyncMock(
+        return_value=[AIEngine(id="engine", name="ai--1", provider=provider)]
+    )
     mass.get_providers_supporting_feature.return_value = [provider]
 
-    response = await request_ai_distractors(mass, "x" * (MAX_AI_PROMPT_BYTES + 1))
+    response = await request_ai_distractors(mass, "x" * (MAX_AI_PROMPT_BYTES + 1), engine_uid=None)
 
     assert response is None
     mass.get_providers_supporting_feature.assert_not_called()
+    provider.ai_query.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ai_distractor_request_refuses_a_configured_engine_that_disappeared() -> None:
+    """A concrete engine selection is never silently replaced by another available engine."""
+    mass = MagicMock()
+    provider = MagicMock(spec=PluginProvider)
+    provider.instance_id = "ai--1"
+    provider.ai_query = AsyncMock(return_value="")
+    provider.get_ai_engines = AsyncMock(
+        return_value=[AIEngine(id="engine", name="ai--1", provider=provider)]
+    )
+    mass.get_providers_supporting_feature.return_value = [provider]
+
+    response = await request_ai_distractors(mass, "prompt", engine_uid="ai--1/gone")
+
+    assert response is None
     provider.ai_query.assert_not_awaited()

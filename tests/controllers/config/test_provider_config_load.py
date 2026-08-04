@@ -9,6 +9,9 @@ Covers three fixes for the Spotify auth failures caused by refresh-token rotatio
   (e.g. auth_required) instead of appearing stuck loading (a spinning hourglass).
 - A raw provider value stored with ``immediate=True`` is flushed straight away instead of
   on the debounced timer, so a rotated (and thus revoked) token is not lost on a crash.
+
+Also covers the post-load dependent scan, which must neither resolve the option values of
+every provider nor record its own failures against the provider that just loaded fine.
 """
 
 from __future__ import annotations
@@ -20,8 +23,9 @@ import pytest
 from music_assistant_models.config_entries import ConfigEntry, ProviderConfig, ProviderError
 from music_assistant_models.enums import ConfigEntryType, ProviderStatus, ProviderType
 from music_assistant_models.errors import LoginFailed, SetupFailedError
+from music_assistant_models.provider import ProviderManifest
 
-from music_assistant.constants import CONF_PROVIDERS
+from music_assistant.constants import CONF_LOG_LEVEL, CONF_PROVIDERS
 from music_assistant.controllers.config.helpers import _provider_status
 from music_assistant.mass import MusicAssistant
 
@@ -124,6 +128,80 @@ async def test_save_preserves_unknown_stored_values(mass_minimal: MusicAssistant
     assert stored["values"]["legacy_token"] == "keep-me"
     # setup_data travels along untouched
     assert stored["setup_data"] == {"token": "abc"}
+
+
+async def test_dependent_scan_does_not_resolve_option_values(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """The post-load dependent scan reads the configs without resolving their option values."""
+    instance = "spotify--test"
+    with (
+        patch.object(mass_minimal, "_load_provider", AsyncMock()),
+        patch.object(
+            mass_minimal.config, "get_provider_configs", AsyncMock(return_value=[])
+        ) as mock_get,
+    ):
+        await mass_minimal.load_provider_config(_prov_conf(instance))
+
+    # resolving values calls get_config_entries() on every loaded provider, which for some
+    # (e.g. Home Assistant) means live network i/o - once per provider load
+    assert mock_get.await_args is not None
+    assert mock_get.await_args.kwargs.get("include_values") is not True
+    assert True not in mock_get.await_args.args
+
+
+async def test_dependent_is_loaded_with_resolved_config_values(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A dependent is handed a config with its values resolved, not the bare scan result."""
+    config = mass_minimal.config
+    instance = "dependent--test"
+    raw = {"domain": "dependent", "type": "player", "instance_id": instance, "enabled": True}
+    config.set(f"{CONF_PROVIDERS}/{instance}", raw)
+    mass_minimal._provider_manifests["dependent"] = ProviderManifest(
+        type=ProviderType.PLAYER,
+        domain="dependent",
+        name="Dependent",
+        description="",
+        codeowners=[],
+        depends_on="spotify",
+    )
+    # what the (deliberately cheap) dependent scan yields: no entries, so no values
+    scanned = cast("ProviderConfig", ProviderConfig.parse([], raw))
+    assert scanned.get_value(CONF_LOG_LEVEL) is None
+
+    with (
+        patch.object(mass_minimal, "_load_provider", AsyncMock()) as mock_load,
+        patch.object(config, "get_provider_configs", AsyncMock(return_value=[scanned])),
+    ):
+        await mass_minimal.load_provider_config(_prov_conf("spotify--test"))
+
+    loaded = mock_load.await_args_list[-1].args[0]
+    assert loaded.instance_id == instance
+    # a provider reads its log level while being constructed, so an unresolved config
+    # (value None) makes logger.setLevel() raise and the dependent never loads at all
+    assert loaded.get_value(CONF_LOG_LEVEL) == "GLOBAL"
+
+
+async def test_dependent_scan_failure_is_not_blamed_on_loaded_provider(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A provider that loaded fine keeps a clean status when the dependent scan fails."""
+    config = mass_minimal.config
+    instance = "spotify--test"
+    config.set(
+        f"{CONF_PROVIDERS}/{instance}",
+        {"domain": "spotify", "type": "music", "instance_id": instance, "enabled": True},
+    )
+    with (
+        patch.object(mass_minimal, "_load_provider", AsyncMock()),
+        patch.object(config, "get_provider_configs", AsyncMock(side_effect=TimeoutError)),
+    ):
+        # the scan failure is swallowed: the provider itself loaded successfully
+        await mass_minimal.load_provider_config(_prov_conf(instance))
+
+    assert config.get(f"{CONF_PROVIDERS}/{instance}/last_error") is None
+    assert _provider_status(_prov_conf(instance), is_loaded=True) == ProviderStatus.LOADED
 
 
 async def test_immediate_flush_for_rotated_token(mass_minimal: MusicAssistant) -> None:

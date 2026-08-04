@@ -20,7 +20,7 @@ from snapcast.control.server import CONTROL_PORT, Snapserver
 from zeroconf import NonUniqueNameException
 from zeroconf.asyncio import AsyncServiceInfo
 
-from music_assistant.constants import CONF_ENABLED
+from music_assistant.constants import CONF_ENABLED, CONF_LOG_LEVEL, VERBOSE_LOG_LEVEL
 from music_assistant.helpers.compare import create_safe_string
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.process import AsyncProcess, check_output
@@ -55,6 +55,7 @@ from music_assistant.providers.snapcast.player import SnapCastPlayer
 from music_assistant.providers.universal_group.constants import UGP_PREFIX
 
 if TYPE_CHECKING:
+    from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.player import PlayerMedia
 
     from .snap_cntrl_proto import SnapclientProto, SnapgroupProto, SnapserverProto
@@ -218,8 +219,7 @@ class SnapCastProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        # set snapcast logging
-        logging.getLogger("snapcast").setLevel(self.logger.level)
+        self._set_snapcast_log_level()
         self._use_builtin_server = not self.config.get_value(CONF_USE_EXTERNAL_SERVER)
         self._stop_called = False
         self._controlscript_available = False
@@ -279,6 +279,14 @@ class SnapCastProvider(PlayerProvider):
         except OSError as err:
             msg = "Unable to start the Snapserver connection ?"
             raise SetupFailedError(msg) from err
+
+    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        await super().update_config(config, changed_keys)
+        # a log level(-only) change does not reload the provider,
+        # so realign snapcast's logger here
+        if f"values/{CONF_LOG_LEVEL}" in changed_keys:
+            self._set_snapcast_log_level()
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -884,3 +892,12 @@ class SnapCastProvider(PlayerProvider):
             return ma_player
 
         return None
+
+    def _set_snapcast_log_level(self) -> None:
+        """Align snapcast's log level with the provider's log level."""
+        # snapcast is very chatty at debug level, so only pass through its
+        # debug logging when verbose logging is enabled
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            logging.getLogger("snapcast").setLevel(logging.DEBUG)
+        else:
+            logging.getLogger("snapcast").setLevel(self.logger.level + 10)

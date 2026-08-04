@@ -6,10 +6,16 @@ import asyncio
 import logging
 import sys
 from typing import TYPE_CHECKING, Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 from music_assistant_models.auth import Scope
+from music_assistant_models.media_items import (
+    Artist,
+    ProviderMapping,
+    Track,
+    UniqueList,
+)
 
 from music_assistant.controllers.diagnostics import DiagnosticsController
 from music_assistant.helpers.diagnostics import (
@@ -270,6 +276,64 @@ async def test_get_report(mass: MusicAssistant) -> None:
     assert "aiosendspin.server.connection.<mac-7f85b52c>" in loggers
     # the whole report must be JSON serializable and stay small
     assert len(json_dumps(report_with_tail)) < 100_000
+
+
+async def _seed_library_track(mass: MusicAssistant) -> None:
+    """Add a single library track mapped to one (fake) provider instance."""
+
+    def _mapping(item_id: str) -> set[ProviderMapping]:
+        return {
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain="prov_a",
+                provider_instance="prov_a_inst",
+                in_library=True,
+            )
+        }
+
+    artist = await mass.music.artists.add_item_to_library(
+        Artist(
+            item_id="0",
+            provider="library",
+            name="Census Artist",
+            provider_mappings=_mapping("census_artist"),
+        )
+    )
+    await mass.music.tracks.add_item_to_library(
+        Track(
+            item_id="0",
+            provider="library",
+            name="Census Track",
+            provider_mappings=_mapping("census_track"),
+            artists=UniqueList([artist]),
+        )
+    )
+
+
+async def test_library_census_ignores_requesting_user_provider_filter(
+    mass: MusicAssistant,
+) -> None:
+    """
+    Test that the library census reports true totals, not what the requesting admin sees.
+
+    diagnostics/get runs inside the requesting user's context, so a census built from the
+    user-scoped library_count() would silently understate the library in support reports.
+
+    :param mass: Full Music Assistant test instance.
+    """
+    await _seed_library_track(mass)
+    unfiltered_census = await mass.diagnostics._census_library()
+    with patch(
+        "music_assistant.controllers.music.media.base.get_current_user",
+        return_value=Mock(provider_filter=["no_such_provider"]),
+    ):
+        census = await mass.diagnostics._census_library()
+    # the seeded items have no mapping on the filtered provider, so a user-scoped count
+    # would report 0 for them
+    assert census["artists"] == 1
+    assert census["tracks"] == 1
+    # nothing at all may shift when a filtered user is the one asking
+    assert census == unfiltered_census
 
 
 async def test_get_report_command_admin_only(mass: MusicAssistant) -> None:

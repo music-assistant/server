@@ -27,7 +27,11 @@ from music_assistant.controllers.config.constants import DEFAULT_SAVE_DELAY
 from music_assistant.controllers.config.core import CoreConfigMixin
 from music_assistant.controllers.config.dsp import DSPConfigMixin
 from music_assistant.controllers.config.flows import SetupFlowMixin
-from music_assistant.controllers.config.migrations import migrate, migrate_provider_setup_data
+from music_assistant.controllers.config.migrations import (
+    migrate,
+    migrate_hass_engine_selection,
+    migrate_provider_setup_data,
+)
 from music_assistant.controllers.config.players import PlayerConfigMixin
 from music_assistant.controllers.config.providers import ProviderConfigMixin
 from music_assistant.controllers.config.queues import PlayerQueueConfigMixin
@@ -78,6 +82,11 @@ class ConfigController(
         # runs here, after encryption is initialized, so string values are encrypted
         # at rest (the migrate() pass in _load() runs before encryption is available).
         if migrate_provider_setup_data(self._data, self.encrypt_string):
+            self.save(immediate=True)
+        # one-off: hand the Home Assistant plugin's former single TTS/AI entity choice over to
+        # the providers that select their own engine now. Runs here for the same reason: the
+        # ai_radio selection lands in its encrypted setup_data.
+        if migrate_hass_engine_selection(self._data, self.encrypt_string):
             self.save(immediate=True)
         if not self.onboard_done:
             self.mass.register_api_command(

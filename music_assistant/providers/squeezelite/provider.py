@@ -79,27 +79,29 @@ class SqueezelitePlayerProvider(PlayerProvider):
         # Validate ALL required ports before starting ANY services
         await self._validate_all_ports(control_port, telnet_port, json_port)
 
-        # Only proceed with server creation after all ports are validated
-        try:
-            self.slimproto = SlimServer(
-                cli_port=telnet_port or None,
-                cli_port_json=json_port or None,
-                ip_address=self.mass.streams.publish_ip,
-                name="Music Assistant",
-                control_port=control_port,
-            )
-            # start slimproto socket server
-            await self.slimproto.start()
-        except Exception as err:
-            # Ensure cleanup on any initialization failure
-            await self._cleanup_server()
-            raise SetupFailedError(f"Failed to start SlimProto server: {err}") from err
+        # create the server here (also validates config and sets up the CLI) but defer
+        # start() to loaded_in_mass, so we subscribe to events before accepting clients
+        self.slimproto = SlimServer(
+            cli_port=telnet_port or None,
+            cli_port_json=json_port or None,
+            ip_address=self.mass.streams.publish_ip,
+            name="Music Assistant",
+            control_port=control_port,
+        )
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         await super().loaded_in_mass()
         assert self.slimproto is not None  # for type checker
+        # subscribe before starting the socket server: aioslimproto does not buffer
+        # events, so a client connecting before we subscribe would be missed entirely
         self.slimproto.subscribe(self._handle_slimproto_event)
+        try:
+            await self.slimproto.start()
+        except Exception as err:
+            # ports were validated during setup, so a failure here is unlikely
+            self.unload_with_error(err)
+            return
         self.mass.streams.register_dynamic_route(
             "/slimproto/multi", self._serve_multi_client_stream
         )

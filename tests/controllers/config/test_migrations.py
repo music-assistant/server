@@ -12,6 +12,7 @@ from music_assistant.controllers.config.migrations import (
     _migrate_bose_soundtouch_presets,
     _migrate_output_limiter,
     _migrate_player_setup_data,
+    migrate_hass_engine_selection,
     migrate_provider_setup_data,
 )
 
@@ -637,3 +638,120 @@ def test_migrate_bose_soundtouch_presets_noop_when_absent() -> None:
         }
     }
     assert _migrate_bose_soundtouch_presets(data) is False
+
+
+def _hass_engine_data(instance_id: str = "hass", **hass_values: Any) -> dict[str, Any]:
+    """Build a config store with a hass provider and all three engine consumers."""
+    return {
+        "providers": {
+            instance_id: {
+                "domain": "hass",
+                "instance_id": instance_id,
+                "values": {"verify_ssl": True, **hass_values},
+            },
+            "ai_radio": {"domain": "ai_radio", "instance_id": "ai_radio", "values": {}},
+            "music_quiz": {"domain": "music_quiz", "instance_id": "music_quiz", "values": {}},
+            "smart_playlist": {
+                "domain": "smart_playlist",
+                "instance_id": "smart_playlist",
+                "values": {},
+            },
+        }
+    }
+
+
+def test_migrate_hass_engine_selection_fans_out_to_all_consumers() -> None:
+    """Both stored entity ids become engine uids on every consumer, encrypted for ai_radio."""
+    data = _hass_engine_data(tts_entity="tts.piper", ai_task_entity="ai_task.google")
+    assert migrate_hass_engine_selection(data, _fake_encrypt) is True
+    prov = data["providers"]
+    assert prov["ai_radio"]["setup_data"] == {
+        "ai_engine": ENCRYPT_SUFFIX + "hass/ai_task.google",
+        "tts_engine": ENCRYPT_SUFFIX + "hass/tts.piper",
+    }
+    # the plain providers store their pick unencrypted in values
+    assert prov["music_quiz"]["values"] == {"ai_engine": "hass/ai_task.google"}
+    assert prov["smart_playlist"]["values"] == {"ai_engine": "hass/ai_task.google"}
+    # the dead keys are consumed, the hass config is otherwise untouched
+    assert prov["hass"]["values"] == {"verify_ssl": True}
+    # a second pass finds nothing left to migrate
+    assert migrate_hass_engine_selection(data, _fake_encrypt) is False
+
+
+def test_migrate_hass_engine_selection_uses_own_instance_id() -> None:
+    """The engine uid is built from the hass config's own instance id, not its domain."""
+    data = _hass_engine_data("hass--abc", ai_task_entity="ai_task.google")
+    assert migrate_hass_engine_selection(data, _fake_encrypt) is True
+    assert data["providers"]["music_quiz"]["values"] == {"ai_engine": "hass--abc/ai_task.google"}
+
+
+def test_migrate_hass_engine_selection_migrates_keys_independently() -> None:
+    """A single stored key migrates on its own; the other selection stays unset."""
+    data = _hass_engine_data(tts_entity="tts.piper")
+    assert migrate_hass_engine_selection(data, _fake_encrypt) is True
+    prov = data["providers"]
+    assert prov["ai_radio"]["setup_data"] == {"tts_engine": ENCRYPT_SUFFIX + "hass/tts.piper"}
+    assert prov["music_quiz"]["values"] == {}
+    assert prov["smart_playlist"]["values"] == {}
+    assert prov["hass"]["values"] == {"verify_ssl": True}
+
+
+def test_migrate_hass_engine_selection_without_consumers() -> None:
+    """The dead hass keys are dropped even when no consuming provider is installed."""
+    data: dict[str, Any] = {
+        "providers": {
+            "hass": {
+                "domain": "hass",
+                "instance_id": "hass",
+                "values": {"tts_entity": "tts.piper", "ai_task_entity": "ai_task.google"},
+            },
+            "music_quiz": {"domain": "music_quiz", "instance_id": "music_quiz", "values": {}},
+        }
+    }
+    assert migrate_hass_engine_selection(data, _fake_encrypt) is True
+    assert data["providers"]["hass"]["values"] == {}
+    assert data["providers"]["music_quiz"]["values"] == {"ai_engine": "hass/ai_task.google"}
+    assert migrate_hass_engine_selection(data, _fake_encrypt) is False
+
+
+def test_migrate_hass_engine_selection_preserves_existing_choice() -> None:
+    """A selection the user already made on a consumer is never overwritten."""
+    data = _hass_engine_data(tts_entity="tts.piper", ai_task_entity="ai_task.google")
+    prov = data["providers"]
+    prov["music_quiz"]["values"]["ai_engine"] = "openai/gpt"
+    prov["ai_radio"]["setup_data"] = {"tts_engine": ENCRYPT_SUFFIX + "elevenlabs/voice"}
+    assert migrate_hass_engine_selection(data, _fake_encrypt) is True
+    assert prov["music_quiz"]["values"] == {"ai_engine": "openai/gpt"}
+    assert prov["ai_radio"]["setup_data"] == {
+        "ai_engine": ENCRYPT_SUFFIX + "hass/ai_task.google",
+        "tts_engine": ENCRYPT_SUFFIX + "elevenlabs/voice",
+    }
+    # the consumer that had no choice yet still gets the migrated one
+    assert prov["smart_playlist"]["values"] == {"ai_engine": "hass/ai_task.google"}
+    assert prov["hass"]["values"] == {"verify_ssl": True}
+
+
+def test_migrate_hass_engine_selection_noop_without_stored_values() -> None:
+    """Nothing stored (or no hass provider at all) reports no change."""
+    assert migrate_hass_engine_selection({}, _fake_encrypt) is False
+    assert migrate_hass_engine_selection({"providers": {}}, _fake_encrypt) is False
+    data = _hass_engine_data()
+    assert migrate_hass_engine_selection(data, _fake_encrypt) is False
+    assert "setup_data" not in data["providers"]["ai_radio"]
+    assert data["providers"]["music_quiz"]["values"] == {}
+
+
+def test_migrate_hass_engine_selection_skips_multiple_hass_configs() -> None:
+    """With several hass configurations there is no correct winner, so nothing is touched."""
+    data = _hass_engine_data(tts_entity="tts.piper", ai_task_entity="ai_task.google")
+    data["providers"]["hass--second"] = {
+        "domain": "hass",
+        "instance_id": "hass--second",
+        "values": {"tts_entity": "tts.cloud"},
+    }
+    assert migrate_hass_engine_selection(data, _fake_encrypt) is False
+    prov = data["providers"]
+    assert prov["hass"]["values"]["tts_entity"] == "tts.piper"
+    assert prov["hass"]["values"]["ai_task_entity"] == "ai_task.google"
+    assert prov["music_quiz"]["values"] == {}
+    assert "setup_data" not in prov["ai_radio"]

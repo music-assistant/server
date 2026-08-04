@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Generator
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -23,22 +22,6 @@ from music_assistant.controllers.dashboard.controller import (
     _RegisteredDashboard,
 )
 from music_assistant.mass import MusicAssistant
-
-
-@pytest.fixture(autouse=True)
-def _use_ephemeral_ports() -> Generator[None]:
-    """
-    Bind the webserver and streamserver to OS-assigned ephemeral ports.
-
-    Avoids clashing with a Music Assistant instance already running on the
-    default ports (8095/8097) on the developer's machine. Autouse ensures the
-    patch is active before the `mass` fixture boots the server.
-    """
-    with (
-        patch("music_assistant.controllers.webserver.controller.DEFAULT_SERVER_PORT", 0),
-        patch("music_assistant.controllers.streams.controller.DEFAULT_PORT", 0),
-    ):
-        yield
 
 
 def _make_controller() -> DashboardController:

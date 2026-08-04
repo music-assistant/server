@@ -14,7 +14,7 @@ from music_assistant_models.media_items import ItemMapping, ProviderMapping, Tra
 from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.controllers.music.recency import RecencySnapshot, RecencyWindows
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import AIEngine, PluginProvider
 from music_assistant.providers.music_quiz.models import (
     MultipleChoiceRoundState,
     MusicQuizConfig,
@@ -106,6 +106,7 @@ def _quiz_type(
         source_uris=["prov://playlist/1"],
         difficulty=difficulty,
         use_ai_distractors=use_ai,
+        ai_engine="ai--1/engine" if use_ai else None,
     )
     quiz_type = GuessTheSongQuizType(mass, config)
     quiz_type._source_track_pool = {}
@@ -113,10 +114,13 @@ def _quiz_type(
 
 
 def _ai_provider(response: object = None, error: Exception | None = None) -> MagicMock:
-    """Return a mock AI_QUERY-capable plugin provider."""
+    """Return a mock AI_QUERY-capable plugin provider exposing a single engine."""
     provider = MagicMock(spec=PluginProvider)
     provider.instance_id = "ai--1"
     provider.ai_query = AsyncMock(return_value=response, side_effect=error)
+    provider.get_ai_engines = AsyncMock(
+        return_value=[AIEngine(id="engine", name="ai--1", provider=provider)]
+    )
     return provider
 
 
@@ -587,10 +591,9 @@ async def test_invalid_primary_ai_response_does_not_try_another_provider() -> No
             extra=True,
         )
     )
-    invalid.instance_id = "ai--a"
     later = _ai_provider()
     later.instance_id = "ai--b"
-    mass.get_providers_supporting_feature.return_value = [later, invalid]
+    mass.get_providers_supporting_feature.return_value = [invalid, later]
     correct_track, correct = _correct()
 
     result = list(await quiz_type._gather_distractors(correct_track, correct))

@@ -290,7 +290,11 @@ class ProfilerProvider(PluginProvider):
             self.mass.music.audiobooks,
             self.mass.music.podcasts,
         ):
-            counts[controller.media_type.value] = await controller.library_count()
+            # raw table sizes: a profiler report needs true totals, not the filtered
+            # subset visible to the (admin) user who requested it
+            counts[controller.media_type.value] = await self.mass.music.database.get_count(
+                controller.db_table
+            )
         return counts
 
     def _on_mass_event(self, event: MassEvent) -> None:

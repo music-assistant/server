@@ -121,8 +121,8 @@ Manages individual WebSocket connections:
 
 ### 5. Authentication Helpers
 
-**Middleware ([helpers/auth_middleware.py](helpers/auth_middleware.py)):**
-- Request authentication for HTTP endpoints
+**Helpers ([helpers/auth_middleware.py](helpers/auth_middleware.py)):**
+- Request authentication for HTTP endpoints, called per handler (there is no aiohttp middleware)
 - User context management (thread-local storage)
 - Ingress detection (Home Assistant add-on)
 - Token extraction from Authorization header
@@ -318,10 +318,11 @@ Enable or disable remote access:
 ### HTTP Request Flow
 
 ```
-HTTP Request → Webserver → Auth Middleware → Command Handler → Response
+HTTP Request → Webserver → Command Handler → Response
                                 |
-                                ├─ Ingress? → Auto-authenticate with HA headers
-                                └─ Regular? → Validate Bearer token
+                                └─ get_authenticated_user()
+                                   ├─ Ingress? → Auto-authenticate with HA headers
+                                   └─ Regular? → Validate Bearer token
 ```
 
 ### WebSocket Request Flow
@@ -468,7 +469,7 @@ webserver/
 ├── api_docs.py                         # API documentation generator
 ├── README.md                           # This file
 ├── helpers/
-│   ├── auth_middleware.py              # HTTP auth middleware
+│   ├── auth_middleware.py              # HTTP/WebSocket auth helpers
 │   └── auth_providers.py               # Authentication providers
 └── remote_access/
     ├── __init__.py                     # Remote access manager

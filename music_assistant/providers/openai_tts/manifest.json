@@ -1,0 +1,13 @@
+{
+  "type": "plugin",
+  "domain": "openai_tts",
+  "stage": "alpha",
+  "name": "OpenAI Text-to-speech",
+  "description": "Turns text into speech using the OpenAI speech API, and works with self-hostable servers that implement the same endpoint such as Kokoro-FastAPI, LocalAI and Speaches.",
+  "codeowners": ["@music-assistant"],
+  "documentation": "https://music-assistant.io/plugins/openai_tts/",
+  "multi_instance": true,
+  "builtin": false,
+  "icon": "text-to-speech",
+  "requirements": []
+}

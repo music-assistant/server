@@ -95,6 +95,8 @@ class MusicQuizConfig(DataClassDictMixin):
     # difficulty is guess-the-song specific; AI distractors also apply to timeline bonuses
     difficulty: str = MusicQuizDifficulty.NORMAL.value
     use_ai_distractors: bool = False
+    # the AI engine uid selected in the provider config, or None when no engine is available
+    ai_engine: str | None = None
     # trivia specific; other quiz types ignore this
     language: str = DEFAULT_TRIVIA_LANGUAGE
     play_reveal_audio: bool = True
@@ -389,6 +391,9 @@ class MusicQuizRound(DataClassDictMixin):
     image_url: str | None = None
     duration: float | None = None
     started_at: float | None = None
+    # when the round's track became audible; only set for rounds that play a
+    # track while answering
+    audio_started_at: float | None = None
     ended_at: float | None = None
     auto_advance_at: float | None = None
 
@@ -408,6 +413,8 @@ class MusicQuizGame(DataClassDictMixin):
     phase: MusicQuizPhase = MusicQuizPhase.LOBBY
     created_at: float = 0
     auto_start_at: float | None = None
+    # set while a reset loads the sources and first round of the next run
+    preparing: bool = False
     players: dict[str, MusicQuizPlayer] = field(default_factory=dict)
     rounds: list[MusicQuizRound] = field(default_factory=list)
     sources: list[MusicQuizSource] = field(default_factory=list)

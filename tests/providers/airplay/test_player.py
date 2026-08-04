@@ -1,6 +1,7 @@
 """Unit tests for AirPlay player."""
 
 import asyncio
+import logging
 import time
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
@@ -1250,6 +1251,44 @@ async def test_stop_cancels_pending_rejoin() -> None:
         assert player._rejoin_task is None
         await asyncio.sleep(0)
         assert rejoin_task.cancelled()
+
+
+# --- Group membership and the leader's stream session ---
+
+
+@pytest.mark.asyncio
+async def test_set_members_adds_the_child_to_the_running_session() -> None:
+    """A member joining a leader with a live session is added to that session."""
+    leader = _make_playing_leader()
+    child = _make_idle_player("child")
+    _attach_running_session(leader, [leader])
+    session = cast("MagicMock", leader.stream).session
+    session.add_client = AsyncMock()
+    _players_mock(leader).get_player.side_effect = lambda player_id: {"child": child}.get(player_id)
+
+    await leader.set_members(player_ids_to_add=["child"])
+
+    session.add_client.assert_awaited_once_with(child)
+    assert leader.group_members == ["leader", "child"]
+
+
+@pytest.mark.asyncio
+async def test_set_members_warns_when_the_leader_has_no_session(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A member joining a leader that renders through a protocol gets no audio, loudly."""
+    leader = _make_idle_player("leader")
+    leader.logger = logging.getLogger("test.airplay.player")
+    child = _make_idle_player("child")
+    _players_mock(leader).get_player.side_effect = lambda player_id: {"child": child}.get(player_id)
+    # the leader hands its audio to one of its output protocols, so it has no session
+    leader.set_active_output_protocol("bridge_leader")
+
+    with caplog.at_level(logging.WARNING):
+        await leader.set_members(player_ids_to_add=["child"])
+
+    assert leader.group_members == ["leader", "child"]
+    assert "no stream session to join" in caplog.text
 
 
 # --- Device password ---

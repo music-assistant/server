@@ -19,6 +19,7 @@ from music_assistant_models.audio_processing import (
 )
 from music_assistant_models.dsp import (
     AudioChannel,
+    ConvolutionFilter,
     DSPConfig,
     DSPState,
     ToneControlFilter,
@@ -40,6 +41,7 @@ from music_assistant.controllers.streams.audio_processing import (
     get_normalization_details,
 )
 from music_assistant.controllers.streams.controller import StreamsController
+from music_assistant.helpers.dsp import ComplexFilter
 
 
 def _format(
@@ -572,7 +574,49 @@ def test_player_output_plan_excludes_neutral_filters() -> None:
     )
 
     assert plan.output_details.dsp.filters == []
-    assert not any(param.startswith("equalizer=") for param in plan.filter_params)
+    assert not any(
+        isinstance(param, str) and param.startswith("equalizer=") for param in plan.filter_params
+    )
+
+
+def _convolution_plan(known_ir_ids: list[str]) -> AudioOutputPlan:
+    """Build an output plan for a player convolving with impulse response "abc123"."""
+    mass = MagicMock()
+    mass.players.get_player.return_value = None
+    mass.storage_path = "/storage"
+    mass.config.get_player_dsp_config.return_value = DSPConfig(
+        enabled=True,
+        filters=[ConvolutionFilter(enabled=True, ir_id="abc123")],
+    )
+    mass.config.get_dsp_irs.return_value = [{"ir_id": ir_id} for ir_id in known_ir_ids]
+    mass.config.get_raw_player_config_value.return_value = "stereo"
+    audio = StreamsAudio(cast("Any", mass))
+    audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
+    return audio.get_player_output_plan(
+        "player-1",
+        audio_format,
+        audio_format,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+
+def test_player_output_plan_drops_convolution_with_unknown_ir() -> None:
+    """An impulse response with no stored record is left out rather than failing ffmpeg."""
+    plan = _convolution_plan(known_ir_ids=["other"])
+
+    assert plan.output_details.dsp.filters == []
+    assert not any(isinstance(param, ComplexFilter) for param in plan.filter_params)
+
+
+def test_player_output_plan_keeps_convolution_with_known_ir() -> None:
+    """An impulse response that is still stored convolves as configured."""
+    plan = _convolution_plan(known_ir_ids=["abc123"])
+
+    assert len(plan.output_details.dsp.filters) == 1
+    complex_filters = [param for param in plan.filter_params if isinstance(param, ComplexFilter)]
+    assert [f.inputs[0].path for f in complex_filters] == ["/storage/dsp_irs/abc123.wav"]
 
 
 def test_player_output_plan_prefers_rendering_player_channels() -> None:

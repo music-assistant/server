@@ -112,9 +112,19 @@ class ArtistsController(MediaControllerBase[Artist]):
         album_artists_only: bool = False,
         artist_type: ArtistType | None = None,
     ) -> int:
-        """Return the total number of items in the library."""
+        """
+        Return the number of artists in the library.
+
+        Restricted to the providers the current user is allowed to see when that user
+        has a provider filter set.
+
+        :param favorite_only: Only count artists marked as favorite.
+        :param album_artists_only: Only count artists that have albums.
+        :param artist_type: Only count artists of this type.
+        """
         sql_query = f"SELECT item_id FROM {self.db_table}"
         query_parts = []
+        query_params: dict[str, Any] = {}
         if artist_type:
             query_parts.append(f"artist_type = '{artist_type}'")
         if favorite_only:
@@ -124,9 +134,13 @@ class ArtistsController(MediaControllerBase[Artist]):
                 f"item_id in (select {DB_TABLE_ALBUM_ARTISTS}.artist_id "
                 f"FROM {DB_TABLE_ALBUM_ARTISTS})"
             )
+        if provider_filter := self._ensure_provider_filter(None):
+            query_parts.append(
+                self._provider_filter_clause(query_params, provider_filter, in_library_only=True)
+            )
         if query_parts:
             sql_query += f" WHERE {' AND '.join(query_parts)}"
-        return await self.mass.music.database.get_count_from_query(sql_query)
+        return await self.mass.music.database.get_count_from_query(sql_query, query_params)
 
     async def library_items(  # noqa: PLR0913
         self,

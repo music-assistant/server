@@ -10,6 +10,11 @@ from music_assistant.models.setup_flow import SetupFlowError
 # smuggle along in the OAuth `state` parameter.
 HOSTED_CALLBACK_URL = "https://music-assistant.io/callback"
 
+# Deadline for the browser part of an OAuth flow. Bounded so the client shows a
+# countdown and a consent that never comes back (window closed, callback blocked)
+# ends the flow instead of leaving the user with a spinner.
+OAUTH_STEP_TIMEOUT = 10 * 60
+
 
 def hosted_bounce_redirect(callback_url: str) -> tuple[str, str]:
     """
@@ -30,7 +35,7 @@ def authorization_code_from_params(params: dict[str, str]) -> str:
     :param params: The merged callback query/body params returned by session.external().
     """
     code = params.get("code")
-    # the hosted relay page forwards a literal "null" code when consent was denied
+    # an older (cached) hosted relay page forwards a literal "null" code on denied consent
     if not code or code == "null":
         error = params.get("error") or "no authorization code returned"
         raise SetupFlowError(f"Authorization failed: {error}")

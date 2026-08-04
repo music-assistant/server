@@ -43,7 +43,7 @@ jobs:
       - name: ⤵️ Check out the base branch
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.ref }}
           persist-credentials: false
 
       - name: 📝 Check the title and description
@@ -107,7 +107,19 @@ jobs:
             const sticky = comments.find(c =>
               c.body?.includes(marker) && c.user?.login === process.env.EXPECTED_APP_BOT_LOGIN);
 
-            const report = fs.readFileSync('report.md', 'utf8').trim();
+            const report = fs.existsSync('report.md')
+              ? fs.readFileSync('report.md', 'utf8').trim()
+              : '';
+
+            // A failure with nothing to report means the check step itself broke rather than
+            // finding problems with the pull request. "@author" and no message tells the author
+            // nothing and reads as a stray ping, so say nothing here and let the job failure
+            // carry it to whoever maintains the workflow.
+            if (failed && !report) {
+              core.setFailed('The check step produced no report; not commenting.');
+              return;
+            }
+
             const body = failed
               ? `${marker}\n@${author} ${report}`
               : `${marker}\n✅ The title and description are good to go. Thanks!`;

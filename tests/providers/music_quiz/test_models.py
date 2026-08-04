@@ -124,6 +124,7 @@ def test_round_answer_state_round_trips_with_discriminator() -> None:
         "image_url": "https://example.test/artwork.jpg",
         "duration": 180.0,
         "started_at": 10.0,
+        "audio_started_at": None,
         "ended_at": 12.0,
         "auto_advance_at": 42.0,
     }

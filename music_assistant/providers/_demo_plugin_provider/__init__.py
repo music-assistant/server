@@ -215,10 +215,11 @@ class MyDemoPluginprovider(PluginProvider):
             )
         ]
 
-    async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
-        """Return StreamDetails for streaming the given AudioSource to a queue."""
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+        """Return StreamDetails for streaming an item owned by this plugin."""
         # OPTIONAL
-        # Will only be called if ProviderFeature.AUDIO_SOURCE is declared.
+        # Called for any playable item this plugin exposes; media_type tells you
+        # which kind. This demo only has an AudioSource.
         #
         # MUST be side-effect-free — no exclusivity claim, no busy raise.
         # MA calls this from both the streaming path AND from queue preload, so
@@ -244,11 +245,11 @@ class MyDemoPluginprovider(PluginProvider):
         #   shairport-sync and librespot do this in passthrough mode). If
         #   the producer actually stops writing, ffmpeg will block and the
         #   player will eventually disconnect.
-        if source_id != AUDIO_SOURCE_ID:
-            raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
+        if item_id != AUDIO_SOURCE_ID:
+            raise MediaNotFoundError(f"Unknown AudioSource: {item_id}")
         return StreamDetails(
             provider=self.instance_id,
-            item_id=source_id,
+            item_id=item_id,
             audio_format=AudioFormat(
                 content_type=ContentType.PCM_S16LE,
                 sample_rate=44100,

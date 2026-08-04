@@ -16,7 +16,11 @@ from aiohttp import ClientError
 from google_drive_api.auth import AbstractAuth
 from music_assistant_models.errors import LoginFailed, ProviderUnavailableError
 
-from music_assistant.helpers.oauth import authorization_code_from_params, hosted_bounce_redirect
+from music_assistant.helpers.oauth import (
+    OAUTH_STEP_TIMEOUT,
+    authorization_code_from_params,
+    hosted_bounce_redirect,
+)
 from music_assistant.models.setup_flow import SetupFlowError
 
 from .constants import OAUTH_AUTHORIZE_URL, OAUTH_SCOPE, OAUTH_TOKEN_URL
@@ -48,7 +52,9 @@ async def authorize(session: SetupSession, client_id: str, client_secret: str) -
         "prompt": "consent",
     }
     result = await session.external(
-        f"{OAUTH_AUTHORIZE_URL}?{urlencode(params)}", step_id="authenticate"
+        f"{OAUTH_AUTHORIZE_URL}?{urlencode(params)}",
+        step_id="authenticate",
+        expires_in=OAUTH_STEP_TIMEOUT,
     )
     code = authorization_code_from_params(result)
     data = {

@@ -22,7 +22,6 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_authenticated_user,
     is_request_from_ingress,
 )
-from music_assistant.helpers.util import format_ip_for_url
 
 if TYPE_CHECKING:
     from music_assistant_models.auth import User
@@ -44,21 +43,6 @@ class SendspinProxyHandler:
         self.webserver = webserver
         self.mass = webserver.mass
         self.logger = LOGGER
-
-    @property
-    def internal_sendspin_url(self) -> str:
-        """Return the internal sendspin URL for connecting to the internal Sendspin server."""
-        # Connect via localhost since the proxy and Sendspin server run in the same process
-        # If the server binds to 0.0.0.0 (all interfaces), use localhost for efficiency
-        # Otherwise use the actual bind IP in case it's configured to a specific interface
-        bind_ip = self.mass.streams.bind_ip
-        if bind_ip == "0.0.0.0":
-            # Use IPv6 loopback if publish_ip is IPv6 (indicates IPv6-only host)
-            publish_ip = str(self.mass.streams.publish_ip)
-            connect_ip = "::1" if ":" in publish_ip else "127.0.0.1"
-        else:
-            connect_ip = bind_ip
-        return f"ws://{format_ip_for_url(connect_ip)}:8927/sendspin"
 
     async def handle_sendspin_proxy(self, request: web.Request) -> web.WebSocketResponse:
         """
@@ -110,7 +94,7 @@ class SendspinProxyHandler:
             for attempt in range(5):
                 try:
                     internal_ws = await self.mass.http_session.ws_connect(
-                        self.internal_sendspin_url
+                        self.webserver.internal_sendspin_url
                     )
                     break
                 except ClientConnectorError:

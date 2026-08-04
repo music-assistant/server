@@ -2935,7 +2935,7 @@ class TestPrefetchFlowsThroughToStreamDetails:
         assert provider._normalized_params["bit_depth"] == 24
         # And get_stream_details now reflects that — MA's
         # `_select_audio_source_pcm_format` consumes this.
-        sd = await provider.get_stream_details("main", "queue1")
+        sd = await provider.get_stream_details("main", MediaType.AUDIO_SOURCE)
         assert sd.media_type == MediaType.AUDIO_SOURCE
         assert sd.audio_format.sample_rate == 96_000
         assert sd.audio_format.bit_depth == 24
@@ -2954,8 +2954,8 @@ class TestPrefetchFlowsThroughToStreamDetails:
         from music_assistant_models.enums import MediaType  # noqa: PLC0415
 
         provider = _make_provider()
-        sd1 = await provider.get_stream_details("main", "queue1")
-        sd2 = await provider.get_stream_details("main", "queue1")
+        sd1 = await provider.get_stream_details("main", MediaType.AUDIO_SOURCE)
+        sd2 = await provider.get_stream_details("main", MediaType.AUDIO_SOURCE)
 
         assert sd1.media_type == MediaType.AUDIO_SOURCE
         assert sd1.audio_format == sd2.audio_format  # value-equal

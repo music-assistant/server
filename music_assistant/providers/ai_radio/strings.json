@@ -12,5 +12,19 @@
       "label": "Weather Country",
       "description": "Country used to look up the weather forecast for stations that reference it."
     }
+  },
+  "setup_flow": {
+    "user": {
+      "title": "Choose the AI Radio engines",
+      "description": "Pick the AI engine that writes the moderator sections and the text-to-speech engine that voices them."
+    },
+    "abort": {
+      "no_ai_engine": "AI Radio needs an AI engine. Set up a plugin that provides AI first, for example the Home Assistant plugin with an AI task entity.",
+      "no_tts_engine": "AI Radio needs a text-to-speech engine. Set up a plugin that provides text-to-speech first, for example the Home Assistant plugin with a TTS entity."
+    }
+  },
+  "errors": {
+    "ai_radio_no_ai_engine": "AI Radio cannot start because no AI engine is available. Set up a plugin that provides AI, for example the Home Assistant plugin with an AI task entity.",
+    "ai_radio_no_tts_engine": "AI Radio cannot start because no text-to-speech engine is available. Set up a plugin that provides text-to-speech, for example the Home Assistant plugin with a TTS entity."
   }
 }

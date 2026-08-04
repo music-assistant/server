@@ -229,8 +229,10 @@ class DiagnosticsController(CoreController):
     async def _census_library(self) -> dict[str, int]:
         """Return the library item counts per media type."""
         music = self.mass.music
+        # raw table sizes: a support report needs true totals, not the filtered
+        # subset visible to the (admin) user who requested it
         return {
-            name: await controller.library_count()
+            name: await music.database.get_count(controller.db_table)
             for name, controller in (
                 ("albums", music.albums),
                 ("artists", music.artists),

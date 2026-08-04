@@ -221,6 +221,128 @@ async def test_user_scoped_task_visibility(tasks_controller: TasksController) ->
         set_current_user(None)
 
 
+def _register_blocking_task(
+    tasks_controller: TasksController,
+    task_id: str,
+    handler: Callable[[], Awaitable[None]],
+) -> None:
+    """Register and immediately queue a scheduled task with the given handler."""
+    tasks_controller.register_scheduled_task(
+        task_id=task_id,
+        name="Test sync",
+        handler=handler,
+        schedule=TaskSchedule.hourly(every=12),
+    )
+    tasks_controller.run_task(task_id)
+
+
+async def test_unregister_scheduled_task_and_wait_waits_for_running_task(
+    tasks_controller: TasksController,
+) -> None:
+    """Unregistering with a wait should only return once the cancelled task unwound."""
+    started = asyncio.Event()
+    cleanup_finished = False
+
+    async def handler() -> None:
+        nonlocal cleanup_finished
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        finally:
+            # cleanup that yields to the event loop, like a sync closing its resources
+            await asyncio.sleep(0.05)
+            cleanup_finished = True
+
+    _register_blocking_task(tasks_controller, "test_sync_task", handler)
+    await asyncio.wait_for(started.wait(), timeout=2)
+
+    assert await tasks_controller.unregister_scheduled_task_and_wait("test_sync_task") is True
+    assert cleanup_finished is True
+    assert "test_sync_task" not in tasks_controller._tasks
+
+
+async def test_unregister_scheduled_task_and_wait_gives_up_after_timeout(
+    tasks_controller: TasksController,
+) -> None:
+    """A task that ignores cancellation must not block the caller indefinitely."""
+    started = asyncio.Event()
+    unwound = asyncio.Event()
+
+    async def handler() -> None:
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            # cleanup that outlives the caller's patience
+            await asyncio.sleep(0.3)
+            unwound.set()
+            raise
+
+    _register_blocking_task(tasks_controller, "test_sync_task", handler)
+    await asyncio.wait_for(started.wait(), timeout=2)
+
+    unregistered = await tasks_controller.unregister_scheduled_task_and_wait(
+        "test_sync_task", timeout=0.05
+    )
+
+    assert unregistered is False
+    assert not unwound.is_set()
+    # the task still finishes (and cleans itself up) on its own
+    await asyncio.wait_for(unwound.wait(), timeout=2)
+    await asyncio.sleep(0)
+    assert "test_sync_task" not in tasks_controller._tasks
+
+
+async def test_unregister_scheduled_task_and_wait_from_within_the_task(
+    tasks_controller: TasksController,
+) -> None:
+    """A task that unregisters itself must not wait for itself."""
+    unregistered: bool | None = None
+    returned = asyncio.Event()
+
+    async def handler() -> None:
+        nonlocal unregistered
+        # yield once so the managed task is fully registered before it cancels itself
+        await asyncio.sleep(0)
+        unregistered = await tasks_controller.unregister_scheduled_task_and_wait("test_sync_task")
+        returned.set()
+        await asyncio.sleep(30)
+
+    _register_blocking_task(tasks_controller, "test_sync_task", handler)
+
+    await asyncio.wait_for(returned.wait(), timeout=2)
+    assert unregistered is True
+
+
+async def test_unschedule_provider_sync_waits_for_running_sync(
+    mass_minimal: MusicAssistant,
+    tasks_controller: TasksController,
+) -> None:
+    """Unscheduling a provider sync should wait for an in-flight sync of that provider."""
+    music = MusicController(mass_minimal)
+    mass_minimal.music = music
+    task_id = music._get_sync_task_id("test_provider--instance", MediaType.TRACK)
+    started = asyncio.Event()
+    cleanup_finished = False
+
+    async def handler() -> None:
+        nonlocal cleanup_finished
+        started.set()
+        try:
+            await asyncio.sleep(30)
+        finally:
+            await asyncio.sleep(0.05)
+            cleanup_finished = True
+
+    _register_blocking_task(tasks_controller, task_id, handler)
+    await asyncio.wait_for(started.wait(), timeout=2)
+
+    await music.unschedule_provider_sync("test_provider--instance")
+
+    assert cleanup_finished is True
+    assert task_id not in tasks_controller._tasks
+
+
 async def test_scheduled_task_state_is_restored(mass_minimal: MusicAssistant) -> None:
     """Scheduled tasks should restore their edited schedule and persisted runtime state."""
     controller = TasksController(mass_minimal)
@@ -412,6 +534,52 @@ async def test_schedule_provider_sync_registers_scheduled_background_tasks(
 
     with pytest.raises(InvalidDataError):
         tasks_controller.get_task(music._get_sync_task_id(provider, MediaType.TRACK))
+
+
+async def test_on_provider_unload_keeps_persisted_sync_state(
+    mass_minimal: MusicAssistant,
+    tasks_controller: TasksController,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Whether persisted sync state survives is decided by unload_provider, not by the hook."""
+    music = MusicController(mass_minimal)
+    mass_minimal.music = music
+
+    provider_config = ProviderConfig(
+        values={},
+        type=ProviderType.MUSIC,
+        domain="test_provider",
+        instance_id="test_provider--instance",
+        name="Test provider",
+    )
+    monkeypatch.setattr(provider_config, "get_value", lambda *_args, **_kwargs: "GLOBAL")
+    provider = DummyMusicProvider(
+        mass_minimal,
+        manifest=ProviderManifest(
+            type=ProviderType.MUSIC,
+            domain="test_provider",
+            name="Test provider",
+            description="Test provider",
+            codeowners=["@music-assistant"],
+        ),
+        config=provider_config,
+    )
+
+    async def handler() -> None:
+        """No-op sync handler for a task that is never run."""
+
+    task_id = music._get_sync_task_id(provider, MediaType.TRACK)
+    tasks_controller.register_scheduled_task(
+        task_id=task_id,
+        name="Sync tracks",
+        handler=handler,
+        schedule=TaskSchedule.hourly(every=12),
+    )
+    assert task_id in tasks_controller._get_persisted_task_states()
+
+    await music.on_provider_unload(provider)
+
+    assert task_id in tasks_controller._get_persisted_task_states()
 
 
 async def test_core_maintenance_tasks_register_nightly_schedules(

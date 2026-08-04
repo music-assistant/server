@@ -35,7 +35,11 @@ from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
 from music_assistant.constants import CONF_ENTRY_WARN_PREVIEW
 from music_assistant.helpers.process import AsyncProcess
-from music_assistant.helpers.util import interface_name_for_ip, select_free_port
+from music_assistant.helpers.util import (
+    interface_name_for_ip,
+    is_port_in_use,
+    select_free_port,
+)
 from music_assistant.models.plugin import PluginProvider
 
 from .client import GoLibrespotClient
@@ -232,7 +236,7 @@ class SpotifyConnectProvider(PluginProvider):
         """Return the AudioSources this plugin currently exposes."""
         return [self._audio_source]
 
-    async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
         Return StreamDetails for streaming the Spotify Connect audio.
 
@@ -246,8 +250,8 @@ class SpotifyConnectProvider(PluginProvider):
         playback can only be acquired while a Spotify session is connected to us
         (entry must come from the Spotify app — see can_initiate below).
         """
-        if source_id != AUDIO_SOURCE_ID:
-            raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
+        if item_id != AUDIO_SOURCE_ID:
+            raise MediaNotFoundError(f"Unknown AudioSource: {item_id}")
         # Only refuse when we can neither resume nor take playback back. If a last
         # context is known we let the stream proceed; on_source_selected then takes
         # playback back (makes us the active device) before audio is pulled.
@@ -265,7 +269,7 @@ class SpotifyConnectProvider(PluginProvider):
         # check above re-runs on every play attempt.
         return StreamDetails(
             provider=self.instance_id,
-            item_id=source_id,
+            item_id=item_id,
             audio_format=self._audio_format,
             decoded_audio_format=self._decoded_audio_format,
             media_type=MediaType.AUDIO_SOURCE,
@@ -611,7 +615,7 @@ class SpotifyConnectProvider(PluginProvider):
         except Exception as err:
             self.logger.debug("Failed to persist player ID: %s", err)
 
-    def _write_config(self) -> None:
+    def _write_config(self, source_ip: str | None) -> None:
         """
         Write the go-librespot ``config.yml`` for this instance.
 
@@ -619,14 +623,19 @@ class SpotifyConnectProvider(PluginProvider):
         sidestep an extra dependency and any string-quoting pitfalls (the device
         name is user-provided). The config dir doubles as the credential/device
         cache so the Spotify Connect device stays paired across restarts.
+
+        :param source_ip: Local address of the player-facing interface, or None to
+            advertise the Spotify Connect device on all interfaces.
         """
         os.makedirs(self.cache_dir, exist_ok=True)
         initial_volume = 50
         if self._default_player_id != PLAYER_ID_AUTO:
+            # the resolved logical (0-100) volume matches the Spotify volume scale;
+            # clamp it as it can be out of range until volume limit enforcement runs
             if (player := self.mass.players.get_player(self._default_player_id)) and (
-                player.volume_level is not None
+                player.state.volume_level is not None
             ):
-                initial_volume = player.volume_level
+                initial_volume = max(0, min(100, player.state.volume_level))
         config: dict[str, Any] = {
             "device_name": self._publish_name,
             "device_type": "speaker",
@@ -652,14 +661,13 @@ class SpotifyConnectProvider(PluginProvider):
         # Advertise the Spotify Connect device only on the interface the streams
         # server binds to, so it lands on the right network on multi-homed hosts.
         # go-librespot selects advertise interfaces by name, so map the IP to one.
-        bind_ip = self.mass.streams.bind_ip
-        if bind_ip and bind_ip != "0.0.0.0":
-            if iface_name := interface_name_for_ip(bind_ip):
+        if source_ip:
+            if iface_name := interface_name_for_ip(source_ip):
                 config["zeroconf_interfaces_to_advertise"] = [iface_name]
             else:
                 self.logger.debug(
                     "No interface found for stream bind IP %s; advertising on all interfaces",
-                    bind_ip,
+                    source_ip,
                 )
         config_file = os.path.join(self.cache_dir, "config.yml")
         with open(config_file, "w", encoding="utf-8") as fileobj:
@@ -668,10 +676,21 @@ class SpotifyConnectProvider(PluginProvider):
     async def _daemon_runner(self) -> None:
         """Run and supervise the go-librespot daemon, restarting it if it exits."""
         assert self._binary
+        assert self._client
         # Loop forever; unload() cancels this task and the explicit stop-check below
         # handles a graceful exit without a restart.
         while True:
-            self._write_config()
+            # If the API port was taken while the daemon was down, move to a
+            # fresh port instead of crash-looping on a bind error.
+            if await is_port_in_use(self._api_port, host="127.0.0.1"):
+                self._api_port = await select_free_port(
+                    API_PORT_RANGE_START, API_PORT_RANGE_END, host="127.0.0.1"
+                )
+                self._client.base_url = f"http://127.0.0.1:{self._api_port}"
+                self.logger.warning(
+                    "API port in use by another process; switching to port %s", self._api_port
+                )
+            self._write_config(await self.mass.streams.get_source_ip())
             proc: AsyncProcess | None = None
             try:
                 # stdout carries the decoded PCM (audio_output_pipe=/dev/stdout) and

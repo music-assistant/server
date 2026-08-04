@@ -664,7 +664,7 @@ class ChromecastPlayer(Player):
             "contentType": f"audio/{file_ext}",
             "streamType": stream_type,
             "metadata": metadata,
-            "duration": media.duration,
+            "duration": media.stream_duration or media.duration,
         }
 
     def _flow_stream_underrun(self) -> bool:

@@ -1,11 +1,14 @@
 """Tests for the discovery core controller."""
 
+import logging
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from zeroconf import IPVersion
 from zeroconf.asyncio import AsyncZeroconf
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 from music_assistant.mass import MusicAssistant
 
 
@@ -21,6 +24,36 @@ class StubUpnpProvider:
         self.manifest = MagicMock(mdns_discovery=None, upnp_discovery=["roku:ecp"])
         self.on_mdns_service_state_change = AsyncMock()
         self.on_upnp_service_discovered = AsyncMock()
+
+
+@pytest.mark.parametrize(
+    ("controller_level", "library_level"),
+    [
+        (VERBOSE_LOG_LEVEL, logging.DEBUG),
+        (logging.DEBUG, logging.INFO),
+        (logging.INFO, logging.WARNING),
+    ],
+)
+def test_discovery_library_logger_levels(
+    mass_minimal: MusicAssistant, controller_level: int, library_level: int
+) -> None:
+    """Discovery library loggers should only expose debug output at VERBOSE."""
+    controller_logger = mass_minimal.discovery.logger
+    library_loggers = [
+        logging.getLogger("async_upnp_client"),
+        logging.getLogger("zeroconf"),
+    ]
+    previous_controller_level = controller_logger.level
+    previous_library_levels = [logger.level for logger in library_loggers]
+    try:
+        controller_logger.setLevel(controller_level)
+        mass_minimal.discovery._configure_library_loggers()
+
+        assert all(logger.level == library_level for logger in library_loggers)
+    finally:
+        controller_logger.setLevel(previous_controller_level)
+        for logger, previous_level in zip(library_loggers, previous_library_levels, strict=True):
+            logger.setLevel(previous_level)
 
 
 async def test_run_provider_discovery_dispatches_upnp_callbacks(mass: MusicAssistant) -> None:
