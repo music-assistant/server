@@ -6,6 +6,7 @@ from collections.abc import Callable, Coroutine, Mapping
 from typing import TYPE_CHECKING, Any, Final
 
 from aiohttp import web
+from yarl import URL
 
 from music_assistant.constants import WILDCARD_BIND_IPS
 
@@ -77,7 +78,9 @@ class Webserver:
         Async initialize of module.
 
         :param bind_ip: IP address to bind to.
-        :param bind_port: Port to bind to.
+        :param bind_port: Port to bind to, or 0 to let the OS assign a free one, which
+            requires a specific ``bind_ip``. The assigned port is available as the
+            ``port`` property and replaces the port in ``base_url``.
         :param base_url: Base URL for the server.
         :param static_routes: List of static routes to register.
         :param static_content: Tuple of (path, directory, name) for static content.
@@ -115,6 +118,11 @@ class Webserver:
         await self._apprunner.setup()
         # set host to None to bind to all addresses on both IPv4 and IPv6
         host = None if bind_ip in WILDCARD_BIND_IPS else bind_ip
+        if bind_port == 0 and host is None:
+            # a wildcard bind gets one socket per address family, each with its own
+            # OS-assigned port, so there is no single port to publish
+            msg = "An OS-assigned port requires a specific bind address"
+            raise ValueError(msg)
         try:
             self._tcp_site = web.TCPSite(
                 self._apprunner, host=host, port=bind_port, ssl_context=ssl_context
@@ -122,6 +130,9 @@ class Webserver:
             await self._tcp_site.start()
         except OSError:
             if host is None:
+                raise
+            if bind_port == 0:
+                # binding all interfaces is no fallback for an OS-assigned port
                 raise
             # the configured interface is not available, retry on all interfaces
             self.logger.error(
@@ -131,6 +142,10 @@ class Webserver:
                 self._apprunner, host=None, port=bind_port, ssl_context=ssl_context
             )
             await self._tcp_site.start()
+        # port 0 asks the OS for a free port, which it only picks at bind time
+        if bind_port == 0:
+            self._bind_port = self._apprunner.addresses[0][1]
+            self._base_url = str(URL(self._base_url).with_port(self._bind_port))
         # start additional ingress TCP site if configured
         # this is only used if we're running in the context of an HA add-on
         # which proxies our frontend and api through ingress
