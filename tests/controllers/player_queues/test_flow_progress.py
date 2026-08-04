@@ -38,8 +38,10 @@ def _flow_progress(
         (index for index, item in enumerate(items) if item.queue_item_id == item_id),
         None,
     )
-    tracker.get_item.side_effect = lambda _queue_id, index: (
-        items[index] if isinstance(index, int) else None
+    tracker.get_item.side_effect = lambda _queue_id, id_or_index: (
+        items[id_or_index]
+        if isinstance(id_or_index, int)
+        else next((item for item in items if item.queue_item_id == id_or_index), None)
     )
     player = SimpleNamespace(
         state=SimpleNamespace(
