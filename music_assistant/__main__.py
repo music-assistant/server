@@ -282,8 +282,10 @@ def main() -> None:
             with suppress(NotImplementedError):
                 loop.add_signal_handler(sig, _set_stop)
 
-        await mass.start()
         try:
+            # a startup that fails part-way must be cleaned up too, or the databases it
+            # already opened keep their worker threads alive and the process never exits
+            await mass.start()
             await stop_event.wait()
         finally:
             logger.info("shutdown requested!")

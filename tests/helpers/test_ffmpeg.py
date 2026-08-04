@@ -11,7 +11,7 @@ import pytest
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.helpers.dsp import ComplexFilter
+from music_assistant.helpers.dsp import ComplexFilter, ComplexFilterInput
 from music_assistant.helpers.ffmpeg import (
     FFMpeg,
     FFMpegStreamInfo,
@@ -555,26 +555,31 @@ async def test_abort_survives_send_signal_racing_process_exit() -> None:
 
 def test_build_filtergraph_all_simple_uses_af() -> None:
     """A chain of plain filters renders to a single -af comma chain."""
-    assert _build_filtergraph_args(["equalizer=x", "volume=3dB"]) == [
-        "-af",
-        "equalizer=x,volume=3dB",
-    ]
+    assert _build_filtergraph_args(["equalizer=x", "volume=3dB"]) == (
+        [],
+        ["-af", "equalizer=x,volume=3dB"],
+    )
 
 
 def test_build_filtergraph_empty_returns_no_args() -> None:
     """An empty chain produces no ffmpeg arguments."""
-    assert _build_filtergraph_args([]) == []
+    assert _build_filtergraph_args([]) == ([], [])
 
 
 def test_build_filtergraph_single_complex_fragment() -> None:
     """A complex fragment renders a labelled -filter_complex graph with -map."""
-    result = _build_filtergraph_args([ComplexFilter("afir=gtype=gn", ["amovie='/ir.wav'"])])
-    assert result == [
-        "-filter_complex",
-        "amovie='/ir.wav'[dsp1];[0:a][dsp1]afir=gtype=gn[dsp2]",
-        "-map",
-        "[dsp2]",
-    ]
+    result = _build_filtergraph_args(
+        [ComplexFilter("afir=irnorm=1", [ComplexFilterInput("/ir.wav", "aresample=48000")])]
+    )
+    assert result == (
+        ["-i", "/ir.wav"],
+        [
+            "-filter_complex",
+            "[1:a]aresample=48000[dsp1];[0:a][dsp1]afir=irnorm=1[dsp2]",
+            "-map",
+            "[dsp2]",
+        ],
+    )
 
 
 def test_build_filtergraph_complex_between_simple_runs() -> None:
@@ -582,28 +587,31 @@ def test_build_filtergraph_complex_between_simple_runs() -> None:
     result = _build_filtergraph_args(
         [
             "equalizer=x",
-            ComplexFilter("afir=gtype=gn", ["amovie='/ir.wav'"]),
+            ComplexFilter("afir=irnorm=1", [ComplexFilterInput("/ir.wav", "aresample=48000")]),
             "volume=2dB",
         ]
     )
-    assert result == [
-        "-filter_complex",
-        "[0:a]equalizer=x[dsp1];amovie='/ir.wav'[dsp2];"
-        "[dsp1][dsp2]afir=gtype=gn[dsp3];[dsp3]volume=2dB[dsp4]",
-        "-map",
-        "[dsp4]",
-    ]
+    assert result == (
+        ["-i", "/ir.wav"],
+        [
+            "-filter_complex",
+            "[0:a]equalizer=x[dsp1];[1:a]aresample=48000[dsp2];"
+            "[dsp1][dsp2]afir=irnorm=1[dsp3];[dsp3]volume=2dB[dsp4]",
+            "-map",
+            "[dsp4]",
+        ],
+    )
 
 
-def test_build_filtergraph_multiple_sources() -> None:
-    """A fragment with several sources feeds them to the body after the main pad."""
-    result = _build_filtergraph_args([ComplexFilter("amerge", ["amovie=a", "amovie=b"])])
-    assert result == [
-        "-filter_complex",
-        "amovie=a[dsp1];amovie=b[dsp2];[0:a][dsp1][dsp2]amerge[dsp3]",
-        "-map",
-        "[dsp3]",
-    ]
+def test_build_filtergraph_multiple_inputs() -> None:
+    """A fragment with several inputs numbers them in order and feeds them to the body."""
+    result = _build_filtergraph_args(
+        [ComplexFilter("amerge", [ComplexFilterInput("/a.wav"), ComplexFilterInput("/b.wav")])]
+    )
+    assert result == (
+        ["-i", "/a.wav", "-i", "/b.wav"],
+        ["-filter_complex", "[0:a][1:a][2:a]amerge[dsp1]", "-map", "[dsp1]"],
+    )
 
 
 def test_get_ffmpeg_args_uses_af_without_complex_filter() -> None:
@@ -621,10 +629,15 @@ def test_get_ffmpeg_args_uses_filter_complex_with_complex_filter() -> None:
     fmt = AudioFormat(
         content_type=ContentType.PCM_S16LE, sample_rate=48000, bit_depth=16, channels=2
     )
-    args = get_ffmpeg_args(fmt, fmt, [ComplexFilter("afir=gtype=gn", ["amovie='/ir.wav'"])])
+    args = get_ffmpeg_args(
+        fmt, fmt, [ComplexFilter("afir=irnorm=1", [ComplexFilterInput("/ir.wav")])]
+    )
     assert "-filter_complex" in args
     assert "-map" in args
     assert "-af" not in args
+    # the impulse response is a real input, so it never passes through graph quoting
+    assert args.count("-i") == 2
+    assert args.index("/ir.wav") > args.index("-i")
 
 
 def _wav_rms_db(path: Path) -> float:
@@ -686,9 +699,22 @@ def test_filtergraph_complex_runs_in_ffmpeg(tmp_path: Path) -> None:
         check=True,
         capture_output=True,
     )
-    args = _build_filtergraph_args([ComplexFilter("afir=gtype=gn", [f"amovie='{ir}'"])])
+    input_args, filter_args = _build_filtergraph_args(
+        [ComplexFilter("afir=irnorm=1", [ComplexFilterInput(str(ir), "aresample=48000")])]
+    )
     result = subprocess.run(  # noqa: S603
-        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(main), *args, str(out)],  # noqa: S607
+        [  # noqa: S607
+            "ffmpeg",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-i",
+            str(main),
+            *input_args,
+            *filter_args,
+            str(out),
+        ],
         capture_output=True,
         text=True,
         check=False,

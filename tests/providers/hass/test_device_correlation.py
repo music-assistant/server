@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from types import SimpleNamespace
 from typing import Any
@@ -20,11 +21,25 @@ def _provider(
     entities: list[dict[str, Any]],
     states: list[dict[str, Any]],
 ) -> HomeAssistantProvider:
+    async def _send_command(command: str, **_kwargs: Any) -> dict[str, Any]:
+        assert command == "config/entity_registry/list_for_display"
+        # Home Assistant leaves disabled entities out of the registry listing
+        return {
+            "entity_categories": {},
+            "entities": [
+                {"ei": entity["entity_id"], "pl": entity["platform"], "di": entity["device_id"]}
+                for entity in entities
+                if entity["disabled_by"] is None
+            ],
+        }
+
     provider = HomeAssistantProvider.__new__(HomeAssistantProvider)
     provider.hass = SimpleNamespace(
         get_device_registry=AsyncMock(return_value=devices),
-        get_entity_registry=AsyncMock(return_value=entities),
+        send_command=AsyncMock(side_effect=_send_command),
     )
+    provider._entity_registry = None
+    provider._entity_registry_lock = asyncio.Lock()
     provider.get_states = AsyncMock(return_value=states)  # type: ignore[method-assign]
     provider.logger = logging.getLogger("test.hass")
     return provider

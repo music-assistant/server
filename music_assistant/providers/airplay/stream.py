@@ -30,6 +30,7 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_CONTENT_CUT_TOLERANCE_MS,
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
     AIRPLAY_PCM_FORMAT,
+    AIRPLAY_START_ACK_TIMEOUT_MS,
     CLI_PROBLEM_MARKERS,
     CONF_AIRPLAY_CREDENTIALS,
     CONF_ENCRYPTION,
@@ -97,7 +98,6 @@ class AirPlayStream:
         self.mass = player.provider.mass
         self.player = player
         self.pcm_format = pcm_format or AIRPLAY_PCM_FORMAT
-        self.logger = player.provider.logger.getChild("stream")
         mac_address = self.player.device_info.mac_address or self.player.player_id
         self.active_remote_id: str = generate_active_remote_id(mac_address)
         self._stream_id = uuid4().hex
@@ -516,7 +516,9 @@ class AirPlayStream:
         # failure answers the wait immediately; no ack within the timeout means
         # an older binary, so fall back to trusting the commanded instant
         # (legacy clamp semantics).
-        ack_timeout = AIRPLAY_JOIN_START_ACK_TIMEOUT_MS / 1000 if join else 2.0
+        ack_timeout = (
+            AIRPLAY_JOIN_START_ACK_TIMEOUT_MS if join else AIRPLAY_START_ACK_TIMEOUT_MS
+        ) / 1000
         try:
             await asyncio.wait_for(self._started.wait(), ack_timeout)
         except TimeoutError:
@@ -889,7 +891,9 @@ class AirPlayStream:
                     self._parse_capabilities_status(line)
                 elif line.startswith("[EVENT] remote command="):
                     self._parse_remote_event(line)
-                self.player.logger.log(VERBOSE_LOG_LEVEL, line)
+                self.player.logger.log(
+                    VERBOSE_LOG_LEVEL, "cliairplay for %s: %s", self.player.display_name, line
+                )
 
     def _parse_remote_event(self, line: str) -> None:
         """Dispatch a normalized remote command reported by cliairplay."""
@@ -1075,13 +1079,17 @@ class AirPlayStream:
             # Routine binary output is verbose-only so it never floods a user's log, but
             # its own diagnostics (a failed socket bind, a missing receiver clock) are the
             # first thing needed when triaging silent playback, so those stay visible.
-            if any(marker in line.lower() for marker in CLI_PROBLEM_MARKERS):
-                logger.warning("cliairplay for %s: %s", player.display_name, line)
-            else:
-                logger.log(VERBOSE_LOG_LEVEL, line)
+            # Every line names its speaker: the provider logger is shared, so the output
+            # of several concurrent streams is otherwise impossible to tell apart.
+            level = (
+                logging.WARNING
+                if any(marker in line.lower() for marker in CLI_PROBLEM_MARKERS)
+                else VERBOSE_LOG_LEVEL
+            )
+            logger.log(level, "cliairplay for %s: %s", player.display_name, line)
             await asyncio.sleep(0)
 
-        logger.debug("cliairplay stderr reader ended")
+        logger.debug("cliairplay stderr reader ended for %s", player.display_name)
         self._process_ended.set()
         if not self._stopped and not self._stopping:
             self._stopped = True

@@ -280,6 +280,46 @@ class MusicbrainzProvider(MetadataProvider):
             return recording.isrcs or []
         return []
 
+    async def get_recordings_by_isrc(self, isrc: str) -> list[MusicBrainzRecording]:
+        """
+        Get the recordings MusicBrainz has on file for an ISRC.
+
+        Inverse of :meth:`get_isrcs_for_recording`: that one goes from a
+        recording to its ISRCs, this one goes from an ISRC back to recordings.
+
+        :param isrc: ISRC of the recording, with or without separators.
+        :return: Recordings tagged with this ISRC, or empty list if not found.
+        """
+        safe_isrc = isrc.replace("-", "").strip()
+        if not safe_isrc.isalnum():
+            return []
+        # the isrc resource rejects inc= parameters and already carries the release dates
+        result = await self._api_client.get_data(f"isrc/{safe_isrc}")
+        if not result or not (recordings := result.get("recordings")):
+            return []
+        parsed: list[MusicBrainzRecording] = []
+        for recording in recordings:
+            # a single malformed entry should not sink the recordings we did parse
+            with suppress(MissingField):
+                parsed.append(MusicBrainzRecording.from_raw(recording))
+        return parsed
+
+    async def get_release_year_by_isrc(self, isrc: str) -> int | None:
+        """
+        Get the year a recording was first released, by ISRC.
+
+        :param isrc: ISRC of the recording, with or without separators.
+        :return: The earliest known release year, or None if MusicBrainz does not know it.
+        """
+        recordings = await self.get_recordings_by_isrc(isrc)
+        # one ISRC can cover several recordings, the oldest one dates the song
+        years: list[int] = []
+        for recording in recordings:
+            release_date = recording.first_release_date or ""
+            if (year := release_date[:4]).isdigit():
+                years.append(int(year))
+        return min(years, default=None)
+
     async def get_release_details(self, album_id: str) -> MusicBrainzRelease:
         """Get Release/Album details by providing a MusicBrainz Album id."""
         endpoint = f"release/{album_id}?inc=artist-credits+aliases+labels"

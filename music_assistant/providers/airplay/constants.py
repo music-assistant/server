@@ -51,7 +51,6 @@ class ClockReadiness(StrEnum):
     UNREPORTED = "unreported"
 
 
-CONF_VOLUME_START: Final[str] = "volume_start"
 CONF_PASSWORD: Final[str] = "password"
 # Storage-only marker (no config entry) set when the device rejected the stored
 # password, so the player keeps asking for setup across restarts until a working
@@ -106,6 +105,11 @@ AIRPLAY_CLOCK_READY_TIMEOUT_MS: Final[int] = 2500
 # for the command reaching the binary and for the convergence error of a
 # projection made from the receiver's very first probe.
 AIRPLAY_CLOCK_READY_LEAD_MS: Final[int] = 500
+# How long a plain (non-join) START waits for the binary's [STATUS] started ack.
+# Nothing holds that ack back, so the window only has to cover the command's trip
+# down the pipe and the answer coming back - unlike a join's ack below, which is
+# withheld until the receiver clock verification resolves.
+AIRPLAY_START_ACK_TIMEOUT_MS: Final[int] = 2000
 # How long a join START waits for the binary's [STATUS] started ack. That ack is
 # held back until the clock verification above resolves, so the window must
 # cover the verification arm window plus a poll round on top of the commanded
@@ -211,8 +215,6 @@ CONF_PAIRING_PASSWORD: Final[str] = "pairing_password"
 CONF_COMPANION_PAIRING_PIN: Final[str] = "companion_pairing_pin"
 CONF_MRP_PAIRING_PIN: Final[str] = "mrp_pairing_pin"
 CONF_PAIR_NOW: Final[str] = "pair_now"
-BACKOFF_TIME_LOWER_LIMIT: Final[int] = 15  # seconds
-BACKOFF_TIME_UPPER_LIMIT: Final[int] = 300  # Five minutes
 
 FALLBACK_VOLUME: Final[int] = 20
 AIRPLAY_VOLUME_MUTE: Final[float] = -144.0

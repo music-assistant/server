@@ -8,11 +8,9 @@ from typing import TYPE_CHECKING
 from music_assistant_models.enums import ArtistEntityType, ExternalID, RecommendationFolderType
 from music_assistant_models.media_items import (
     Artist,
-    MediaItemMetadata,
     RecommendationFolder,
     UniqueList,
 )
-from music_assistant_models.media_items.metadata import LifeSpan
 
 from music_assistant.helpers.datetime import utc as datetime_utc
 
@@ -131,25 +129,21 @@ class MusicBrainzRecommendationManager:
             if not mbid:
                 continue
             scanned += 1
-            entity_type: ArtistEntityType | None = (
-                artist.metadata.artist_entity_type if artist.metadata else None
-            )
+            last_refresh = artist.metadata.last_refresh if artist.metadata else None
+            if last_refresh is None:
+                self.mass.metadata.schedule_update_metadata(artist)
+                continue
             life_span = artist.metadata.life_span if artist.metadata else None
-            if life_span is None:
-                # Metadata not yet populated; fall back to a direct MusicBrainz API call.
-                try:
-                    mb_artist = await self.provider.get_artist_details(mbid)
-                except Exception as err:
-                    self.logger.debug("Skipping artist %s: %s", mbid, err)
-                    continue
-                if entity_type is None and mb_artist.type:
-                    entity_type = ArtistEntityType(mb_artist.type.lower())
-                if mb_artist.life_span:
-                    mb_ls = mb_artist.life_span
-                    life_span = LifeSpan(begin=mb_ls.begin, end=mb_ls.end, ended=mb_ls.ended)
             if not life_span:
                 continue
-            if entity_type in (ArtistEntityType.CHARACTER, ArtistEntityType.OTHER):
+            entity_type = artist.metadata.artist_entity_type if artist.metadata else None
+            # Only process known artist types with date-based events (whitelist approach)
+            if entity_type not in (
+                ArtistEntityType.PERSON,
+                ArtistEntityType.GROUP,
+                ArtistEntityType.ORCHESTRA,
+                ArtistEntityType.CHOIR,
+            ):
                 continue
             begin = life_span.begin
             end = life_span.end
@@ -157,13 +151,6 @@ class MusicBrainzRecommendationManager:
             birth_in_window = begin and len(begin) >= 10 and begin[5:10] in window
             death_in_window = life_span.ended and end and len(end) >= 10 and end[5:10] in window
             if birth_in_window or death_in_window:
-                # Ensure life_span and entity_type are stored in the artist metadata
-                # so the frontend can compute event type and date without extra API calls.
-                metadata = artist.metadata or MediaItemMetadata()
-                metadata.life_span = life_span
-                if entity_type not in (None, ArtistEntityType.UNKNOWN):
-                    metadata.artist_entity_type = entity_type
-                artist.metadata = metadata
                 matched.append(artist)
 
         self.logger.debug(

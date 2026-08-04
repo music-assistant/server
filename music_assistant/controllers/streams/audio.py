@@ -30,7 +30,13 @@ from music_assistant_models.audio_processing import (
     AudioOutputDetails,
     AudioQueueProcessing,
 )
-from music_assistant_models.dsp import AudioChannel, DSPConfig, DSPFilter, DSPState
+from music_assistant_models.dsp import (
+    AudioChannel,
+    ConvolutionFilter,
+    DSPConfig,
+    DSPFilter,
+    DSPState,
+)
 from music_assistant_models.enums import (
     ContentType,
     CrossfadeMode,
@@ -68,6 +74,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TARGET,
     CONF_VOLUME_NORMALIZATION_TRACKS,
+    DSP_IRS_DIRNAME,
     FLOW_MODE_SAMPLE_RATE_48000,
     FLOW_MODE_SAMPLE_RATE_96000,
     FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
@@ -113,7 +120,7 @@ from music_assistant.helpers.audio import (
     resample_pcm_audio,
     resolve_output_player_ids,
 )
-from music_assistant.helpers.dsp import filter_to_ffmpeg_params
+from music_assistant.helpers.dsp import ComplexFilter, filter_to_ffmpeg_params
 from music_assistant.helpers.ffmpeg import (
     FFMpeg,
     get_ffmpeg_overlay_stream,
@@ -311,21 +318,14 @@ class StreamsAudio:
                     if not provider:
                         self.logger.debug(f"Skipping {prov_media} - provider not available")
                         continue  # provider not available ?
-                    # get streamdetails from provider; AudioSource items come from a
-                    # PluginProvider which carries a different signature (queue-scoped
-                    # context rather than media_type) — branch on provider type.
+                    # get streamdetails from provider; music and plugin providers
+                    # share this signature, so either type can own the item.
                     try:
                         BYPASS_THROTTLER.set(True)
-                        if media_item.media_type == MediaType.AUDIO_SOURCE:
-                            plugin_prov = cast("PluginProvider", provider)
-                            streamdetails = await plugin_prov.get_stream_details(
-                                prov_media.item_id, queue_item.queue_id
-                            )
-                        else:
-                            music_prov = cast("MusicProvider", provider)
-                            streamdetails = await music_prov.get_stream_details(
-                                prov_media.item_id, media_item.media_type
-                            )
+                        stream_prov = cast("MusicProvider | PluginProvider", provider)
+                        streamdetails = await stream_prov.get_stream_details(
+                            prov_media.item_id, media_item.media_type
+                        )
                     except AudioError as err:
                         last_audio_error = err
                         self.logger.warning(str(err))
@@ -1154,7 +1154,7 @@ class StreamsAudio:
         :param session_id: Explicit queue session identifier for the processing snapshot.
         :param queue_item_id: Queue item for a single-item output path.
         """
-        filter_params: list[str] = []
+        filter_params: list[str | ComplexFilter] = []
         player = self.mass.players.get_player(player_id)
         destination_player_id = (
             player.protocol_parent_id if player and player.protocol_parent_id else player_id
@@ -1185,8 +1185,21 @@ class StreamsAudio:
         if dsp.enabled:
             if dsp.input_gain != 0:
                 filter_params.append(f"volume={dsp.input_gain}dB")
+            ir_dir = os.path.join(self.mass.storage_path, DSP_IRS_DIRNAME)
+            known_ir_ids = {record["ir_id"] for record in self.mass.config.get_dsp_irs()}
             for dsp_filter in enabled_filters:
-                params = filter_to_ffmpeg_params(dsp_filter, input_format)
+                if isinstance(dsp_filter, ConvolutionFilter) and dsp_filter.ir_id:
+                    # ffmpeg fails to open the graph if the impulse response file is gone,
+                    # which costs the player all audio, so drop the filter instead
+                    if dsp_filter.ir_id not in known_ir_ids:
+                        self.logger.warning(
+                            "Skipping the convolution filter of player %s: "
+                            "impulse response %s is not stored",
+                            player_id,
+                            dsp_filter.ir_id,
+                        )
+                        continue
+                params = filter_to_ffmpeg_params(dsp_filter, input_format, ir_dir=ir_dir)
                 if not params:
                     continue
                 filter_params.extend(params)
@@ -3404,8 +3417,8 @@ class StreamsAudio:
             provider = self.mass.get_provider(mapping.provider)
             if provider is None:
                 raise MediaNotFoundError(f"Provider {mapping.provider} is not available")
-            provider = cast("MusicProvider", provider)
-            streamdetails = await provider.get_stream_details(
+            stream_prov = cast("MusicProvider | PluginProvider", provider)
+            streamdetails = await stream_prov.get_stream_details(
                 mapping.item_id, MediaType.SOUND_EFFECT
             )
         except Exception as err:

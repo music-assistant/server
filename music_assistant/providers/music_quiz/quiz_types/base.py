@@ -141,7 +141,7 @@ class QuizType(ABC):
         return False
 
     @classmethod
-    def is_available(cls, mass: MusicAssistant) -> bool:  # noqa: ARG003
+    async def is_available(cls, mass: MusicAssistant) -> bool:  # noqa: ARG003
         """
         Return whether this quiz type can be created.
 

@@ -37,8 +37,15 @@ from music_assistant_models.errors import (
     UnsupportedFeaturedException,
 )
 from music_assistant_models.player import OutputProtocol, PlayerMedia, PlayerSource
+from music_assistant_models.player_control import PlayerControl
 
-from music_assistant.constants import ATTR_PREVIOUS_VOLUME, CONF_MUTE_CONTROL
+from music_assistant.constants import (
+    ATTR_FAKE_MUTE,
+    ATTR_MUTE_LOCK,
+    ATTR_PREVIOUS_VOLUME,
+    CONF_MUTE_CONTROL,
+    CONF_VOLUME_CONTROL,
+)
 from music_assistant.controllers.players import PlayerController
 from tests.common import MockPlayer, MockProvider
 
@@ -1122,6 +1129,7 @@ class TestVolumeScalingOnRedirect:
             protocol_parent_id=None,
             extra_data={},
             volume_control=volume_control,
+            mute_control=PLAYER_CONTROL_NONE,
             volume_set=volume_set or AsyncMock(),
             update_state=MagicMock(),
             provider=MagicMock(),
@@ -1343,6 +1351,176 @@ class TestFakeMuteControl:
         unmuted_state = player.state
         assert unmuted_state.volume_muted is False
         assert unmuted_state.volume_level == 25
+
+
+class TestMuteControlGuard:
+    """Muting is gated on the mute control, independently of the volume control."""
+
+    def _make_player(
+        self,
+        mock_mass: MagicMock,
+        mute_control: str,
+        volume_control: str,
+        controls: dict[str, PlayerControl] | None = None,
+    ) -> tuple[PlayerController, MockPlayer]:
+        """Build a controller with a single player using the given control config."""
+
+        def _conf(_player_id: str, key: str, default: object = None) -> object:
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            if key == CONF_MUTE_CONTROL:
+                return mute_control
+            if key == CONF_VOLUME_CONTROL:
+                return volume_control
+            return default if default is not None else "auto"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        player = MockPlayer(provider, "player_1", "Player 1")
+        controller._players = {"player_1": player}
+        controller._controls = controls or {}
+        mock_mass.players = controller
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        player.set_initialized()
+        player.update_state(signal_event=False)
+        return controller, player
+
+    async def test_external_mute_control_without_volume_control(self, mock_mass: MagicMock) -> None:
+        """A player without volume control still mutes through an external PlayerControl."""
+        mute_set = AsyncMock()
+        control = PlayerControl(
+            id="ext_mute",
+            provider="test",
+            name="External Mute",
+            supports_mute=True,
+            mute_set=mute_set,
+        )
+        controller, player = self._make_player(
+            mock_mass,
+            mute_control="ext_mute",
+            volume_control=PLAYER_CONTROL_NONE,
+            controls={"ext_mute": control},
+        )
+        assert player.mute_control == "ext_mute"
+
+        await controller.cmd_volume_mute("player_1", True)
+        mute_set.assert_awaited_once_with(True)
+
+    async def test_native_mute_control_without_volume_control(self, mock_mass: MagicMock) -> None:
+        """A player without volume control still mutes natively."""
+        controller, player = self._make_player(
+            mock_mass,
+            mute_control=PLAYER_CONTROL_NATIVE,
+            volume_control=PLAYER_CONTROL_NONE,
+        )
+        volume_mute = AsyncMock()
+        player.volume_mute = volume_mute  # type: ignore[method-assign]
+
+        await controller.cmd_volume_mute("player_1", True)
+        volume_mute.assert_awaited_once_with(True)
+
+    async def test_mute_control_none_raises(self, mock_mass: MagicMock) -> None:
+        """A player with volume control but no mute control rejects the command."""
+        controller, player = self._make_player(
+            mock_mass,
+            mute_control=PLAYER_CONTROL_NONE,
+            volume_control=PLAYER_CONTROL_NATIVE,
+        )
+        volume_mute = AsyncMock()
+        player.volume_mute = volume_mute  # type: ignore[method-assign]
+
+        with pytest.raises(UnsupportedFeaturedException):
+            await controller.cmd_volume_mute("player_1", True)
+        volume_mute.assert_not_awaited()
+
+    async def test_fake_mute_without_volume_control_raises(self, mock_mass: MagicMock) -> None:
+        """Fake mute needs a volume control to drive, so it rejects the command outright."""
+        controller, player = self._make_player(
+            mock_mass,
+            mute_control=PLAYER_CONTROL_FAKE,
+            volume_control=PLAYER_CONTROL_NONE,
+        )
+        player._attr_volume_level = 40
+
+        with pytest.raises(UnsupportedFeaturedException):
+            await controller.cmd_volume_mute("player_1", True)
+        assert ATTR_PREVIOUS_VOLUME not in player.extra_data
+        assert ATTR_FAKE_MUTE not in player.extra_data
+
+    async def test_vanished_mute_control_raises(self, mock_mass: MagicMock) -> None:
+        """A mute control that disappeared after being resolved is reported, not ignored."""
+        control = PlayerControl(
+            id="ext_mute",
+            provider="test",
+            name="External Mute",
+            supports_mute=True,
+            mute_set=AsyncMock(),
+        )
+        controller, player = self._make_player(
+            mock_mass,
+            mute_control="ext_mute",
+            volume_control=PLAYER_CONTROL_NONE,
+            controls={"ext_mute": control},
+        )
+        # the resolved control is cached on the player, so removing it here leaves
+        # the player pointing at a control that no longer exists
+        assert player.mute_control == "ext_mute"
+        controller._controls = {}
+
+        with pytest.raises(UnsupportedFeaturedException):
+            await controller.cmd_volume_mute("player_1", True)
+
+    async def test_unmute_clears_mute_lock_without_mute_control(self, mock_mass: MagicMock) -> None:
+        """Unmuting clears a mute lock left behind by a since-removed mute control."""
+        controller, player = self._make_player(
+            mock_mass,
+            mute_control=PLAYER_CONTROL_NONE,
+            volume_control=PLAYER_CONTROL_NATIVE,
+        )
+        player.extra_data[ATTR_MUTE_LOCK] = True
+
+        with pytest.raises(UnsupportedFeaturedException):
+            await controller.cmd_volume_mute("player_1", False)
+        assert ATTR_MUTE_LOCK not in player.extra_data
+
+
+class TestGroupMuteMemberFilter:
+    """Group mute skips members that have no mute control of their own."""
+
+    async def test_member_without_mute_control_is_skipped(self, mock_mass: MagicMock) -> None:
+        """A member without a mute control must not fail the whole group command."""
+
+        def _conf(player_id: str, key: str, default: object = None) -> object:
+            if key == "min_volume":
+                return 0
+            if key == "max_volume":
+                return 100
+            if key == CONF_MUTE_CONTROL and player_id == "member":
+                return PLAYER_CONTROL_NONE
+            return default if default is not None else "auto"
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        leader = MockPlayer(provider, "leader", "Leader")
+        leader._attr_supported_features = {PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE}
+        leader._attr_group_members = ["leader", "member"]
+        member = MockPlayer(provider, "member", "Member")
+        member._attr_supported_features = {PlayerFeature.VOLUME_SET}
+        controller._players = {"leader": leader, "member": member}
+        mock_mass.players = controller
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        for player in (leader, member):
+            player.set_initialized()
+            player.update_state(signal_event=False)
+        leader_mute = AsyncMock()
+        leader.volume_mute = leader_mute  # type: ignore[method-assign]
+
+        await controller.cmd_group_volume_mute("leader", True)
+        leader_mute.assert_awaited_once_with(True)
 
 
 class TestCurrentMediaTimeUpdates:

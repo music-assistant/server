@@ -21,6 +21,7 @@ from aiohttp import WSMsgType, web
 from music_assistant_models.enums import ContentType
 from music_assistant_models.media_items import AudioFormat, Track
 
+from music_assistant.constants import SENDSPIN_SERVER_PORT
 from music_assistant.controllers.streams.audio_processing import get_media_session_id
 from music_assistant.controllers.webserver.helpers.auth_middleware import ImpersonatedUser
 from music_assistant.helpers.ffmpeg import get_ffmpeg_stream
@@ -45,8 +46,12 @@ from .models import MsxContent, MsxItem, MsxTemplate
 from .player import MSXPlayer
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from multidict import MultiMapping
     from music_assistant_models.player import PlayerMedia
+
+    from music_assistant.helpers.dsp import ComplexFilter
 
     from .provider import MSXBridgeProvider
 
@@ -556,8 +561,7 @@ class MSXHTTPServer:
         safe_host: str = html_escape(request.host)  # escape for HTML display
         _raw_host: str = request.url.host or request.host.split(":")[0]  # IPv6-safe, no port
         hostname = f"[{_raw_host}]" if ":" in _raw_host else _raw_host
-        sendspin_port = "8927"
-        sendspin_url = f"http://{hostname}:{sendspin_port}"
+        sendspin_url = f"http://{hostname}:{SENDSPIN_SERVER_PORT}"
         kiosk_html5_url = f"{base}/web?kiosk=1"
         # escape the composed URL as a whole: host-derived prefix plus & separators
         sendspin_query = f"sendspin=1&sendspin_url={quote(sendspin_url, safe='')}"
@@ -617,7 +621,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
 </div>
 <div class="link-row" style="margin-top: 12px;">
 <strong>Custom Sendspin URL:</strong><br>
-<code>/web?kiosk=1&amp;sendspin=1&amp;sendspin_url=http://&lt;ma-server&gt;:8927</code>
+<code>/web?kiosk=1&amp;sendspin=1&amp;sendspin_url=http://&lt;ma-server&gt;:{SENDSPIN_SERVER_PORT}</code>
 </div>
 </div>
 
@@ -1785,7 +1789,7 @@ small {{ color: #666; display: block; margin-top: 4px; }}
         audio_source: Any,
         pcm_format: AudioFormat,
         out_format: AudioFormat,
-        filter_params: list[str],
+        filter_params: Sequence[str | ComplexFilter],
     ) -> None:
         """Pre-buffer audio chunks, then send HTTP headers and stream remaining data."""
         player_id = player.player_id

@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from music_assistant_models.media_items import AudioFormat
     from music_assistant_models.streamdetails import StreamDetails
 
+    from music_assistant.helpers.dsp import ComplexFilter
     from music_assistant.mass import MusicAssistant
     from music_assistant.models.player import PlayerMedia
 
@@ -42,7 +43,7 @@ _QUALITY_RANK = {
 class AudioOutputPlan:
     """Executable filters and matching client-facing output details."""
 
-    filter_params: list[str]
+    filter_params: list[str | ComplexFilter]
     output_details: AudioOutputDetails
     input_format: AudioFormat
     handoff_format: AudioFormat | None = None
