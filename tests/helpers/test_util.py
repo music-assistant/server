@@ -1,7 +1,9 @@
 """Tests for music_assistant.helpers.util helpers."""
 
 import asyncio
+import gc
 import socket
+import threading
 import time
 from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
@@ -21,6 +23,7 @@ from music_assistant.helpers.util import (
 )
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
+from tests.common import collect_loop_errors
 
 GUARDED_PROVIDER_ID = "test_guarded_prov"
 
@@ -82,6 +85,15 @@ class TestSelectFreePort:
             port = await select_free_port(38800, 38900, host="127.0.0.1")
         probe.assert_awaited_once_with(port, host="127.0.0.1")
 
+    @pytest.mark.asyncio
+    async def test_exhausted_range_error_mentions_inclusive_range(self) -> None:
+        """The exhausted-range error names the searched range with an inclusive end."""
+        with (
+            patch("music_assistant.helpers.util.is_port_in_use", return_value=True),
+            pytest.raises(OSError, match=r"38800-38809$"),
+        ):
+            await select_free_port(38800, 38810)
+
 
 class TestIsPortInUse:
     """is_port_in_use can probe the exact address a server will bind."""
@@ -93,6 +105,14 @@ class TestIsPortInUse:
             sock.bind(("127.0.0.1", 0))
             sock.listen(1)
             assert await is_port_in_use(sock.getsockname()[1], host="127.0.0.1")
+
+    @pytest.mark.asyncio
+    async def test_released_loopback_port_is_free(self) -> None:
+        """A port without a listener on the probed address is reported free."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        assert not await is_port_in_use(port, host="127.0.0.1")
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -319,6 +339,69 @@ class TestGetIpAddresses:
                 await task_a
             assert await task_b == ("192.168.1.10",)
         assert enumerate_mock.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_cancelled_caller_of_a_failing_probe_logs_no_loop_error(self) -> None:
+        """A probe failing after a caller gave up is not reported to the loop handler."""
+        release = threading.Event()
+
+        def failing_enumerate(_include_ipv6: bool) -> tuple[str, ...]:
+            release.wait()
+            raise OSError("probe failed")
+
+        with (
+            collect_loop_errors() as reported,
+            patch(
+                "music_assistant.helpers.util._enumerate_ip_addresses",
+                side_effect=failing_enumerate,
+            ) as enumerate_mock,
+        ):
+            task_a = asyncio.create_task(util.get_ip_addresses())
+            task_b = asyncio.create_task(util.get_ip_addresses())
+            # let both callers await the (same) in-flight probe, then cancel one
+            await asyncio.sleep(0)
+            task_a.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task_a
+            # release the probe only once the cancellation is fully processed, so the
+            # failure reliably lands after the giving-up caller is gone
+            release.set()
+            with pytest.raises(OSError, match="probe failed"):
+                await task_b
+
+        assert enumerate_mock.call_count == 1
+        assert reported == []
+
+    @pytest.mark.asyncio
+    async def test_sole_cancelled_caller_of_a_failing_probe_logs_no_loop_error(self) -> None:
+        """A probe failing with no caller left to receive it is not reported either."""
+        release = threading.Event()
+
+        def failing_enumerate(_include_ipv6: bool) -> tuple[str, ...]:
+            release.wait()
+            raise OSError("probe failed")
+
+        with (
+            collect_loop_errors() as reported,
+            patch(
+                "music_assistant.helpers.util._enumerate_ip_addresses",
+                side_effect=failing_enumerate,
+            ),
+        ):
+            caller = asyncio.create_task(util.get_ip_addresses())
+            await asyncio.sleep(0)
+            probe = util._ip_addresses_pending[False]
+            caller.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await caller
+            release.set()
+            await asyncio.wait((probe,))
+            # drop the last reference so asyncio would report an unretrieved exception
+            del probe
+            gc.collect()
+            await asyncio.sleep(0)
+
+        assert reported == []
 
 
 class TestSanitizeHttpHeaderValue:

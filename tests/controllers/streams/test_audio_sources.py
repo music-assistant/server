@@ -16,15 +16,25 @@ from music_assistant_models.enums import (
     PlayerType,
     SourceControl,
     StreamType,
+    VolumeNormalizationMode,
 )
 from music_assistant_models.errors import (
     MediaNotFoundError,
     UnsupportedFeaturedException,
 )
-from music_assistant_models.media_items import AudioFormat, AudioSource, ProviderMapping
+from music_assistant_models.media_items import (
+    AudioFormat,
+    AudioSource,
+    ProviderMapping,
+    SoundEffect,
+)
+from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
+from music_assistant.constants import CONF_VOLUME_NORMALIZATION_TARGET
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.streams.audio import StreamsAudio
+from music_assistant.mass import MusicAssistant
 from music_assistant.models.plugin import PluginProvider
 from tests.common import MockPlayer, MockProvider
 
@@ -923,3 +933,97 @@ class TestAudioSourceLibraryRejection:
         controller.mass = MagicMock()
         with pytest.raises(UnsupportedFeaturedException, match="can not be library items"):
             await controller.add_item_to_library("stale_plugin://audio_source/main")
+
+
+# ------------------------------------------------ streamdetails dispatch for plugin-owned items
+
+
+def _register_stub_plugin(
+    mass: MusicAssistant, provider_cls: type[PluginProvider], *, instance_id: str
+) -> PluginProvider:
+    """Instantiate a real PluginProvider subclass with a stub manifest/config and register it."""
+    manifest = MagicMock()
+    manifest.domain = instance_id
+    config = MagicMock()
+    config.instance_id = instance_id
+    config.get_value = MagicMock(return_value="GLOBAL")
+    provider = provider_cls(mass, manifest, config)
+    # get_provider() only returns providers marked available; the real load pipeline sets
+    # this after handle_async_init, which we skip here.
+    provider.available = True
+    mass._providers[instance_id] = provider
+    return provider
+
+
+def _ready_streams_audio(mass: MusicAssistant) -> StreamsAudio:
+    """
+    Attach a minimal streams/player_queues stand-in to `mass` and return its StreamsAudio.
+
+    mass_minimal only wires config/cache/discovery; get_stream_details also reads
+    mass.streams (volume-normalization config) and mass.player_queues (preferred-provider
+    lookup), so dispatch tests stub those in directly rather than booting the full server.
+    """
+    mass.player_queues = MagicMock()
+    mass.player_queues.queue_data_or_none = MagicMock(return_value=None)
+    mass.streams = MagicMock()
+    mass.streams.get_config_value = MagicMock(
+        side_effect=lambda key, *_a, **_k: (
+            -14
+            if key == CONF_VOLUME_NORMALIZATION_TARGET
+            else VolumeNormalizationMode.DISABLED.value
+        )
+    )
+    mass.streams.audio = StreamsAudio(mass)
+    return mass.streams.audio  # type: ignore[no-any-return]
+
+
+def _queue_item_for_sound_effect(
+    *, queue_id: str, provider_instance: str, item_id: str
+) -> QueueItem:
+    """Build a QueueItem wrapping a SoundEffect owned by `provider_instance`."""
+    media_item = SoundEffect(
+        item_id=item_id,
+        provider=provider_instance,
+        name="Clip",
+        provider_mappings={
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=provider_instance,
+                provider_instance=provider_instance,
+            )
+        },
+    )
+    return QueueItem(
+        queue_id=queue_id, queue_item_id=item_id, name="Clip", duration=None, media_item=media_item
+    )
+
+
+async def test_plugin_owned_sound_effect_uses_plugin_stream_details(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """A SOUND_EFFECT owned by a plugin provider is served by the plugin hook."""
+    received: list[tuple[str, MediaType]] = []
+
+    class ClipPlugin(PluginProvider):
+        async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
+            received.append((item_id, media_type))
+            return StreamDetails(
+                provider=self.instance_id,
+                item_id=item_id,
+                audio_format=AudioFormat(content_type=ContentType.MP3),
+                media_type=media_type,
+                stream_type=StreamType.HTTP,
+                path="http://example.invalid/clip.mp3",
+                duration=12,
+            )
+
+    audio = _ready_streams_audio(mass_minimal)
+    plugin = _register_stub_plugin(mass_minimal, ClipPlugin, instance_id="clipper")
+    queue_item = _queue_item_for_sound_effect(
+        queue_id="player_a", provider_instance=plugin.instance_id, item_id="clip_007"
+    )
+
+    streamdetails = await audio.get_stream_details(queue_item)
+
+    assert received == [("clip_007", MediaType.SOUND_EFFECT)]
+    assert streamdetails.media_type == MediaType.SOUND_EFFECT

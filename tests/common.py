@@ -5,7 +5,7 @@ import contextlib
 import logging
 import pathlib
 from collections.abc import AsyncGenerator, Iterator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiofiles.os
@@ -35,6 +35,26 @@ async def get_fixtures_dir(
     for file in await aiofiles.os.listdir(dir_path):
         async with aiofiles.open(dir_path / file, "rb") as fp:
             yield (file, await fp.read())
+
+
+@contextlib.contextmanager
+def collect_loop_errors() -> Iterator[list[dict[str, Any]]]:
+    """
+    Capture everything the running loop reports to its exception handler.
+
+    Yields the (initially empty) list the captured contexts are appended to; the loop's
+    own handler is restored on exit. Use it to assert that an operation does not surface
+    an error the server itself already handles, which would otherwise reach the user as
+    an ERROR log entry with a traceback.
+    """
+    loop = asyncio.get_running_loop()
+    previous = loop.get_exception_handler()
+    reported: list[dict[str, Any]] = []
+    loop.set_exception_handler(lambda _loop, context: reported.append(context))
+    try:
+        yield reported
+    finally:
+        loop.set_exception_handler(previous)
 
 
 @contextlib.asynccontextmanager
