@@ -46,15 +46,30 @@ class TestGetSourceIp:
         assert await controller.get_source_ip(DEVICE_IP_V6) is None
 
     @pytest.mark.asyncio
-    async def test_wildcard_bind_ip_resolves_per_device_route(self) -> None:
-        """Without an operator pin, the interface that routes to the device is used."""
-        controller = _streams_controller(bind_ip="0.0.0.0")
+    @pytest.mark.parametrize(
+        ("bind_ip", "device_ip", "source_ip"),
+        [("0.0.0.0", DEVICE_IP, "192.168.1.5"), ("::", DEVICE_IP_V6, "fd00::5")],
+    )
+    async def test_wildcard_bind_ip_resolves_per_device_route(
+        self, bind_ip: str, device_ip: str, source_ip: str
+    ) -> None:
+        """
+        Without an operator pin, the interface that routes to the device is used.
+
+        Every wildcard bind IP takes this path, not just the IPv4 one: a wildcard is not
+        itself a bindable address, so handing it to a caller would be a broken result.
+
+        :param bind_ip: Wildcard bind IP the streamserver is bound to.
+        :param device_ip: IP address of the device the traffic is meant for.
+        :param source_ip: Local address the per-device route lookup resolves to.
+        """
+        controller = _streams_controller(bind_ip=bind_ip)
         with patch(
             "music_assistant.controllers.streams.controller.get_source_ip_for_target",
-            new=AsyncMock(return_value="192.168.1.5"),
+            new=AsyncMock(return_value=source_ip),
         ) as routing_lookup:
-            assert await controller.get_source_ip(DEVICE_IP) == "192.168.1.5"
-        routing_lookup.assert_awaited_once_with(DEVICE_IP)
+            assert await controller.get_source_ip(device_ip) == source_ip
+        routing_lookup.assert_awaited_once_with(device_ip)
 
     @pytest.mark.asyncio
     async def test_unroutable_target_pins_nothing(self) -> None:

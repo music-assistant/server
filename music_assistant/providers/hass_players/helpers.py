@@ -26,16 +26,34 @@ if TYPE_CHECKING:
     from music_assistant.providers.hass import HomeAssistantProvider
 
 
+async def get_media_player_entity_registry(
+    hass_prov: HomeAssistantProvider,
+) -> dict[str, HassEntity]:
+    """
+    Return the full registry entries of all Home Assistant media_player entities.
+
+    :param hass_prov: The Home Assistant provider to read the registry from.
+    :return: The registry entries keyed by entity ID.
+    """
+    registry = await hass_prov.get_entity_registry()
+    return await hass_prov.get_entity_registry_entries(
+        [entity_id for entity_id in registry if entity_id.startswith("media_player.")]
+    )
+
+
 async def get_hass_media_players(
     hass_prov: HomeAssistantProvider,
+    entity_registry: dict[str, HassEntity],
 ) -> AsyncGenerator[tuple[HassState, HassEntity | None]]:
-    """Return all HA state objects (with registry entry) for (valid) media_player entities."""
-    entity_registry = {x["entity_id"]: x for x in await hass_prov.hass.get_entity_registry()}
+    """
+    Return all HA state objects (with registry entry) for (valid) media_player entities.
+
+    :param hass_prov: The Home Assistant provider to fetch the entity states from.
+    :param entity_registry: The registry entries of the media_player entities to consider.
+    """
     # discover via the registry instead of a full state dump; entities without a
     # unique_id are not registered and are therefore not discovered here
-    media_player_ids = [
-        entity_id for entity_id in entity_registry if entity_id.startswith("media_player.")
-    ]
+    media_player_ids = list(entity_registry)
     for state in await hass_prov.get_states(entity_ids=media_player_ids):
         if "mass_player_type" in state["attributes"]:
             # filter out mass players

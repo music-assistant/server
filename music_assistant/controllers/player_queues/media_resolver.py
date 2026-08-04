@@ -46,6 +46,8 @@ from music_assistant.helpers.collections import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from music_assistant.controllers.player_queues.controller import PlayerQueuesController
 
 _LATEST_EPISODE_KEYWORDS = frozenset({"latest", "newest"})
@@ -604,27 +606,19 @@ class MediaResolver:
             media_item = await self.mass.music.get_item_by_uri(media_item.uri)
         if media_item.media_type == MediaType.PLAYLIST:
             media_item = cast("Playlist", media_item)
-            self.mass.create_task(
-                self.mass.music.mark_item_played(
-                    media_item, userid=userid, queue_id=queue_id, user_initiated=True
-                )
+            playlist_tracks = await self.get_playlist_tracks(
+                media_item,
+                start_item,
+                sort_by=sort_by,
+                keep_preceding_items=keep_preceding_items,
             )
-            return list(
-                await self.get_playlist_tracks(
-                    media_item,
-                    start_item,
-                    sort_by=sort_by,
-                    keep_preceding_items=keep_preceding_items,
-                )
-            )
+            self._mark_container_played(media_item, playlist_tracks, userid, queue_id)
+            return list(playlist_tracks)
         if media_item.media_type == MediaType.ARTIST:
             media_item = cast("Artist", media_item)
-            self.mass.create_task(
-                self.mass.music.mark_item_played(
-                    media_item, userid=userid, queue_id=queue_id, user_initiated=True
-                )
-            )
-            return list(await self.get_artist_tracks(media_item))
+            artist_tracks = await self.get_artist_tracks(media_item)
+            self._mark_container_played(media_item, artist_tracks, userid, queue_id)
+            return list(artist_tracks)
         if media_item.media_type == MediaType.ALBUM:
             media_item = cast("Album", media_item)
             return list(
@@ -637,12 +631,9 @@ class MediaResolver:
             )
         if media_item.media_type == MediaType.GENRE:
             media_item = cast("Genre", media_item)
-            self.mass.create_task(
-                self.mass.music.mark_item_played(
-                    media_item, userid=userid, queue_id=queue_id, user_initiated=True
-                )
-            )
-            return list(await self.get_genre_tracks(media_item, start_item))
+            genre_tracks = await self.get_genre_tracks(media_item, start_item)
+            self._mark_container_played(media_item, genre_tracks, userid, queue_id)
+            return list(genre_tracks)
         if media_item.media_type == MediaType.AUDIOBOOK:
             media_item = cast("Audiobook", media_item)
             # ensure we grab the correct/latest resume point info
@@ -679,16 +670,11 @@ class MediaResolver:
 
         if media_item.media_type == MediaType.PODCAST:
             media_item = cast("Podcast", media_item)
-            self.mass.create_task(
-                self.mass.music.mark_item_played(
-                    media_item, userid=userid, queue_id=queue_id, user_initiated=True
-                )
+            episodes = await self.get_next_podcast_episodes(
+                media_item, start_item, userid=userid, start_from_beginning=start_from_beginning
             )
-            return list(
-                await self.get_next_podcast_episodes(
-                    media_item, start_item, userid=userid, start_from_beginning=start_from_beginning
-                )
-            )
+            self._mark_container_played(media_item, episodes, userid, queue_id)
+            return list(episodes)
         if media_item.media_type == MediaType.PODCAST_EPISODE:
             media_item = cast("PodcastEpisode", media_item)
             return list(
@@ -727,3 +713,29 @@ class MediaResolver:
             tracks += [x for x in resolved if isinstance(x, Track)]
 
         return tracks
+
+    def _mark_container_played(
+        self,
+        container: MediaItemType,
+        resolved_items: Sequence[MediaItemType],
+        userid: str | None,
+        queue_id: str | None,
+    ) -> None:
+        """
+        Credit a container the user asked to play with an explicit play.
+
+        Only credits when the container actually resolved to something, so an empty
+        playlist/artist/genre/podcast never lands in the play history.
+
+        :param container: The playlist, artist, genre or podcast that was asked for.
+        :param resolved_items: The items the container resolved to.
+        :param userid: Optional user the playback is attributed to.
+        :param queue_id: Optional queue the playback is requested for.
+        """
+        if not resolved_items:
+            return
+        self.mass.create_task(
+            self.mass.music.mark_item_played(
+                container, userid=userid, queue_id=queue_id, user_initiated=True
+            )
+        )

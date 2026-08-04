@@ -370,11 +370,26 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         self.logger.debug("deleted item with id %s from database", db_id)
 
     async def library_count(self, favorite_only: bool = False) -> int:
-        """Return the total number of items in the library."""
+        """
+        Return the number of items in the library.
+
+        Restricted to the providers the current user is allowed to see when that user
+        has a provider filter set.
+
+        :param favorite_only: Only count items marked as favorite.
+        """
+        query_parts: list[str] = []
+        query_params: dict[str, Any] = {}
         if favorite_only:
-            sql_query = f"SELECT item_id FROM {self.db_table} WHERE favorite = 1"
-            return await self.mass.music.database.get_count_from_query(sql_query)
-        return await self.mass.music.database.get_count(self.db_table)
+            query_parts.append("favorite = 1")
+        if provider_filter := self._ensure_provider_filter(None):
+            query_parts.append(
+                self._provider_filter_clause(query_params, provider_filter, in_library_only=True)
+            )
+        if not query_parts:
+            return await self.mass.music.database.get_count(self.db_table)
+        sql_query = f"SELECT item_id FROM {self.db_table} WHERE {' AND '.join(query_parts)}"
+        return await self.mass.music.database.get_count_from_query(sql_query, query_params)
 
     if TYPE_CHECKING:
 
@@ -1660,32 +1675,46 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
                 "AND gm.genre_id IN :genre_ids)"
             )
         # Apply the provider filter
+        if provider_filter or in_library_only:
+            query_parts.append(
+                self._provider_filter_clause(query_params, provider_filter, in_library_only)
+            )
+
+    @final
+    def _provider_filter_clause(
+        self,
+        query_params: dict[str, Any],
+        provider_filter: list[str] | None,
+        in_library_only: bool = False,
+    ) -> str:
+        """
+        Return the SQL clause that restricts items by their provider mappings.
+
+        At least one of provider_filter/in_library_only must be set, otherwise the
+        returned clause only asserts that the item has any mapping at all.
+
+        :param query_params: Query params dict; the clause's bound params are added to it.
+        :param provider_filter: Only match items mapped to one of these provider instances.
+        :param in_library_only: Only match provider mappings that are in the provider's library.
+        """
         # NOTE: provider mapping filters are applied as a correlated EXISTS subquery
         # instead of a JOIN + GROUP BY, so SQLite can stream results straight from the
         # sort index instead of materializing/sorting the whole (deduped) result set.
+        query_params["provider_media_type"] = self.media_type.value
+        conditions = [
+            f"provider_mappings.item_id = {self.db_table}.item_id",
+            "provider_mappings.media_type = :provider_media_type",
+        ]
+        if in_library_only:
+            conditions.append("provider_mappings.in_library = 1")
         if provider_filter:
             provider_conditions = []
             for idx, prov in enumerate(provider_filter):
                 param_name = f"provider_filter_{idx}"
                 provider_conditions.append(f"provider_mappings.provider_instance = :{param_name}")
                 query_params[param_name] = prov
-            query_params["provider_media_type"] = self.media_type.value
-            in_library_clause = "AND provider_mappings.in_library = 1 " if in_library_only else ""
-            query_parts.append(
-                "EXISTS(SELECT 1 FROM provider_mappings "
-                f"WHERE provider_mappings.item_id = {self.db_table}.item_id "
-                "AND provider_mappings.media_type = :provider_media_type "
-                f"{in_library_clause}"
-                f"AND ({' OR '.join(provider_conditions)}))"
-            )
-        elif in_library_only:
-            query_params["provider_media_type"] = self.media_type.value
-            query_parts.append(
-                "EXISTS(SELECT 1 FROM provider_mappings "
-                f"WHERE provider_mappings.item_id = {self.db_table}.item_id "
-                "AND provider_mappings.media_type = :provider_media_type "
-                "AND provider_mappings.in_library = 1)"
-            )
+            conditions.append(f"({' OR '.join(provider_conditions)})")
+        return f"EXISTS(SELECT 1 FROM provider_mappings WHERE {' AND '.join(conditions)})"
 
     @final
     def _build_final_query(

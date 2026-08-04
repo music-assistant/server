@@ -58,6 +58,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TRACKS,
     DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
+    DEFAULT_HOST,
     DEFAULT_STREAM_HEADERS,
     DLNA_CONTENT_FEATURES,
     DLNA_CONTENT_FEATURES_REALTIME,
@@ -157,6 +158,29 @@ async def _wav_passthrough_stream(
         yield chunk
 
 
+def _get_publish_addresses(
+    bind_ip: str, configured_publish_ip: str | None, all_ip_addresses: tuple[str, ...]
+) -> list[str]:
+    """
+    Return the addresses this host should advertise to players on the local network.
+
+    :param bind_ip: The configured bind IP (a wildcard means all interfaces).
+    :param configured_publish_ip: The explicitly configured publish IP, or None when auto.
+    :param all_ip_addresses: All detected host IP addresses, in ranked order.
+    """
+    if configured_publish_ip:
+        # an explicitly configured address is the authoritative answer
+        return [configured_publish_ip]
+    if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
+        # only one interface is served, so no other address can be reached
+        return [bind_ip]
+    # Auto-detected: the primary address is only a guess at which interface the players
+    # live on, so advertise every address (highest ranked first) and let the device pick
+    # one it can reach. On a multi-homed host - a VPN or docker interface alongside the
+    # LAN - the primary-route address is regularly not the one on the players' network.
+    return list(all_ip_addresses)
+
+
 class StreamsController(CoreController):
     """Controller to stream audio to players."""
 
@@ -177,6 +201,9 @@ class StreamsController(CoreController):
         self.announcement_renderer = AnnouncementRenderer()
         self._bind_ip: str = "0.0.0.0"
         self._configured_publish_ip: str | None = None
+        # every address players may reach this host on, best candidate first - for mDNS
+        # records, which can carry them all, unlike the single-valued publish_ip
+        self.publish_addresses: list[str] = []
         self.audio = StreamsAudio(mass)
         self.audio_processing = AudioProcessingManager(mass)
         self._audio_analysis = AudioAnalysisController(self)
@@ -379,8 +406,8 @@ class StreamsController(CoreController):
             ConfigEntry(
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
-                default_value="0.0.0.0",
-                options=[ConfigValueOption(x, title=x) for x in {"0.0.0.0", *ip_addresses}],
+                default_value=DEFAULT_HOST,
+                options=[ConfigValueOption(x, title=x) for x in {DEFAULT_HOST, *ip_addresses}],
                 category="generic",
                 advanced=True,
                 required=False,
@@ -421,23 +448,11 @@ class StreamsController(CoreController):
             None if configured_publish_ip == CONF_VALUE_AUTO else configured_publish_ip
         )
         # resolve the "auto" default (or an unset value) to this server's primary IP
-        self.publish_ip = (
-            self._configured_publish_ip or (await get_ip_addresses(include_ipv6=True))[0]
-        )
+        all_ip_addresses = await get_ip_addresses(include_ipv6=True)
+        self.publish_ip = self._configured_publish_ip or all_ip_addresses[0]
         self._bind_ip = bind_ip = str(config.get_value(CONF_BIND_IP))
-        # print a big fat message in the log where the streamserver is running
-        # because this is a common source of issues for people with more complex setups
-        self.logger.log(
-            logging.INFO if self.mass.config.onboard_done else logging.WARNING,
-            "\n\n################################################################################\n"
-            "Starting streamserver on  %s:%s\n"
-            "This is the IP address that is communicated to players.\n"
-            "If this is incorrect, audio will not play!\n"
-            "See the documentation for how to configure the publish IP for the Streamserver\n"
-            "in Settings --> System --> Streams\n"
-            "################################################################################\n",
-            self.publish_ip,
-            self.publish_port,
+        self.publish_addresses = _get_publish_addresses(
+            bind_ip, self._configured_publish_ip, all_ip_addresses
         )
         await self._server.setup(
             bind_ip=bind_ip,
@@ -457,6 +472,23 @@ class StreamsController(CoreController):
                 ("*", "/command/{queue_id}/{command}.mp3", self.serve_command_request),
                 ("*", "/announcement/{player_id}.{fmt}", self.serve_announcement_stream),
             ],
+        )
+        # adopt the port the server actually bound to: a configured port of 0 is only
+        # resolved by the OS at bind time
+        self.publish_port = cast("int", self._server.port)
+        # print a big fat message in the log where the streamserver is running
+        # because this is a common source of issues for people with more complex setups
+        self.logger.log(
+            logging.INFO if self.mass.config.onboard_done else logging.WARNING,
+            "\n\n################################################################################\n"
+            "Started streamserver on %s:%s\n"
+            "This is the IP address that is communicated to players.\n"
+            "If this is incorrect, audio will not play!\n"
+            "See the documentation for how to configure the publish IP for the Streamserver\n"
+            "in Settings --> System --> Streams\n"
+            "################################################################################\n",
+            self.publish_ip,
+            self.publish_port,
         )
 
     async def close(self) -> None:
