@@ -2,9 +2,19 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
-from music_assistant.constants import ENCRYPT_SUFFIX
+from music_assistant_models.errors import InvalidDataError
+
+from music_assistant.constants import (
+    CONF_NFS_SUBFOLDER_MIGRATED,
+    CONF_SERVER_ID,
+    ENCRYPT_SUFFIX,
+)
+from music_assistant.controllers.config.controller import ConfigController
 from music_assistant.controllers.config.migrations import (
     PROVIDER_SETUP_FLOW_KEYS,
     _migrate_airplay_apple_power_control,
@@ -13,16 +23,24 @@ from music_assistant.controllers.config.migrations import (
     _migrate_output_limiter,
     _migrate_player_setup_data,
     migrate_hass_engine_selection,
+    migrate_nfs_subfolder_into_export_path,
     migrate_provider_setup_data,
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     import pytest
 
 
 def _fake_encrypt(value: str) -> str:
     """Mirror ConfigController.encrypt_string: prefix once, idempotent for encrypted values."""
     return value if value.startswith(ENCRYPT_SUFFIX) else ENCRYPT_SUFFIX + value
+
+
+def _fake_decrypt(value: str) -> str:
+    """Mirror ConfigController.decrypt_string: strip the prefix, pass plain values through."""
+    return value.removeprefix(ENCRYPT_SUFFIX)
 
 
 def test_migrate_output_limiter_drops_stored_values() -> None:
@@ -638,6 +656,203 @@ def test_migrate_bose_soundtouch_presets_noop_when_absent() -> None:
         }
     }
     assert _migrate_bose_soundtouch_presets(data) is False
+
+
+def test_migrate_nfs_subfolder_folds_into_export_path() -> None:
+    """The subfolder is appended to the export path and the now-obsolete key is dropped."""
+    data: dict[str, Any] = {
+        "providers": {
+            "filesystem_nfs--1": {
+                "domain": "filesystem_nfs",
+                "setup_data": {
+                    "host": ENCRYPT_SUFFIX + "nas.local",
+                    "export_path": ENCRYPT_SUFFIX + "/mnt/vault",
+                    "subfolder": ENCRYPT_SUFFIX + "Music",
+                    "nfs_version": ENCRYPT_SUFFIX + "3",
+                },
+                "values": {"sync_tracks": True},
+            }
+        }
+    }
+
+    assert migrate_nfs_subfolder_into_export_path(data, _fake_encrypt, _fake_decrypt) is True
+
+    setup_data = data["providers"]["filesystem_nfs--1"]["setup_data"]
+    assert setup_data["export_path"] == ENCRYPT_SUFFIX + "/mnt/vault/Music"
+    assert "subfolder" not in setup_data
+    assert setup_data["host"] == ENCRYPT_SUFFIX + "nas.local"
+    assert setup_data["nfs_version"] == ENCRYPT_SUFFIX + "3"
+    assert data["providers"]["filesystem_nfs--1"]["values"] == {"sync_tracks": True}
+    # the marker stops a second pass
+    assert data[CONF_NFS_SUBFOLDER_MIGRATED] is True
+    assert migrate_nfs_subfolder_into_export_path(data, _fake_encrypt, _fake_decrypt) is False
+    assert setup_data["export_path"] == ENCRYPT_SUFFIX + "/mnt/vault/Music"
+
+
+def test_migrate_nfs_subfolder_normalizes_leading_slash_and_nesting() -> None:
+    """A leading slash is tolerated and a nested subfolder keeps its full depth."""
+    data: dict[str, Any] = {
+        "providers": {
+            "rooted": {
+                "domain": "filesystem_nfs",
+                "setup_data": {
+                    "export_path": ENCRYPT_SUFFIX + "/volume1",
+                    "subfolder": ENCRYPT_SUFFIX + "/music",
+                },
+            },
+            "nested": {
+                "domain": "filesystem_nfs",
+                "setup_data": {
+                    "export_path": ENCRYPT_SUFFIX + "/exports/media/",
+                    "subfolder": ENCRYPT_SUFFIX + " albums/A-K ",
+                },
+            },
+        }
+    }
+
+    assert migrate_nfs_subfolder_into_export_path(data, _fake_encrypt, _fake_decrypt) is True
+
+    providers = data["providers"]
+    assert providers["rooted"]["setup_data"]["export_path"] == ENCRYPT_SUFFIX + "/volume1/music"
+    assert (
+        providers["nested"]["setup_data"]["export_path"]
+        == ENCRYPT_SUFFIX + "/exports/media/albums/A-K"
+    )
+
+
+def test_migrate_nfs_subfolder_noop_cases() -> None:
+    """Instances without a usable subfolder, and other providers, are left untouched."""
+    data: dict[str, Any] = {
+        "providers": {
+            "empty_subfolder": {
+                "domain": "filesystem_nfs",
+                "setup_data": {
+                    "export_path": ENCRYPT_SUFFIX + "/mnt/vault",
+                    "subfolder": ENCRYPT_SUFFIX + "",
+                },
+            },
+            "no_subfolder_key": {
+                "domain": "filesystem_nfs",
+                "setup_data": {"export_path": ENCRYPT_SUFFIX + "/mnt/vault"},
+            },
+            "no_export_path": {
+                "domain": "filesystem_nfs",
+                "setup_data": {"subfolder": ENCRYPT_SUFFIX + "Music"},
+            },
+            "smb": {
+                "domain": "filesystem_smb",
+                "setup_data": {
+                    "share": ENCRYPT_SUFFIX + "media",
+                    "subfolder": ENCRYPT_SUFFIX + "Music",
+                },
+            },
+        }
+    }
+    providers_before = deepcopy(data["providers"])
+
+    # only the one-shot marker is written; no provider config is touched
+    assert migrate_nfs_subfolder_into_export_path(data, _fake_encrypt, _fake_decrypt) is True
+    assert data["providers"] == providers_before
+    assert data[CONF_NFS_SUBFOLDER_MIGRATED] is True
+
+
+def test_migrate_nfs_subfolder_never_folds_a_post_fix_config() -> None:
+    """A subfolder stored after the marker is set is never folded, however often this runs."""
+    data: dict[str, Any] = {
+        CONF_NFS_SUBFOLDER_MIGRATED: True,
+        "providers": {
+            "filesystem_nfs--1": {
+                "domain": "filesystem_nfs",
+                "setup_data": {
+                    "export_path": ENCRYPT_SUFFIX + "/mnt/vault",
+                    "subfolder": ENCRYPT_SUFFIX + "Music",
+                },
+            }
+        },
+    }
+    before = deepcopy(data)
+
+    assert migrate_nfs_subfolder_into_export_path(data, _fake_encrypt, _fake_decrypt) is False
+    assert data == before
+
+
+def test_migrate_nfs_subfolder_handles_plaintext_values() -> None:
+    """A value that was never encrypted at rest folds just the same."""
+    data: dict[str, Any] = {
+        "providers": {
+            "filesystem_nfs--1": {
+                "domain": "filesystem_nfs",
+                "setup_data": {"export_path": "/mnt/vault", "subfolder": "Music"},
+            }
+        }
+    }
+
+    assert migrate_nfs_subfolder_into_export_path(data, _fake_encrypt, _fake_decrypt) is True
+    assert (
+        data["providers"]["filesystem_nfs--1"]["setup_data"]["export_path"]
+        == ENCRYPT_SUFFIX + "/mnt/vault/Music"
+    )
+
+
+def test_migrate_nfs_subfolder_skips_an_undecryptable_instance() -> None:
+    """An unreadable value costs that instance its migration, not the server its startup."""
+
+    def _failing_decrypt(_value: str) -> str:
+        raise InvalidDataError("Password decryption failed")
+
+    data: dict[str, Any] = {
+        "providers": {
+            "broken": {
+                "domain": "filesystem_nfs",
+                "setup_data": {
+                    "export_path": ENCRYPT_SUFFIX + "unreadable",
+                    "subfolder": ENCRYPT_SUFFIX + "unreadable",
+                },
+            }
+        }
+    }
+
+    assert migrate_nfs_subfolder_into_export_path(data, _fake_encrypt, _failing_decrypt) is True
+
+    # left as it was, but the marker is still claimed
+    assert data["providers"]["broken"]["setup_data"] == {
+        "export_path": ENCRYPT_SUFFIX + "unreadable",
+        "subfolder": ENCRYPT_SUFFIX + "unreadable",
+    }
+    assert data[CONF_NFS_SUBFOLDER_MIGRATED] is True
+
+
+def test_migrate_nfs_subfolder_round_trips_through_real_encryption(tmp_path: Path) -> None:
+    """The folded export path is re-encrypted with the live key, so a migrated config loads."""
+    mass = SimpleNamespace(storage_path=str(tmp_path))
+    controller = ConfigController(mass)  # type: ignore[arg-type]
+    controller.initialized = True
+    controller.save = lambda **_kwargs: None  # type: ignore[method-assign]
+    controller.set(CONF_SERVER_ID, uuid4().hex)
+    controller._init_encryption()
+
+    data: dict[str, Any] = {
+        "providers": {
+            "filesystem_nfs--1": {
+                "domain": "filesystem_nfs",
+                "setup_data": {
+                    "export_path": controller.encrypt_string("/mnt/vault"),
+                    "subfolder": controller.encrypt_string("Music"),
+                },
+            }
+        }
+    }
+
+    assert (
+        migrate_nfs_subfolder_into_export_path(
+            data, controller.encrypt_string, controller.decrypt_string
+        )
+        is True
+    )
+
+    stored = data["providers"]["filesystem_nfs--1"]["setup_data"]["export_path"]
+    assert stored.startswith(ENCRYPT_SUFFIX)
+    assert controller.decrypt_string(stored) == "/mnt/vault/Music"
 
 
 def _hass_engine_data(instance_id: str = "hass", **hass_values: Any) -> dict[str, Any]:
