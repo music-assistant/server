@@ -406,6 +406,7 @@ def generate_m3u(
 def construct_media_item_from_playlist_item(
     item: PlaylistItem,
     mass: MusicAssistant,
+    default_media_type: MediaType = MediaType.TRACK,
 ) -> MediaItemType | None:
     """
     Construct a MediaItem from a PlaylistItem's stored metadata.
@@ -415,16 +416,20 @@ def construct_media_item_from_playlist_item(
 
     :param item: Parsed PlaylistItem with metadata, providers, and images.
     :param mass: MusicAssistant instance for provider resolution.
+    :param default_media_type: Media type to assume when the entry carries no
+        (valid) media_type in its #EXTMA metadata.
     """
     metadata = item.metadata or {}
     try:
-        media_type = MediaType(metadata.get("media_type", "track"))
+        media_type = MediaType(metadata.get("media_type", default_media_type.value))
     except ValueError:
-        media_type = MediaType.TRACK
+        media_type = default_media_type
     name = metadata.get("name") or item.title or item.path
     duration = try_parse_int(item.length, default=None) if item.length else None
 
     provider_mappings = _resolve_provider_mappings(item, mass)
+    if not provider_mappings and item.path:
+        provider_mappings = _builtin_fallback_mappings(item.path, mass)
     external_ids = _collect_external_ids(metadata)
 
     first_provider = next(
@@ -432,7 +437,7 @@ def construct_media_item_from_playlist_item(
         next(iter(provider_mappings), None),
     )
     item_provider = first_provider.provider_domain if first_provider else "builtin"
-    item_id = first_provider.item_id if first_provider else item.path.rsplit("/", 1)[-1]
+    item_id = first_provider.item_id if first_provider else item.path
 
     media_item: MediaItemType
     if media_type == MediaType.SOUND_EFFECT:
@@ -544,6 +549,25 @@ def _resolve_provider_mappings(item: PlaylistItem, mass: MusicAssistant) -> set[
             )
         )
     return provider_mappings
+
+
+def _builtin_fallback_mappings(path: str, mass: MusicAssistant) -> set[ProviderMapping]:
+    """
+    Build the builtin provider mapping for an entry that carries no #EXTPROV.
+
+    A plain third-party M3U lists bare stream URLs, which is exactly what the
+    builtin provider uses as its item_id. Without a mapping the constructed item
+    never reaches ``library_add`` and would end up an unplayable library entry.
+    """
+    prov = mass.get_provider("builtin")
+    return {
+        ProviderMapping(
+            item_id=path,
+            provider_domain="builtin",
+            provider_instance=prov.instance_id if prov else "builtin",
+            available=prov is not None,
+        )
+    }
 
 
 def _collect_external_ids(metadata: dict[str, str]) -> set[tuple[ExternalID, str]]:
@@ -709,6 +733,8 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
         "media_type": full_item.media_type.value,
         "name": full_item.name,
     }
+    if full_item.favorite:
+        metadata["favorite"] = "true"
     if hasattr(full_item, "authors") and full_item.authors:
         metadata["authors"] = "; ".join(full_item.authors)
     if hasattr(full_item, "narrators") and full_item.narrators:
@@ -768,7 +794,9 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
     return PlaylistItem(
         path=primary_uri,
         title=title,
-        length=str(duration) if duration else None,
+        # -1 is the M3U convention for unknown length and parses back to None, so an
+        # item without a duration (a radio station) still gets its #EXTINF title line
+        length=str(duration) if duration else "-1",
         metadata=metadata,
         providers=prov_infos,
         images=images,

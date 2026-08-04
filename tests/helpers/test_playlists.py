@@ -689,7 +689,9 @@ def test_media_item_to_playlist_item_radio() -> None:
     assert result.podcast is None
     assert result.album is None
     assert len(result.artists) == 0
-    assert result.length is None
+    # a radio has no duration, which must still yield an #EXTINF line carrying the name
+    assert result.length == "-1"
+    assert "#EXTINF:-1,Test FM" in generate_m3u("Radio Stations", [result])
 
 
 def test_media_item_to_playlist_item_no_version() -> None:
@@ -749,6 +751,103 @@ def test_media_item_to_playlist_item_multiple_providers() -> None:
     assert domains == {"spotify", "tidal"}
     # primary URI uses the highest quality provider
     assert result.path == "tidal://track/t2"
+
+
+def test_media_item_to_playlist_item_favorite() -> None:
+    """Test that a favorited item carries the flag so a restore can reapply it."""
+    radio = Radio(
+        item_id="radio1",
+        provider="builtin",
+        name="Test FM",
+        favorite=True,
+        provider_mappings={
+            ProviderMapping(
+                item_id="radio1", provider_domain="builtin", provider_instance="builtin"
+            ),
+        },
+    )
+
+    result = media_item_to_playlist_item(radio)
+
+    assert result.metadata is not None
+    assert result.metadata["favorite"] == "true"
+    # a non-favorited item must not carry the key at all
+    radio.favorite = False
+    assert "favorite" not in (media_item_to_playlist_item(radio).metadata or {})
+
+
+def test_zero_duration_track_round_trips_unknown_length() -> None:
+    """Test that a zero-duration track gets an #EXTINF:-1 line that parses back to None."""
+    track = Track(
+        item_id="t1",
+        provider="builtin",
+        name="Unknown Length",
+        duration=0,
+        provider_mappings={
+            ProviderMapping(
+                item_id="http://example.com/live.mp3",
+                provider_domain="builtin",
+                provider_instance="builtin",
+            ),
+        },
+    )
+
+    m3u_data = generate_m3u("Playlist", [media_item_to_playlist_item(track)])
+
+    assert "#EXTINF:-1,Unknown Length" in m3u_data
+    parsed = parse_m3u(m3u_data)
+    assert len(parsed) == 1
+    assert parsed[0].length is None
+    assert parsed[0].title == "Unknown Length"
+
+
+# --------------------------------------------------------------------------- #
+#  construct_media_item_from_playlist_item — entries without #EXTPROV          #
+# --------------------------------------------------------------------------- #
+
+
+def _mass_with_builtin() -> MagicMock:
+    """Return a mock mass whose only resolvable provider is builtin."""
+
+    class DummyProvider:
+        domain = "builtin"
+        instance_id = "builtin"
+
+    mass = MagicMock()
+    mass.get_provider.side_effect = lambda ref: DummyProvider() if ref == "builtin" else None
+    return mass
+
+
+def test_construct_plain_url_gets_builtin_mapping() -> None:
+    """A bare stream URL with no #EXTPROV must still produce a usable provider mapping."""
+    item = PlaylistItem(path="http://stream.example.com/radio1")
+
+    media_item = construct_media_item_from_playlist_item(
+        item, cast("Any", _mass_with_builtin()), MediaType.RADIO
+    )
+
+    assert isinstance(media_item, Radio)
+    # an item with no mappings never reaches library_add and stays unplayable
+    assert len(media_item.provider_mappings) == 1
+    mapping = next(iter(media_item.provider_mappings))
+    assert mapping.provider_domain == "builtin"
+    assert mapping.available is True
+    # builtin's item_id *is* the stream URL, so it must not be truncated to its last segment
+    assert mapping.item_id == "http://stream.example.com/radio1"
+    assert media_item.item_id == "http://stream.example.com/radio1"
+
+
+def test_construct_defaults_to_requested_media_type() -> None:
+    """An entry without #EXTMA media_type honours the caller's default instead of Track."""
+    item = PlaylistItem(path="http://stream.example.com/radio1")
+    mass = cast("Any", _mass_with_builtin())
+
+    assert isinstance(
+        construct_media_item_from_playlist_item(item, mass, MediaType.RADIO),
+        Radio,
+    )
+    # the default stays Track for every existing caller
+    assert isinstance(construct_media_item_from_playlist_item(item, mass), Track)
 
 
 # --------------------------------------------------------------------------- #
