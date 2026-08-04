@@ -993,6 +993,7 @@ def _enumerate_ip_addresses(include_ipv6: bool) -> tuple[str, ...]:
             _sock6.close()
     # get all IP addresses of all network interfaces
     adapters = ifaddr.get_adapters()
+    seen_ipv6_prefixes: set[tuple[str, bytes]] = set()
     for adapter in adapters:
         for ip in adapter.ips:
             if ip.is_IPv6 and not include_ipv6:
@@ -1005,6 +1006,15 @@ def _enumerate_ip_addresses(include_ipv6: bool) -> tuple[str, ...]:
             if ip_str.startswith(("::1", "::ffff:", "fe80")):
                 # filter out IPv6 loopback/link-local address
                 continue
+            if ip.is_IPv6:
+                # keep only the first address of each /64: SLAAC privacy extensions add
+                # a new temporary address per rotation within the same prefix while the
+                # first one is the stable address, so announcing the rest only fills the
+                # mDNS records with addresses the host stops holding
+                ipv6_prefix = (adapter.name, ip_address(ip_str).packed[:8])
+                if ipv6_prefix in seen_ipv6_prefixes:
+                    continue
+                seen_ipv6_prefixes.add(ipv6_prefix)
             if ip_str == primary_ip:
                 score = 10
             elif ip_str.startswith(("192.168.",)):

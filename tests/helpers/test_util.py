@@ -321,6 +321,127 @@ class TestGetIpAddresses:
         assert enumerate_mock.call_count == 1
 
 
+class TestEnumerateIpAddresses:
+    """_enumerate_ip_addresses filters and ranks the addresses of all adapters."""
+
+    @pytest.fixture(autouse=True)
+    def _no_primary_ip(self) -> Iterator[None]:
+        """Neutralize the primary-IP probe so ranking never depends on the test host."""
+        with patch("music_assistant.helpers.util.socket.socket") as mock_socket:
+            mock_socket.return_value.connect.side_effect = OSError
+            yield
+
+    def test_temporary_addresses_within_one_prefix_are_dropped(self) -> None:
+        """Only the first IPv6 address of a /64 is kept (the rest are rotating temporaries)."""
+        adapters = [
+            _make_adapter(
+                "eth0",
+                ipv6_addrs=[
+                    "2001:db8:0:1:45f:fbc1:f274:46ab",
+                    "2001:db8:0:1:2cfa:5e0c:b80d:dac6",
+                    "2001:db8:0:1:1d31:37fa:bc4d:e2f4",
+                ],
+            ),
+        ]
+        with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+            result = util._enumerate_ip_addresses(include_ipv6=True)
+        assert result == ("2001:db8:0:1:45f:fbc1:f274:46ab",)
+
+    def test_distinct_prefixes_on_one_adapter_are_kept(self) -> None:
+        """Addresses in different /64s on the same adapter all survive."""
+        adapters = [
+            _make_adapter(
+                "eth0",
+                ipv6_addrs=[
+                    "fd3a:ce91:4b25:0:1cb3:49d2:d3d5:4001",
+                    "2001:db8:0:1:45f:fbc1:f274:46ab",
+                    "2001:db8:0:2:45f:fbc1:f274:46ab",
+                ],
+            ),
+        ]
+        with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+            result = util._enumerate_ip_addresses(include_ipv6=True)
+        assert result == (
+            "fd3a:ce91:4b25:0:1cb3:49d2:d3d5:4001",
+            "2001:db8:0:1:45f:fbc1:f274:46ab",
+            "2001:db8:0:2:45f:fbc1:f274:46ab",
+        )
+
+    def test_prefix_is_tracked_per_adapter(self) -> None:
+        """The same /64 on two adapters keeps one address per adapter."""
+        adapters = [
+            _make_adapter(
+                "eth0",
+                ipv6_addrs=["2001:db8:0:1:1::1", "2001:db8:0:1:1::2"],
+            ),
+            _make_adapter(
+                "eth1",
+                ipv6_addrs=["2001:db8:0:1:2::1", "2001:db8:0:1:2::2"],
+            ),
+        ]
+        with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+            result = util._enumerate_ip_addresses(include_ipv6=True)
+        assert result == ("2001:db8:0:1:1::1", "2001:db8:0:1:2::1")
+
+    def test_ipv4_addresses_are_not_deduplicated(self) -> None:
+        """Multiple IPv4 addresses in one subnet on one adapter are all kept."""
+        adapters = [
+            _make_adapter("eth0", ipv4_addrs=["192.168.1.10", "192.168.1.11"]),
+        ]
+        with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+            result = util._enumerate_ip_addresses(include_ipv6=False)
+        assert result == ("192.168.1.10", "192.168.1.11")
+
+    def test_ipv6_is_skipped_when_not_requested(self) -> None:
+        """Without include_ipv6 only the IPv4 addresses are returned."""
+        adapters = [
+            _make_adapter("eth0", ipv4_addrs=["192.168.1.10"], ipv6_addrs=["2001:db8:0:1::1"]),
+        ]
+        with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+            result = util._enumerate_ip_addresses(include_ipv6=False)
+        assert result == ("192.168.1.10",)
+
+    def test_loopback_and_link_local_are_filtered(self) -> None:
+        """Loopback, APIPA and link-local addresses never make it into the result."""
+        adapters = [
+            _make_adapter("lo", ipv4_addrs=["127.0.0.1"], ipv6_addrs=["::1"]),
+            _make_adapter(
+                "eth0",
+                ipv4_addrs=["169.254.1.5", "192.168.1.10"],
+                ipv6_addrs=["fe80::186f:912f:998:e451", "::ffff:192.168.1.10"],
+            ),
+        ]
+        with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+            result = util._enumerate_ip_addresses(include_ipv6=True)
+        assert result == ("192.168.1.10",)
+
+    def test_filtered_addresses_do_not_claim_a_prefix(self) -> None:
+        """A filtered link-local address does not stop a routable address from being kept."""
+        adapters = [
+            _make_adapter(
+                "eth0",
+                ipv6_addrs=["fe80::186f:912f:998:e451", "2001:db8:0:1::1"],
+            ),
+        ]
+        with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+            result = util._enumerate_ip_addresses(include_ipv6=True)
+        assert result == ("2001:db8:0:1::1",)
+
+    def test_ranking_puts_the_primary_address_first(self) -> None:
+        """The address of the default route outranks the other private addresses."""
+        adapters = [
+            _make_adapter("eth0", ipv4_addrs=["192.168.1.10"]),
+            _make_adapter("eth1", ipv4_addrs=["10.0.0.5"]),
+        ]
+        with (
+            patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters),
+            patch("music_assistant.helpers.util.socket.socket") as mock_socket,
+        ):
+            mock_socket.return_value.getsockname.return_value = ("10.0.0.5", 0)
+            result = util._enumerate_ip_addresses(include_ipv6=False)
+        assert result == ("10.0.0.5", "192.168.1.10")
+
+
 class TestSanitizeHttpHeaderValue:
     """sanitize_http_header_value strips characters aiohttp forbids in response headers."""
 
@@ -481,6 +602,36 @@ class _GatedMusicProvider(MusicProvider):
             name="Track",
             provider_mappings={_provider_mapping(prov_track_id)},
         )
+
+
+def _make_adapter(
+    name: str,
+    ipv4_addrs: list[str] | None = None,
+    ipv6_addrs: list[str] | None = None,
+) -> MagicMock:
+    """
+    Build a stand-in for an ifaddr.Adapter holding the given addresses.
+
+    :param name: The adapter name.
+    :param ipv4_addrs: The IPv4 addresses of the adapter.
+    :param ipv6_addrs: The IPv6 addresses of the adapter.
+    """
+    adapter = MagicMock()
+    adapter.name = name
+    ips = []
+    for addr in ipv4_addrs or []:
+        ip_mock = MagicMock()
+        ip_mock.is_IPv6 = False
+        ip_mock.ip = addr
+        ips.append(ip_mock)
+    for addr in ipv6_addrs or []:
+        ip_mock = MagicMock()
+        ip_mock.is_IPv6 = True
+        # ifaddr reports IPv6 addresses as (address, flowinfo, scope_id) tuples
+        ip_mock.ip = (addr, 0, 0)
+        ips.append(ip_mock)
+    adapter.ips = ips
+    return adapter
 
 
 def _provider_mapping(item_id: str) -> ProviderMapping:
