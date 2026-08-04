@@ -30,6 +30,7 @@ from music_assistant.controllers.config.flows import SetupFlowMixin
 from music_assistant.controllers.config.migrations import (
     migrate,
     migrate_hass_engine_selection,
+    migrate_nfs_subfolder_into_export_path,
     migrate_provider_setup_data,
 )
 from music_assistant.controllers.config.players import PlayerConfigMixin
@@ -81,7 +82,14 @@ class ConfigController(
         # one-off: move pre-setup-flow provider values into (encrypted) setup_data.
         # runs here, after encryption is initialized, so string values are encrypted
         # at rest (the migrate() pass in _load() runs before encryption is available).
-        if migrate_provider_setup_data(self._data, self.encrypt_string):
+        setup_data_migrated = migrate_provider_setup_data(self._data, self.encrypt_string)
+        # one-off: fold a stored NFS subfolder into its export path. Same phase and reason as
+        # above, and after it so a legacy install's keys have landed in setup_data by now.
+        # TODO: remove after 2.10 release
+        nfs_subfolder_migrated = migrate_nfs_subfolder_into_export_path(
+            self._data, self.encrypt_string, self.decrypt_string
+        )
+        if setup_data_migrated or nfs_subfolder_migrated:
             self.save(immediate=True)
         # one-off: hand the Home Assistant plugin's former single TTS/AI entity choice over to
         # the providers that select their own engine now. Runs here for the same reason: the

@@ -1235,6 +1235,8 @@
   "provider.filesystem_nfs.config_entries.nfs_version.options.4.2": "NFS 4.2",
   "provider.filesystem_nfs.config_entries.subfolder.description": "[optional] Use if your music is stored in a sublevel of the export. E.g. 'collections' or 'albums/A-K'.",
   "provider.filesystem_nfs.config_entries.subfolder.label": "Subfolder",
+  "provider.filesystem_nfs.errors.invalid_subfolder": "Invalid subfolder {0}: it must be a relative path inside the export.",
+  "provider.filesystem_nfs.errors.subfolder_not_found": "Subfolder {0} does not exist in the NFS export.",
   "provider.filesystem_nfs.manifest.description": "Play music and audiobooks stored on NFS connected network drives.",
   "provider.filesystem_onedrive.config_entries.auth.description": "Sign in with Microsoft to grant Music Assistant read-only access to your OneDrive files.",
   "provider.filesystem_onedrive.config_entries.auth.label": "Authorize with Microsoft",
