@@ -424,7 +424,12 @@ class SnapCastProvider(PlayerProvider):
                     zeroconf_type,
                     name=f"Snapcast.{zeroconf_type}",
                     properties={"is_mass": "true"},
-                    addresses=[await get_ip_pton(str(self.mass.streams.publish_ip))],
+                    # the snapserver listens on all interfaces, so advertise every address
+                    # we can be reached on and let a client pick one on its own network
+                    addresses=[
+                        await get_ip_pton(address)
+                        for address in self.mass.streams.publish_addresses
+                    ],
                     port=port,
                     server=f"{socket.gethostname()}.local",
                 )
