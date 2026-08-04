@@ -41,6 +41,7 @@ from music_assistant.constants import (
     LIVE_INDICATORS,
     SOUNDTRACK_INDICATORS,
     VERBOSE_LOG_LEVEL,
+    WILDCARD_BIND_IPS,
 )
 from music_assistant.helpers.process import check_output
 
@@ -956,10 +957,27 @@ async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
     # so concurrent callers always end up awaiting the same probe
     if not (pending := _ip_addresses_pending.get(include_ipv6)):
         pending = asyncio.create_task(_probe())
+        pending.add_done_callback(_log_ip_probe_failure)
         _ip_addresses_pending[include_ipv6] = pending
-    # shield the shared probe: a caller awaiting a task holds it as its fut_waiter,
-    # so cancelling that caller would otherwise cancel the probe for all other callers
-    return await asyncio.shield(pending)
+    # wait for the shared probe instead of awaiting it directly: a caller awaiting a task
+    # holds it as its fut_waiter, so cancelling that caller would otherwise cancel the probe
+    # for all other callers. asyncio.shield achieves the same, but as of Python 3.14 a
+    # cancelled caller makes it report the probe's exception through
+    # loop.call_exception_handler, even when another caller already handled it.
+    if not pending.done():
+        await asyncio.wait((pending,))
+    return pending.result()
+
+
+def _log_ip_probe_failure(probe: asyncio.Task[tuple[str, ...]]) -> None:
+    """Log (and thereby retrieve) the exception of a finished address probe, if any."""
+    if probe.cancelled():
+        return
+    # every waiter that is still around reports the failure itself, so a debug line is
+    # enough here; retrieving the exception is what keeps asyncio from reporting it as
+    # "Task exception was never retrieved" once the probe is garbage collected
+    if (err := probe.exception()) is not None:
+        LOGGER.debug("Enumerating IP addresses failed: %s", err)
 
 
 def _enumerate_ip_addresses(include_ipv6: bool) -> tuple[str, ...]:
@@ -1110,7 +1128,7 @@ async def select_free_port(range_start: int, range_end: int, host: str | None = 
             if not await is_port_in_use(port, host=host):
                 _reserved_ports[port] = now + _PORT_RESERVATION_TTL
                 return port
-    msg = "No free port available"
+    msg = f"No free port available in range {range_start}-{range_end - 1}"
     raise OSError(msg)
 
 
@@ -1154,7 +1172,7 @@ async def get_source_ip_for_target(target_ip: str) -> str:
                 _sock.settimeout(1.0)
                 _sock.connect(route_target)
                 routed_ip = str(_sock.getsockname()[0])
-                if routed_ip and routed_ip not in ("0.0.0.0", "::", ""):
+                if routed_ip and routed_ip not in WILDCARD_BIND_IPS:
                     return routed_ip
             except OSError:
                 pass
@@ -1969,13 +1987,28 @@ class _SupportsMass(Protocol):
 def guard_single_request[SelfT: _SupportsMass, **P, R](
     func: Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]],
 ) -> Callable[Concatenate[SelfT, P], Coroutine[Any, Any, R]]:
-    """Guard single request to a function."""
+    """
+    Ensure concurrent calls with identical arguments result in a single request.
+
+    Callers arriving while an identical call is already in flight await that same call and
+    receive its result. Cancelling one caller leaves both the request and the other callers
+    unaffected. Calls count as identical when they are made on the same object with equally
+    represented arguments.
+
+    :param func: The coroutine method to guard.
+    """
 
     @functools.wraps(func)
     async def wrapper(self: SelfT, *args: P.args, **kwargs: P.kwargs) -> R:
         mass = self.mass
-        # create a task_id dynamically based on the function and args/kwargs
-        cache_key_parts = [func.__class__.__name__, func.__name__, *args]
+        # create a task_id dynamically based on the bound method and args/kwargs.
+        # the instance is part of the key because a decorated method may be inherited by
+        # multiple subclasses (all media controllers share
+        # MediaControllerBase.get_provider_item) and a class may have multiple instances
+        # (e.g. a provider set up twice), which must never join each other's flight.
+        # id(self) is stable while a flight is live because the task references self;
+        # the class name only serves to keep the task_id readable while debugging.
+        cache_key_parts = [type(self).__name__, id(self), func.__qualname__, *args]
         for key in sorted(kwargs.keys()):
             cache_key_parts.append(f"{key}{kwargs[key]}")
         task_id = ".".join(map(str, cache_key_parts))
@@ -1988,6 +2021,13 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
             eager_start=True,
             **kwargs,
         )
-        return await task
+        # wait for the shared task instead of awaiting it directly: a caller awaiting a
+        # task holds it as its fut_waiter, so cancelling that caller would cancel the
+        # request for every other caller too. asyncio.shield achieves the same, but as of
+        # Python 3.14 a cancelled caller makes it report the request's exception through
+        # loop.call_exception_handler, even when another caller already handled it.
+        if not task.done():
+            await asyncio.wait((task,))
+        return task.result()
 
     return wrapper

@@ -36,8 +36,11 @@ The public game state is guest-safe by construction. Common state contains:
   the revealed shared ``timeline`` and redacted ``bonus_definitions``; the
   current song, year, correct placement and bonus answers remain protected.
 - reveal/finished rounds additionally expose common ``answer_label``,
-  ``track_uri``, ``image_url``, ``duration`` and ``ended_at`` fields. The
-  answer strategy adds the revealed correct option or timeline entry and
+  ``track_uri``, ``image_url``, ``duration``, ``audio_started_at`` and
+  ``ended_at`` fields. ``audio_started_at`` is when the round's track became
+  audible: it trails ``started_at`` by the playback startup latency, so clients
+  following the audio (e.g. synced lyrics) should prefer it over ``started_at``.
+  The answer strategy adds the revealed correct option or timeline entry and
   answer-specific player results. ``auto_advance_at`` contains the authoritative
   next-round deadline when the backend scheduled automatic advancement.
 
@@ -188,6 +191,14 @@ REPLAY_AUTO_START_SECONDS = 30
 # minimum time players get to see the reveal/scoreboard before the game
 # advances, even when the round track has (almost) finished playing
 MIN_REVEAL_SECONDS = 10.0
+
+# a track is not audible the instant playback is commanded: the stream still has to be
+# resolved, encoded and buffered by the receiver. ASSUMED_AUDIO_START_LATENCY is what we
+# assume when the player never reported a real position, while the MIN/MAX pair bounds a
+# player-reported start relative to the play command so a stale report is discarded.
+ASSUMED_AUDIO_START_LATENCY = 1.0
+MIN_REPORTED_AUDIO_START_LATENCY = -1.0
+MAX_REPORTED_AUDIO_START_LATENCY = 10.0
 
 
 class _PlaybackPreference(TypedDict):
@@ -984,6 +995,8 @@ class MusicQuizPlugin(PluginProvider):
         self.mass.cancel_timer(self._reveal_timer_id)
         current_round = get_current_round(game)
         current_round.auto_advance_at = None
+        if quiz_type.plays_track_before_answering:
+            current_round.audio_started_at = self._audio_started_at(current_round)
         now = time.time()
         advance_delay = quiz_type.completed_reveal_auto_advance_delay if completed else None
         if advance_delay is None:
@@ -1501,6 +1514,44 @@ class MusicQuizPlugin(PluginProvider):
                 await self.mass.player_queues.stop(self._playback_session.queue_id)
             except Exception as err:
                 self.logger.warning("Could not stop Music Quiz playback: %s", err)
+
+    def _audio_started_at(self, game_round: MusicQuizRound) -> float:
+        """
+        Return the timestamp at which the round's track became audible.
+
+        :param game_round: Started round whose playback should be timed.
+        """
+        started_at = game_round.started_at or 0
+        latency = ASSUMED_AUDIO_START_LATENCY
+        if (reported := self._reported_playback_start()) is not None:
+            reported_latency = reported - started_at
+            if (
+                MIN_REPORTED_AUDIO_START_LATENCY
+                <= reported_latency
+                <= MAX_REPORTED_AUDIO_START_LATENCY
+            ):
+                latency = reported_latency
+        return started_at + max(latency, 0.0)
+
+    def _reported_playback_start(self) -> float | None:
+        """Return when the playback target's reported position started, or None if it has none."""
+        if (session := self._playback_session) is None:
+            return None
+        if (player := self.mass.players.get_player(session.player_id)) is None:
+            return None
+        queue = self.mass.player_queues.get(session.queue_id)
+        # a flow stream reports its position across the whole queue rather than the
+        # current track, so its anchor is not this round's track start
+        if queue is not None and queue.flow_mode:
+            return None
+        elapsed = player.state.elapsed_time
+        last_updated = player.state.elapsed_time_last_updated
+        # providers report no position (Sendspin's play_media sets _attr_elapsed_time to None)
+        # or a zero position with a fresh timestamp before real playback progress lands,
+        # which would otherwise resolve to "audio started now"
+        if not elapsed or last_updated is None:
+            return None
+        return last_updated - elapsed
 
     async def _close_playback_session(self) -> None:
         """Close and drop the shared playback session under the playback lock."""
@@ -2060,6 +2111,7 @@ def _host_round(
         "image_url": game_round.image_url,
         "duration": game_round.duration,
         "started_at": game_round.started_at,
+        "audio_started_at": game_round.audio_started_at,
         "ended_at": game_round.ended_at,
         "auto_advance_at": game_round.auto_advance_at,
     }
@@ -2131,6 +2183,7 @@ def _public_round(
         state["track_uri"] = game_round.track_uri
         state["image_url"] = game_round.image_url
         state["duration"] = game_round.duration
+        state["audio_started_at"] = game_round.audio_started_at
         state["ended_at"] = game_round.ended_at
     return state
 

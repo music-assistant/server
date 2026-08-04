@@ -48,7 +48,7 @@ PLAYLIST_MEDIA_TYPES: Final[tuple[MediaType, ...]] = (
 
 # API_SCHEMA_VERSION: bump this when adding new features to the API commands (and models)
 # or small non-breaking changes to existing commands
-API_SCHEMA_VERSION: Final[int] = 41
+API_SCHEMA_VERSION: Final[int] = 42
 
 # MIN_SCHEMA_VERSION is the minimum API schema version that the current server
 # version can work with. Only bump when there are breaking changes to existing
@@ -128,6 +128,8 @@ CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
 WILDCARD_BIND_IPS: Final[tuple[str, ...]] = ("0.0.0.0", "::")
+# Port used by the built-in Sendspin server (runs next to, not behind, the webserver)
+SENDSPIN_SERVER_PORT: Final[int] = 8927
 CONF_AUTO_PLAY: Final[str] = "auto_play"
 CONF_PLAY_MEDIA_OVERRIDES_GROUP: Final[str] = "play_media_overrides_group"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
@@ -206,7 +208,6 @@ def _default_background_scan_concurrency() -> int:
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
-DEFAULT_PORT: Final[int] = 8095
 DEFAULT_BACKGROUND_SCAN_CONCURRENCY: Final[int] = _default_background_scan_concurrency()
 
 

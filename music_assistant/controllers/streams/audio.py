@@ -318,21 +318,14 @@ class StreamsAudio:
                     if not provider:
                         self.logger.debug(f"Skipping {prov_media} - provider not available")
                         continue  # provider not available ?
-                    # get streamdetails from provider; AudioSource items come from a
-                    # PluginProvider which carries a different signature (queue-scoped
-                    # context rather than media_type) — branch on provider type.
+                    # get streamdetails from provider; music and plugin providers
+                    # share this signature, so either type can own the item.
                     try:
                         BYPASS_THROTTLER.set(True)
-                        if media_item.media_type == MediaType.AUDIO_SOURCE:
-                            plugin_prov = cast("PluginProvider", provider)
-                            streamdetails = await plugin_prov.get_stream_details(
-                                prov_media.item_id, queue_item.queue_id
-                            )
-                        else:
-                            music_prov = cast("MusicProvider", provider)
-                            streamdetails = await music_prov.get_stream_details(
-                                prov_media.item_id, media_item.media_type
-                            )
+                        stream_prov = cast("MusicProvider | PluginProvider", provider)
+                        streamdetails = await stream_prov.get_stream_details(
+                            prov_media.item_id, media_item.media_type
+                        )
                     except AudioError as err:
                         last_audio_error = err
                         self.logger.warning(str(err))
@@ -1683,18 +1676,18 @@ class StreamsAudio:
                         streamdetails.uri,
                         asyncio.get_event_loop().time() - stream_started_at,
                     )
-                # trigger pre-buffering of the next track well before end
-                # to ensure the raw PCM is ready when the next track needs to be streamed.
-                # only do this for tracks: live sources (radio, audio_source) open an
-                # upstream connection that would sit idle and likely time out before the
-                # player actually consumes it.
+                # trigger pre-buffering of the next item well before end
+                # to ensure the raw PCM is ready when the next item needs to be streamed.
+                # tracks and sound effects are finite files that fill and close immediately;
+                # live sources (radio, audio_source) open an upstream connection that would
+                # sit idle and likely time out before the player actually consumes it.
                 if (
                     not next_buffer_triggered
                     and streamdetails.duration
                     and (queue := self.mass.player_queues.get_active_queue(queue_item.queue_id))
                     and queue.next_item
                     and queue.next_item.queue_item_id != queue_item.queue_item_id
-                    and queue.next_item.media_type == MediaType.TRACK
+                    and queue.next_item.media_type in (MediaType.TRACK, MediaType.SOUND_EFFECT)
                     and (bytes_received / pcm_format.pcm_sample_size + seek_position)
                     >= streamdetails.duration - 60
                 ):
@@ -3424,8 +3417,8 @@ class StreamsAudio:
             provider = self.mass.get_provider(mapping.provider)
             if provider is None:
                 raise MediaNotFoundError(f"Provider {mapping.provider} is not available")
-            provider = cast("MusicProvider", provider)
-            streamdetails = await provider.get_stream_details(
+            stream_prov = cast("MusicProvider | PluginProvider", provider)
+            streamdetails = await stream_prov.get_stream_details(
                 mapping.item_id, MediaType.SOUND_EFFECT
             )
         except Exception as err:

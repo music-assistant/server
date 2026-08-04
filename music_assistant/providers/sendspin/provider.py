@@ -59,6 +59,7 @@ from music_assistant.constants import (
     CONF_LOG_LEVEL,
     CONF_PLAYERS,
     CONF_PROVIDERS,
+    SENDSPIN_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.helpers.util import format_ip_for_url
@@ -804,7 +805,7 @@ class SendspinProvider(PlayerProvider):
         # Start server for handling incoming Sendspin connections from clients
         # and mDNS discovery of new clients
         await self.server_api.start_server(
-            port=8927,
+            port=SENDSPIN_SERVER_PORT,
             host=self.mass.streams.bind_ip,
             advertise_addresses=[self.mass.streams.publish_ip],
         )
