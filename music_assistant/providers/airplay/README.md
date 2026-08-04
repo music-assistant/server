@@ -631,6 +631,14 @@ The bridge consists of:
 - **`SendspinAirPlayBridge`**: Manages the bridge for a single AirPlay player
 - **`SendspinBridgeManager`**: Manages bridges for all AirPlay players
 
+### Transport Loss
+
+The CLI accepts and discards audio once its process is gone, so a lost transport is only visible on the `AirPlayStream` itself. The bridge checks it on every chunk: the dead stream is released and a fresh one is cold-started and re-anchored on the group's live timeline, so the speaker rejoins where the rest of the group is playing.
+
+Giving up comes in two strengths, and what separates them is whether the transport was ever playing. A start that simply failed — a sleeping device, one connect timeout, a protocol that never became ready — only stops the current stream; the bridge stays grouped and the next Sendspin stream starts it over. Giving up on a transport that *had* been playing means the speaker went away mid-stream: either its recovery could not reconnect, or it dropped the transport again within `BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS` of the last one. The bridge then also leaves the Sendspin session, because that silence is not going to end on its own and the visible player must stop reporting playback nobody can hear.
+
+The group re-join recovery in `stream.py` only covers native AirPlay grouping — a bridged player's group membership lives on its Sendspin player, not on the AirPlay one.
+
 ### Requirements
 
 - Sendspin provider must be enabled

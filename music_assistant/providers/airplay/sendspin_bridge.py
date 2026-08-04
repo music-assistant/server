@@ -117,6 +117,15 @@ MAX_HELD_CHUNKS: int = 4_000
 PAD_BLOCK_FRAMES: int = BRIDGE_SAMPLE_RATE
 SILENCE_BLOCK: bytes = b"\x00" * (PAD_BLOCK_FRAMES * BRIDGE_CHANNELS * BRIDGE_BYTES_PER_SAMPLE)
 
+# A transport that dies again this soon after a recovery is not coming back by
+# itself (a rebooting device, a receiver that accepts the connection and drops
+# it again). Re-anchoring once more would only churn CLI processes, so the
+# bridge gives up instead. Measured from the moment the loss is noticed, which
+# includes the several seconds a cold recovery needs before audio resumes (a
+# process spawn, the clock-readiness wait and the join headroom), so this sits
+# far enough beyond that for a recovered transport to prove itself.
+BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS: float = 30.0
+
 
 def get_bridge_client_id(airplay_player: AirPlayPlayer) -> str | None:
     """
@@ -277,6 +286,13 @@ class SendspinAirPlayBridge:
         # the cap does not re-sum the whole backlog on every chunk.
         self._held_us: int = 0
         self._cleanup_task: asyncio.Task[None] | None = None
+        # Monotonic instant of the last recovery from a lost transport (None when
+        # none happened yet), used to tell a one-off loss from a flapping device.
+        self._last_transport_recovery: float | None = None
+        # Whether the transport being started is replacing one that was already
+        # playing. Giving up then means a speaker that went away mid-stream, as
+        # opposed to one that was never reachable to begin with.
+        self._recovering_transport = False
         # Timer id for the deferred teardown on stream end. A seek/next ends the
         # sendspin stream and immediately starts a new one; deferring the CLI
         # teardown across that gap lets the next stream reuse the connected
@@ -435,6 +451,12 @@ class SendspinAirPlayBridge:
             self.airplay_player.display_name,
             request.connection_reason,
         )
+        # Each Sendspin stream gets its own recovery budget: a loss on the
+        # previous one says nothing about the device's health on this one. This
+        # is settled before anything can return early, so no stream ever
+        # inherits the previous one's verdict.
+        self._last_transport_recovery = None
+        self._recovering_transport = False
         if not self.airplay_player.available:
             self.logger.warning(
                 "Cannot start Sendspin stream for %s: player not available",
@@ -488,6 +510,20 @@ class SendspinAirPlayBridge:
         Called via the BridgePlayerRole.on_stream_start callback when the
         PushStream begins delivering audio chunks.
         """
+        self._restart_transport()
+
+    def _restart_transport(self) -> None:
+        """
+        Release the current transport and arm a fresh one for the next chunk.
+
+        Leaves the bridge unanchored with a running writer, so the next chunk
+        Sendspin delivers starts a transport and anchors it where that chunk
+        sits on the group's timeline. A warm-eligible stream is the exception:
+        it is kept so the new media rides its flush-refill instead.
+        """
+        # A teardown deferred by an earlier stream end would otherwise fire into
+        # the transport armed here, so it is dropped along with the old one.
+        self.mass.cancel_timer(self._teardown_timer_id)
         # The stream might not yet be cleaned up completely (on rapid skips for example).
         # A warm-eligible stream is kept out of the snapshot so it survives into the
         # new stream instead of being torn down (see _stream_is_warm_eligible).
@@ -575,12 +611,7 @@ class SendspinAirPlayBridge:
                     self.airplay_player.display_name,
                 )
                 return
-            # Stop accepting chunks, unblock the writer, and schedule full cleanup
-            self._is_streaming = False
-            self._held_chunks.clear()
-            self._held_us = 0
-            self._airplay_stream_ready.set()
-            self._schedule_cleanup()
+            self._abandon_streaming()
 
     async def _start_cold_stream(self, stream: AirPlayStream) -> bool:
         """
@@ -807,6 +838,47 @@ class SendspinAirPlayBridge:
         """
         self._cleanup_task = self.mass.create_task(self._stop_streaming_locked())
 
+    def _abandon_streaming(self) -> None:
+        """
+        Give up on this stream: stop accepting chunks and tear the transport down.
+
+        A transport that was never established (a sleeping device, one connect
+        timeout) leaves the bridge grouped, so the next Sendspin stream simply
+        starts it over. Giving up on one that was already playing means the
+        speaker went away for good, and the bridge leaves the session so its
+        silence reaches the player instead of hiding behind the group state.
+        """
+        self._is_streaming = False
+        self._held_chunks.clear()
+        self._held_us = 0
+        # unblock a writer still waiting for a stream that will never be ready
+        self._airplay_stream_ready.set()
+        self._schedule_cleanup()
+        if self._recovering_transport:
+            self._recovering_transport = False
+            self.mass.create_task(self._leave_sendspin_session())
+
+    async def _leave_sendspin_session(self) -> None:
+        """
+        Take the bridge out of Sendspin playback, keeping it registered.
+
+        Sendspin reports playback from the group's own state, so a bridge whose
+        speaker is unreachable would hold the visible player on PLAYING while
+        nothing is audible. Leaving surfaces that silence: a shared group plays
+        on without this speaker, a solo one stops. The client stays registered,
+        so the player survives to be grouped again.
+        """
+        if not (client := self._sendspin_client):
+            return
+        try:
+            await client.quiesce_to_solo_stopped()
+        except Exception as err:
+            self.logger.warning(
+                "Could not take %s out of its Sendspin session: %s",
+                self.airplay_player.display_name,
+                err,
+            )
+
     async def _stop_streaming_locked(self) -> None:
         """Serialize streaming teardown with other stop/start operations."""
         async with self._lock:
@@ -866,9 +938,11 @@ class SendspinAirPlayBridge:
                     "Protocol start task failed for %s, stopping streaming",
                     self.airplay_player.display_name,
                 )
-                self._is_streaming = False
-                self._schedule_cleanup()
+                self._abandon_streaming()
                 return
+
+        if self._transport_lost() and not self._recover_transport():
+            return
 
         if self._airplay_stream_start_task is None:
             # Provisionally anchor byte 0 to the instant Sendspin scheduled for the
@@ -939,6 +1013,53 @@ class SendspinAirPlayBridge:
             delta_seconds * 1000,
             shift_seconds * 1000,
         )
+
+    def _transport_lost(self) -> bool:
+        """
+        Return whether the anchored transport died while the bridge kept feeding it.
+
+        The CLI drops writes without raising once its process is gone, so a dead
+        transport is only visible on the stream itself. Only an anchored stream
+        with no start in flight can be judged: while a cold start or a warm
+        handover runs it owns the transport and reports its own failures.
+        """
+        start_task = self._airplay_stream_start_task
+        if start_task is None or not start_task.done():
+            return False
+        stream = self._airplay_stream
+        return self._started and stream is not None and not stream.running
+
+    def _recover_transport(self) -> bool:
+        """
+        Re-anchor the bridge after a transport loss, unless the device keeps dropping.
+
+        :return: True when a fresh transport is armed for the current chunk,
+            False when the bridge gave up and stopped streaming.
+        """
+        now = time.monotonic()
+        last_recovery = self._last_transport_recovery
+        if (
+            last_recovery is not None
+            and now - last_recovery < BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS
+        ):
+            self.logger.error(
+                "AirPlay transport for %s died again within %.0fs of the previous recovery, "
+                "giving up and taking it out of the Sendspin session",
+                self.airplay_player.display_name,
+                BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS,
+            )
+            self._abandon_streaming()
+            return False
+        self._last_transport_recovery = now
+        self.logger.warning(
+            "AirPlay transport for %s was lost mid-stream, re-joining the Sendspin timeline",
+            self.airplay_player.display_name,
+        )
+        # From here the bridge is replacing a transport that was playing, so
+        # failing to bring it back means the speaker is gone rather than late.
+        self._recovering_transport = True
+        self._restart_transport()
+        return True
 
     def _hold_chunk(self, chunk: AudioChunk) -> None:
         """
@@ -1051,8 +1172,11 @@ class SendspinAirPlayBridge:
                     "Timed out waiting for AirPlay protocol to become ready for %s",
                     self.airplay_player.display_name,
                 )
-                self._is_streaming = False
-                self._schedule_cleanup()
+                if self._writer_task is asyncio.current_task():
+                    # Only the writer that still feeds the bridge may give up on
+                    # it; one left behind by a slow teardown speaks for a stream
+                    # that is already gone.
+                    self._abandon_streaming()
                 return
             while True:
                 data = await self._write_queue.get()
