@@ -1286,7 +1286,9 @@ class SendspinPlaybackSession:
         clients with a different preferred rate up/down-sample in their own DSP
         step on the receiving side.
 
-        Channel count follows the leader's advertised capability (from ClientHello)
+        Channel count follows the leader's advertised capability (from ClientHello),
+        but only when the player has explicitly opted in via CONF_OUTPUT_CHANNELS.
+        Otherwise the session stays stereo regardless of what the client advertises.
         Multichannel is restricted to ungrouped players.
         """
         leader_output = self._get_member_output_format(self.player.player_id)
@@ -1295,7 +1297,15 @@ class SendspinPlaybackSession:
             sample_rate = min(sample_rate, _LOSSY_MAX_SAMPLE_RATE)
         session_channels = 2
         is_grouped = bool(self._members or self.pending_join_members)
-        if not is_grouped:
+        raw_output_channels = self.player.mass.config.get_raw_player_config_value(
+            self.player.player_id,
+            CONF_OUTPUT_CHANNELS,
+            "stereo",
+        )
+        multichannel_opted_in = (
+            str(raw_output_channels or "stereo").strip().lower() == "multichannel"
+        )
+        if not is_grouped and multichannel_opted_in:
             advertised = int(leader_output.channels) if leader_output.channels else 2
             session_channels = resolve_channel_count(advertised)
         pcm_format = AudioFormat(
