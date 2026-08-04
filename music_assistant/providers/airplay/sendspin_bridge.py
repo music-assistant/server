@@ -918,12 +918,15 @@ class SendspinAirPlayBridge:
             return
         shift_seconds = stream.cumulative_shift_seconds
         delta_seconds = shift_seconds - self._applied_shift_seconds
-        if delta_seconds <= 0:
+        if delta_seconds < 0:
             # The binary zeroes its running total on every START, so a total that
             # went backwards means the stream re-anchored outside _anchor_stream:
             # take the new baseline rather than walking a mapping that START has
-            # already replaced.
+            # already replaced, and drop a correction that mapping no longer owes.
             self._applied_shift_seconds = shift_seconds
+            self._absorbing_shift = False
+            return
+        if not delta_seconds:
             return
         self._applied_shift_seconds = shift_seconds
         self._drop_until_us += round(delta_seconds * 1_000_000)

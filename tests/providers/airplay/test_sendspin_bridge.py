@@ -989,6 +989,28 @@ def test_a_cursor_off_the_frame_grid_still_absorbs_quietly() -> None:
     logger.warning.assert_called_once()
 
 
+def test_an_absorption_spanning_chunks_reports_only_the_reanchor() -> None:
+    """
+    A shift takes several chunks to trim off, and stays one report throughout.
+
+    The binary keeps reporting the same running total while the trim works, so
+    every chunk until the cursor is back on the timeline realigns by design.
+    """
+    bridge, stream, first_ts = _shifted_bridge(0.0)
+    logger = cast("MagicMock", bridge.logger)
+    for index in range(1, 11):
+        bridge._on_audio_chunk(_pcm_chunk(first_ts + 100_000 * index))
+    logger.warning.assert_not_called()
+
+    stream.cumulative_shift_seconds = 0.5
+    # Five chunks of content are trimmed away before the cursor catches up.
+    for index in range(11, 17):
+        bridge._on_audio_chunk(_pcm_chunk(first_ts + 100_000 * index))
+
+    logger.warning.assert_called_once()
+    assert not bridge._absorbing_shift
+
+
 def test_an_unchanged_reanchor_total_is_folded_only_once() -> None:
     """The binary reports a running total, so only what is new moves the anchor."""
     bridge, _, first_ts = _shifted_bridge(0.5)
@@ -1019,6 +1041,27 @@ def test_a_reset_reanchor_total_rebaselines_without_moving_the_anchor() -> None:
 
     assert bridge._drop_until_us == anchor_after_fold
     assert bridge._applied_shift_seconds == 0.0
+
+
+def test_a_reset_reanchor_total_ends_the_absorption() -> None:
+    """
+    A total that went backwards leaves no correction outstanding to stay quiet for.
+
+    The START that zeroed the total replaced the mapping the trim was working
+    against, so a realignment after it is Sendspin timeline drift again and
+    worth reporting.
+    """
+    bridge, stream, first_ts = _shifted_bridge(0.5)
+    logger = cast("MagicMock", bridge.logger)
+    # Mid-absorption: the trim has not caught the cursor up to the timeline yet.
+    bridge._on_audio_chunk(_pcm_chunk(first_ts + 550_000))
+    logger.warning.reset_mock()
+
+    stream.cumulative_shift_seconds = 0.0
+    bridge._on_audio_chunk(_pcm_chunk(first_ts + 600_000))
+
+    assert not bridge._absorbing_shift
+    logger.warning.assert_called_once()
 
 
 async def test_anchoring_clears_the_folded_shift_baseline() -> None:
