@@ -228,7 +228,7 @@ async def test_import_plain_url_m3u_yields_playable_radios(radio_mass: MusicAssi
     items = await mass.music.radio.library_items(summary=False)
     assert len(items) == 1
     station = items[0]
-    # media type is forced to radio: without that this would have become a Track
+    # a bare url carries no #EXTMA, so import_radios supplies the media type itself
     assert isinstance(station, Radio)
     assert station.name == "Plain Station"
     # an item with no provider mappings never reaches library_add and stays unplayable
@@ -262,15 +262,28 @@ async def test_import_reports_unresolvable_station(radio_mass: MusicAssistant) -
     assert await mass.music.radio.library_count() == 0
 
 
-async def test_import_reports_non_url_entry(radio_mass: MusicAssistant) -> None:
-    """A radio station is a stream url, so a bare local path is rejected and reported."""
+@pytest.mark.parametrize(
+    ("path", "expected"),
+    [
+        # a radio station is a stream url, so a bare local path is not one
+        ("some/file.mp3", "not a stream url"),
+        # an entry that resolves to another media type must not be stored as a station
+        ("spotify://track/abc123", "is a track, not a radio station"),
+    ],
+)
+async def test_import_reports_entry_that_is_not_a_station(
+    radio_mass: MusicAssistant, path: str, expected: str
+) -> None:
+    """An entry that is not a radio station is reported, and nothing is stored for it."""
     mass = radio_mass
     await _clear_radio_library(mass)
 
-    task = await mass.music.radio.import_radios("#EXTM3U\n#EXTINF:-1,Local\nsome/file.mp3\n")
+    task = await mass.music.radio.import_radios(f"#EXTM3U\n#EXTINF:-1,Some Entry\n{path}\n")
     await _wait_for_task_status(mass.tasks, task.id, TaskStatus.PARTIAL_SUCCESS)
 
-    assert len(mass.tasks.get_task(task.id).failure_messages) == 1
+    failures = mass.tasks.get_task(task.id).failure_messages
+    assert len(failures) == 1
+    assert expected in failures[0]
     assert await mass.music.radio.library_count() == 0
 
 

@@ -838,7 +838,7 @@ def test_construct_plain_url_gets_builtin_mapping() -> None:
     mapping = next(iter(media_item.provider_mappings))
     assert mapping.provider_domain == "builtin"
     assert mapping.available is True
-    # builtin's item_id *is* the stream URL, so it must not be truncated to its last segment
+    # builtin's item_id *is* the stream url, so the whole url carries through
     assert mapping.item_id == "http://stream.example.com/radio1"
     assert media_item.item_id == "http://stream.example.com/radio1"
 

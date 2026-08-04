@@ -300,7 +300,7 @@ class RadioController(MediaControllerBase[Radio]):
             except MusicAssistantError as err:
                 label = (item.metadata or {}).get("name") or item.title or item.path
                 report_current_task_failure(f"{label}: {err}")
-        update_current_task_progress_from_index(total, total)
+        update_current_task_progress_from_index(total, total, "Import complete")
 
     async def _import_radio_item(self, item: PlaylistItem) -> None:
         """Resolve a single parsed M3U entry against its provider and add it to the library."""
@@ -312,13 +312,14 @@ class RadioController(MediaControllerBase[Radio]):
                 raise InvalidDataError(msg)
             media_type, prov_lookup, prov_item_id = await parse_uri(item.path)
             if media_type not in (MediaType.RADIO, MediaType.UNKNOWN):
-                msg = f"{item.path} is not a radio station"
+                msg = f"{item.path} is a {media_type.value}, not a radio station"
                 raise InvalidDataError(msg)
             provider = self.mass.get_provider(prov_lookup, provider_type=MusicProvider)
             if not provider:
                 msg = f"Provider {prov_lookup} is not available"
                 raise ProviderUnavailableError(msg)
-            # replace instead of mutate: a retry re-runs the handler over the same parsed items
+            # a retry re-runs this handler over the same parsed items, so build a new
+            # entry rather than writing the resolved mapping back into the shared one
             item = replace(
                 item,
                 providers=[

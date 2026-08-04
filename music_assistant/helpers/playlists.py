@@ -417,8 +417,8 @@ def construct_media_item_from_playlist_item(
 
     :param item: Parsed PlaylistItem with metadata, providers, and images.
     :param mass: MusicAssistant instance for provider resolution.
-    :param default_media_type: Media type to assume when the entry carries no
-        (valid) media_type in its #EXTMA metadata.
+    :param default_media_type: Media type to build when the entry's #EXTMA metadata
+        holds no usable media_type.
     """
     metadata = item.metadata or {}
     try:
@@ -430,6 +430,8 @@ def construct_media_item_from_playlist_item(
 
     provider_mappings = _resolve_provider_mappings(item, mass)
     if not provider_mappings and item.path.startswith(BUILTIN_URL_SCHEMES):
+        # an item without any mapping never reaches library_add, leaving an unplayable
+        # library entry, so a plain stream url is mapped to the provider that serves it
         provider_mappings = _builtin_fallback_mappings(item.path, mass)
     external_ids = _collect_external_ids(metadata)
 
@@ -553,12 +555,7 @@ def _resolve_provider_mappings(item: PlaylistItem, mass: MusicAssistant) -> set[
 
 
 def _builtin_fallback_mappings(path: str, mass: MusicAssistant) -> set[ProviderMapping]:
-    """
-    Return the builtin provider mapping for a stream URL that carries no #EXTPROV.
-
-    An item left without any mapping never reaches ``library_add``, so it would
-    become a permanently unplayable library entry.
-    """
+    """Return the builtin mapping for a stream url, which builtin takes as its item_id."""
     prov = mass.get_provider("builtin")
     return {
         ProviderMapping(
@@ -792,8 +789,8 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
     return PlaylistItem(
         path=primary_uri,
         title=title,
-        # -1 is the M3U convention for unknown length and parses back to None, so an
-        # item without a duration (a radio station) still gets its #EXTINF title line
+        # generate_m3u only writes #EXTINF when length is set, and -1 is the M3U
+        # convention for unknown length, which parse_m3u maps back to None
         length=str(duration) if duration else "-1",
         metadata=metadata,
         providers=prov_infos,
