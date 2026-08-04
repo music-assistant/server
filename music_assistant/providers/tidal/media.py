@@ -155,6 +155,7 @@ class TidalMediaManager:
             async for doc in self.api.paginate_jsonapi(
                 f"albums/{prov_album_id}/relationships/items",
                 include=["items.artists", "items.albums.coverArt"],
+                replace_media="items",
             ):
                 for item in doc.data_list:
                     # The items relationship is mixed-type: an album's music
@@ -180,6 +181,7 @@ class TidalMediaManager:
             async for doc in self.api.paginate_jsonapi(
                 f"artists/{prov_artist_id}/relationships/albums",
                 include=["albums.artists", "albums.coverArt"],
+                replace_media="albums",
             ):
                 for item in doc.data_list:
                     if resource := doc.resolve(item):
@@ -196,6 +198,7 @@ class TidalMediaManager:
                 f"artists/{prov_artist_id}/relationships/tracks",
                 params={"collapseBy": "FINGERPRINT"},
                 include=["tracks.artists", "tracks.albums.coverArt"],
+                replace_media="tracks",
             )
             return [
                 parse_track_v2(self.provider, doc, resource)
@@ -212,6 +215,7 @@ class TidalMediaManager:
             doc = await self.api.get_jsonapi(
                 f"tracks/{prov_track_id}/relationships/similarTracks",
                 include=["similarTracks.artists", "similarTracks.albums.coverArt"],
+                replace_media="similarTracks",
             )
             tracks = [
                 parse_track_v2(self.provider, doc, resource)
@@ -296,6 +300,7 @@ class TidalMediaManager:
         async for doc in self.api.paginate_jsonapi(
             "userCollectionTracks/me/relationships/items",
             include=["items.artists", "items.albums.coverArt"],
+            replace_media="items",
         ):
             for item in doc.data_list:
                 if resource := doc.resolve(item):

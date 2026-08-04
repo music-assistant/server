@@ -116,6 +116,7 @@ async def test_get_similar_tracks(
     provider_mock.api.get_jsonapi.assert_called_with(
         "tracks/123/relationships/similarTracks",
         include=["similarTracks.artists", "similarTracks.albums.coverArt"],
+        replace_media="similarTracks",
     )
 
 

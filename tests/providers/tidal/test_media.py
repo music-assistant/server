@@ -257,6 +257,7 @@ async def test_get_artist_toptracks(media_manager: TidalMediaManager, provider_m
         "artists/4184211/relationships/tracks",
         params={"collapseBy": "FINGERPRINT"},
         include=["tracks.artists", "tracks.albums.coverArt"],
+        replace_media="tracks",
     )
 
 

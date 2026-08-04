@@ -58,12 +58,25 @@ class TidalAPIClient:
         endpoint: str,
         include: Sequence[str] | None = None,
         params: dict[str, Any] | None = None,
+        replace_media: str | None = None,
         **kwargs: Any,
     ) -> JsonApiDocument:
-        """Get a JSON:API document from the official Tidal API."""
+        """
+        Get a JSON:API document from the official Tidal API.
+
+        :param endpoint: Path below the API root.
+        :param include: Relationship paths to side-load into `included`.
+        :param params: Extra query parameters.
+        :param replace_media: Relationship path(s) whose media identifiers Tidal should
+            project onto their live replacements. Tidal churns tracks (deletes and
+            re-adds them under new ids), and this makes it hand back the live id plus
+            the original in `meta.replacement`, instead of an id that 404s.
+        """
         query = dict(params or {})
         if include:
             query["include"] = ",".join(include)
+        if replace_media:
+            query["replaceMedia"] = replace_media
         headers = kwargs.pop("headers", {})
         headers["Accept"] = JSONAPI_CONTENT_TYPE
         data = await self.get(
@@ -96,6 +109,7 @@ class TidalAPIClient:
         include: Sequence[str] | None = None,
         params: dict[str, Any] | None = None,
         max_pages: int = MAX_PAGINATION_PAGES,
+        replace_media: str | None = None,
         **kwargs: Any,
     ) -> AsyncGenerator[JsonApiDocument]:
         """Yield successive JSON:API document pages, following the cursor links."""
@@ -104,7 +118,13 @@ class TidalAPIClient:
             page_params = dict(params or {})
             if cursor:
                 page_params["page[cursor]"] = cursor
-            doc = await self.get_jsonapi(endpoint, include=include, params=page_params, **kwargs)
+            doc = await self.get_jsonapi(
+                endpoint,
+                include=include,
+                params=page_params,
+                replace_media=replace_media,
+                **kwargs,
+            )
             yield doc
             cursor = doc.next_cursor
             if not cursor:

@@ -92,6 +92,23 @@ async def test_get_jsonapi_returns_document_on_valid_response(
     assert doc.data == {"id": "1", "type": "tracks"}
 
 
+async def test_get_jsonapi_sends_replace_media(
+    api_client: TidalAPIClient, provider_mock: Mock
+) -> None:
+    """Test replace_media reaches Tidal as the replaceMedia query parameter."""
+    response = AsyncMock(spec=ClientResponse)
+    response.status = 200
+    response.json.return_value = {"data": []}
+    ctx = AsyncMock()
+    ctx.__aenter__.return_value = response
+    provider_mock.mass.http_session.request = MagicMock(return_value=ctx)
+
+    await api_client.get_jsonapi("albums/1/relationships/items", replace_media="items")
+
+    params = provider_mock.mass.http_session.request.call_args[1]["params"]
+    assert params["replaceMedia"] == "items"
+
+
 async def test_session_id_scoped_to_unofficial_api(
     api_client: TidalAPIClient, provider_mock: Mock
 ) -> None:
