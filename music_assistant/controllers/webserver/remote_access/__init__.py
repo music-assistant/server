@@ -195,14 +195,9 @@ class RemoteAccessManager:
             self.mass.storage_path
         )
 
-        # resolved once, at gateway start: changing the base URL restarts neither the
-        # webserver nor this gateway, and behind a reverse proxy this address need not be
-        # reachable from this host at all
-        base_url = self.mass.webserver.base_url
-        local_ws_url = base_url.replace("http", "ws", 1)
-        if not local_ws_url.endswith("/"):
-            local_ws_url += "/"
-        local_ws_url += "ws"
+        # resolved once, at gateway start: this follows the webserver's bind address, which
+        # can only change through a reload of the webserver - and that restarts this gateway
+        local_ws_url = self.webserver.internal_base_url.replace("http", "ws", 1) + "/ws"
 
         ha_cloud_available, ice_servers = await self._get_ha_cloud_status()
         using_ha_cloud = bool(ha_cloud_available and ice_servers)
