@@ -2111,8 +2111,8 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
             SELECT
                 'collection' as type,
                 collection_title as name,
-                COALESCE(collection_search_title, replace(lower(collection_title),' ','')) AS search_name,
-                COALESCE(collection_search_sort_title, replace(lower(collection_title),' ','')) AS search_sort_name,
+                COALESCE(MAX(collection_search_title), replace(lower(collection_title),' ','')) AS search_name,
+                COALESCE(MAX(collection_search_sort_title), replace(lower(collection_title),' ','')) AS search_sort_name,
                 MAX(timestamp_added) as timestamp_added,
                 MAX(timestamp_modified) as timestamp_modified,
                 MAX(last_played) as last_played,
