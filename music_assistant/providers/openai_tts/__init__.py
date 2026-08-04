@@ -343,13 +343,14 @@ class OpenAITTSProvider(PluginProvider):
     def _voice_override(self) -> list[str]:
         """Return the configured voices, empty when the override is unset."""
         configured = self.get_config_value(CONF_VOICES)
-        # tolerate a single comma separated string next to the stored list of values
-        values: list[object]
-        if isinstance(configured, str):
-            values = list(configured.split(","))
-        elif isinstance(configured, list):
-            values = list(configured)
-        else:
-            return []
-        names = [str(value).strip() for value in values if str(value).strip()]
+        values = configured if isinstance(configured, list) else [configured]
+        # a single value can hold a comma separated list of its own, e.g. when the whole
+        # list was pasted into one field
+        names = [
+            name.strip()
+            for value in values
+            if isinstance(value, str)
+            for name in value.split(",")
+            if name.strip()
+        ]
         return list(dict.fromkeys(names))

@@ -51,10 +51,24 @@ async def test_resolve_voices_honours_config_override() -> None:
     assert await provider._resolve_voices() == ["nova", "alloy", "echo"]
 
 
-async def test_resolve_voices_accepts_a_single_string_override() -> None:
-    """A comma separated string is accepted next to the stored list of values."""
-    provider = create_provider(**{CONF_VOICES: " nova ,alloy,, nova,echo "})
+async def test_resolve_voices_splits_values_holding_commas() -> None:
+    """A whole list pasted into one value is split into the separate voices."""
+    provider = create_provider(**{CONF_VOICES: [" nova ,alloy", "echo", " nova"]})
     assert await provider._resolve_voices() == ["nova", "alloy", "echo"]
+
+
+async def test_resolve_voices_ignores_an_empty_override() -> None:
+    """An empty override is the shape stored when nothing is configured."""
+    provider = create_provider(**{CONF_VOICES: []})
+    assert await provider._resolve_voices() == list(DEFAULT_VOICES)
+
+
+async def test_voices_config_entry_defaults_to_an_empty_list() -> None:
+    """Clearing the field submits the default, which must keep the multi value shape."""
+    provider = create_provider()
+    entry = next(e for e in await provider.get_config_entries() if e.key == CONF_VOICES)
+    assert entry.multi_value is True
+    assert entry.default_value == []
 
 
 async def test_resolve_voices_falls_back_to_defaults() -> None:
