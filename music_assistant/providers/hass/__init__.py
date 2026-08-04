@@ -14,6 +14,8 @@ import logging
 import os
 from functools import partial
 from itertools import batched
+from sys import intern
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict, cast
 
 from hass_client import HomeAssistantClient
@@ -46,7 +48,7 @@ from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
 from .constants import OFF_STATES, MediaPlayerEntityFeature, parse_supported_features
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection
+    from collections.abc import Callable, Collection, Mapping
 
     from aiohttp import ClientSession
     from hass_client.models import (
@@ -187,7 +189,7 @@ class HomeAssistantProvider(PluginProvider):
     _ai_engines: list[AIEngine]
     _tts_engines: list[TTSEngine]
     _startup_complete: bool = False
-    _entity_registry: dict[str, HassRegistryEntity] | None = None
+    _entity_registry: Mapping[str, HassRegistryEntity] | None = None
     _entity_registry_generation: int = 0
     _entity_registry_lock: asyncio.Lock
     _wanted_controls: dict[str, _ControlCapabilities] | None = None
@@ -380,12 +382,16 @@ class HomeAssistantProvider(PluginProvider):
             "player_controls": len(self._player_controls) if self._player_controls else 0,
         }
 
-    async def get_entity_registry(self) -> dict[str, HassRegistryEntity]:
+    async def get_entity_registry(self) -> Mapping[str, HassRegistryEntity]:
         """
         Return the Home Assistant entity registry, keyed by entity ID.
 
         Entities that are disabled in Home Assistant are absent from the result, and so are
         entities without a unique ID: those are not part of Home Assistant's registry at all.
+
+        The result is shared between all callers and must be treated as read-only: the
+        mapping itself rejects writes, but the entries are plain dicts, so copy an entry
+        before changing it.
         """
         if (registry := self._entity_registry) is not None:
             return registry
@@ -1045,7 +1051,11 @@ class HomeAssistantProvider(PluginProvider):
         except Exception as err:
             self.logger.warning("Failed to refresh Home Assistant engines: %s", err)
 
-    async def _fetch_entity_registry(self) -> dict[str, HassRegistryEntity]:
+    # unlike the device registry below, this listing is mirrored for the lifetime of the
+    # connection rather than kept behind a TTL: it runs to several megabytes on a large
+    # setup, and Home Assistant announces every change, so the mirror is both the cheaper
+    # and the more accurate option
+    async def _fetch_entity_registry(self) -> Mapping[str, HassRegistryEntity]:
         """Fetch the entity registry from Home Assistant, keyed by entity ID."""
         # the display variant of the registry listing carries abbreviated keys and only the
         # fields the Home Assistant frontend needs, making it several times smaller
@@ -1053,14 +1063,19 @@ class HomeAssistantProvider(PluginProvider):
             "dict[str, Any]",
             await self.hass.send_command("config/entity_registry/list_for_display"),
         )
-        return {
-            entry["ei"]: HassRegistryEntity(
+        # the listing repeats a handful of platform names and one device id per device over
+        # all of its entities, so hold on to a single string object per distinct value
+        device_ids: dict[str, str] = {}
+        registry: dict[str, HassRegistryEntity] = {}
+        for entry in result["entities"]:
+            if (device_id := entry.get("di")) is not None:
+                device_id = device_ids.setdefault(device_id, device_id)
+            registry[entry["ei"]] = HassRegistryEntity(
                 entity_id=entry["ei"],
-                platform=entry["pl"],
-                device_id=entry.get("di"),
+                platform=intern(entry["pl"]),
+                device_id=device_id,
             )
-            for entry in result["entities"]
-        }
+        return MappingProxyType(registry)
 
     # the lock sits outside the cache to keep a burst of lookups from fetching once per
     # caller. use_cache stores in the background, so the callers that reach a still-cold
