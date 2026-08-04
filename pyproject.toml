@@ -21,13 +21,13 @@ dependencies = [
   "certifi==2025.11.12",
   "colorlog==6.10.1",
   "modern_colorthief==0.2.1",
-  "cryptography==49.0.0",
+  "cryptography==50.0.0",
   "chardet>=5.2.0",
   "ifaddr==0.2.0",
   "getmac==0.9.5",
   "mashumaro==3.20",
-  "music-assistant-models==1.1.176",
-  "music-assistant-frontend==2.17.252",
+  "music-assistant-models==1.1.179",
+  "music-assistant-frontend==2.17.255",
   "mutagen==1.48.1",
   "orjson==3.11.6",
   "pillow==12.3.0",
@@ -67,7 +67,7 @@ test = [
   "pytest-codspeed==5.0.3",
   "pytest-cov==7.0.0",
   "pytest-timeout==2.4.0",
-  "syrupy==5.2.0",
+  "syrupy==5.5.3",
   "tomli==2.4.1",
   "ruff==0.15.22",
   "yappi==1.7.6",
@@ -82,9 +82,10 @@ mass = "music_assistant.__main__:main"
 # "connexion" is a French word in the MusicMe login URL path
 # "claus" is Santa Claus, in the christmas_music genre description
 # "childrens" is the normalized form of the "Children's" audiobook genre (apostrophe stripped)
+# "speaches" is the name of a self-hostable OpenAI-compatible speech server
 # translations/*.json are machine-translated locale files (Lokalise); foreign words aren't typos
 # tidal fixtures are captured API responses; foreign album/track titles aren't typos
-ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,connexion,claus,childrens,"
+ignore-words-list = "provid,hass,followings,childs,explict,additionals,commitish,nam,connexion,claus,childrens,speaches,"
 skip = """*.js,*.svg,\
 music_assistant/helpers/resources/countries.json,\
 music_assistant/helpers/resources/genres/genre_mapping.json,\

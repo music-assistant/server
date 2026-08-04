@@ -97,21 +97,8 @@ class AirPlayPairing:
         self._session: aiohttp.ClientSession | None = None
         self._base_url: str = f"http://{format_ip_for_url(address)}:{self.port}"
 
-        # Common state
-        self._is_pairing: bool = False
-
         # RAOP client identifier: 8 random bytes, the credentials are self-contained
         self._client_id = os.urandom(8)
-
-    @property
-    def is_pairing(self) -> bool:
-        """Return True if a pairing session is in progress."""
-        return self._is_pairing
-
-    @property
-    def device_provides_pin(self) -> bool:
-        """Return True if the device displays the PIN."""
-        return True  # Both HAP and RAOP display PIN on device
 
     @property
     def protocol_name(self) -> str:
@@ -133,7 +120,6 @@ class AirPlayPairing:
             self._cli_binary = await get_cli_binary()
         else:
             self._session = aiohttp.ClientSession()
-        self._is_pairing = True
 
     async def start_pin_pairing(self) -> bool:
         """
@@ -191,7 +177,6 @@ class AirPlayPairing:
 
     async def close(self) -> None:
         """Clean up resources."""
-        self._is_pairing = False
         if self._pair_proc and not self._pair_proc.closed:
             await self._pair_proc.kill()
         self._pair_proc = None

@@ -45,12 +45,15 @@ def clean_tuple(values: Iterable[str]) -> tuple[str, ...]:
     return tuple(x.strip() for x in values if x not in (None, "", " "))
 
 
-def clean_mbid(value: str | None, source: str | None = None) -> str | None:
+def clean_mbid(
+    value: str | None, source: str | None = None, logger: logging.Logger | None = None
+) -> str | None:
     """
     Return a MusicBrainz identifier in canonical (lowercase UUID) form, or None if invalid.
 
-    :param value: The raw MusicBrainz identifier value from the file tags.
-    :param source: Origin of the value (e.g. filename), included in the log when invalid.
+    :param value: The raw MusicBrainz identifier value, from file tags or a provider payload.
+    :param source: Origin of the value (e.g. file path or provider item), logged when invalid.
+    :param logger: Logger to emit the warning to, defaults to the tags logger.
     """
     if not value:
         return None
@@ -59,9 +62,11 @@ def clean_mbid(value: str | None, source: str | None = None) -> str | None:
         return str(UUID(value.strip("\x00 \t\r\n")))
     except ValueError, TypeError, AttributeError:
         if source:
-            LOGGER.warning("Ignoring invalid MusicBrainz identifier %r in %s", value, source)
+            (logger or LOGGER).warning(
+                "Ignoring invalid MusicBrainz identifier %r in %s", value, source
+            )
         else:
-            LOGGER.warning("Ignoring invalid MusicBrainz identifier %r", value)
+            (logger or LOGGER).warning("Ignoring invalid MusicBrainz identifier %r", value)
         return None
 
 

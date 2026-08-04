@@ -16,6 +16,7 @@ from music_assistant.providers.party import (
     CONF_ENABLE_ADD_QUEUE,
     CONF_ENABLE_BOOST,
     CONF_ENABLE_GUEST_ACCESS,
+    CONF_PARTY_DURATION,
     CONF_PARTY_MODE,
     CONF_PREVENT_DUPLICATE_TRACKS,
     PartyPlugin,
@@ -39,6 +40,7 @@ def _create_party_plugin() -> PartyPlugin:
         CONF_ENABLE_BOOST: True,
         CONF_ENABLE_ADD_QUEUE: True,
         CONF_PREVENT_DUPLICATE_TRACKS: True,
+        CONF_PARTY_DURATION: 8,
     }
     plugin.config.get_value.side_effect = config_values.__getitem__
     return plugin
@@ -175,3 +177,35 @@ async def test_guest_readable_commands_use_guest_scope() -> None:
     assert scopes["party/listen_in"] == Scope.PLAYERS_CONTROL
     assert scopes["party/stop_listen_in"] == Scope.PLAYERS_CONTROL
     assert scopes["party/can_listen_in"] == Scope.PLAYERS_CONTROL
+
+
+@pytest.mark.parametrize("expiry", [8, 48])
+@pytest.mark.asyncio
+async def test_get_party_url_passes_configured_expiry(expiry: int) -> None:
+    """get_party_url passes the configured expiry through to the join code helper."""
+    plugin = _create_party_plugin()
+    cast("MagicMock", plugin.config.get_value).side_effect = {
+        CONF_ENABLE_GUEST_ACCESS: True,
+        CONF_PARTY_DURATION: expiry,
+    }.get
+
+    guest_user = MagicMock()
+    with (
+        patch(
+            "music_assistant.providers.party.guest_access.get_or_create_guest_user",
+            AsyncMock(return_value=guest_user),
+        ),
+        patch(
+            "music_assistant.providers.party.guest_access.get_or_create_join_code",
+            AsyncMock(return_value="abc123"),
+        ) as mock_get_code,
+        patch(
+            "music_assistant.providers.party.guest_access.build_join_url",
+            return_value="http://example/?join=abc123",
+        ),
+    ):
+        url = await plugin.get_party_url()
+
+    assert url == "http://example/?join=abc123"
+    mock_get_code.assert_awaited_once()
+    assert mock_get_code.call_args.kwargs["expires_in_hours"] == expiry

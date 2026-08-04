@@ -19,7 +19,6 @@ from music_assistant_models.auth import Scope
 from music_assistant_models.enums import EventType
 
 from music_assistant.constants import CONF_CORE
-from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.helpers.webrtc_certificate import (
     get_or_create_remote_id,
     get_or_create_webrtc_certificate_pems,
@@ -196,8 +195,11 @@ class RemoteAccessManager:
             self.mass.storage_path
         )
 
+        # resolved once, at gateway start: changing the base URL restarts neither the
+        # webserver nor this gateway, and behind a reverse proxy this address need not be
+        # reachable from this host at all
         base_url = self.mass.webserver.base_url
-        local_ws_url = base_url.replace("http", "ws")
+        local_ws_url = base_url.replace("http", "ws", 1)
         if not local_ws_url.endswith("/"):
             local_ws_url += "/"
         local_ws_url += "ws"
@@ -212,7 +214,10 @@ class RemoteAccessManager:
         mode = "optimized" if using_ha_cloud else "basic"
         self.logger.info("Starting remote access in %s mode", mode)
 
-        sendspin_url = f"ws://{format_ip_for_url(str(self.mass.streams.publish_ip))}:8927/sendspin"
+        # resolved once, at gateway start: this follows the streams bind IP, while the socket
+        # behind it is only bound when the Sendspin provider loads, so the two can disagree
+        # either way and re-resolving per session would be no more reliable
+        sendspin_url = self.webserver.internal_sendspin_url
 
         gateway = WebRTCGateway(
             http_session=self.mass.http_session,
