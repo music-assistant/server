@@ -84,6 +84,8 @@ class AriaCastReceiver(PluginProvider):
     yielded by get_audio_stream exactly like the VBAN receiver.
     """
 
+    reload_on_streams_network_change = True
+
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return the features supported by this provider."""

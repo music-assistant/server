@@ -55,6 +55,8 @@ async def setup(
 class PlexConnectProvider(PluginProvider):
     """Plex Connect plugin provider implementation."""
 
+    reload_on_streams_network_change = True
+
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
