@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import fields
 
+from music_assistant.controllers.streams.smart_fades.models import TransitionTier
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     CandidateSpec,
     EnergyLadderGenerator,
@@ -15,6 +16,30 @@ from music_assistant.controllers.streams.smart_fades.planner.context import (
     build_transition_context,
 )
 from music_assistant.models.audio_analysis import AudioAnalysisData
+
+
+def _analysis(
+    bpm: float,
+    duration: float = 240.0,
+    grid_until: float | None = None,
+) -> AudioAnalysisData:
+    """Synthetic AudioAnalysisData with an even beat/downbeat grid, optionally truncated early."""
+    interval = 60.0 / bpm
+    count = int(duration / interval) + 1
+    beats = [i * interval for i in range(count)]
+    if grid_until is not None:
+        beats = [b for b in beats if b <= grid_until]
+    return AudioAnalysisData(
+        duration=duration,
+        bpm=bpm,
+        beats=beats,
+        downbeats=beats[::4],
+        beats_per_bar=4,
+        rms_energy=[0.8] * 1800,
+        key="C",
+        mode="minor",
+        extra_data={},
+    )
 
 
 def _instrumental_vs_vocal_ctx() -> TransitionContext:
@@ -142,3 +167,12 @@ def test_trim_closing_not_emitted_for_small_gap() -> None:
     """A tail whose energy anchor already sits near the audible end emits nothing."""
     specs = list(TrimClosingAnchorGenerator().generate(_small_trim_gap_ctx()))
     assert specs == []
+
+
+def test_grid_blendable_false_for_sparse_tail() -> None:
+    """A tail whose grid dies early reports grid_blendable=False (rubato/ambient outro)."""
+    aa_out = _analysis(bpm=124.0, duration=200.0, grid_until=170.0)  # grid stops 30s early
+    aa_in = _analysis(bpm=124.0, duration=200.0)
+    ctx = build_transition_context(aa_out, aa_in, 45.0, logging.getLogger("test"))
+    assert ctx.grid_blendable is False
+    assert ctx.tier is TransitionTier.QUICK_FADE

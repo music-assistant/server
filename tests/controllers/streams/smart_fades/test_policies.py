@@ -65,6 +65,7 @@ def _ctx(
         coda_zone=None,
         tier=tier,
         cross_meter=False,
+        grid_blendable=True,
         bpm_diff_percent=0.0,
         vocal_out_placement=None,
         vocal_in_placement=None,

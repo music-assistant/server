@@ -123,6 +123,9 @@ class TransitionContext:
     coda_zone: CodaZone | None
     tier: TransitionTier
     cross_meter: bool
+    # whether the anchored tail's downbeat grid supports a blend, the
+    # `_tail_is_blendable` verdict `choose_tier` keys its own tier pick on
+    grid_blendable: bool
     bpm_diff_percent: float
     vocal_out_placement: VocalMask | None
     vocal_in_placement: VocalMask | None
@@ -225,6 +228,8 @@ def build_transition_context(
     # never the pure full-band mix_out_anchor: a kick-timed track's blendability
     # window ends where its kick dies, exactly as the old masked grid did
     cross_meter, tier = choose_tier(outgoing, incoming, tier_anchor)
+    anchored_downbeats = grid_downbeats[grid_downbeats <= tier_anchor]
+    grid_blendable = _tail_is_blendable(anchored_downbeats)
     bpm_diff_percent = _bpm_diff_percent(outgoing.bpm, incoming.bpm)
 
     # fade detection is a per-transition fact regardless of which anchor a
@@ -302,6 +307,7 @@ def build_transition_context(
         coda_zone=coda_zone,
         tier=tier,
         cross_meter=cross_meter,
+        grid_blendable=grid_blendable,
         bpm_diff_percent=bpm_diff_percent,
         vocal_out_placement=vocal_out_placement,
         vocal_in_placement=vocal_in_placement,
