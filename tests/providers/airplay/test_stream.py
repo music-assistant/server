@@ -892,6 +892,20 @@ async def test_pipe_write_resumes_after_the_buffer_drains() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pipe_write_gives_up_when_the_pipe_goes_before_the_first_write() -> None:
+    """A pipe removed the instant a write starts fails cleanly rather than blowing up."""
+    writer = AsyncNamedPipeWriter("/tmp/audio")  # noqa: S108
+
+    with (
+        patch.object(AsyncNamedPipeWriter, "_ensure_write_fd", return_value=True),
+        patch("music_assistant.helpers.named_pipe.os.write") as write,
+    ):
+        assert await writer.write(b"\x00" * 10) is False
+
+    write.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_pipe_write_stops_when_the_descriptor_is_taken_mid_stall() -> None:
     """A stalled write gives up once the pipe is removed out from under it."""
     writer = AsyncNamedPipeWriter("/tmp/audio")  # noqa: S108

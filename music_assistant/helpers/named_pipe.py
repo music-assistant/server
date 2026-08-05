@@ -98,7 +98,8 @@ class AsyncNamedPipeWriter:
                 return False
             # hold on to the descriptor a concurrent remove() may swap out from under us
             write_fd = self._write_fd
-            assert write_fd is not None
+            if write_fd is None:
+                return False
             data_view = memoryview(data)
             total_bytes_written = 0
             give_up_at = time.monotonic() + WRITE_TOTAL_TIMEOUT
