@@ -76,6 +76,7 @@ async def _create_cntrl_server(
 class SnapCastProvider(PlayerProvider):
     """SnapCastProvider."""
 
+    reload_on_streams_network_change = True
     _snapserver: SnapserverProto
     _snapserver_runner: asyncio.Task[None] | None
     _snapserver_started: asyncio.Event | None

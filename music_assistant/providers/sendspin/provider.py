@@ -236,6 +236,7 @@ def _manual_client_url(address: str) -> str:
 class SendspinProvider(PlayerProvider):
     """Player Provider for Sendspin."""
 
+    reload_on_streams_network_change = True
     server_api: SendspinServer
     unregister_cbs: list[Callable[[], None]]
     _pending_unregisters: dict[str, asyncio.Event]
