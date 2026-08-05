@@ -673,10 +673,16 @@ def get_ffmpeg_args(
     ):
         filter_params.append(resample_filter)
 
+    # ffmpeg refuses a simple -af chain alongside a complex graph on the same stream, so we
+    # leave the graph to any caller that declares one in one of the passthrough arg lists
+    caller_owns_filtergraph = any(
+        "-filter_complex" in args for args in (extra_args, extra_input_args, extra_output_args)
+    )
+
     # a complex fragment brings its own inputs, which must follow the main input
     extra_input_args, filter_args = (
         _build_filtergraph_args(filter_params)
-        if filter_params and "-filter_complex" not in extra_args
+        if filter_params and not caller_owns_filtergraph
         else ([], [])
     )
 
