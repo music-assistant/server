@@ -38,6 +38,11 @@ MIN_VOCAL_RUN = 0.3
 # inside the same phrase rather than a real gap between two of them
 MIN_VOCAL_GAP = 0.5
 MAX_VOCAL_GAP = 1.0
+# Sustained-evidence gate: a run only becomes a window when its peak OR its
+# mean shows real confidence; weak short runs are backing 'aahhs'/detector
+# noise, and a window here can veto an entire 8-bar blend downstream
+VOCAL_MIN_RUN_PEAK = 0.85
+VOCAL_MIN_RUN_MEAN = 0.60
 
 # Two-sided vocal-collision guard, in rendered-crossfade seconds. Collisions
 # are scored on UNPADDED windows (padding is silence, not vocal), and the
@@ -94,6 +99,8 @@ class VocalHysteresisConfig:
     min_run: float = MIN_VOCAL_RUN
     min_gap: float = MIN_VOCAL_GAP
     max_gap: float = MAX_VOCAL_GAP
+    min_run_peak: float = VOCAL_MIN_RUN_PEAK
+    min_run_mean: float = VOCAL_MIN_RUN_MEAN
 
 
 DEFAULT_VOCAL_CONFIG = VocalHysteresisConfig()
@@ -191,11 +198,14 @@ def build_vocal_windows(
         1,
         math.ceil(math.nextafter(config.min_run / frame_duration, -math.inf)),
     )
-    timed_runs = [
-        (left * frame_duration, right * frame_duration)
-        for left, right in runs
-        if right - left >= min_run_frames
-    ]
+    timed_runs: list[tuple[float, float]] = []
+    for run_start_frame, run_end_frame in runs:
+        if run_end_frame - run_start_frame < min_run_frames:
+            continue
+        run = probabilities[run_start_frame:run_end_frame]
+        if max(run) < config.min_run_peak and sum(run) / len(run) < config.min_run_mean:
+            continue
+        timed_runs.append((run_start_frame * frame_duration, run_end_frame * frame_duration))
 
     gap = min(config.max_gap, max(config.min_gap, beat_duration or config.min_gap))
     windows: list[tuple[float, float]] = []

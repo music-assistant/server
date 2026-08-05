@@ -21,6 +21,18 @@ def _analysis(vocal_activity: object, duration: float | None = 240.0) -> AudioAn
     return AudioAnalysisData(duration=duration, extra_data={"vocal_activity": vocal_activity})
 
 
+# Used only by TestBuildVocalWindowsSustainedEvidenceGate below.
+FRAME = 0.1  # 10 bins per second
+
+
+def _timeline(spec: list[tuple[float, int]]) -> list[float]:
+    """Flat probability segments: [(prob, n_bins), ...]."""
+    probs: list[float] = []
+    for prob, bins in spec:
+        probs.extend([prob] * bins)
+    return probs
+
+
 class TestParseVocalProbabilities:
     """The 1800-bin contract is validated in full; any defect disables vocal logic entirely."""
 
@@ -222,6 +234,28 @@ class TestBuildVocalWindows:
         mask = build_vocal_windows(probabilities, 0.1, 0.0, 5.0)
         assert len(mask.windows) == 1
         assert mask.windows[0][1] == pytest.approx(5.0)
+
+
+class TestBuildVocalWindowsSustainedEvidenceGate:
+    """A run only becomes a window when its peak OR its mean shows real confidence."""
+
+    def test_weak_backing_run_is_dropped(self) -> None:
+        """A 1.5s run peaking 0.69 (background 'aahh') never becomes a window."""
+        probs = _timeline([(0.0, 100), (0.55, 10), (0.69, 5), (0.0, 100)])
+        mask = build_vocal_windows(probs, FRAME, 0.0, len(probs) * FRAME)
+        assert mask.windows == []
+
+    def test_confident_peak_run_is_kept(self) -> None:
+        """A short run with a confident peak (real singing) still opens a window."""
+        probs = _timeline([(0.0, 100), (0.95, 15), (0.0, 100)])
+        mask = build_vocal_windows(probs, FRAME, 0.0, len(probs) * FRAME)
+        assert len(mask.windows) == 1
+
+    def test_sustained_medium_run_is_kept(self) -> None:
+        """A long medium-confidence run (soft verse, mean >= 0.60) is kept."""
+        probs = _timeline([(0.0, 50), (0.65, 80), (0.0, 50)])
+        mask = build_vocal_windows(probs, FRAME, 0.0, len(probs) * FRAME)
+        assert len(mask.windows) == 1
 
 
 class TestVocalMaskClampedTo:
