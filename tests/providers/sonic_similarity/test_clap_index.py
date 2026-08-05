@@ -14,11 +14,12 @@ import threading
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pytest
 
+from music_assistant.providers.sonic_similarity import index_io
 from music_assistant.providers.sonic_similarity.clap_index import (
     CLAP_EMBEDDING_DIM,
     ClapIndex,
@@ -84,6 +85,31 @@ async def test_round_trip_persists_under_sonic_similarity_stem(
 
 
 @pytest.mark.asyncio
+async def test_saved_index_reloads_with_its_embeddings(
+    tmp_path: Path, logger: logging.Logger, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A saved index comes back intact through a fresh instance, chunk boundaries included."""
+    # well under the payload, so the write loop runs many times over
+    monkeypatch.setattr(index_io, "WRITE_CHUNK_BYTES", 4096)
+
+    idx = ClapIndex(_make_mass(tmp_path), logger)  # type: ignore[arg-type]
+    await idx.load()
+    vectors = {f"track{n}": _unit_vec(n) for n in range(20)}
+    for item_id, vec in vectors.items():
+        await idx.add("spotify", item_id, vec)
+    await idx.save()
+
+    reloaded = ClapIndex(_make_mass(tmp_path), logger)  # type: ignore[arg-type]
+    await reloaded.load()
+
+    assert len(reloaded) == len(vectors)
+    for item_id, vec in vectors.items():
+        stored = reloaded.get_embedding("spotify", item_id)
+        assert stored is not None
+        np.testing.assert_allclose(stored, vec, atol=1e-3)
+
+
+@pytest.mark.asyncio
 async def test_get_embedding_by_item_id_missing_returns_none(
     tmp_path: Path, logger: logging.Logger
 ) -> None:
@@ -138,7 +164,7 @@ async def test_save_writes_keys_before_index_so_a_crash_doesnt_orphan_labels(
     await idx.add("spotify", "track1", _unit_vec(1))
 
     # Force the index save to fail after the keys file has already been written.
-    def _boom(_path: str) -> None:
+    def _boom() -> Any:
         raise RuntimeError("disk full mid-save")
 
     monkeypatch.setattr(idx._index, "save", _boom)
@@ -170,7 +196,7 @@ async def test_close_waits_for_a_save_whose_task_was_cancelled(
     writers_lock = threading.Lock()
     writers = 0
 
-    def _slow_save(path: str) -> None:
+    def _slow_save() -> Any:
         nonlocal writers
         with writers_lock:
             writers += 1
@@ -178,7 +204,7 @@ async def test_close_waits_for_a_save_whose_task_was_cancelled(
         # parked here rather than sleeping, so the assertion below can never
         # be decided by how fast the machine happens to be
         assert release.wait(10), "close() never let the save finish"
-        real_save(path)
+        return real_save()
 
     monkeypatch.setattr(idx._index, "save", _slow_save)
 
