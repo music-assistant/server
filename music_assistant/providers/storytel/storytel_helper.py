@@ -98,6 +98,8 @@ class StorytelHelper:
 
     _KEY = API_ENCRYPTION_KEY
     _IV = API_ENCRYPTION_IV
+    # Query params carrying login credentials (see URL_LOGIN), redacted before logging.
+    _SENSITIVE_QUERY_PARAMS = frozenset({"uid", "pwd"})
 
     def __init__(
         self,
@@ -908,20 +910,35 @@ class StorytelHelper:
         :param headers: optional request headers.
         :param json_data: optional JSON request body.
         """
+        safe_url = self._redact_url_query(url)
         try:
             async with self.session.request(method, url, headers=headers, json=json_data) as resp:
                 await self.raise_for_status(resp)
                 return cast("dict[str, Any]", await resp.json())
         except (ClientError, ConnectionError, TimeoutError) as err:
-            self.logger.error("Storytel request %s %s failed: %s", method, url, err)
-            raise ProviderUnavailableError(f"Storytel request to {url} failed: {err}") from err
+            self.logger.error("Storytel request %s %s failed: %s", method, safe_url, err)
+            raise ProviderUnavailableError(f"Storytel request to {safe_url} failed: {err}") from err
         except (ContentTypeError, JSONDecodeError) as err:
             self.logger.error(
-                "Storytel request %s %s returned an invalid response: %s", method, url, err
+                "Storytel request %s %s returned an invalid response: %s", method, safe_url, err
             )
             raise ProviderUnavailableError(
-                f"Storytel returned an invalid response for {method} {url}"
+                f"Storytel returned an invalid response for {method} {safe_url}"
             ) from err
+
+    def _redact_url_query(self, url: str) -> str:
+        """Mask sensitive login credentials in a URL's query string before it is logged."""
+        try:
+            parsed = URL(url)
+            if not parsed.query:
+                return str(parsed)
+            redacted_query = {
+                key: ("***" if key in self._SENSITIVE_QUERY_PARAMS else value)
+                for key, value in parsed.query.items()
+            }
+            return str(parsed.with_query(redacted_query))
+        except ValueError:
+            return url.split("?", 1)[0]
 
     async def _fetch_explore_page(self, page_url: str) -> dict[str, Any]:
         """Fetch a Storytel explore page or list-resource payload."""
