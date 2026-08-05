@@ -131,6 +131,20 @@ async def test_ssl_disabled_alerts_the_webserver_is_unencrypted(
     assert await _visible_alerts(webserver) == {"webserver_warn"}
 
 
+async def test_switching_ssl_off_drops_the_certificate_alert(
+    mock_mass: MagicMock, tmp_path: Path
+) -> None:
+    """Verify a reload onto the same controller reports the SSL state it was reloaded with."""
+    webserver, _ = await _setup_webserver(
+        mock_mass, tmp_path, certificate="not a certificate", private_key="not a private key"
+    )
+    assert await _visible_alerts(webserver) == {"ssl_inactive_warn"}
+
+    await _run_setup(webserver, tmp_path, certificate="", private_key="", enable_ssl=False)
+
+    assert await _visible_alerts(webserver) == {"webserver_warn"}
+
+
 def _make_server_mock() -> MagicMock:
     """Create a Webserver double that adopts the address it is set up with."""
     server = MagicMock()
@@ -183,7 +197,33 @@ async def _setup_webserver(
     webserver._server = server
     webserver.auth = MagicMock(setup=AsyncMock())
     webserver.remote_access = MagicMock(setup=AsyncMock())
+    await _run_setup(
+        webserver,
+        tmp_path,
+        certificate=certificate,
+        private_key=private_key,
+        enable_ssl=enable_ssl,
+    )
+    return webserver, server
 
+
+async def _run_setup(
+    webserver: WebserverController,
+    tmp_path: Path,
+    *,
+    certificate: str,
+    private_key: str,
+    enable_ssl: bool,
+) -> None:
+    """
+    Set up a prepared controller against the given SSL config, as a (re)load does.
+
+    :param webserver: The prepared controller to set up.
+    :param tmp_path: Directory to serve as the frontend, in place of the bundled one.
+    :param certificate: Value for the ssl_certificate config option.
+    :param private_key: Value for the ssl_private_key config option.
+    :param enable_ssl: Value for the enable_ssl config option.
+    """
     config_values: dict[str, Any] = {
         "bind_port": 8095,
         "bind_ip": None,
@@ -205,4 +245,3 @@ async def _setup_webserver(
         ),
     ):
         await webserver.setup(cast("CoreConfig", config))
-    return webserver, server
