@@ -168,7 +168,8 @@ jobs:
       - name: Pytest
         # mode=partial runs only the changed providers' tests with coverage scoped to
         # those provider packages; mode=full runs everything with full coverage.
-        # `-o addopts=` clears the default "--cov music_assistant" so the scope applies.
+        # --dist loadfile keeps each test file on one xdist worker so syrupy
+        # snapshot handling works correctly.
         env:
           MODE: ${{ needs.changes.outputs.mode }}
           TEST_PATHS: ${{ needs.changes.outputs.test_paths }}
@@ -198,7 +199,7 @@ jobs:
           # it in the saved snapshot so it is never evicted.
           setpriv --reuid=tester --regid=tester --init-groups \
             env HOME=/home/tester \
-            pytest -p numpy -o addopts="" --durations 10 $cov --cov-report=term-missing --cov-report=xml $targets
+            pytest -p numpy -n auto --dist loadfile --durations 10 $cov --cov-report=term-missing --cov-report=xml $targets
       - name: Upload coverage to Codecov
         if: ${{ !github.event.pull_request.head.repo.fork }}
         uses: codecov/codecov-action@v7
