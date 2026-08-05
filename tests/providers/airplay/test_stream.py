@@ -23,6 +23,7 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
     AIRPLAY_START_ACK_TIMEOUT_MS,
     CONF_AIRPLAY_CREDENTIALS,
+    CONF_BUFFER_DEPTH,
     CONF_ENCRYPTION,
     CONF_PASSWORD,
     AirPlayRemoteCommand,
@@ -292,26 +293,43 @@ async def test_cli_args_no_ptp_shared_when_daemon_alive_but_not_ready() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cli_args_broken_ptp_firmware_routes_to_ntp() -> None:
+async def test_cli_args_linkplay_gets_deeper_buffer() -> None:
     """
-    Old-LinkPlay platform firmware gets --no-ptp instead of the shared clock.
+    LinkPlay-based receivers get a deeper splice queue, on the normal PTP path.
 
-    These receivers advertise SupportsPTP but render silence at any PTP anchor
-    (Edifier MS50A), so the stream routes them to NTP timing. The newer LinkPlay
-    platform (WiiM, fv without the Linkplay token) renders PTP fine and must
-    keep the shared clock.
+    Their pipeline starves below ~1 s of queued audio and renders silence at
+    the stock 600 ms depth (Edifier MS50A even solo, WiiM as multiroom master).
+    Both platform generations must match: the old one embeds Linkplay in fv,
+    the newer one only names Linkplay as manufacturer.
     """
     player = _make_player()
     player.airplay_discovery_info.decoded_properties["fv"] = "p20.Linkplay.4.6.430230"
     args = await _build_args(player)
-    assert "--no-ptp" in args
-    assert "--ptp-shared" not in args
+    assert _arg_value(args, "--latency") == "1000"
+    assert "--no-ptp" not in args
+    assert "--ptp-shared" in args
 
     player = _make_player()
     player.airplay_discovery_info.decoded_properties["fv"] = "p20.4.8.814756"
+    player.airplay_discovery_info.decoded_properties["manufacturer"] = "Linkplay Technology Inc."
     args = await _build_args(player)
-    assert "--no-ptp" not in args
-    assert "--ptp-shared" in args
+    assert _arg_value(args, "--latency") == "1000"
+
+    # Non-LinkPlay devices stay on the binary's stock depth.
+    player = _make_player()
+    args = await _build_args(player)
+    assert "--latency" not in args
+
+
+@pytest.mark.asyncio
+async def test_cli_args_buffer_depth_config_overrides_auto() -> None:
+    """A configured buffer depth wins over the automatic value, on any device."""
+    player = _make_player()
+    player.config.get_value = MagicMock(
+        side_effect=lambda key, default=None: 1500 if key == CONF_BUFFER_DEPTH else default
+    )
+    args = await _build_args(player)
+    assert _arg_value(args, "--latency") == "1500"
 
 
 @pytest.mark.asyncio

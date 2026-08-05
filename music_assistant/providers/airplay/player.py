@@ -8,7 +8,7 @@ import ipaddress
 import time
 from typing import TYPE_CHECKING, cast
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption, ConfigValueType
 from music_assistant_models.constants import PLAYER_CONTROL_NATIVE
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -37,6 +37,7 @@ from .constants import (
     ATV_PASSWORD_BIT,
     BASE_PLAYER_FEATURES,
     CONF_AIRPLAY_CREDENTIALS,
+    CONF_BUFFER_DEPTH,
     CONF_ENCRYPTION,
     CONF_ENTRY_SYNC_ADJUST_AIRPLAY,
     CONF_FORCE_RAOP,
@@ -328,6 +329,26 @@ class AirPlayPlayer(Player):
                 default_value=False,
                 category="protocol_generic",
                 advanced=True,
+            ),
+            # Receiver-queue depth presets: 0 = automatic (600 ms stock, 1000 ms
+            # for LinkPlay-based devices whose pipeline starves below ~1 s).
+            # Capped at 1750 - the receiver's standard 2 s buffer minus margin;
+            # deeper values would overflow it.
+            ConfigEntry(
+                key=CONF_BUFFER_DEPTH,
+                type=ConfigEntryType.INTEGER,
+                options=[
+                    ConfigValueOption(0),
+                    ConfigValueOption(500),
+                    ConfigValueOption(750),
+                    ConfigValueOption(1000),
+                    ConfigValueOption(1500),
+                    ConfigValueOption(1750),
+                ],
+                default_value=0,
+                category="protocol_generic",
+                advanced=True,
+                requires_reload=True,
             ),
         ]
 
