@@ -444,8 +444,9 @@ class QuizType(ABC):
         The track itself is returned unchanged when MusicBrainz has nothing better to offer.
 
         :param track: Track to date by its ISRC.
-        :return: The dated track and the release year MusicBrainz knows for its recording, which
-            is also reported when the track already carries that year or an earlier one.
+        :return: The dated track and the usable release year MusicBrainz knows for its recording.
+            The year is reported even when the track already carries that year or an earlier one,
+            and is None when MusicBrainz knows no year or only an implausible one.
         """
         musicbrainz = self.mass.get_provider("musicbrainz")
         isrc = track.get_external_id(ExternalID.ISRC)
