@@ -303,10 +303,10 @@ class AirPlayStream:
         # Send the mute-aware volume right away — audio can start within a
         # second now that metadata goes out immediately — and repeat it after
         # 2 seconds because some players ignore the first volume command
-        # (https://github.com/music-assistant/support/issues/3330).
-        volume = 0 if self.player.volume_muted else self.player.volume_level
-        await self.send_cli_command(f"VOLUME={volume}")
-        self.mass.call_later(2, self.send_cli_command(f"VOLUME={volume}"))
+        # (https://github.com/music-assistant/support/issues/3330). The repeat reads
+        # the level when it fires, so it never replays a value that changed since.
+        await self._send_current_volume()
+        self.mass.call_later(2, self._send_current_volume)
         # settle artwork and the position on top of the identity push above
         self.player._on_player_media_updated()
 
@@ -1396,6 +1396,11 @@ class AirPlayStream:
         if not metadata:
             return
         await self.send_metadata(None, metadata)
+
+    async def _send_current_volume(self) -> None:
+        """Send the player's current volume level to the device, muted as zero."""
+        volume = 0 if self.player.volume_muted else self.player.volume_level
+        await self.send_cli_command(f"VOLUME={volume}")
 
     async def _cleanup_failed_start(self) -> None:
         """Release all resources owned by a cliairplay process that failed to start."""
