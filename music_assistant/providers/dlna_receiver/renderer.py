@@ -38,7 +38,7 @@ LOGGER = logging.getLogger(__name__)
 SCPD_DIR = Path(__file__).parent / "scpd"
 
 SoapCallback = Callable[..., Awaitable[None]]
-PlayCallback = Callable[[str], Awaitable[None]]
+PlayCallback = Callable[[str], Awaitable[bool]]
 PositionCallback = Callable[[], tuple[int, int]]
 
 # Extra entity mapping for XML attribute values (default escape() handles only &, <, >).
@@ -166,6 +166,13 @@ class UPnPRenderer:
         """
         host = f"[{self.bind_ip}]" if ":" in self.bind_ip else self.bind_ip
         return f"http://{host}:{self.http_port}/description.xml"
+
+    async def set_transport_state(self, state: str) -> None:
+        """Set transport state and notify subscribers when it changed."""
+        if self.transport_state == state:
+            return
+        self.transport_state = state
+        await self._notify_av_transport_change()
 
     def _setup_routes(self) -> None:
         """Register HTTP routes for UPnP description, control, and eventing."""
@@ -337,24 +344,21 @@ class UPnPRenderer:
 
         if action_name == "Play":
             previous_state = self.transport_state
-            if self.on_play:
-                await self.on_play(previous_state)
-            self.transport_state = TRANSPORT_STATE_PLAYING
-            await self._notify_av_transport_change()
+            if self.on_play and not await self.on_play(previous_state):
+                return self._soap_error(701, "Transition not available")
+            await self.set_transport_state(TRANSPORT_STATE_PLAYING)
             return self._soap_response(action_name, UPNP_SERVICE_AV_TRANSPORT)
 
         if action_name == "Pause":
-            self.transport_state = TRANSPORT_STATE_PAUSED
             if self.on_pause:
                 await self.on_pause()
-            await self._notify_av_transport_change()
+            await self.set_transport_state(TRANSPORT_STATE_PAUSED)
             return self._soap_response(action_name, UPNP_SERVICE_AV_TRANSPORT)
 
         if action_name == "Stop":
-            self.transport_state = TRANSPORT_STATE_STOPPED
             if self.on_stop:
                 await self.on_stop()
-            await self._notify_av_transport_change()
+            await self.set_transport_state(TRANSPORT_STATE_STOPPED)
             return self._soap_response(action_name, UPNP_SERVICE_AV_TRANSPORT)
 
         if action_name == "Seek":
@@ -393,12 +397,13 @@ class UPnPRenderer:
             )
 
         if action_name == "GetMediaInfo":
+            _elapsed, duration = self.on_get_position() if self.on_get_position else (0, 0)
             return self._soap_response(
                 action_name,
                 UPNP_SERVICE_AV_TRANSPORT,
                 {
                     "NrTracks": "1",
-                    "MediaDuration": "00:00:00",
+                    "MediaDuration": _format_upnp_time(duration),
                     "CurrentURI": self.current_uri,
                     "CurrentURIMetaData": self.current_uri_metadata,
                     "NextURI": "",

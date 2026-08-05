@@ -28,59 +28,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant_models.enums import ConfigEntryType
-
-from .constants import (
-    CONF_BIND_IP,
-    CONF_FRIENDLY_NAME,
-    CONF_HTTP_PORT,
-    CONF_TARGET_PLAYERS,
-    DEFAULT_FRIENDLY_NAME,
-    DEFAULT_HTTP_PORT,
-)
-
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ProviderConfig
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
     from music_assistant.models import ProviderInstanceType
-
-
-async def get_config_entries(
-    mass: MusicAssistant,  # noqa: ARG001
-    instance_id: str | None = None,  # noqa: ARG001
-    action: str | None = None,  # noqa: ARG001
-    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
-) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
-    # Labels/descriptions are localized from strings.json (config_entries.<key>).
-    return (
-        ConfigEntry(
-            key=CONF_FRIENDLY_NAME,
-            type=ConfigEntryType.STRING,
-            default_value=DEFAULT_FRIENDLY_NAME,
-            required=True,
-        ),
-        ConfigEntry(
-            key=CONF_TARGET_PLAYERS,
-            type=ConfigEntryType.STRING,
-            default_value="*",
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_BIND_IP,
-            type=ConfigEntryType.STRING,
-            required=False,
-        ),
-        ConfigEntry(
-            key=CONF_HTTP_PORT,
-            type=ConfigEntryType.INTEGER,
-            default_value=DEFAULT_HTTP_PORT,
-            required=True,
-        ),
-    )
 
 
 async def setup(

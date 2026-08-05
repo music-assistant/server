@@ -16,33 +16,35 @@ import contextlib
 import ipaddress
 import logging
 import time
-import uuid
-import xml.etree.ElementTree as ET
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass
-from html import unescape
 from typing import TYPE_CHECKING, ClassVar
 
 import aiohttp
-from music_assistant_models.config_entries import ConfigValueType  # noqa: F401
+from music_assistant_models.config_entries import ConfigEntry
 from music_assistant_models.enums import (
+    ConfigEntryType,
     ContentType,
     MediaType,
     ProviderFeature,
     QueueOption,
     StreamType,
 )
-from music_assistant_models.errors import AudioError, MediaNotFoundError, SetupFailedError
+from music_assistant_models.errors import (
+    AudioError,
+    MediaNotFoundError,
+    MusicAssistantError,
+    SetupFailedError,
+)
 from music_assistant_models.helpers import create_uri
 from music_assistant_models.media_items import AudioSource, ProviderMapping
 from music_assistant_models.media_items.audio_format import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails, StreamMetadata
 
+from music_assistant.constants import CONF_BIND_IP
 from music_assistant.helpers.util import get_ip_addresses
 from music_assistant.models.plugin import PluginProvider
 
 from .constants import (
-    CONF_BIND_IP,
     CONF_FRIENDLY_NAME,
     CONF_HTTP_PORT,
     CONF_TARGET_PLAYER,
@@ -52,10 +54,16 @@ from .constants import (
     TRANSPORT_STATE_PAUSED,
     TRANSPORT_STATE_PLAYING,
     TRANSPORT_STATE_STOPPED,
-    UDN_NAMESPACE,
 )
-from .renderer import UPnPRenderer
-from .ssdp import SSDPAdvertiser
+from .lifecycle import RendererCallbacks, RendererRegistry
+from .metadata import (
+    clear_playback,
+    freeze_elapsed,
+    parse_didl_metadata,
+    parse_duration,
+    position_for,
+)
+from .models import RendererInstance
 from .urls import redact_url as _redact_url
 from .urls import validate_stream_url as _validate_stream_url
 
@@ -66,10 +74,6 @@ if TYPE_CHECKING:
     from music_assistant.mass import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
-
-# DIDL-Lite metadata is normally < 4 KiB; bound input (measured in characters)
-# to guard CPU/memory on parse.
-_MAX_DIDL_CHARS = 64 * 1024
 
 
 def _is_concrete_ipv4(value: str) -> bool:
@@ -94,25 +98,6 @@ def _is_concrete_ipv4(value: str) -> bool:
     )
 
 
-@dataclass
-class RendererInstance:
-    """Per-player renderer state: UPnP renderer + SSDP + streaming context."""
-
-    player_id: str
-    player_name: str
-    renderer: UPnPRenderer
-    ssdp: SSDPAdvertiser
-    current_stream_url: str | None = None
-    current_metadata: dict[str, str | None] | None = None
-    stream_metadata: StreamMetadata | None = None
-    play_start_time: float | None = None
-    elapsed_offset: int = 0
-    # metadata_dirty marks a real change (new track / pause / resume) that must
-    # be pushed to the queue item; elapsed-only ticks are resynced periodically.
-    metadata_dirty: bool = False
-    last_metadata_push: float = 0.0
-
-
 class DLNAReceiverProvider(PluginProvider):
     """
     DLNA Receiver plugin provider for Music Assistant.
@@ -133,20 +118,46 @@ class DLNAReceiverProvider(PluginProvider):
         """Initialize provider state; renderer instances are created in loaded_in_mass."""
         super().__init__(mass, manifest, config, self.SUPPORTED_FEATURES)
         self._instances: dict[str, RendererInstance] = {}
+        self._registry: RendererRegistry | None = None
         # Exclusive stream claims: source_id -> (queue_id, stream_session_id).
         # Claimed in on_source_selected (never in get_stream_details, which
         # must stay side-effect-free for queue preload), released in
         # on_source_unselected when the session token matches.
         self._claims: dict[str, tuple[str, str]] = {}
         self._metadata_task: asyncio.Task[None] | None = None
-        self._discovery_task: asyncio.Task[None] | None = None
-        # Monotonically bumped per renderer; assigned lazily in loaded_in_mass.
-        self._next_port: int = 0
 
     @property
     def supported_features(self) -> set[ProviderFeature]:
         """Return supported features."""
         return {ProviderFeature.AUDIO_SOURCE}
+
+    async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Return editable options for this provider instance."""
+        return (
+            ConfigEntry(
+                key=CONF_FRIENDLY_NAME,
+                type=ConfigEntryType.STRING,
+                default_value=DEFAULT_FRIENDLY_NAME,
+                required=True,
+            ),
+            ConfigEntry(
+                key=CONF_TARGET_PLAYERS,
+                type=ConfigEntryType.STRING,
+                default_value="*",
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_BIND_IP,
+                type=ConfigEntryType.STRING,
+                required=False,
+            ),
+            ConfigEntry(
+                key=CONF_HTTP_PORT,
+                type=ConfigEntryType.INTEGER,
+                default_value=DEFAULT_HTTP_PORT,
+                required=True,
+            ),
+        )
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -180,64 +191,59 @@ class DLNAReceiverProvider(PluginProvider):
                 "or run MA on a network that exposes an IPv4 interface."
             )
             raise SetupFailedError(msg)
-        self._base_port = int(
+        base_port = int(
             self.config.get_value(CONF_HTTP_PORT) or DEFAULT_HTTP_PORT  # type: ignore[arg-type]
         )
-        self._next_port = self._base_port
+        self._registry = RendererRegistry(
+            mass=self.mass,
+            target_spec=self._raw_target(),
+            friendly_prefix=self._friendly_prefix,
+            bind_ip=self._bind_ip,
+            base_port=base_port,
+            callbacks=RendererCallbacks(
+                on_set_av_transport_uri=self._on_set_transport_uri,
+                on_play=self._on_play,
+                on_pause=self._on_pause,
+                on_stop=self._on_stop,
+                on_get_position=position_for,
+                on_set_volume=self._on_set_volume,
+                on_set_mute=self._on_set_mute,
+                on_instance_removed=self._on_instance_removed,
+            ),
+        )
+        self._instances = self._registry.instances
+        try:
+            await self._registry.start()
+        except Exception as err:
+            self.unload_with_error(err)
+            return
 
-        raw_target = self._raw_target()
-        player_specs = self._resolve_player_specs()
-
-        for pid, pname in player_specs:
-            await self._create_instance(
-                player_id=pid,
-                player_name=pname,
-                friendly_prefix=self._friendly_prefix,
-                bind_ip=self._bind_ip,
-                http_port=self._next_port,
-            )
-            self._next_port += 1
-
-        if not player_specs:
+        if not self._instances:
             LOGGER.info(
                 "No target players are available yet; waiting for player registration",
             )
-
-        # For target_players=*, keep looking for late-registering players in the
-        # background instead of blocking startup.
-        if raw_target == "*":
-            self._discovery_task = asyncio.create_task(self._adopt_late_players())
 
         LOGGER.info(
             "DLNA Receiver started: %d renderer(s) on %s (base port %s)",
             len(self._instances),
             self._bind_ip,
-            self._base_port,
+            base_port,
         )
 
     async def unload(self, is_removed: bool = False) -> None:
         """
         Unload the provider — stop all renderer instances.
 
-        Cancels and *awaits* background tasks before touching ``_instances``:
-        otherwise ``_adopt_late_players`` could still be mid-``_create_instance``
-        and append a new entry to the dict while we're iterating it, which
-        raises ``RuntimeError`` and leaks sockets.
+        Cancels the metadata task before renderer shutdown.
         """
-        for task in (self._metadata_task, self._discovery_task):
-            if task is None or task.done():
-                continue
-            task.cancel()
+        if self._metadata_task is not None and not self._metadata_task.done():
+            self._metadata_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await task
+                await self._metadata_task
         self._metadata_task = None
-        self._discovery_task = None
-        # Snapshot before iterating: no more background mutation possible now,
-        # but cheap defense against future concurrent shutdown paths.
-        for inst in list(self._instances.values()):
-            await inst.ssdp.stop()
-            await inst.renderer.stop()
-        self._instances.clear()
+        if self._registry is not None:
+            await self._registry.stop()
+            self._registry = None
         LOGGER.info("DLNA Receiver provider unloaded")
 
     # ------------------------------------------------------------------
@@ -368,7 +374,7 @@ class DLNAReceiverProvider(PluginProvider):
         if previous and previous[0] != queue_id:
             try:
                 await self.mass.players.cmd_stop(previous[0])
-            except Exception as err:
+            except MusicAssistantError as err:
                 LOGGER.debug("Could not stop previous consumer %s: %s", previous[0], err)
         self._claims[source_id] = (queue_id, stream_session_id)
         self._ensure_metadata_task()
@@ -396,210 +402,19 @@ class DLNAReceiverProvider(PluginProvider):
         # rebuilds the stream metadata from the sender's DIDL.
         inst = self._instances.get(source_id)
         if inst:
-            inst.renderer.transport_state = TRANSPORT_STATE_STOPPED
-            self._clear_instance_playback(inst)
-
-    # ------------------------------------------------------------------
-    # Instance management
-    # ------------------------------------------------------------------
-
-    async def _adopt_late_players(self) -> None:
-        """
-        Poll for newly-registered MA players and spin up renderers for them.
-
-        Runs only when ``target_players=*``. Caps the total wait at ~5 minutes
-        so stale provider instances don't poll forever.
-        """
-        known_ids = {inst.player_id for inst in self._instances.values() if inst.player_id}
-        try:
-            for _ in range(60):  # ~5 minutes at 5s intervals
-                await asyncio.sleep(5)
-                specs = self._resolve_player_specs()
-                new = [(pid, name) for pid, name in specs if pid and pid not in known_ids]
-                for pid, name in new:
-                    await self._create_instance(
-                        player_id=pid,
-                        player_name=name,
-                        friendly_prefix=self._friendly_prefix,
-                        bind_ip=self._bind_ip,
-                        http_port=self._next_port,
-                    )
-                    self._next_port += 1
-                    known_ids.add(pid)
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            LOGGER.debug("Late-player discovery loop error", exc_info=True)
-
-    async def _create_instance(
-        self,
-        player_id: str,
-        player_name: str,
-        friendly_prefix: str,
-        bind_ip: str,
-        http_port: int,
-    ) -> RendererInstance:
-        """Create and start a single renderer instance for a player."""
-        friendly_name = f"{friendly_prefix} — {player_name}" if player_name else friendly_prefix
-
-        udn = self._deterministic_udn(player_id)
-
-        renderer = UPnPRenderer(
-            friendly_name=friendly_name,
-            bind_ip=bind_ip,
-            http_port=http_port,
-            udn=udn,
-            # Reuse MA's shared HTTP session so every GENA NOTIFY across
-            # all three services on every renderer shares one connector.
-            session=self.mass.http_session,
-        )
-
-        inst = RendererInstance(
-            player_id=player_id,
-            player_name=player_name,
-            renderer=renderer,
-            ssdp=SSDPAdvertiser(
-                udn=udn,
-                description_url=renderer.description_url,
-                bind_ip=bind_ip,
-            ),
-        )
-
-        # Wire SOAP callbacks bound to this instance
-        renderer.on_set_av_transport_uri = lambda uri, meta: self._on_set_transport_uri(
-            inst, uri, meta
-        )
-        renderer.on_play = lambda previous_state: self._on_play(inst, previous_state)
-        renderer.on_pause = lambda: self._on_pause(inst)
-        renderer.on_stop = lambda: self._on_stop(inst)
-        renderer.on_get_position = lambda: self._position_for(inst)
-        renderer.on_set_volume = lambda vol: self._on_set_volume(inst, vol)
-        renderer.on_set_mute = lambda m: self._on_set_mute(inst, m)
-
-        # Roll back a partially-started instance so a failed SSDP start
-        # (port collision, multicast permission denied, etc.) doesn't
-        # leave the HTTP runner holding the port across reloads.
-        await renderer.start()
-        # If http_port was 0, renderer.start() just learned the ephemeral
-        # port from the bound socket; refresh the cached SSDP LOCATION so
-        # alive/M-SEARCH responses advertise the real port instead of
-        # whatever description_url resolved to at construction time.
-        inst.ssdp.description_url = renderer.description_url
-        try:
-            await inst.ssdp.start()
-        except Exception:
-            with contextlib.suppress(Exception):
-                await inst.ssdp.stop()
-            with contextlib.suppress(Exception):
-                await renderer.stop()
-            raise
-
-        self._instances[self._source_id_for(inst)] = inst
-
-        LOGGER.info(
-            "Renderer '%s' → player '%s' on port %d (UDN: %s)",
-            friendly_name,
-            player_id or "(none)",
-            http_port,
-            udn,
-        )
-        return inst
+            await inst.renderer.set_transport_state(TRANSPORT_STATE_STOPPED)
+            clear_playback(inst)
 
     def _raw_target(self) -> str:
         """
         Return the configured target spec, defaulting to all players.
 
-        Centralizes the CONF_TARGET_PLAYERS → CONF_TARGET_PLAYER fallback so
-        every call site (late-player adoption check, spec resolution) sees
-        the same value; otherwise a legacy ``"*"`` config would skip the
-        _adopt_late_players background task.
+        Preserve the legacy single-player key for existing installations.
         """
         raw = str(self.config.get_value(CONF_TARGET_PLAYERS) or "").strip()
         if not raw:
             raw = str(self.config.get_value(CONF_TARGET_PLAYER) or "").strip()
         return raw or "*"
-
-    def _resolve_player_specs(self) -> list[tuple[str, str]]:
-        """
-        Resolve configured player targets to (player_id, display_name) pairs.
-
-        Supports:
-        - Empty / not set → all currently known MA players
-        - "*" → all currently known MA players
-        - Comma-separated player_ids
-        - Legacy CONF_TARGET_PLAYER (single player_id, backward compat)
-        """
-        raw = self._raw_target()
-
-        if raw == "*":
-            return self._get_all_players()
-
-        # Comma-separated list (order-preserving dedupe: repeated ids would
-        # collide on the same instance key and leak sockets on each rebind).
-        specs: list[tuple[str, str]] = []
-        seen: set[str] = set()
-        for raw_pid in raw.split(","):
-            pid = raw_pid.strip()
-            if not pid or pid in seen:
-                continue
-            seen.add(pid)
-            name = self._get_player_name(pid)
-            specs.append((pid, name))
-        return specs
-
-    def _get_all_players(self) -> list[tuple[str, str]]:
-        """
-        Get all MA players as (player_id, display_name) pairs.
-
-        Includes unavailable players (they may come online later).
-        Filters out protocol players and our own DLNA Receiver renderers
-        (which the UPnP player provider discovers as "up<udn_hex>" players).
-        """
-        try:
-            players = self.mass.players.all_players(
-                return_unavailable=True,
-                return_protocol_players=False,
-            )
-            all_pids = {p.player_id for p in players}
-
-            # For every player_id, compute the UPnP player_id that would
-            # result from discovering our deterministic-UDN renderer.
-            # This catches ALL recursion levels without needing _instances.
-            own_renderer_pids: set[str] = set()
-            for pid in all_pids:
-                udn = self._deterministic_udn(pid)
-                own_renderer_pids.add(udn)
-                own_renderer_pids.add(f"up{udn.replace(':', '').replace('-', '').lower()}")
-
-            # Also filter already-created instances (belt-and-suspenders)
-            own_renderer_pids.update(
-                inst.player_id for inst in self._instances.values() if inst.player_id
-            )
-
-            result = []
-            for p in players:
-                if p.player_id in own_renderer_pids:
-                    LOGGER.debug(
-                        "Filtering out own renderer player: %s (%s)",
-                        p.player_id,
-                        p.display_name or p.name,
-                    )
-                    continue
-                result.append((p.player_id, p.display_name or p.name or p.player_id))
-            return result
-        except Exception:
-            LOGGER.warning("Could not enumerate MA players", exc_info=True)
-            return []
-
-    def _get_player_name(self, player_id: str) -> str:
-        """Get the display name for a player, falling back to the id."""
-        try:
-            player = self.mass.players.get_player(player_id)
-            if player:
-                return player.display_name or player.name or player_id
-            return player_id
-        except Exception:
-            return player_id
 
     # ------------------------------------------------------------------
     # AudioSource helpers
@@ -643,86 +458,6 @@ class DLNAReceiverProvider(PluginProvider):
         )
 
     # ------------------------------------------------------------------
-    # DIDL-Lite metadata parsing
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _parse_didl_metadata(metadata: str | None) -> dict[str, str | None]:
-        """Parse DIDL-Lite XML and extract title, artist, album, image_url, duration."""
-        result: dict[str, str | None] = {
-            "title": None,
-            "artist": None,
-            "album": None,
-            "image_url": None,
-            "duration": None,
-        }
-        if not metadata:
-            return result
-
-        # Bound untrusted input before parsing (normal DIDL is well under this).
-        if len(metadata) > _MAX_DIDL_CHARS:
-            LOGGER.info(
-                "DIDL metadata truncated from %d to %d chars",
-                len(metadata),
-                _MAX_DIDL_CHARS,
-            )
-            metadata = metadata[:_MAX_DIDL_CHARS]
-
-        # SOAP bodies may contain XML-escaped DIDL-Lite content
-        metadata = unescape(metadata)
-
-        # Defence-in-depth: reject DOCTYPE/ENTITY declarations before parsing
-        # with the stdlib XML parser (defusedxml is not yet a dependency) to
-        # avoid billion-laughs / external-entity DoS on untrusted LAN input.
-        lowered = metadata.lower()
-        if "<!doctype" in lowered or "<!entity" in lowered:
-            LOGGER.info("DIDL metadata rejected: DOCTYPE/ENTITY declaration present")
-            return result
-
-        try:
-            root = ET.fromstring(metadata)  # noqa: S314
-        except Exception:
-            LOGGER.info("Failed to parse DIDL-Lite metadata: %s", metadata[:300])
-            return result
-
-        ns = {
-            "dc": "http://purl.org/dc/elements/1.1/",
-            "upnp": "urn:schemas-upnp-org:metadata-1-0/upnp/",
-            "didl": "urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/",
-        }
-
-        item = root.find("didl:item", ns)
-        if item is None:
-            item = root
-
-        title_el = item.find("dc:title", ns)
-        if title_el is not None and title_el.text:
-            result["title"] = title_el.text
-
-        artist_el = item.find("upnp:artist", ns)
-        if artist_el is None:
-            artist_el = item.find("dc:creator", ns)
-        if artist_el is not None and artist_el.text:
-            result["artist"] = artist_el.text
-
-        album_el = item.find("upnp:album", ns)
-        if album_el is not None and album_el.text:
-            result["album"] = album_el.text
-
-        art_el = item.find("upnp:albumArtURI", ns)
-        if art_el is not None and art_el.text:
-            result["image_url"] = art_el.text
-
-        # Extract duration from <res duration="H:MM:SS"> element
-        res_el = item.find("didl:res", ns)
-        if res_el is not None:
-            dur = res_el.get("duration")
-            if dur:
-                result["duration"] = dur
-
-        return result
-
-    # ------------------------------------------------------------------
     # Renderer callbacks (per-instance)
     # ------------------------------------------------------------------
 
@@ -758,35 +493,39 @@ class DLNAReceiverProvider(PluginProvider):
             _redact_url(safe_url),
         )
         inst.current_stream_url = safe_url
-        inst.current_metadata = self._parse_didl_metadata(metadata)
+        inst.current_metadata = parse_didl_metadata(metadata)
 
-    async def _on_play(self, inst: RendererInstance, previous_state: str) -> None:
+    async def _on_play(self, inst: RendererInstance, previous_state: str) -> bool:
         """Handle Play — start streaming to this instance's player."""
         target = inst.player_id
         if not target:
             LOGGER.warning("No target player bound — ignoring Play")
-            return
+            return False
 
         if not inst.current_stream_url:
             LOGGER.warning("Play received but no stream URL for %s", target)
-            return
+            return False
 
         if previous_state == TRANSPORT_STATE_PLAYING:
             LOGGER.debug("Player %s is already playing; ignoring duplicate Play", target)
-            return
+            return True
 
         if previous_state == TRANSPORT_STATE_PAUSED:
             LOGGER.info("Resuming playback on player %s", target)
-            await self.mass.players.cmd_play(target)
+            try:
+                await self.mass.players.cmd_play(target)
+            except MusicAssistantError as err:
+                LOGGER.warning("Could not resume playback on %s: %s", target, err)
+                return False
             inst.play_start_time = time.time()
             inst.metadata_dirty = True
             self._ensure_metadata_task()
-            return
+            return True
 
         LOGGER.info("Starting playback on player %s", target)
         meta = inst.current_metadata or {}
         LOGGER.debug("DIDL metadata for %s: %s", target, meta)
-        duration = self._parse_duration(meta.get("duration"))
+        duration = parse_duration(meta.get("duration"))
 
         # Stream metadata for MA UI display; travels with the StreamDetails
         # and is refreshed via update_stream_metadata by the metadata loop.
@@ -806,7 +545,6 @@ class DLNAReceiverProvider(PluginProvider):
         inst.play_start_time = time.time()
         inst.elapsed_offset = 0
         inst.metadata_dirty = True
-        self._ensure_metadata_task()
 
         # Route through the AudioSource item so MA pulls bytes via our
         # get_audio_stream() proxy instead of handing the raw upstream
@@ -815,12 +553,19 @@ class DLNAReceiverProvider(PluginProvider):
         # QueueOption.PLAY overrides any user-configured default enqueue
         # option — the sender expects immediate playback, not enqueueing.
         source_uri = create_uri(MediaType.AUDIO_SOURCE, self.instance_id, source_id)
-        await self.mass.player_queues.play_media(target, source_uri, option=QueueOption.PLAY)
+        try:
+            await self.mass.player_queues.play_media(target, source_uri, option=QueueOption.PLAY)
+        except MusicAssistantError as err:
+            clear_playback(inst)
+            LOGGER.warning("Could not start playback on %s: %s", target, err)
+            return False
+        self._ensure_metadata_task()
+        return True
 
     async def _on_pause(self, inst: RendererInstance) -> None:
         """Handle Pause for this instance's player."""
         if inst.player_id:
-            self._freeze_elapsed(inst)
+            freeze_elapsed(inst)
             inst.metadata_dirty = True
             await self.mass.players.cmd_pause(inst.player_id)
 
@@ -828,7 +573,7 @@ class DLNAReceiverProvider(PluginProvider):
         """Handle Stop for this instance's player."""
         if inst.player_id:
             await self.mass.players.cmd_stop(inst.player_id)
-        self._clear_instance_playback(inst)
+        clear_playback(inst)
 
     async def _on_set_volume(self, inst: RendererInstance, volume: int) -> None:
         """Handle volume change for this instance's player."""
@@ -840,38 +585,10 @@ class DLNAReceiverProvider(PluginProvider):
         if inst.player_id:
             await self.mass.players.cmd_volume_mute(inst.player_id, mute)
 
-    # ------------------------------------------------------------------
-    # Playback state & metadata helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _freeze_elapsed(inst: RendererInstance) -> None:
-        """Freeze the instance's elapsed time at the current playback position."""
-        if inst.play_start_time:
-            inst.elapsed_offset += int(time.time() - inst.play_start_time)
-            inst.play_start_time = None
-
-    @staticmethod
-    def _clear_instance_playback(inst: RendererInstance) -> None:
-        """Clear one renderer instance's playback state and metadata."""
-        inst.play_start_time = None
-        inst.elapsed_offset = 0
-        inst.stream_metadata = None
-        inst.metadata_dirty = False
-
-    def _position_for(self, inst: RendererInstance) -> tuple[int, int]:
-        """Return the renderer's current elapsed time and duration in seconds."""
-        elapsed = inst.elapsed_offset
-        if inst.play_start_time is not None:
-            elapsed += int(time.time() - inst.play_start_time)
-
-        duration = inst.stream_metadata.duration if inst.stream_metadata else None
-        if duration is None:
-            duration = self._parse_duration((inst.current_metadata or {}).get("duration"))
-        duration = duration or 0
-        if duration:
-            elapsed = min(elapsed, duration)
-        return max(0, elapsed), duration
+    def _on_instance_removed(self, source_id: str, inst: RendererInstance) -> None:
+        """Clear provider-owned state when a player renderer disappears."""
+        self._claims.pop(source_id, None)
+        clear_playback(inst)
 
     @staticmethod
     def _should_push_metadata(inst: RendererInstance, now: float) -> bool:
@@ -888,7 +605,10 @@ class DLNAReceiverProvider(PluginProvider):
         """Start the metadata update loop if not already running."""
         if self._metadata_task and not self._metadata_task.done():
             return
-        self._metadata_task = asyncio.create_task(self._metadata_update_loop())
+        self._metadata_task = self.mass.create_task(
+            self._metadata_update_loop,
+            task_id="dlna_receiver_metadata_updates",
+        )
 
     async def _metadata_update_loop(self) -> None:
         """
@@ -897,75 +617,36 @@ class DLNAReceiverProvider(PluginProvider):
         Exits on its own when no renderer instance has active stream metadata
         left; restarted on demand by _ensure_metadata_task.
         """
-        try:
-            while True:
-                await asyncio.sleep(2)
-                active = [
-                    (source_id, inst)
-                    for source_id, inst in self._instances.items()
-                    if inst.stream_metadata is not None
-                ]
-                if not active:
-                    break
+        while True:
+            await asyncio.sleep(2)
+            active = [
+                (source_id, inst)
+                for source_id, inst in self._instances.items()
+                if inst.stream_metadata is not None
+            ]
+            if not active:
+                break
 
-                now = time.time()
-                for source_id, inst in active:
-                    metadata = inst.stream_metadata
-                    if metadata is None:
-                        continue
-                    metadata.elapsed_time, _duration = self._position_for(inst)
-                    metadata.elapsed_time_last_updated = now
+            now = time.time()
+            for source_id, inst in active:
+                metadata = inst.stream_metadata
+                if metadata is None:
+                    continue
+                metadata.elapsed_time, _duration = position_for(inst, now)
+                metadata.elapsed_time_last_updated = now
 
-                    if inst.player_id and not self.mass.players.get_player(inst.player_id):
-                        LOGGER.debug("Metadata loop: player %s gone", inst.player_id)
-                        self._clear_instance_playback(inst)
-                        continue
+                if inst.player_id and not self.mass.players.get_player(inst.player_id):
+                    LOGGER.debug("Metadata loop: player %s gone", inst.player_id)
+                    clear_playback(inst)
+                    continue
 
-                    # Push through to the queue item's streamdetails so the UI
-                    # reflects title/elapsed changes without restarting the stream.
-                    claim = self._claims.get(source_id)
-                    if claim and self._should_push_metadata(inst, now):
-                        self.mass.streams.update_stream_metadata(
-                            claim[0],
-                            source_id,
-                            self.instance_id,
-                            metadata,
-                        )
-                        inst.metadata_dirty = False
-                        inst.last_metadata_push = now
-        except asyncio.CancelledError:
-            pass
-        except Exception:
-            LOGGER.debug("Metadata update loop error", exc_info=True)
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _parse_duration(value: str | None) -> int | None:
-        """Parse UPnP duration string (H:MM:SS or H:MM:SS.xxx) to seconds."""
-        if not value:
-            return None
-        try:
-            parts = value.split(":")
-            if len(parts) == 3:
-                h, m, s = parts
-                return int(h) * 3600 + int(m) * 60 + int(float(s))
-            if len(parts) == 2:
-                m, s = parts
-                return int(m) * 60 + int(float(s))
-            return int(float(value))
-        except ValueError, TypeError:
-            return None
-
-    @staticmethod
-    def _deterministic_udn(player_id: str) -> str:
-        """
-        Generate a deterministic UDN from the player_id.
-
-        Uses UUID5 so the same player always gets the same UDN,
-        keeping DLNA control point bookmarks stable across restarts.
-        """
-        namespace = uuid.uuid5(uuid.NAMESPACE_URL, UDN_NAMESPACE)
-        return f"uuid:{uuid.uuid5(namespace, player_id or '__default__')}"
+                claim = self._claims.get(source_id)
+                if claim and self._should_push_metadata(inst, now):
+                    self.mass.streams.update_stream_metadata(
+                        claim[0],
+                        source_id,
+                        self.instance_id,
+                        metadata,
+                    )
+                    inst.metadata_dirty = False
+                    inst.last_metadata_push = now

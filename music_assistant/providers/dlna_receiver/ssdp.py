@@ -8,6 +8,8 @@ import logging
 import secrets
 import socket
 
+from music_assistant_models.errors import SetupFailedError
+
 from .constants import (
     SSDP_MAX_AGE,
     SSDP_MULTICAST_ADDR,
@@ -90,7 +92,7 @@ class SSDPAdvertiser:
                     "target player, or use a platform that supports "
                     "SO_REUSEPORT."
                 )
-                raise RuntimeError(msg) from err
+                raise SetupFailedError(msg) from err
             raise
         mreq = socket.inet_aton(SSDP_MULTICAST_ADDR) + socket.inet_aton(self.bind_ip)
         recv_sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP, mreq)

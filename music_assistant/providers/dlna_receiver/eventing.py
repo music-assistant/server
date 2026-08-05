@@ -250,7 +250,7 @@ class EventingManager:
                             continue
                         LOGGER.debug("NOTIFY sent to %s (SEQ=%d)", url, sub.seq - 1)
                         return
-                except Exception:
+                except aiohttp.ClientError, TimeoutError:
                     LOGGER.debug("NOTIFY to %s failed, trying next callback", url)
 
             LOGGER.warning("All NOTIFY callbacks failed for SID %s", sub.sid)

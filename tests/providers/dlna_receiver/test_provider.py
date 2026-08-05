@@ -11,53 +11,57 @@ import asyncio
 import json
 import types
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, QueueOption, StreamType
+from music_assistant_models.errors import MusicAssistantError, SetupFailedError
 from music_assistant_models.streamdetails import StreamMetadata
 
+from music_assistant.constants import CONF_BIND_IP
 from music_assistant.providers.dlna_receiver import __file__ as provider_package_file
-from music_assistant.providers.dlna_receiver import get_config_entries
 from music_assistant.providers.dlna_receiver.constants import (
-    CONF_BIND_IP,
     CONF_TARGET_PLAYER,
     CONF_TARGET_PLAYERS,
     TRANSPORT_STATE_PAUSED,
     TRANSPORT_STATE_PLAYING,
     TRANSPORT_STATE_STOPPED,
 )
-from music_assistant.providers.dlna_receiver.provider import DLNAReceiverProvider, RendererInstance
+from music_assistant.providers.dlna_receiver.lifecycle import deterministic_udn
+from music_assistant.providers.dlna_receiver.metadata import position_for
+from music_assistant.providers.dlna_receiver.models import RendererInstance
+from music_assistant.providers.dlna_receiver.provider import DLNAReceiverProvider
 from music_assistant.providers.dlna_receiver.renderer import UPnPRenderer
 
 
 def test_deterministic_udn_same_input() -> None:
     """Same player_id always produces the same UDN."""
-    udn1 = DLNAReceiverProvider._deterministic_udn("player_kitchen")
-    udn2 = DLNAReceiverProvider._deterministic_udn("player_kitchen")
+    udn1 = deterministic_udn("player_kitchen")
+    udn2 = deterministic_udn("player_kitchen")
     assert udn1 == udn2
     assert udn1.startswith("uuid:")
 
 
 def test_deterministic_udn_different_inputs() -> None:
     """Different player_ids produce different UDNs."""
-    udn1 = DLNAReceiverProvider._deterministic_udn("player_kitchen")
-    udn2 = DLNAReceiverProvider._deterministic_udn("player_bedroom")
+    udn1 = deterministic_udn("player_kitchen")
+    udn2 = deterministic_udn("player_bedroom")
     assert udn1 != udn2
 
 
 def test_deterministic_udn_default() -> None:
     """Empty player_id produces a stable UDN for the default instance."""
-    udn1 = DLNAReceiverProvider._deterministic_udn("")
-    udn2 = DLNAReceiverProvider._deterministic_udn("")
+    udn1 = deterministic_udn("")
+    udn2 = deterministic_udn("")
     assert udn1 == udn2
-    assert udn1 != DLNAReceiverProvider._deterministic_udn("some_player")
+    assert udn1 != deterministic_udn("some_player")
 
 
 def test_deterministic_udn_is_valid_uuid() -> None:
     """Generated UDN contains a valid UUID5."""
-    udn = DLNAReceiverProvider._deterministic_udn("test_player")
+    udn = deterministic_udn("test_player")
     uuid_str = udn.replace("uuid:", "")
     parsed = uuid.UUID(uuid_str)
     assert parsed.version == 5
@@ -73,7 +77,7 @@ def test_multiple_renderers_different_ports() -> None:
 
 def test_renderer_with_explicit_udn() -> None:
     """Renderer uses provided UDN instead of generating one."""
-    udn = DLNAReceiverProvider._deterministic_udn("test_player")
+    udn = deterministic_udn("test_player")
     r = UPnPRenderer("Test", "127.0.0.1", 9999, udn=udn)
     assert r.udn == udn
 
@@ -113,6 +117,16 @@ def _make_provider(cls, values: dict[str, str]):  # type: ignore[no-untyped-def]
     return inst
 
 
+def _mass_stub(**values: object) -> types.SimpleNamespace:
+    """Return a mass double that preserves tracked-task behavior."""
+
+    def _create_task(target: Any, *args: object, **_kwargs: object):  # type: ignore[no-untyped-def]
+        coroutine = target(*args) if callable(target) else target
+        return asyncio.create_task(coroutine)
+
+    return types.SimpleNamespace(create_task=_create_task, **values)
+
+
 def test_raw_target_prefers_new_key(provider_cls) -> None:  # type: ignore[no-untyped-def]
     """_raw_target uses CONF_TARGET_PLAYERS when set."""
     inst = _make_provider(provider_cls, {CONF_TARGET_PLAYERS: "p1,p2"})
@@ -134,41 +148,18 @@ def test_raw_target_defaults_to_all_players(provider_cls) -> None:  # type: igno
     assert inst._raw_target() == "*"
 
 
-def test_target_players_config_defaults_to_all() -> None:
-    """New configurations default target_players to all players."""
-    entries = asyncio.run(get_config_entries(cast("Any", None)))
-    target_entry = next(entry for entry in entries if entry.key == CONF_TARGET_PLAYERS)
-    assert target_entry.default_value == "*"
-
-
-def test_get_all_players_filters_own_renderer_ids(provider_cls) -> None:  # type: ignore[no-untyped-def]
-    """Raw UDN and universal IDs for our renderers must not become targets."""
-    target_id = "player_kitchen"
-    renderer_udn = provider_cls._deterministic_udn(target_id)
-    universal_id = f"up{renderer_udn.replace(':', '').replace('-', '').lower()}"
-    players = [
-        types.SimpleNamespace(player_id=target_id, display_name="Kitchen", name="Kitchen"),
-        types.SimpleNamespace(player_id=renderer_udn, display_name="DLNA raw", name="DLNA raw"),
-        types.SimpleNamespace(
-            player_id=universal_id,
-            display_name="DLNA universal",
-            name="DLNA universal",
-        ),
-    ]
-
-    prov = _make_provider(provider_cls, {})
-    prov.mass = types.SimpleNamespace(
-        players=types.SimpleNamespace(all_players=lambda **_kwargs: players)
-    )
-    prov._instances = {}
-
-    assert prov._get_all_players() == [(target_id, "Kitchen")]
-
-
 def test_manifest_has_provider_icon() -> None:
     """The provider manifest declares an icon for the UI."""
     manifest = json.loads(Path(provider_package_file).with_name("manifest.json").read_text())
     assert manifest["icon"] == "cast-audio"
+
+
+def test_manifest_uses_canonical_docs_without_unused_credit() -> None:
+    """Manifest links MA documentation and credits only used dependencies."""
+    manifest = json.loads(Path(provider_package_file).with_name("manifest.json").read_text())
+
+    assert manifest["documentation"] == "https://www.music-assistant.io/plugins/dlna-receiver/"
+    assert "credits" not in manifest
 
 
 async def test_loaded_without_players_does_not_create_unbound_renderer(provider_cls) -> None:  # type: ignore[no-untyped-def]
@@ -177,9 +168,14 @@ async def test_loaded_without_players_does_not_create_unbound_renderer(provider_
     def _all_players(**_kwargs: object) -> list[object]:
         return []
 
-    mass = types.SimpleNamespace(
+    def _subscribe(_callback: object, _events: object) -> Callable[[], None]:
+        return lambda: None
+
+    mass = _mass_stub(
         cache=None,
         players=types.SimpleNamespace(all_players=_all_players),
+        subscribe=_subscribe,
+        http_session=object(),
     )
     prov = provider_cls(
         cast("Any", mass),
@@ -190,14 +186,110 @@ async def test_loaded_without_players_does_not_create_unbound_renderer(provider_
     await prov.loaded_in_mass()
     try:
         assert prov._instances == {}
-        assert prov._discovery_task is not None
+        assert prov._registry is not None
     finally:
         await prov.unload()
+
+
+async def test_loaded_publishes_registry_instances_while_start_is_in_progress(
+    provider_cls: type[DLNAReceiverProvider],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A started renderer must expose its AudioSource before the full batch finishes."""
+    from music_assistant.providers.dlna_receiver import music_assistant.providers.dlna_receiver as provider_module  # noqa: PLC0415
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _GatedRegistry:
+        """Registry double that publishes one instance before startup completes."""
+
+        def __init__(self, **_kwargs: object) -> None:
+            self.instances: dict[str, RendererInstance] = {}
+
+        async def start(self) -> None:
+            self.instances["player_kitchen"] = _make_instance(
+                "player_kitchen",
+                "Kitchen",
+                "http://cp.local/track.flac",
+            )
+            entered.set()
+            await release.wait()
+
+        async def stop(self) -> None:
+            self.instances.clear()
+
+    monkeypatch.setattr(provider_module, "RendererRegistry", _GatedRegistry)
+    mass = _mass_stub(cache=None)
+    prov = provider_cls(
+        cast("Any", mass),
+        cast("Any", types.SimpleNamespace(domain="dlna_receiver")),
+        cast("Any", _StubConfig({CONF_BIND_IP: "192.168.1.20"})),
+    )
+    load_task = asyncio.create_task(prov.loaded_in_mass())
+    await entered.wait()
+
+    try:
+        sources = await prov.get_audio_sources()
+        streamdetails = await prov.get_stream_details("player_kitchen", "queue1")
+        assert [source.item_id for source in sources] == ["player_kitchen"]
+        assert streamdetails.item_id == "player_kitchen"
+    finally:
+        release.set()
+        await load_task
+        await prov.unload()
+
+
+async def test_loaded_reports_registry_start_failure_and_returns(
+    provider_cls: type[DLNAReceiverProvider],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A post-load startup failure must schedule provider unload with its original error."""
+    from music_assistant.providers.dlna_receiver import music_assistant.providers.dlna_receiver as provider_module  # noqa: PLC0415
+
+    start_error = SetupFailedError("SSDP unavailable")
+
+    class _FailingRegistry:
+        """Registry double that fails after construction."""
+
+        def __init__(self, **_kwargs: object) -> None:
+            self.instances: dict[str, RendererInstance] = {}
+
+        async def start(self) -> None:
+            raise start_error
+
+        async def stop(self) -> None:
+            return None
+
+    monkeypatch.setattr(provider_module, "RendererRegistry", _FailingRegistry)
+    prov = provider_cls(
+        cast("Any", _mass_stub(cache=None)),
+        cast("Any", types.SimpleNamespace(domain="dlna_receiver")),
+        cast("Any", _StubConfig({CONF_BIND_IP: "192.168.1.20"})),
+    )
+    reported: list[Exception] = []
+    monkeypatch.setattr(prov, "unload_with_error", reported.append)
+
+    await prov.loaded_in_mass()
+
+    assert reported == [start_error]
 
 
 # ---------------------------------------------------------------------
 # New plugin-sources contract (AudioSource MediaItems)
 # ---------------------------------------------------------------------
+
+
+class _RendererStub:
+    """Renderer state double retaining the real external-state contract."""
+
+    def __init__(self, friendly_name: str) -> None:
+        self.friendly_name = friendly_name
+        self.transport_state = TRANSPORT_STATE_STOPPED
+
+    async def set_transport_state(self, state: str) -> None:
+        """Apply an externally reported state change."""
+        self.transport_state = state
 
 
 def _make_instance(player_id: str, player_name: str, url: str | None = None) -> RendererInstance:
@@ -208,7 +300,7 @@ def _make_instance(player_id: str, player_name: str, url: str | None = None) -> 
     return RendererInstance(
         player_id=player_id,
         player_name=player_name,
-        renderer=cast("UPnPRenderer", types.SimpleNamespace(friendly_name=friendly)),
+        renderer=cast("UPnPRenderer", _RendererStub(friendly)),
         ssdp=cast("SSDPAdvertiser", types.SimpleNamespace()),
         current_stream_url=url,
     )
@@ -224,7 +316,7 @@ def _make_contract_provider(
     never drift from the constructor's state initialization.
     """
     prov = cls(
-        cast("Any", types.SimpleNamespace(cache=None)),
+        cast("Any", _mass_stub(cache=None)),
         cast("Any", types.SimpleNamespace(domain="dlna_receiver")),
         cast("Any", _StubConfig({})),
     )
@@ -402,7 +494,7 @@ def test_on_play_routes_through_play_media(provider_cls) -> None:  # type: ignor
 
     prov.mass = cast(
         "Any",
-        types.SimpleNamespace(
+        _mass_stub(
             player_queues=types.SimpleNamespace(play_media=_record_play_media),
         ),
     )
@@ -436,7 +528,7 @@ def test_on_play_resumes_paused_player_without_restarting_stream(provider_cls) -
 
     prov.mass = cast(
         "Any",
-        types.SimpleNamespace(
+        _mass_stub(
             players=types.SimpleNamespace(cmd_play=_record_cmd_play),
             player_queues=types.SimpleNamespace(play_media=_record_play_media),
         ),
@@ -466,7 +558,7 @@ def test_on_play_is_idempotent_while_already_playing(provider_cls) -> None:  # t
 
     prov.mass = cast(
         "Any",
-        types.SimpleNamespace(
+        _mass_stub(
             players=types.SimpleNamespace(cmd_play=_record),
             player_queues=types.SimpleNamespace(play_media=_record),
         ),
@@ -492,7 +584,7 @@ def test_on_stop_clears_only_that_instance(provider_cls) -> None:  # type: ignor
 
     prov.mass = cast(
         "Any",
-        types.SimpleNamespace(
+        _mass_stub(
             player_queues=types.SimpleNamespace(play_media=_noop),
             players=types.SimpleNamespace(cmd_stop=_noop),
         ),
@@ -520,7 +612,7 @@ def test_on_source_unselected_stops_elapsed_tracking(provider_cls) -> None:  # t
 
     prov.mass = cast(
         "Any",
-        types.SimpleNamespace(
+        _mass_stub(
             player_queues=types.SimpleNamespace(play_media=_noop),
             players=types.SimpleNamespace(cmd_stop=_noop),
         ),
@@ -537,14 +629,12 @@ def test_on_source_unselected_stops_elapsed_tracking(provider_cls) -> None:  # t
     assert inst.renderer.transport_state == TRANSPORT_STATE_STOPPED
 
 
-def test_position_for_reports_elapsed_and_duration(provider_cls) -> None:  # type: ignore[no-untyped-def]
+def test_position_for_reports_elapsed_and_duration() -> None:
     """Renderer position comes from the instance's tracked playback state."""
     inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/a.flac")
     inst.elapsed_offset = 65
     inst.current_metadata = {"duration": "00:04:05"}
-    prov = _make_contract_provider(provider_cls, {"player_kitchen": inst})
-
-    assert prov._position_for(inst) == (65, 245)
+    assert position_for(inst) == (65, 245)
 
 
 def test_get_audio_stream_raises_without_url(provider_cls) -> None:  # type: ignore[no-untyped-def]
@@ -577,7 +667,7 @@ def test_on_source_selected_stops_previous_queue_on_handoff(provider_cls) -> Non
 
     prov.mass = cast(
         "Any",
-        types.SimpleNamespace(players=types.SimpleNamespace(cmd_stop=_record_stop)),
+        _mass_stub(players=types.SimpleNamespace(cmd_stop=_record_stop)),
     )
 
     async def _scenario() -> None:
@@ -640,3 +730,107 @@ def test_is_concrete_ipv4_rejects_non_routable(value: str) -> None:
     from music_assistant.providers.dlna_receiver.provider import _is_concrete_ipv4  # noqa: PLC0415
 
     assert _is_concrete_ipv4(value) is False
+
+
+async def test_instance_config_entries_expose_runtime_options(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """Loaded provider instances expose all four editable options."""
+    prov = _make_contract_provider(provider_cls, {})
+
+    entries = await prov.get_config_entries()
+
+    assert {entry.key for entry in entries} == {
+        "friendly_name",
+        "target_players",
+        "bind_ip",
+        "http_port",
+    }
+    target_entry = next(entry for entry in entries if entry.key == CONF_TARGET_PLAYERS)
+    assert target_entry.default_value == "*"
+
+
+async def test_on_play_reports_expected_playback_failure(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """A Music Assistant playback rejection is reported to the SOAP layer."""
+    inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/track.flac")
+    prov = _make_contract_provider(provider_cls, {"player_kitchen": inst})
+
+    async def _reject_play(*_args: object, **_kwargs: object) -> None:
+        raise MusicAssistantError("player unavailable")
+
+    prov.mass = cast(
+        "Any",
+        _mass_stub(
+            player_queues=types.SimpleNamespace(play_media=_reject_play),
+        ),
+    )
+
+    assert await prov._on_play(inst, TRANSPORT_STATE_STOPPED) is False
+    assert inst.stream_metadata is None
+    assert inst.play_start_time is None
+
+
+async def test_source_handoff_does_not_hide_unexpected_errors(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """Only expected Music Assistant command failures are suppressed on handoff."""
+    inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/track.flac")
+    prov = _make_contract_provider(provider_cls, {"player_kitchen": inst})
+    prov._claims["player_kitchen"] = ("queue1", "session1")
+
+    async def _raise_unexpected(_queue_id: str) -> None:
+        raise RuntimeError("programming error")
+
+    prov.mass = cast(
+        "Any",
+        _mass_stub(players=types.SimpleNamespace(cmd_stop=_raise_unexpected)),
+    )
+
+    with pytest.raises(RuntimeError, match="programming error"):
+        await prov.on_source_selected("player_kitchen", "player_kitchen", "queue2", "session2")
+
+
+async def test_metadata_loop_does_not_hide_unexpected_errors(
+    provider_cls: type[DLNAReceiverProvider],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unexpected queue metadata errors terminate the tracked task visibly."""
+    inst = _make_instance("player_kitchen", "Kitchen", "http://cp.local/track.flac")
+    inst.stream_metadata = StreamMetadata(title="Track")
+    inst.metadata_dirty = True
+    prov = _make_contract_provider(provider_cls, {"player_kitchen": inst})
+    prov._claims["player_kitchen"] = ("queue1", "session1")
+
+    async def _no_delay(_seconds: float) -> None:
+        return None
+
+    def _raise_unexpected(*_args: object) -> None:
+        raise RuntimeError("metadata update failed")
+
+    monkeypatch.setattr(asyncio, "sleep", _no_delay)
+    prov.mass = cast(
+        "Any",
+        _mass_stub(
+            players=types.SimpleNamespace(get_player=lambda _player_id: object()),
+            streams=types.SimpleNamespace(update_stream_metadata=_raise_unexpected),
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="metadata update failed"):
+        await prov._metadata_update_loop()
+
+
+async def test_metadata_loop_is_created_through_mass(provider_cls) -> None:  # type: ignore[no-untyped-def]
+    """Metadata updates are tracked by Music Assistant's task manager."""
+    prov = _make_contract_provider(provider_cls, {})
+    calls: list[str | None] = []
+
+    def _create_task(target: Any, *args: object, task_id: str | None = None, **_kwargs: object):  # type: ignore[no-untyped-def]
+        calls.append(task_id)
+        coroutine = target(*args) if callable(target) else target
+        return asyncio.create_task(coroutine)
+
+    prov.mass = cast("Any", types.SimpleNamespace(create_task=_create_task))
+
+    prov._ensure_metadata_task()
+    assert calls == ["dlna_receiver_metadata_updates"]
+    assert prov._metadata_task is not None
+    prov._metadata_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await prov._metadata_task

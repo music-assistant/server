@@ -197,8 +197,9 @@ async def test_play_callback_receives_prior_transport_state(
     renderer.transport_state = "PAUSED_PLAYBACK"
     received_states: list[tuple[str, str]] = []
 
-    async def _on_play(previous_state: str) -> None:
+    async def _on_play(previous_state: str) -> bool:
         received_states.append((previous_state, renderer.transport_state))
+        return True
 
     renderer.on_play = _on_play
 
@@ -248,6 +249,78 @@ async def test_get_position_info(
     assert "<TrackDuration>00:04:05</TrackDuration>" in text
     assert "<RelTime>00:01:05</RelTime>" in text
     assert "<AbsTime>00:01:05</AbsTime>" in text
+
+
+async def test_play_rejection_returns_701_without_state_change(
+    client: TestClient[Request, Application],
+    renderer: UPnPRenderer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A rejected provider callback cannot advertise playback that never started."""
+    renderer.transport_state = "STOPPED"
+    notifications: list[dict[str, str]] = []
+
+    async def _reject_play(_previous_state: str) -> bool:
+        return False
+
+    async def _record_notify(variables: dict[str, str]) -> None:
+        notifications.append(variables)
+
+    renderer.on_play = _reject_play
+    monkeypatch.setattr(renderer._evt_av_transport, "notify", _record_notify)
+
+    resp = await client.post(
+        "/AVTransport/control",
+        headers={
+            "SOAPACTION": '"urn:schemas-upnp-org:service:AVTransport:1#Play"',
+        },
+        data="<dummy/>",
+    )
+
+    assert resp.status == 500
+    assert "<errorCode>701</errorCode>" in await resp.text()
+    assert renderer.transport_state == "STOPPED"
+    assert notifications == []
+
+
+async def test_set_transport_state_notifies_only_on_change(
+    renderer: UPnPRenderer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """External Music Assistant state changes are delivered to GENA subscribers."""
+    renderer.transport_state = "PLAYING"
+    notifications: list[dict[str, str]] = []
+
+    async def _record_notify(variables: dict[str, str]) -> None:
+        notifications.append(variables)
+
+    monkeypatch.setattr(renderer._evt_av_transport, "notify", _record_notify)
+
+    await renderer.set_transport_state("STOPPED")
+    await renderer.set_transport_state("STOPPED")
+
+    assert renderer.transport_state == "STOPPED"
+    assert len(notifications) == 1
+    assert "STOPPED" in notifications[0]["LastChange"]
+
+
+async def test_get_media_info_reports_provider_duration(
+    client: TestClient[Request, Application],
+    renderer: UPnPRenderer,
+) -> None:
+    """GetMediaInfo and GetPositionInfo expose the same track duration."""
+    renderer.on_get_position = lambda: (65, 245)
+
+    resp = await client.post(
+        "/AVTransport/control",
+        headers={
+            "SOAPACTION": '"urn:schemas-upnp-org:service:AVTransport:1#GetMediaInfo"',
+        },
+        data="<dummy/>",
+    )
+
+    assert resp.status == 200
+    assert "<MediaDuration>00:04:05</MediaDuration>" in await resp.text()
 
 
 async def test_get_connection_info(client: TestClient[Request, Application]) -> None:

@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import socket
+
+import pytest
+from music_assistant_models.errors import SetupFailedError
 
 from music_assistant.providers.dlna_receiver.ssdp import (
     _MX_MAX_SECONDS,
     SSDPAdvertiser,
     _parse_mx_delay,
 )
-
-if TYPE_CHECKING:
-    import pytest
 
 
 def test_ssdp_advertiser_init() -> None:
@@ -88,3 +88,50 @@ def test_parse_mx_delay_caps_large_mx() -> None:
     for _ in range(20):
         delay = _parse_mx_delay("120")
         assert 0.0 <= delay < _MX_MAX_SECONDS
+
+
+async def test_shared_ssdp_port_failure_is_setup_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unsupported SSDP port sharing is reported as a provider setup failure."""
+
+    class _Socket:
+        def __init__(self, fail_bind: bool) -> None:
+            self._fail_bind = fail_bind
+
+        def setsockopt(self, _level: int, option: int, _value: object) -> None:
+            if option == socket.SO_REUSEPORT:
+                raise OSError("unsupported")
+
+        def setblocking(self, _value: bool) -> None:
+            return None
+
+        def bind(self, _address: object) -> None:
+            if self._fail_bind:
+                error = OSError("address in use")
+                error.errno = 98
+                raise error
+
+        def close(self) -> None:
+            return None
+
+    sockets = iter((_Socket(False), _Socket(True)))
+    monkeypatch.setattr(
+        "music_assistant.providers.dlna_receiver.ssdp.socket.socket", lambda *_args: next(sockets)
+    )
+
+    class _Loop:
+        async def create_datagram_endpoint(
+            self, _factory: object, **_kwargs: object
+        ) -> tuple[object, object]:
+            return object(), object()
+
+    monkeypatch.setattr(
+        "music_assistant.providers.dlna_receiver.ssdp.asyncio.get_running_loop", lambda: _Loop()
+    )
+    advertiser = SSDPAdvertiser(
+        udn="uuid:test",
+        description_url="http://192.0.2.10:8298/description.xml",
+        bind_ip="192.0.2.10",
+    )
+
+    with pytest.raises(SetupFailedError, match="Unable to bind SSDP"):
+        await advertiser.start()
