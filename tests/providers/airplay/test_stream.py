@@ -4,6 +4,7 @@ import asyncio
 import errno
 import logging
 import os
+import select
 import threading
 from collections.abc import AsyncGenerator, Callable, Coroutine
 from contextlib import suppress
@@ -16,7 +17,7 @@ from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.helpers.named_pipe import WRITE_STALL_TIMEOUT, AsyncNamedPipeWriter
+from music_assistant.helpers.named_pipe import WRITE_POLL_INTERVAL_MS, AsyncNamedPipeWriter
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
@@ -798,9 +799,9 @@ async def test_pipe_write_completes_a_large_write_while_the_reader_drains(
     read_fd = os.open(pipe_path, os.O_RDONLY | os.O_NONBLOCK)
     payload = b"\x00" * 176400
 
-    async def drain() -> int:
-        received = 0
-        while received < len(payload):
+    async def drain() -> bytes:
+        received = bytearray()
+        while len(received) < len(payload):
             try:
                 chunk = os.read(read_fd, 65536)
             except BlockingIOError:
@@ -809,14 +810,53 @@ async def test_pipe_write_completes_a_large_write_while_the_reader_drains(
                 # no writer attached yet or nothing buffered: yield instead of spinning
                 await asyncio.sleep(0.001)
                 continue
-            received += len(chunk)
-        return received
+            received += chunk
+        return bytes(received)
 
     reader = asyncio.create_task(drain())
     try:
         async with asyncio.timeout(10):
             assert await writer.write(payload) is True
+            # every byte arrives exactly once, so a resumed write never repeats itself
+            assert await reader == payload
+    finally:
+        reader.cancel()
+        with suppress(asyncio.CancelledError):
+            await reader
+        os.close(read_fd)
+        await writer.remove()
+
+
+@pytest.mark.asyncio
+async def test_pipe_write_outlasts_a_reader_slower_than_the_stall_timeout(
+    tmp_path: Path,
+) -> None:
+    """The stall budget covers a lack of progress, not the total time a write takes."""
+    pipe_path = tmp_path / "audio"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+    read_fd = os.open(pipe_path, os.O_RDONLY | os.O_NONBLOCK)
+    payload = b"\x00" * 176400
+    stall_timeout = 0.15
+
+    async def drain_slowly() -> int:
+        received = 0
+        while received < len(payload):
+            await asyncio.sleep(0.02)
+            with suppress(BlockingIOError):
+                received += len(os.read(read_fd, 8192))
+        return received
+
+    reader = asyncio.create_task(drain_slowly())
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    try:
+        async with asyncio.timeout(30):
+            with patch("music_assistant.helpers.named_pipe.WRITE_STALL_TIMEOUT", stall_timeout):
+                assert await writer.write(payload) is True
             assert await reader == len(payload)
+        # a reader this slow only completes because each pause resets the budget
+        assert loop.time() - started > stall_timeout
     finally:
         reader.cancel()
         with suppress(asyncio.CancelledError):
@@ -837,47 +877,48 @@ async def test_pipe_write_resumes_after_the_buffer_drains() -> None:
             "music_assistant.helpers.named_pipe.os.write",
             side_effect=[4, BlockingIOError(errno.EAGAIN, "buffer full"), 6],
         ) as write,
-        patch(
-            "music_assistant.helpers.named_pipe.select.select",
-            return_value=([], [42], []),
-        ) as wait_writable,
+        patch("music_assistant.helpers.named_pipe.select.poll") as poll,
     ):
         assert await writer.write(data) is True
 
+    # the retry picks up where the short write stopped, it never resends
     assert write.call_args_list == [
         call(42, memoryview(data)),
         call(42, memoryview(data)[4:]),
         call(42, memoryview(data)[4:]),
     ]
-    wait_writable.assert_called_once_with([], [42], [], WRITE_STALL_TIMEOUT)
+    poll.return_value.register.assert_called_once_with(42, select.POLLOUT)
+    poll.return_value.poll.assert_called_once_with(WRITE_POLL_INTERVAL_MS)
 
 
 @pytest.mark.asyncio
-async def test_pipe_write_resets_fd_when_the_reader_closes_during_a_stall() -> None:
+async def test_pipe_write_resets_fd_when_the_reader_closes_during_a_stall(
+    tmp_path: Path,
+) -> None:
     """A reader that goes away while the buffer is full still resets the writer."""
-    data = b"\x00" * 10
-    writer = AsyncNamedPipeWriter("/tmp/audio")  # noqa: S108
-    writer._write_fd = 42
+    pipe_path = tmp_path / "audio"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+    read_fd = os.open(pipe_path, os.O_RDONLY | os.O_NONBLOCK)
 
-    with (
-        patch(
-            "music_assistant.helpers.named_pipe.os.write",
-            side_effect=[
-                4,
-                BlockingIOError(errno.EAGAIN, "buffer full"),
-                OSError(errno.EPIPE, "reader closed"),
-            ],
-        ),
-        patch(
-            "music_assistant.helpers.named_pipe.select.select",
-            return_value=([], [42], []),
-        ),
-        patch("music_assistant.helpers.named_pipe.os.close") as close_fd,
-    ):
-        assert await writer.write(data) is False
+    async def close_reader_mid_stall() -> None:
+        await asyncio.sleep(0.05)
+        os.close(read_fd)
 
-    close_fd.assert_called_once_with(42)
-    assert writer._write_fd is None
+    closer = asyncio.create_task(close_reader_mid_stall())
+    try:
+        async with asyncio.timeout(30):
+            assert await writer.write(b"\x00" * 176400) is False
+            await closer
+        # the departed reader is what ends the write, so it must not be left mid-stall
+        assert writer._write_fd is None
+    finally:
+        closer.cancel()
+        with suppress(asyncio.CancelledError):
+            await closer
+        with suppress(OSError):
+            os.close(read_fd)
+        await writer.remove()
 
 
 @pytest.mark.asyncio
