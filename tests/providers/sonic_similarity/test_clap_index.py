@@ -196,6 +196,23 @@ async def test_close_waits_for_a_save_whose_task_was_cancelled(
 
 
 @pytest.mark.asyncio
+async def test_add_landing_after_release_leaves_no_phantom_entry(
+    tmp_path: Path, logger: logging.Logger
+) -> None:
+    """An insert that reaches the worker after teardown must not record a key without a vector."""
+    idx = ClapIndex(_make_mass(tmp_path), logger)  # type: ignore[arg-type]
+    await idx.load()
+    await idx.close()
+
+    # the worker an in-flight add() would have reached once the index was released
+    applied = idx._add_sync(derive_label("spotify", "late"), _unit_vec(1), "spotify", "late")
+
+    assert applied is False
+    assert len(idx) == 0
+    assert not idx.contains("spotify", "late")
+
+
+@pytest.mark.asyncio
 async def test_corrupt_index_with_valid_keys_drops_keys_to_avoid_phantom_contains(
     tmp_path: Path, logger: logging.Logger
 ) -> None:

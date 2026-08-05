@@ -123,9 +123,8 @@ class ClapIndex:
             return
 
         vec = np.asarray(embedding, dtype=np.float32)
-        if not await asyncio.to_thread(self._add_sync, label, vec):
+        if not await asyncio.to_thread(self._add_sync, label, vec, provider, item_id):
             return
-        self._reverse[label] = (provider, item_id)
         self._dirty_adds += 1
         await self._maybe_flush()
 
@@ -256,14 +255,17 @@ class ClapIndex:
                     self._reverse = {}
                     self._keys_path.unlink(missing_ok=True)
 
-    def _add_sync(self, label: int, vec: np.ndarray) -> bool:
-        """Insert the vector, or return False if the index was released meanwhile."""
+    def _add_sync(self, label: int, vec: np.ndarray, provider: str, item_id: str) -> bool:
+        """Insert the vector with its reverse entry, or return False if the index was released."""
+        # both halves under one lock: a reverse entry without its vector makes
+        # contains() lie and blocks a later rebuild from re-adding the embedding
         with self._lock:
             if self._index is None:
                 return False
             if label in self._index:
                 self._index.remove(label)
             self._index.add(label, vec)
+            self._reverse[label] = (provider, item_id)
             return True
 
     def _embedding_for_label(self, label: int) -> np.ndarray | None:
