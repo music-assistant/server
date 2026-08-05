@@ -30,6 +30,8 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 
 if TYPE_CHECKING:
+    from music_assistant.helpers.dsp import ComplexFilter
+
     from .player import SendspinPlayer
     from .provider import SendspinProvider
 
@@ -48,10 +50,10 @@ _DEFAULT_SENDSPIN_PCM_FORMAT = SendspinAudioFormat(
     channels=2,
     sample_type="float",
 )
-# Media types whose upstream feeds at realtime rate, so the Sendspin queue
-# cannot grow after playback begins. Buffered types (tracks, podcasts, etc.)
-# race ahead and fill the queue naturally, so the min_buffer startup wait is
-# pure latency.
+# Media types whose upstream feeds at realtime rate, so the Sendspin queue cannot
+# grow after playback begins, so their send-ahead stays at the min_buffer_ms floor.
+# Buffered types (tracks, podcasts, etc.) race ahead and fill the queue naturally, so
+# their send-ahead may extend to a larger required_lead_time_ms without lasting cost.
 _LIVE_MEDIA_TYPES: frozenset[MediaType] = frozenset(
     {
         MediaType.RADIO,
@@ -286,10 +288,10 @@ class _JoinCatchupState:
 class _PipelineConfig:
     requires_transform: bool
     output_channels: str
-    filter_params: tuple[str, ...]
+    filter_params: tuple[str | ComplexFilter, ...]
 
     @property
-    def signature(self) -> tuple[bool, str, tuple[str, ...]]:
+    def signature(self) -> tuple[bool, str, tuple[str | ComplexFilter, ...]]:
         return (self.requires_transform, self.output_channels, self.filter_params)
 
 
@@ -1249,7 +1251,10 @@ class SendspinPlaybackSession:
         except Exception:
             filter_params = ()
             output_plan = None
-        custom_filter_graph = any(param.strip() for param in filter_params)
+        # a ComplexFilter (e.g. convolution) is never a plain string, so it always counts
+        custom_filter_graph = any(
+            not isinstance(param, str) or param.strip() for param in filter_params
+        )
         requires_transform = dsp_enabled or output_channels != "stereo" or custom_filter_graph
         if (
             output_plan is not None
@@ -1350,7 +1355,7 @@ class SendspinPlaybackSession:
 
     # -- FFmpeg lifecycle ------------------------------------------------------
 
-    def _create_member_ffmpeg(self, filter_params: tuple[str, ...]) -> FFMpeg:
+    def _create_member_ffmpeg(self, filter_params: tuple[str | ComplexFilter, ...]) -> FFMpeg:
         """Create per-member FFMpeg for DSP pipeline."""
         return FFMpeg(
             audio_input="-",

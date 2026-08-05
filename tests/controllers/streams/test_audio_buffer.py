@@ -8,13 +8,16 @@ from collections.abc import AsyncGenerator
 from contextlib import suppress
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
 from music_assistant_models.media_items import AudioFormat
+from music_assistant_models.queue_item import QueueItem
 from music_assistant_models.streamdetails import StreamDetails
 
+import music_assistant.controllers.streams.audio as audio_mod
+from music_assistant.controllers.streams.audio import StreamsAudio
 from music_assistant.controllers.streams.audio_buffer import (
     AudioBuffer,
     AudioBufferDiscarded,
@@ -27,6 +30,7 @@ from music_assistant.controllers.streams.constants import (
     BufferMode,
     BufferSize,
 )
+from music_assistant.mass import MusicAssistant
 
 # Standard test PCM format: 44100Hz, 16-bit, stereo
 TEST_PCM_FORMAT = AudioFormat(
@@ -742,3 +746,91 @@ async def test_inactivity_monitor_keeps_active_buffer() -> None:
     monitor.cancel()
     with suppress(asyncio.CancelledError):
         await monitor
+
+
+# -- Pre-buffering of the next queue item --
+
+
+@pytest.fixture
+async def mass_minimal(mass_minimal: MusicAssistant) -> MusicAssistant:
+    """Extend the base fixture with the player_queues/streams stand-ins get_queue_item_stream needs."""
+    mass_minimal.player_queues = SimpleNamespace(  # type: ignore[assignment]
+        get_active_queue=lambda _queue_id: None,
+        prepare_next_audio_buffer=lambda _queue_id: None,
+    )
+    mass_minimal.streams = MagicMock()
+    return mass_minimal
+
+
+class _FakeAudioBuffer:
+    """AudioBuffer test double that streams a fixed run of 1-second chunks."""
+
+    has_error = False
+    pcm_format = TEST_PCM_FORMAT
+
+    @classmethod
+    async def get_buffer(cls, **_kwargs: Any) -> _FakeAudioBuffer:
+        return cls()
+
+    async def get_stream(self, **_kwargs: Any) -> AsyncGenerator[bytes]:
+        async for chunk in _make_source(90):
+            yield chunk
+
+
+async def _stream_until_prebuffer_window(
+    mass: MusicAssistant, *, next_item_media_type: MediaType, queue_id: str
+) -> None:
+    """
+    Drive get_queue_item_stream for a 90s current TRACK item past the pre-buffer trigger point.
+
+    Sets up a queue whose next item has ``next_item_media_type`` and streams the current
+    item to completion, so the pre-buffer trigger condition (evaluated once more than
+    duration - 60 seconds of PCM has been yielded) gets a chance to fire.
+    """
+    streamdetails = _make_stream_details(MediaType.TRACK, duration=90, allow_seek=True)
+    streamdetails.loudness = -10.0  # skip the audio-analysis hydration call
+    current_item = QueueItem(
+        queue_id=queue_id,
+        queue_item_id="current",
+        name="Current",
+        duration=90,
+        streamdetails=streamdetails,
+    )
+    next_item = SimpleNamespace(queue_item_id="next", media_type=next_item_media_type)
+    queue = SimpleNamespace(next_item=next_item)
+    mass.player_queues.get_active_queue = lambda _player_id: queue  # type: ignore[method-assign, assignment, return-value]
+
+    controller = StreamsAudio(mass)
+    with patch.object(audio_mod, "AudioBuffer", _FakeAudioBuffer):
+        async for _chunk in controller.get_queue_item_stream(current_item, TEST_PCM_FORMAT):
+            pass
+
+
+@pytest.mark.asyncio
+async def test_sound_effect_next_item_triggers_prebuffer(mass_minimal: MusicAssistant) -> None:
+    """A SOUND_EFFECT next item is pre-buffered like a track."""
+    calls: list[str] = []
+    mass_minimal.player_queues.prepare_next_audio_buffer = (  # type: ignore[method-assign]
+        lambda queue_id: calls.append(queue_id)
+    )
+
+    await _stream_until_prebuffer_window(
+        mass_minimal, next_item_media_type=MediaType.SOUND_EFFECT, queue_id="player_a"
+    )
+
+    assert calls == ["player_a"]
+
+
+@pytest.mark.asyncio
+async def test_audio_source_next_item_is_not_prebuffered(mass_minimal: MusicAssistant) -> None:
+    """A live AUDIO_SOURCE next item is still excluded from pre-buffering."""
+    calls: list[str] = []
+    mass_minimal.player_queues.prepare_next_audio_buffer = (  # type: ignore[method-assign]
+        lambda queue_id: calls.append(queue_id)
+    )
+
+    await _stream_until_prebuffer_window(
+        mass_minimal, next_item_media_type=MediaType.AUDIO_SOURCE, queue_id="player_a"
+    )
+
+    assert calls == []

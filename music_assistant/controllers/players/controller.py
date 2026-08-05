@@ -899,6 +899,10 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             for child_player in self.iter_group_members(
                 player, only_powered=True, exclude_self=False
             ):
+                if child_player.mute_control == PLAYER_CONTROL_NONE:
+                    # members without a mute control are left alone, just like the
+                    # group mute state itself is calculated from the capable members only
+                    continue
                 coros.append(self.cmd_volume_mute(child_player.player_id, muted))
             await asyncio.gather(*coros)
 
@@ -914,23 +918,28 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         player = self.get_player(player_id, True)
         assert player
 
-        # Set/clear mute lock for players in a group
+        # clearing the mute lock may not depend on mute support, otherwise a lock set
+        # while the player still had a mute control would outlive a control change
+        if not muted:
+            player.extra_data.pop(ATTR_MUTE_LOCK, None)
+
+        mute_control = player.mute_control
+        if mute_control == PLAYER_CONTROL_NONE:
+            raise UnsupportedFeaturedException(
+                f"Player {player.state.name} does not support muting"
+            )
+
+        # Set mute lock for players in a group
         # This prevents auto-unmute when group volume changes
         is_in_group = bool(player.state.synced_to or player.state.active_group)
         if muted and is_in_group:
             player.extra_data[ATTR_MUTE_LOCK] = True
-        elif not muted:
-            player.extra_data.pop(ATTR_MUTE_LOCK, None)
 
-        if player.volume_control == PLAYER_CONTROL_NONE:
-            raise UnsupportedFeaturedException(
-                f"Player {player.state.name} does not support muting"
-            )
-        if player.mute_control == PLAYER_CONTROL_NATIVE:
+        if mute_control == PLAYER_CONTROL_NATIVE:
             # player supports mute command natively: forward to player
             await player.volume_mute(muted)
             return
-        if player.mute_control == PLAYER_CONTROL_FAKE:
+        if mute_control == PLAYER_CONTROL_FAKE:
             # user wants to use fake mute control - so we use volume instead
             self.logger.debug(
                 "Using volume for muting for player %s",
@@ -953,10 +962,10 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             return
 
         # handle external player control
-        if player_control := self._controls.get(player.mute_control):
-            control_name = player_control.name if player_control else player.mute_control
+        if player_control := self._controls.get(mute_control):
+            control_name = player_control.name
             self.logger.debug("Redirecting mute command to PlayerControl %s", control_name)
-            if not player_control or not player_control.supports_mute:
+            if not player_control.supports_mute:
                 raise UnsupportedFeaturedException(
                     f"Player control {control_name} is not available"
                 )
@@ -965,13 +974,16 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             return
 
         # handle to protocol player as volume_mute control
-        if protocol_player := self.get_player(player.mute_control):
+        if protocol_player := self.get_player(mute_control):
             self.logger.debug(
                 "Redirecting mute command to protocol player %s",
                 protocol_player.provider.manifest.name,
             )
             await protocol_player.volume_mute(muted)
             return
+
+        # the configured control disappeared after the mute control was resolved
+        raise UnsupportedFeaturedException(f"Player {player.state.name} does not support muting")
 
     @handle_player_command
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
@@ -1877,8 +1889,10 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         control = self._controls.pop(control_id, None)
         if control is None:
             return
-        self._controls.pop(control_id, None)
         self.logger.info("PlayerControl removed: %s", control.name)
+        # players configured to use this control still resolve to it until they are
+        # refreshed, so let them fall back to their remaining options right away
+        self.update_player_control(control_id)
 
     def get_player_provider(self, player_id: str) -> PlayerProvider:
         """Return PlayerProvider for given player."""
@@ -3394,9 +3408,9 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 )
         # handle external player control
         elif player_control := self._controls.get(player.state.power_control):
-            control_name = player_control.name if player_control else player.state.power_control
+            control_name = player_control.name
             self.logger.debug("Redirecting power command to PlayerControl %s", control_name)
-            if not player_control or not player_control.supports_power:
+            if not player_control.supports_power:
                 raise UnsupportedFeaturedException(
                     f"Player control {control_name} is not available"
                 )
@@ -3453,7 +3467,9 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 has_mute_lock = parent.extra_data.get(ATTR_MUTE_LOCK, False)
         if (
             not has_mute_lock
-            and player.state.mute_control not in (PLAYER_CONTROL_NONE, PLAYER_CONTROL_FAKE)
+            # the live value is what cmd_volume_mute checks, so a control change that
+            # has not reached the player state yet may not send us into a failing unmute
+            and player.mute_control not in (PLAYER_CONTROL_NONE, PLAYER_CONTROL_FAKE)
             and player.state.volume_muted
         ):
             # if player is muted and not locked, we unmute it first
@@ -3499,9 +3515,9 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             )
         # handle external player control
         if player_control := self._controls.get(player.state.volume_control):
-            control_name = player_control.name if player_control else player.state.volume_control
+            control_name = player_control.name
             self.logger.debug("Redirecting volume command to PlayerControl %s", control_name)
-            if not player_control or not player_control.supports_volume:
+            if not player_control.supports_volume:
                 raise UnsupportedFeaturedException(
                     f"Player control {control_name} is not available"
                 )

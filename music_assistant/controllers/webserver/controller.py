@@ -36,8 +36,10 @@ from music_assistant.constants import (
     CONF_BIND_IP,
     CONF_BIND_PORT,
     CONF_VALUE_AUTO,
+    DEFAULT_HOST,
     INGRESS_SERVER_PORT,
     RESOURCES_DIR,
+    SENDSPIN_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
     WILDCARD_BIND_IPS,
 )
@@ -63,6 +65,7 @@ from .helpers.auth_middleware import (
     has_scope,
     is_request_from_ingress,
     resolve_command_impersonation,
+    set_current_peer_address,
     set_current_token,
     set_current_user,
     set_impersonated_user,
@@ -109,6 +112,20 @@ def _get_publish_addresses(
             addresses.append(ip)
             break
     return addresses
+
+
+def _get_internal_connect_ip(bind_ip: str | None, publish_ip: str) -> str:
+    """
+    Return the IP address to reach a server running on this host.
+
+    :param bind_ip: The server's configured bind IP (None or a wildcard means all interfaces).
+    :param publish_ip: The server's resolved publish IP.
+    """
+    if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
+        # bound to one specific interface, so loopback would not reach the server
+        return bind_ip
+    # Use IPv6 loopback if publish_ip is IPv6 (indicates IPv6-only host)
+    return "::1" if ":" in publish_ip else "127.0.0.1"
 
 
 def _locale_from_request(request: web.Request) -> str | None:
@@ -162,6 +179,27 @@ class WebserverController(CoreController):
         if base_url == CONF_VALUE_AUTO:
             return self._auto_base_url
         return base_url.removesuffix("/")
+
+    @property
+    def internal_base_url(self) -> str:
+        """Return the URL to reach this webserver's own API from this host."""
+        # the advertised address is not necessarily dialable here: a configured base URL
+        # routes out through DNS and a reverse proxy just to come back in, and a published
+        # IP need not exist on this host at all (e.g. a container or NAT setup), so derive
+        # the address from what the webserver actually binds to
+        connect_ip = _get_internal_connect_ip(self.bind_ip, self.publish_ip)
+        protocol = "https" if self.config.get_value(CONF_ENABLE_SSL, False) else "http"
+        return f"{protocol}://{format_ip_for_url(connect_ip)}:{self.publish_port}"
+
+    @property
+    def internal_sendspin_url(self) -> str:
+        """Return the URL to reach the in-process Sendspin server from this host."""
+        # the advertised address is not necessarily dialable here (e.g. a container or
+        # NAT setup), so derive the address from what the Sendspin server actually binds to
+        connect_ip = _get_internal_connect_ip(
+            self.mass.streams.bind_ip, str(self.mass.streams.publish_ip)
+        )
+        return f"ws://{format_ip_for_url(connect_ip)}:{SENDSPIN_SERVER_PORT}/sendspin"
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
@@ -271,6 +309,32 @@ class WebserverController(CoreController):
         self._auto_base_url = (
             f"{protocol}://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
         )
+
+        # Create SSL context if SSL is enabled
+        ssl_context = None
+        if ssl_enabled:
+            ssl_context = await create_server_ssl_context(
+                str(config.get_value(CONF_SSL_CERTIFICATE) or ""),
+                str(config.get_value(CONF_SSL_PRIVATE_KEY) or ""),
+                logger=self.logger,
+            )
+
+        await self._server.setup(
+            bind_ip=bind_ip,
+            bind_port=self.publish_port,
+            base_url=self._auto_base_url,
+            static_routes=routes,
+            # add assets subdir as static_content
+            static_content=("/assets", os.path.join(frontend_dir, "assets"), "assets"),
+            ingress_tcp_site_params=ingress_tcp_site_params,
+            # Add mass object to app for use by the auth helpers
+            app_state={"mass": self.mass},
+            ssl_context=ssl_context,
+        )
+        # adopt the port the server actually bound to: a configured port of 0 is only
+        # resolved by the OS at bind time
+        self.publish_port = cast("int", self._server.port)
+        self._auto_base_url = self._server.base_url
         base_url = self.base_url
         # print a big fat message in the log where the webserver is running
         # because this is a common source of issues for people with more complex setups
@@ -301,28 +365,6 @@ class WebserverController(CoreController):
                 "################################################################################\n",
                 base_url,
             )
-
-        # Create SSL context if SSL is enabled
-        ssl_context = None
-        if ssl_enabled:
-            ssl_context = await create_server_ssl_context(
-                str(config.get_value(CONF_SSL_CERTIFICATE) or ""),
-                str(config.get_value(CONF_SSL_PRIVATE_KEY) or ""),
-                logger=self.logger,
-            )
-
-        await self._server.setup(
-            bind_ip=bind_ip,
-            bind_port=self.publish_port,
-            base_url=base_url,
-            static_routes=routes,
-            # add assets subdir as static_content
-            static_content=("/assets", os.path.join(frontend_dir, "assets"), "assets"),
-            ingress_tcp_site_params=ingress_tcp_site_params,
-            # Add mass object to app for use in auth middleware
-            app_state={"mass": self.mass},
-            ssl_context=ssl_context,
-        )
 
         # Setup remote access after webserver is running
         await self.remote_access.setup()
@@ -500,8 +542,8 @@ class WebserverController(CoreController):
             ConfigEntry(
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
-                default_value="0.0.0.0",
-                options=[ConfigValueOption(x, title=x) for x in {"0.0.0.0", *ip_addresses}],
+                default_value=DEFAULT_HOST,
+                options=[ConfigValueOption(x, title=x) for x in {DEFAULT_HOST, *ip_addresses}],
                 category="generic",
                 advanced=True,
                 requires_reload=True,
@@ -545,6 +587,9 @@ class WebserverController(CoreController):
 
     async def _handle_jsonrpc_api_command(self, request: web.Request) -> web.Response:
         """Handle incoming JSON RPC API command."""
+        # These requests carry no connection identity, so the peer address is all an
+        # unauthenticated handler has to tell one caller apart from another.
+        set_current_peer_address(request.remote)
         # Fail early if we don't have any users yet
         if not self.auth.has_users:
             return web.Response(status=503, text="Setup required")
