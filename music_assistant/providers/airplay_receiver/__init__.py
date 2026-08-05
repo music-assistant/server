@@ -578,6 +578,13 @@ class AirPlayReceiverProvider(PluginProvider):
             self._shairport_proc = shairport = AsyncProcess(
                 args, stderr=True, name=f"shairport-sync[{self.name}]"
             )
+
+            # Open the FIFO before shairport-sync can invoke session-control hooks.
+            self._metadata_reader = MetadataReader(
+                self.metadata_pipe.path, self.logger, self._on_metadata_update
+            )
+            await self._metadata_reader.start()
+
             await shairport.start()
 
             # Check if process started successfully
@@ -587,12 +594,6 @@ class AirPlayReceiverProvider(PluginProvider):
                     "shairport-sync exited immediately with code %s", shairport.returncode
                 )
                 return
-
-            # Start metadata reader
-            self._metadata_reader = MetadataReader(
-                self.metadata_pipe.path, self.logger, self._on_metadata_update
-            )
-            await self._metadata_reader.start()
 
             # Keep reading logging from stderr until exit
             self.logger.debug("Starting to read shairport-sync stderr")
