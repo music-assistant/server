@@ -14,7 +14,7 @@ CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
     key=CONF_MISSING_ALBUM_ARTIST_ACTION,
     type=ConfigEntryType.STRING,
     default_value="various_artists",
-    help_link="https://music-assistant.io/music-providers/filesystem/#tagging-files",
+    help_link="https://music-assistant.io/music-providers/local-files/#tagging-files",
     required=False,
     options=[
         ConfigValueOption("track_artist"),
