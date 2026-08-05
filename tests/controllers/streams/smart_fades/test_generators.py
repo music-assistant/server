@@ -138,6 +138,17 @@ class TestEnergyLadderGenerator:
         assert {s.bars for s in specs} == {8, 4, 2, 1}
         assert {s.anchor_s for s in specs} == {None}
 
+    def test_no_full_band_anchor_variant_on_a_kick_timed_track(self) -> None:
+        """The kick-folded default anchor is authoritative: no pure full-band variant is emitted."""
+        ctx = _base_ctx(kick_anchor=10.0, default_anchor=10.0, mix_out_anchor=30.0)
+        specs = list(EnergyLadderGenerator().generate(ctx))
+
+        # a full-band variant would let a longer blend win past the kick
+        # die-out, defeating the researched kick handover
+        assert {s.anchor_s for s in specs} == {None}
+        assert {s.bars for s in specs} == {8, 4, 2, 1}
+        assert all(s.source == "energy-ladder" for s in specs)
+
     def test_no_full_band_variant_when_it_equals_the_default_anchor(self) -> None:
         """A full-band anchor equal to the (kick-folded) default emits no duplicate rungs."""
         ctx = _base_ctx(kick_anchor=45.0, default_anchor=45.0, mix_out_anchor=45.0)
@@ -151,6 +162,18 @@ class TestEnergyLadderGenerator:
         specs = list(EnergyLadderGenerator().generate(ctx))
 
         assert {s.anchor_s for s in specs} == {None}
+
+    def test_both_instrumental_decks_earn_16_bars(self) -> None:
+        """Near-zero vocal duty on both decks earns the 16-bar instrumental-blend rung."""
+        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [])
+        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [])
+        ctx = build_transition_context(out, inc, 45.0, LOGGER)
+
+        specs = list(EnergyLadderGenerator().generate(ctx))
+        sixteens = [s for s in specs if s.bars == _INSTRUMENTAL_BLEND_BARS]
+
+        assert sixteens
+        assert all(s.ideal_bars == _INSTRUMENTAL_BLEND_BARS for s in sixteens)
 
     def test_one_sided_instrumental_denied_emits_no_extra_16_bar_rung(self) -> None:
         """An elevated mid bar inside the VAD-silent blend region denies the one-sided rule."""
