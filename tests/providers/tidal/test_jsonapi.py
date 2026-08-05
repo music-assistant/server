@@ -65,8 +65,10 @@ def test_next_cursor() -> None:
     assert JsonApiDocument({"links": {}}).next_cursor is None
     doc = JsonApiDocument({"links": {"next": "/tracks?countryCode=AT&page[cursor]=abc123&other=1"}})
     assert doc.next_cursor == "abc123"
-    bare = JsonApiDocument({"links": {"next": "rawcursor"}})
-    assert bare.next_cursor == "rawcursor"
+    # A next link without a page[cursor] param is not a usable cursor: guessing
+    # would fire a malformed follow-up request, so the walk must stop cleanly.
+    no_cursor = JsonApiDocument({"links": {"next": "/tracks?countryCode=AT"}})
+    assert no_cursor.next_cursor is None
 
 
 def test_next_cursor_percent_encoded_brackets() -> None:

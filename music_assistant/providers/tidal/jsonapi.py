@@ -45,10 +45,12 @@ class JsonApiDocument:
             return None
         # The next link is a path with a page[cursor] query param, whose brackets
         # may be percent-encoded (page%5Bcursor%5D). parse_qs decodes both the key
-        # and value; fall back to treating the whole link as a bare cursor.
+        # and value. A next link WITHOUT that param is not a usable cursor: guessing
+        # (e.g. sending the whole link) would fire a malformed request, so stop the
+        # walk cleanly instead.
         if cursors := parse_qs(urlparse(next_link).query).get("page[cursor]"):
             return cursors[0]
-        return next_link
+        return None
 
     def resolve(self, identifier: dict[str, Any]) -> dict[str, Any] | None:
         """Resolve a resource identifier ({type, id}) to its included resource."""

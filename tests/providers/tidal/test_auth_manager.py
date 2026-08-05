@@ -37,7 +37,6 @@ async def test_initialize_success(auth_manager: TidalAuthManager) -> None:
             "access_token": "token",
             "refresh_token": "refresh",
             "expires_at": time.time() + 3600,
-            "client_id": "client_id",
         }
     )
     assert await auth_manager.initialize(auth_data) is True
@@ -62,7 +61,6 @@ async def test_ensure_valid_token_expired(
     auth_manager._auth_info = {
         "expires_at": time.time() - 3600,
         "refresh_token": "refresh",
-        "client_id": "client_id",
     }
 
     # Mock refresh response
@@ -86,7 +84,6 @@ async def test_refresh_token_failure(
     """Test refresh_token failure."""
     auth_manager._auth_info = {
         "refresh_token": "refresh",
-        "client_id": "client_id",
     }
 
     # Mock refresh response failure
@@ -104,7 +101,6 @@ async def test_refresh_token_cooldown(
     """Test a refresh right after a successful one skips the token endpoint."""
     auth_manager._auth_info = {
         "refresh_token": "refresh",
-        "client_id": "client_id",
     }
 
     response = AsyncMock()

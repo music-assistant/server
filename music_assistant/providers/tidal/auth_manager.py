@@ -228,8 +228,10 @@ class TidalAuthManager:
         if not refresh_token:
             return False
 
+        # Always refresh against the v2 client: Tidal's token endpoint accepts
+        # refresh tokens issued to the previous client when presented with the
+        # new client credentials (live-verified with a pre-migration token).
         client_id, client_secret = _v2_client_credentials()
-        client_id = self._auth_info.get("client_id") or client_id
 
         data = {
             "refresh_token": refresh_token,
