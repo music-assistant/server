@@ -2479,3 +2479,53 @@ def test_a_group_without_a_live_decision_reuses_the_warm_process() -> None:
     _group_bridges(solo, daemon_ready=False)
 
     assert solo._can_reuse_stream_warm() is True
+
+
+async def test_a_superseded_cold_start_does_not_record_its_decision() -> None:
+    """
+    Only the start that owns the bridge records what its process runs with.
+
+    A superseded start still spawns the process it is holding and tears it down,
+    so recording its decision would advertise a dead process to the group.
+    """
+    superseded = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    _group_bridges(superseded, daemon_ready=False)
+    # the newer start already spawned its process on the shared clock, while a
+    # fresh resolve would now answer the other way
+    superseded._use_shared_ptp = True
+    # ...and that newer start owns the bridge, so this one is stale
+    superseded._airplay_stream_start_task = MagicMock()
+    stream = _make_anchor_stream()
+
+    with patch(
+        "music_assistant.providers.airplay.sendspin_bridge.time.time",
+        return_value=UNIX_NOW_S,
+    ):
+        assert await superseded._start_cold_stream(stream) is False
+
+    assert superseded._use_shared_ptp is True
+    stream.stop.assert_awaited_once_with(force=True)
+
+
+@pytest.mark.parametrize("arm", ["sendspin_stream_start", "transport_restart"])
+def test_a_released_process_stops_deciding_for_its_group(arm: str) -> None:
+    """
+    A process the bridge is about to tear down no longer speaks for its group.
+
+    Arming the bridge for its next stream happens well before that stream
+    resolves, so a decision left over from the released process would be handed
+    to a sibling resolving in between - and after a regroup it is the wrong one.
+    """
+    regrouped = _make_warm_bridge(use_shared_ptp=False)
+    playing = _make_warm_bridge(use_shared_ptp=True)
+    _group_bridges(regrouped, playing, daemon_ready=True)
+
+    if arm == "sendspin_stream_start":
+        regrouped._on_stream_start(MagicMock())
+    else:
+        regrouped._on_bridge_stream_start()
+
+    assert regrouped._is_streaming is True
+    assert regrouped.active_shared_ptp is None
+    # the sibling still holding a live process keeps deciding for the group
+    assert playing.active_shared_ptp is True

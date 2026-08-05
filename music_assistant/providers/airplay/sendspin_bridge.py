@@ -548,6 +548,7 @@ class SendspinAirPlayBridge:
         if not keep_stream:
             self._airplay_stream = None
             self.airplay_player.stream = None
+            self._use_shared_ptp = None
         self._writer_task = None
         self._airplay_stream_start_task = None
         self._airplay_stream_ready.clear()
@@ -601,6 +602,7 @@ class SendspinAirPlayBridge:
         if not keep_stream:
             self._airplay_stream = None
             self.airplay_player.stream = None
+            self._use_shared_ptp = None
         self._writer_task = None
         self._airplay_stream_start_task = None
 
@@ -689,8 +691,12 @@ class SendspinAirPlayBridge:
         try:
             # Resolving and recording the decision never awaits, so two bridges
             # starting together cannot both find their group still undecided.
-            self._use_shared_ptp = self._resolve_shared_ptp()
-            await stream.connect(self._use_shared_ptp)
+            # A start that has already been superseded still spawns the process
+            # it is holding, but the record belongs to whoever owns the bridge.
+            decision = self._resolve_shared_ptp()
+            if asyncio.current_task() is self._airplay_stream_start_task:
+                self._use_shared_ptp = decision
+            await stream.connect(decision)
             await stream.wait_for_connection()
             if asyncio.current_task() is not self._airplay_stream_start_task:
                 await stream.stop(force=True)
