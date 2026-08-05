@@ -29,12 +29,10 @@ from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.models.setup_flow import AbortFlow
 
 from .constants import (
-    AIRPLAY_AP2_SETUP_LEAD_MS,
     AIRPLAY_DISCOVERY_TYPE,
     AIRPLAY_HIRES_AUDIO_FORMATS,
     AIRPLAY_HIRES_SAMPLE_RATES,
     AIRPLAY_PCM_FORMAT,
-    AIRPLAY_RAOP_SETUP_LEAD_MS,
     AIRPLAY_REJOIN_ATTEMPT_DELAYS,
     ATV_PASSWORD_BIT,
     BASE_PLAYER_FEATURES,
@@ -272,11 +270,9 @@ class AirPlayPlayer(Player):
         }
 
     @property
-    def wait_start(self) -> int:
-        """Get the setup lead required by an externally timed audio source."""
-        if self.protocol == StreamingProtocol.RAOP:
-            return AIRPLAY_RAOP_SETUP_LEAD_MS
-        return AIRPLAY_AP2_SETUP_LEAD_MS
+    def native_grouping_requires_own_stream(self) -> bool:
+        """Return True: members are attached to this player's own stream session."""
+        return True
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
@@ -486,9 +482,11 @@ class AirPlayPlayer(Player):
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
+        # Record before sending: the connect-time volume resync reads this attribute,
+        # so a send that suspends first would let the resync push the stale level.
+        self._attr_volume_level = volume_level
         if self.stream and self.stream.running and self.volume_muted is not True:
             await self.stream.send_cli_command(f"VOLUME={volume_level}")
-        self._attr_volume_level = volume_level
         self.update_state()
         # store last state in playerconfig
         self.mass.config.set_raw_player_config_value(
@@ -598,6 +596,15 @@ class AirPlayPlayer(Player):
                     # (e.g. after a dynamic leader switch where the stream continues)
                     if child_player_to_add not in stream_session.sync_clients:
                         await stream_session.add_client(child_player_to_add)
+                elif self.active_output_protocol not in (None, "native"):
+                    # Members can only be attached to this player's own stream session, which
+                    # does not exist while it renders through one of its output protocols.
+                    self.logger.warning(
+                        "%s joined the group of %s while that player renders through another "
+                        "output protocol: there is no stream session to join, so it stays silent",
+                        child_player_to_add.display_name if child_player_to_add else player_id,
+                        self.display_name,
+                    )
 
             # Ensure group leader includes itself in group_members when it has members
             # This is required for the synced_to property to work correctly

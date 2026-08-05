@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import deque
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
@@ -41,11 +42,23 @@ from music_assistant.providers.sendspin.bridge_role import (
 )
 from music_assistant.providers.sendspin.helpers import bridge_client_id_from_mac
 
+from .constants import (
+    AIRPLAY_CLOCK_READY_LEAD_MS,
+    AIRPLAY_CLOCK_READY_TIMEOUT_MS,
+    AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
+    AIRPLAY_SPLICE_LEAD_MARGIN_MS,
+    ClockReadiness,
+)
 from .helpers import player_id_to_mac_address
 from .stream import AirPlayStream
 
 if TYPE_CHECKING:
-    from aiosendspin.server import ExternalStreamStartRequest, SendspinClient, SendspinServer
+    from aiosendspin.server import (
+        ExternalStreamStartRequest,
+        SendspinClient,
+        SendspinGroup,
+        SendspinServer,
+    )
     from aiosendspin.server.roles import AudioChunk
 
     from music_assistant.models.player import Player
@@ -60,7 +73,8 @@ if TYPE_CHECKING:
 # seconds), and dumping that into the binary's stdin ahead of the start anchor
 # desyncs playback. Pace writes to keep the device buffered to at most this many
 # seconds of audio ahead of real time -- comfortably above the binary's own
-# prefill need (~wait_start + its ~2 s buffer) yet far below a whole-track backlog.
+# prefill need (the start lead plus its ~2 s buffer) yet far below a whole-track
+# backlog.
 MAX_DEVICE_BUFFER_SECONDS: float = 8.0
 
 # How long to keep a connected CLI alive after a sendspin stream ends, waiting
@@ -68,6 +82,63 @@ MAX_DEVICE_BUFFER_SECONDS: float = 8.0
 # this window. Comfortably longer than a sendspin stream restart, short enough
 # that a genuine stop stops the device promptly.
 BRIDGE_WARM_GRACE_SECONDS: float = 4.0
+
+# Budget (ms) for a cold transport: a process spawn plus connect/session setup
+# was measured at 1.66-1.83 s, and 2000 keeps a small margin over the slowest
+# measurement.
+BRIDGE_COLD_CONNECT_BUDGET_MS: int = 2000
+
+# Lead (ms) reported to Sendspin so it schedules the first chunk that far ahead
+# of the instant it wants audible. It has to cover getting the transport ready
+# plus the binary's own clock-verification floor, which the anchor can never
+# undercut -- a shorter lead makes the anchor land past the first chunks and
+# their audio is dropped. A cold start adds its connect budget on top; a kept,
+# already-connected CLI pays no connect, leaving only the floor.
+BRIDGE_COLD_START_LEAD_MS: int = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS + BRIDGE_COLD_CONNECT_BUDGET_MS
+BRIDGE_WARM_START_LEAD_MS: int = AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS
+
+# Buffer (ms) Sendspin keeps the bridge supplied with for the whole stream, and
+# the only floor a live source honours -- the start lead above is a hint Sendspin
+# may ignore to keep live latency down. It keeps the binary's ring fed rather
+# than tracking real time, without charging every other group member the full
+# start lead in added latency on a live source.
+BRIDGE_MIN_BUFFER_MS: int = 1000
+
+# Defensive cap (µs of audio) on the backlog held while the start anchor is being
+# settled. Sendspin bounds what it hands a joiner at 30 s of producer backlog, so
+# a hold growing past that means the anchor never resolved; the oldest chunks are
+# dropped instead of letting the backlog grow without bound.
+MAX_HELD_AUDIO_US: int = 45_000_000
+# Companion cap on the number of held chunks: the µs cap cannot bound a run of
+# zero-duration chunks. Sits generously above the count of 25 ms frames the
+# bridge role delivers across MAX_HELD_AUDIO_US.
+MAX_HELD_CHUNKS: int = 4_000
+
+# Silence is queued as repeats of one shared block when filling a hole in the
+# Sendspin timeline. A timeline rebase can open a hole of tens of seconds, whose
+# silence as one buffer would be megabytes built on the event loop; repeating an
+# immutable block leaves only the sub-block remainder to allocate, whatever the
+# hole's length.
+PAD_BLOCK_FRAMES: int = BRIDGE_SAMPLE_RATE
+SILENCE_BLOCK: bytes = b"\x00" * (PAD_BLOCK_FRAMES * BRIDGE_CHANNELS * BRIDGE_BYTES_PER_SAMPLE)
+
+# A transport that dies again this soon after a recovery is not coming back by
+# itself (a rebooting device, a receiver that accepts the connection and drops
+# it again). Re-anchoring once more would only churn CLI processes, so the
+# bridge gives up instead. Measured from the moment the loss is noticed, which
+# includes the several seconds a cold recovery needs before audio resumes (a
+# process spawn, the clock-readiness wait and the join headroom), so this sits
+# far enough beyond that for a recovered transport to prove itself. The same
+# window guards the session re-join below: a bridge that gives up again this
+# soon after being put back was not fixed by returning it.
+BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS: float = 30.0
+
+# Delays (seconds) before each attempt to put a bridge back into the Sendspin
+# group a give-up took it out of. The first clears a brief blackout or a receiver
+# that was slow to answer; the second is what covers a speaker that rebooted,
+# which is typically absent from mDNS for far longer than the first. Once they
+# run out the player stays out and idle.
+BRIDGE_REJOIN_ATTEMPT_DELAYS: tuple[int, ...] = (5, 30)
 
 
 def get_bridge_client_id(airplay_player: AirPlayPlayer) -> str | None:
@@ -112,6 +183,29 @@ def sendspin_audible_instant_to_unix_ms(
     """
     future_s = (audible_instant_us - sendspin_now_us) / 1_000_000
     return int((unix_now + future_s) * 1000)
+
+
+def unix_ms_to_sendspin_audible_instant(
+    unix_ms: int,
+    sendspin_now_us: int,
+    unix_now: float,
+) -> int:
+    """
+    Map a unix epoch millisecond onto an audible instant on the Sendspin clock.
+
+    The inverse of :func:`sendspin_audible_instant_to_unix_ms`, used to place the
+    instant the binary acked back on the shared Sendspin timeline so chunk
+    timestamps can be measured against it. It carries the same requirement:
+    ``sendspin_now_us`` and ``unix_now`` must be sampled back to back, because
+    only the offset from now transfers between the two clocks.
+
+    :param unix_ms: Unix epoch millisecond to map.
+    :param sendspin_now_us: ``sendspin_server.clock.now_us()`` captured now.
+    :param unix_now: ``time.time()`` captured at the same instant as sendspin_now_us.
+    :return: The Sendspin-clock instant (µs) that coincides with ``unix_ms``.
+    """
+    future_s = unix_ms / 1000 - unix_now
+    return sendspin_now_us + round(future_s * 1_000_000)
 
 
 def device_buffer_ahead_seconds(
@@ -178,6 +272,14 @@ class SendspinAirPlayBridge:
         # counter is also the write cursor's position on the Sendspin timeline.
         self._queued_frames: int = 0
         self._drop_until_us: int = 0
+        # Playout shift (seconds) already folded into the anchor from the binary's
+        # own mid-stream re-anchors. The binary zeroes its running total on every
+        # START, so this baseline is cleared wherever the anchor is (re)established.
+        self._applied_shift_seconds: float = 0.0
+        # Whether a folded playout shift is still being trimmed off the content.
+        # Distinguishes the realignment that correction produces from Sendspin
+        # timeline drift, which is the only one worth reporting.
+        self._absorbing_shift: bool = False
         # Unix-epoch ms at which byte 0 written to the CLI is audible (0 = unset).
         # Used to pace writes so the device buffer stays bounded (see _cli_writer).
         self._start_unix_ms: int = 0
@@ -187,7 +289,25 @@ class SendspinAirPlayBridge:
         self._airplay_stream_ready = asyncio.Event()
         # Whether the current stream has been anchored with its first START.
         self._started = False
+        # Whether _drop_until_us reflects the instant the binary acked. Until it
+        # does, arriving chunks are held instead of placed.
+        self._anchor_settled = False
+        # Chunks delivered while the anchor is still being negotiated. Held as
+        # chunks rather than queued bytes because _align_chunk places bytes
+        # relative to _drop_until_us, which the ack is about to move.
+        self._held_chunks: deque[AudioChunk] = deque()
+        # Running total of the held chunks' duration, kept alongside the deque so
+        # the cap does not re-sum the whole backlog on every chunk.
+        self._held_us: int = 0
         self._cleanup_task: asyncio.Task[None] | None = None
+        # Monotonic instant of the last recovery from a lost transport (None when
+        # none happened yet), used to tell a one-off loss from a flapping device.
+        self._last_transport_recovery: float | None = None
+        self._rejoin_task: asyncio.Task[None] | None = None
+        # Monotonic instant the bridge was last put back into the group a give-up
+        # took it out of (None when never). Giving up again this soon after means
+        # the speaker did not hold its place, so it is left out instead.
+        self._last_rejoin: float | None = None
         # Timer id for the deferred teardown on stream end. A seek/next ends the
         # sendspin stream and immediately starts a new one; deferring the CLI
         # teardown across that gap lets the next stream reuse the connected
@@ -293,6 +413,7 @@ class SendspinAirPlayBridge:
     async def stop(self) -> None:
         """Stop and unregister the Sendspin bridge."""
         self.mass.cancel_timer(self._teardown_timer_id)
+        self._cancel_rejoin()
         async with self._lock:
             await self._stop_streaming()
             if self._sendspin_client and self._bridge_client_id:
@@ -304,17 +425,22 @@ class SendspinAirPlayBridge:
 
     def _refresh_bridge_timing(self) -> None:
         """
-        Push the AirPlay startup latency to the bridge role.
+        Push the AirPlay startup lead and ongoing buffer to the bridge role.
 
-        ``wait_start`` is the lead time the device needs before audio begins, so
-        Sendspin schedules the first chunk that far ahead instead of dropping it.
-        ``min_buffer_ms`` is 0 — the device carries its own jitter buffer.
+        The lead is how far ahead of the audible instant Sendspin schedules the
+        first chunk; a kept, already-connected CLI needs less of it than a cold
+        one.
         """
         if self._bridge_role is None:
             return
+        lead_ms = (
+            BRIDGE_WARM_START_LEAD_MS
+            if self._stream_is_warm_eligible()
+            else BRIDGE_COLD_START_LEAD_MS
+        )
         self._bridge_role.set_timing(
-            required_lead_time_ms=int(self.airplay_player.wait_start),
-            min_buffer_ms=0,
+            required_lead_time_ms=lead_ms,
+            min_buffer_ms=BRIDGE_MIN_BUFFER_MS,
         )
 
     def _stream_is_warm_eligible(self) -> bool:
@@ -341,6 +467,13 @@ class SendspinAirPlayBridge:
             self.airplay_player.display_name,
             request.connection_reason,
         )
+        # Each Sendspin stream gets its own recovery budget: a loss on the
+        # previous one says nothing about the device's health on this one. This
+        # is settled before anything can return early, so no stream ever
+        # inherits the previous one's verdict.
+        self._last_transport_recovery = None
+        # Joining a session by any means supersedes a pending re-join.
+        self._cancel_rejoin()
         if not self.airplay_player.available:
             self.logger.warning(
                 "Cannot start Sendspin stream for %s: player not available",
@@ -383,6 +516,9 @@ class SendspinAirPlayBridge:
         self._drop_until_us = 0
         self._start_unix_ms = 0
         self._started = keep_stream
+        self._anchor_settled = False
+        self._held_chunks.clear()
+        self._held_us = 0
 
     def _on_bridge_stream_start(self) -> None:
         """
@@ -391,6 +527,20 @@ class SendspinAirPlayBridge:
         Called via the BridgePlayerRole.on_stream_start callback when the
         PushStream begins delivering audio chunks.
         """
+        self._restart_transport()
+
+    def _restart_transport(self) -> None:
+        """
+        Release the current transport and arm a fresh one for the next chunk.
+
+        Leaves the bridge unanchored with a running writer, so the next chunk
+        Sendspin delivers starts a transport and anchors it where that chunk
+        sits on the group's timeline. A warm-eligible stream is the exception:
+        it is kept so the new media rides its flush-refill instead.
+        """
+        # A teardown deferred by an earlier stream end would otherwise fire into
+        # the transport armed here, so it is dropped along with the old one.
+        self.mass.cancel_timer(self._teardown_timer_id)
         # The stream might not yet be cleaned up completely (on rapid skips for example).
         # A warm-eligible stream is kept out of the snapshot so it survives into the
         # new stream instead of being torn down (see _stream_is_warm_eligible).
@@ -419,6 +569,9 @@ class SendspinAirPlayBridge:
         self._drop_until_us = 0
         self._start_unix_ms = 0
         self._started = keep_stream
+        self._anchor_settled = False
+        self._held_chunks.clear()
+        self._held_us = 0
         # Drain stale audio data from the previous stream
         while not self._write_queue.empty():
             self._write_queue.get_nowait()
@@ -439,39 +592,16 @@ class SendspinAirPlayBridge:
             if cleanup and not cleanup.done():
                 await cleanup
 
-            # Derive the audible start instant from _drop_until_us (set on first
-            # chunk arrival) so the CLI has enough lead to connect and establish
-            # the session. _drop_until_us is on the Sendspin (monotonic) clock;
-            # map it to the unix epoch ms used by the START command.
-            sendspin_clock_now_us = self.sendspin_server.clock.now_us()
-            unix_clock_now = time.time()
-            start_unix_ms = sendspin_audible_instant_to_unix_ms(
-                self._drop_until_us, sendspin_clock_now_us, unix_clock_now
-            )
-            lead_us = self._drop_until_us - sendspin_clock_now_us
-            if lead_us <= 0:
-                # Session setup outran the lead budget (e.g. a slow teardown of a
-                # previous stream ahead of us). The anchor is already in the past,
-                # so the binary cannot honour it and playback starts late relative
-                # to the Sendspin timeline. Surface it instead of failing silently.
-                self.logger.warning(
-                    "AirPlay start anchor for %s is not in the future "
-                    "(setup exceeded the %dms lead) - playback may start late",
-                    self.airplay_player.display_name,
-                    int(self.airplay_player.wait_start),
-                )
-            sync_adjust = self.airplay_player.config.get_value(CONF_SYNC_ADJUST, 0)
-            if isinstance(sync_adjust, int) and sync_adjust != 0:
-                start_unix_ms += sync_adjust
-            # Publish the audible anchor so the writer can pace against it.
-            self._start_unix_ms = start_unix_ms
-
             # A kept, still-connected stream (see _stream_is_warm_eligible,
             # checked by the stream-start callbacks) absorbs the new media via a
             # flush-refill on the SAME cli stdin instead of a cold reconnect.
             kept_stream = self._airplay_stream
             if kept_stream is not None:
-                if await self._start_warm_stream(kept_stream, start_unix_ms):
+                if await self._start_warm_stream(kept_stream):
+                    return
+                if asyncio.current_task() is not self._airplay_stream_start_task:
+                    # Not a failure: a newer stream start owns the bridge and the
+                    # kept stream, so neither is this task's to tear down.
                     return
                 # Warm handover failed - tear down the kept stream and fall through
                 # to the cold path below, which spawns a fresh process.
@@ -483,32 +613,28 @@ class SendspinAirPlayBridge:
             # On a rapid skip, _on_bridge_stream_start snapshots self._airplay_stream
             # for cleanup. If we assigned it earlier, the new stream would be missed
             # and leaked. Only publish once connect() succeeds and this task is current.
-            new_stream = AirPlayStream(self.airplay_player)
-            if not await self._start_cold_stream(new_stream, start_unix_ms):
-                return
-            self.logger.info(
-                "Bridge protocol started for %s (start_unix_ms=%s, lookahead=%.0fms)",
-                self.airplay_player.display_name,
-                start_unix_ms,
-                lead_us / 1000,
-            )
+            await self._start_cold_stream(AirPlayStream(self.airplay_player))
         except Exception as err:
             self.logger.error(
                 "Failed to start AirPlay protocol for %s: %s",
                 self.airplay_player.display_name,
                 err,
             )
-            # Stop accepting chunks, unblock the writer, and schedule full cleanup
-            self._is_streaming = False
-            self._airplay_stream_ready.set()
-            self._schedule_cleanup()
+            if asyncio.current_task() is not self._airplay_stream_start_task:
+                # A newer stream start owns the bridge: its backlog, writer gate
+                # and stream must survive this task's failure untouched.
+                self.logger.debug(
+                    "Superseded AirPlay start for %s failed, leaving the newer stream alone",
+                    self.airplay_player.display_name,
+                )
+                return
+            self._abandon_streaming()
 
-    async def _start_cold_stream(self, stream: AirPlayStream, start_unix_ms: int) -> bool:
+    async def _start_cold_stream(self, stream: AirPlayStream) -> bool:
         """
         Connect a fresh bridge transport and anchor its first START.
 
         :param stream: New AirPlay stream to start.
-        :param start_unix_ms: Audible-start instant for the first sample.
         :return: True when the stream is anchored, False when superseded.
         """
         try:
@@ -519,18 +645,25 @@ class SendspinAirPlayBridge:
                 return False
             self._airplay_stream = stream
             self.airplay_player.stream = stream
-            # The binary buffers stdin into its ring from process start; unblock
-            # the writer so it feeds PCM, then anchor the start.
-            self._airplay_stream_ready.set()
-            await stream.start(start_unix_ms)
-            self._started = True
+            if await self._anchor_stream(stream, warm=False):
+                return True
+            # A superseded cold stream is this task's to tear down: it was
+            # connected here and no other start owns it (unlike the warm path,
+            # where the kept stream belongs to the newer start). Only unpublish
+            # what still points at it, so a newer owner's assignment survives.
+            with suppress(Exception):
+                await stream.stop(force=True)
+            if self._airplay_stream is stream:
+                self._airplay_stream = None
+            if self.airplay_player.stream is stream:
+                self.airplay_player.stream = None
+            return False
         except BaseException:
             with suppress(Exception):
                 await stream.stop(force=True)
             raise
-        return True
 
-    async def _start_warm_stream(self, stream: AirPlayStream, start_unix_ms: int) -> bool:
+    async def _start_warm_stream(self, stream: AirPlayStream) -> bool:
         """
         Flush a kept, still-connected stream and resume it on the new track.
 
@@ -540,7 +673,6 @@ class SendspinAirPlayBridge:
         failure returns False so the caller falls back to a cold restart.
 
         :param stream: The kept AirPlayStream to flush and resume.
-        :param start_unix_ms: The audible-start instant to re-anchor at.
         """
         try:
             if not await stream.flush():
@@ -548,17 +680,7 @@ class SendspinAirPlayBridge:
             if asyncio.current_task() is not self._airplay_stream_start_task:
                 # A newer stream start owns the bridge; leave the stream to it.
                 return False
-            # The binary drained its ring + stdin on flush and keeps reading
-            # stdin; unblock the writer to feed the new track into the SAME cli
-            # stdin, then re-anchor the resumed start.
-            self._airplay_stream_ready.set()
-            await stream.start(start_unix_ms)
-            self._started = True
-            self.logger.info(
-                "Bridge warm handover for %s (start_unix_ms=%d)",
-                self.airplay_player.display_name,
-                start_unix_ms,
-            )
+            return await self._anchor_stream(stream, warm=True)
         except asyncio.CancelledError:
             raise
         except Exception as err:
@@ -568,6 +690,135 @@ class SendspinAirPlayBridge:
                 err,
             )
             return False
+
+    async def _anchor_stream(self, stream: AirPlayStream, *, warm: bool) -> bool:
+        """
+        Anchor a connected stream on the Sendspin timeline and release the writer.
+
+        Commands the START, then maps the bridge's content onto the instant the
+        binary acked rather than the one that was asked for, so the device plays
+        the same audio at the same time as the rest of the Sendspin group. The
+        writer stays blocked until that mapping is in place.
+
+        :param stream: The connected AirPlay stream to anchor.
+        :param warm: True when re-anchoring a kept, still-connected stream, whose
+            queued audio the new anchor has to clear.
+        :return: True when the stream is anchored, False when superseded.
+        """
+        readiness, ready_at_unix_ms = await stream.wait_clock_ready(
+            timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000
+        )
+        if readiness is ClockReadiness.STALLED:
+            # A bridged device that never answered our clock renders silence,
+            # and unlike a group member it is the whole playback: say so where
+            # the anchor is decided rather than letting it look anchored.
+            self.logger.warning(
+                "%s never answered the server's PTP clock, so this stream will be silent "
+                "until it does; anchoring anyway",
+                self.airplay_player.display_name,
+            )
+        sendspin_now_us = self.sendspin_server.clock.now_us()
+        unix_now = time.time()
+        now_ms = int(unix_now * 1000)
+        # The instant Sendspin wants the first chunk we hold to be audible; the
+        # anchor never precedes it, so nothing Sendspin scheduled is thrown away.
+        first_chunk_unix_ms = sendspin_audible_instant_to_unix_ms(
+            self._drop_until_us, sendspin_now_us, unix_now
+        )
+        anchor_ms = max(now_ms + AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS, first_chunk_unix_ms)
+        if ready_at_unix_ms:
+            anchor_ms = max(anchor_ms, ready_at_unix_ms + AIRPLAY_CLOCK_READY_LEAD_MS)
+        sync_adjust = self.airplay_player.config.get_value(CONF_SYNC_ADJUST, 0)
+        adjust_ms = sync_adjust if isinstance(sync_adjust, int) else 0
+        if warm:
+            # A splice-timeline receiver honours the commanded instant only when
+            # it lands beyond the audio still queued behind the flushed head. A
+            # NEGATIVE sync_adjust moves the commanded instant earlier, eating
+            # into the lead, so it has to be added back to the requirement.
+            if stream.warm_lead_ms > 0:
+                anchor_ms = max(
+                    anchor_ms,
+                    now_ms
+                    + stream.warm_lead_ms
+                    - min(0, adjust_ms)
+                    + AIRPLAY_SPLICE_LEAD_MARGIN_MS,
+                )
+            if stream.flushed_head_unix_ms > 0:
+                anchor_ms = max(
+                    anchor_ms,
+                    stream.flushed_head_unix_ms - adjust_ms + AIRPLAY_SPLICE_LEAD_MARGIN_MS,
+                )
+        commanded_ms = anchor_ms + adjust_ms
+
+        # Always a join: the Sendspin timeline is the group's, never the bridge's
+        # to set, so the binary must hold its ack until the receiver clock
+        # verification resolves and report the instant it really scheduled.
+        actual = await stream.start(commanded_ms, join=True)
+
+        # The ack can be held for seconds, so re-check ownership before touching
+        # any state a newer stream start may already own.
+        if (
+            asyncio.current_task() is not self._airplay_stream_start_task
+            or self._airplay_stream is not stream
+        ):
+            return False
+        if actual is None:
+            self.logger.warning(
+                "AirPlay start for %s was not acknowledged, trusting the commanded "
+                "instant %d - playback may start slightly late",
+                self.airplay_player.display_name,
+                commanded_ms,
+            )
+        acked_adjusted = actual if actual is not None else commanded_ms
+        # The command carries the device's sync_adjust; the group timeline does not.
+        acked_timeline_ms = acked_adjusted - adjust_ms
+        sendspin_now_us = self.sendspin_server.clock.now_us()
+        unix_now = time.time()
+        anchor_us = unix_ms_to_sendspin_audible_instant(
+            acked_timeline_ms, sendspin_now_us, unix_now
+        )
+        skipped_us = anchor_us - self._drop_until_us
+        self._start_unix_ms = acked_adjusted
+        self._drop_until_us = anchor_us
+        self._queued_frames = 0
+        # A START re-anchors the binary's playout from scratch and zeroes the
+        # total it reports, so the bridge's baseline starts over with it.
+        self._applied_shift_seconds = 0.0
+        self._absorbing_shift = False
+        self._anchor_settled = True
+        self._started = True
+        # Replay what arrived while the anchor was being settled before yielding
+        # to the loop, so the backlog stays ahead of whatever _on_audio_chunk
+        # delivers next.
+        held = list(self._held_chunks)
+        self._held_chunks.clear()
+        self._held_us = 0
+        for chunk in held:
+            if chunk.timestamp_us + chunk.duration_us <= self._drop_until_us:
+                continue
+            self._align_chunk(chunk)
+        self._airplay_stream_ready.set()
+
+        # The content shift is signed: a later anchor skips content, an earlier
+        # one (the binary is free to ack either way) pads silence up to it.
+        self.logger.info(
+            "Bridge protocol %s for %s (start_unix_ms=%d, acked %+d ms off the commanded "
+            "instant, content shifted %+.0f ms)",
+            "resumed" if warm else "started",
+            self.airplay_player.display_name,
+            acked_adjusted,
+            acked_adjusted - commanded_ms,
+            skipped_us / 1000,
+        )
+        if skipped_us > 500_000:
+            self.logger.warning(
+                "AirPlay start for %s dropped %.0fms of audio: Sendspin scheduled the first "
+                "chunk %.0fms ahead but the device could not be audible before %.0fms",
+                self.airplay_player.display_name,
+                skipped_us / 1000,
+                first_chunk_unix_ms - now_ms,
+                acked_timeline_ms - now_ms,
+            )
         return True
 
     def _on_volume_change(self, volume: int) -> None:
@@ -603,6 +854,137 @@ class SendspinAirPlayBridge:
         cleanups are serialized safely.
         """
         self._cleanup_task = self.mass.create_task(self._stop_streaming_locked())
+
+    def _abandon_streaming(self) -> None:
+        """
+        Give up on this stream: stop accepting chunks and tear the transport down.
+
+        Sendspin reports playback from the group's own state, so a bridge that
+        stops feeding its speaker would otherwise hold the visible player on
+        PLAYING while nothing is audible. The bridge leaves the session instead,
+        so that silence reaches the player.
+        """
+        self._is_streaming = False
+        self._held_chunks.clear()
+        self._held_us = 0
+        # unblock a writer still waiting for a stream that will never be ready
+        self._airplay_stream_ready.set()
+        self._schedule_cleanup()
+        self.mass.create_task(self._leave_sendspin_session())
+
+    async def _leave_sendspin_session(self) -> None:
+        """
+        Take the bridge out of Sendspin playback and line up its return.
+
+        A shared group plays on without this speaker, and the bridge is given a
+        bounded attempt to re-join it so a device that was only briefly away
+        comes back on its own. A solo group has nothing to re-join: leaving is
+        what stops it. Either way the client stays registered, so the player
+        survives to be grouped again.
+        """
+        if not (client := self._sendspin_client):
+            return
+        # Captured before leaving, which is what moves the client to a solo group.
+        group = client.group
+        try:
+            previous_group_id = await client.quiesce_to_solo_stopped()
+        except Exception as err:
+            self.logger.warning(
+                "Could not take %s out of its Sendspin session: %s",
+                self.airplay_player.display_name,
+                err,
+            )
+            return
+        if previous_group_id is None:
+            return
+        # Whichever way this give-up goes, an older schedule must not outlive it.
+        self._cancel_rejoin()
+        last_rejoin = self._last_rejoin
+        if (
+            last_rejoin is not None
+            and time.monotonic() - last_rejoin < BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS
+        ):
+            self.logger.warning(
+                "%s gave up again within %.0fs of being re-joined, leaving it out of the group",
+                self.airplay_player.display_name,
+                BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS,
+            )
+            return
+        self._rejoin_task = self.mass.create_task(self._rejoin_attempts(group))
+
+    async def _rejoin_attempts(self, group: SendspinGroup) -> None:
+        """
+        Put the bridge back into the group a give-up took it out of.
+
+        :param group: The Sendspin group the bridge left.
+        """
+        max_attempts = len(BRIDGE_REJOIN_ATTEMPT_DELAYS)
+        for attempt, delay in enumerate(BRIDGE_REJOIN_ATTEMPT_DELAYS, start=1):
+            await asyncio.sleep(delay)
+            if not (client := self._sendspin_client):
+                return
+            if len(client.group.clients) > 1 or client.group.has_active_stream:
+                # given a group or a stream of its own meanwhile: re-joining
+                # would take the speaker away from whatever it was just given,
+                # and adding it elsewhere stops the session it is playing
+                self.logger.debug(
+                    "Not re-joining %s: it is in use again already",
+                    self.airplay_player.display_name,
+                )
+                return
+            if self.airplay_player.stream is not None and not self.owns_airplay_stream:
+                # the speaker is streaming natively: the re-join would restart
+                # the transport and tear down a session that is not the bridge's
+                self.logger.debug(
+                    "Not re-joining %s: it is streaming outside the bridge",
+                    self.airplay_player.display_name,
+                )
+                return
+            if not self.airplay_player.available:
+                # a speaker that rebooted is missing from discovery for a while
+                # after it starts answering again, so this is worth another go
+                self.logger.debug(
+                    "Not re-joining %s yet: the speaker is offline",
+                    self.airplay_player.display_name,
+                )
+                continue
+            if not group.clients:
+                self.logger.debug(
+                    "Not re-joining %s: the group it left no longer exists",
+                    self.airplay_player.display_name,
+                )
+                return
+            try:
+                await group.add_client(client)
+            except Exception as err:
+                self.logger.warning(
+                    "Could not re-join %s to its Sendspin group (attempt %d/%d): %s",
+                    self.airplay_player.display_name,
+                    attempt,
+                    max_attempts,
+                    err,
+                )
+                continue
+            # Stamped where the speaker actually rejoins, not where the attempt
+            # was scheduled, so the guard holds whatever the delays above are.
+            self._last_rejoin = time.monotonic()
+            self.logger.info("Re-joined %s to its Sendspin group", self.airplay_player.display_name)
+            return
+        self.logger.warning(
+            "Giving up on re-joining %s to its Sendspin group after %d attempt(s); "
+            "the player stays idle",
+            self.airplay_player.display_name,
+            max_attempts,
+        )
+
+    def _cancel_rejoin(self) -> None:
+        """Drop any pending attempt to re-join the Sendspin group."""
+        rejoin_task = self._rejoin_task
+        self._rejoin_task = None
+        # never self-cancel: a re-join announces itself through the same
+        # stream-start path that clears stale schedules
+        if rejoin_task and not rejoin_task.done() and rejoin_task is not asyncio.current_task():
+            rejoin_task.cancel()
 
     async def _stop_streaming_locked(self) -> None:
         """Serialize streaming teardown with other stop/start operations."""
@@ -663,25 +1045,37 @@ class SendspinAirPlayBridge:
                     "Protocol start task failed for %s, stopping streaming",
                     self.airplay_player.display_name,
                 )
-                self._is_streaming = False
-                self._schedule_cleanup()
+                self._abandon_streaming()
                 return
 
+        if self._transport_lost() and not self._recover_transport():
+            return
+
         if self._airplay_stream_start_task is None:
-            # Anchor byte 0 to the instant Sendspin scheduled for the first chunk it
-            # actually delivered -- i.e. trust the shared timeline instead of inventing
-            # our own "now + wait_start" start. Sendspin already schedules the first
-            # sample the AirPlay setup budget ahead because we report
-            # required_lead_time_ms = wait_start at registration:
-            #   * fresh track  -> the first chunk IS file position 0, so the intro is
-            #     kept (the old "now + wait_start" anchor discarded the opening seconds
-            #     whenever Sendspin had scheduled position 0 earlier than that instant);
+            # Provisionally anchor byte 0 to the instant Sendspin scheduled for the
+            # first chunk it actually delivered, which keeps the bridge on the group's
+            # shared timeline. That instant is at least the bridge lead ahead of now,
+            # because that is what _refresh_bridge_timing reports as
+            # required_lead_time_ms:
+            #   * fresh track  -> the first chunk IS file position 0, so an anchor on
+            #     its own scheduled instant has no audio ahead of it to discard and
+            #     the intro is kept;
             #   * late join     -> the first chunk is the catch-up target, i.e. the
             #     group's current playback position, so the joiner lands in sync.
+            # _anchor_stream re-bases this onto the instant the binary acks.
             self._drop_until_us = chunk.timestamp_us
             self._airplay_stream_start_task = self.mass.create_task(
                 self._start_protocol_from_chunk()
             )
+
+        if not self._anchor_settled:
+            # The binary has not acked its anchor yet, and that ack moves
+            # _drop_until_us. Hold the chunk instead of placing it against a
+            # reference that is about to change.
+            self._hold_chunk(chunk)
+            return
+
+        self._absorb_playout_shift()
 
         # Drop chunks that end entirely before the target start time.
         chunk_end_us = chunk.timestamp_us + chunk.duration_us
@@ -690,16 +1084,113 @@ class SendspinAirPlayBridge:
 
         self._align_chunk(chunk)
 
+    def _absorb_playout_shift(self) -> None:
+        """
+        Fold the binary's own mid-stream re-anchors into the bridge's timeline mapping.
+
+        cliairplay re-anchors its playout later when it runs out of PCM on stdin,
+        which makes every byte it was handed audible that much later than the
+        anchor promised. Moving the anchor by the same amount keeps the content
+        the bridge feeds on the group's timeline instead of leaving the device
+        permanently behind the rest of it.
+        """
+        stream = self._airplay_stream
+        if stream is None:
+            return
+        shift_seconds = stream.cumulative_shift_seconds
+        delta_seconds = shift_seconds - self._applied_shift_seconds
+        if delta_seconds < 0:
+            # The binary zeroes its running total on every START, so a total that
+            # went backwards means the stream re-anchored outside _anchor_stream:
+            # take the new baseline rather than walking a mapping that START has
+            # already replaced, and drop a correction that mapping no longer owes.
+            self._applied_shift_seconds = shift_seconds
+            self._absorbing_shift = False
+            return
+        if not delta_seconds:
+            return
+        self._applied_shift_seconds = shift_seconds
+        self._drop_until_us += round(delta_seconds * 1_000_000)
+        self._start_unix_ms += round(delta_seconds * 1000)
+        self._absorbing_shift = True
+        self.logger.warning(
+            "%s re-anchored its playout %.0f ms later after running out of audio; "
+            "re-aligning its content with the group (%.0f ms in total)",
+            self.airplay_player.display_name,
+            delta_seconds * 1000,
+            shift_seconds * 1000,
+        )
+
+    def _transport_lost(self) -> bool:
+        """
+        Return whether the anchored transport died while the bridge kept feeding it.
+
+        The CLI drops writes without raising once its process is gone, so a dead
+        transport is only visible on the stream itself. Only an anchored stream
+        with no start in flight can be judged: while a cold start or a warm
+        handover runs it owns the transport and reports its own failures.
+        """
+        start_task = self._airplay_stream_start_task
+        if start_task is None or not start_task.done():
+            return False
+        stream = self._airplay_stream
+        return self._started and stream is not None and not stream.running
+
+    def _recover_transport(self) -> bool:
+        """
+        Re-anchor the bridge after a transport loss, unless the device keeps dropping.
+
+        :return: True when a fresh transport is armed for the current chunk,
+            False when the bridge gave up and stopped streaming.
+        """
+        now = time.monotonic()
+        last_recovery = self._last_transport_recovery
+        if (
+            last_recovery is not None
+            and now - last_recovery < BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS
+        ):
+            self.logger.error(
+                "AirPlay transport for %s died again within %.0fs of the previous recovery, "
+                "giving up and taking it out of the Sendspin session",
+                self.airplay_player.display_name,
+                BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS,
+            )
+            self._abandon_streaming()
+            return False
+        self._last_transport_recovery = now
+        self.logger.warning(
+            "AirPlay transport for %s was lost mid-stream, re-joining the Sendspin timeline",
+            self.airplay_player.display_name,
+        )
+        self._restart_transport()
+        return True
+
+    def _hold_chunk(self, chunk: AudioChunk) -> None:
+        """
+        Keep a chunk until the start anchor settles, capping the backlog.
+
+        The backlog is bounded by both its duration and its chunk count; the
+        count is what bounds a run of zero-duration chunks.
+
+        :param chunk: The chunk to replay once the anchor is known.
+        """
+        self._held_chunks.append(chunk)
+        self._held_us += chunk.duration_us
+        while len(self._held_chunks) > 1 and (
+            self._held_us > MAX_HELD_AUDIO_US or len(self._held_chunks) > MAX_HELD_CHUNKS
+        ):
+            self._held_us -= self._held_chunks.popleft().duration_us
+
     def _align_chunk(self, chunk: AudioChunk) -> None:
         """
         Queue a chunk at the byte offset its timestamp claims on the CLI stream.
 
-        The device plays the stream at a fixed rate from a start anchor that is
-        never revised, so a chunk only stays on the group's clock when it is
-        written at the offset matching its timestamp. A hole in the Sendspin
-        timeline is filled with silence and an overlapping head is trimmed;
-        without that, the device would run permanently ahead of (or behind) the
-        rest of the group by the size of the discontinuity.
+        The device plays the stream at a fixed rate from the anchor, so a chunk
+        only stays on the group's clock when it is written at the offset matching
+        its timestamp. A hole in the Sendspin timeline is filled with silence and
+        an overlapping head is trimmed; without that, the device would run
+        permanently ahead of (or behind) the rest of the group by the size of the
+        discontinuity.
 
         :param chunk: The audio chunk to queue.
         """
@@ -708,8 +1199,17 @@ class SendspinAirPlayBridge:
             (chunk.timestamp_us - self._drop_until_us) * BRIDGE_SAMPLE_RATE / 1_000_000
         )
         drift_frames = target_frames - self._queued_frames
+        if drift_frames >= 0:
+            # The cursor caught back up, so any shift folded into the anchor has
+            # been worked off and a later realignment is timeline drift again.
+            self._absorbing_shift = False
         drift_us = round(drift_frames * 1_000_000 / BRIDGE_SAMPLE_RATE)
-        if abs(drift_us) > 1_000:
+        # The first placement after an anchor sits at the gap between the anchor
+        # and the chunk by construction, which is not drift; only a cursor that
+        # already advanced can have drifted away from the timeline. Trimming off a
+        # folded playout shift is a correction the bridge asked for, so it stays
+        # quiet as well until the cursor is back on the timeline.
+        if self._queued_frames and abs(drift_us) > 1_000 and not self._absorbing_shift:
             self.logger.warning(
                 "Realigned %d µs of Sendspin timeline drift for %s",
                 drift_us,
@@ -724,11 +1224,24 @@ class SendspinAirPlayBridge:
                 return
             data = data[trim_bytes:]
         elif drift_frames > 0:
-            self._write_queue.put_nowait(b"\x00" * (drift_frames * bytes_per_frame))
+            self._queue_silence(drift_frames)
             self._queued_frames += drift_frames
 
         self._write_queue.put_nowait(data)
         self._queued_frames += len(data) // bytes_per_frame
+
+    def _queue_silence(self, frames: int) -> None:
+        """
+        Hand the CLI a run of silence to fill a hole in the Sendspin timeline.
+
+        :param frames: Number of silent frames to queue.
+        """
+        bytes_per_frame = BRIDGE_CHANNELS * BRIDGE_BYTES_PER_SAMPLE
+        whole_blocks, remainder = divmod(frames, PAD_BLOCK_FRAMES)
+        for _ in range(whole_blocks):
+            self._write_queue.put_nowait(SILENCE_BLOCK)
+        if remainder:
+            self._write_queue.put_nowait(b"\x00" * (remainder * bytes_per_frame))
 
     async def _cli_writer(self) -> None:
         """
@@ -763,8 +1276,11 @@ class SendspinAirPlayBridge:
                     "Timed out waiting for AirPlay protocol to become ready for %s",
                     self.airplay_player.display_name,
                 )
-                self._is_streaming = False
-                self._schedule_cleanup()
+                if self._writer_task is asyncio.current_task():
+                    # Only the writer that still feeds the bridge may give up on
+                    # it; one left behind by a slow teardown speaks for a stream
+                    # that is already gone.
+                    self._abandon_streaming()
                 return
             while True:
                 data = await self._write_queue.get()
@@ -797,8 +1313,13 @@ class SendspinAirPlayBridge:
         """Stop streaming (internal, called with lock held)."""
         self._is_streaming = False
         self._queued_frames = 0
+        self._applied_shift_seconds = 0.0
+        self._absorbing_shift = False
         self._airplay_stream_ready.clear()
         self._started = False
+        self._anchor_settled = False
+        self._held_chunks.clear()
+        self._held_us = 0
         if self._airplay_stream_start_task:
             self._airplay_stream_start_task.cancel()
             with suppress(asyncio.CancelledError, Exception):

@@ -21,6 +21,7 @@ from music_assistant_models.enums import (
     RepeatMode,
 )
 from music_assistant_models.errors import (
+    InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
     PlayerUnavailableError,
@@ -49,6 +50,7 @@ from music_assistant.controllers.player_queues.base import _PlayerQueuesBase
 from music_assistant.controllers.player_queues.constants import (
     CONF_DEFAULT_ENQUEUE_OPTION_LIVE_SOURCES,
     MANAGED_POOL_MAX,
+    PROBED_DURATION_MEDIA_TYPES,
 )
 from music_assistant.controllers.player_queues.helpers import (
     build_queue_item,
@@ -61,6 +63,7 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     set_current_user,
 )
+from music_assistant.helpers.audio import get_probed_duration, store_probed_duration
 from music_assistant.helpers.throttle_retry import BYPASS_THROTTLER
 
 if TYPE_CHECKING:
@@ -379,9 +382,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             prefer_album_loudness=bool(playing_album_tracks),
         )
         # update queue_item.duration from streamdetails if we got a better value
-        if queue_item.streamdetails.duration and not queue_item.duration:
-            queue_item.duration = queue_item.streamdetails.duration
-            self.signal_update(queue_id, items_changed=True)
+        self._apply_probed_duration(queue_item)
 
         # pre-initialize the AudioBuffer so audio is ready
         # when the player requests it. For the current/first track this ensures
@@ -396,6 +397,62 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                 wait_ready=True,
                 reason="prepare",
             )
+            # the first chunk is in, so the source has been probed and a duration the
+            # provider did not report is known before playback starts
+            self._apply_probed_duration(queue_item)
+
+    def _apply_probed_duration(self, queue_item: QueueItem) -> None:
+        """
+        Apply a duration determined while streaming to the queue item and its media item.
+
+        :param queue_item: The queue item whose streamdetails to take the duration from.
+        """
+        streamdetails = queue_item.streamdetails
+        if streamdetails is None or not streamdetails.duration:
+            return
+        duration = int(streamdetails.duration)
+        if not self._set_missing_duration(queue_item, duration):
+            return
+        if uri := getattr(queue_item.media_item, "uri", None):
+            # store it so listings and later playbacks have it up front
+            self.mass.create_task(store_probed_duration(self.mass, uri, duration))
+
+    async def _restore_probed_duration(self, queue_item: QueueItem) -> None:
+        """
+        Apply the duration determined during an earlier playback to an item that lacks one.
+
+        :param queue_item: The queue item to fill the duration of.
+        """
+        if queue_item.media_type not in PROBED_DURATION_MEDIA_TYPES:
+            return
+        if not (uri := getattr(queue_item.media_item, "uri", None)):
+            return
+        if queue_item.duration and getattr(queue_item.media_item, "duration", None):
+            return
+        if duration := await get_probed_duration(self.mass, uri):
+            self._set_missing_duration(queue_item, duration)
+
+    def _set_missing_duration(self, queue_item: QueueItem, duration: int) -> bool:
+        """
+        Fill in the duration of a queue item and its media item, leaving known ones alone.
+
+        :param queue_item: The queue item to fill the duration of.
+        :param duration: The duration in seconds.
+        :return: True if the item (or its media item) did not have a duration yet.
+        """
+        if queue_item.media_type not in PROBED_DURATION_MEDIA_TYPES:
+            return False
+        media_item = queue_item.media_item
+        # an ItemMapping or any other reference without a duration is left untouched
+        media_item_duration = getattr(media_item, "duration", None)
+        if queue_item.duration and media_item_duration != 0:
+            return False
+        if not queue_item.duration:
+            queue_item.duration = duration
+        if media_item_duration == 0:
+            media_item.duration = duration  # type: ignore[union-attr]
+        self.signal_update(queue_item.queue_id, items_changed=True)
+        return True
 
     def _get_next_index(
         self,
@@ -683,26 +740,22 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     # item is MediaItemType | ItemMapping at this point
                     media_item = item
 
-                if (
-                    isinstance(media_item, ItemMapping)
-                    and media_item.media_type == MediaType.PLAYLIST
-                ):
-                    # Resolve ItemMapping for a playlist so the full Playlist object
-                    # so we have access to details such as 'is_dynamic'
-                    with suppress(MusicAssistantError):
-                        media_item = await self.mass.music.playlists.get(
-                            media_item.item_id,
-                            media_item.provider,
-                        )
+                if isinstance(media_item, ItemMapping):
+                    # Resolve any ItemMapping to its full media item, exactly as the str-uri
+                    # form above already does. Everything below needs the real object: the
+                    # enqueued/source bookkeeping only accepts full items (so a mapping would
+                    # otherwise never count as a user-initiated play), and the dynamic check
+                    # needs details such as a playlist's 'is_dynamic'.
+                    if media_item.uri is None:
+                        raise InvalidDataError("ItemMapping has no URI")
+                    media_item = await self.mass.music.get_item_by_uri(media_item.uri)
 
                 # Save requested media item to play on the queue so we can use it as a seed
                 # for Autoplay's music refill (the podcast/audiobook continuations resolve
                 # their successor from the queue's last item instead).
                 # Use FIFO list to keep track of the last 10 played items
                 # Skip ItemMapping and BrowseFolder - only queue full MediaItemType objects
-                if not isinstance(
-                    media_item, (ItemMapping, BrowseFolder)
-                ) and media_item.media_type in (
+                if not isinstance(media_item, BrowseFolder) and media_item.media_type in (
                     MediaType.TRACK,
                     MediaType.ALBUM,
                     MediaType.PLAYLIST,
@@ -744,15 +797,13 @@ class QueueLoaderMixin(_PlayerQueuesBase):
                     )
                 elif already_dynamic:
                     # feed the already-active pool: keep the finite item as a (materialized) source
-                    if not isinstance(media_item, (ItemMapping, BrowseFolder)):
+                    if not isinstance(media_item, BrowseFolder):
                         source_items.append(media_item)
                 else:
                     # not (yet) a managed pool: record the finite parent as a source (kept for a
                     # later dynamic transition and for similar/autoplay seeds) and expand it into
                     # the linear queue
-                    if not isinstance(
-                        media_item, (ItemMapping, BrowseFolder)
-                    ) and media_item.media_type in (
+                    if not isinstance(media_item, BrowseFolder) and media_item.media_type in (
                         MediaType.TRACK,
                         MediaType.ALBUM,
                         MediaType.PLAYLIST,
@@ -808,7 +859,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
         ]
 
         if not queue_items:
-            raise MediaNotFoundError("No playable items found")
+            raise MediaNotFoundError("No playable items found", translation_key="no_playable_items")
 
         await self._enqueue_with_option(
             queue_id, queue_items, option, pin_first=start_item is not None
@@ -853,7 +904,7 @@ class QueueLoaderMixin(_PlayerQueuesBase):
             build_queue_item(queue_id, track) for track in pool_tracks if track.available
         ]
         if not queue_items:
-            raise MediaNotFoundError("No playable items found")
+            raise MediaNotFoundError("No playable items found", translation_key="no_playable_items")
         # the managed pool already interleaved the sources in a recency-aware order; load as-is
         await self.load(queue_id, queue_items, insert_at_index=insert_at, keep_remaining=False)
         if start_playing:
