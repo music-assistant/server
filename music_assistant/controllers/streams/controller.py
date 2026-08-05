@@ -1680,6 +1680,7 @@ class StreamsController(CoreController):
                     "Error reloading provider %s: %s",
                     instance_id,
                     str(err) or err.__class__.__name__,
+                    exc_info=err,
                 )
         # only mark the new network as applied once every provider moved over, so a run
         # cut short by a second config change is retried on the next reload

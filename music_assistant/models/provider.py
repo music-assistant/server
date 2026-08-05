@@ -35,7 +35,7 @@ class Provider:
     manifest: ProviderManifest
     config: ProviderConfig
     # set to True in providers that capture a mass.streams address or port while loading,
-    # to have them reloaded onto the new one when the streamserver config changes
+    # to have them reloaded onto the new one when the streamserver network changes
     reload_on_streams_network_change: bool = False
 
     def __init__(
