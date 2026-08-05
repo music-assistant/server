@@ -941,6 +941,10 @@ def _entry_options(ctx: TransitionContext, bars: int) -> list[float]:
             options.append(snapped)
     if ctx.natural_entry not in options:
         options.append(ctx.natural_entry)
+    # at 1-2 bars the overlap is a handover, not a blend: keeping B's whole
+    # intro (zero trim) lets it build naturally after A's tail rides out
+    if bars <= 2 and ctx.natural_entry > 0.0 and 0.0 not in options:
+        options.append(0.0)
     return options
 
 

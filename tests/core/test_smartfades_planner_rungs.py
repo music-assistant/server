@@ -10,6 +10,7 @@ from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     CandidateSpec,
     EnergyLadderGenerator,
     TrimClosingAnchorGenerator,
+    _entry_options,
 )
 from music_assistant.controllers.streams.smart_fades.planner.context import (
     TransitionContext,
@@ -176,3 +177,22 @@ def test_grid_blendable_false_for_sparse_tail() -> None:
     ctx = build_transition_context(aa_out, aa_in, 45.0, logging.getLogger("test"))
     assert ctx.grid_blendable is False
     assert ctx.tier is TransitionTier.QUICK_FADE
+
+
+def _ctx_with_late_natural_entry() -> TransitionContext:
+    """Build a context where B grooves late: its natural entry lands deep in the 45s head."""
+    aa_out = _analysis(bpm=124.0, duration=200.0)
+    aa_in = _analysis(bpm=124.0, duration=45.0)
+    aa_in.rms_energy = [0.05] * 720 + [0.9] * 1080
+    ctx = build_transition_context(aa_out, aa_in, 45.0, logging.getLogger("test"))
+    assert ctx.natural_entry > 10.0
+    return ctx
+
+
+def test_short_rungs_offer_intro_keeping_entry() -> None:
+    """At 1-2 bars an entry at 0.0 (keep B's intro) is offered alongside the natural entry."""
+    ctx = _ctx_with_late_natural_entry()
+    options = _entry_options(ctx, 2)
+    assert 0.0 in options
+    assert ctx.natural_entry in options
+    assert 0.0 not in _entry_options(ctx, 8)
