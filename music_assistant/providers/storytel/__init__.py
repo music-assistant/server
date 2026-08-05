@@ -401,10 +401,8 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
             return
         # Set bookmark position to the media duration if the item was fully played and the duration is known. Otherwise, use the provided position.
         bookmark_position = position
-        if fully_played:
-            media_duration = getattr(media_item, "duration", None)
-            if isinstance(media_duration, int) and media_duration > 0:
-                bookmark_position = media_duration
+        if fully_played and isinstance(media_item, (Audiobook, PodcastEpisode)):
+            bookmark_position = media_item.duration
         try:
             await self.api.set_bookmark(
                 consumable_id,
@@ -532,11 +530,10 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
                 return
         podcast = await self.get_podcast(prov_podcast_id, use_cache=use_cache)
         episode_languages = {lang for lang in self.api.languages_query.split(",") if lang}
-        podcast_languages = getattr(getattr(podcast, "metadata", None), "languages", None)
-        if podcast_languages:
-            episode_languages.update(
-                str(language).strip() for language in podcast_languages if str(language).strip()
-            )
+        podcast_languages: UniqueList[str] = podcast.metadata.languages or UniqueList()
+        episode_languages.update(
+            str(language).strip() for language in podcast_languages if str(language).strip()
+        )
         podcast_episodes = await self.api.get_podcast_episodes(
             prov_podcast_id,
             total_episodes=podcast.total_episodes or 0,
