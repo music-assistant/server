@@ -12,6 +12,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
+from music_assistant.constants import WILDCARD_BIND_IPS
 from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.helpers.datetime import utc
 
@@ -61,45 +62,50 @@ async def test_valid_certificate_advertises_tls(
 ) -> None:
     """Verify a usable certificate results in https URLs."""
     certificate, private_key = self_signed_cert
-    webserver = await _setup_webserver(
+    webserver, server = await _setup_webserver(
         mock_mass, tmp_path, certificate=certificate, private_key=private_key
     )
 
     assert webserver.base_url == "https://192.168.1.5:8095"
     assert webserver.internal_base_url == "https://127.0.0.1:8095"
+    assert server.setup.await_args.kwargs["ssl_context"] is not None
 
 
 async def test_missing_certificate_advertises_plain_http(
     mock_mass: MagicMock, tmp_path: Path
 ) -> None:
     """Verify the URLs follow the plain HTTP fallback when no certificate is configured."""
-    webserver = await _setup_webserver(mock_mass, tmp_path, certificate="", private_key="")
+    webserver, server = await _setup_webserver(mock_mass, tmp_path, certificate="", private_key="")
 
     assert webserver.base_url == "http://192.168.1.5:8095"
     assert webserver.internal_base_url == "http://127.0.0.1:8095"
+    assert server.setup.await_args.kwargs["ssl_context"] is None
 
 
 async def test_invalid_certificate_advertises_plain_http(
     mock_mass: MagicMock, tmp_path: Path
 ) -> None:
     """Verify the URLs follow the plain HTTP fallback when the certificate is unusable."""
-    webserver = await _setup_webserver(
+    webserver, server = await _setup_webserver(
         mock_mass, tmp_path, certificate="not a certificate", private_key="not a private key"
     )
 
     assert webserver.base_url == "http://192.168.1.5:8095"
     assert webserver.internal_base_url == "http://127.0.0.1:8095"
+    assert server.setup.await_args.kwargs["ssl_context"] is None
 
 
 def _make_server_mock() -> MagicMock:
-    """Create a Webserver double that echoes back the base URL it is set up with."""
+    """Create a Webserver double that adopts the address it is set up with."""
     server = MagicMock()
-    server.port = 8095
 
-    async def _echo_base_url(**kwargs: Any) -> None:
+    async def _adopt_setup_args(**kwargs: Any) -> None:
         server.base_url = kwargs["base_url"]
+        server.port = kwargs["bind_port"]
+        bind_ip = kwargs["bind_ip"]
+        server.bind_ip = None if bind_ip in WILDCARD_BIND_IPS else bind_ip
 
-    server.setup = AsyncMock(side_effect=_echo_base_url)
+    server.setup = AsyncMock(side_effect=_adopt_setup_args)
     return server
 
 
@@ -109,7 +115,7 @@ async def _setup_webserver(
     *,
     certificate: str,
     private_key: str,
-) -> WebserverController:
+) -> tuple[WebserverController, MagicMock]:
     """
     Run the real setup of a WebserverController with SSL enabled.
 
@@ -117,9 +123,11 @@ async def _setup_webserver(
     :param tmp_path: Directory to serve as the frontend, in place of the bundled one.
     :param certificate: Value for the ssl_certificate config option.
     :param private_key: Value for the ssl_private_key config option.
+    :return: The controller and the Webserver double it was set up against.
     """
     webserver = WebserverController(mock_mass)
-    webserver._server = _make_server_mock()
+    server = _make_server_mock()
+    webserver._server = server
     webserver.auth = MagicMock(setup=AsyncMock())
     webserver.remote_access = MagicMock(setup=AsyncMock())
 
@@ -144,4 +152,4 @@ async def _setup_webserver(
         ),
     ):
         await webserver.setup(cast("CoreConfig", config))
-    return webserver
+    return webserver, server
