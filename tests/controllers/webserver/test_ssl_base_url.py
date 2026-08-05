@@ -100,7 +100,6 @@ def _make_server_mock() -> MagicMock:
     server = MagicMock()
 
     async def _adopt_setup_args(**kwargs: Any) -> None:
-        server.base_url = kwargs["base_url"]
         server.port = kwargs["bind_port"]
         bind_ip = kwargs["bind_ip"]
         server.bind_ip = None if bind_ip in WILDCARD_BIND_IPS else bind_ip
