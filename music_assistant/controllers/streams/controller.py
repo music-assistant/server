@@ -200,6 +200,7 @@ class StreamsController(CoreController):
         self.manifest.icon = "cast-audio"
         self.announcement_renderer = AnnouncementRenderer()
         self._bind_ip: str = "0.0.0.0"
+        self._base_url: str = ""
         self._configured_publish_ip: str | None = None
         # every address players may reach this host on, best candidate first - for mDNS
         # records, which can carry them all, unlike the single-valued publish_ip
@@ -237,7 +238,7 @@ class StreamsController(CoreController):
     @property
     def base_url(self) -> str:
         """Return the base_url for the streamserver."""
-        return self._server.base_url
+        return self._base_url
 
     @property
     def bind_ip(self) -> str:
@@ -449,14 +450,13 @@ class StreamsController(CoreController):
         self._configured_publish_ip = (
             None if configured_publish_ip == CONF_VALUE_AUTO else configured_publish_ip
         )
-        # resolve the "auto" default (or an unset value) to this server's primary IP
         all_ip_addresses = await get_ip_addresses(include_ipv6=True)
-        self.publish_ip = self._configured_publish_ip or all_ip_addresses[0]
         bind_ip = str(config.get_value(CONF_BIND_IP))
+        self._resolve_publish_state(bind_ip, all_ip_addresses)
         await self._server.setup(
             bind_ip=bind_ip,
             bind_port=cast("int", self.publish_port),
-            base_url=f"http://{format_ip_for_url(str(self.publish_ip))}:{self.publish_port}",
+            base_url=self._base_url,
             static_routes=[
                 (
                     "*",
@@ -475,10 +475,7 @@ class StreamsController(CoreController):
         # adopt what the server actually bound to: a configured port of 0 is only resolved
         # by the OS at bind time and an unavailable bind IP falls back to all interfaces
         self.publish_port = cast("int", self._server.port)
-        self._bind_ip = self._server.bind_ip or DEFAULT_HOST
-        self.publish_addresses = _get_publish_addresses(
-            self._bind_ip, self._configured_publish_ip, all_ip_addresses
-        )
+        self._resolve_publish_state(self._server.bind_ip or DEFAULT_HOST, all_ip_addresses)
         # print a big fat message in the log where the streamserver is running
         # because this is a common source of issues for people with more complex setups
         self.logger.log(
@@ -555,7 +552,9 @@ class StreamsController(CoreController):
             and media.media_type not in (MediaType.RADIO, MediaType.AUDIO_SOURCE)
         )
         base_path = "flow" if flow_mode else "single"
-        return f"{self._server.base_url}/{base_path}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}"
+        return (
+            f"{self.base_url}/{base_path}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}"
+        )
 
     def update_stream_metadata(
         self,
@@ -1694,6 +1693,28 @@ class StreamsController(CoreController):
             self.audio.smart_fades_mixer.logger.setLevel(self.logger.level)
         else:
             self.audio.smart_fades_mixer.logger.setLevel(log_level)
+
+    def _resolve_publish_state(self, bind_ip: str, all_ip_addresses: tuple[str, ...]) -> None:
+        """
+        Resolve the addresses and base URL to advertise for the given bind address.
+
+        Reads ``self.publish_port``, so set that first.
+
+        :param bind_ip: Address the streamserver binds to (a wildcard means all interfaces).
+        :param all_ip_addresses: All detected host IP addresses, in ranked order.
+        """
+        self._bind_ip = bind_ip
+        if self._configured_publish_ip:
+            self.publish_ip = self._configured_publish_ip
+        elif bind_ip and bind_ip not in WILDCARD_BIND_IPS:
+            # only this interface serves the stream, so no other address can reach it
+            self.publish_ip = bind_ip
+        else:
+            self.publish_ip = all_ip_addresses[0]
+        self.publish_addresses = _get_publish_addresses(
+            bind_ip, self._configured_publish_ip, all_ip_addresses
+        )
+        self._base_url = f"http://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
 
 
 def _same_ip_family(ip: str, other_ip: str) -> bool:
