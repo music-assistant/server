@@ -55,7 +55,6 @@ def _make_provider() -> tuple[YandexDiskFileSystemProvider, _FakeApi]:
     return prov, fake
 
 
-@pytest.mark.integration
 @pytest.mark.asyncio
 async def test_scandir_maps_listing_to_filesystem_items() -> None:
     """A root scan yields directories and files with proxy stream URLs."""

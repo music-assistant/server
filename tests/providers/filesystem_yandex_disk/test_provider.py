@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from typing import Any, cast
 from unittest import mock
 
@@ -10,9 +11,10 @@ from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.providers.filesystem_cloud.base import CloudFileSystemProvider
 from music_assistant.providers.filesystem_yandex_disk import get_config_entries
-from music_assistant.providers.filesystem_yandex_disk import music_assistant.providers.filesystem_yandex_disk as provider_module
 from music_assistant.providers.filesystem_yandex_disk.constants import DISK_ROOT
 from music_assistant.providers.filesystem_yandex_disk.provider import YandexDiskFileSystemProvider
+
+provider_module = sys.modules[YandexDiskFileSystemProvider.__module__]
 
 
 class _FakeApi:
