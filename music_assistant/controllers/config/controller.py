@@ -209,7 +209,7 @@ class ConfigController(
 
         self._save_requested += 1
         if immediate:
-            self.mass.loop.create_task(self._async_save())
+            self.mass.create_task(self._async_save)
         else:
             # schedule the save for later
             self._timer_handle = self.mass.loop.call_later(DEFAULT_SAVE_DELAY, self._start_save)
