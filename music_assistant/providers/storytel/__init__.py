@@ -13,7 +13,6 @@ from collections.abc import AsyncGenerator, Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 
-from aiohttp import ClientError
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
@@ -65,6 +64,20 @@ if TYPE_CHECKING:
     from music_assistant.models import ProviderInstanceType
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+def _unwrap_single_exception(err: ExceptionGroup[Exception]) -> BaseException:
+    """
+    Return the sole exception wrapped by a TaskGroup's ExceptionGroup, if there is only one.
+
+    A concurrent TaskGroup wraps any child failure in an ExceptionGroup, which would otherwise
+    hide the real (and often specific, catchable) exception type from callers.
+
+    :param err: the ExceptionGroup raised by a TaskGroup.
+    """
+    if len(err.exceptions) == 1 and not isinstance(err.exceptions[0], ExceptionGroup):
+        return err.exceptions[0]
+    return err
 
 
 # -------------------------------
@@ -144,7 +157,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
                 if err.subgroup(LoginFailed):
                     await self.api.revalidate_account()
                     return await method(*args, **kwargs)
-                raise
+                raise _unwrap_single_exception(err) from err
 
         return cast("F", wrapper)
 
@@ -174,7 +187,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
                     async for item in method(*args, **kwargs):
                         yield item
                     return
-                raise
+                raise _unwrap_single_exception(err) from err
 
         return cast("F", wrapper)
 
@@ -246,11 +259,11 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
             await self._api.login(username, password)
         except LoginFailed:
             raise SetupFailedError("Invalid Storytel username or password")
-        except (ClientError, ConnectionError) as err:
+        except ProviderUnavailableError as err:
             raise SetupFailedError(f"Storytel login failed: {err}") from err
         try:
             await self._api.fetch_resource_version()
-        except (ClientError, ConnectionError, ProviderUnavailableError) as err:
+        except ProviderUnavailableError as err:
             self.logger.warning(
                 "Storytel resource version refresh failed during setup; using default: %s",
                 err,
@@ -398,15 +411,9 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
                 bookmark_position,
                 kids_mode=self._kids_mode,
             )
-        except (
-            ClientError,
-            ConnectionError,
-            TimeoutError,
-            LoginFailed,
-            ProviderUnavailableError,
-        ) as err:
-            if isinstance(err, (LoginFailed, ProviderUnavailableError)):
-                raise
+        except LoginFailed:
+            raise
+        except ProviderUnavailableError as err:
             self.logger.warning("Failed to update Storytel bookmark: %s", err)
 
     @handle_login_failed

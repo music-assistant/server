@@ -12,6 +12,7 @@ from asyncio import Lock, Task, TaskGroup
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from json import JSONDecodeError
 from typing import TYPE_CHECKING, Any, TypeVar, cast
 from urllib.parse import quote
 
@@ -181,7 +182,7 @@ class StorytelHelper:
         try:
             resp_json = await resp.json()
             resp_message = resp_json.get("message") or ""
-        except ContentTypeError:
+        except ContentTypeError, JSONDecodeError:
             resp_message = await resp.text() or "<no response>"
         if resp.status in (401, 403):
             raise LoginFailed(f"Unauthorized ({resp.status}): {resp_message}")
@@ -201,9 +202,7 @@ class StorytelHelper:
         url = URL_LOGIN.replace("{UID}", quote(username, safe="")).replace(
             "{PASSWORD}", quote(enc, safe="")
         )
-        async with self.session.get(url) as resp:
-            await self.raise_for_status(resp)
-            data: dict[str, Any] = await resp.json()
+        data = await self._request_json("GET", url)
         acc = data.get("accountInfo") or {}
         jwt = acc.get("jwt")
         sst = acc.get("singleSignToken")
@@ -223,13 +222,14 @@ class StorytelHelper:
             if not self._auth or self._auth.single_sign_token != current_token:
                 return self._auth
             try:
-                async with self.session.post(URL_REVALIDATE, json={"token": current_token}) as resp:
-                    await self.raise_for_status(resp)
-                    data: dict[str, Any] = await resp.json()
-            except LoginFailed:
+                data = await self._request_json(
+                    "POST", URL_REVALIDATE, json_data={"token": current_token}
+                )
+            except LoginFailed as err:
+                self.logger.warning("Storytel account revalidation failed: %s", err)
                 raise ProviderUnavailableError(
                     "Storytel account revalidation failed, token may be expired. Please login again."
-                )
+                ) from err
         acc = data.get("accountInfo") or {}
         jwt = acc.get("jwt")
         sst = acc.get("singleSignToken")
@@ -249,9 +249,7 @@ class StorytelHelper:
         headers = self.headers_api()
         headers["Accept"] = API_HEADER_CONTENT_TYPE_LIBRARY_DELTA
 
-        async with self.session.post(url, headers=headers, json={}) as resp:
-            await self.raise_for_status(resp)
-            data: dict[str, Any] = await resp.json()
+        data = await self._request_json("POST", url, headers=headers, json_data={})
 
         library_items = data.get("items") or {}
         following_items = data.get("followingItems") or {}
@@ -276,9 +274,7 @@ class StorytelHelper:
         url = URL_CONSUMABLE_DETAILS.replace("{CONSUMABLE_ID}", consumable_id)
         headers = self.headers_api()
         headers["Accept"] = API_HEADER_CONTENT_TYPE_BOOK_DETAILS
-        async with self.session.get(url, headers=headers) as resp:
-            await self.raise_for_status(resp)
-            return cast("dict[str, Any]", await resp.json())
+        return await self._request_json("GET", url, headers=headers)
 
     async def get_bookmark(self, consumable_id: str) -> dict[str, Any] | None:
         """
@@ -287,9 +283,7 @@ class StorytelHelper:
         :param consumable_id: the consumable id.
         """
         url = URL_BOOKMARK_GET.replace("{CONSUMABLE_ID}", consumable_id)
-        async with self.session.get(url, headers=self.headers_api()) as resp:
-            await self.raise_for_status(resp)
-            data: dict[str, Any] = await resp.json()
+        data = await self._request_json("GET", url, headers=self.headers_api())
         bookmarks = data.get("bookmarks") or []
         # Only abook bookmark
         for bm in bookmarks:
@@ -315,13 +309,10 @@ class StorytelHelper:
             "secondsSinceCreated": 0,
             "type": "abook",
         }
-        async with self.session.post(
-            URL_BOOKMARK_SET,
-            headers={**self.headers_api(), "content-type": "application/json"},
-            json=payload,
-        ) as resp:
-            await self.raise_for_status(resp)
-            return cast("dict[str, Any]", await resp.json())
+        headers = {**self.headers_api(), "content-type": "application/json"}
+        return await self._request_json(
+            "POST", URL_BOOKMARK_SET, headers=headers, json_data=payload
+        )
 
     async def fetch_resource_version(self) -> None:
         """Fetch and cache the resource version for the Storytel API."""
@@ -334,9 +325,9 @@ class StorytelHelper:
             "items": {},
         }
 
-        async with self.session.post(url, headers=headers, json=request_data) as resp:
-            await self.raise_for_status(resp)
-            response_data: dict[str, Any] = await resp.json()
+        response_data = await self._request_json(
+            "POST", url, headers=headers, json_data=request_data
+        )
 
         resource_version = response_data.get("resourceVersion", "")
 
@@ -377,9 +368,9 @@ class StorytelHelper:
                 "millisecondsSinceEvent": 10,
             }
 
-        async with self.session.post(url, headers=headers, json=request_data) as resp:
-            await self.raise_for_status(resp)
-            response_data: dict[str, Any] = await resp.json()
+        response_data = await self._request_json(
+            "POST", url, headers=headers, json_data=request_data
+        )
 
         following_items = response_data.get("followingItems") or {}
         library_items = response_data.get("items") or {}
@@ -435,9 +426,9 @@ class StorytelHelper:
                 "millisecondsSinceEvent": 10,
             }
 
-        async with self.session.post(url, headers=headers, json=request_data) as resp:
-            await self.raise_for_status(resp)
-            response_data: dict[str, Any] = await resp.json()
+        response_data = await self._request_json(
+            "POST", url, headers=headers, json_data=request_data
+        )
 
         following_items = response_data.get("followingItems") or {}
         library_items = response_data.get("items") or {}
@@ -536,9 +527,7 @@ class StorytelHelper:
                 url += f"&nextPageToken={quote(token, safe='')}"
             headers = self.headers_api()
             headers["Accept"] = API_HEADER_CONTENT_TYPE_EXPLORE
-            async with self.session.get(url, headers=headers) as resp:
-                await self.raise_for_status(resp)
-                return cast("dict[str, Any]", await resp.json())
+            return await self._request_json("GET", url, headers=headers)
 
         async def fetch_items(token: str) -> list[dict[str, Any]]:
             page_data = await fetch_page(token)
@@ -589,9 +578,7 @@ class StorytelHelper:
         url = URL_PODCAST_DETAILS.replace("{CONSUMABLE_ID}", consumable_id)
         headers = self.headers_api()
         headers["Accept"] = API_HEADER_CONTENT_TYPE_EXPLORE
-        async with self.session.get(url, headers=headers) as resp:
-            await self.raise_for_status(resp)
-            return cast("dict[str, Any]", await resp.json())
+        return await self._request_json("GET", url, headers=headers)
 
     async def search_podcasts(
         self, query: str, limit: int = 10, page_token: str = "", results_count: int = 0
@@ -863,6 +850,8 @@ class StorytelHelper:
             ClientError,
             ConnectionError,
             TimeoutError,
+            ContentTypeError,
+            JSONDecodeError,
             LoginFailed,
             MediaNotFoundError,
             ProviderUnavailableError,
@@ -899,13 +888,42 @@ class StorytelHelper:
             duration=content_duration_seconds,
         )
 
+    async def _request_json(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        json_data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Perform a Storytel API request and return the parsed JSON response body.
+
+        :param method: the HTTP method to use, e.g. "GET" or "POST".
+        :param url: the request URL.
+        :param headers: optional request headers.
+        :param json_data: optional JSON request body.
+        """
+        try:
+            async with self.session.request(method, url, headers=headers, json=json_data) as resp:
+                await self.raise_for_status(resp)
+                return cast("dict[str, Any]", await resp.json())
+        except (ClientError, ConnectionError, TimeoutError) as err:
+            self.logger.error("Storytel request %s %s failed: %s", method, url, err)
+            raise ProviderUnavailableError(f"Storytel request to {url} failed: {err}") from err
+        except (ContentTypeError, JSONDecodeError) as err:
+            self.logger.error(
+                "Storytel request %s %s returned an invalid response: %s", method, url, err
+            )
+            raise ProviderUnavailableError(
+                f"Storytel returned an invalid response for {method} {url}"
+            ) from err
+
     async def _fetch_explore_page(self, page_url: str) -> dict[str, Any]:
         """Fetch a Storytel explore page or list-resource payload."""
         headers = self.headers_api()
         headers["Accept"] = API_HEADER_CONTENT_TYPE_EXPLORE
-        async with self.session.get(page_url, headers=headers) as resp:
-            await self.raise_for_status(resp)
-            return cast("dict[str, Any]", await resp.json())
+        return await self._request_json("GET", page_url, headers=headers)
 
     async def _recommendation_folder_from_block_url(
         self,
@@ -1039,14 +1057,11 @@ class StorytelHelper:
 
         url = URL_PLAYBACK_BOOK_DETAILS.replace("{CONSUMABLE_ID}", consumable_id)
         try:
-            headers = self.headers_api()
-            async with self.session.get(url, headers=headers) as resp:
-                await self.raise_for_status(resp)
-                data: dict[str, Any] = await resp.json()
+            data = await self._request_json("GET", url, headers=self.headers_api())
             formats = data.get("formats") or []
             audiobook_format = next((f for f in formats if f.get("type") == "abook"), None)
             chapters = audiobook_format.get("chapters") or [] if audiobook_format else []
-        except (ClientError, TimeoutError, KeyError, TypeError, ValueError) as err:
+        except (ProviderUnavailableError, KeyError, TypeError, ValueError) as err:
             self.logger.debug("Failed to fetch chapters for %s: %s", consumable_id, err)
 
         return list(chapters)
@@ -1275,9 +1290,7 @@ class StorytelHelper:
             url += f"&page={quote(page_token, safe='')}"
         headers = self.headers_api()
         headers["Accept"] = API_HEADER_CONTENT_TYPE_SEARCH
-        async with self.session.get(url, headers=headers) as resp:
-            await self.raise_for_status(resp)
-            data: dict[str, Any] = await resp.json()
+        data = await self._request_json("GET", url, headers=headers)
 
         if data is None:
             raise MediaNotFoundError(f"No search results found for query '{query}'")
