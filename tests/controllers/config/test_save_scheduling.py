@@ -11,7 +11,8 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
-from collections.abc import Callable, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -74,6 +75,35 @@ async def _stalled_json_dumps(*_args: Any, **_kwargs: Any) -> str:
     """Stand in for the serialization step of a save that is still busy when the server stops."""
     await asyncio.Event().wait()
     return ""
+
+
+@asynccontextmanager
+async def _change_made_while_saving(
+    controller: ConfigController, mass: _FakeMass
+) -> AsyncIterator[None]:
+    """
+    Change a setting while a save is writing, and leave that save finished.
+
+    The change lands after the running save took its snapshot, so it is not part of
+    that write, and the save clears the pending marker on its way out.
+    """
+    save_to_disk = controller._save_to_disk
+    writing = threading.Event()
+    release = threading.Event()
+
+    def blocking_save_to_disk(json_data: str) -> None:
+        writing.set()
+        release.wait(5)
+        save_to_disk(json_data)
+
+    with patch.object(controller, "_save_to_disk", new=blocking_save_to_disk):
+        controller.set("first", 1, immediate=True)
+        await asyncio.to_thread(writing.wait, 5)
+        controller.set("second", 2)
+        release.set()
+        await asyncio.gather(*mass.tasks)
+        mass.tasks.clear()
+    yield
 
 
 async def _cancel_save_tasks(mass: _FakeMass) -> None:
@@ -211,22 +241,34 @@ async def test_close_cancels_the_pending_save_timer(tmp_path: Path) -> None:
 async def test_close_saves_change_made_while_a_save_was_writing(tmp_path: Path) -> None:
     """A change made after a save took its snapshot is not in that write, so the stop must do it."""
     controller, mass = _make_controller(tmp_path)
-    save_to_disk = controller._save_to_disk
-    writing = threading.Event()
-    release = threading.Event()
 
-    def blocking_save_to_disk(json_data: str) -> None:
-        writing.set()
-        release.wait(5)
-        save_to_disk(json_data)
+    async with _change_made_while_saving(controller, mass):
+        pass
 
-    with patch.object(controller, "_save_to_disk", new=blocking_save_to_disk):
-        controller.set("first", 1, immediate=True)
-        await asyncio.to_thread(writing.wait, 5)
-        controller.set("second", 2)
-        release.set()
-        await asyncio.gather(*mass.tasks)
-        mass.tasks.clear()
+    await controller.close()
+
+    assert json.loads(Path(controller.filename).read_text()) == {"first": 1, "second": 2}
+
+
+async def test_close_saves_that_change_once_its_timer_has_fired(tmp_path: Path) -> None:
+    """
+    The same change must also survive once its debounce timer has already fired.
+
+    From that point the timer handle is gone too, so the save it started is the only
+    remaining record that the change is not on disk - and the stop cancels it.
+    """
+    controller, mass = _make_controller(tmp_path)
+
+    async with _change_made_while_saving(controller, mass):
+        assert controller._save_pending is False
+        assert controller._timer_handle is not None
+
+    with patch(
+        "music_assistant.controllers.config.controller.async_json_dumps", new=_stalled_json_dumps
+    ):
+        controller._timer_handle.cancel()
+        controller._start_save()
+        await _cancel_save_tasks(mass)
 
     await controller.close()
 

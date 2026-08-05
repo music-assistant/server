@@ -303,6 +303,9 @@ class ConfigController(
     def _start_save(self) -> None:
         """Start the save task, called by the save timer."""
         self._timer_handle = None
+        # re-assert the marker: a save that finished while this timer was armed may have
+        # cleared it for a change that was not part of that write
+        self._save_pending = True
         self.mass.create_task(self._async_save)
 
     async def _async_save(self) -> None:
