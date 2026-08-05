@@ -252,10 +252,17 @@ class TestBuildVocalWindowsSustainedEvidenceGate:
         assert len(mask.windows) == 1
 
     def test_sustained_medium_run_is_kept(self) -> None:
-        """A long medium-confidence run (soft verse, mean >= 0.60) is kept."""
-        probs = _timeline([(0.0, 50), (0.65, 80), (0.0, 50)])
+        """A long medium-confidence run (soft verse, mean >= 0.65) is kept."""
+        # 0.70, not 0.65, so the assertion doesn't ride the mean-threshold boundary
+        probs = _timeline([(0.0, 50), (0.70, 80), (0.0, 50)])
         mask = build_vocal_windows(probs, FRAME, 0.0, len(probs) * FRAME)
         assert len(mask.windows) == 1
+
+    def test_moderate_mean_backing_run_is_dropped(self) -> None:
+        """A ~1.1s run, peak 0.84 / mean ~0.648, between the old (0.60) and new (0.65) floor."""
+        probs = _timeline([(0.0, 100), (0.55, 5), (0.62, 3), (0.84, 3), (0.0, 100)])
+        mask = build_vocal_windows(probs, FRAME, 0.0, len(probs) * FRAME)
+        assert mask.windows == []
 
 
 class TestVocalMaskClampedTo:

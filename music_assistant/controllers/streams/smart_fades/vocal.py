@@ -42,7 +42,7 @@ MAX_VOCAL_GAP = 1.0
 # mean shows real confidence; weak short runs are backing 'aahhs'/detector
 # noise, and a window here can veto an entire 8-bar blend downstream
 VOCAL_MIN_RUN_PEAK = 0.85
-VOCAL_MIN_RUN_MEAN = 0.60
+VOCAL_MIN_RUN_MEAN = 0.65
 
 # Two-sided vocal-collision guard, in rendered-crossfade seconds. Collisions
 # are scored on UNPADDED windows (padding is silence, not vocal), and the
