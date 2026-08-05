@@ -1,9 +1,10 @@
 """
 Unit tests for the output-device recovery in the Sendspin -> Local Audio bridge.
 
-Every blocking device call is run inline against mock streams, so no test ever
-opens a sound card and none of them depend on the host's wall clock. Cover six
-things, for both writers (PulseAudio and sounddevice):
+Device calls are answered by mock streams -- run inline, or handed back on a
+future the test controls -- so no test ever opens a sound card and none of them
+depend on the host's wall clock. Cover six things, across both writers
+(PulseAudio and sounddevice) wherever the two paths differ:
 
 * mid-stream recovery: a write that fails closes the dead stream, reopens the
   device and carries on writing to the fresh one, with a reopened PA sink both
@@ -178,7 +179,7 @@ def _patch_device_open(
     """
     if bridge.backend == "pulse":
         return patch.object(bridge, "_get_pa_stream", AsyncMock(side_effect=list(streams)))
-    return patch.object(bridge, "_open_sounddevice_stream", AsyncMock(side_effect=list(streams)))
+    return patch.object(bridge, "_get_sounddevice_stream", AsyncMock(side_effect=list(streams)))
 
 
 def _device_error(bridge: SendspinLocalAudioBridge) -> Exception:
@@ -229,6 +230,7 @@ async def _never_returns() -> None:
 
 async def _settle() -> None:
     """Let every task the bridge scheduled reach its own next suspension."""
+    # a handful of turns: a teardown can be several tasks deep before it settles
     for _ in range(5):
         await asyncio.sleep(0)
 
@@ -339,27 +341,6 @@ async def test_a_reopened_pa_sink_is_re_pinned_to_unity_without_hardware_volume(
 
     fresh.write.assert_called_once_with(_pcm_chunk(2))
     reset_volume.assert_awaited_once_with()
-
-
-@needs_portaudio
-async def test_a_stream_that_will_not_start_is_handed_back_to_portaudio() -> None:
-    """
-    A device that opens but refuses to start is released rather than leaked.
-
-    PortAudio has already handed the device out by then, and a handle nobody
-    gives back keeps every later attempt on that device failing.
-    """
-    bridge = _make_bridge(backend="sounddevice")
-    stream = _make_device_stream()
-    stream.start = MagicMock(side_effect=_device_error(bridge))
-
-    with (
-        patch("sounddevice.RawOutputStream", MagicMock(return_value=stream)),
-        pytest.raises(Exception, match="device disconnected"),
-    ):
-        bridge._create_sounddevice_stream()
-
-    stream.close.assert_called_once_with()
 
 
 # --- The reopen budget ---------------------------------------------------------
@@ -562,69 +543,6 @@ async def test_a_device_that_never_finishes_opening_leaves_the_session(backend: 
     leave.assert_called_once_with()
 
 
-@needs_portaudio
-async def test_a_cancelled_open_releases_the_device_it_still_gets() -> None:
-    """
-    A device that finishes opening after its writer is gone is closed, not orphaned.
-
-    PortAudio hands the device out whether or not anyone is still waiting, and a
-    handle nobody gives back makes every later open of that device fail.
-    """
-    bridge = _make_bridge(backend="sounddevice")
-    stream = _make_device_stream()
-    opening: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
-
-    def _defer_the_open(
-        executor: object, func: Callable[..., Any], *args: Any
-    ) -> asyncio.Future[Any]:
-        # the open takes no arguments; anything else is the release closing up
-        return _run_inline(executor, func, *args) if args else opening
-
-    cast("MagicMock", bridge.mass).loop.run_in_executor = MagicMock(side_effect=_defer_the_open)
-    task = asyncio.create_task(bridge._open_sounddevice_stream())
-    await _settle()
-    task.cancel()
-    with suppress(asyncio.CancelledError):
-        await task
-
-    # the device only becomes available once nobody is waiting for it any more
-    opening.set_result(stream)
-    await _settle()
-
-    stream.close.assert_called_once_with()
-
-
-async def test_a_timed_out_open_releases_the_device_when_it_finally_arrives() -> None:
-    """
-    A device that opens long after the wait gave up is closed, not left behind.
-
-    The open runs to completion in its own thread whatever the bridge does, and
-    a sink nobody hands back keeps every later open of it failing.
-    """
-    bridge = _make_bridge()
-    stream = _make_device_stream()
-    opening: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
-
-    def _defer_the_open(
-        executor: object, func: Callable[..., Any], *args: Any
-    ) -> asyncio.Future[Any]:
-        # the open takes no arguments; anything else is the release closing up
-        return _run_inline(executor, func, *args) if args else opening
-
-    cast("MagicMock", bridge.mass).loop.run_in_executor = MagicMock(side_effect=_defer_the_open)
-
-    with (
-        patch(f"{_MODULE}._DEVICE_OPEN_TIMEOUT_SECONDS", 0.01),
-        pytest.raises(TimeoutError),
-    ):
-        await bridge._get_pa_stream()
-
-    opening.set_result(stream)
-    await _settle()
-
-    stream.close.assert_called_once_with()
-
-
 async def test_abandoning_a_stream_defers_the_leave_off_the_writer() -> None:
     """
     Giving up stops the feed and hands the leave to a task of its own.
@@ -667,21 +585,91 @@ async def test_a_writer_a_stream_start_installed_can_still_give_up() -> None:
     leave.assert_called_once_with()
 
 
-async def test_a_superseded_writer_cannot_give_up_on_its_replacement() -> None:
-    """
-    A writer a newer stream replaced gives up on nothing.
+# --- Handing the device back -------------------------------------------------
 
-    Leaving the session would stop the group for a stream that is playing
-    perfectly well, and the flag it would clear now belongs to that stream.
+
+@needs_portaudio
+async def test_a_stream_that_will_not_start_is_handed_back_to_portaudio() -> None:
+    """
+    A device that opens but refuses to start is released rather than leaked.
+
+    PortAudio has already handed the device out by then, and a handle nobody
+    gives back keeps every later attempt on that device failing.
+    """
+    bridge = _make_bridge(backend="sounddevice")
+    stream = _make_device_stream()
+    stream.start = MagicMock(side_effect=_device_error(bridge))
+
+    with (
+        patch("sounddevice.RawOutputStream", MagicMock(return_value=stream)),
+        pytest.raises(Exception, match="device disconnected"),
+    ):
+        bridge._create_sounddevice_stream()
+
+    stream.close.assert_called_once_with()
+
+
+@needs_portaudio
+async def test_a_cancelled_open_releases_the_device_it_still_gets() -> None:
+    """
+    A device that finishes opening after its writer is gone is closed, not orphaned.
+
+    PortAudio hands the device out whether or not anyone is still waiting, and a
+    handle nobody gives back makes every later open of that device fail.
+    """
+    bridge = _make_bridge(backend="sounddevice")
+    stream = _make_device_stream()
+    opening: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+
+    def _defer_the_open(
+        executor: object, func: Callable[..., Any], *args: Any
+    ) -> asyncio.Future[Any]:
+        # the open takes no arguments; anything else is the release closing up
+        return _run_inline(executor, func, *args) if args else opening
+
+    cast("MagicMock", bridge.mass).loop.run_in_executor = MagicMock(side_effect=_defer_the_open)
+    task = asyncio.create_task(bridge._get_sounddevice_stream())
+    await _settle()
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+    # the device only becomes available once nobody is waiting for it any more
+    opening.set_result(stream)
+    await _settle()
+
+    stream.close.assert_called_once_with()
+
+
+async def test_a_timed_out_open_releases_the_device_when_it_finally_arrives() -> None:
+    """
+    A device that opens long after the wait gave up is closed, not left behind.
+
+    The open runs to completion in its own thread whatever the bridge does, and
+    a sink nobody hands back keeps every later open of it failing.
     """
     bridge = _make_bridge()
-    bridge._writer_task = MagicMock()  # a newer stream's writer
+    stream = _make_device_stream()
+    opening: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
 
-    with patch.object(bridge, "_leave_sendspin_session", MagicMock()) as leave:
-        bridge._abandon_streaming()
+    def _defer_the_open(
+        executor: object, func: Callable[..., Any], *args: Any
+    ) -> asyncio.Future[Any]:
+        # the open takes no arguments; anything else is the release closing up
+        return _run_inline(executor, func, *args) if args else opening
 
-    assert bridge._is_streaming is True
-    leave.assert_not_called()
+    cast("MagicMock", bridge.mass).loop.run_in_executor = MagicMock(side_effect=_defer_the_open)
+
+    with (
+        patch(f"{_MODULE}._DEVICE_OPEN_TIMEOUT_SECONDS", 0.01),
+        pytest.raises(TimeoutError),
+    ):
+        await bridge._get_pa_stream()
+
+    opening.set_result(stream)
+    await _settle()
+
+    stream.close.assert_called_once_with()
 
 
 # --- Not giving up: an ordinary end of stream keeps the bridge in its session ---
@@ -831,6 +819,23 @@ async def test_a_refused_quiesce_is_reported_and_contained() -> None:
 # --- Writer supersession: a replaced writer speaks for a stream that is gone ---
 
 
+async def test_a_superseded_writer_cannot_give_up_on_its_replacement() -> None:
+    """
+    A writer a newer stream replaced gives up on nothing.
+
+    Leaving the session would stop the group for a stream that is playing
+    perfectly well, and the flag it would clear now belongs to that stream.
+    """
+    bridge = _make_bridge()
+    bridge._writer_task = MagicMock()  # a newer stream's writer
+
+    with patch.object(bridge, "_leave_sendspin_session", MagicMock()) as leave:
+        bridge._abandon_streaming()
+
+    assert bridge._is_streaming is True
+    leave.assert_not_called()
+
+
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_a_superseded_writer_does_not_silence_its_replacement(backend: str) -> None:
     """
@@ -874,18 +879,6 @@ async def test_a_stale_teardown_leaves_the_newer_writer_running() -> None:
     newer_writer.cancel()
     with suppress(asyncio.CancelledError):
         await newer_writer
-
-
-async def test_a_teardown_stops_the_writer_it_was_scheduled_for() -> None:
-    """The writer the stream end actually belongs to is cancelled and cleared."""
-    bridge = _make_bridge()
-    writer = _install_writer(bridge, _never_returns())
-
-    await bridge._stop_streaming_locked(writer)
-
-    assert writer.cancelled()
-    assert bridge._writer_task is None
-    assert bridge._is_streaming is False
 
 
 async def test_a_stream_end_tears_down_the_writer_that_was_running() -> None:
