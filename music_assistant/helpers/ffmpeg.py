@@ -427,9 +427,9 @@ async def get_ffmpeg_overlay_stream(
     Mix a looping audio overlay into a PCM audio stream.
 
     The overlay is looped for the full duration of the main stream and the mixed
-    output has the exact same PCM format and duration as the main input. A mono
-    overlay mixes in at the same level as an equivalent stereo one. If the overlay
-    input fails mid-stream, the main audio continues unaffected.
+    output has the exact same PCM format and duration as the main input. For a stereo
+    output, a mono overlay mixes in at the same level as an equivalent stereo one. If
+    the overlay input fails mid-stream, the main audio continues unaffected.
 
     :param audio_input: The main audio stream (raw PCM in ``pcm_format``).
     :param overlay_input: File path or URL of the overlay audio.
