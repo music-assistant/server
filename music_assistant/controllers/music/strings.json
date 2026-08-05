@@ -25,6 +25,7 @@
     "scan_genre_mappings": "Scan genre mappings",
     "add_playlist_tracks": "Add items to playlist {0}",
     "remove_playlist_tracks": "Remove items from playlist {0}",
-    "import_playlist_matching": "Import playlist {0}"
+    "import_playlist_matching": "Import playlist {0}",
+    "import_radios": "Import {0} radio stations"
   }
 }

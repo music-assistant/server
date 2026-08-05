@@ -642,6 +642,7 @@
   "core.music.background_task.correct_provider_mappings": "Correct provider mappings",
   "core.music.background_task.database_cleanup": "Database cleanup",
   "core.music.background_task.import_playlist_matching": "Import playlist {0}",
+  "core.music.background_task.import_radios": "Import {0} radio stations",
   "core.music.background_task.remove_playlist_tracks": "Remove items from playlist {0}",
   "core.music.background_task.scan_genre_mappings": "Scan genre mappings",
   "core.music.background_task.sync_provider_albums": "Sync Albums for {0}",

@@ -70,6 +70,10 @@ _CLI_ERROR_CODE_RE = re.compile(r"\bcode=(\S+)")
 _CLI_ERROR_HTTP_RE = re.compile(r"\bhttp=(\d+)")
 _CLI_ERROR_DETAIL_RE = re.compile(r'\bdetail="([^"]*)"')
 
+# Seconds to wait for the binary's command pipe reader. It attaches right after
+# the connection is reported, so this only bridges the reader thread starting up.
+_COMMAND_PIPE_READER_TIMEOUT: Final[float] = 2.0
+
 
 @dataclass
 class CliError:
@@ -237,8 +241,7 @@ class AirPlayStream:
         :param use_shared_ptp: Session-wide decision on whether native AirPlay 2
             members attach to the shared PTP clock daemon. The stream session
             passes the same value to every member so a group never mixes PTP and
-            NTP timing. None (single-stream callers) falls back to the daemon's
-            live state.
+            NTP timing. None lets the stream decide from the daemon's readiness.
         """
         self._check_password_preflight()
         # A fresh cliairplay process re-anchors from scratch, so drop any shift
@@ -252,7 +255,6 @@ class AirPlayStream:
             await self._cli_proc.start()
             self._cli_proc.attach_stderr_reader(self.mass.create_task(self._stderr_reader()))
             self._stdout_reader_task = self.mass.create_task(self._stdout_reader())
-            await self._send_current_metadata(send_artwork=False)
         except BaseException:
             try:
                 await self._cleanup_failed_start()
@@ -264,6 +266,10 @@ class AirPlayStream:
         """
         Wait for device connection to be established.
 
+        Also gives the binary's command pipe a moment to open, so the first
+        commands are not dropped. A pipe that never opens is reported but does
+        not fail the wait.
+
         :raises PlayerCommandFailed: If the binary reported that the device needs
             a password, or rejected the configured one.
         :raises TimeoutError: If the connection was not established for any other
@@ -272,13 +278,19 @@ class AirPlayStream:
         if not self._cli_proc:
             raise RuntimeError("cliairplay process is not running")
         await self._await_connected()
-        # Send the mute-aware volume right away — audio can start within a
-        # second now that metadata goes out immediately — and repeat it after
-        # 2 seconds because some players ignore the first volume command
-        # (https://github.com/music-assistant/support/issues/3330).
-        volume = 0 if self.player.volume_muted else self.player.volume_level
-        await self.send_cli_command(f"VOLUME={volume}")
-        self.mass.call_later(2, self.send_cli_command(f"VOLUME={volume}"))
+        # The binary attaches to its command pipe only once it is connected, so
+        # the first command waits for that reader instead of being dropped. A
+        # stream torn down while connecting takes its pipe along, which is not a
+        # fault worth reporting.
+        if not await self.commands_pipe.wait_for_reader(_COMMAND_PIPE_READER_TIMEOUT):
+            if self.running:
+                self.player.logger.warning(
+                    "cliairplay did not open its command pipe for %s; "
+                    "playback commands cannot be delivered",
+                    self.player.display_name,
+                )
+        # Nothing has reached this binary yet, so clear the delivery state to
+        # make sure the pushes below are really sent.
         async with self._metadata_lock:
             self._metadata_text_checksum = ""
             self._metadata_artwork_checksum = ""
@@ -287,6 +299,15 @@ class AirPlayStream:
         # Push track metadata before START. Some receivers (notably Sonos) hold
         # back audio rendering until they receive track metadata; deferring it
         # can keep them silent past the commanded start.
+        await self._send_current_metadata(send_artwork=False)
+        # Send the mute-aware volume right away — audio can start within a
+        # second now that metadata goes out immediately — and repeat it after
+        # 2 seconds because some players ignore the first volume command
+        # (https://github.com/music-assistant/support/issues/3330). The repeat reads
+        # the level when it fires, so it never replays a value that changed since.
+        await self._send_current_volume()
+        self.mass.call_later(2, self._send_current_volume)
+        # settle artwork and the position on top of the identity push above
         self.player._on_player_media_updated()
 
     async def stop(self, force: bool = False) -> None:
@@ -714,7 +735,7 @@ class AirPlayStream:
         :param use_shared_ptp: Whether a native AirPlay 2 stream attaches to the
             shared PTP clock daemon. The stream session passes an explicit
             group-wide decision so members never mix PTP and NTP timing; None
-            (single-stream callers) falls back to the daemon's live state.
+            reads the daemon's current readiness and decides from that.
         """
         cli_binary = await get_cli_binary()
         prov = cast("AirPlayProvider", self.prov)
@@ -811,10 +832,12 @@ class AirPlayStream:
         # Shared PTP daemon clock (multi-room sync for native AP2 streams). The
         # decision is made once per session and passed in, so every native AP2
         # member of a sync group uses the same timing source and cannot drift.
-        # A single-stream caller (use_shared_ptp is None) falls back to the
-        # daemon's live state.
+        # Without a caller-supplied decision (use_shared_ptp is None) the stream
+        # gates on the daemon serving rather than merely running: between spawn and
+        # the daemon publishing its clock there is nothing to attach to, and a
+        # stream that asks anyway silently takes its own timing instead.
         if target_protocol == StreamingProtocol.AIRPLAY2:
-            shared_ptp = prov.ptp_daemon_running if use_shared_ptp is None else use_shared_ptp
+            shared_ptp = prov.ptp_daemon_ready if use_shared_ptp is None else use_shared_ptp
             if shared_ptp:
                 args += ["--ptp-shared"]
 
@@ -1373,6 +1396,11 @@ class AirPlayStream:
         if not metadata:
             return
         await self.send_metadata(None, metadata)
+
+    async def _send_current_volume(self) -> None:
+        """Send the player's current volume level to the device, muted as zero."""
+        volume = 0 if self.player.volume_muted else self.player.volume_level
+        await self.send_cli_command(f"VOLUME={volume}")
 
     async def _cleanup_failed_start(self) -> None:
         """Release all resources owned by a cliairplay process that failed to start."""
