@@ -214,8 +214,12 @@ class AppleMusicMediaManager:
         if external_id_type.upper() not in ("UPC", "BARCODE"):
             return None
 
-        # Apple Music stores UPC with leading zero stripped, so normalize it
-        normalized_upc = external_id.lstrip("0")
+        # Apple Music stores UPC with leading zero stripped (EAN-13 -> UPC-12), so normalize it
+        normalized_upc = (
+            external_id[1:]
+            if len(external_id) == 13 and external_id.startswith("0")
+            else external_id
+        )
 
         endpoint = f"catalog/{self.provider._storefront}/albums"
         try:

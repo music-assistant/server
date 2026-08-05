@@ -12,8 +12,21 @@ def _make_media_manager() -> tuple[AppleMusicMediaManager, MagicMock]:
     provider = MagicMock()
     provider.logger = MagicMock()
     provider._storefront = "us"
+    provider.instance_id = "apple_music--test"
+    provider.domain = "apple_music"
+
     api_mock = MagicMock()
+    api_mock.get_data = AsyncMock()
+    api_mock.get_ratings = AsyncMock(return_value={})
     provider.api = api_mock
+
+    mass = MagicMock()
+    mass.cache.get = AsyncMock(return_value=None)
+    mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
+    mass.cache.set = AsyncMock()
+    mass.create_task = MagicMock(side_effect=lambda coro, **_: coro.close())
+    provider.mass = mass
+
     return AppleMusicMediaManager(provider), api_mock
 
 
@@ -22,22 +35,19 @@ async def test_get_track_by_isrc() -> None:
     """Track lookup by ISRC calls the correct API endpoint."""
     manager, api_mock = _make_media_manager()
 
-    api_mock.get_data = AsyncMock(
-        return_value={
-            "data": [
-                {
-                    "id": "1234567890",
-                    "type": "songs",
-                    "attributes": {
-                        "name": "Test Track",
-                        "artistName": "Test Artist",
-                        "isrc": "USTEST1234567",
-                    },
-                }
-            ]
-        }
-    )
-    api_mock.get_ratings = AsyncMock(return_value={})
+    api_mock.get_data.return_value = {
+        "data": [
+            {
+                "id": "1234567890",
+                "type": "songs",
+                "attributes": {
+                    "name": "Test Track",
+                    "artistName": "Test Artist",
+                    "isrc": "USTEST1234567",
+                },
+            }
+        ]
+    }
 
     result = await manager.get_track_by_external_id("USTEST1234567", "ISRC")
 
@@ -53,7 +63,7 @@ async def test_get_track_by_isrc_not_found() -> None:
     """Track lookup returns None when ISRC is not found."""
     manager, api_mock = _make_media_manager()
 
-    api_mock.get_data = AsyncMock(return_value={"data": []})
+    api_mock.get_data.return_value = {"data": []}
 
     result = await manager.get_track_by_external_id("UNKNOWN123", "ISRC")
 
@@ -76,22 +86,19 @@ async def test_get_album_by_upc() -> None:
     """Album lookup by UPC calls the correct API endpoint."""
     manager, api_mock = _make_media_manager()
 
-    api_mock.get_data = AsyncMock(
-        return_value={
-            "data": [
-                {
-                    "id": "9876543210",
-                    "type": "albums",
-                    "attributes": {
-                        "name": "Test Album",
-                        "artistName": "Test Artist",
-                        "upc": "123456789012",
-                    },
-                }
-            ]
-        }
-    )
-    api_mock.get_ratings = AsyncMock(return_value={})
+    api_mock.get_data.return_value = {
+        "data": [
+            {
+                "id": "9876543210",
+                "type": "albums",
+                "attributes": {
+                    "name": "Test Album",
+                    "artistName": "Test Artist",
+                    "upc": "123456789012",
+                },
+            }
+        ]
+    }
 
     result = await manager.get_album_by_external_id("0123456789012", "UPC")
 
@@ -108,22 +115,19 @@ async def test_get_album_by_barcode() -> None:
     """Album lookup by BARCODE (synonym for UPC) works."""
     manager, api_mock = _make_media_manager()
 
-    api_mock.get_data = AsyncMock(
-        return_value={
-            "data": [
-                {
-                    "id": "9876543210",
-                    "type": "albums",
-                    "attributes": {
-                        "name": "Test Album",
-                        "artistName": "Test Artist",
-                        "upc": "123456789012",
-                    },
-                }
-            ]
-        }
-    )
-    api_mock.get_ratings = AsyncMock(return_value={})
+    api_mock.get_data.return_value = {
+        "data": [
+            {
+                "id": "9876543210",
+                "type": "albums",
+                "attributes": {
+                    "name": "Test Album",
+                    "artistName": "Test Artist",
+                    "upc": "123456789012",
+                },
+            }
+        ]
+    }
 
     result = await manager.get_album_by_external_id("123456789012", "BARCODE")
 
