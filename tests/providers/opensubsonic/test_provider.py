@@ -286,3 +286,55 @@ async def test_get_resume_position_no_bookmark_returns_zero(
     assert not fully_played
     assert position == 0
     assert created is None
+
+
+# ---------------------------------------------------------------------------
+# get_playlist_tracks
+# ---------------------------------------------------------------------------
+
+
+def _parse_track_stub(*_args: Any, **_kwargs: Any) -> Mock:
+    """Return a lightweight stand-in Track (parse_track is covered by test_parsers)."""
+    return Mock(position=0)
+
+
+@pytest.mark.asyncio
+async def test_get_playlist_tracks_avoids_per_track_metadata_fetch(
+    provider: OpenSonicProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Enqueuing a playlist must not fetch album or lyrics per track (avoids N+1 requests)."""
+    sonic_playlist = Mock()
+    sonic_playlist.entry = [_make_sonic_item(item_id=f"tr-{i}") for i in range(3)]
+
+    provider.conn = Mock()
+    provider.conn.get_playlist = AsyncMock(return_value=sonic_playlist)
+    provider.conn.get_album = AsyncMock()
+    provider.conn.get_album_info2 = AsyncMock()
+    provider.conn.get_lyrics = AsyncMock()
+    provider.conn.get_lyrics_by_song_id = AsyncMock()
+
+    # force a cache miss so the real method body runs, and capture the background
+    # store task so its coroutine is awaited rather than left pending
+    tasks, task_mock = _make_task_capturer()
+    provider.mass.cache.get_with_freshness = AsyncMock(  # type: ignore[method-assign]
+        return_value=(None, False, False)
+    )
+    provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
+    provider.mass.create_task = task_mock  # type: ignore[method-assign]
+
+    # parse_track has its own coverage in test_parsers; isolate the fetch behaviour here
+    monkeypatch.setattr(
+        "music_assistant.providers.opensubsonic.sonic_provider.parse_track",
+        _parse_track_stub,
+    )
+
+    result = await provider.get_playlist_tracks("pl-1")
+    await asyncio.gather(*tasks)
+
+    assert len(result) == 3
+    assert [track.position for track in result] == [1, 2, 3]
+    provider.conn.get_playlist.assert_awaited_once_with("pl-1")
+    provider.conn.get_album.assert_not_awaited()
+    provider.conn.get_album_info2.assert_not_awaited()
+    provider.conn.get_lyrics.assert_not_awaited()
+    provider.conn.get_lyrics_by_song_id.assert_not_awaited()
