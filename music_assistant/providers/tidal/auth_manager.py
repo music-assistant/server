@@ -6,7 +6,7 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.errors import LoginFailed
 
@@ -15,7 +15,7 @@ from music_assistant.helpers.app_vars import app_var
 from .constants import AUTH_SCOPE, AUTH_URL, SESSIONS_URL
 
 if TYPE_CHECKING:
-    from aiohttp import ClientSession
+    from aiohttp import ClientResponse, ClientSession
 
 TOKEN_REFRESH_BUFFER = 60 * 7  # 7 minutes
 # Minimum time between two token refreshes, so that (concurrent) requests
@@ -26,6 +26,22 @@ TOKEN_REFRESH_COOLDOWN = 30
 def _v2_client_credentials() -> tuple[str, str]:
     """Return the (client_id, client_secret) of the Tidal v2 (device) client."""
     return app_var("tidal_client_id_v2"), app_var("tidal_client_secret_v2")
+
+
+async def _read_json(response: ClientResponse, context: str) -> dict[str, Any]:
+    """
+    Parse an auth response body as JSON, raising LoginFailed on a non-JSON body.
+
+    :param response: The auth endpoint response to parse.
+    :param context: Short description of the request, used in the error message.
+    """
+    # A proxy/gateway error can carry an HTML body; content_type=None skips
+    # aiohttp's content-type check so such a failure surfaces as LoginFailed
+    # instead of a ContentTypeError escaping the login flow's error contract.
+    try:
+        return cast("dict[str, Any]", await response.json(content_type=None))
+    except (json.JSONDecodeError, UnicodeDecodeError) as err:
+        raise LoginFailed(f"{context} failed: HTTP {response.status} (non-JSON response)") from err
 
 
 def _basic_auth_headers(client_id: str, client_secret: str) -> dict[str, str]:
@@ -155,7 +171,7 @@ class TidalAuthManager:
             f"{AUTH_URL}/device_authorization",
             data={"client_id": client_id, "scope": AUTH_SCOPE},
         ) as response:
-            device: dict[str, Any] = await response.json()
+            device = await _read_json(response, "Device authorization")
             if response.status != 200:
                 raise LoginFailed(f"Device authorization failed: {device}")
         return device
@@ -187,13 +203,14 @@ class TidalAuthManager:
             async with http_session.post(
                 f"{AUTH_URL}/token", data=data, headers=headers
             ) as response:
-                token_data = await response.json()
+                token_data = await _read_json(response, "Device login")
                 if response.status == 200:
                     return await TidalAuthManager._finalize_login(http_session, token_data)
             # Anything other than the two "keep waiting" signals is terminal.
             error = token_data.get("error")
             if error == "slow_down":
-                interval += 2
+                # RFC 8628 section 3.5: increase the poll interval by 5 seconds.
+                interval += 5
             elif error != "authorization_pending":
                 raise LoginFailed(f"Device login failed: {token_data}")
 

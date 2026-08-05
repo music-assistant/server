@@ -275,17 +275,33 @@ async def test_add_item_track_no_skipped_meta(
 async def test_add_item_track_stale_id_unresolvable(
     library_manager: TidalLibraryManager, provider_mock: Mock
 ) -> None:
-    """Test a NOT_FOUND track id that cannot be resolved results in no retry POST."""
+    """Test an unresolvable NOT_FOUND id reports failure: nothing was added."""
     provider_mock.api.write_jsonapi.return_value = {
         "meta": {"skipped": [{"id": "123", "reason": "NOT_FOUND", "type": "tracks"}]}
     }
     # resolve_live_track_id default (from fixture) already returns None.
     item = Mock(item_id="123", media_type=MediaType.TRACK)
 
-    assert await library_manager.add_item(item) is True
+    assert await library_manager.add_item(item) is False
 
     provider_mock.resolve_live_track_id.assert_called_once_with("123")
     assert provider_mock.api.write_jsonapi.call_count == 1
+
+
+async def test_add_item_track_healed_retry_also_skipped(
+    library_manager: TidalLibraryManager, provider_mock: Mock
+) -> None:
+    """Test failure is reported when the healed id is itself rejected as NOT_FOUND."""
+    provider_mock.api.write_jsonapi.side_effect = [
+        {"meta": {"skipped": [{"id": "123", "reason": "NOT_FOUND", "type": "tracks"}]}},
+        {"meta": {"skipped": [{"id": "123_live", "reason": "NOT_FOUND", "type": "tracks"}]}},
+    ]
+    provider_mock.resolve_live_track_id = AsyncMock(return_value="123_live")
+    item = Mock(item_id="123", media_type=MediaType.TRACK)
+
+    assert await library_manager.add_item(item) is False
+
+    assert provider_mock.api.write_jsonapi.call_count == 2
 
 
 async def test_add_item_non_track_no_healing(

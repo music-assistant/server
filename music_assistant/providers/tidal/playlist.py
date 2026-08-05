@@ -50,13 +50,16 @@ class TidalPlaylistManager:
     async def add_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add tracks to playlist."""
         # v1 appends at the end and skips dead/duplicate ids server-side
-        # (onArtifactNotFound / onDupes = SKIP), so no reactive id healing is needed.
+        # (onArtifactNotFound / onDupes = SKIP), so no reactive healing round-trip
+        # is needed; the cache-only redirect still maps ids the churn cache already
+        # knows are stale onto their live equivalents before they would be skipped.
         # The playlist ETag guards the write against a concurrent modification.
         try:
+            sent = [await self.provider.redirect_cached_id(str(tid)) for tid in prov_track_ids]
             playlist_obj, etag = await self.api.get_with_etag(f"{PLAYLISTS}/{prov_playlist_id}")
             data = {
                 "onArtifactNotFound": "SKIP",
-                "trackIds": ",".join(str(tid) for tid in prov_track_ids),
+                "trackIds": ",".join(sent),
                 "toIndex": playlist_obj.get("numberOfTracks", 0),
                 "onDupes": "SKIP",
             }

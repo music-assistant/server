@@ -155,6 +155,21 @@ async def test_start_device_login_failure(mock_app_var: Mock, http_session: Asyn
 
 
 @patch("music_assistant.providers.tidal.auth_manager.app_var")
+async def test_start_device_login_non_json_body(
+    mock_app_var: Mock, http_session: AsyncMock
+) -> None:
+    """A non-JSON body (e.g. proxy HTML error page) surfaces as LoginFailed."""
+    mock_app_var.side_effect = ["client_id", "client_secret"]
+    response = AsyncMock()
+    response.status = 502
+    response.json.side_effect = json.JSONDecodeError("Expecting value", "<html>", 0)
+    http_session.post.return_value.__aenter__.return_value = response
+
+    with pytest.raises(LoginFailed, match="non-JSON"):
+        await TidalAuthManager.start_device_login(http_session)
+
+
+@patch("music_assistant.providers.tidal.auth_manager.app_var")
 async def test_poll_device_login_success(mock_app_var: Mock, http_session: AsyncMock) -> None:
     """poll_device_login returns auth data with user info and an absolute expiry."""
     mock_app_var.side_effect = ["client_id", "client_secret"]

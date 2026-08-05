@@ -20,6 +20,7 @@ def provider_mock() -> Mock:
     provider.auth.user.user_name = "someuser"
     provider.api = AsyncMock()
     provider.logger = Mock()
+    provider.redirect_cached_id = AsyncMock(side_effect=lambda item_id: item_id)
     return provider
 
 
@@ -98,6 +99,27 @@ async def test_add_playlist_tracks_multiple(
         as_form=True,
         headers={"If-None-Match": "etag-2"},
     )
+
+
+async def test_add_playlist_tracks_redirects_cached_stale_ids(
+    playlist_manager: TidalPlaylistManager, provider_mock: Mock
+) -> None:
+    """
+    Test a cache-known stale id is redirected to its live id before the v1 add.
+
+    v1 silently skips dead ids (onArtifactNotFound=SKIP), so without the cache-only
+    redirect a churned id would be dropped; with it, the live id is sent instead.
+    """
+
+    async def _redirect(item_id: str) -> str:
+        return "track_1_live" if item_id == "track_1" else item_id
+
+    provider_mock.redirect_cached_id = AsyncMock(side_effect=_redirect)
+    provider_mock.api.get_with_etag.return_value = ({"numberOfTracks": 0}, "etag-3")
+
+    await playlist_manager.add_tracks("1", ["track_1", "track_2"])
+
+    assert provider_mock.api.post.call_args.kwargs["data"]["trackIds"] == "track_1_live,track_2"
 
 
 async def test_add_playlist_tracks_without_etag(

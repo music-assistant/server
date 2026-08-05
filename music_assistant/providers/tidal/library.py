@@ -150,12 +150,18 @@ class TidalLibraryManager:
         if not any(s.get("id") == send_id and s.get("reason") == "NOT_FOUND" for s in skipped):
             return True
         live = await self.provider.resolve_live_track_id(original_id)
-        if live and live != send_id:
-            retry_body = {"data": [{"type": resource_type, "id": live}]}
-            await self.api.write_jsonapi(
-                "POST", f"{resource_name}/me/relationships/items", retry_body
-            )
-        return True
+        if not live or live == send_id:
+            # The id is dead and could not be healed: nothing was added, so don't
+            # report success (MA would mark the track as in-library).
+            return False
+        retry_body = {"data": [{"type": resource_type, "id": live}]}
+        retry = await self.api.write_jsonapi(
+            "POST", f"{resource_name}/me/relationships/items", retry_body
+        )
+        retry_skipped = (retry.get("meta") or {}).get("skipped") or []
+        return not any(
+            s.get("id") == live and s.get("reason") == "NOT_FOUND" for s in retry_skipped
+        )
 
 
 def _set_date_added(media_item: MediaItemType, item: dict[str, Any]) -> None:
