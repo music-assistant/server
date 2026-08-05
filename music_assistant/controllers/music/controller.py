@@ -171,7 +171,7 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
             ),
         )
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
         """Handle a one-shot action button press and re-render the config entries."""
         if action == CONF_RESET_DB:
             await self._reset_database()
