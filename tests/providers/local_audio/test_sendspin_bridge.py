@@ -59,7 +59,7 @@ def _import_sounddevice() -> ModuleType | None:
     """Return the sounddevice module, or None where the PortAudio library is missing."""
     try:
         return importlib.import_module("sounddevice")
-    except OSError:
+    except Exception:
         return None
 
 
@@ -101,7 +101,7 @@ def _schedule(target: Any, *_args: Any, eager_start: bool = True, **_kwargs: Any
     """
     if not asyncio.iscoroutine(target):
         return MagicMock()
-    return asyncio.Task(target, eager_start=eager_start)
+    return asyncio.Task(target, loop=asyncio.get_running_loop(), eager_start=eager_start)
 
 
 class _MonotonicClock:
@@ -176,7 +176,7 @@ def _patch_device_open(
     """
     if bridge.backend == "pulse":
         return patch.object(bridge, "_get_pa_stream", AsyncMock(side_effect=list(streams)))
-    return patch.object(bridge, "_open_sounddevice_stream", MagicMock(side_effect=list(streams)))
+    return patch.object(bridge, "_open_sounddevice_stream", AsyncMock(side_effect=list(streams)))
 
 
 def _device_error(bridge: SendspinLocalAudioBridge) -> Exception:
@@ -223,6 +223,12 @@ async def _run_writer(bridge: SendspinLocalAudioBridge) -> None:
 async def _never_returns() -> None:
     """Stand in for a writer still feeding its stream."""
     await asyncio.Event().wait()
+
+
+async def _settle() -> None:
+    """Let every task the bridge scheduled reach its own next suspension."""
+    for _ in range(5):
+        await asyncio.sleep(0)
 
 
 def _scheduled_targets(bridge: SendspinLocalAudioBridge) -> list[Any]:
@@ -349,7 +355,7 @@ async def test_a_stream_that_will_not_start_is_handed_back_to_portaudio() -> Non
         patch("sounddevice.RawOutputStream", MagicMock(return_value=stream)),
         pytest.raises(Exception, match="device disconnected"),
     ):
-        bridge._open_sounddevice_stream()
+        bridge._create_sounddevice_stream()
 
     stream.close.assert_called_once_with()
 
@@ -509,6 +515,58 @@ async def test_an_unexpected_writer_failure_leaves_the_session(backend: str) -> 
     stream.close.assert_called_once_with()
     leave.assert_called_once_with()
     assert leave.return_value in _scheduled_targets(bridge)
+
+
+async def test_giving_up_really_quiesces_the_sendspin_client() -> None:
+    """
+    A writer that gives up takes the client out of its session for real.
+
+    Scheduling the leave and performing it are separate steps, so this drives
+    the whole path end to end rather than either half of it.
+    """
+    bridge = _make_bridge()
+    client = MagicMock()
+    client.quiesce_to_solo_stopped = AsyncMock()
+    bridge._sendspin_client = client
+    _queue_chunks(bridge, _pcm_chunk(1))
+
+    with _patch_device_open(bridge, OSError("sink vanished")):
+        await _run_writer(bridge)
+    await _settle()  # the leave is deferred off the writer
+
+    client.quiesce_to_solo_stopped.assert_awaited_once_with()
+
+
+@needs_portaudio
+async def test_a_cancelled_open_releases_the_device_it_still_gets() -> None:
+    """
+    A device that finishes opening after its writer is gone is closed, not orphaned.
+
+    PortAudio hands the device out whether or not anyone is still waiting, and a
+    handle nobody gives back makes every later open of that device fail.
+    """
+    bridge = _make_bridge(backend="sounddevice")
+    stream = _make_device_stream()
+    opening: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+
+    def _defer_the_open(
+        executor: object, func: Callable[..., Any], *args: Any
+    ) -> asyncio.Future[Any]:
+        # the open takes no arguments; anything else is the release closing up
+        return _run_inline(executor, func, *args) if args else opening
+
+    cast("MagicMock", bridge.mass).loop.run_in_executor = MagicMock(side_effect=_defer_the_open)
+    task = asyncio.create_task(bridge._open_sounddevice_stream())
+    await _settle()
+    task.cancel()
+    with suppress(asyncio.CancelledError):
+        await task
+
+    # the device only becomes available once nobody is waiting for it any more
+    opening.set_result(stream)
+    await _settle()
+
+    stream.close.assert_called_once_with()
 
 
 async def test_abandoning_a_stream_defers_the_leave_off_the_writer() -> None:
@@ -732,6 +790,53 @@ async def test_a_teardown_stops_the_writer_it_was_scheduled_for() -> None:
     assert writer.cancelled()
     assert bridge._writer_task is None
     assert bridge._is_streaming is False
+
+
+async def test_a_stream_end_tears_down_the_writer_that_was_running() -> None:
+    """
+    The teardown a stream end schedules is bound to the writer running at the time.
+
+    That binding is what lets a later teardown recognise itself as stale, so it
+    has to name a writer — a teardown naming none matches nothing and quietly
+    stops tearing anything down at all.
+    """
+    bridge = _make_bridge()
+    writer = _install_writer(bridge, _never_returns())
+    await _settle()
+
+    bridge._on_bridge_stream_end()
+    await _settle()
+
+    assert writer.cancelled()
+    assert bridge._writer_task is None
+    assert bridge._is_streaming is False
+
+
+async def test_a_timed_out_stop_cancels_the_writer_it_captured() -> None:
+    """
+    A writer that will not stop on its own is cancelled — and only that writer.
+
+    The cancel comes after a wait, by which time a new stream may already have
+    installed its own writer; cancelling that one would silence a stream that
+    has only just started.
+    """
+    bridge = _make_bridge(backend="sounddevice")
+    newer_writer = MagicMock()
+    stubborn = _install_writer(bridge, _never_returns())
+    await _settle()
+
+    async def _install_the_replacement() -> None:
+        await asyncio.sleep(0)
+        bridge._writer_task = newer_writer
+
+    with patch(f"{_MODULE}._WRITER_STOP_TIMEOUT_SECONDS", 0.01):
+        replacing = asyncio.create_task(_install_the_replacement())
+        await bridge._stop_streaming()
+    await replacing
+
+    assert stubborn.cancelled()
+    assert bridge._writer_task is newer_writer
+    newer_writer.cancel.assert_not_called()
 
 
 async def test_a_teardown_does_not_disown_a_writer_installed_while_it_waits() -> None:

@@ -81,6 +81,11 @@ _LATE_DROP_THRESHOLD_US = 500_000  # 500 ms
 # stream. Measured from the moment the reopen is attempted.
 _DEVICE_REOPEN_GUARD_SECONDS: float = 30.0
 
+# How long a writer gets to stop on its own before it is cancelled. It can be
+# parked in a blocking write on a device that stopped responding, where the
+# graceful stop sentinel never gets read.
+_WRITER_STOP_TIMEOUT_SECONDS: float = 2.0
+
 
 def _now_us() -> int:
     """
@@ -760,7 +765,7 @@ class SendspinLocalAudioBridge:
 
         stream: sd.RawOutputStream | None = None
         try:
-            stream = await self.mass.loop.run_in_executor(None, self._open_sounddevice_stream)
+            stream = await self._open_sounddevice_stream()
             self.logger.debug("sounddevice stream opened for %s", self.device_name)
             assert stream is not None
 
@@ -805,8 +810,33 @@ class SendspinLocalAudioBridge:
             if self._writer_task is asyncio.current_task():
                 self._writer_task = None
 
-    def _open_sounddevice_stream(self) -> sd.RawOutputStream:
-        """Open and start a sounddevice output stream for this device."""
+    async def _open_sounddevice_stream(self) -> sd.RawOutputStream:
+        """
+        Open a sounddevice output stream for this device, off the event loop.
+
+        PortAudio hands out the device regardless of whether the caller is still
+        waiting, so an open that lands after its writer is gone is closed rather
+        than left behind to make every later open fail.
+        """
+        open_future = self.mass.loop.run_in_executor(None, self._create_sounddevice_stream)
+        try:
+            return await asyncio.shield(open_future)
+        except asyncio.CancelledError:
+            open_future.add_done_callback(self._release_orphaned_sounddevice_stream)
+            raise
+
+    def _release_orphaned_sounddevice_stream(self, open_future: asyncio.Future[Any]) -> None:
+        """
+        Close a device whose open completed after the writer waiting on it had gone.
+
+        :param open_future: The finished open, whose stream nobody took ownership of.
+        """
+        if open_future.cancelled() or open_future.exception() is not None:
+            return
+        self.mass.loop.run_in_executor(None, self._close_sounddevice_stream, open_future.result())
+
+    def _create_sounddevice_stream(self) -> sd.RawOutputStream:
+        """Open and start a sounddevice output stream, blocking until the device is ready."""
         import sounddevice as _sd  # noqa: PLC0415
 
         stream = _sd.RawOutputStream(
@@ -870,7 +900,7 @@ class SendspinLocalAudioBridge:
         if not self._start_device_reopen():
             return None
         try:
-            stream = await self.mass.loop.run_in_executor(None, self._open_sounddevice_stream)
+            stream = await self._open_sounddevice_stream()
         except _sd.PortAudioError as err:
             self.logger.error("Could not reopen sound device %s: %s", self.device_name, err)
             return None
@@ -916,11 +946,12 @@ class SendspinLocalAudioBridge:
         """
         Give up on this stream: stop accepting chunks and leave the Sendspin session.
 
-        The output device is this player's only audio path and nothing restarts
-        the writer within a stream, so a device that cannot be (re)opened stays
-        silent. Leaving surfaces that silence instead of letting the group hold
-        the player on PLAYING.
+        Playback resumes normally on the next stream — the device is only given
+        up on for the remainder of this one.
         """
+        # The device is this player's only audio path and nothing restarts the
+        # writer within a stream, so leaving is what surfaces the silence
+        # instead of letting the group hold the player on PLAYING.
         self._is_streaming = False
         # Leaving ends the Sendspin stream, which unwinds straight back into
         # this bridge's own teardown — that must not run inside the writer task
@@ -973,7 +1004,7 @@ class SendspinLocalAudioBridge:
                     self._write_queue.get_nowait()
                 self._write_queue.put_nowait(None)
                 try:
-                    await asyncio.wait_for(writer_task, timeout=2.0)
+                    await asyncio.wait_for(writer_task, timeout=_WRITER_STOP_TIMEOUT_SECONDS)
                 except TimeoutError:
                     writer_task.cancel()
                     with suppress(asyncio.CancelledError):
