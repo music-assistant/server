@@ -463,9 +463,11 @@ class PartyPlugin(PluginProvider):
         # 1. The plugin is being removed entirely (is_removed=True)
         # 2. Guest access is disabled in config (provider reload with disabled setting)
         # This ensures guests are immediately disconnected when access is revoked
-        # Note: We read the LIVE config value since self.config is a snapshot from init
+        # Note: We read the LIVE config value since self.config is a snapshot from init.
+        # The default must match the config entry's default_value: only values that differ
+        # from their default are persisted, so switching guest access off drops the key.
         guest_access_enabled = self.mass.config.get_raw_provider_config_value(
-            self.instance_id, CONF_ENABLE_GUEST_ACCESS, default=True
+            self.instance_id, CONF_ENABLE_GUEST_ACCESS, default=False
         )
         if is_removed or not guest_access_enabled:
             self.logger.debug("Revoking guest tokens...")

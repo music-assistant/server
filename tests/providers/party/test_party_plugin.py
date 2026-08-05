@@ -8,9 +8,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState
+from music_assistant_models.config_entries import ProviderConfig
+from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, ProviderType
 from music_assistant_models.errors import ActionUnavailable, InvalidDataError
 
+from music_assistant.controllers.config.controller import ConfigController
 from music_assistant.helpers.shared_playback import SharedPlaybackMode
 from music_assistant.providers.party import (
     CONF_ENABLE_ADD_QUEUE,
@@ -278,9 +280,10 @@ async def test_unload_revokes_guest_tokens_when_guest_access_is_off() -> None:
     await plugin.unload()
 
     cast("AsyncMock", plugin._revoke_guest_tokens).assert_awaited_once()
-    # the live stored value is what decides, not the config snapshot taken at init
+    # the live stored value is what decides, not the config snapshot taken at init, and an
+    # absent key must read as disabled (matching the config entry's default_value)
     cast("MagicMock", plugin.mass.config.get_raw_provider_config_value).assert_called_once_with(
-        "party--test", CONF_ENABLE_GUEST_ACCESS, default=True
+        "party--test", CONF_ENABLE_GUEST_ACCESS, default=False
     )
 
 
@@ -300,5 +303,53 @@ async def test_unload_revokes_guest_tokens_on_removal() -> None:
     plugin = _create_unload_plugin(guest_access_enabled=True)
 
     await plugin.unload(is_removed=True)
+
+    cast("AsyncMock", plugin._revoke_guest_tokens).assert_awaited_once()
+
+
+async def _create_stored_config_controller(*, guest_access_enabled: bool) -> ConfigController:
+    """Store the party config the way a real save does and return a controller holding it."""
+    entries = await _create_config_entries_plugin(
+        guest_access_enabled=guest_access_enabled
+    ).get_config_entries()
+    config = ProviderConfig.parse(
+        entries,
+        {"type": ProviderType.PLUGIN, "domain": "party", "instance_id": "party--test"},
+    )
+    config.update({CONF_ENABLE_GUEST_ACCESS: guest_access_enabled})
+
+    controller = ConfigController.__new__(ConfigController)
+    controller._data = {"providers": {"party--test": config.to_raw()}}
+    controller.initialized = True
+    return controller
+
+
+@pytest.mark.parametrize("guest_access_enabled", [True, False])
+@pytest.mark.asyncio
+async def test_stored_guest_access_value_survives_a_save(guest_access_enabled: bool) -> None:
+    """
+    Only non-default values are persisted, so a disabled toggle is stored as an absent key.
+
+    unload() must still read that absent key back as disabled.
+    """
+    controller = await _create_stored_config_controller(guest_access_enabled=guest_access_enabled)
+
+    stored_values = controller._data["providers"]["party--test"]["values"]
+    assert (CONF_ENABLE_GUEST_ACCESS in stored_values) is guest_access_enabled
+    assert (
+        controller.get_raw_provider_config_value(
+            "party--test", CONF_ENABLE_GUEST_ACCESS, default=False
+        )
+        is guest_access_enabled
+    )
+
+
+@pytest.mark.asyncio
+async def test_unload_revokes_guest_tokens_after_a_real_save_of_guest_access_off() -> None:
+    """Switching guest access off and reloading revokes the tokens against real stored config."""
+    plugin = _create_unload_plugin(guest_access_enabled=False)
+    plugin.mass.config = await _create_stored_config_controller(guest_access_enabled=False)
+
+    await plugin.unload()
 
     cast("AsyncMock", plugin._revoke_guest_tokens).assert_awaited_once()
