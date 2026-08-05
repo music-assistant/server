@@ -10,17 +10,27 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from music_assistant_models.auth import Scope
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.enums import EventType
+from music_assistant_models.errors import InvalidDataError, SetupFailedError
 
+from music_assistant.helpers.plugin_engines import (
+    select_ai_engine,
+    select_tts_engine,
+)
 from music_assistant.models.plugin import PluginProvider
 
 from .constants import (
+    CONF_AI_ENGINE,
+    CONF_TTS_ENGINE,
     DEFAULT_MAX_CONCURRENT_RUNS,
+    ENGINE_DISCOVERY_TIMEOUT,
     MAX_FINISHED_SESSIONS,
     SUPPORTED_FEATURES,
+    TRANSLATION_OWNER,
 )
 from .helpers import utc_now_iso
 from .models import SessionState
+from .rendering import AIRadioRenderMixin
 from .runtime import AIRadioRuntimeMixin
 from .storage import AIRadioStorageMixin
 
@@ -39,7 +49,7 @@ async def setup(
     return AIRadioProvider(mass, manifest, config, SUPPORTED_FEATURES)
 
 
-class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
+class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMixin, PluginProvider):
     """Implementation of the AI Radio plugin provider."""
 
     def __init__(
@@ -72,6 +82,7 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
         await asyncio.to_thread(self._storage_dir.mkdir, parents=True, exist_ok=True)
         await self._load_sections()
         await self._load_stations()
+        await self._wait_for_engines()
         self.logger.info(
             "AI Radio initialized for instance '%s' with %d stations and %d sections",
             self.instance_id,
@@ -234,17 +245,12 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
     async def start_run(
         self,
         station_id: str,
-        mode: str = "playlist",
         source_playlist_id_override: str | None = None,
         source_playlist_provider_override: str | None = None,
         player_id_override: str | None = None,
         dynamic_source_playtime_cap_override: int | float | None = None,  # noqa: PYI041
-        dynamic_batch_size_override: int | None = None,
     ) -> dict[str, Any]:
         """Start a new AI Radio run."""
-        selected_mode = mode.strip().lower()
-        if selected_mode not in {"playlist", "dynamic"}:
-            raise InvalidDataError("mode must be 'playlist' or 'dynamic'")
         if station_id not in self._stations:
             raise KeyError(f"Unknown station id: {station_id}")
 
@@ -261,21 +267,16 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
             if float(dynamic_source_playtime_cap_override) < 0:
                 raise InvalidDataError("dynamic_source_playtime_cap_override must be >= 0")
             station["max_duration_minutes"] = float(dynamic_source_playtime_cap_override)
-        if dynamic_batch_size_override is not None:
-            if int(dynamic_batch_size_override) < 1:
-                raise InvalidDataError("dynamic_batch_size_override must be >= 1")
-            station["dynamic_batch_size"] = int(dynamic_batch_size_override)
-        if selected_mode == "dynamic":
-            player_id = str(station.get("default_player_id") or "").strip()
-            if not player_id:
-                raise InvalidDataError("Dynamic mode requires a target player_id")
-            player = self.mass.players.get_player(player_id)
-            if player is None:
-                raise InvalidDataError(f"Unknown target player: {player_id}")
-            if player.available is False:
-                raise InvalidDataError(f"Target player is unavailable: {player_id}")
-            if player.enabled is False:
-                raise InvalidDataError(f"Target player is disabled: {player_id}")
+        player_id = str(station.get("default_player_id") or "").strip()
+        if not player_id:
+            raise InvalidDataError("AI Radio requires a target player")
+        player = self.mass.players.get_player(player_id)
+        if player is None:
+            raise InvalidDataError(f"Unknown target player: {player_id}")
+        if player.available is False:
+            raise InvalidDataError(f"Target player is unavailable: {player_id}")
+        if player.enabled is False:
+            raise InvalidDataError(f"Target player is disabled: {player_id}")
 
         # the run guards and the session insert must stay one critical section, or a future
         # await between them would let concurrent callers slip past the concurrency limits
@@ -298,7 +299,6 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
             session = SessionState(
                 session_id=session_id,
                 station_id=station_id,
-                mode=selected_mode,
             )
             self._sessions[session_id] = session
             self._prune_finished_sessions()
@@ -307,10 +307,9 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
                 task_id=f"ai_radio_session_{session_id}",
             )
         self.logger.debug(
-            "AI Radio session started: session=%s station=%s mode=%s",
+            "AI Radio session started: session=%s station=%s",
             session_id,
             station_id,
-            selected_mode,
         )
         return session.as_dict()
 
@@ -329,10 +328,9 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
         selected.ended_at = utc_now_iso()
         await self._stop_session_queue(selected)
         self.logger.info(
-            "AI Radio session stopped: session=%s station=%s mode=%s",
+            "AI Radio session stopped: session=%s station=%s",
             selected.session_id,
             selected.station_id,
-            selected.mode,
         )
         return selected.as_dict()
 
@@ -344,6 +342,51 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioStorageMixin, PluginProvider):
             return {"sessions": [self._sessions[session_id].as_dict()]}
         sessions = sorted(self._sessions.values(), key=lambda item: item.created_at, reverse=True)
         return {"sessions": [session.as_dict() for session in sessions]}
+
+    async def _wait_for_engines(self) -> None:
+        """
+        Wait (bounded) until a concrete AI and TTS engine are selected for this instance.
+
+        :raises SetupFailedError: When either engine is still unavailable at the deadline.
+        """
+        engines_changed = asyncio.Event()
+        unsubscribe = self.mass.subscribe(
+            lambda _event: engines_changed.set(), EventType.PROVIDERS_UPDATED
+        )
+        try:
+            async with asyncio.timeout(ENGINE_DISCOVERY_TIMEOUT):
+                while (error := await self._engine_selection_error()) is not None:
+                    await engines_changed.wait()
+                    # clearing only after the wait keeps an update that lands during the
+                    # probe above signalled, so that wakeup is never lost
+                    engines_changed.clear()
+        except TimeoutError:
+            error = await self._engine_selection_error()
+        finally:
+            unsubscribe()
+        if error is not None:
+            raise error
+
+    async def _engine_selection_error(self) -> SetupFailedError | None:
+        """
+        Seed a concrete engine selection where none is stored yet.
+
+        :return: The error for the first engine that cannot be selected or no longer
+            resolves, or None when both engines are settled.
+        """
+        if await select_ai_engine(self, CONF_AI_ENGINE, in_setup_data=True) is None:
+            return SetupFailedError(
+                "AI Radio has no AI engine available",
+                translation_key="ai_radio_no_ai_engine",
+                translation_owner=TRANSLATION_OWNER,
+            )
+        if await select_tts_engine(self, CONF_TTS_ENGINE, in_setup_data=True) is None:
+            return SetupFailedError(
+                "AI Radio has no text-to-speech engine available",
+                translation_key="ai_radio_no_tts_engine",
+                translation_owner=TRANSLATION_OWNER,
+            )
+        return None
 
     def _prune_finished_sessions(self) -> None:
         """Drop the oldest finished sessions beyond the retention limit."""

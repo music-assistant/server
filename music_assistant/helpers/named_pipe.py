@@ -6,7 +6,6 @@ import asyncio
 import errno as errno_module
 import logging
 import os
-import time
 from collections.abc import AsyncGenerator
 from contextlib import suppress
 from functools import partial
@@ -46,6 +45,28 @@ class AsyncNamedPipeWriter:
             os.mkfifo(self._pipe_path)
 
         await asyncio.to_thread(_create)
+
+    async def wait_for_reader(self, timeout: float) -> bool:
+        """
+        Wait until the pipe has a reader attached, so writes are no longer dropped.
+
+        A pipe without a reader accepts nothing, so a writer that is spawning its
+        reader alongside itself waits here before its first write.
+
+        :param timeout: Maximum time to wait for the reader in seconds.
+        :return: True once the pipe can be written to, False if no reader
+            attached before the timeout.
+        """
+        try:
+            async with asyncio.timeout(timeout):
+                while True:
+                    # a concurrent write opens the same descriptor from its worker thread
+                    async with self._write_lock:
+                        if self._ensure_write_fd():
+                            return True
+                    await asyncio.sleep(0.05)
+        except TimeoutError:
+            return False
 
     async def write(self, data: bytes) -> bool:
         """
@@ -107,14 +128,17 @@ class AsyncNamedPipeWriter:
 
     async def remove(self) -> None:
         """Close write fd and remove the pipe."""
-        if self._write_fd is not None:
-            with suppress(Exception):
-                os.close(self._write_fd)
-            self._write_fd = None
-        pipe_path = Path(self._pipe_path)
-        if pipe_path.exists():
-            with suppress(Exception):
-                pipe_path.unlink()
+        # the lock keeps a write in flight on its worker thread from reopening
+        # the descriptor between the close and the unlink
+        async with self._write_lock:
+            if self._write_fd is not None:
+                with suppress(Exception):
+                    os.close(self._write_fd)
+                self._write_fd = None
+            pipe_path = Path(self._pipe_path)
+            if pipe_path.exists():
+                with suppress(Exception):
+                    pipe_path.unlink()
 
     def __str__(self) -> str:
         """Return string representation."""
@@ -126,58 +150,18 @@ class AsyncNamedPipeWriter:
         return self._owner_id or self._pipe_path
 
     def _ensure_write_fd(self) -> bool:
-        """Ensure we have a write fd open. Returns True if successful."""
+        """Open the write end while a reader is attached. Returns True if successful."""
         if self._write_fd is not None:
             return True
         if not Path(self._pipe_path).exists():
             return False
-        # Retry opening until reader is available (up to 1s)
-        for _ in range(20):
-            try:
-                self._write_fd = os.open(self._pipe_path, os.O_WRONLY | os.O_NONBLOCK)
-                return True
-            except OSError as e:
-                if e.errno in (errno_module.ENXIO, errno_module.ENOENT):
-                    time.sleep(0.05)
-                    continue
-                raise
-        _LOGGER.warning(
-            "Could not open pipe %s (owner=%s): no reader after retries",
-            self._pipe_path,
-            self._log_owner,
-        )
-        return False
-
-
-async def open_named_pipe_writer(pipe_path: str, timeout: float = 1.0) -> int:
-    """
-    Open a named pipe writer after its reader is expected to be ready.
-
-    :param pipe_path: Filesystem path of the named pipe.
-    :param timeout: Maximum time to wait for the reader in seconds.
-    :return: A blocking file descriptor suitable for subprocess inheritance.
-    :raises TimeoutError: If no reader becomes available before the timeout.
-    :raises OSError: If opening or configuring the pipe fails.
-    """
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + timeout
-    while True:
         try:
-            fd = os.open(pipe_path, os.O_WRONLY | os.O_NONBLOCK)
-        except OSError as err:
-            if err.errno not in (errno_module.ENXIO, errno_module.ENOENT):
-                raise
-            remaining = deadline - loop.time()
-            if remaining <= 0:
-                raise TimeoutError(f"Timed out opening named pipe writer: {pipe_path}") from err
-            await asyncio.sleep(min(0.05, remaining))
-            continue
-        try:
-            os.set_blocking(fd, True)
-        except BaseException:
-            os.close(fd)
+            self._write_fd = os.open(self._pipe_path, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError as e:
+            if e.errno in (errno_module.ENXIO, errno_module.ENOENT):
+                return False
             raise
-        return fd
+        return True
 
 
 async def read_named_pipe(

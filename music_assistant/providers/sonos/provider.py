@@ -340,6 +340,9 @@ class SonosPlayerProvider(PlayerProvider):
 
     def _parse_sonos_queue_item(self, media: PlayerMedia) -> dict[str, Any]:
         """Parse MusicAssistant PlayerMedia to a Sonos Media (queue) object."""
+        # the speaker tracks its position within the audio we serve, which is
+        # shorter than the media item when playback starts at a seek position
+        duration = media.stream_duration or media.duration
         return {
             "id": media.queue_item_id or media.uri,
             "track": {
@@ -349,7 +352,7 @@ class SonosPlayerProvider(PlayerProvider):
                 "service": {"name": "Music Assistant", "id": "mass"},
                 "name": media.title,
                 "imageUrl": media.image_url,
-                "durationMillis": int(media.duration * 1000) if media.duration else 0,
+                "durationMillis": int(duration * 1000) if duration else 0,
                 "artist": {
                     "name": media.artist,
                 }

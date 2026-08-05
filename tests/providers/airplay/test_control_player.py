@@ -108,6 +108,11 @@ def _make_control_player(
     provider.mass.config.set.side_effect = _config_set
     provider.mass.config.decrypt_string.side_effect = lambda value: value
     provider.mass.config.encrypt_string.side_effect = lambda value: value
+    # raw player config values live in their own store (individual tests override
+    # this); without it they would read back as (truthy) mocks
+    provider.mass.config.get_raw_player_config_value.side_effect = (
+        lambda _player_id, _key, default=None: default
+    )
     # Real Companion services advertise the flags under the mixed-case key
     # "rpFl"; zeroconf preserves TXT key casing as sent on the wire.
     companion_info = (

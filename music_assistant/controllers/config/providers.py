@@ -686,6 +686,21 @@ class ProviderConfigMixin:
             }
         ):
             extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_BACK)
-        if provider and isinstance(provider, MusicProvider) and provider.is_streaming_provider:
+        if (
+            provider
+            and isinstance(provider, MusicProvider)
+            and provider.is_streaming_provider
+            and supported_features.intersection(
+                {
+                    ProviderFeature.LIBRARY_ARTISTS,
+                    ProviderFeature.LIBRARY_ALBUMS,
+                    ProviderFeature.LIBRARY_TRACKS,
+                    ProviderFeature.LIBRARY_PLAYLISTS,
+                    ProviderFeature.LIBRARY_AUDIOBOOKS,
+                    ProviderFeature.LIBRARY_PODCASTS,
+                    ProviderFeature.LIBRARY_RADIOS,
+                }
+            )
+        ):
             extra_entries.append(CONF_ENTRY_LIBRARY_SYNC_DELETIONS)
         return extra_entries

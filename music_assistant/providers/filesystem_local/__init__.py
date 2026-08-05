@@ -79,7 +79,7 @@ from music_assistant.helpers import lyrics
 from music_assistant.helpers.compare import compare_strings, create_safe_string
 from music_assistant.helpers.json import SerializableType, json_loads
 from music_assistant.helpers.playlists import parse_m3u, parse_pls
-from music_assistant.helpers.tags import AudioTags, async_parse_tags, split_items
+from music_assistant.helpers.tags import AudioTags, async_parse_tags, clean_mbid, split_items
 from music_assistant.helpers.util import (
     TaskManager,
     detect_charset,
@@ -94,6 +94,7 @@ from .constants import (
     CACHE_CATEGORY_ARTIST_INFO,
     CACHE_CATEGORY_AUDIOBOOK_CHAPTERS,
     CACHE_CATEGORY_FOLDER_IMAGES,
+    CACHE_CATEGORY_PODCAST_EPISODES,
     CACHE_CATEGORY_PODCAST_METADATA,
     CACHE_CATEGORY_SOUND_EFFECTS,
     CONF_CONTENT_TYPE,
@@ -107,6 +108,7 @@ from .constants import (
     CUE_EXTENSIONS,
     DEFAULT_AUDIOBOOK_PODCAST_GENRE,
     IMAGE_EXTENSIONS,
+    PARTIAL_LISTING_CACHE_EXPIRATION,
     PLAYLIST_EXTENSIONS,
     PODCAST_EPISODE_EXTENSIONS,
     SOUND_EFFECT_EXTENSIONS,
@@ -125,6 +127,7 @@ from .helpers import (
     get_absolute_path,
     get_album_dir,
     get_artist_dir,
+    get_folder_signature,
     get_relative_path,
     recursive_iter,
     sorted_scandir,
@@ -826,28 +829,75 @@ class LocalFileSystemProvider(MusicProvider):
 
     async def get_podcast_episodes(self, prov_podcast_id: str) -> AsyncGenerator[PodcastEpisode]:
         """Get podcast episodes for given podcast id."""
-        episodes: list[PodcastEpisode] = []
+        folder_items = [item for item in await self._scandir(prov_podcast_id) if not item.is_dir]
+        episode_files = [x for x in folder_items if x.ext in PODCAST_EPISODE_EXTENSIONS]
+        # artwork and metadata.json count towards the signature too, because the parse embeds
+        # them into every episode. Case-insensitive, matching _get_podcast_metadata's exists()
+        signature_files = [
+            x
+            for x in folder_items
+            if x.ext in PODCAST_EPISODE_EXTENSIONS
+            or x.ext in IMAGE_EXTENSIONS
+            or x.filename.lower() == "metadata.json"
+        ]
+        cache_key = f"podcast_episodes.{prov_podcast_id}"
+        cache_checksum = get_folder_signature(signature_files)
+        if (
+            cached_episodes := await self.mass.cache.get(
+                cache_key,
+                provider=self.instance_id,
+                category=CACHE_CATEGORY_PODCAST_EPISODES,
+                checksum=cache_checksum,
+                base_class=PodcastEpisode,
+            )
+        ) is not None:
+            for episode in cached_episodes:
+                yield episode
+            return
 
-        async def _process_podcast_episode(item: FileSystemItem) -> None:
-            tags = await async_parse_tags(item.absolute_path, item.file_size)
+        # these caches have no checksum of their own, so drop them before parsing or the new
+        # entry gets the values the signature just invalidated. Refill once, or every parse
+        # task below misses at the same time and repeats the same scandir and file read
+        for stale_category in (CACHE_CATEGORY_FOLDER_IMAGES, CACHE_CATEGORY_PODCAST_METADATA):
+            await self.mass.cache.delete(
+                prov_podcast_id, category=stale_category, provider=self.instance_id
+            )
+        await self._get_local_images(prov_podcast_id)
+        await self._get_podcast_metadata(prov_podcast_id)
+
+        # collected by index so the listing keeps scandir order, not parse completion order
+        parsed: list[PodcastEpisode | None] = [None] * len(episode_files)
+
+        async def _process_podcast_episode(index: int, item: FileSystemItem) -> None:
             try:
-                episode = await self._parse_podcast_episode(item, tags)
+                tags = await async_parse_tags(item.absolute_path, item.file_size)
+                parsed[index] = await self._parse_podcast_episode(item, tags)
             except MusicAssistantError as err:
                 self.logger.warning(
                     "Could not parse uri/file %s to podcast episode: %s",
                     item.relative_path,
                     str(err),
                 )
-            else:
-                episodes.append(episode)
 
-        async with TaskManager(self.mass, 25) as tm:
-            for item in await self._scandir(prov_podcast_id):
-                if "." not in item.relative_path or item.is_dir:
-                    continue
-                if item.ext not in PODCAST_EPISODE_EXTENSIONS:
-                    continue
-                tm.create_task(_process_podcast_episode(item))
+        # reuse the per-sync worker limit: the slowest filesystems to parse are exactly the
+        # ones that lower it
+        async with TaskManager(self.mass, self._SYNC_CONCURRENCY) as tm:
+            for index, item in enumerate(episode_files):
+                await tm.create_task_with_limit(_process_podcast_episode(index, item))
+
+        episodes = [episode for episode in parsed if episode is not None]
+        # cache an incomplete listing briefly rather than not at all, so one unreadable file
+        # cannot make every request re-parse the whole folder
+        complete = len(episodes) == len(episode_files)
+        await self.mass.cache.set(
+            key=cache_key,
+            data=[episode.to_dict() for episode in episodes],
+            # a complete listing is invalidated by the folder signature instead
+            expiration=3600 * 24 * 365 if complete else PARTIAL_LISTING_CACHE_EXPIRATION,
+            provider=self.instance_id,
+            category=CACHE_CATEGORY_PODCAST_EPISODES,
+            checksum=cache_checksum,
+        )
 
         for episode in episodes:
             yield episode
@@ -1466,8 +1516,8 @@ class LocalFileSystemProvider(MusicProvider):
         explicit_tag = tags.get("itunesadvisory")
         if explicit_tag is not None:
             track.metadata.explicit = explicit_tag == "1"
-        if tags.musicbrainz_recordingid:
-            track.mbid = tags.musicbrainz_recordingid
+        if recording_mbid := clean_mbid(tags.musicbrainz_recordingid, tags.filename):
+            track.mbid = recording_mbid
 
         # handle (optional) loudness measurement tag(s)
         if tags.track_loudness is not None:
@@ -1657,7 +1707,7 @@ class LocalFileSystemProvider(MusicProvider):
                 )
             },
         )
-        if mbid:
+        if mbid := clean_mbid(mbid, f"tags of artist {name}"):
             artist.mbid = mbid
         if not artist_path or not await self.exists(artist_path):
             return artist
@@ -1674,7 +1724,7 @@ class LocalFileSystemProvider(MusicProvider):
                 artist.name = info.get("title", info.get("name", name))
                 if sort_name := info.get("sortname"):
                     artist.sort_name = sort_name
-                if mbid := info.get("musicbrainzartistid"):
+                if mbid := clean_mbid(info.get("musicbrainzartistid"), nfo_file):
                     artist.mbid = mbid
                 if description := info.get("biography"):
                     artist.metadata.description = description
@@ -1794,8 +1844,8 @@ class LocalFileSystemProvider(MusicProvider):
         explicit_tag = tags.get("itunesadvisory")
         if explicit_tag is not None:
             audio_book.metadata.explicit = explicit_tag == "1"
-        if tags.musicbrainz_recordingid:
-            audio_book.mbid = tags.musicbrainz_recordingid
+        if recording_mbid := clean_mbid(tags.musicbrainz_recordingid, tags.filename):
+            audio_book.mbid = recording_mbid
 
         # try to fetch additional metadata from the folder
         if not audio_book.image or not audio_book.metadata.description:
@@ -2140,10 +2190,12 @@ class LocalFileSystemProvider(MusicProvider):
         if track_tags.barcode:
             album.external_ids.add((ExternalID.BARCODE, track_tags.barcode))
 
-        if track_tags.musicbrainz_albumid:
-            album.mbid = track_tags.musicbrainz_albumid
-        if track_tags.musicbrainz_releasegroupid:
-            album.add_external_id(ExternalID.MB_RELEASEGROUP, track_tags.musicbrainz_releasegroupid)
+        if album_mbid := clean_mbid(track_tags.musicbrainz_albumid, track_tags.filename):
+            album.mbid = album_mbid
+        if releasegroup_mbid := clean_mbid(
+            track_tags.musicbrainz_releasegroupid, track_tags.filename
+        ):
+            album.add_external_id(ExternalID.MB_RELEASEGROUP, releasegroup_mbid)
         if track_tags.year:
             album.year = track_tags.year
         album.album_type = track_tags.album_type
@@ -2162,7 +2214,7 @@ class LocalFileSystemProvider(MusicProvider):
                 try:
                     data = (await self._read_file(nfo_file)).decode("utf-8")
                     info = await asyncio.to_thread(xmltodict.parse, data)
-                    parse_album_nfo(album, info["album"])
+                    parse_album_nfo(album, info["album"], nfo_file)
                 except (ExpatError, KeyError) as err:
                     self.logger.warning(
                         "Failed to parse album NFO file %s: %s",

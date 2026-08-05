@@ -309,7 +309,8 @@ def _announcement_controller(http_profile: str) -> tuple[StreamsController, Magi
     controller = StreamsController.__new__(StreamsController)
     controller.mass = mass = MagicMock()
     controller.logger = logging.getLogger("test.streams.announcement")
-    controller.announcements = {"player1": _announce_data(None)}
+    controller.announcement_renderer = AnnouncementRenderer()
+    controller.announcement_renderer._by_player = {"player1": _announce_data(None)}
     player = MagicMock()
     player.display_name = "Player A"
     player.get_output_config_value.return_value = http_profile
