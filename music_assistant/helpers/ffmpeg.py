@@ -32,6 +32,10 @@ CACHE_ATTR_LIBSOXR_PRESENT: Final[str] = "libsoxr_present"
 CACHE_ATTR_FFMPEG_VERSION: Final[str] = "ffmpeg_version"
 DEFAULT_MP3_BIT_RATE: Final[int] = 320
 
+# added to unity gain to cancel the 1/sqrt(2) per channel that FFmpeg's
+# mono->stereo rematrix applies, so a mono source keeps its original level
+_MONO_WIDEN_COMPENSATION: Final[float] = 2**0.5 - 1
+
 # Regex patterns to extract audio format details from ffmpeg's stderr output.
 # Examples of the lines we parse:
 #   Stream #0:0: Audio: mp3, 44100 Hz, stereo, fltp, 320 kb/s
@@ -422,8 +426,9 @@ async def get_ffmpeg_overlay_stream(
     Mix a looping audio overlay into a PCM audio stream.
 
     The overlay is looped for the full duration of the main stream and the mixed
-    output has the exact same PCM format and duration as the main input. If the
-    overlay input fails mid-stream, the main audio continues unaffected.
+    output has the exact same PCM format and duration as the main input. It mixes
+    in at the same level regardless of its own channel count. If the overlay input
+    fails mid-stream, the main audio continues unaffected.
 
     :param audio_input: The main audio stream (raw PCM in ``pcm_format``).
     :param overlay_input: File path or URL of the overlay audio.
@@ -453,10 +458,12 @@ async def get_ffmpeg_overlay_stream(
     # silenceremove strips a near-silent intro from the overlay source (e.g. a soft
     # fade-in) so it becomes audible right away; it is a no-op for sources that
     # already start at full level. It runs before volume so detection is based on
-    # the source's own levels rather than the scaled output.
+    # the source's own levels rather than the scaled output. volume in turn has to
+    # stay ahead of the resample and conform steps, which replace the source's own
+    # channel count with the output's.
     filter_complex = (
         f"[0:a]silenceremove=start_periods=1:start_threshold=-40dB,"
-        f"volume={overlay_volume / 100},"
+        f"{_get_overlay_volume_filter(overlay_volume, pcm_format.channels)},"
         f"aresample={pcm_format.sample_rate}"
         f"{conform_filter}[overlay];"
         "[1:a][overlay]amix=inputs=2:duration=first:normalize=0[mixed]"
@@ -786,6 +793,25 @@ def _get_channel_conform_filter(input_channels: int, output_channels: int) -> st
         # spreads the source at 1/sqrt(2) per channel and so costs 3 dB
         return "pan=stereo|c0=c0|c1=c0"
     return None
+
+
+def _get_overlay_volume_filter(overlay_volume: int, output_channels: int) -> str:
+    """
+    Return the filter that scales an overlay source to the requested loudness.
+
+    :param overlay_volume: Requested overlay loudness in percent.
+    :param output_channels: Channel count of the mixed output.
+    """
+    gain = overlay_volume / 100
+    if output_channels != 2:
+        return f"volume={gain}"
+    # widening a mono source to stereo is left to FFmpeg, whose rematrix spreads it at
+    # 1/sqrt(2) per channel and so drops it 3 dB below an equally loud stereo source.
+    # nb_channels is evaluated where this filter sits, ahead of any layout conversion,
+    # so it still reports the source's own count and only a mono source is compensated,
+    # leaving a stereo one (and its image) untouched. Kept free of commas, which would
+    # otherwise read as the end of this filter in the graph.
+    return f"volume={gain}*(1+{_MONO_WIDEN_COMPENSATION}*not(nb_channels-1))"
 
 
 def _build_filtergraph_args(
