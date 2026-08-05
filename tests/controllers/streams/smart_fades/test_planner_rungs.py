@@ -3,14 +3,9 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import fields
 
-from music_assistant.controllers.streams.smart_fades.models import (
-    TransitionStrategy,
-    TransitionTier,
-)
+from music_assistant.controllers.streams.smart_fades.models import TransitionStrategy
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
-    CandidateSpec,
     EnergyLadderGenerator,
     LazyOverlayGenerator,
     TrimClosingAnchorGenerator,
@@ -144,11 +139,6 @@ def _small_trim_gap_ctx() -> TransitionContext:
     return build_transition_context(aa_out, aa_in, 45.0, logging.getLogger("test"))
 
 
-def test_candidate_spec_has_no_one_sided_field() -> None:
-    """The one-sided 16-bar relaxation was removed (1/12k win rate, scored 0.5)."""
-    assert "one_sided_vocal" not in {f.name for f in fields(CandidateSpec)}
-
-
 def test_energy_ladder_emits_only_plain_rungs() -> None:
     """A one-instrumental/one-vocal pair gets the plain ladder, no 16-bar spec."""
     instrumental_vs_vocal_ctx = _instrumental_vs_vocal_ctx()
@@ -167,8 +157,7 @@ def test_trim_closing_ladder_emitted_for_big_trim_gap() -> None:
         assert spec.anchor_s <= ctx.audio_end
     # the ladder is walked, not just one rung
     assert len({spec.bars for spec in specs}) >= 2
-    # the long rung must survive: the per-rung target-skip used to suppress it
-    # because a long rung's span reaches past the default anchor
+    # every rung shares the single late anchor, including the longest one
     assert 8 in {spec.bars for spec in specs}
 
 
@@ -176,15 +165,6 @@ def test_trim_closing_not_emitted_for_small_gap() -> None:
     """A tail whose energy anchor already sits near the audible end emits nothing."""
     specs = list(TrimClosingAnchorGenerator().generate(_small_trim_gap_ctx()))
     assert specs == []
-
-
-def test_grid_blendable_false_for_sparse_tail() -> None:
-    """A tail whose grid dies early reports grid_blendable=False (rubato/ambient outro)."""
-    aa_out = _analysis(bpm=124.0, duration=200.0, grid_until=170.0)  # grid stops 30s early
-    aa_in = _analysis(bpm=124.0, duration=200.0)
-    ctx = build_transition_context(aa_out, aa_in, 45.0, logging.getLogger("test"))
-    assert ctx.grid_blendable is False
-    assert ctx.tier is TransitionTier.QUICK_FADE
 
 
 def _ctx_with_late_natural_entry() -> TransitionContext:
@@ -274,8 +254,8 @@ def test_lazy_overlay_beats_trim_closing_on_a_qualifying_pair() -> None:
     The overlay must win the tie against trim-closing's equally-cheap short rungs.
 
     Both generators anchor near the audible end with ~zero trim on this
-    context, so this exercises the actual tie-break (generator order plus
-    the overlay's mild penalty), not just an absence of competition.
+    context, so this exercises the actual tie-break (generator order), not
+    just an absence of competition.
     """
     aa_out, aa_in = _ambient_unblendable_ctx()
     ctx = build_transition_context(aa_out, aa_in, 45.0, logging.getLogger("test"))

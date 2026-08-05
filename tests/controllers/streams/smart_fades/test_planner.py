@@ -441,7 +441,7 @@ def _with_vocal_activity(
 
 
 class TestRescuePassBeforeEmergencyHandoff:
-    """When every regular candidate is rejected, a rescue rung ships before the handoff."""
+    """When the rescue pass also fails, the emergency handoff ships as the last resort."""
 
     def test_emergency_handoff_still_ships_when_the_rescue_pass_also_fails(self) -> None:
         """Wall-to-wall vocal collision on both decks rejects the rescue rung too: handoff ships."""

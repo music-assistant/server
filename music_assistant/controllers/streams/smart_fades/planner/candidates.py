@@ -76,12 +76,12 @@ RUNG_LADDER: tuple[int, ...] = (16, 8, 4, 2, 1)
 _TRIM_GUARD_LOW_FLOOR: float = 0.25
 _TRIM_GUARD_VOICE_FLOOR: float = 0.4
 
-# Trim-closing anchors engage only when the energy anchor strands this much
-# audible tail; below it the default anchor's trim is already acceptable
+# Trim-closing anchors engage only when the audible end sits this much past
+# the energy anchor; below it the default anchor's trim is already acceptable
 _TRIM_CLOSING_MIN_GAP_S: float = 8.0
 
 # Lazy-overlay length: a long unphrased equal-power blend, not a rung on any ladder
-LAZY_OVERLAY_SECONDS: float = 16.0
+_LAZY_OVERLAY_SECONDS: float = 16.0
 # both decks at or under this in-window vocal duty qualify as ambient
 _LAZY_DUTY_MAX: float = 0.10
 
@@ -161,7 +161,8 @@ class EnergyLadderGenerator(CandidateGenerator):
         ideal = ladder[0]
         # the default anchor is already kick-folded; a pure full-band variant
         # would let a longer blend win past the kick die-out, defeating the
-        # researched kick handover, so it is deliberately not emitted
+        # researched kick handover, so it is deliberately not emitted (trim-closing
+        # may still anchor later when >=8s of audible tail would otherwise be stranded)
         anchors: list[float | None] = [None]
         a_pin = _fade_onset_pin(ctx)
         if a_pin < ctx.default_anchor:
@@ -324,13 +325,13 @@ class RescueAnchorGenerator(CandidateGenerator):
 
 
 class TrimClosingAnchorGenerator(CandidateGenerator):
-    """Emits the tier ladder at the last audible downbeat when a large audible tail is stranded."""
+    """Emits the tier ladder at the audible end when a large audible tail is stranded."""
 
     name = "trim-closing-anchor"
 
     def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
-        """Emit every ladder rung at one late anchor, or nothing when the trim gap is small."""
-        anchor = _nearest_protective_anchor(ctx, ctx.audio_end, prefer_earliest=False)
+        """Emit every ladder rung at the audible end, or nothing when the trim gap is small."""
+        anchor = ctx.audio_end
         if anchor - ctx.default_anchor < _TRIM_CLOSING_MIN_GAP_S:
             return
         ladder = bars_ladder(ctx, ctx.tier)
@@ -354,7 +355,7 @@ class LazyOverlayGenerator(CandidateGenerator):
         """Emit the overlay spec, or nothing when the pair doesn't qualify."""
         if ctx.tier is not TransitionTier.QUICK_FADE or ctx.cross_meter:
             return
-        if ctx.grid_blendable or ctx.bpm_diff_percent > TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
+        if ctx.bpm_diff_percent > TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
             return
         duties = _vocal_duties(ctx)
         if duties is None or duties[0] > _LAZY_DUTY_MAX or duties[1] > _LAZY_DUTY_MAX:
@@ -854,7 +855,7 @@ class CandidateFactory:
         plan = TransitionPlan(
             tier=spec.tier,
             fade_out_window=tail.effective_end,
-            crossfade_duration=min(LAZY_OVERLAY_SECONDS, tail.effective_end),
+            crossfade_duration=min(_LAZY_OVERLAY_SECONDS, tail.effective_end),
             tempo_plan=TempoPlan(),
             fadeout_trim=tail.fadeout_trim,
             fadein_trim_start=None,
@@ -943,7 +944,7 @@ class _AnchoredTail:
 
 
 def _vocal_duties(ctx: TransitionContext) -> tuple[float, float] | None:
-    """Outgoing/incoming vocal duty fractions the instrumental-blend gates key on, or None."""
+    """Outgoing/incoming vocal duty fractions the instrumental-blend/lazy-overlay gates key on."""
     if ctx.vocal_out_scoring is None or ctx.vocal_in_scoring is None:
         return None
     out_duty = sum(right - left for left, right in ctx.vocal_out_scoring.windows) / max(

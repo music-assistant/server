@@ -259,7 +259,7 @@ class TestBuildVocalWindowsSustainedEvidenceGate:
         assert len(mask.windows) == 1
 
     def test_moderate_mean_backing_run_is_dropped(self) -> None:
-        """A ~1.1s run, peak 0.84 / mean ~0.648, between the old (0.60) and new (0.65) floor."""
+        """A ~1.1s run just under both floors (peak 0.84, mean ~0.648) is dropped."""
         probs = _timeline([(0.0, 100), (0.55, 5), (0.62, 3), (0.84, 3), (0.0, 100)])
         mask = build_vocal_windows(probs, FRAME, 0.0, len(probs) * FRAME)
         assert mask.windows == []

@@ -1,4 +1,4 @@
-"""Tests for the smart fades candidate generators and the instrumental cross-check."""
+"""Tests for the smart fades candidate generators."""
 
 from __future__ import annotations
 
@@ -98,7 +98,6 @@ def _base_ctx(**overrides: Any) -> TransitionContext:
         coda_zone=None,
         tier=TransitionTier.FULL_BLEND,
         cross_meter=False,
-        grid_blendable=True,
         bpm_diff_percent=0.0,
         vocal_out_placement=None,
         vocal_in_placement=None,
@@ -122,7 +121,7 @@ def _out_analysis_with_quiet_tail() -> AudioAnalysisData:
 
 
 class TestEnergyLadderGenerator:
-    """The primary energy ladder: default anchor, kick anchor."""
+    """The primary energy ladder: default/kick anchor selection and the instrumental 16-bar rung."""
 
     def test_emits_full_ladder_at_default_anchor_when_energy_only(self) -> None:
         """Without vocal data, every rung is emitted once at the default anchor."""

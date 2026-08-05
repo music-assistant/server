@@ -27,8 +27,6 @@ from music_assistant.controllers.streams.smart_fades.vocal import (
 from .candidates import RUNG_LADDER, Candidate, VocalOnsetEntryGenerator
 from .context import TransitionContext
 
-# The tier ladder's rungs, largest first, that a candidate's bar count is
-# measured against (matches the old planner's candidate-bar-count ladder)
 # Ambition ordering of the transition tiers, most ambitious first
 _TIER_ORDER: tuple[TransitionTier, ...] = (
     TransitionTier.FULL_BLEND,
@@ -180,15 +178,12 @@ class OverlapPreferencePolicy(Policy):
 
     rung_penalty_per_step: float = 10.0
     tier_penalty_per_step: float = 15.0
-    lazy_overlay_penalty: float = 0.0
 
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Judge one candidate against the shared per-transition context."""
         spec = candidate.spec
         if spec.strategy is TransitionStrategy.LAZY_OVERLAY:
-            # unphrased fallback: mildly dispreferred so any surviving phrased
-            # candidate of comparable cost still wins
-            return Verdict.ok(self.lazy_overlay_penalty)
+            return Verdict.ok()  # the overlay has no rung/tier notion to score
         rung_gap = RUNG_LADDER.index(spec.bars) - RUNG_LADDER.index(candidate.ideal_bars)
         tier_steps = max(0, _TIER_ORDER.index(spec.tier) - _TIER_ORDER.index(ctx.tier))
         penalty = self.rung_penalty_per_step * rung_gap
