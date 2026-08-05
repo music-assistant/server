@@ -167,6 +167,9 @@ def test_trim_closing_ladder_emitted_for_big_trim_gap() -> None:
         assert spec.anchor_s <= ctx.audio_end
     # the ladder is walked, not just one rung
     assert len({spec.bars for spec in specs}) >= 2
+    # the long rung must survive: the per-rung target-skip used to suppress it
+    # because a long rung's span reaches past the default anchor
+    assert 8 in {spec.bars for spec in specs}
 
 
 def test_trim_closing_not_emitted_for_small_gap() -> None:

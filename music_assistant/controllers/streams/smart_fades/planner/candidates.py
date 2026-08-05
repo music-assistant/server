@@ -324,21 +324,17 @@ class RescueAnchorGenerator(CandidateGenerator):
 
 
 class TrimClosingAnchorGenerator(CandidateGenerator):
-    """Emits the tier's ladder at late anchors that close a large audible-trim gap."""
+    """Emits the tier ladder at the last audible downbeat when a large audible tail is stranded."""
 
     name = "trim-closing-anchor"
 
     def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
-        """Emit one late-anchored spec per rung, or nothing when the trim gap is small."""
-        if ctx.audio_end - ctx.default_anchor < _TRIM_CLOSING_MIN_GAP_S:
+        """Emit every ladder rung at one late anchor, or nothing when the trim gap is small."""
+        anchor = _nearest_protective_anchor(ctx, ctx.audio_end, prefer_earliest=False)
+        if anchor - ctx.default_anchor < _TRIM_CLOSING_MIN_GAP_S:
             return
         ladder = bars_ladder(ctx, ctx.tier)
-        bar_seconds = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
         for bars in ladder:
-            target = ctx.audio_end - bars * bar_seconds
-            if target <= ctx.default_anchor:
-                continue
-            anchor = _nearest_protective_anchor(ctx, target, prefer_earliest=False)
             yield CandidateSpec(
                 tier=ctx.tier,
                 bars=bars,
