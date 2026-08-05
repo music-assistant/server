@@ -92,6 +92,14 @@ sounddevice.RawOutputStream (PortAudio, int16)
 ALSA hw: device / CoreAudio Device
 ```
 
+### Output Device Loss
+
+The writer task is the player's only audio path, and nothing restarts it inside a Sendspin stream, so a device that fails mid-playback would otherwise stay silent for the rest of the stream while the Sendspin group keeps the player on PLAYING.
+
+A failed write therefore closes the device and reopens it — libpulse has no reconnect, so the `pa_simple` connection is replaced rather than retried. There is no timeline state to rebuild: chunks carry absolute timestamps and the late-drop threshold discards whatever piled up during the reopen, so the device resyncs on its own. A reopened PA sink runs through idle->RUNNING again, so the cached hardware volume is re-applied along with it.
+
+The bridge gives up when it has no working device and cannot get one: the device fails again within `_DEVICE_REOPEN_GUARD_SECONDS` of a reopen, the reopen itself fails, or the device never opened at the start of the stream. It then leaves the Sendspin session (`quiesce_to_solo_stopped`) — a shared group plays on without this device, a solo one stops. The client stays registered, so the player survives to be grouped again.
+
 ### Volume Control
 
 The MA volume slider (0-100) is mapped to an amplitude scale factor via an exponential "audio taper" curve (`volume_pct_to_amplitude` in `constants.py`, based on the [dr-lex taper](https://www.dr-lex.be/info-stuff/volumecontrols.html)): a constant dB change per slider step from 10% to 100%, with a linear ramp to true silence below 10%. This avoids the classic "linear volume slider" problem where the bottom of the range is wildly more sensitive than the top and the top barely changes the loudness at all. The same taper is used for both the hardware and software volume paths below, so a given slider position sounds the same regardless of which path is active.
