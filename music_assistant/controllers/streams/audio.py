@@ -1210,21 +1210,25 @@ class StreamsAudio:
         channel_value = self._get_output_channels(player, player_id)
         source_channel = None
         channel_mix = ""
-        if channel_value == "left":
-            source_channel = AudioChannel.FL
-            channel_mix = "FL"
-        elif channel_value == "right":
-            source_channel = AudioChannel.FR
-            channel_mix = "FR"
-        elif channel_value == "mono":
-            # both source channels feed the downmix, so report ALL to keep the
-            # output from ever being presented as bit perfect
-            source_channel = AudioChannel.ALL
-            channel_mix = "0.5*FL+0.5*FR"
+        # a single channel source is already the downmix and holds no FL/FR to select
+        # from, where a pan would silently resolve every gain to zero
+        if input_format.channels > 1:
+            if channel_value == "left":
+                source_channel = AudioChannel.FL
+                channel_mix = "FL"
+            elif channel_value == "right":
+                source_channel = AudioChannel.FR
+                channel_mix = "FR"
+            elif channel_value == "mono":
+                # both source channels feed the downmix, so report ALL to keep the
+                # output from ever being presented as bit perfect
+                source_channel = AudioChannel.ALL
+                channel_mix = "0.5*FL+0.5*FR"
         if channel_mix:
-            # every output channel is fed explicitly: leaving ffmpeg to upmix from a
-            # single channel costs 3 dB through its rematrix
-            if output_format.channels == 1:
+            # the pan runs in the command that emits the handoff format, and it feeds
+            # every channel of it explicitly: leaving ffmpeg to upmix from a single
+            # channel costs 3 dB through its rematrix
+            if (handoff_format or output_format).channels == 1:
                 filter_params.append(f"pan=mono|c0={channel_mix}")
             else:
                 filter_params.append(f"pan=stereo|c0={channel_mix}|c1={channel_mix}")
