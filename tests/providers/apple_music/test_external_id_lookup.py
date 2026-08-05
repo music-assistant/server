@@ -18,7 +18,7 @@ def _make_media_manager() -> tuple[AppleMusicMediaManager, MagicMock]:
     api_mock = MagicMock()
     api_mock.get_data = AsyncMock()
     api_mock.get_ratings = AsyncMock(return_value={})
-    provider.api = api_mock
+    provider.api_client = api_mock  # Changed from provider.api to provider.api_client
 
     mass = MagicMock()
     mass.cache.get = AsyncMock(return_value=None)
