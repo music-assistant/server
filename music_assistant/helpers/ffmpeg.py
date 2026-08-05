@@ -30,6 +30,24 @@ LOGGER = logging.getLogger("ffmpeg")
 MINIMAL_FFMPEG_VERSION = 7
 CACHE_ATTR_LIBSOXR_PRESENT: Final[str] = "libsoxr_present"
 CACHE_ATTR_FFMPEG_VERSION: Final[str] = "ffmpeg_version"
+# flac is capped to 8 channels hence no solutions for >8
+_CHANNEL_LAYOUT: Final[dict[int, str]] = {
+    1: "mono",
+    2: "stereo",
+    3: "2.1",
+    4: "quad",
+    5: "5.0",
+    6: "5.1",
+    7: "6.1",
+    8: "7.1",
+}
+
+
+def _channel_layout(channels: int) -> str:
+    """Return the FFmpeg channel layout name for a given channel count."""
+    return _CHANNEL_LAYOUT.get(channels, "stereo")
+
+
 DEFAULT_MP3_BIT_RATE: Final[int] = 320
 
 # Regex patterns to extract audio format details from ffmpeg's stderr output.
@@ -585,7 +603,7 @@ def get_ffmpeg_args(
                 "-ac",
                 str(input_format.channels),
                 "-channel_layout",
-                "mono" if input_format.channels == 1 else "stereo",
+                _channel_layout(input_format.channels),
                 "-ar",
                 str(input_format.sample_rate),
                 "-acodec",
@@ -604,7 +622,7 @@ def get_ffmpeg_args(
         "-ac",
         str(output_format.channels),
         "-channel_layout",
-        "mono" if output_format.channels == 1 else "stereo",
+        _channel_layout(output_format.channels),
     ]
     if output_path.upper() == "NULL":
         # devnull stream
@@ -666,9 +684,12 @@ def get_ffmpeg_args(
     output_args.append(output_path)
 
     # edge case: source file is not stereo - downmix to stereo
+    # includes BL/BR as well as SL/SR so 5.1 (rear) and 7.1 (side) surrounds both fold in
     if input_format.channels > 2 and output_format.channels == 2:
         filter_params = [
-            "pan=stereo|FL=1.0*FL+0.707*FC+0.707*SL+0.707*LFE|FR=1.0*FR+0.707*FC+0.707*SR+0.707*LFE",
+            "pan=stereo|"
+            "FL=FL+0.707*FC+0.707*LFE+0.707*BL+0.707*SL|"
+            "FR=FR+0.707*FC+0.707*LFE+0.707*BR+0.707*SR",
             *filter_params,
         ]
 

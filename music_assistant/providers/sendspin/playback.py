@@ -29,6 +29,8 @@ from music_assistant.providers.sendspin.bridge_role import (
     BridgePlayerRole,
 )
 
+from .helpers import resolve_channel_count
+
 if TYPE_CHECKING:
     from music_assistant.helpers.dsp import ComplexFilter
 
@@ -735,8 +737,9 @@ class SendspinPlaybackSession:
         self._queue_session_id = get_media_session_id(media)
         self._pipeline_config_cache.clear()
         self.player.logger.debug(
-            "Sendspin session PCM format: %d Hz / F32",
+            "Sendspin session PCM format: %d Hz / F32 / %d channel(s)",
             self._pcm_format.sample_rate,
+            self._pcm_format.channels,
         )
         push_stream = self._create_push_stream()
         is_live = media.media_type in _LIVE_MEDIA_TYPES
@@ -1282,21 +1285,39 @@ class SendspinPlaybackSession:
         lossy — higher rates yield no perceivable quality gain there. Member
         clients with a different preferred rate up/down-sample in their own DSP
         step on the receiving side.
+
+        Channel count follows the leader's advertised capability (from ClientHello),
+        but only when the player has explicitly opted in via CONF_OUTPUT_CHANNELS.
+        Otherwise the session stays stereo regardless of what the client advertises.
+        Multichannel is restricted to ungrouped players.
         """
         leader_output = self._get_member_output_format(self.player.player_id)
         sample_rate = int(leader_output.sample_rate) or _DEFAULT_PCM_FORMAT.sample_rate
         if leader_output.content_type in (ContentType.OPUS, ContentType.MP3, ContentType.AAC):
             sample_rate = min(sample_rate, _LOSSY_MAX_SAMPLE_RATE)
+        session_channels = 2
+        is_grouped = bool(self._members or self.pending_join_members)
+        raw_output_channels = self.player.mass.config.get_raw_player_config_value(
+            self.player.player_id,
+            CONF_OUTPUT_CHANNELS,
+            "stereo",
+        )
+        multichannel_opted_in = (
+            str(raw_output_channels or "stereo").strip().lower() == "multichannel"
+        )
+        if not is_grouped and multichannel_opted_in:
+            advertised = int(leader_output.channels) if leader_output.channels else 2
+            session_channels = resolve_channel_count(advertised)
         pcm_format = AudioFormat(
             content_type=ContentType.PCM_F32LE,
             sample_rate=sample_rate,
             bit_depth=32,
-            channels=2,
+            channels=session_channels,
         )
         sendspin_pcm_format = SendspinAudioFormat(
             sample_rate=sample_rate,
             bit_depth=32,
-            channels=2,
+            channels=session_channels,
             sample_type="float",
         )
         return pcm_format, sendspin_pcm_format

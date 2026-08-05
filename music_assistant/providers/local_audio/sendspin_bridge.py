@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import struct
 import sys
 import time
 import uuid
@@ -17,6 +18,7 @@ from aiosendspin.models.types import AudioCodec, PlayerCommand
 from music_assistant_models.enums import IdentifierType
 from music_assistant_models.player import DeviceInfo
 
+from music_assistant.constants import CONF_OUTPUT_CHANNELS
 from music_assistant.models.player import Player
 from music_assistant.providers.sendspin.bridge_manager import SendspinBridgeManagerBase
 from music_assistant.providers.sendspin.bridge_role import (
@@ -26,7 +28,11 @@ from music_assistant.providers.sendspin.bridge_role import (
     BRIDGE_SAMPLE_RATE,
     BridgePlayerRole,
 )
-from music_assistant.providers.sendspin.helpers import bridge_client_id_from_uuid
+from music_assistant.providers.sendspin.helpers import (
+    OUTPUT_CHANNELS_MULTICHANNEL,
+    bridge_client_id_from_uuid,
+    resolve_channel_count,
+)
 
 from .constants import (
     AUDIO_BACKEND_ALSA,
@@ -46,8 +52,10 @@ if sys.platform == "linux":
     from .pa_simple import (
         PASimpleStream,
         PAVolumeController,
+        build_channel_remap_index,
         enumerate_alsa_devices,
         enumerate_pa_sinks,
+        remap_pcm_channels,
         suspend_resume_sink,
     )
     from .remap_topology import (
@@ -57,6 +65,8 @@ if sys.platform == "linux":
     )
 
 if TYPE_CHECKING:
+    import logging
+
     import sounddevice as sd  # noqa: F401
     from aiosendspin.server import (
         ExternalStreamStartRequest,
@@ -74,6 +84,31 @@ if TYPE_CHECKING:
 # played, since writing stale audio would push subsequent chunks further out of
 # sync with the server timeline.
 _LATE_DROP_THRESHOLD_US = 500_000  # 500 ms
+
+
+def _find_first_nonsilent_frame(
+    data: bytes, frame_size: int, fmt: str, silence_threshold: int = 50
+) -> tuple[int, ...] | None:
+    """
+    Return the first frame in `data` that carries signal.
+
+    Returns the first frame where any sample exceeds the silence threshold,
+    or the very first frame if the whole scanned range is silent.
+
+    Diagnostic-only: chunks commonly start with a silent lead-in (encoder
+    priming, or genuine silence in the source), which makes logging frame 0
+    useless for verifying channel content/order. Scans up to the first 2000
+    frames (a few hundred ms) rather than the whole chunk, since this is
+    only for a one-time log line, not the audio path itself.
+    """
+    n_frames = min(len(data) // frame_size, 2000)
+    for i in range(n_frames):
+        frame = struct.unpack_from(fmt, data, i * frame_size)
+        if any(abs(s) > silence_threshold for s in frame):
+            return frame
+    if n_frames:
+        return struct.unpack_from(fmt, data, 0)
+    return None
 
 
 def _now_us() -> int:
@@ -125,19 +160,70 @@ class SendspinLocalAudioBridge:
         self.device_info = device_info
         self.device_name: str = device_info["name"]
         self.display_name: str = device_info.get("description", self.device_name)
+        self.logger = provider.logger.getChild(f"bridge.{self.display_name}")
         self.pa_sink_name: str | None = device_info.get("pa_sink_name")
         self.sample_rate: int = device_info.get("sample_rate", BRIDGE_SAMPLE_RATE)
         self.bit_depth: int = device_info.get("bit_depth", BRIDGE_BIT_DEPTH)
         # The PA sink's actual channel count (e.g. 8 for a 7.1 master, 2 for a
-        # remap sink). Used for pa_cvolume_set in PAVolumeController calls —
-        # a mismatch against the sink's real channel_map can leave the
-        # displayed reference_volume updated while soft_volume (real gain)
-        # doesn't change. This is independent of BRIDGE_CHANNELS, which is
-        # the audio *stream's* channel count (always 2).
-        self.pa_channels: int = device_info.get("max_output_channels", BRIDGE_CHANNELS)
+        # remap sink). Drives both the advertised Sendspin format and the
+        # actual PCM stream opened against the sink, and is used for
+        # pa_cvolume_set in PAVolumeController calls — a mismatch against the
+        # sink's real channel_map can leave the displayed reference_volume
+        # updated while soft_volume (real gain) doesn't change.
+        # What the device can do, clamped by the same rule the session format
+        # uses so the two can never disagree.
+        self.device_channels: int = resolve_channel_count(
+            device_info.get("max_output_channels", BRIDGE_CHANNELS)
+        )
+        # Multichannel is opt-in and off by default, so nothing changes on upgrade.
+        # Toggle lives on the sendspin protocol player.
+        _config_client_id = bridge_client_id_from_uuid(
+            get_device_uuid(self.device_name, device_info.get("hostapi", 0))
+        )
+        # The output-channels mode this bridge was built with, so a later change
+        # can be detected and the bridge rebuilt (the count is fixed at
+        # construction and advertised from then on).
+        self.output_channels_mode: str = str(
+            self.mass.config.get_raw_player_config_value(
+                _config_client_id, CONF_OUTPUT_CHANNELS, "stereo"
+            )
+        )
+        self.pa_channels: int = (
+            self.device_channels
+            if self.output_channels_mode == OUTPUT_CHANNELS_MULTICHANNEL
+            else BRIDGE_CHANNELS
+        )
+
+        # The device's real physical channel order, as reported by the ALSA
+        # driver (pa_simple query_alsa_chmap(), via enumerate_alsa_devices()),
+        # and the resulting remap index against MA's standard PCM output order,
+        # computed once here so both writer backends (_audio_writer_pulse and
+        # _audio_writer_sounddevice) apply the identical correction. None when
+        # no correction is needed or possible.
+        self.physical_channel_map: list[str] | None = device_info.get("physical_channel_map")
+        # Byte-remap applies to the ALSA backend only: raw hw: devices are
+        # order-blind, so content must be reordered into the driver's active
+        # chmap before writing. On the pulse backend PASimpleStream declares
+        # the data's slot order explicitly (pa_channel_map in MA/FFmpeg
+        # order) and the server reorders by position name to the sink's map
+        # — byte-remapping as well would mislabel the declared order and
+        # double-remap. physical_channel_map is still kept for logging.
+        self._channel_remap_index: list[int] | None = (
+            build_channel_remap_index(
+                self.pa_channels, self.physical_channel_map, logger=self.logger
+            )
+            if backend != "pulse"
+            else None
+        )
         self.device_index: int | None = device_info.get("index")
         self.backend: str = backend
-        self.logger = provider.logger.getChild(f"bridge.{self.display_name}")
+        self.logger.debug(
+            "%s: pa_channels=%d physical_channel_map=%s remap_index=%s",
+            self.device_name,
+            self.pa_channels,
+            self.physical_channel_map,
+            self._channel_remap_index,
+        )
 
         # The shared PAVolumeController, if connected for the pulse backend.
         # Used by _reset_sink_volume() (pin-to-100% fallback, via libpulse
@@ -230,13 +316,20 @@ class SendspinLocalAudioBridge:
 
         # On Linux advertise the sink's native format so MA transcodes correctly.
         _depths = sorted({self.bit_depth, BRIDGE_BIT_DEPTH}, reverse=True)
+        # Advertise stereo plus the device's native layout when it has one, so the
+        # player's preferred-format setting offers a real multichannel choice for
+        # capable devices and a single stereo option for everything else.
+        _channel_counts = [BRIDGE_CHANNELS]
+        if self.device_channels > BRIDGE_CHANNELS:
+            _channel_counts.append(self.device_channels)
         supported_formats = [
             SupportedAudioFormat(
                 codec=AudioCodec.PCM,
-                channels=BRIDGE_CHANNELS,
+                channels=c,
                 sample_rate=self.sample_rate,
                 bit_depth=d,
             )
+            for c in _channel_counts
             for d in _depths
         ]
 
@@ -287,7 +380,7 @@ class SendspinLocalAudioBridge:
         self._bridge_role.setup_audio_requirements(
             sample_rate=self.sample_rate,
             bit_depth=self.bit_depth,
-            channels=BRIDGE_CHANNELS,
+            channels=self.pa_channels,
         )
 
         self.logger.info(
@@ -296,6 +389,13 @@ class SendspinLocalAudioBridge:
             self._bridge_client_id,
             self._volume_control_mode,
         )
+        if self._channel_remap_index is not None:
+            self.logger.info(
+                "Channel remap active for %s: physical order %s (remap indices: %s)",
+                self.device_name,
+                self.physical_channel_map,
+                self._channel_remap_index,
+            )
 
         if self._volume_controller is not None:
             # Remap sink: apply the restored volume/mute to PA sink hardware
@@ -385,7 +485,7 @@ class SendspinLocalAudioBridge:
         bytes_per_sample = self.bit_depth // 8
         # One chunk of silence to trigger idle->RUNNING and initialise the
         # ALSA DMA buffer — just enough to pay the mmap init cost.
-        silence = bytes(BRIDGE_CHANNELS * bytes_per_sample * 64)  # 64 frames
+        silence = bytes(self.pa_channels * bytes_per_sample * 64)  # 64 frames
         try:
             stream = await self.mass.loop.run_in_executor(
                 None,
@@ -393,7 +493,7 @@ class SendspinLocalAudioBridge:
                     sink_name=pa_sink_name,
                     app_name=f"music-assistant-{pa_sink_name}",
                     rate=self.sample_rate,
-                    channels=BRIDGE_CHANNELS,
+                    channels=self.pa_channels,
                     bit_depth=self.bit_depth,
                 ),
             )
@@ -623,7 +723,7 @@ class SendspinLocalAudioBridge:
             "Opening PA stream: sink=%s rate=%d channels=%d bit_depth=%d",
             self.pa_sink_name,
             self.sample_rate,
-            BRIDGE_CHANNELS,
+            self.pa_channels,
             self.bit_depth,
         )
         assert self.pa_sink_name is not None
@@ -634,10 +734,49 @@ class SendspinLocalAudioBridge:
                 sink_name=pa_sink_name,
                 app_name=f"music-assistant-{pa_sink_name}",
                 rate=self.sample_rate,
-                channels=BRIDGE_CHANNELS,
+                channels=self.pa_channels,
                 bit_depth=self.bit_depth,
             ),
         )
+
+    def _remap_channels(self, data: bytes, bytes_per_sample: int, *, log_first: bool) -> bytes:
+        """
+        Reorder a PCM chunk into the device's physical channel order.
+
+        Shared by both writer backends. When `log_first` is set, the first
+        non-silent frame is logged before and after the reorder, which is the
+        only practical way to tell a wrong channel order apart from wrong
+        incoming data.
+
+        :param data: Raw interleaved PCM for this chunk.
+        :param bytes_per_sample: Sample width the writer is using.
+        :param log_first: Emit the one-time before/after diagnostic.
+        :returns: The reordered PCM, or `data` unchanged if no remap applies.
+        """
+        if self._channel_remap_index is None:
+            return data
+        frame_size = self.pa_channels * bytes_per_sample
+        fmt = f"<{self.pa_channels}{ {2: 'h', 4: 'i'}.get(bytes_per_sample, 'i') }"
+        if log_first:
+            self.logger.debug(
+                "First chunk PRE-remap, first non-silent frame (%d channels, %d-byte): %s",
+                self.pa_channels,
+                bytes_per_sample,
+                _find_first_nonsilent_frame(data, frame_size, fmt),
+            )
+        data = remap_pcm_channels(
+            data, self.pa_channels, bytes_per_sample, self._channel_remap_index
+        )
+        if log_first:
+            self.logger.debug(
+                "First chunk POST-remap, first non-silent frame (%d channels, %d-byte): %s "
+                "(expected physical order %s)",
+                self.pa_channels,
+                bytes_per_sample,
+                _find_first_nonsilent_frame(data, frame_size, fmt),
+                self.physical_channel_map,
+            )
+        return data
 
     async def _audio_writer_pulse(self) -> None:
         """Write queued audio to a PA sink via PASimpleStream (Linux)."""
@@ -706,13 +845,14 @@ class SendspinLocalAudioBridge:
             self._output_stream = _sd.RawOutputStream(
                 device=self.device_index,
                 samplerate=self.sample_rate,
-                channels=BRIDGE_CHANNELS,
+                channels=self.pa_channels,
                 dtype="int16",
                 blocksize=DEFAULT_BUFFER_FRAMES,
             )
             self._output_stream.start()
             self.logger.debug("sounddevice stream opened for %s", self.device_name)
 
+            first_chunk_written = False
             while True:
                 item = await self._write_queue.get()
                 if item is None or not self._is_streaming:
@@ -721,6 +861,8 @@ class SendspinLocalAudioBridge:
                 if not await self._wait_for_chunk_time(timestamp_us):
                     continue  # late chunk dropped
                 data = self._apply_software_volume(data)
+                data = self._remap_channels(data, 2, log_first=not first_chunk_written)
+                first_chunk_written = True
                 try:
                     await self.mass.loop.run_in_executor(None, self._output_stream.write, data)
                 except _sd.PortAudioError as err:
@@ -801,7 +943,7 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
             )
             try:
                 resolved_backend, devices = await self.mass.loop.run_in_executor(
-                    None, self._enumerate_output_devices, configured_backend
+                    None, self._enumerate_output_devices, configured_backend, self.logger
                 )
             except Exception as err:
                 self.logger.warning("Failed to enumerate audio devices: %s", err)
@@ -1114,13 +1256,16 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
         return new_devices
 
     @staticmethod
-    def _enumerate_output_devices(backend: str) -> tuple[str, list[dict[str, Any]]]:
+    def _enumerate_output_devices(
+        backend: str, logger: logging.Logger
+    ) -> tuple[str, list[dict[str, Any]]]:
         """
         Enumerate available audio output devices for the given backend.
 
         :param backend: One of AUDIO_BACKEND_AUTO / AUDIO_BACKEND_PULSEAUDIO /
             AUDIO_BACKEND_ALSA (from constants).  On non-Linux the backend is
             always resolved to "sounddevice".
+        :param logger: The provider's logger, forwarded to the pa_simple helpers
         :returns: Tuple of (resolved_backend, device_list).
         """
         if sys.platform != "linux":
@@ -1147,7 +1292,7 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
 
         # Linux — dispatch by configured backend
         if backend == AUDIO_BACKEND_ALSA:
-            return "alsa", enumerate_alsa_devices()
+            return "alsa", enumerate_alsa_devices(logger=logger)
 
         if backend == AUDIO_BACKEND_PULSEAUDIO:
             return "pulse", enumerate_pa_sinks()
@@ -1159,4 +1304,16 @@ class LocalAudioBridgeManager(SendspinBridgeManagerBase[SendspinLocalAudioBridge
                 return "pulse", sinks
         except (FileNotFoundError, RuntimeError):  # fmt: skip
             pass
-        return "alsa", enumerate_alsa_devices()
+        return "alsa", enumerate_alsa_devices(logger=logger)
+
+    def _is_bridge_stale(self, bridge: SendspinLocalAudioBridge) -> bool:
+        """Rebuild when the Sendspin server was replaced or the channel mode changed."""
+        if super()._is_bridge_stale(bridge):
+            return True
+        client_id = bridge_client_id_from_uuid(
+            get_device_uuid(bridge.device_name, bridge.device_info.get("hostapi", 0))
+        )
+        current_mode = str(
+            self.mass.config.get_raw_player_config_value(client_id, CONF_OUTPUT_CHANNELS, "stereo")
+        )
+        return current_mode != bridge.output_channels_mode

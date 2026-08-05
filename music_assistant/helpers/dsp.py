@@ -82,7 +82,7 @@ def filter_to_ffmpeg_params(
         if dsp_filter.preamp and dsp_filter.preamp != 0 and not has_per_channel_preamp:
             filter_params.append(f"volume={dsp_filter.preamp}dB")
         # "volume" is handled for the whole audio stream only, so we'll use the pan filter instead
-        elif has_per_channel_preamp:
+        elif has_per_channel_preamp and input_format.channels == 2:
             channel_config = []
             all_channels = [AudioChannel.FL, AudioChannel.FR]
             for channel_id in all_channels:
@@ -100,6 +100,7 @@ def filter_to_ffmpeg_params(
                     channel_config.append(f"{channel_id}={channel_id}")
 
             # Could potentially also be expanded for more than 2 channels
+            # pan=stereo only outputs FL/FR; on a non-stereo source it would
             filter_params.append("pan=stereo|" + "|".join(channel_config))
         for b in dsp_filter.bands:
             if not b.enabled:

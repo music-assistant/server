@@ -23,6 +23,7 @@ from music_assistant.controllers.streams.smart_fades.models import (
 from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
 from music_assistant.controllers.streams.smart_fades.renderer import TransitionRenderer
 from music_assistant.helpers.audio import iter_pcm_slices
+from music_assistant.helpers.ffmpeg import _channel_layout
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import remove_file
 
@@ -69,7 +70,7 @@ class SmartFade(ABC):
         """
         ...
 
-    async def apply(
+    async def apply(  # noqa: PLR0915
         self,
         fade_out_part: bytes,
         fade_in_part: bytes | AsyncGenerator[bytes],
@@ -100,7 +101,7 @@ class SmartFade(ABC):
             "-ar",
             str(pcm_format.sample_rate),
             "-channel_layout",
-            "mono" if pcm_format.channels == 1 else "stereo",
+            _channel_layout(pcm_format.channels),
             "-f",
             pcm_format.content_type.value,
             "-i",
@@ -113,7 +114,7 @@ class SmartFade(ABC):
             "-ar",
             str(pcm_format.sample_rate),
             "-channel_layout",
-            "mono" if pcm_format.channels == 1 else "stereo",
+            _channel_layout(pcm_format.channels),
             "-f",
             pcm_format.content_type.value,
             "-i",
@@ -136,7 +137,7 @@ class SmartFade(ABC):
                 "-ar",
                 str(pcm_format.sample_rate),
                 "-channel_layout",
-                "mono" if pcm_format.channels == 1 else "stereo",
+                _channel_layout(pcm_format.channels),
                 "-f",
                 pcm_format.content_type.value,
                 "-",
@@ -165,10 +166,26 @@ class SmartFade(ABC):
 
                 feed_task = asyncio.create_task(_feed_stdin())
                 stderr_task = asyncio.create_task(_drain_stderr())
+                # iter_any() reads are not frame-aligned; buffer across chunks
+                # so only whole PCM frames are yielded (partial frames corrupt
+                # downstream resampling on non-stereo streams).
+                frame_size = (pcm_format.bit_depth // 8) * pcm_format.channels
+                leftover = b""
                 try:
                     async for chunk in proc.iter_any():
                         got_output = True
-                        yield chunk
+                        data = leftover + chunk
+                        aligned_len = len(data) - (len(data) % frame_size)
+                        if aligned_len:
+                            yield data[:aligned_len]
+                        leftover = data[aligned_len:]
+                    if leftover:
+                        self.logger.warning(
+                            "Crossfade FFmpeg output ended with %d leftover byte(s), "
+                            "not a whole %d-byte frame — dropped",
+                            len(leftover),
+                            frame_size,
+                        )
                 finally:
                     if not feed_task.done():
                         feed_task.cancel()

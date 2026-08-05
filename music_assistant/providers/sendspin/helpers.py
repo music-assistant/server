@@ -14,6 +14,11 @@ from music_assistant_models.enums import ConfigEntryType
 
 from .constants import BRIDGE_PREFIX
 
+# Ceiling on the channel count derived from a client's advertised format.
+# 8 covers 7.1, which is also where the ffmpeg channel layouts stop; anything a
+# client claims beyond this is untrusted.
+_MAX_SESSION_CHANNELS = 8
+
 if TYPE_CHECKING:
     from aiosendspin.models.core import ClientHelloPayload
     from aiosendspin.models.management import ManagementResultData
@@ -123,6 +128,29 @@ def effective_unpaired_access(
     if config is not None and config.unpaired_access is not None:
         return config.unpaired_access.enabled
     return info is not None and info.unpaired_access.enabled
+
+
+# Extra option value for MA's per-player output-channel setting, offered only to
+# clients whose hello advertises a layout with more than two channels. Selecting
+# it sends audio at the device's native channel count instead of stereo.
+OUTPUT_CHANNELS_MULTICHANNEL = "multichannel"
+
+
+def resolve_channel_count(advertised: int) -> int:
+    """
+    Resolve an advertised channel count to one this pipeline can carry.
+
+    Applied to both the session PCM format and the bridge's output stream so the
+    two can never disagree: the session format is fixed at stream start and no
+    conversion happens between it and the device.
+
+    Multichannel is accepted only for counts with a known ffmpeg layout and a
+    matching physical channel order (3..8); a client advertising fewer or more
+    than the pipeline supports falls back to stereo.
+    """
+    if 2 < advertised <= _MAX_SESSION_CHANNELS:
+        return advertised
+    return 2
 
 
 def bridge_client_id_from_mac(mac: str) -> str:
