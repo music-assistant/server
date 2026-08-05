@@ -8,7 +8,11 @@ the configured storage_path.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
+import time
+from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -147,6 +151,48 @@ async def test_save_writes_keys_before_index_so_a_crash_doesnt_orphan_labels(
     assert keys_path.exists()
     assert "track1" in keys_path.read_text(encoding="utf-8")
     assert not (tmp_path / "sonic_similarity_clap_keys.json.tmp").exists()
+
+
+@pytest.mark.asyncio
+async def test_close_waits_for_a_save_whose_task_was_cancelled(
+    tmp_path: Path,
+    logger: logging.Logger,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Server shutdown cancels the save task; its worker keeps writing and must finish alone."""
+    idx = ClapIndex(_make_mass(tmp_path), logger)  # type: ignore[arg-type]
+    await idx.load()
+    await idx.add("spotify", "track1", _unit_vec(1))
+
+    real_save = idx._index.save
+    in_save = threading.Event()
+    active = 0
+    max_active = 0
+
+    def _slow_save(path: str) -> None:
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        in_save.set()
+        time.sleep(0.2)
+        real_save(path)
+        active -= 1
+
+    monkeypatch.setattr(idx._index, "save", _slow_save)
+
+    save_task = asyncio.create_task(idx.save())
+    await asyncio.to_thread(in_save.wait)
+    save_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await save_task
+
+    # the unload that follows task cancellation on shutdown
+    await idx.close()
+
+    assert max_active == 1
+    keys_path = tmp_path / "sonic_similarity_clap_keys.json"
+    assert "track1" in keys_path.read_text(encoding="utf-8")
+    assert idx._index is None
 
 
 @pytest.mark.asyncio
