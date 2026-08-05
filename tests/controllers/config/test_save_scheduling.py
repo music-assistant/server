@@ -175,6 +175,24 @@ async def test_close_saves_change_that_is_still_debounced(tmp_path: Path) -> Non
     assert json.loads(Path(controller.filename).read_text()) == {"generation": 1}
 
 
+async def test_cancelled_save_does_not_race_the_next_writer(tmp_path: Path) -> None:
+    """
+    A save cancelled mid-write may not leave a second writer racing it.
+
+    Cancelling a save does not stop the worker thread it handed the write to, so the
+    save that follows writes the same file at the same time as one that is on its way
+    out - and between them they used to leave no settings file at all.
+    """
+    controller, mass = _make_controller(tmp_path)
+    controller.set("generation", 1, immediate=True)
+    await _cancel_save_tasks(mass)
+
+    await controller.close()
+
+    assert json.loads(Path(controller.filename).read_text()) == {"generation": 1}
+    assert not Path(f"{controller.filename}.tmp").exists()
+
+
 async def test_close_saves_change_whose_save_task_was_cancelled(tmp_path: Path) -> None:
     """
     A change must survive a stop that cancels the save task before closing.

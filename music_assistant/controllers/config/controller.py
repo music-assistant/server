@@ -7,6 +7,7 @@ import base64
 import contextlib
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -71,6 +72,7 @@ class ConfigController(
         self._save_requested = 0
         self._save_written = 0
         self._save_lock = asyncio.Lock()
+        self._disk_lock = threading.Lock()
 
     async def setup(self) -> None:
         """Async initialize of controller."""
@@ -316,24 +318,29 @@ class ConfigController(
 
     def _save_to_disk(self, json_data: str) -> None:
         """Atomically write the settings file to disk, rotating the previous one to backup."""
-        filename = Path(self.filename)
-        filename_temp = Path(f"{self.filename}.tmp")
-        with filename_temp.open("w", encoding="utf-8") as _file:
-            _file.write(json_data)
-            _file.flush()
-            # fsync so a power failure can not leave a zero-length file behind (#5716)
-            os.fsync(_file.fileno())
-        with contextlib.suppress(FileNotFoundError, *JSON_DECODE_EXCEPTIONS):
-            # only rotate a parseable file to the backup, so a corrupt
-            # (crash leftover) file can never clobber a possibly good backup
-            json_loads(filename.read_bytes())
-            filename.replace(f"{self.filename}.backup")
-        filename_temp.replace(filename)
-        # best effort: fsync the directory as well so the renames themselves
-        # survive a power failure (not supported on all platforms/filesystems)
-        with contextlib.suppress(OSError):
-            dir_fd = os.open(os.path.dirname(self.filename), os.O_RDONLY)
-            try:
-                os.fsync(dir_fd)
-            finally:
-                os.close(dir_fd)
+        # cancelling a save does not stop the worker thread it already handed the write
+        # to, so _save_lock is released while this is still running. guard the file
+        # itself here, in the thread that actually writes it, or a second writer would
+        # race this one over the same temp file and leave no settings at all
+        with self._disk_lock:
+            filename = Path(self.filename)
+            filename_temp = Path(f"{self.filename}.tmp")
+            with filename_temp.open("w", encoding="utf-8") as _file:
+                _file.write(json_data)
+                _file.flush()
+                # fsync so a power failure can not leave a zero-length file behind (#5716)
+                os.fsync(_file.fileno())
+            with contextlib.suppress(FileNotFoundError, *JSON_DECODE_EXCEPTIONS):
+                # only rotate a parseable file to the backup, so a corrupt
+                # (crash leftover) file can never clobber a possibly good backup
+                json_loads(filename.read_bytes())
+                filename.replace(f"{self.filename}.backup")
+            filename_temp.replace(filename)
+            # best effort: fsync the directory as well so the renames themselves
+            # survive a power failure (not supported on all platforms/filesystems)
+            with contextlib.suppress(OSError):
+                dir_fd = os.open(os.path.dirname(self.filename), os.O_RDONLY)
+                try:
+                    os.fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
