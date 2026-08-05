@@ -812,6 +812,7 @@
   "core.webserver.config_entries.webserver_warn.label": "Please note that the webserver is by default unencrypted. Never ever expose the webserver directly to the internet! \n\nEnable SSL below or use a reverse proxy or VPN to secure access. \n\nAs an alternative, consider using the Remote Access feature which secures access to your Music Assistant instance without the need to expose your webserver directly.",
   "core.webserver.manifest.description": "Configuration of the webserver and API",
   "core.webserver.manifest.name": "Webserver",
+  "provider.abc_radio_network.manifest.description": "Stream the live music stations of the Australian ABC Radio network — including triple j, Double J, ABC Classic and ABC Jazz — with live now-playing information.",
   "provider.acoustid_lookup.config_entries.analyse_streaming.description": "When enabled, also fingerprint and identify tracks played from streaming providers (Spotify, Tidal, Qobuz, …) that are present in your library but lack a MusicBrainz Recording Id.",
   "provider.acoustid_lookup.config_entries.analyse_streaming.label": "Analyse tracks from streaming providers",
   "provider.acoustid_lookup.config_entries.api_key.description": "Optional. Music Assistant ships with a shared AcoustID API key, so this can be left empty. Provide your own free key from https://acoustid.org/api-key if you prefer to use a dedicated one. AcoustID requests that high-traffic deployments notify the project in advance — see https://acoustid.org/webservice for details.",
