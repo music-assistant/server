@@ -78,9 +78,7 @@ def test_url_ignores_a_configured_base_url(webserver: WebserverController) -> No
 
 def test_url_uses_tls_when_ssl_is_enabled(webserver: WebserverController) -> None:
     """Verify the scheme matches what the webserver serves."""
-    cast("MagicMock", webserver.config).get_value.side_effect = lambda key, default=None: {
-        CONF_ENABLE_SSL: True
-    }.get(key, default)
+    webserver._ssl_active = True
     webserver.bind_ip = "0.0.0.0"
     webserver.publish_ip = "192.168.1.5"
 
