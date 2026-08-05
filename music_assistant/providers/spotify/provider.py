@@ -413,6 +413,18 @@ class SpotifyProvider(MusicProvider):
 
         try:
             result = await self._get_data("search", q=f"upc:{external_id}", type="album", limit=1)
+
+            # If BARCODE search failed and code starts with 0, try without leading 0 (EAN-13 -> UPC-12)
+            if (
+                not result.get("albums", {}).get("items")
+                and external_id_type.upper() == "BARCODE"
+                and len(external_id) == 13
+                and external_id.startswith("0")
+            ):
+                result = await self._get_data(
+                    "search", q=f"upc:{external_id[1:]}", type="album", limit=1
+                )
+
             if not result.get("albums", {}).get("items"):
                 return None
             album_obj = result["albums"]["items"][0]

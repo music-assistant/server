@@ -39,13 +39,36 @@ async def test_get_track_by_isrc(
                     {
                         "id": "track123",
                         "name": "Test Track",
-                        "artists": [{"id": "artist123", "name": "Test Artist"}],
+                        "artists": [
+                            {
+                                "id": "artist123",
+                                "name": "Test Artist",
+                                "external_urls": {
+                                    "spotify": "https://open.spotify.com/artist/artist123"
+                                },
+                            }
+                        ],
                         "album": {
                             "id": "album123",
                             "name": "Test Album",
+                            "album_type": "album",
+                            "artists": [
+                                {
+                                    "id": "artist123",
+                                    "name": "Test Artist",
+                                    "external_urls": {
+                                        "spotify": "https://open.spotify.com/artist/artist123"
+                                    },
+                                }
+                            ],
+                            "external_urls": {"spotify": "https://open.spotify.com/album/album123"},
                             "images": [{"url": "https://example.com/image.jpg"}],
                         },
                         "duration_ms": 180000,
+                        "external_urls": {"spotify": "https://open.spotify.com/track/track123"},
+                        "is_local": False,
+                        "is_playable": True,
+                        "explicit": False,
                         "external_ids": {"isrc": "USUM71703861"},
                     }
                 ]
@@ -95,7 +118,17 @@ async def test_get_album_by_upc(
                     {
                         "id": "album123",
                         "name": "Test Album",
-                        "artists": [{"id": "artist123", "name": "Test Artist"}],
+                        "album_type": "album",
+                        "artists": [
+                            {
+                                "id": "artist123",
+                                "name": "Test Artist",
+                                "external_urls": {
+                                    "spotify": "https://open.spotify.com/artist/artist123"
+                                },
+                            }
+                        ],
+                        "external_urls": {"spotify": "https://open.spotify.com/album/album123"},
                         "images": [{"url": "https://example.com/image.jpg"}],
                         "release_date": "2017-01-01",
                         "total_tracks": 10,
@@ -127,7 +160,17 @@ async def test_get_album_by_barcode(
                     {
                         "id": "album123",
                         "name": "Test Album",
-                        "artists": [{"id": "artist123", "name": "Test Artist"}],
+                        "album_type": "album",
+                        "artists": [
+                            {
+                                "id": "artist123",
+                                "name": "Test Artist",
+                                "external_urls": {
+                                    "spotify": "https://open.spotify.com/artist/artist123"
+                                },
+                            }
+                        ],
+                        "external_urls": {"spotify": "https://open.spotify.com/album/album123"},
                         "images": [{"url": "https://example.com/image.jpg"}],
                         "release_date": "2017-01-01",
                         "total_tracks": 10,
@@ -156,6 +199,54 @@ async def test_get_album_by_upc_not_found(
     album = await spotify_provider.get_album_by_external_id("INVALID_UPC", "upc")
 
     assert album is None
+
+
+@pytest.mark.asyncio
+async def test_get_album_by_ean13_barcode_fallback(
+    spotify_provider: SpotifyProvider, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test album lookup by EAN-13 BARCODE with fallback to UPC-12."""
+    # First call returns empty, second call (without leading 0) succeeds
+    get_data_mock = AsyncMock(
+        side_effect=[
+            {"albums": {"items": []}},  # EAN-13 not found
+            {  # UPC-12 found
+                "albums": {
+                    "items": [
+                        {
+                            "id": "album123",
+                            "name": "Test Album",
+                            "album_type": "album",
+                            "artists": [
+                                {
+                                    "id": "artist123",
+                                    "name": "Test Artist",
+                                    "external_urls": {
+                                        "spotify": "https://open.spotify.com/artist/artist123"
+                                    },
+                                }
+                            ],
+                            "external_urls": {"spotify": "https://open.spotify.com/album/album123"},
+                            "images": [{"url": "https://example.com/image.jpg"}],
+                            "release_date": "2017-01-01",
+                            "total_tracks": 10,
+                        }
+                    ]
+                }
+            },
+        ]
+    )
+    monkeypatch.setattr(spotify_provider, "_get_data", get_data_mock)
+
+    album = await spotify_provider.get_album_by_external_id("0123456789012", "barcode")
+
+    assert album is not None
+    assert album.item_id == "album123"
+    assert get_data_mock.call_count == 2
+    # First call with EAN-13
+    get_data_mock.assert_any_call("search", q="upc:0123456789012", type="album", limit=1)
+    # Second call with UPC-12 (without leading 0)
+    get_data_mock.assert_any_call("search", q="upc:123456789012", type="album", limit=1)
 
 
 @pytest.mark.asyncio
