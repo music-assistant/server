@@ -80,6 +80,11 @@ _TRIM_GUARD_VOICE_FLOOR: float = 0.4
 # audible tail; below it the default anchor's trim is already acceptable
 _TRIM_CLOSING_MIN_GAP_S: float = 8.0
 
+# Lazy-overlay length: a long unphrased equal-power blend, not a rung on any ladder
+LAZY_OVERLAY_SECONDS: float = 16.0
+# both decks at or under this in-window vocal duty qualify as ambient
+_LAZY_DUTY_MAX: float = 0.10
+
 
 @dataclass(frozen=True, slots=True)
 class CandidateSpec:
@@ -344,6 +349,31 @@ class TrimClosingAnchorGenerator(CandidateGenerator):
             )
 
 
+class LazyOverlayGenerator(CandidateGenerator):
+    """Emits one long unphrased overlay when the grid is unusable but both decks are ambient."""
+
+    name = "lazy-overlay"
+
+    def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
+        """Emit the overlay spec, or nothing when the pair doesn't qualify."""
+        if ctx.tier is not TransitionTier.QUICK_FADE or ctx.cross_meter:
+            return
+        if ctx.grid_blendable or ctx.bpm_diff_percent > TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
+            return
+        duties = _vocal_duties(ctx)
+        if duties is None or duties[0] > _LAZY_DUTY_MAX or duties[1] > _LAZY_DUTY_MAX:
+            return
+        yield CandidateSpec(
+            tier=ctx.tier,
+            bars=1,
+            anchor_s=ctx.audio_end,
+            entry_s=None,
+            strategy=TransitionStrategy.LAZY_OVERLAY,
+            source=self.name,
+            ideal_bars=1,
+        )
+
+
 def default_generators() -> tuple[CandidateGenerator, ...]:
     """Return the standard generator set, in preference order (best first)."""
     return (
@@ -351,6 +381,7 @@ def default_generators() -> tuple[CandidateGenerator, ...]:
         CodaAnchorGenerator(),
         ProtectiveAnchorGenerator(),
         VocalOnsetEntryGenerator(),
+        LazyOverlayGenerator(),
         TrimClosingAnchorGenerator(),
     )
 
@@ -375,6 +406,8 @@ class CandidateFactory:
         The returned candidate's spec reflects what was actually built: a
         re-anchored tail can downgrade the tier and cap the bar count.
         """
+        if spec.strategy is TransitionStrategy.LAZY_OVERLAY:
+            return self._build_lazy_overlay(spec)
         tail = self._anchored_tail(spec.anchor_s)
         # a re-anchored tail can downgrade the tier (shorter/irregular grid); the
         # requested bar count still reflects the old tier, so cap it at the new
@@ -818,6 +851,21 @@ class CandidateFactory:
             mid >= _TRIM_GUARD_VOICE_FLOOR * profile.reference["mid"]
         )
         return low_silent & voice_active
+
+    def _build_lazy_overlay(self, spec: CandidateSpec) -> Candidate:
+        """Build the unphrased long-overlay candidate: anchored at the audible end, no alignment."""
+        tail = self._anchored_tail(spec.anchor_s)
+        plan = TransitionPlan(
+            tier=spec.tier,
+            fade_out_window=tail.effective_end,
+            crossfade_duration=min(LAZY_OVERLAY_SECONDS, tail.effective_end),
+            tempo_plan=TempoPlan(),
+            fadeout_trim=tail.fadeout_trim,
+            fadein_trim_start=None,
+        )
+        return Candidate(
+            spec=spec, plan=plan, metrics=self._score(spec, plan), ideal_bars=spec.ideal_bars
+        )
 
     def _score(self, spec: CandidateSpec, plan: TransitionPlan) -> PlanMetrics:
         """Score a candidate: trims, retained vocal time, downbeat alignment, collision."""

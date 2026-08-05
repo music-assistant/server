@@ -13,7 +13,11 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from music_assistant.controllers.streams.smart_fades.models import TransitionPlan, TransitionTier
+from music_assistant.controllers.streams.smart_fades.models import (
+    TransitionPlan,
+    TransitionStrategy,
+    TransitionTier,
+)
 from music_assistant.controllers.streams.smart_fades.vocal import (
     COLLISION_SECONDS_LIMIT,
     SHORT_FADE_SECONDS,
@@ -176,10 +180,15 @@ class OverlapPreferencePolicy(Policy):
 
     rung_penalty_per_step: float = 10.0
     tier_penalty_per_step: float = 15.0
+    lazy_overlay_penalty: float = 2.0
 
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Judge one candidate against the shared per-transition context."""
         spec = candidate.spec
+        if spec.strategy is TransitionStrategy.LAZY_OVERLAY:
+            # unphrased fallback: mildly dispreferred so any surviving phrased
+            # candidate of comparable cost still wins
+            return Verdict.ok(self.lazy_overlay_penalty)
         rung_gap = RUNG_LADDER.index(spec.bars) - RUNG_LADDER.index(candidate.ideal_bars)
         tier_steps = max(0, _TIER_ORDER.index(spec.tier) - _TIER_ORDER.index(ctx.tier))
         penalty = self.rung_penalty_per_step * rung_gap
