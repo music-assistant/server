@@ -771,7 +771,7 @@ class StorytelHelper:
                 block_id_prefixes=("personal-recommendations_",),
                 folder_item_id=f"{self.provider_id}_recommendations",
                 folder_name="Recommended for You",
-                translation_key="storytel.recommendations.recommended_for_you.name",
+                translation_key="recommended_for_you",
             ):
                 folders.append(folder)
 
@@ -790,7 +790,7 @@ class StorytelHelper:
                 block_id_prefixes=("algorithmic-podcasts-for-you",),
                 folder_item_id=f"{self.provider_id}_podcast_recommendations",
                 folder_name="Recommended Podcasts",
-                translation_key="storytel.recommendations.recommended_podcasts.name",
+                translation_key="recommended_podcasts",
             ):
                 folders.append(folder)
 

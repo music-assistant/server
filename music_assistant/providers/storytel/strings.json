@@ -17,12 +17,14 @@
       "description": "Hides non-children's books from search and recommendations."
     }
   },
-  "recommendations": {
-    "recommended_for_you": {
-      "name": "Recommended for You"
-    },
-    "recommended_podcasts": {
-      "name": "Recommended Podcasts"
+  "media": {
+    "recommendations": {
+      "recommended_for_you": {
+        "name": "Recommended for You"
+      },
+      "recommended_podcasts": {
+        "name": "Recommended Podcasts"
+      }
     }
   }
 }
