@@ -7,7 +7,7 @@ import sys
 import time
 import uuid
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import numpy as np
 from aiosendspin.models.core import ClientHelloPayload
@@ -57,6 +57,8 @@ if sys.platform == "linux":
     )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     import sounddevice as sd
     from aiosendspin.server import (
         ExternalStreamStartRequest,
@@ -85,6 +87,13 @@ _DEVICE_REOPEN_GUARD_SECONDS: float = 30.0
 # parked in a blocking write on a device that stopped responding, where the
 # graceful stop sentinel never gets read.
 _WRITER_STOP_TIMEOUT_SECONDS: float = 2.0
+
+# An open that has not come back by now is not going to: the device is wedged
+# rather than simply gone. Generous enough that a sink resuming from suspend or
+# a card waking up still makes it.
+_DEVICE_OPEN_TIMEOUT_SECONDS: float = 10.0
+
+_StreamT = TypeVar("_StreamT")
 
 
 def _now_us() -> int:
@@ -673,15 +682,18 @@ class SendspinLocalAudioBridge:
         )
         assert self.pa_sink_name is not None
         pa_sink_name = self.pa_sink_name
-        return await self.mass.loop.run_in_executor(
-            None,
-            lambda: PASimpleStream(
-                sink_name=pa_sink_name,
-                app_name=f"music-assistant-{pa_sink_name}",
-                rate=self.sample_rate,
-                channels=BRIDGE_CHANNELS,
-                bit_depth=self.bit_depth,
+        return await self._await_device_open(
+            self.mass.loop.run_in_executor(
+                None,
+                lambda: PASimpleStream(
+                    sink_name=pa_sink_name,
+                    app_name=f"music-assistant-{pa_sink_name}",
+                    rate=self.sample_rate,
+                    channels=BRIDGE_CHANNELS,
+                    bit_depth=self.bit_depth,
+                ),
             ),
+            lambda stream: stream.close(),
         )
 
     async def _audio_writer_pulse(self) -> None:
@@ -787,7 +799,7 @@ class SendspinLocalAudioBridge:
                         self._abandon_streaming()
                         return
                     stream = replacement
-        except _sd.PortAudioError as err:
+        except (_sd.PortAudioError, TimeoutError) as err:
             self.logger.error("Failed to open sounddevice stream for %s: %s", self.device_name, err)
             self._abandon_streaming()
         except Exception:
@@ -811,29 +823,57 @@ class SendspinLocalAudioBridge:
                 self._writer_task = None
 
     async def _open_sounddevice_stream(self) -> sd.RawOutputStream:
-        """
-        Open a sounddevice output stream for this device, off the event loop.
+        """Open a sounddevice output stream for this device, off the event loop."""
+        return await self._await_device_open(
+            self.mass.loop.run_in_executor(None, self._create_sounddevice_stream),
+            lambda stream: self._close_sounddevice_stream(stream, drain=False),
+        )
 
-        PortAudio hands out the device regardless of whether the caller is still
-        waiting, so an open that lands after its writer is gone is closed rather
-        than left behind to make every later open fail.
+    async def _await_device_open(
+        self, open_future: asyncio.Future[_StreamT], close_stream: Callable[[_StreamT], None]
+    ) -> _StreamT:
         """
-        open_future = self.mass.loop.run_in_executor(None, self._create_sounddevice_stream)
+        Wait for a device to finish opening, for as long as that is worth doing.
+
+        An open that never comes back would otherwise hold the writer forever
+        while chunks pile up behind a player still reporting playback.
+
+        :param open_future: The open running off the event loop.
+        :param close_stream: How to release the device, used when it arrives
+            after nobody is waiting for it any more.
+        :return: The opened stream.
+        :raises TimeoutError: The device did not open in time.
+        """
         try:
-            return await asyncio.shield(open_future)
+            return await asyncio.wait_for(asyncio.shield(open_future), _DEVICE_OPEN_TIMEOUT_SECONDS)
         except asyncio.CancelledError:
-            open_future.add_done_callback(self._release_orphaned_sounddevice_stream)
+            self._release_orphaned_stream(open_future, close_stream)
             raise
+        except TimeoutError:
+            self._release_orphaned_stream(open_future, close_stream)
+            raise TimeoutError(
+                f"the device did not open within {_DEVICE_OPEN_TIMEOUT_SECONDS:.0f}s"
+            ) from None
 
-    def _release_orphaned_sounddevice_stream(self, open_future: asyncio.Future[Any]) -> None:
+    def _release_orphaned_stream(
+        self, open_future: asyncio.Future[_StreamT], close_stream: Callable[[_StreamT], None]
+    ) -> None:
         """
-        Close a device whose open completed after the writer waiting on it had gone.
+        Arrange for a device to be released once an open nobody is waiting for finishes.
 
-        :param open_future: The finished open, whose stream nobody took ownership of.
+        The open runs to completion in its own thread whatever the caller does,
+        and a device nobody hands back keeps every later open of it failing.
+
+        :param open_future: The open that outlived the caller waiting on it.
+        :param close_stream: How to release the device it produces.
         """
-        if open_future.cancelled() or open_future.exception() is not None:
-            return
-        self.mass.loop.run_in_executor(None, self._close_sounddevice_stream, open_future.result())
+
+        def _close_when_open(finished: asyncio.Future[_StreamT]) -> None:
+            if finished.cancelled() or finished.exception() is not None:
+                return
+            self.mass.loop.run_in_executor(None, close_stream, finished.result())
+
+        open_future.add_done_callback(_close_when_open)
 
     def _create_sounddevice_stream(self) -> sd.RawOutputStream:
         """Open and start a sounddevice output stream, blocking until the device is ready."""
@@ -901,7 +941,7 @@ class SendspinLocalAudioBridge:
             return None
         try:
             stream = await self._open_sounddevice_stream()
-        except _sd.PortAudioError as err:
+        except (_sd.PortAudioError, TimeoutError) as err:
             self.logger.error("Could not reopen sound device %s: %s", self.device_name, err)
             return None
         self.logger.warning("Reopened sound device %s after a write failure", self.device_name)

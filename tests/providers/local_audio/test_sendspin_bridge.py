@@ -537,6 +537,29 @@ async def test_giving_up_really_quiesces_the_sendspin_client() -> None:
     client.quiesce_to_solo_stopped.assert_awaited_once_with()
 
 
+@pytest.mark.parametrize("backend", BACKENDS)
+async def test_a_device_that_never_finishes_opening_leaves_the_session(backend: str) -> None:
+    """
+    A device that hangs on open is given up on rather than waited for.
+
+    Waiting holds the writer with nothing consuming its queue, so the chunks
+    pile up behind a player that goes on reporting playback it cannot produce.
+    """
+    bridge = _make_bridge(backend=backend)
+    opening: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+    cast("MagicMock", bridge.mass).loop.run_in_executor = MagicMock(return_value=opening)
+    _queue_chunks(bridge, _pcm_chunk(1))
+
+    with (
+        patch(f"{_MODULE}._DEVICE_OPEN_TIMEOUT_SECONDS", 0.01),
+        patch.object(bridge, "_leave_sendspin_session", MagicMock()) as leave,
+    ):
+        await _run_writer(bridge)
+
+    assert bridge._is_streaming is False
+    leave.assert_called_once_with()
+
+
 @needs_portaudio
 async def test_a_cancelled_open_releases_the_device_it_still_gets() -> None:
     """
@@ -563,6 +586,37 @@ async def test_a_cancelled_open_releases_the_device_it_still_gets() -> None:
         await task
 
     # the device only becomes available once nobody is waiting for it any more
+    opening.set_result(stream)
+    await _settle()
+
+    stream.close.assert_called_once_with()
+
+
+async def test_a_timed_out_open_releases_the_device_when_it_finally_arrives() -> None:
+    """
+    A device that opens long after the wait gave up is closed, not left behind.
+
+    The open runs to completion in its own thread whatever the bridge does, and
+    a sink nobody hands back keeps every later open of it failing.
+    """
+    bridge = _make_bridge()
+    stream = _make_device_stream()
+    opening: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+
+    def _defer_the_open(
+        executor: object, func: Callable[..., Any], *args: Any
+    ) -> asyncio.Future[Any]:
+        # the open takes no arguments; anything else is the release closing up
+        return _run_inline(executor, func, *args) if args else opening
+
+    cast("MagicMock", bridge.mass).loop.run_in_executor = MagicMock(side_effect=_defer_the_open)
+
+    with (
+        patch(f"{_MODULE}._DEVICE_OPEN_TIMEOUT_SECONDS", 0.01),
+        pytest.raises(TimeoutError),
+    ):
+        await bridge._get_pa_stream()
+
     opening.set_result(stream)
     await _settle()
 
