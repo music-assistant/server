@@ -158,6 +158,8 @@ class WebserverController(CoreController):
         self.clients: set[WebsocketClientHandler] = set()
         # the URL that the "auto" base_url setting resolves to, detected at setup
         self._auto_base_url: str = ""
+        # whether SSL is switched on in the config, resolved at setup
+        self._ssl_configured: bool = False
         # whether the webserver actually serves TLS, resolved at setup
         self._ssl_active: bool = False
         self.bind_ip: str | None = None
@@ -300,7 +302,8 @@ class WebserverController(CoreController):
         bind_ip = cast("str | None", config.get_value(CONF_BIND_IP))
         # Create SSL context if SSL is enabled
         ssl_context = None
-        if config.get_value(CONF_ENABLE_SSL, False):
+        self._ssl_configured = bool(config.get_value(CONF_ENABLE_SSL, False))
+        if self._ssl_configured:
             ssl_context = await create_server_ssl_context(
                 str(config.get_value(CONF_SSL_CERTIFICATE) or ""),
                 str(config.get_value(CONF_SSL_PRIVATE_KEY) or ""),
@@ -511,12 +514,23 @@ class WebserverController(CoreController):
                 default_value=DEFAULT_SERVER_PORT,
                 requires_reload=True,
             ),
+            # the two alerts are mutually exclusive: the generic one while SSL is switched off,
+            # and the SSL specific one when a certificate failed to load and left the webserver
+            # on plain HTTP
             ConfigEntry(
                 key="webserver_warn",
                 type=ConfigEntryType.ALERT,
                 required=False,
+                hidden=self._ssl_configured,
                 depends_on=CONF_ENABLE_SSL,
                 depends_on_value=False,
+            ),
+            ConfigEntry(
+                key="ssl_inactive_warn",
+                type=ConfigEntryType.ALERT,
+                required=False,
+                hidden=not self._ssl_configured or self._ssl_active,
+                depends_on=CONF_ENABLE_SSL,
             ),
             ConfigEntry(
                 key=CONF_ENABLE_SSL,
