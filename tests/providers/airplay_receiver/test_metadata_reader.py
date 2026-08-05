@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import pathlib
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -22,29 +23,10 @@ def pipe_path(tmp_path: pathlib.Path) -> str:
     return path
 
 
-async def _write_marker(pipe_path: str, marker: str) -> None:
-    """Write a marker using a short-lived FIFO writer."""
-
-    def _write() -> None:
-        fd = os.open(pipe_path, os.O_WRONLY)
-        try:
-            os.write(fd, f"{marker}\n".encode())
-        finally:
-            os.close(fd)
-
-    await asyncio.get_event_loop().run_in_executor(None, _write)
-
-
-async def _wait_for(condition: Callable[[], bool], timeout: float = 2.0) -> None:
-    async with asyncio.timeout(timeout):
-        while not condition():
-            await asyncio.sleep(0.01)
-
-
-async def _write_marker_when_reader_present(
-    pipe_path: str, marker: str, timeout: float = 5.0
-) -> None:
-    """Write a marker without blocking forever when the FIFO has no reader."""
+async def _write_marker(pipe_path: str, marker: str, timeout: float = 5.0) -> None:
+    """Write a marker using a short-lived FIFO writer, like a sessioncontrol hook does."""
+    # O_NONBLOCK so a regression leaving the FIFO readerless fails the test instead of
+    # hanging it: opening for write raises ENXIO while no reader is attached.
     async with asyncio.timeout(timeout):
         while True:
             try:
@@ -56,6 +38,12 @@ async def _write_marker_when_reader_present(
         os.write(fd, f"{marker}\n".encode())
     finally:
         os.close(fd)
+
+
+async def _wait_for(condition: Callable[[], bool], timeout: float = 2.0) -> None:
+    async with asyncio.timeout(timeout):
+        while not condition():
+            await asyncio.sleep(0.01)
 
 
 async def test_pipe_is_open_when_start_returns(pipe_path: str) -> None:
@@ -84,7 +72,7 @@ async def test_hook_marker_delivered(pipe_path: str) -> None:
 
 
 async def test_markers_after_writer_close(pipe_path: str) -> None:
-    """Accept markers from writers that connect after EOF."""
+    """Accept markers from hook writers that connect after an earlier writer closed."""
     updates: list[dict[str, Any]] = []
     reader = MetadataReader(pipe_path, logging.getLogger("test"), updates.append)
     await reader.start()
@@ -98,36 +86,28 @@ async def test_markers_after_writer_close(pipe_path: str) -> None:
         await reader.stop()
 
 
-async def test_reader_backs_off_on_eof(pipe_path: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """After all writers closed, the reader backs off instead of spinning the loop."""
+async def test_reader_stays_idle_after_writer_close(pipe_path: str) -> None:
+    """A FIFO with no writers left must not keep the event loop busy."""
     updates: list[dict[str, Any]] = []
     reader = MetadataReader(pipe_path, logging.getLogger("test"), updates.append)
-    real_read = os.read
-    read_counts: list[int] = []
-
-    def counting_read(fd: int, size: int) -> bytes:
-        if fd == reader._fd:
-            read_counts.append(fd)
-        return real_read(fd, size)
-
-    monkeypatch.setattr(os, "read", counting_read)
     await reader.start()
     try:
         await _write_marker(pipe_path, "MA_PLAY_BEGIN")
-        # The marker arriving proves the reader consumed it and the writer is gone,
-        # so every read from here on hits EOF.
+        # The marker arriving proves the reader consumed it and the hook writer is gone.
         await _wait_for(lambda: bool(updates))
-        read_counts.clear()
+        cpu_before = time.process_time()
         await asyncio.sleep(0.5)
-        assert len(read_counts) < 20
+        # Only epoll reports a writerless FIFO readable forever, so this guard is
+        # meaningful on Linux and passes trivially on macOS/kqueue.
+        assert time.process_time() - cpu_before < 0.1
     finally:
         await reader.stop()
 
 
-async def test_reader_restarts_after_unexpected_error(
+async def test_reader_keeps_pipe_attached_across_restart(
     pipe_path: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """After an unexpected error kills a read, the reader reopens the pipe and keeps working."""
+    """An unexpected read error restarts the loop without ever detaching from the FIFO."""
     updates: list[dict[str, Any]] = []
     reader = MetadataReader(pipe_path, logging.getLogger("test"), updates.append)
     real_read = os.read
@@ -145,8 +125,10 @@ async def test_reader_restarts_after_unexpected_error(
     try:
         await _write_marker(pipe_path, "MA_PLAY_BEGIN")
         await _wait_for(lambda: not fail_once)
-        await _write_marker_when_reader_present(pipe_path, "MA_PLAY_BEGIN")
-        await _wait_for(lambda: bool(updates), timeout=5.0)
-        assert updates[-1] == {"play_state": "playing"}
+        # Well inside the restart backoff: a hook writer must still find a reader here.
+        await asyncio.sleep(0.2)
+        os.close(os.open(pipe_path, os.O_WRONLY | os.O_NONBLOCK))
+        await _write_marker(pipe_path, "MA_PLAY_END")
+        await _wait_for(lambda: updates[-1:] == [{"play_state": "stopped"}], timeout=5.0)
     finally:
         await reader.stop()
