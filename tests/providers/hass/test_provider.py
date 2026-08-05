@@ -808,6 +808,11 @@ async def test_registry_reuses_repeated_strings() -> None:
             registry = await provider._fetch_entity_registry()
 
         assert len(registry) == 3
+        assert registry["light.lamp_0"] == {
+            "entity_id": "light.lamp_0",
+            "platform": "esphome",
+            "device_id": "device",
+        }
         assert len({id(entry["platform"]) for entry in registry.values()}) == 1
         assert len({id(entry["device_id"]) for entry in registry.values()}) == 1
 

@@ -1051,7 +1051,7 @@ class HomeAssistantProvider(PluginProvider):
         except Exception as err:
             self.logger.warning("Failed to refresh Home Assistant engines: %s", err)
 
-    # unlike the device registry below, this listing is mirrored for the lifetime of the
+    # unlike _fetch_device_registry, this listing is mirrored for the lifetime of the
     # connection rather than kept behind a TTL: it runs to several megabytes on a large
     # setup, and Home Assistant announces every change, so the mirror is both the cheaper
     # and the more accurate option
