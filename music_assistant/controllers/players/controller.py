@@ -918,6 +918,11 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         player = self.get_player(player_id, True)
         assert player
 
+        if player.type == PlayerType.GROUP:
+            # redirect to special group mute control
+            await self.cmd_group_volume_mute(player_id, muted)
+            return
+
         # clearing the mute lock may not depend on mute support, otherwise a lock set
         # while the player still had a mute control would outlive a control change
         if not muted:
