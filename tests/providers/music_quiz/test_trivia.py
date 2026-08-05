@@ -1016,8 +1016,8 @@ async def test_compilation_year_round_is_scored_on_the_musicbrainz_year() -> Non
 
 
 @pytest.mark.asyncio
-async def test_compilation_rounds_only_generate_artist_and_title_targets() -> None:
-    """Generate valid rounds without selecting compilation album or year targets."""
+async def test_undated_compilation_rounds_only_generate_artist_and_title_targets() -> None:
+    """Generate valid rounds without album or year targets while MusicBrainz cannot date them."""
     first_track = _track("one", "First Song", "Artist One", release_year=2012)
     first_track.album = _full_album(
         "first-album",
