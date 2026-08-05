@@ -31,9 +31,11 @@ MAX_FINISHED_SESSIONS = 20
 # a show whose playback never starts within this window is declared failed
 SHOW_START_TIMEOUT_SECONDS = 300
 
-# generous, since sections are prose and the engine may be a slow local model,
-# but bounded so a wedged engine fails the clip instead of hanging the session
-AI_QUERY_TIMEOUT_SECONDS = 120
+# last-resort guards so a wedged engine fails the clip instead of hanging the session.
+# Kept above the deadlines the engines apply themselves (120s in the OpenAI-compatible
+# providers), so their own, more specific error is the one that surfaces.
+AI_QUERY_TIMEOUT_SECONDS = 180
+TTS_QUERY_TIMEOUT_SECONDS = 180
 
 SUPPORTED_FEATURES: set[Any] = set()
 EMPTY_SECTION_ID = "EMPTY_SECTION"

@@ -373,12 +373,12 @@ async def test_generate_text_fails_the_section_when_the_engine_stalls(
     """A stalled AI engine fails the section instead of hanging the session."""
     monkeypatch.setattr("music_assistant.providers.ai_radio.runtime.AI_QUERY_TIMEOUT_SECONDS", 0.01)
 
-    async def _never_returns(*_args: Any, **_kwargs: Any) -> str:
-        await asyncio.Event().wait()
-        return ""
+    async def _answers_too_late(*_args: Any, **_kwargs: Any) -> str:
+        await asyncio.sleep(5)
+        return "section text"
 
     plugin = _create_ai_plugin("hass_1", "ai_task.default")
-    plugin.ai_query = AsyncMock(side_effect=_never_returns)
+    plugin.ai_query = AsyncMock(side_effect=_answers_too_late)
     runtime = DummyRuntime({CONF_AI_ENGINE: "hass_1/ai_task.default"})
     _set_runtime_mass(
         runtime,
