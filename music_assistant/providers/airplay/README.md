@@ -453,6 +453,12 @@ daemon reports it is serving, attaching them to its elected clock via shared
 memory. A sync group resolves that choice once and applies it to every member,
 so a group never mixes members on the shared clock with members off it.
 
+Sendspin-bridged players hold the same line across their Sendspin group. Their
+processes are spawned independently and can outlive several tracks, so a bridge
+adopts the choice a live group member is already running with and only asks the
+daemon when the group has no such member. That keeps members which start minutes
+apart, or which keep a warm process across a track change, on one clock.
+
 The official Music Assistant container runs as root, allowing the daemon to bind
 these ports. A custom container running Music Assistant as a non-root user must
 grant the binary `CAP_NET_BIND_SERVICE` (for example,
