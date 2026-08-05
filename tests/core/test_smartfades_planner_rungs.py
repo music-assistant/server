@@ -8,6 +8,7 @@ from dataclasses import fields
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     CandidateSpec,
     EnergyLadderGenerator,
+    TrimClosingAnchorGenerator,
 )
 from music_assistant.controllers.streams.smart_fades.planner.context import (
     TransitionContext,
@@ -45,6 +46,73 @@ def _instrumental_vs_vocal_ctx() -> TransitionContext:
     return build_transition_context(aa_out, aa_in, 45.0, logging.getLogger("test"))
 
 
+def _big_trim_gap_ctx() -> TransitionContext:
+    """
+    Build a context whose energy anchor lands early, stranding audible tail behind it.
+
+    rms_energy holds at 0.9 for the first 70% of the buffer, drops to a
+    still-audible 0.25 until 95%, then to silence - no vocal data, so the
+    gap can only be closed by an energy-path generator.
+    """
+    beats = [i * 60 / 128 for i in range(int(45 * 128 / 60))]
+    downbeats = beats[::4]
+    rms_energy = [0.9] * 1260 + [0.25] * 450 + [0.0] * 90
+    aa_out = AudioAnalysisData(
+        duration=45.0,
+        bpm=128.0,
+        beats=beats,
+        downbeats=downbeats,
+        beats_per_bar=4,
+        rms_energy=rms_energy,
+        key="C",
+        mode="minor",
+        extra_data={},
+    )
+    aa_in = AudioAnalysisData(
+        duration=45.0,
+        bpm=128.0,
+        beats=beats,
+        downbeats=downbeats,
+        beats_per_bar=4,
+        rms_energy=[0.8] * 1800,
+        key="C",
+        mode="minor",
+        extra_data={},
+    )
+    ctx = build_transition_context(aa_out, aa_in, 45.0, logging.getLogger("test"))
+    assert ctx.audio_end - ctx.default_anchor >= 8.0
+    return ctx
+
+
+def _small_trim_gap_ctx() -> TransitionContext:
+    """Build a context with flat rms_energy, so the energy anchor already sits at the audible end."""
+    beats = [i * 60 / 128 for i in range(int(45 * 128 / 60))]
+    downbeats = beats[::4]
+    aa_out = AudioAnalysisData(
+        duration=45.0,
+        bpm=128.0,
+        beats=beats,
+        downbeats=downbeats,
+        beats_per_bar=4,
+        rms_energy=[0.8] * 1800,
+        key="C",
+        mode="minor",
+        extra_data={},
+    )
+    aa_in = AudioAnalysisData(
+        duration=45.0,
+        bpm=128.0,
+        beats=beats,
+        downbeats=downbeats,
+        beats_per_bar=4,
+        rms_energy=[0.8] * 1800,
+        key="C",
+        mode="minor",
+        extra_data={},
+    )
+    return build_transition_context(aa_out, aa_in, 45.0, logging.getLogger("test"))
+
+
 def test_candidate_spec_has_no_one_sided_field() -> None:
     """The one-sided 16-bar relaxation was removed (1/12k win rate, scored 0.5)."""
     assert "one_sided_vocal" not in {f.name for f in fields(CandidateSpec)}
@@ -56,3 +124,21 @@ def test_energy_ladder_emits_only_plain_rungs() -> None:
     specs = list(EnergyLadderGenerator().generate(instrumental_vs_vocal_ctx))
     assert specs
     assert all(spec.bars <= 8 for spec in specs)
+
+
+def test_trim_closing_ladder_emitted_for_big_trim_gap() -> None:
+    """An instrumental tail with a large audible gap past the energy anchor gets late-anchored rungs."""
+    ctx = _big_trim_gap_ctx()
+    specs = list(TrimClosingAnchorGenerator().generate(ctx))
+    assert specs
+    for spec in specs:
+        assert spec.anchor_s is not None and spec.anchor_s > ctx.default_anchor
+        assert spec.anchor_s <= ctx.audio_end
+    # the ladder is walked, not just one rung
+    assert len({spec.bars for spec in specs}) >= 2
+
+
+def test_trim_closing_not_emitted_for_small_gap() -> None:
+    """A tail whose energy anchor already sits near the audible end emits nothing."""
+    specs = list(TrimClosingAnchorGenerator().generate(_small_trim_gap_ctx()))
+    assert specs == []

@@ -76,6 +76,10 @@ RUNG_LADDER: tuple[int, ...] = (16, 8, 4, 2, 1)
 _TRIM_GUARD_LOW_FLOOR: float = 0.25
 _TRIM_GUARD_VOICE_FLOOR: float = 0.4
 
+# Trim-closing anchors engage only when the energy anchor strands this much
+# audible tail; below it the default anchor's trim is already acceptable
+_TRIM_CLOSING_MIN_GAP_S: float = 8.0
+
 
 @dataclass(frozen=True, slots=True)
 class CandidateSpec:
@@ -314,6 +318,32 @@ class RescueAnchorGenerator(CandidateGenerator):
                 )
 
 
+class TrimClosingAnchorGenerator(CandidateGenerator):
+    """Emits the tier's ladder at late anchors that close a large audible-trim gap."""
+
+    name = "trim-closing-anchor"
+
+    def generate(self, ctx: TransitionContext) -> Iterable[CandidateSpec]:
+        """Emit one late-anchored spec per rung, or nothing when the trim gap is small."""
+        if ctx.audio_end - ctx.default_anchor < _TRIM_CLOSING_MIN_GAP_S:
+            return
+        ladder = bars_ladder(ctx, ctx.tier)
+        bar_seconds = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
+        for bars in ladder:
+            target = ctx.audio_end - bars * bar_seconds
+            if target <= ctx.default_anchor:
+                continue
+            anchor = _nearest_protective_anchor(ctx, target, prefer_earliest=False)
+            yield CandidateSpec(
+                tier=ctx.tier,
+                bars=bars,
+                anchor_s=anchor,
+                entry_s=None,
+                source=self.name,
+                ideal_bars=ladder[0],
+            )
+
+
 def default_generators() -> tuple[CandidateGenerator, ...]:
     """Return the standard generator set, in preference order (best first)."""
     return (
@@ -321,6 +351,7 @@ def default_generators() -> tuple[CandidateGenerator, ...]:
         CodaAnchorGenerator(),
         ProtectiveAnchorGenerator(),
         VocalOnsetEntryGenerator(),
+        TrimClosingAnchorGenerator(),
     )
 
 
