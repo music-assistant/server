@@ -613,6 +613,18 @@ class Player(ABC):
         return self._attr_can_group_with
 
     @property
+    def native_grouping_requires_own_stream(self) -> bool:
+        """
+        Return whether native grouping only works while this player renders its own stream.
+
+        Device-side grouping keeps working whatever feeds the leader, so members can
+        stay natively grouped while the leader streams over another protocol.
+        Grouping that attaches members to the leader's own stream has nothing for
+        them to join once the leader moves to a protocol.
+        """
+        return False
+
+    @property
     def is_active_session(self) -> bool:
         """
         Return whether this group player is currently holding (capturing) its members.
@@ -923,12 +935,15 @@ class Player(ABC):
         """
         return []
 
-    async def handle_config_action(self, action: str) -> list[ConfigEntry]:
+    async def handle_config_action(self, action: str) -> list[ConfigEntry] | None:
         """
-        Handle a one-shot action button press from this player's config and re-render.
+        Run the one-shot side effect for a pressed action button from this player's config.
 
         Override to run the side effect for each ``ConfigEntryType.ACTION`` entry this
-        player declares, then return the (possibly refreshed) config entries to display.
+        player declares. Raise to report failure to the caller. Return None when there is
+        nothing to re-render. Returning entries re-renders the config form from the owning
+        player's freshly resolved entries; the returned entries themselves are not shown,
+        so they serve only as the signal that a re-render is needed.
 
         :param action: The action id of the pressed button (an entry's ``action`` key).
         """
@@ -1306,7 +1321,9 @@ class Player(ABC):
     @final
     def icon(self) -> str:
         """Return the player icon."""
-        return cast("str", self._config.get_value(CONF_ENTRY_PLAYER_ICON.key))
+        # players without an icon config entry (e.g. protocol players) serve the fallback id
+        icon = self._config.get_value(CONF_ENTRY_PLAYER_ICON.key)
+        return cast("str", icon or CONF_ENTRY_PLAYER_ICON.default_value)
 
     @cached_property
     @final
@@ -1360,6 +1377,10 @@ class Player(ABC):
     def mute_control(self) -> str:
         """Return the mute control type."""
         conf = self.mass.config.get_raw_player_config_value(self.player_id, CONF_MUTE_CONTROL)
+        if conf == PLAYER_CONTROL_FAKE and self.volume_control == PLAYER_CONTROL_NONE:
+            # fake mute is simulated by setting the volume to zero, so without a volume
+            # control to drive there is no way to mute this player at all
+            return PLAYER_CONTROL_NONE
         if conf and conf in (PLAYER_CONTROL_NATIVE, PLAYER_CONTROL_FAKE, PLAYER_CONTROL_NONE):
             # the control type is explicitly set in the config, use that
             return str(conf)
@@ -2423,10 +2444,23 @@ class Player(ABC):
             return None
         # handle protocol player as volume control
         if control := self.mass.players.get_player(volume_control):
-            if control.volume_level is not None:
-                return self.mass.players.scale_volume_from_device(
-                    self.player_id, control.volume_level
+            control_volume = control.volume_level
+            if (
+                control_volume == 0
+                and control.player_id != self.active_output_protocol
+                and any(
+                    linked.output_protocol_id == control.player_id
+                    for linked in self.linked_output_protocols
                 )
+            ):
+                # A linked protocol interface that is not actively rendering audio
+                # may report volume 0 while the device is in standby (e.g. the cast
+                # side of some devices), which doesn't reflect the real device volume.
+                # Treat it as unknown so we fall back to other sources instead of
+                # propagating a spurious hard mute.
+                control_volume = None
+            if control_volume is not None:
+                return self.mass.players.scale_volume_from_device(self.player_id, control_volume)
         # handle player control for volume if set
         if player_control := self.mass.players.get_player_control(volume_control):
             if player_control.volume_level is not None:
@@ -2635,18 +2669,20 @@ class Player(ABC):
         mass_source = next((x for x in sources if x.id == self.player_id), None)
         if mass_source is None:
             # if the MA queue is not in the source list, add it.
-            # The capability flags reflect what the queue can actually do right now: with an
-            # empty queue there is nothing to play, seek or skip through, so clients can grey
-            # out those controls instead of issuing commands that can only fail.
+            # The capability flags reflect what the queue can actually do right now, so clients can
+            # grey out controls instead of issuing commands that can only fail: an empty queue has
+            # nothing to play, seek or skip through, and a queue that played to its end can only be
+            # started over, with nothing left to seek within or skip to.
             queue = self.mass.player_queues.get(self.player_id)
             queue_has_items = bool(queue and queue.items)
+            queue_running = queue_has_items and not (queue and queue.ended)
             mass_source = PlayerSource(
                 id=self.player_id,
                 name="Music Assistant Queue",
                 passive=False,
                 can_play_pause=queue_has_items,
-                can_seek=queue_has_items,
-                can_next_previous=queue_has_items,
+                can_seek=queue_running,
+                can_next_previous=queue_running,
             )
             sources.append(mass_source)
         return sources

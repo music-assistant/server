@@ -34,6 +34,9 @@ class Provider:
     mass: MusicAssistant
     manifest: ProviderManifest
     config: ProviderConfig
+    # set to True in providers that capture a mass.streams address or port while loading,
+    # to have them reloaded onto the new one when the streamserver network changes
+    reload_on_streams_network_change: bool = False
 
     def __init__(
         self,
@@ -70,12 +73,14 @@ class Provider:
         """
         return ()
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
         """
-        Handle a one-shot action button press from this provider's options and re-render.
+        Run the one-shot side effect for a pressed action button from this provider's options.
 
         Override to run the side effect for each ``ConfigEntryType.ACTION`` entry this
-        provider declares, then return the (possibly refreshed) config entries to display.
+        provider declares. Raise to report failure to the caller. Return None when there
+        is nothing to re-render; returning config entries re-renders the options page
+        with those entries instead.
 
         :param action: The action id of the pressed button (an entry's ``action`` key).
         """
@@ -363,12 +368,11 @@ class Provider:
             # async_init completed
             logging_name = self.name
         self.logger = mass_logger.getChild(logging_name)
-        log_level = str(config.get_value(CONF_LOG_LEVEL))
+        # fall back to the entry's own default: a config that reaches us without its
+        # entries resolved must not take the whole provider down over a log level
+        log_level = str(config.get_value(CONF_LOG_LEVEL) or "GLOBAL")
         if log_level == "GLOBAL":
             self.logger.setLevel(mass_logger.level)
         else:
             self.logger.setLevel(log_level)
-        if logging.getLogger().level > self.logger.level:
-            # if the root logger's level is higher, we need to adjust that too
-            logging.getLogger().setLevel(self.logger.level)
         self.logger.debug("Log level configured to %s", log_level)

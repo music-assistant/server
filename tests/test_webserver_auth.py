@@ -17,6 +17,8 @@ from music_assistant_models.errors import InsufficientPermissions, InvalidDataEr
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
 from music_assistant.controllers.config import ConfigController
 from music_assistant.controllers.webserver.auth import (
+    JOIN_CODE_GLOBAL_FAILURE_CEILING,
+    JOIN_CODE_GLOBAL_RATE_LIMIT_KEY,
     JOIN_CODE_LENGTH,
     TOKEN_ABSOLUTE_MAX_EXPIRATION,
     TOKEN_ACTIVITY_PERSIST_INTERVAL,
@@ -24,6 +26,7 @@ from music_assistant.controllers.webserver.auth import (
     TOKEN_LONG_LIVED_EXPIRATION,
     TOKEN_SHORT_LIVED_EXPIRATION,
     AuthenticationManager,
+    _mask_join_code,
 )
 from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
@@ -31,11 +34,17 @@ from music_assistant.controllers.webserver.helpers.auth_middleware import (
     get_current_user,
     has_scope,
     resolve_command_impersonation,
+    set_current_client_id,
+    set_current_peer_address,
     set_current_token,
     set_current_user,
     set_impersonated_user,
 )
-from music_assistant.controllers.webserver.helpers.auth_providers import BuiltinLoginProvider
+from music_assistant.controllers.webserver.helpers.auth_providers import (
+    PRUNE_THRESHOLD,
+    BuiltinLoginProvider,
+    LoginRateLimiter,
+)
 from music_assistant.helpers.datetime import utc
 from music_assistant.mass import MusicAssistant
 
@@ -703,6 +712,57 @@ async def test_get_login_providers(auth_manager: AuthenticationManager) -> None:
 
     assert len(providers) > 0
     assert any(p["provider_id"] == "builtin" for p in providers)
+
+
+class _FakeHassProvider:
+    """Minimal stand-in for the Home Assistant provider."""
+
+    domain = "hass"
+    available = True
+
+    def __init__(self, url: str | None) -> None:
+        self._url = url
+
+    @property
+    def url(self) -> str | None:
+        """Return the configured Home Assistant URL, or None if not configured."""
+        return self._url
+
+
+async def test_get_login_providers_with_ha_provider(
+    auth_manager: AuthenticationManager, mass_minimal: MusicAssistant
+) -> None:
+    """
+    Test that the HA OAuth login provider is registered when the HA provider has a URL.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param mass_minimal: Minimal MusicAssistant instance.
+    """
+    mass_minimal._providers["hass"] = _FakeHassProvider("http://homeassistant.local:8123")  # type: ignore[assignment]
+
+    providers = await auth_manager.get_login_providers()
+
+    assert any(p["provider_id"] == "homeassistant" for p in providers)
+
+
+async def test_get_login_providers_ha_provider_without_url(
+    auth_manager: AuthenticationManager, mass_minimal: MusicAssistant
+) -> None:
+    """
+    Test that a HA provider without a URL does not break the login providers endpoint.
+
+    Regression test for the HA provider storing its URL in setup data instead of
+    config: builtin login must remain available and the endpoint must not raise.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param mass_minimal: Minimal MusicAssistant instance.
+    """
+    mass_minimal._providers["hass"] = _FakeHassProvider(None)  # type: ignore[assignment]
+
+    providers = await auth_manager.get_login_providers()
+
+    assert any(p["provider_id"] == "builtin" for p in providers)
+    assert not any(p["provider_id"] == "homeassistant" for p in providers)
 
 
 async def test_create_user_with_api(auth_manager: AuthenticationManager) -> None:
@@ -1877,10 +1937,10 @@ async def test_exchange_join_code_success_does_not_reset_rate_limit(
     auth_manager: AuthenticationManager,
 ) -> None:
     """
-    Verify a successful exchange does not clear the failed-attempt counter.
+    Verify a successful exchange does not clear the shared failed-attempt counter.
 
-    The rate limit key is global, so clearing on success would let an attacker
-    holding any valid code reset the counter at will and bypass throttling.
+    Callers without a connection identity share one bucket, so clearing it on success
+    would let an attacker holding any valid code reset the counter for everyone.
 
     :param auth_manager: AuthenticationManager instance.
     """
@@ -1899,6 +1959,219 @@ async def test_exchange_join_code_success_does_not_reset_rate_limit(
     result = await auth_manager.exchange_join_code(code)
     assert result["success"] is False
     assert "too many" in result["error"].lower()
+
+
+async def test_exchange_join_code_rate_limit_is_per_connection(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Verify one throttled client does not lock out the other clients.
+
+    At a party every guest exchanges a join code over their own connection, so a guest
+    re-scanning an expired QR code must only ever throttle their own connection.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="partyguest", role=UserRole.GUEST)
+    code, _ = await auth_manager.generate_join_code(user=user, expires_in_hours=24, max_uses=0)
+
+    # One guest burns through the progressive delay threshold with a stale code.
+    set_current_client_id("connection-a")
+    for _ in range(3):
+        assert (await auth_manager.exchange_join_code("EXPIRED12345"))["success"] is False
+    result = await auth_manager.exchange_join_code("EXPIRED12345")
+    assert "too many" in result["error"].lower()
+
+    # A second guest is unaffected, both for a bad code and for a valid one.
+    set_current_client_id("connection-b")
+    result = await auth_manager.exchange_join_code("EXPIRED12345")
+    assert "invalid" in result["error"].lower()
+    assert (await auth_manager.exchange_join_code(code))["success"] is True
+
+
+async def test_exchange_join_code_success_clears_connection_rate_limit(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Verify a successful exchange clears the counter of that connection only.
+
+    A per-connection counter can only be cleared by the connection that filled it, so a
+    valid code holder cannot lift the throttle for anyone else.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="clearingguest", role=UserRole.GUEST)
+    code, _ = await auth_manager.generate_join_code(user=user, expires_in_hours=24, max_uses=0)
+
+    set_current_client_id("connection-c")
+    for _ in range(2):
+        assert (await auth_manager.exchange_join_code("MISTYPED1234"))["success"] is False
+
+    assert (await auth_manager.exchange_join_code(code))["success"] is True
+
+    # Without the reset, the fourth failure overall would trip the threshold.
+    for _ in range(2):
+        result = await auth_manager.exchange_join_code("MISTYPED1234")
+        assert "invalid" in result["error"].lower()
+
+    # The shared bucket of connection-less callers is untouched by all of this.
+    set_current_client_id(None)
+    result = await auth_manager.exchange_join_code("MISTYPED1234")
+    assert "invalid" in result["error"].lower()
+
+
+async def test_exchange_join_code_global_ceiling_throttles_every_client(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Verify the server-wide ceiling still backstops the per-connection counters.
+
+    A client can open a fresh connection (and thus a fresh counter) at will, so the
+    ceiling is what bounds sustained abuse.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="ceilingguest", role=UserRole.GUEST)
+    code, _ = await auth_manager.generate_join_code(user=user, expires_in_hours=24, max_uses=0)
+
+    for _ in range(JOIN_CODE_GLOBAL_FAILURE_CEILING):
+        await auth_manager._join_code_global_rate_limiter.record_failed_attempt(
+            JOIN_CODE_GLOBAL_RATE_LIMIT_KEY
+        )
+
+    # An untouched connection is throttled, even when it presents a valid code.
+    set_current_client_id("connection-never-seen-before")
+    result = await auth_manager.exchange_join_code(code)
+    assert result["success"] is False
+    assert "too many" in result["error"].lower()
+
+
+async def test_exchange_join_code_rate_limit_falls_back_to_peer_address(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Verify stateless API callers are told apart by the address they connect from.
+
+    The login page exchanges join codes over the JSON RPC endpoint, which carries no
+    connection identity, so without this every such caller would share one bucket.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    user = await auth_manager.create_user(username="httpguest", role=UserRole.GUEST)
+    code, _ = await auth_manager.generate_join_code(user=user, expires_in_hours=24, max_uses=0)
+
+    set_current_peer_address("192.0.2.10")
+    for _ in range(3):
+        assert (await auth_manager.exchange_join_code("EXPIRED12345"))["success"] is False
+    assert "too many" in (await auth_manager.exchange_join_code("EXPIRED12345"))["error"].lower()
+
+    # A caller from another address is unaffected.
+    set_current_peer_address("192.0.2.11")
+    assert (await auth_manager.exchange_join_code(code))["success"] is True
+
+    # An address can be shared by everyone behind a proxy, so success must not clear it.
+    set_current_peer_address("192.0.2.10")
+    assert "too many" in (await auth_manager.exchange_join_code(code))["error"].lower()
+
+    # A websocket client id always wins over the peer address.
+    set_current_client_id("connection-e")
+    assert (await auth_manager.exchange_join_code(code))["success"] is True
+
+
+def test_mask_join_code() -> None:
+    """Verify the log mask keeps a correlatable prefix but no usable code."""
+    assert _mask_join_code("abcdefghjklm") == "ABCD********"
+    assert _mask_join_code("abc") == "ABC"
+
+
+async def test_exchange_join_code_logs_identify_the_caller(
+    auth_manager: AuthenticationManager,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    Verify a support log can tell a rejected code apart from a throttled client.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param caplog: Log capture fixture.
+    """
+    set_current_client_id("connection-d")
+    for _ in range(3):
+        await auth_manager.exchange_join_code("MISTYPED1234")
+    rejections = [record.getMessage() for record in caplog.records if "rejected" in record.message]
+    assert len(rejections) == 3
+    assert "client=connection-d" in rejections[0]
+    # the attempted code is only ever logged masked
+    assert "code=MIST********" in rejections[0]
+    assert "MISTYPED1234" not in rejections[0]
+
+    caplog.clear()
+    await auth_manager.exchange_join_code("MISTYPED1234")
+    throttles = [record.getMessage() for record in caplog.records if "throttled" in record.message]
+    assert len(throttles) == 1
+    assert "throttled by the client limit" in throttles[0]
+    assert "client=connection-d" in throttles[0]
+    assert "client_failures=3" in throttles[0]
+    assert "server_failures=3" in throttles[0]
+
+
+async def test_login_rate_limiter_default_tiers() -> None:
+    """Verify the default progressive delays escalate with the failed attempt count."""
+    limiter = LoginRateLimiter()
+
+    assert limiter.get_attempt_count("bob") == 0
+    for expected_count, expected_delay in ((2, 0), (3, 30), (6, 60), (10, 120), (15, 300)):
+        while limiter.get_attempt_count("bob") < expected_count:
+            await limiter.record_failed_attempt("bob")
+        assert limiter.get_delay("bob") == expected_delay
+
+    await limiter.clear_attempts("bob")
+    assert limiter.get_attempt_count("bob") == 0
+    assert limiter.get_delay("bob") == 0
+
+
+async def test_login_rate_limiter_custom_tiers() -> None:
+    """Verify a limiter can be configured with its own threshold and delay."""
+    limiter = LoginRateLimiter(delay_tiers=((3, 60),))
+
+    for _ in range(2):
+        await limiter.record_failed_attempt("key")
+    assert await limiter.check_rate_limit("key") == (True, 0)
+
+    await limiter.record_failed_attempt("key")
+    allowed, remaining_delay = await limiter.check_rate_limit("key")
+    assert allowed is False
+    assert 0 < remaining_delay <= 60
+
+
+async def test_login_rate_limiter_drops_attempts_outside_window() -> None:
+    """Verify attempts older than the tracking window stop counting."""
+    limiter = LoginRateLimiter(tracking_window=timedelta(seconds=0))
+
+    await limiter.record_failed_attempt("key")
+    assert limiter.get_attempt_count("key") == 0
+
+
+async def test_login_rate_limiter_prunes_expired_keys() -> None:
+    """
+    Verify expired keys do not pile up when they are never used again.
+
+    Keys are one-off by nature (a connection that gives up, a made-up username), so
+    without the sweep the bookkeeping would grow for as long as the server runs.
+    """
+    limiter = LoginRateLimiter(tracking_window=timedelta(seconds=0))
+
+    for index in range(PRUNE_THRESHOLD + 1):
+        await limiter.record_failed_attempt(f"key{index}")
+
+    # Every attempt is already outside this limiter's window, so the sweep drops them all.
+    assert len(limiter._failed_attempts) == 0
+
+    live = LoginRateLimiter()
+    for index in range(PRUNE_THRESHOLD + 1):
+        await live.record_failed_attempt(f"key{index}")
+
+    # Attempts inside the tracking window are never swept away.
+    assert len(live._failed_attempts) == PRUNE_THRESHOLD + 1
 
 
 async def test_resolve_command_impersonation(auth_manager: AuthenticationManager) -> None:

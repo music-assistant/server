@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections.abc import Callable
 from contextlib import suppress
@@ -55,10 +56,13 @@ from music_assistant_models.errors import AlreadyRegisteredError, SetupFailedErr
 from music_assistant.constants import (
     CONF_ENABLED,
     CONF_ENTRY_MANUAL_DISCOVERY_IPS,
+    CONF_LOG_LEVEL,
     CONF_PLAYERS,
     CONF_PROVIDERS,
+    SENDSPIN_SERVER_PORT,
+    VERBOSE_LOG_LEVEL,
 )
-from music_assistant.helpers.util import format_ip_for_url
+from music_assistant.helpers.util import format_ip_for_url, select_announce_addresses
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
@@ -116,7 +120,6 @@ VIRTUAL_PLAYER_CLEANUP_DELAYS = (0.0, 0.5, 2.0)
 VIRTUAL_PLAYER_CLEANUP_TIMEOUT = 2.0
 
 PIN_REQUEST_FEEDBACK_TIMEOUT = 2
-PIN_SUBMIT_FEEDBACK_TIMEOUT = 10
 PIN_RETRY_IDLE_TIMEOUT = 300
 MANAGEMENT_REQUEST_TIMEOUT = 10
 MANAGEMENT_IDLE_TIMEOUT = 300
@@ -130,6 +133,7 @@ class PinPairingSession:
     method: PairMethod
     pin_future: asyncio.Future[str]
     verify: bool = False
+    static: bool = False
     task: asyncio.Task[None] | None = None
     pin_request_event: asyncio.Event = field(default_factory=asyncio.Event)
     error: Exception | None = None
@@ -232,6 +236,7 @@ def _manual_client_url(address: str) -> str:
 class SendspinProvider(PlayerProvider):
     """Player Provider for Sendspin."""
 
+    reload_on_streams_network_change = True
     server_api: SendspinServer
     unregister_cbs: list[Callable[[], None]]
     _pending_unregisters: dict[str, asyncio.Event]
@@ -293,6 +298,7 @@ class SendspinProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Load the persistent server identity and pairing store, then create the server."""
+        self._set_aiosendspin_log_level()
         storage_dir = Path(self.mass.storage_path) / "sendspin"
         identity_path = storage_dir / IDENTITY_FILENAME
         try:
@@ -346,6 +352,14 @@ class SendspinProvider(PlayerProvider):
         # seed the hass availability snapshot so the first (un)load is seen as a change
         hass = self.mass.get_provider("hass")
         self._hass_available = hass is not None and hass.available
+
+    async def update_config(self, config: ProviderConfig, changed_keys: set[str]) -> None:
+        """Handle logic when the config is updated."""
+        await super().update_config(config, changed_keys)
+        # a log level(-only) change does not reload the provider,
+        # so realign aiosendspin's logger here
+        if f"values/{CONF_LOG_LEVEL}" in changed_keys:
+            self._set_aiosendspin_log_level()
 
     def event_cb(self, server: SendspinServer, event: SendspinEvent) -> None:
         """Event callback registered to the sendspin server."""
@@ -616,6 +630,13 @@ class SendspinProvider(PlayerProvider):
         :param static: Pair with the static PIN even when a dynamic PIN is offered.
         """
         session = self._pin_sessions.get(client_id)
+        if session is not None and (session.verify != verify or session.static != static):
+            # a stale session from an earlier run never resumes; the caller's
+            # static/verify choice must win
+            if session.attempt_running:
+                raise SecurityActionError("pairing_error_concurrent")
+            await self.cancel_pin_pairing(client_id)
+            session = None
         if session is not None and session.can_retry:
             self._begin_pin_attempt(session)
             await self._pin_request_feedback(session)
@@ -636,21 +657,20 @@ class SendspinProvider(PlayerProvider):
             method=method,
             pin_future=self.mass.loop.create_future(),
             verify=verify,
+            static=static,
         )
         self._pin_sessions[client_id] = session
         self._begin_pin_attempt(session)
         await self._pin_request_feedback(session)
         return session
 
-    async def submit_pin(self, client_id: str, pin: str) -> None:
-        """Deliver the operator-entered PIN and wait briefly for the outcome."""
+    def submit_pin(self, client_id: str, pin: str) -> None:
+        """Deliver the operator-entered PIN to the in-flight pairing attempt."""
         session = self._pin_sessions.get(client_id)
         if session is None or session.task is None:
             raise SecurityActionError("pairing_error_no_pin_session")
         if not session.pin_future.done():
             session.pin_future.set_result(pin.strip())
-        with suppress(TimeoutError):
-            await asyncio.wait_for(asyncio.shield(session.task), PIN_SUBMIT_FEEDBACK_TIMEOUT)
 
     async def cancel_pin_pairing(self, client_id: str) -> None:
         """Abort an in-flight or parked PIN pairing session, restoring normal service."""
@@ -792,9 +812,9 @@ class SendspinProvider(PlayerProvider):
         # Start server for handling incoming Sendspin connections from clients
         # and mDNS discovery of new clients
         await self.server_api.start_server(
-            port=8927,
+            port=SENDSPIN_SERVER_PORT,
             host=self.mass.streams.bind_ip,
-            advertise_addresses=[self.mass.streams.publish_ip],
+            advertise_addresses=select_announce_addresses(self.mass.streams.publish_addresses),
         )
         for address in self._manual_ip_config:
             try:
@@ -847,6 +867,15 @@ class SendspinProvider(PlayerProvider):
             ),
             return_exceptions=True,
         )
+
+    def _set_aiosendspin_log_level(self) -> None:
+        """Keep aiosendspin's (very chatty) logging quiet unless verbose logging is enabled."""
+        # aiosendspin logs every protocol message of every client session at debug
+        # level, so only pass that through when verbose logging is enabled
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            logging.getLogger("aiosendspin").setLevel(logging.DEBUG)
+        else:
+            logging.getLogger("aiosendspin").setLevel(self.logger.level + 10)
 
     def _begin_client_event(self, client_id: str) -> int:
         """Increment version and in-flight task count for a client event."""

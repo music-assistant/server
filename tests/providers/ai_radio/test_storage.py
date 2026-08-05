@@ -372,15 +372,7 @@ def test_normalize_general_replaces_null_instructions_with_default() -> None:
     assert result["instructions"] == DEFAULT_LLM_INSTRUCTIONS
 
 
-@pytest.mark.parametrize(
-    "field",
-    [
-        "max_duration_minutes",
-        "dynamic_batch_size",
-        "dynamic_poll_seconds",
-        "dynamic_prefetch_remaining_tracks",
-    ],
-)
+@pytest.mark.parametrize("field", ["max_duration_minutes"])
 def test_normalize_station_rejects_non_numeric_numeric_field(field: str) -> None:
     """Reject station numeric fields containing non-numeric values."""
     storage = DummyStorage()

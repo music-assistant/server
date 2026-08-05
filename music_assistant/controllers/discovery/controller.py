@@ -197,10 +197,11 @@ class DiscoveryController(CoreController):
 
     def _configure_library_loggers(self) -> None:
         """Align third-party discovery logging with the discovery controller log level."""
-        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
-            logging.getLogger("async_upnp_client").setLevel(logging.DEBUG)
-        else:
-            logging.getLogger("async_upnp_client").setLevel(self.logger.level + 10)
+        library_log_level = (
+            logging.DEBUG if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else self.logger.level + 10
+        )
+        for logger_name in ("async_upnp_client", "zeroconf"):
+            logging.getLogger(logger_name).setLevel(library_log_level)
 
     def _create_aiozc(self, config: CoreConfig) -> AsyncZeroconf:
         """Create the shared AsyncZeroconf instance for the discovery controller."""

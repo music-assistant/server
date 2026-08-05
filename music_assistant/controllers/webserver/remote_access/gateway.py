@@ -31,7 +31,7 @@ from aiolibdatachannel import (
     install_python_logger,
 )
 
-from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.constants import MASS_LOGGER_NAME, SENDSPIN_SERVER_PORT, VERBOSE_LOG_LEVEL
 
 if TYPE_CHECKING:
     from aiolibdatachannel import DataChannel
@@ -44,6 +44,8 @@ HTTP_PROXY_CONCURRENCY = 6
 
 # Chunk ma-api messages larger than this; libdatachannel caps data-channel messages at 256 KiB.
 MA_API_CHUNK_SIZE = 64 * 1024
+
+DEFAULT_SENDSPIN_URL = f"ws://localhost:{SENDSPIN_SERVER_PORT}/sendspin"
 
 
 @dataclass
@@ -92,7 +94,7 @@ class WebRTCGateway:
         key_pem: str,
         signaling_url: str = "wss://signaling.music-assistant.io/ws",
         local_ws_url: str = "ws://localhost:8095/ws",
-        sendspin_url: str = "ws://localhost:8927/sendspin",
+        sendspin_url: str = DEFAULT_SENDSPIN_URL,
         ice_servers: list[dict[str, Any]] | None = None,
         ice_servers_callback: Callable[[], Awaitable[list[dict[str, Any]]]] | None = None,
         set_sendspin_player_callback: Callable[[str, str], None] | None = None,
@@ -105,7 +107,7 @@ class WebRTCGateway:
         :param cert_pem: Persistent DTLS certificate (PEM), enabling client-side pinning.
         :param key_pem: Private key (PEM) matching the DTLS certificate.
         :param signaling_url: WebSocket URL of the signaling server.
-        :param local_ws_url: Local WebSocket URL to bridge to.
+        :param local_ws_url: Same-host WebSocket URL of the Music Assistant API to bridge to.
         :param sendspin_url: Internal Sendspin WebSocket URL to bridge to.
         :param ice_servers: List of ICE server configurations (used at registration time).
         :param ice_servers_callback: Optional callback to fetch fresh ICE servers for each session.
@@ -154,12 +156,12 @@ class WebRTCGateway:
         if self._running:
             self.logger.warning("WebRTC Gateway already running, skipping start")
             return
-        # Failing candidates, paths and permissions is how ICE converges, so below DEBUG
-        # we only take errors from libdatachannel's native logging.
+        # Failing candidates and permissions is how ICE converges: full chatter only at VERBOSE
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             rtc_log_level = LogLevel.VERBOSE
         elif self.logger.isEnabledFor(logging.DEBUG):
-            rtc_log_level = LogLevel.DEBUG
+            rtc_log_level = LogLevel.WARNING
+            self.logger.addFilter(_BENIGN_NATIVE_NOISE_FILTER)
         else:
             rtc_log_level = LogLevel.ERROR
         install_python_logger(self.logger, level=rtc_log_level)
@@ -173,6 +175,7 @@ class WebRTCGateway:
     async def stop(self) -> None:
         """Stop the WebRTC Gateway."""
         self.logger.info("Stopping WebRTC Gateway")
+        self.logger.removeFilter(_BENIGN_NATIVE_NOISE_FILTER)
         self._running = False
 
         # Close all sessions
@@ -498,8 +501,10 @@ class WebRTCGateway:
         async with self._http_proxy_semaphore:
             try:
                 # Use shared HTTP session for this request
+                # this dial never leaves the host: TLS verification would fail on the bind
+                # address, and an unfollowed redirect cannot take the unverified dial off-host
                 async with self.http_session.request(
-                    method, local_http_url, headers=headers
+                    method, local_http_url, headers=headers, ssl=False, allow_redirects=False
                 ) as response:
                     body = await response.read()
                     await self._send_http_proxy_response(
@@ -630,9 +635,11 @@ class WebRTCGateway:
         try:
             # Include session_id in URL so server can track WebRTC sessions
             ws_url = f"{self.local_ws_url}?webrtc_session_id={session.session_id}"
-            session.local_ws = await self.http_session.ws_connect(ws_url)
+            # TLS verification would fail on the bind address and adds nothing to a dial
+            # that never leaves this host
+            session.local_ws = await self.http_session.ws_connect(ws_url, ssl=False)
         except Exception:
-            self.logger.exception("Failed to connect to local WebSocket")
+            self.logger.exception("Failed to connect to local WebSocket %s", self.local_ws_url)
             channel.close()
             self._schedule_close(session.session_id)
             return
@@ -831,6 +838,18 @@ class WebRTCGateway:
                     self._set_sendspin_player_callback(session.session_id, client_id)
         except json.JSONDecodeError, TypeError:
             pass  # Not valid JSON, ignore
+
+
+class _BenignNativeNoiseFilter(logging.Filter):
+    """Drops known-benign native libdatachannel log lines."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Return whether this log record is worth keeping."""
+        # Cloudflare omits the ERROR-CODE attribute, so libjuice warns on a benign refusal
+        return "TURN CreatePermission error response, code=0" not in record.getMessage()
+
+
+_BENIGN_NATIVE_NOISE_FILTER = _BenignNativeNoiseFilter()
 
 
 def _is_usable_ice_url(url: str) -> bool:

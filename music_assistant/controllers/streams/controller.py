@@ -58,12 +58,14 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TRACKS,
     DEFAULT_BACKGROUND_SCAN_CONCURRENCY,
+    DEFAULT_HOST,
     DEFAULT_STREAM_HEADERS,
     DLNA_CONTENT_FEATURES,
     DLNA_CONTENT_FEATURES_REALTIME,
     ICY_HEADERS,
     SILENCE_FILE,
     VERBOSE_LOG_LEVEL,
+    WILDCARD_BIND_IPS,
 )
 from music_assistant.controllers.players.helpers import AnnounceData
 from music_assistant.controllers.streams.announcements import (
@@ -101,9 +103,10 @@ from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.util import (
     format_ip_for_url,
     get_ip_addresses,
+    get_source_ip_for_target,
     sanitize_http_header_value,
 )
-from music_assistant.helpers.webserver import Webserver
+from music_assistant.helpers.webserver import Webserver, redact_sensitive_headers
 from music_assistant.models.core_controller import CoreController
 from music_assistant.models.music_provider import MusicProvider
 from music_assistant.models.plugin import PluginProvider
@@ -155,6 +158,29 @@ async def _wav_passthrough_stream(
         yield chunk
 
 
+def _get_publish_addresses(
+    bind_ip: str, configured_publish_ip: str | None, all_ip_addresses: tuple[str, ...]
+) -> list[str]:
+    """
+    Return the addresses this host should advertise to players on the local network.
+
+    :param bind_ip: The configured bind IP (a wildcard means all interfaces).
+    :param configured_publish_ip: The explicitly configured publish IP, or None when auto.
+    :param all_ip_addresses: All detected host IP addresses, in ranked order.
+    """
+    if configured_publish_ip:
+        # an explicitly configured address is the authoritative answer
+        return [configured_publish_ip]
+    if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
+        # only one interface is served, so no other address can be reached
+        return [bind_ip]
+    # Auto-detected: the primary address is only a guess at which interface the players
+    # live on, so advertise every address (highest ranked first) and let the device pick
+    # one it can reach. On a multi-homed host - a VPN or docker interface alongside the
+    # LAN - the primary-route address is regularly not the one on the players' network.
+    return list(all_ip_addresses)
+
+
 class StreamsController(CoreController):
     """Controller to stream audio to players."""
 
@@ -172,9 +198,15 @@ class StreamsController(CoreController):
             "streaming audio to players on the local network."
         )
         self.manifest.icon = "cast-audio"
-        self.announcements: dict[str, AnnounceData] = {}
         self.announcement_renderer = AnnouncementRenderer()
         self._bind_ip: str = "0.0.0.0"
+        self._base_url: str = ""
+        self._configured_publish_ip: str | None = None
+        # every address players may reach this host on, best candidate first - for mDNS
+        # records, which can carry them all, unlike the single-valued publish_ip
+        self.publish_addresses: list[str] = []
+        # the network as it was at the previous setup, to spot a runtime change
+        self._network_fingerprint: tuple[str, str, int, tuple[str, ...]] | None = None
         self.audio = StreamsAudio(mass)
         self.audio_processing = AudioProcessingManager(mass)
         self._audio_analysis = AudioAnalysisController(self)
@@ -198,19 +230,65 @@ class StreamsController(CoreController):
             "ffmpeg_version": get_global_cache_value(CACHE_ATTR_FFMPEG_VERSION),
             "libsoxr_support": get_global_cache_value(CACHE_ATTR_LIBSOXR_PRESENT),
             "active_output_streams": self._active_output_streams,
-            "active_announcements": len(self.announcements),
+            "active_announcements": self.announcement_renderer.active_announcements,
             "active_announcement_renders": self.announcement_renderer.active_renders,
+            "publish_ip_configured": self._configured_publish_ip is not None,
         }
 
     @property
     def base_url(self) -> str:
         """Return the base_url for the streamserver."""
-        return self._server.base_url
+        return self._base_url
 
     @property
     def bind_ip(self) -> str:
         """Return the IP address this streamserver is bound to."""
         return self._bind_ip
+
+    async def get_source_ip(self, target_ip: str | None = None) -> str | None:
+        """
+        Return a local, bindable source IP on the player-facing network.
+
+        For callers that bind a socket or hand a local interface address to a helper
+        process, so their traffic leaves on the network the players live on. The result
+        is always an address of this host, never the advertised address, which may not
+        exist here at all.
+
+        Returns None when no single interface should be pinned, which the caller must
+        read as "bind all interfaces and let the routing table decide".
+
+        :param target_ip: IP address of the device the traffic is meant for. Omit it for
+            a shared consumer that serves every player at once; such a caller can only be
+            pinned by an explicitly configured bind IP.
+        """
+        if self._bind_ip and self._bind_ip not in WILDCARD_BIND_IPS:
+            if target_ip and not _same_ip_family(self._bind_ip, target_ip):
+                return None
+            return self._bind_ip
+        if not target_ip:
+            return None
+        return await get_source_ip_for_target(target_ip) or None
+
+    def get_publish_ip(self, target_ip: str) -> str | None:
+        """
+        Return the address to advertise to the device at ``target_ip``, if one is configured.
+
+        Only an explicitly configured publish IP is returned. An auto-detected one is a
+        guess at this host's primary interface, which on a multi-homed host is not
+        necessarily the network the players live on, so callers that can derive the
+        address from the connection itself must prefer that over the guess.
+
+        Returns None when no publish IP was configured, or when the configured one cannot
+        apply to this device.
+
+        :param target_ip: IP address of the device that would receive the address, used to
+            reject an address of the wrong IP family.
+        """
+        if not self._configured_publish_ip:
+            return None
+        if not _same_ip_family(self._configured_publish_ip, target_ip):
+            return None
+        return self._configured_publish_ip
 
     @property
     def smart_fades_available(self) -> bool:
@@ -331,8 +409,8 @@ class StreamsController(CoreController):
             ConfigEntry(
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
-                default_value="0.0.0.0",
-                options=[ConfigValueOption(x, title=x) for x in {"0.0.0.0", *ip_addresses}],
+                default_value=DEFAULT_HOST,
+                options=[ConfigValueOption(x, title=x) for x in {DEFAULT_HOST, *ip_addresses}],
                 category="generic",
                 advanced=True,
                 required=False,
@@ -368,30 +446,16 @@ class StreamsController(CoreController):
         await check_ffmpeg_version()
         # start the webserver
         self.publish_port = config.get_value(CONF_BIND_PORT, DEFAULT_PORT)
-        publish_ip = str(config.get_value(CONF_PUBLISH_IP) or CONF_VALUE_AUTO)
-        if publish_ip == CONF_VALUE_AUTO:
-            # resolve the "auto" default (or an unset value) to this server's primary IP
-            publish_ip = (await get_ip_addresses(include_ipv6=True))[0]
-        self.publish_ip = publish_ip
-        self._bind_ip = bind_ip = str(config.get_value(CONF_BIND_IP))
-        # print a big fat message in the log where the streamserver is running
-        # because this is a common source of issues for people with more complex setups
-        self.logger.log(
-            logging.INFO if self.mass.config.onboard_done else logging.WARNING,
-            "\n\n################################################################################\n"
-            "Starting streamserver on  %s:%s\n"
-            "This is the IP address that is communicated to players.\n"
-            "If this is incorrect, audio will not play!\n"
-            "See the documentation for how to configure the publish IP for the Streamserver\n"
-            "in Settings --> System --> Streams\n"
-            "################################################################################\n",
-            self.publish_ip,
-            self.publish_port,
+        configured_publish_ip = str(config.get_value(CONF_PUBLISH_IP) or CONF_VALUE_AUTO)
+        self._configured_publish_ip = (
+            None if configured_publish_ip == CONF_VALUE_AUTO else configured_publish_ip
         )
+        all_ip_addresses = await get_ip_addresses(include_ipv6=True)
+        bind_ip = str(config.get_value(CONF_BIND_IP))
+        self._resolve_publish_state(bind_ip, all_ip_addresses)
         await self._server.setup(
             bind_ip=bind_ip,
             bind_port=cast("int", self.publish_port),
-            base_url=f"http://{format_ip_for_url(str(self.publish_ip))}:{self.publish_port}",
             static_routes=[
                 (
                     "*",
@@ -407,6 +471,25 @@ class StreamsController(CoreController):
                 ("*", "/announcement/{player_id}.{fmt}", self.serve_announcement_stream),
             ],
         )
+        # adopt what the server actually bound to: a configured port of 0 is only resolved
+        # by the OS at bind time and an unavailable bind IP falls back to all interfaces
+        self.publish_port = cast("int", self._server.port)
+        self._resolve_publish_state(self._server.bind_ip or DEFAULT_HOST, all_ip_addresses)
+        # print a big fat message in the log where the streamserver is running
+        # because this is a common source of issues for people with more complex setups
+        self.logger.log(
+            logging.INFO if self.mass.config.onboard_done else logging.WARNING,
+            "\n\n################################################################################\n"
+            "Started streamserver on %s:%s\n"
+            "This is the IP address that is communicated to players.\n"
+            "If this is incorrect, audio will not play!\n"
+            "See the documentation for how to configure the publish IP for the Streamserver\n"
+            "in Settings --> System --> Streams\n"
+            "################################################################################\n",
+            self.publish_ip,
+            self.publish_port,
+        )
+        await self._reload_network_dependent_providers()
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -468,7 +551,9 @@ class StreamsController(CoreController):
             and media.media_type not in (MediaType.RADIO, MediaType.AUDIO_SOURCE)
         )
         base_path = "flow" if flow_mode else "single"
-        return f"{self._server.base_url}/{base_path}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}"
+        return (
+            f"{self.base_url}/{base_path}/{session_id}/{queue_id}/{queue_item_id}/{player_id}.{fmt}"
+        )
 
     def update_stream_metadata(
         self,
@@ -1086,7 +1171,7 @@ class StreamsController(CoreController):
         player_id = request.match_info["player_id"]
         if not (player := self.mass.players.get_player(player_id)):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
-        if not (announce_data := self.announcements.get(player_id)):
+        if not (announce_data := self.announcement_renderer.get_for_player(player_id)):
             raise web.HTTPNotFound(reason=f"No pending announcements for Player: {player_id}")
 
         # work out output format/details
@@ -1164,11 +1249,14 @@ class StreamsController(CoreController):
     def get_announcement_url(
         self,
         player_id: str,
-        announce_data: AnnounceData,
         content_type: ContentType = ContentType.MP3,
     ) -> str:
-        """Get the url for the special announcement stream."""
-        self.announcements[player_id] = announce_data
+        """
+        Get the url that serves the announcement registered for the given player.
+
+        :param player_id: The player the announcement is played on.
+        :param content_type: The format to serve the announcement in.
+        """
         # use stream server to host announcement on local network
         # this ensures playback on all players, including ones that do not
         # like https hosts and it also offers the pre-announce 'bell'
@@ -1552,12 +1640,50 @@ class StreamsController(CoreController):
                 request.method,
                 request.path,
                 request.remote,
-                request.headers,
+                redact_sensitive_headers(request.headers),
             )
         else:
             self.logger.debug(
                 "Got %s request to %s from %s", request.method, request.path, request.remote
             )
+
+    async def _reload_network_dependent_providers(self) -> None:
+        """Reload the providers that captured the streamserver network, if it changed."""
+        previous = self._network_fingerprint
+        current = (
+            self._bind_ip,
+            str(self.publish_ip),
+            cast("int", self.publish_port),
+            tuple(self.publish_addresses),
+        )
+        if previous is None or previous == current:
+            self._network_fingerprint = current
+            return
+        # these providers bind or advertise the network while they load, so a plain
+        # reload is what moves them over - they share no lighter rebind path
+        instance_ids = [
+            prov.instance_id
+            for prov in self.mass.providers
+            if prov.reload_on_streams_network_change
+        ]
+        for instance_id in instance_ids:
+            try:
+                config = await self.mass.config.get_provider_config(instance_id)
+                self.logger.info(
+                    "Streamserver network changed, reloading provider %s",
+                    config.name or config.domain,
+                )
+                await self.mass.load_provider_config(config)
+            except Exception as err:
+                self.logger.warning(
+                    "Error reloading provider %s: %s",
+                    instance_id,
+                    str(err) or err.__class__.__name__,
+                    exc_info=err,
+                )
+        # only mark the new network as applied once the loop completed, so a run cut short
+        # by a second config change runs again on the next reload
+        self._network_fingerprint = current
 
     def _setup_smart_fades_logger(self, config: CoreConfig) -> None:
         """Set up smart fades logger level."""
@@ -1566,3 +1692,25 @@ class StreamsController(CoreController):
             self.audio.smart_fades_mixer.logger.setLevel(self.logger.level)
         else:
             self.audio.smart_fades_mixer.logger.setLevel(log_level)
+
+    def _resolve_publish_state(self, bind_ip: str, all_ip_addresses: tuple[str, ...]) -> None:
+        """
+        Resolve the addresses and base URL to advertise for the given bind address.
+
+        Reads ``self.publish_port``, so set that first.
+
+        :param bind_ip: Address the streamserver binds to (a wildcard means all interfaces).
+        :param all_ip_addresses: All detected host IP addresses, in ranked order.
+        """
+        self._bind_ip = bind_ip
+        self.publish_addresses = _get_publish_addresses(
+            bind_ip, self._configured_publish_ip, all_ip_addresses
+        )
+        # players that can only be handed one address get the highest ranked one
+        self.publish_ip = self.publish_addresses[0]
+        self._base_url = f"http://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
+
+
+def _same_ip_family(ip: str, other_ip: str) -> bool:
+    """Return whether two addresses belong to the same IP family."""
+    return (":" in ip) == (":" in other_ip)

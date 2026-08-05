@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import Sequence
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -25,7 +25,7 @@ from music_assistant_models.unique_list import UniqueList
 from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.controllers.music.recency import RecencySnapshot
 from music_assistant.helpers.json import json_dumps, json_loads
-from music_assistant.models.plugin import PluginProvider
+from music_assistant.models.plugin import AIEngine, PluginProvider
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import (
     DEFAULT_TRIVIA_LANGUAGE,
@@ -38,7 +38,7 @@ from music_assistant.providers.music_quiz.models import (
 from music_assistant.providers.music_quiz.quiz_types import get_quiz_type
 from music_assistant.providers.music_quiz.quiz_types.base import MAX_SUGGESTION_COUNT
 from music_assistant.providers.music_quiz.quiz_types.trivia import (
-    AI_ATTEMPTS_PER_PROVIDER,
+    AI_GENERATION_ATTEMPTS,
     AI_QUERY_TIMEOUT_SECONDS,
     MAX_AI_PROMPT_BYTES,
     MAX_AI_RESPONSE_BYTES,
@@ -173,10 +173,13 @@ def _ai_provider(
     instance_id: str = "ai--1",
     error: Exception | None = None,
 ) -> MagicMock:
-    """Return a mock AI_QUERY-capable plugin provider."""
+    """Return a mock AI_QUERY-capable plugin provider exposing a single engine."""
     provider = MagicMock(spec=PluginProvider)
     provider.instance_id = instance_id
     provider.ai_query = AsyncMock(return_value=response, side_effect=error)
+    provider.get_ai_engines = AsyncMock(
+        return_value=[AIEngine(id="engine", name=instance_id, provider=provider)]
+    )
     return provider
 
 
@@ -193,14 +196,23 @@ def _quiz(
     tracks: list[Track],
     *,
     providers: Sequence[object] | None = None,
+    ai_engine: str | None = None,
     round_count: int = 1,
     suggestion_count: int = 4,
     difficulty: str = MusicQuizDifficulty.NORMAL.value,
     language: str = DEFAULT_TRIVIA_LANGUAGE,
     play_reveal_audio: bool = True,
 ) -> tuple[TriviaQuizType, MagicMock]:
-    """Return a Trivia strategy backed by a selected-track pool."""
-    mass = _mass(providers if providers is not None else [_ai_provider()])
+    """
+    Return a Trivia strategy backed by a selected-track pool.
+
+    :param ai_engine: The configured engine uid; defaults to the engine of the first
+        given plugin provider, since a game always runs on one concrete selection.
+    """
+    ai_providers = list(providers if providers is not None else [_ai_provider()])
+    mass = _mass(ai_providers)
+    if ai_engine is None and ai_providers:
+        ai_engine = f"{cast('Any', ai_providers[0]).instance_id}/engine"
     config = MusicQuizConfig(
         round_count=round_count,
         suggestion_count=suggestion_count,
@@ -208,6 +220,7 @@ def _quiz(
         difficulty=difficulty,
         language=language,
         play_reveal_audio=play_reveal_audio,
+        ai_engine=ai_engine,
     )
     quiz = TriviaQuizType(mass, config)
     quiz._source_track_pool = {track.uri: track for track in tracks if track.uri}
@@ -289,6 +302,32 @@ def _correct_source_uri(state: MultipleChoiceRoundState) -> str:
     assert len(correct) == 1
     assert correct[0].uri is not None
     return correct[0].uri
+
+
+def _with_isrc(track: Track, isrc: str) -> Track:
+    """Return the given track carrying an ISRC."""
+    track.add_external_id(ExternalID.ISRC, isrc)
+    return track
+
+
+def _with_musicbrainz(mass: MagicMock, years: dict[str, int]) -> MagicMock:
+    """Attach a MusicBrainz provider that dates the given ISRCs to the mock MusicAssistant."""
+    provider = MagicMock()
+    provider.get_release_year_by_isrc = AsyncMock(side_effect=lambda isrc: years.get(isrc))
+    mass.get_provider = MagicMock(
+        side_effect=lambda domain: provider if domain == "musicbrainz" else None
+    )
+    return provider
+
+
+def _year_question_provider() -> MagicMock:
+    """Return a mock AI provider that words one release year question."""
+    return _ai_provider(
+        _valid_response(
+            "In which year was this song first released?",
+            ["2011", "1994", "1987"],
+        )
+    )
 
 
 def test_registry_identity_and_config_are_trivia_specific() -> None:
@@ -482,7 +521,7 @@ async def test_selected_track_and_playlist_sources_are_loaded_without_search(
     assert source.uri is not None
     quiz = TriviaQuizType(
         mass,
-        MusicQuizConfig(round_count=1, source_uris=[source.uri]),
+        MusicQuizConfig(round_count=1, source_uris=[source.uri], ai_engine="ai--1/engine"),
     )
 
     await quiz.initialize()
@@ -708,6 +747,146 @@ def test_album_mapping_retains_release_grounding_without_compilation_evidence() 
 
 
 @pytest.mark.asyncio
+async def test_musicbrainz_dates_a_reissue_album_mapping() -> None:
+    """Prefer the MusicBrainz recording year over a reissue year on an album mapping."""
+    track = _with_isrc(
+        _track("reissue", "Teardrop", "Massive Attack", album="Mezzanine", album_year=2007),
+        "ISRC-REISSUE",
+    )
+    quiz, mass = _quiz([track])
+    _with_musicbrainz(mass, {"ISRC-REISSUE": 1998})
+
+    facts = quiz._track_facts(await quiz._musicbrainz_dated_track(track))
+
+    assert facts is not None
+    assert facts.release_year == 1998
+
+
+@pytest.mark.asyncio
+async def test_library_release_year_survives_a_later_musicbrainz_year() -> None:
+    """Keep the earliest known year when MusicBrainz only knows a later remaster."""
+    dated_album = _with_isrc(
+        _track("album-dated", "Penny Lane", "The Beatles", album="Past Masters", album_year=1967),
+        "ISRC-ALBUM-DATED",
+    )
+    dated_track = _with_isrc(
+        _track("track-dated", "Penny Lane", "The Beatles", release_year=1967),
+        "ISRC-TRACK-DATED",
+    )
+    quiz, mass = _quiz([dated_album, dated_track])
+    _with_musicbrainz(mass, {"ISRC-ALBUM-DATED": 2017, "ISRC-TRACK-DATED": 2017})
+
+    album_facts = quiz._track_facts(await quiz._musicbrainz_dated_track(dated_album))
+    track_facts = quiz._track_facts(await quiz._musicbrainz_dated_track(dated_track))
+
+    assert album_facts is not None
+    assert album_facts.release_year == 1967
+    assert track_facts is not None
+    assert track_facts.release_year == 1967
+
+
+@pytest.mark.asyncio
+async def test_musicbrainz_adds_a_year_target_to_an_undated_track() -> None:
+    """Offer a release year target once MusicBrainz dates a track the library left undated."""
+    track = _with_isrc(
+        _track("undated", "Teardrop", "Massive Attack", album="Mezzanine"),
+        "ISRC-UNDATED",
+    )
+    quiz, mass = _quiz([track])
+    _with_musicbrainz(mass, {"ISRC-UNDATED": 1998})
+
+    undated_facts = quiz._track_facts(track)
+    dated_facts = quiz._track_facts(await quiz._musicbrainz_dated_track(track))
+
+    assert undated_facts is not None
+    assert undated_facts.release_year is None
+    assert quiz._available_targets(undated_facts) == (
+        TriviaTarget.ARTIST,
+        TriviaTarget.TITLE,
+        TriviaTarget.ALBUM,
+    )
+    assert dated_facts is not None
+    assert dated_facts.release_year == 1998
+    assert quiz._available_targets(dated_facts) == tuple(TriviaTarget)
+
+
+@pytest.mark.asyncio
+async def test_compilation_release_year_stays_suppressed_after_dating() -> None:
+    """Keep compilation year facts suppressed even when MusicBrainz can date the recording."""
+    track = _with_isrc(_track("compilation", "Africa", "Toto", release_year=1998), "ISRC-COMP")
+    track.album = _full_album(
+        "party-hits",
+        "Party Hits",
+        album_type=AlbumType.COMPILATION,
+        year=1998,
+    )
+    quiz, mass = _quiz([track])
+    _with_musicbrainz(mass, {"ISRC-COMP": 1982})
+
+    facts = quiz._track_facts(await quiz._musicbrainz_dated_track(track))
+
+    assert facts is not None
+    assert facts.release_year is None
+    assert TriviaTarget.YEAR not in quiz._available_targets(facts)
+
+
+@pytest.mark.asyncio
+async def test_prepare_round_scores_and_grounds_the_musicbrainz_release_year() -> None:
+    """Score and ground a release year question on the MusicBrainz recording year."""
+    track = _with_isrc(_track("reissue", "Teardrop", release_year=2007), "ISRC-REISSUE")
+    provider = _year_question_provider()
+    quiz, mass = _quiz([track], providers=[provider])
+    _with_musicbrainz(mass, {"ISRC-REISSUE": 1998})
+
+    game_round = await quiz.prepare_round(0, [])
+
+    assert game_round.answer_label == "1998"
+    assert isinstance(game_round.answer_state, MultipleChoiceRoundState)
+    assert _correct_source_uri(game_round.answer_state) == track.uri
+    payload = _prompt_payload(provider.ai_query.await_args.args[0])
+    assert payload["question_target"] == TriviaTarget.YEAR
+    assert payload["correct_answer"] == "1998"
+    assert payload["track_metadata"]["release_year"] == 1998
+
+
+@pytest.mark.asyncio
+async def test_prepare_round_keeps_library_years_without_musicbrainz() -> None:
+    """Ground a release year question on library metadata when MusicBrainz is unavailable."""
+    track = _with_isrc(_track("library", "Teardrop", release_year=1998), "ISRC-LIBRARY")
+    quiz, mass = _quiz([track], providers=[_year_question_provider()])
+    mass.get_provider = MagicMock(return_value=None)
+
+    game_round = await quiz.prepare_round(0, [])
+
+    assert game_round.answer_label == "1998"
+
+
+@pytest.mark.asyncio
+async def test_musicbrainz_lookups_do_not_scale_with_the_source_pool() -> None:
+    """Date only the track that becomes the question, never the complete eligible pool."""
+    tracks = [
+        _with_isrc(
+            _track(
+                f"track-{index}",
+                f"Song {index}",
+                f"Artist {index}",
+                album=f"Album {index}",
+                album_year=2007,
+            ),
+            f"ISRC-{index}",
+        )
+        for index in range(60)
+    ]
+    quiz, mass = _quiz(tracks, providers=[_ai_provider(_valid_response())])
+    musicbrainz = _with_musicbrainz(mass, {f"ISRC-{index}": 1998 for index in range(60)})
+
+    await quiz.initialize()
+    await quiz.prepare_round(0, [])
+
+    assert musicbrainz.get_release_year_by_isrc.await_count == 1
+
+
+@pytest.mark.asyncio
 async def test_compilation_rounds_only_generate_artist_and_title_targets() -> None:
     """Generate valid rounds without selecting compilation album or year targets."""
     first_track = _track("one", "First Song", "Artist One", release_year=2012)
@@ -784,6 +963,7 @@ async def test_prepare_round_persists_unique_sources_across_fresh_strategies() -
         round_count=2,
         suggestion_count=4,
         source_uris=["prov://playlist/source"],
+        ai_engine="ai--1/engine",
     )
     mass = _mass([provider])
     first_quiz = TriviaQuizType(mass, config)
@@ -1244,7 +1424,7 @@ async def test_generation_retries_when_grounded_repair_is_insufficient() -> None
     result = await quiz._generate_question(_artist_fact())
 
     assert result.wrong_answers == ("Portishead", "Radiohead", "Air")
-    assert provider.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
+    assert provider.ai_query.await_count == AI_GENERATION_ATTEMPTS
 
 
 @pytest.mark.asyncio
@@ -1267,7 +1447,7 @@ async def test_generation_fails_when_all_grounded_repairs_are_insufficient() -> 
         await quiz._generate_question(_artist_fact())
 
     assert error.value.translation_key == "music_quiz_trivia_generation_failed"
-    assert provider.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
+    assert provider.ai_query.await_count == AI_GENERATION_ATTEMPTS
 
 
 @pytest.mark.parametrize(
@@ -1482,71 +1662,83 @@ async def test_generation_retries_invalid_response_then_accepts_valid_response()
     result = await quiz._generate_question(_artist_fact())
 
     assert result.question == "Which artist recorded this selected track?"
-    assert provider.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
+    assert provider.ai_query.await_count == AI_GENERATION_ATTEMPTS
 
 
 @pytest.mark.asyncio
-async def test_generation_uses_deterministic_provider_fallback() -> None:
-    """Try plugin providers by instance ID and fall back after bounded invalid output."""
-    first = _ai_provider("invalid", instance_id="ai--a")
-    second = _ai_provider(_valid_response(), instance_id="ai--b")
-    quiz, _ = _quiz([], providers=[second, first])
-
-    result = await quiz._generate_question(_artist_fact())
-
-    assert result.question == "Which artist recorded this selected track?"
-    assert first.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
-    second.ai_query.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_generation_falls_back_after_provider_exception() -> None:
-    """Continue to the next AI plugin when a provider query raises."""
-    failing = _ai_provider(error=RuntimeError("provider failed"), instance_id="ai--a")
-    working = _ai_provider(_valid_response(), instance_id="ai--b")
-    quiz, _ = _quiz([], providers=[working, failing])
-
-    result = await quiz._generate_question(_artist_fact())
-
-    assert result.question == "Which artist recorded this selected track?"
-    assert failing.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
-    working.ai_query.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_generation_times_out_stalled_provider_before_fallback() -> None:
-    """Bound each AI attempt so a stalled provider cannot block game management."""
-
-    async def _stall(_prompt: str) -> str:
-        await asyncio.Event().wait()
-        raise AssertionError
-
-    stalled = _ai_provider(instance_id="ai--a")
-    stalled.ai_query.side_effect = _stall
-    working = _ai_provider(_valid_response(), instance_id="ai--b")
-    quiz, _ = _quiz([], providers=[working, stalled])
-
-    with patch(
-        "music_assistant.providers.music_quiz.quiz_types.trivia.AI_QUERY_TIMEOUT_SECONDS",
-        AI_QUERY_TIMEOUT_SECONDS / 30_000,
-    ):
-        result = await quiz._generate_question(_artist_fact())
-
-    assert result.question == "Which artist recorded this selected track?"
-    assert stalled.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
-    working.ai_query.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_generation_surfaces_localized_failure_after_all_providers() -> None:
-    """Fail explicitly after every provider exhausts its bounded attempts."""
-    invalid = _ai_provider("invalid", instance_id="ai--a")
-    failing = _ai_provider(error=RuntimeError("provider failed"), instance_id="ai--b")
-    quiz, _ = _quiz([], providers=[failing, invalid])
+async def test_generation_stays_on_the_configured_engine() -> None:
+    """Another available engine never answers for the engine the game was configured with."""
+    configured = _ai_provider("invalid", instance_id="ai--a")
+    other = _ai_provider(_valid_response(), instance_id="ai--b")
+    quiz, _ = _quiz([], providers=[configured, other])
 
     with pytest.raises(InvalidDataError) as error:
         await quiz._generate_question(_artist_fact())
 
     assert error.value.translation_key == "music_quiz_trivia_generation_failed"
-    assert invalid.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
-    assert failing.ai_query.await_count == AI_ATTEMPTS_PER_PROVIDER
+    assert configured.ai_query.await_count == AI_GENERATION_ATTEMPTS
+    other.ai_query.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_generation_retries_after_provider_exception() -> None:
+    """A raising query costs one attempt, leaving the next one to succeed."""
+    provider = _ai_provider()
+    provider.ai_query.side_effect = [RuntimeError("provider failed"), _valid_response()]
+    quiz, _ = _quiz([], providers=[provider])
+
+    result = await quiz._generate_question(_artist_fact())
+
+    assert result.question == "Which artist recorded this selected track?"
+    assert provider.ai_query.await_count == AI_GENERATION_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_generation_times_out_a_stalled_provider() -> None:
+    """Bound each AI attempt so a stalled provider cannot block game management."""
+
+    async def _stall(_prompt: str, **_kwargs: Any) -> str:
+        await asyncio.Event().wait()
+        raise AssertionError
+
+    stalled = _ai_provider()
+    stalled.ai_query.side_effect = _stall
+    quiz, _ = _quiz([], providers=[stalled])
+
+    with (
+        patch(
+            "music_assistant.providers.music_quiz.quiz_types.trivia.AI_QUERY_TIMEOUT_SECONDS",
+            AI_QUERY_TIMEOUT_SECONDS / 30_000,
+        ),
+        pytest.raises(InvalidDataError) as error,
+    ):
+        await quiz._generate_question(_artist_fact())
+
+    assert error.value.translation_key == "music_quiz_trivia_generation_failed"
+    assert stalled.ai_query.await_count == AI_GENERATION_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_generation_surfaces_localized_failure_after_all_attempts() -> None:
+    """Fail explicitly once the configured engine exhausts its bounded attempts."""
+    invalid = _ai_provider("invalid")
+    quiz, _ = _quiz([], providers=[invalid])
+
+    with pytest.raises(InvalidDataError) as error:
+        await quiz._generate_question(_artist_fact())
+
+    assert error.value.translation_key == "music_quiz_trivia_generation_failed"
+    assert invalid.ai_query.await_count == AI_GENERATION_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_generation_requires_the_configured_engine_to_exist() -> None:
+    """A configured engine that vanished fails the round instead of using another one."""
+    other = _ai_provider(_valid_response(), instance_id="ai--b")
+    quiz, _ = _quiz([], providers=[other], ai_engine="ai--a/engine")
+
+    with pytest.raises(InvalidDataError) as error:
+        await quiz._generate_question(_artist_fact())
+
+    assert error.value.translation_key == "music_quiz_trivia_ai_provider_required"
+    other.ai_query.assert_not_awaited()

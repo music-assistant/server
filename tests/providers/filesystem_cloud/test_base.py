@@ -12,7 +12,7 @@ from aiohttp.test_utils import make_mocked_request
 from music_assistant_models.errors import MediaNotFoundError, ProviderUnavailableError
 
 from music_assistant.providers.filesystem_cloud.base import CloudFileSystemProvider, RawItem
-from music_assistant.providers.filesystem_local.helpers import FileSystemItem
+from music_assistant.providers.filesystem_local.helpers import FileSystemItem, ScanErrors
 
 if TYPE_CHECKING:
     from aiohttp import ClientResponse
@@ -86,7 +86,7 @@ def _make_provider(tree: dict[str, list[RawItem]] | None = None) -> _StubCloudPr
 async def _run_enumerate(
     provider: _StubCloudProvider,
     *,
-    root_scan_errors: list[OSError] | None = None,
+    scan_errors: ScanErrors | None = None,
 ) -> None:
     """Drive _enumerate_files_for_sync with empty sync buckets."""
     await provider._enumerate_files_for_sync(
@@ -96,7 +96,7 @@ async def _run_enumerate(
         items_to_process=[],
         unchanged_cue_items=[],
         cue_stems=set(),
-        root_scan_errors=root_scan_errors if root_scan_errors is not None else [],
+        scan_errors=scan_errors if scan_errors is not None else ScanErrors(),
     )
 
 
@@ -330,11 +330,12 @@ async def test_enumerate_subfolder_error_is_skipped() -> None:
     provider._classify_scan_item = MagicMock()  # type: ignore[method-assign]
     logger = MagicMock()
     provider.logger = logger
-    root_scan_errors: list[OSError] = []
+    scan_errors = ScanErrors()
 
-    await _run_enumerate(provider, root_scan_errors=root_scan_errors)
+    await _run_enumerate(provider, scan_errors=scan_errors)
 
-    assert not root_scan_errors
+    assert not scan_errors.fatal
+    assert scan_errors.failed_dirs == 1
     logger.warning.assert_called_once()
     assert provider._classify_scan_item.call_count == 1
 
@@ -343,11 +344,11 @@ async def test_enumerate_root_error_aborts() -> None:
     """A root-level listing failure is reported so the sync aborts."""
     provider = _make_provider()
     provider.fail_list = {ROOT_ID}
-    root_scan_errors: list[OSError] = []
+    scan_errors = ScanErrors()
 
-    await _run_enumerate(provider, root_scan_errors=root_scan_errors)
+    await _run_enumerate(provider, scan_errors=scan_errors)
 
-    assert len(root_scan_errors) == 1
+    assert scan_errors.fatal is not None
 
 
 async def test_enumerate_stops_on_directory_cycle() -> None:

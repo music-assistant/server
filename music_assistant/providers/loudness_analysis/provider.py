@@ -33,7 +33,7 @@ CONF_WRITE_REPLAYGAIN_TAGS = "write_replaygain_tags"
 
 _INTEGRATED_RE = re.compile(r"Integrated loudness:.*?I:\s*(-?\d+(?:\.\d+)?)\s*LUFS", re.DOTALL)
 _LRA_RE = re.compile(r"Loudness range:.*?LRA:\s*(-?\d+(?:\.\d+)?)\s*LU", re.DOTALL)
-_TRUE_PEAK_RE = re.compile(r"True peak:.*?Peak:\s*(-?\d+(?:\.\d+)?)\s*dBTP", re.DOTALL)
+_TRUE_PEAK_RE = re.compile(r"True peak:.*?Peak:\s*(-?\d+(?:\.\d+)?)\s*dBFS", re.DOTALL)
 
 
 @dataclass
@@ -48,7 +48,7 @@ class LoudnessSessionData:
 class LoudnessAnalysisProvider(AudioAnalysisProvider):
     """Audio analysis provider that measures EBU R128 integrated loudness."""
 
-    analysis_version: int = 1
+    analysis_version: int = 2
 
     def __init__(
         self,
@@ -133,7 +133,7 @@ class LoudnessAnalysisProvider(AudioAnalysisProvider):
             input_format=audio_format,
             output_format=audio_format,
             audio_output="NULL",
-            filter_params=["ebur128=framelog=verbose"],
+            filter_params=["ebur128=framelog=verbose:peak=true"],
             collect_log_history=True,
             loglevel="info",
         )

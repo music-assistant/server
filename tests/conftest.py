@@ -4,7 +4,7 @@ import asyncio
 import logging
 import pathlib
 import threading
-from collections.abc import AsyncGenerator, Callable, Generator
+from collections.abc import AsyncGenerator, Generator
 from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, NonCallableMagicMock, patch
 
@@ -18,7 +18,20 @@ from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.tasks import TasksController
 from music_assistant.mass import MusicAssistant
-from tests.common import suppress_auto_loaded_providers, use_ephemeral_server_ports
+from tests.common import suppress_auto_loaded_providers, use_ephemeral_server_ports, utf8_safe
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_report_to_serializable() -> Generator[None, object, object]:
+    """
+    Make serialized test reports strict-UTF-8 safe for pytest-xdist.
+
+    Lone surrogates in a captured report (e.g. undecodable filesystem paths) kill
+    the execnet worker channel. Covers test reports only; other xdist payloads
+    (warnings, log-start nodeids) are serialized outside this hook.
+    """
+    data = yield
+    return utf8_safe(data)
 
 
 @pytest.fixture(autouse=True)
@@ -66,10 +79,7 @@ def _create_mock_zeroconf() -> MagicMock:
 
 
 @pytest.fixture
-async def mass(
-    tmp_path: pathlib.Path,
-    unused_tcp_port_factory: Callable[[], int],
-) -> AsyncGenerator[MusicAssistant]:
+async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant]:
     """
     Start a Music Assistant in test mode.
 
@@ -89,7 +99,7 @@ async def mass(
     mock_browser = NonCallableMagicMock()  # Use NonCallable to avoid api_cmd issues
 
     with (
-        use_ephemeral_server_ports(unused_tcp_port_factory),
+        use_ephemeral_server_ports(),
         patch(
             "music_assistant.controllers.discovery.controller.AsyncZeroconf",
             return_value=mock_zc,
@@ -108,11 +118,14 @@ async def mass(
         # providers and no local_audio bridging the host's sound devices as players
         suppress_auto_loaded_providers(),
     ):
-        await mass_instance.start()
-
         try:
+            await mass_instance.start()
             yield mass_instance
         finally:
+            # also stop after a failed boot: pytest holds on to the setup traceback,
+            # which keeps the half-started server (and the non-daemon threads of its
+            # open database connections) alive until the interpreter exits, where
+            # joining those threads then hangs the whole test process
             await mass_instance.stop()
 
 
