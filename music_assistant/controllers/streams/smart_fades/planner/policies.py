@@ -172,12 +172,10 @@ class DeadAirPolicy(Policy):
 
 
 class OverlapPreferencePolicy(Policy):
-    """Prefer the tier's top rung, the context's chosen tier, and two-sided vocal relief."""
+    """Prefer the tier's top rung and the context's chosen tier."""
 
     rung_penalty_per_step: float = 10.0
     tier_penalty_per_step: float = 15.0
-    one_sided_incoming_penalty: float = 5.0
-    one_sided_outgoing_penalty: float = 12.0
 
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Judge one candidate against the shared per-transition context."""
@@ -186,10 +184,6 @@ class OverlapPreferencePolicy(Policy):
         tier_steps = max(0, _TIER_ORDER.index(spec.tier) - _TIER_ORDER.index(ctx.tier))
         penalty = self.rung_penalty_per_step * rung_gap
         penalty += self.tier_penalty_per_step * tier_steps
-        if spec.one_sided_vocal == "incoming":
-            penalty += self.one_sided_incoming_penalty
-        elif spec.one_sided_vocal == "outgoing":
-            penalty += self.one_sided_outgoing_penalty
         return Verdict.ok(penalty)
 
 

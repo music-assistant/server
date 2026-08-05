@@ -22,7 +22,6 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from music_assistant.constants import VERBOSE_LOG_LEVEL
-from music_assistant.controllers.streams.smart_fades.bands import instrumental_claim_confirmed
 from music_assistant.controllers.streams.smart_fades.helpers import (
     MIN_EFFECTIVE_FADE_BUFFER,
     SMART_CROSSFADE_DURATION,
@@ -39,7 +38,6 @@ from music_assistant.controllers.streams.smart_fades.models import (
 )
 from music_assistant.controllers.streams.smart_fades.structure import point_in_mask
 from music_assistant.controllers.streams.smart_fades.vocal import (
-    VocalMask,
     collision_metrics,
     mask_saturated,
     merge_windows,
@@ -92,8 +90,6 @@ class CandidateSpec:
     strategy: TransitionStrategy = TransitionStrategy.ENERGY_ALIGNED
     # generator name, for scoreboard + tie-break
     source: str = ""
-    # "outgoing" | "incoming" | None (16-bar relaxation)
-    one_sided_vocal: str | None = None
     # the tier ladder's top rung; 0 = same as bars
     ideal_bars: int = 0
 
@@ -177,25 +173,6 @@ class EnergyLadderGenerator(CandidateGenerator):
                         source=self.name,
                         ideal_bars=ideal,
                     )
-        # the doubled overlap is a full-blend privilege: a shorter tier's
-        # ladder never reaches 16 bars, one-sided relaxation or not
-        if ctx.tier is not TransitionTier.FULL_BLEND:
-            return
-        one_sided = _one_sided_instrumental_side(ctx)
-        if one_sided is None:
-            return
-        for anchor in anchors:
-            entries = [None] if anchor is None else _entry_options(ctx, _INSTRUMENTAL_BLEND_BARS)
-            for entry in entries:
-                yield CandidateSpec(
-                    tier=ctx.tier,
-                    bars=_INSTRUMENTAL_BLEND_BARS,
-                    anchor_s=anchor,
-                    entry_s=entry,
-                    source=self.name,
-                    one_sided_vocal=one_sided,
-                    ideal_bars=_INSTRUMENTAL_BLEND_BARS,
-                )
 
 
 class CodaAnchorGenerator(CandidateGenerator):
@@ -373,11 +350,6 @@ class CandidateFactory:
         # tier's largest rung or a long overlap ships without its tempo ramp
         _, tier = choose_tier(self._ctx.outgoing, self._ctx.incoming, tail.effective_end)
         bars_cap = bars_ladder(self._ctx, tier)[0]
-        if spec.one_sided_vocal is not None and tier is TransitionTier.FULL_BLEND:
-            # the one-sided relaxation's ceiling is declared by its generator
-            # (panel-reviewed 16-bar rung); the ladder alone only grants 16
-            # to both-instrumental pairs
-            bars_cap = max(bars_cap, _INSTRUMENTAL_BLEND_BARS)
         bars = min(spec.bars, bars_cap)
 
         fadein_start_pos = (
@@ -906,41 +878,6 @@ def _vocal_duties(ctx: TransitionContext) -> tuple[float, float] | None:
         SMART_CROSSFADE_DURATION
     )
     return out_duty, in_duty
-
-
-def _one_sided_instrumental_side(ctx: TransitionContext) -> str | None:
-    """Which side (the one WITH vocals) earns the one-sided 16-bar rung, or None."""
-    duties = _vocal_duties(ctx)
-    if duties is None:
-        return None
-    out_duty, in_duty = duties
-    out_ok = out_duty <= _INSTRUMENTAL_DUTY_MAX
-    in_ok = in_duty <= _INSTRUMENTAL_DUTY_MAX
-    if out_ok == in_ok:
-        # both qualify (already the ladder's plain ideal) or neither does
-        return None
-    assert ctx.vocal_out_scoring is not None  # narrowed by _vocal_duties
-    assert ctx.vocal_in_scoring is not None
-    if out_ok:
-        if ctx.outgoing_profile is None:
-            return None
-        media_mask = _shift_windows(ctx.vocal_out_scoring, ctx.buffer_offset)
-        region_end = ctx.buffer_offset + ctx.audio_end
-        confirmed = instrumental_claim_confirmed(
-            ctx.outgoing_profile, media_mask, ctx.buffer_offset, region_end
-        )
-        return "incoming" if confirmed else None
-    if ctx.incoming_profile is None:
-        return None
-    confirmed = instrumental_claim_confirmed(
-        ctx.incoming_profile, ctx.vocal_in_scoring, 0.0, float(SMART_CROSSFADE_DURATION)
-    )
-    return "outgoing" if confirmed else None
-
-
-def _shift_windows(mask: VocalMask, offset: float) -> VocalMask:
-    """Shift a mask's windows by a constant offset (buffer-local <-> media time)."""
-    return VocalMask(windows=[(left + offset, right + offset) for left, right in mask.windows])
 
 
 def _fade_onset_pin(ctx: TransitionContext) -> float:

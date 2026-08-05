@@ -138,18 +138,6 @@ class TestEnergyLadderGenerator:
         assert {s.bars for s in specs} == {8, 4, 2, 1}
         assert {s.anchor_s for s in specs} == {None}
 
-    def test_no_full_band_anchor_variant_on_a_kick_timed_track(self) -> None:
-        """The kick-folded default anchor is authoritative: no pure full-band variant is emitted."""
-        ctx = _base_ctx(kick_anchor=10.0, default_anchor=10.0, mix_out_anchor=30.0)
-        specs = list(EnergyLadderGenerator().generate(ctx))
-
-        # a full-band variant would let a longer blend win past the kick
-        # die-out, defeating the researched kick handover
-        assert {s.anchor_s for s in specs} == {None}
-        assert {s.bars for s in specs} == {8, 4, 2, 1}
-        assert all(s.source == "energy-ladder" for s in specs)
-        assert all(s.one_sided_vocal is None for s in specs)
-
     def test_no_full_band_variant_when_it_equals_the_default_anchor(self) -> None:
         """A full-band anchor equal to the (kick-folded) default emits no duplicate rungs."""
         ctx = _base_ctx(kick_anchor=45.0, default_anchor=45.0, mix_out_anchor=45.0)
@@ -164,31 +152,6 @@ class TestEnergyLadderGenerator:
 
         assert {s.anchor_s for s in specs} == {None}
 
-    def test_both_instrumental_decks_earn_16_bars_untagged(self) -> None:
-        """Near-zero vocal duty on both decks earns 16 bars with no one-sided tag."""
-        out = _with_vocal_activity(_analysis(120.0, duration=240.0), [])
-        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [])
-        ctx = build_transition_context(out, inc, 45.0, LOGGER)
-
-        specs = list(EnergyLadderGenerator().generate(ctx))
-        sixteens = [s for s in specs if s.bars == _INSTRUMENTAL_BLEND_BARS]
-
-        assert sixteens
-        assert all(s.one_sided_vocal is None for s in sixteens)
-        assert all(s.ideal_bars == _INSTRUMENTAL_BLEND_BARS for s in sixteens)
-
-    def test_one_sided_instrumental_confirmed_tags_extra_16_bar_rung(self) -> None:
-        """A near-instrumental outgoing deck, cross-check confirmed, earns a tagged 16-bar rung."""
-        out = _out_analysis_with_quiet_tail(elevated_spike=False)
-        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(5.0, 25.0)])
-        ctx = build_transition_context(out, inc, 45.0, LOGGER)
-
-        specs = list(EnergyLadderGenerator().generate(ctx))
-        sixteens = [s for s in specs if s.bars == _INSTRUMENTAL_BLEND_BARS]
-
-        assert sixteens
-        assert all(s.one_sided_vocal == "incoming" for s in sixteens)
-
     def test_one_sided_instrumental_denied_emits_no_extra_16_bar_rung(self) -> None:
         """An elevated mid bar inside the VAD-silent blend region denies the one-sided rule."""
         out = _out_analysis_with_quiet_tail(elevated_spike=True)
@@ -198,39 +161,6 @@ class TestEnergyLadderGenerator:
         specs = list(EnergyLadderGenerator().generate(ctx))
 
         assert not [s for s in specs if s.bars == _INSTRUMENTAL_BLEND_BARS]
-
-    def test_one_sided_16_bars_denied_on_tempo_blend_tier(self) -> None:
-        """A cross-check-confirmed pair on the TEMPO_BLEND tier earns no one-sided 16 bars."""
-        ctx = self._confirmed_one_sided_ctx(tier=TransitionTier.TEMPO_BLEND)
-        specs = list(EnergyLadderGenerator().generate(ctx))
-
-        assert not [s for s in specs if s.one_sided_vocal is not None]
-        assert not [s for s in specs if s.bars == _INSTRUMENTAL_BLEND_BARS]
-
-    def test_one_sided_16_bars_denied_on_quick_fade_tier(self) -> None:
-        """A cross-check-confirmed pair on the QUICK_FADE tier earns no one-sided 16 bars."""
-        ctx = self._confirmed_one_sided_ctx(tier=TransitionTier.QUICK_FADE)
-        specs = list(EnergyLadderGenerator().generate(ctx))
-
-        assert not [s for s in specs if s.one_sided_vocal is not None]
-        assert not [s for s in specs if s.bars == _INSTRUMENTAL_BLEND_BARS]
-
-    def test_one_sided_16_bars_denied_on_cross_meter_pair(self) -> None:
-        """A cross-meter (quick-fade) pair earns no one-sided 16 bars either."""
-        ctx = self._confirmed_one_sided_ctx(tier=TransitionTier.QUICK_FADE, cross_meter=True)
-        specs = list(EnergyLadderGenerator().generate(ctx))
-
-        assert not [s for s in specs if s.one_sided_vocal is not None]
-        assert not [s for s in specs if s.bars == _INSTRUMENTAL_BLEND_BARS]
-
-    def _confirmed_one_sided_ctx(self, **overrides: Any) -> TransitionContext:
-        """Build the cross-check-confirmed one-sided context, then force the given tier facts."""
-        out = _out_analysis_with_quiet_tail(elevated_spike=False)
-        inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(5.0, 25.0)])
-        ctx = build_transition_context(out, inc, 45.0, LOGGER)
-        # fixture sanity: this pair DOES earn the one-sided rung on its real tier
-        assert any(s.one_sided_vocal is not None for s in EnergyLadderGenerator().generate(ctx))
-        return dataclasses.replace(ctx, **overrides)
 
 
 class TestFadeOnsetPin:
