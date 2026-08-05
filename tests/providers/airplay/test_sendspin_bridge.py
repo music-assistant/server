@@ -1255,11 +1255,22 @@ def test_unix_to_sendspin_instant_round_trips() -> None:
 # --- Warm handover: a kept stream survives a new stream start and rides flush-refill ---
 
 
-def _make_kept_stream(*, running: bool = True, connected: bool = True) -> MagicMock:
-    """Build a mock AirPlayStream reporting the given running/connected state."""
+def _make_kept_stream(
+    *, running: bool = True, connected: bool = True, ended_cleanly: bool = False
+) -> MagicMock:
+    """
+    Build a mock AirPlayStream reporting the given running/connected state.
+
+    :param running: Whether the cli process behind the stream is still alive.
+    :param connected: Whether the device connection has been established.
+    :param ended_cleanly: Whether the binary reported the end of the stream
+        itself. A real bool: a bare MagicMock reads as a clean end, which the
+        loss check treats as no loss at all.
+    """
     stream = MagicMock()
     stream.running = running
     stream.connected = connected
+    stream.ended_cleanly = ended_cleanly
     # A real float: the shift fold subtracts it from the applied baseline, which
     # a bare MagicMock cannot answer.
     stream.cumulative_shift_seconds = 0.0
@@ -1589,10 +1600,18 @@ def _make_completed_start_task(*, failed: bool = False) -> MagicMock:
     return task
 
 
-def _make_anchored_bridge(*, running: bool) -> tuple[SendspinAirPlayBridge, MagicMock]:
-    """Return a bridge anchored on a transport in the given running state, plus that transport."""
+def _make_anchored_bridge(
+    *, running: bool, ended_cleanly: bool = False
+) -> tuple[SendspinAirPlayBridge, MagicMock]:
+    """
+    Return a bridge anchored on a transport in the given running state, plus that transport.
+
+    :param running: Whether the cli process behind the transport is still alive.
+    :param ended_cleanly: Whether the binary reported the end of the stream
+        itself, which stops the transport without losing it.
+    """
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
-    stream = _make_kept_stream(running=running)
+    stream = _make_kept_stream(running=running, ended_cleanly=ended_cleanly)
     bridge._airplay_stream = stream
     bridge.airplay_player.stream = stream
     bridge._airplay_stream_start_task = _make_completed_start_task()
@@ -1686,6 +1705,48 @@ def test_unanchored_transport_is_not_treated_as_a_loss() -> None:
     assert bridge._airplay_stream_start_task is start_task
 
 
+def test_a_stream_the_native_path_took_over_is_not_recovered() -> None:
+    """
+    A transport the bridge no longer owns is not the bridge's to restart.
+
+    The native path stops (or replaces) the player's stream without telling the
+    bridge, which reads its own stopped stream as a crash. Recovering would put
+    a second cli process on the same receiver and let the cold start publish its
+    stream over the native session's.
+    """
+    bridge, stopped_stream = _make_anchored_bridge(running=False)
+    # the native path took the player over and left the bridge holding a stream
+    # that is no longer the player's
+    cast("MagicMock", bridge.airplay_player).stream = _make_kept_stream()
+
+    with patch.object(bridge, "_restart_transport", MagicMock()) as restart:
+        bridge._on_audio_chunk(_pcm_chunk(SENDSPIN_EPOCH_US + 1_000_000))
+
+    restart.assert_not_called()
+    assert bridge._airplay_stream is stopped_stream
+
+
+def test_a_stream_the_binary_ended_itself_is_not_a_loss() -> None:
+    """
+    A cli process that reported the end of the stream did not lose its transport.
+
+    The stderr loop also ends on a clean [STATUS] eof or the binary's idle cap,
+    which stops the stream exactly like a crash does. Restarting one of those
+    spawns a process for audio that is already over, and two such restarts
+    inside the guard window take the speaker out of the group for good. Its
+    counterpart is test_lost_transport_rearms_a_cold_start_on_the_current_chunk,
+    where the same stopped stream ended without saying so.
+    """
+    bridge, ended_stream = _make_anchored_bridge(running=False, ended_cleanly=True)
+
+    with patch.object(bridge, "_restart_transport", MagicMock()) as restart:
+        bridge._on_audio_chunk(_pcm_chunk(SENDSPIN_EPOCH_US + 1_000_000))
+
+    restart.assert_not_called()
+    assert bridge._airplay_stream is ended_stream
+    assert bridge._started is True
+
+
 def test_restarting_the_transport_drops_a_deferred_teardown() -> None:
     """
     A teardown deferred by an earlier stream end must not fire into the new transport.
@@ -1698,6 +1759,62 @@ def test_restarting_the_transport_drops_a_deferred_teardown() -> None:
     bridge._restart_transport()
 
     cast("MagicMock", bridge.mass).cancel_timer.assert_called_once_with(bridge._teardown_timer_id)
+
+
+def test_a_grace_timer_that_already_fired_spares_the_restarted_stream() -> None:
+    """
+    A teardown whose timer fired before the restart cancelled it leaves the new stream alone.
+
+    cancel_timer cannot recall a handle that already fired, so a stream arriving
+    at the very end of the grace window still gets the call. Reading the live
+    fields there would cancel that stream's writer and drain its queue, leaving
+    the speaker silent for the whole track -- and the warm restart keeps the same
+    stream object, so telling the two apart by the stream alone cannot work.
+    """
+    bridge, stream = _make_anchored_bridge(running=True)
+    bridge._writer_task = MagicMock()
+
+    bridge._on_bridge_stream_end()
+    # the next stream arrives and rides the kept process, cancelling a timer that
+    # has already fired
+    bridge._restart_transport()
+    new_writer_task = bridge._writer_task
+    bridge._write_queue.put_nowait(b"\x00" * BRIDGE_BYTES_PER_FRAME)
+
+    bridge._deferred_cleanup()
+
+    assert bridge._airplay_stream is stream
+    assert bridge._writer_task is new_writer_task
+    assert not bridge._write_queue.empty()
+
+
+async def test_the_cleanup_a_start_waits_on_cannot_cancel_it() -> None:
+    """
+    A start waiting for the pending teardown is not among the handles it cancels.
+
+    _start_protocol_from_chunk and _cli_writer both await _cleanup_task before
+    touching the transport. A teardown reading the live fields when it finally
+    ran would find the waiting start there and cancel it, killing the stream it
+    was clearing the way for.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._is_streaming = False
+    stream = _make_kept_stream()
+    stream.stop = AsyncMock()
+    bridge._airplay_stream = stream
+    bridge._airplay_stream_start_task = _make_completed_start_task()
+
+    bridge._schedule_cleanup()
+    teardown = cast("MagicMock", bridge.mass).create_task.call_args.args[0]
+    # the start that arrives next publishes itself and then awaits the teardown
+    start = cast("asyncio.Task[None]", asyncio.current_task())
+    bridge._airplay_stream_start_task = start
+
+    await teardown
+
+    # the teardown ran against what the bridge held when it was scheduled
+    stream.stop.assert_awaited_once_with(force=True)
+    assert start.cancelling() == 0
 
 
 def test_a_new_sendspin_stream_restores_the_recovery_budget() -> None:
@@ -2318,6 +2435,88 @@ async def test_leaving_the_session_without_a_client_is_a_noop() -> None:
     await bridge._leave_sendspin_session()
 
     logger.warning.assert_not_called()
+
+
+# --- An explicit stop: end playback now, without lining up a return ------------
+
+
+def _bridge_manager_for(bridge: SendspinAirPlayBridge) -> SendspinBridgeManager:
+    """Return a bridge manager holding the given bridge under its player id."""
+    manager = SendspinBridgeManager(cast("MagicMock", bridge.provider))
+    manager._bridges[bridge.airplay_player.player_id] = bridge
+    return manager
+
+
+async def test_an_explicit_stop_tears_the_transport_down_at_once() -> None:
+    """
+    A stop the user asked for stops the speaker now, not after the grace window.
+
+    A Sendspin stream ending defers the teardown so the next track can ride the
+    warm binary; nothing follows a stop, and the device holds seconds of audio,
+    so deferring there just plays out what the user asked to end.
+    """
+    bridge, stream = _make_anchored_bridge(running=True)
+    writer_task = MagicMock()
+    bridge._writer_task = writer_task
+    start_task = bridge._airplay_stream_start_task
+    manager = _bridge_manager_for(bridge)
+
+    with (
+        patch.object(bridge, "_cleanup_old_stream", MagicMock()) as cleanup,
+        patch.object(bridge, "_leave_sendspin_session", MagicMock()),
+    ):
+        assert manager.stop_streaming(bridge.airplay_player.player_id) is True
+
+    assert cleanup.call_args.args[:3] == (stream, writer_task, start_task)
+    assert bridge._is_streaming is False
+    assert bridge._airplay_stream is None
+    # no grace window is armed: that is what the teardown would have waited out
+    cast("MagicMock", bridge.mass).call_later.assert_not_called()
+
+
+async def test_an_explicit_stop_leaves_the_session_without_a_return() -> None:
+    """
+    Stopping takes the speaker out of the session, and it stays out.
+
+    Sendspin reports playback from the group's state, so a stopped bridge that
+    stayed in would hold the visible player on PLAYING. The re-join exists to
+    recover a speaker that dropped out by itself; a user who stopped one has not
+    asked for it back.
+    """
+    bridge, _ = _make_anchored_bridge(running=True)
+    manager = _bridge_manager_for(bridge)
+
+    with patch.object(bridge, "_leave_sendspin_session", MagicMock()) as leave:
+        manager.stop_streaming(bridge.airplay_player.player_id)
+
+    leave.assert_called_once_with(rejoin=False)
+    # scheduled, not merely constructed: an unscheduled coroutine never leaves
+    scheduled = [call.args[0] for call in cast("MagicMock", bridge.mass).create_task.call_args_list]
+    assert leave.return_value in scheduled
+
+
+async def test_a_stop_of_an_idle_bridge_keeps_its_place_in_the_group() -> None:
+    """
+    A bridge with nothing playing has no session to leave.
+
+    Its group is not reporting playback through this speaker, so quiescing it out
+    would only cost a grouped-but-idle player its membership on a stop command.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._is_streaming = False
+    manager = _bridge_manager_for(bridge)
+
+    with patch.object(bridge, "_leave_sendspin_session", MagicMock()) as leave:
+        assert manager.stop_streaming(bridge.airplay_player.player_id) is True
+
+    leave.assert_not_called()
+
+
+async def test_a_stop_never_reaches_a_player_without_a_bridge() -> None:
+    """An unbridged player is left to the caller's own stop path."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+
+    assert _bridge_manager_for(bridge).stop_streaming("apother") is False
 
 
 # --- One shared-PTP decision per Sendspin group --------------------------------
