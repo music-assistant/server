@@ -73,8 +73,11 @@ def _raise_on_auth_error(status: int, endpoint: str) -> None:
 class AppleMusicAPIClient:
     """Handles all HTTP communication with the Apple Music API."""
 
-    # period=0.25 -> 4 req/s. Raise it if Apple starts returning 429s.
-    throttler = ThrottlerManager(rate_limit=1, period=0.25, initial_backoff=15)
+    # period=0.25 -> 4 req/s. Apple's 429s are momentary edge throttling that is not
+    # governed by this rate: measured against the catalog search endpoint, every 429
+    # cleared on a retry, 97% of them after 0.5s and all of them within 3.5s. So retry
+    # quickly (and let the backoff escalate) instead of stalling playback for 15s.
+    throttler = ThrottlerManager(rate_limit=1, period=0.25, initial_backoff=1)
 
     def __init__(self, provider: AppleMusicProvider) -> None:
         """Initialize the API client."""

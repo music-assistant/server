@@ -300,3 +300,29 @@ async def test_write_requests_auth_error_raises_login_failed(status: int) -> Non
             await client.post_data("me/library")
         with pytest.raises(LoginFailed):
             await client.delete_data("me/library/playlists/p.1")
+
+
+# ---------------------------------------------------------------------------
+# P5: a momentary 429 recovers quickly instead of stalling playback
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_get_data_429_retries_within_a_second() -> None:
+    """A 429 is retried after ~1s, so a throttled boundary fetch does not stall playback."""
+    client, provider = _make_client()
+    payload = {"data": [{"id": "1"}]}
+    provider.mass.http_session.get = MagicMock(
+        side_effect=[
+            _FakeRequestCtx(_make_response(status=429)),
+            _FakeRequestCtx(_make_response(status=200, json_data=payload)),
+        ]
+    )
+    sleep_mock = AsyncMock()
+    with patch(_SLEEP_TARGET, new=sleep_mock):
+        result = await client.get_data("me/library/songs", limit=50, offset=0)
+    assert result == payload
+    sleeps = [call.args[0] for call in sleep_mock.await_args_list]
+    assert sleeps, "expected the 429 to be retried after a backoff"
+    # jitter adds at most 10% on top of the initial backoff
+    assert max(sleeps) <= 1.1
