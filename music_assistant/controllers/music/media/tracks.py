@@ -279,12 +279,7 @@ class TracksController(MediaControllerBase[Track]):
                     "OR json_extract(tracks.metadata, '$.explicit') = 0)"
                 )
 
-        # Check if we need to join artist table
-        need_artist_join = (order_by and "track_artist_name" in order_by) or (
-            search and " - " in search
-        )
-
-        if need_artist_join:
+        if (order_by and "track_artist_name" in order_by) or (search and " - " in search):
             extra_join_parts.append(
                 "JOIN track_artists ON track_artists.track_id = tracks.item_id "
                 "JOIN artists ON artists.item_id = track_artists.artist_id "
@@ -320,14 +315,23 @@ class TracksController(MediaControllerBase[Track]):
         if search and len(result) < 25 and not offset:
             # append artist items to result
             artist_search_str = create_safe_string(search, True, True)
-            extra_join_parts.append(
-                "JOIN track_artists ON track_artists.track_id = tracks.item_id "
-                "JOIN artists ON artists.item_id = track_artists.artist_id "
-                "AND "
-                + search_name_match_clause(
-                    "artists", artist_search_str, "search_artist", extra_query_params
+            if order_by and "track_artist_name" in order_by:
+                # JOIN already exists for sorting, only add WHERE clause
+                extra_query_parts.append(
+                    search_name_match_clause(
+                        "artists", artist_search_str, "search_artist", extra_query_params
+                    )
                 )
-            )
+            else:
+                # JOIN not yet added, add it with the search condition
+                extra_join_parts.append(
+                    "JOIN track_artists ON track_artists.track_id = tracks.item_id "
+                    "JOIN artists ON artists.item_id = track_artists.artist_id "
+                    "AND "
+                    + search_name_match_clause(
+                        "artists", artist_search_str, "search_artist", extra_query_params
+                    )
+                )
             existing_uris = {item.uri for item in result}
             for _track in await self.get_library_items_by_query(
                 favorite=favorite,

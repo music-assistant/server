@@ -459,9 +459,9 @@ async def test_album_artist_name_sorting(seeded_mass: MusicAssistant) -> None:
     artist_album_pairs_desc = [
         (a.artists[0].name, a.name, a.year) for a in albums_desc if a.artists
     ]
-    expected_desc = sorted(
-        artist_album_pairs_asc, key=lambda x: (x[0], -x[2] if x[2] else 0), reverse=True
-    )
+    # SQL: artists.search_name DESC, year DESC - both descending
+    expected_desc = sorted(artist_album_pairs_asc, key=lambda x: x[2] or 0, reverse=True)
+    expected_desc = sorted(expected_desc, key=lambda x: x[0], reverse=True)
     assert artist_album_pairs_desc == expected_desc, "Should sort by artist name descending"
 
 
