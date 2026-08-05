@@ -1,6 +1,5 @@
 """Test Tidal Playlist Manager."""
 
-from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -21,8 +20,6 @@ def provider_mock() -> Mock:
     provider.auth.user.user_name = "someuser"
     provider.api = AsyncMock()
     provider.logger = Mock()
-    provider.redirect_cached_id = AsyncMock(side_effect=lambda item_id: item_id)
-    provider.resolve_live_track_id = AsyncMock(return_value=None)
     return provider
 
 
@@ -33,38 +30,20 @@ def playlist_manager(provider_mock: Mock) -> TidalPlaylistManager:
 
 
 async def test_create_playlist(playlist_manager: TidalPlaylistManager, provider_mock: Mock) -> None:
-    """Test create posts to the official playlists endpoint and is marked editable."""
-    provider_mock.api.write_jsonapi.return_value = {
-        "data": {
-            "type": "playlists",
-            "id": "pl1",
-            "attributes": {
-                "name": "Test Playlist",
-                "description": "",
-                "playlistType": "USER",
-            },
-        }
-    }
+    """Test create posts to the v1 user playlists endpoint and is marked editable."""
+    provider_mock.api.post.return_value = {"uuid": "pl1", "title": "Test Playlist"}
 
     playlist = await playlist_manager.create("Test Playlist")
 
     assert playlist.item_id == "pl1"
+    # A freshly created playlist is forced editable/owned regardless of the echo.
     assert playlist.is_editable is True
     assert playlist.owner == "Some User"
     assert next(iter(playlist.provider_mappings)).is_unique is True
-    provider_mock.api.write_jsonapi.assert_called_with(
-        "POST",
-        "playlists",
-        {
-            "data": {
-                "type": "playlists",
-                "attributes": {
-                    "name": "Test Playlist",
-                    "description": "",
-                    "accessType": "UNLISTED",
-                },
-            }
-        },
+    provider_mock.api.post.assert_called_with(
+        "users/12345/playlists",
+        data={"title": "Test Playlist", "description": ""},
+        as_form=True,
     )
 
 
@@ -72,7 +51,7 @@ async def test_create_playlist_failure(
     playlist_manager: TidalPlaylistManager, provider_mock: Mock
 ) -> None:
     """Test create raises ResourceTemporarilyUnavailable on a client error."""
-    provider_mock.api.write_jsonapi.side_effect = ClientError()
+    provider_mock.api.post.side_effect = ClientError()
 
     with pytest.raises(ResourceTemporarilyUnavailable):
         await playlist_manager.create("Test Playlist")
@@ -81,245 +60,123 @@ async def test_create_playlist_failure(
 async def test_add_playlist_tracks_single(
     playlist_manager: TidalPlaylistManager, provider_mock: Mock
 ) -> None:
-    """Test add_tracks with a single track id, all accepted, no healing needed."""
-    provider_mock.api.write_jsonapi.return_value = {"data": [{"type": "tracks", "id": "track_1"}]}
+    """Test add_tracks appends via v1 items with the playlist ETag."""
+    provider_mock.api.get_with_etag.return_value = ({"numberOfTracks": 3}, "etag-1")
 
     await playlist_manager.add_tracks("1", ["track_1"])
 
-    provider_mock.api.write_jsonapi.assert_called_once_with(
-        "POST",
-        "playlists/1/relationships/items",
-        {"data": [{"type": "tracks", "id": "track_1"}]},
+    provider_mock.api.get_with_etag.assert_called_once_with("playlists/1")
+    provider_mock.api.post.assert_called_once_with(
+        "playlists/1/items",
+        data={
+            "onArtifactNotFound": "SKIP",
+            "trackIds": "track_1",
+            "toIndex": 3,
+            "onDupes": "SKIP",
+        },
+        as_form=True,
+        headers={"If-None-Match": "etag-1"},
     )
-    provider_mock.resolve_live_track_id.assert_not_called()
 
 
 async def test_add_playlist_tracks_multiple(
     playlist_manager: TidalPlaylistManager, provider_mock: Mock
 ) -> None:
-    """Test add_tracks batches multiple track ids into a single POST, all accepted."""
-    provider_mock.api.write_jsonapi.return_value = {
-        "data": [{"type": "tracks", "id": "track_1"}, {"type": "tracks", "id": "track_2"}]
-    }
+    """Test add_tracks joins track ids and appends at the current end index."""
+    provider_mock.api.get_with_etag.return_value = ({"numberOfTracks": 10}, "etag-2")
 
     await playlist_manager.add_tracks("1", ["track_1", "track_2"])
 
-    provider_mock.api.write_jsonapi.assert_called_once_with(
-        "POST",
-        "playlists/1/relationships/items",
-        {"data": [{"type": "tracks", "id": "track_1"}, {"type": "tracks", "id": "track_2"}]},
+    provider_mock.api.post.assert_called_once_with(
+        "playlists/1/items",
+        data={
+            "onArtifactNotFound": "SKIP",
+            "trackIds": "track_1,track_2",
+            "toIndex": 10,
+            "onDupes": "SKIP",
+        },
+        as_form=True,
+        headers={"If-None-Match": "etag-2"},
     )
-    provider_mock.resolve_live_track_id.assert_not_called()
+
+
+async def test_add_playlist_tracks_without_etag(
+    playlist_manager: TidalPlaylistManager, provider_mock: Mock
+) -> None:
+    """Test add_tracks omits the If-None-Match header when no ETag is returned."""
+    provider_mock.api.get_with_etag.return_value = ({"numberOfTracks": 0}, "")
+
+    await playlist_manager.add_tracks("1", ["track_1"])
+
+    assert provider_mock.api.post.call_args.kwargs["headers"] == {}
 
 
 async def test_add_playlist_tracks_failure(
     playlist_manager: TidalPlaylistManager, provider_mock: Mock
 ) -> None:
     """Test add_tracks raises ResourceTemporarilyUnavailable on a client error."""
-    provider_mock.api.write_jsonapi.side_effect = ClientError()
+    provider_mock.api.get_with_etag.side_effect = ClientError()
 
     with pytest.raises(ResourceTemporarilyUnavailable):
         await playlist_manager.add_tracks("1", ["track_1"])
 
 
-async def test_add_playlist_tracks_never_reactively_heals(
-    playlist_manager: TidalPlaylistManager, provider_mock: Mock
-) -> None:
-    """
-    Test add_tracks does not resolve/retry when a sent id is absent from the response.
-
-    The playlist items-add response has no per-item skip signal and its data is the
-    paginated listing (appended tracks are not on page one). Diffing it would re-POST a
-    track that actually succeeded, duplicating it; add_tracks must never do that.
-    """
-    provider_mock.api.write_jsonapi.return_value = {"data": [{"type": "tracks", "id": "track_1"}]}
-    provider_mock.resolve_live_track_id = AsyncMock(return_value="track_2_live")
-
-    await playlist_manager.add_tracks("1", ["track_1", "track_2"])
-
-    provider_mock.resolve_live_track_id.assert_not_called()
-    assert provider_mock.api.write_jsonapi.call_count == 1
-
-
-async def test_add_playlist_tracks_preemptive_redirect(
-    playlist_manager: TidalPlaylistManager, provider_mock: Mock
-) -> None:
-    """Test a cached redirect is applied before sending, avoiding a reactive resolve."""
-
-    async def _redirect(item_id: str) -> str:
-        return "track_1_live" if item_id == "track_1" else item_id
-
-    provider_mock.redirect_cached_id = AsyncMock(side_effect=_redirect)
-    provider_mock.api.write_jsonapi.return_value = {
-        "data": [{"type": "tracks", "id": "track_1_live"}]
-    }
-
-    await playlist_manager.add_tracks("1", ["track_1"])
-
-    provider_mock.api.write_jsonapi.assert_called_once_with(
-        "POST",
-        "playlists/1/relationships/items",
-        {"data": [{"type": "tracks", "id": "track_1_live"}]},
-    )
-    provider_mock.resolve_live_track_id.assert_not_called()
-
-
-def _entries_page(entries: list[dict[str, Any]]) -> Any:
-    """Build an async generator function yielding a single page of entries."""
-
-    async def _pages(*_a: Any, **_k: Any) -> Any:
-        yield Mock(data_list=entries)
-
-    return _pages
-
-
 async def test_remove_playlist_tracks(
     playlist_manager: TidalPlaylistManager, provider_mock: Mock
 ) -> None:
-    """Test remove_tracks resolves 1-based positions to their itemId and deletes them."""
-    entries = [
-        {"type": "tracks", "id": "track_1", "meta": {"itemId": "uuid-1"}},
-        {"type": "tracks", "id": "track_2", "meta": {"itemId": "uuid-2"}},
-        {"type": "tracks", "id": "track_3", "meta": {"itemId": "uuid-3"}},
-    ]
-    provider_mock.api.paginate_jsonapi = _entries_page(entries)
+    """Test remove_tracks deletes v1 items by 0-based index with the playlist ETag."""
+    provider_mock.api.get_with_etag.return_value = ({}, "etag-r")
 
     await playlist_manager.remove_tracks("1", (1, 3))
 
-    provider_mock.api.write_jsonapi.assert_called_with(
-        "DELETE",
-        "playlists/1/relationships/items",
-        {
-            "data": [
-                {"type": "tracks", "id": "track_1", "meta": {"itemId": "uuid-1"}},
-                {"type": "tracks", "id": "track_3", "meta": {"itemId": "uuid-3"}},
-            ]
-        },
+    provider_mock.api.get_with_etag.assert_called_once_with("playlists/1")
+    provider_mock.api.delete.assert_called_once_with(
+        "playlists/1/items/0,2",
+        headers={"If-None-Match": "etag-r"},
     )
 
 
-async def test_remove_playlist_tracks_ignores_videos(
+async def test_remove_playlist_tracks_single(
     playlist_manager: TidalPlaylistManager, provider_mock: Mock
 ) -> None:
-    """Test remove_tracks counts only tracks, as MA's positions come from the track listing."""
-    entries = [
-        {"type": "tracks", "id": "track_1", "meta": {"itemId": "uuid-1"}},
-        {"type": "videos", "id": "video_1", "meta": {"itemId": "uuid-video"}},
-        {"type": "tracks", "id": "track_2", "meta": {"itemId": "uuid-2"}},
-    ]
-    provider_mock.api.paginate_jsonapi = _entries_page(entries)
+    """Test a single 1-based position maps to its 0-based index."""
+    provider_mock.api.get_with_etag.return_value = ({}, "etag-r")
 
-    # Position 2 is the second TRACK, not the video sitting at relationship index 2.
     await playlist_manager.remove_tracks("1", (2,))
 
-    provider_mock.api.write_jsonapi.assert_called_with(
-        "DELETE",
-        "playlists/1/relationships/items",
-        {"data": [{"type": "tracks", "id": "track_2", "meta": {"itemId": "uuid-2"}}]},
+    provider_mock.api.delete.assert_called_once_with(
+        "playlists/1/items/1",
+        headers={"If-None-Match": "etag-r"},
     )
 
 
-async def test_remove_playlist_tracks_duplicate_track_ids(
+async def test_remove_playlist_tracks_without_etag(
     playlist_manager: TidalPlaylistManager, provider_mock: Mock
 ) -> None:
-    """Test remove_tracks targets the correct occurrence when a track repeats."""
-    entries = [
-        {"type": "tracks", "id": "track_1", "meta": {"itemId": "uuid-1"}},
-        {"type": "tracks", "id": "track_1", "meta": {"itemId": "uuid-2"}},
-        {"type": "tracks", "id": "track_1", "meta": {"itemId": "uuid-3"}},
-    ]
-    provider_mock.api.paginate_jsonapi = _entries_page(entries)
+    """Test remove_tracks omits the If-None-Match header when no ETag is returned."""
+    provider_mock.api.get_with_etag.return_value = ({}, "")
 
-    # Position 2 (1-based) is the second occurrence of track_1: uuid-2.
-    await playlist_manager.remove_tracks("1", (2,))
+    await playlist_manager.remove_tracks("1", (1,))
 
-    provider_mock.api.write_jsonapi.assert_called_with(
-        "DELETE",
-        "playlists/1/relationships/items",
-        {"data": [{"type": "tracks", "id": "track_1", "meta": {"itemId": "uuid-2"}}]},
-    )
+    assert provider_mock.api.delete.call_args.kwargs["headers"] == {}
 
 
-async def test_remove_playlist_tracks_out_of_range_position(
+async def test_remove_playlist_tracks_empty_positions_skips_calls(
     playlist_manager: TidalPlaylistManager, provider_mock: Mock
 ) -> None:
-    """Test remove_tracks skips out-of-range positions and does not write when empty."""
-    entries = [{"type": "tracks", "id": "track_1", "meta": {"itemId": "uuid-1"}}]
-    provider_mock.api.paginate_jsonapi = _entries_page(entries)
+    """Test remove_tracks with no positions returns before fetching the ETag or deleting."""
+    await playlist_manager.remove_tracks("1", ())
 
-    await playlist_manager.remove_tracks("1", (5,))
-
-    provider_mock.api.write_jsonapi.assert_not_called()
-
-
-async def test_remove_playlist_tracks_skips_entry_missing_item_id(
-    playlist_manager: TidalPlaylistManager, provider_mock: Mock
-) -> None:
-    """Test remove_tracks skips an entry lacking meta.itemId without raising."""
-    entries: list[dict[str, Any]] = [
-        {"type": "tracks", "id": "track_1"},  # missing "meta" entirely
-        {"type": "tracks", "id": "track_2", "meta": {"itemId": "uuid-2"}},
-    ]
-    provider_mock.api.paginate_jsonapi = _entries_page(entries)
-
-    await playlist_manager.remove_tracks("1", (1, 2))
-
-    provider_mock.api.write_jsonapi.assert_called_with(
-        "DELETE",
-        "playlists/1/relationships/items",
-        {"data": [{"type": "tracks", "id": "track_2", "meta": {"itemId": "uuid-2"}}]},
-    )
+    provider_mock.api.get_with_etag.assert_not_called()
+    provider_mock.api.delete.assert_not_called()
 
 
 async def test_remove_playlist_tracks_failure(
     playlist_manager: TidalPlaylistManager, provider_mock: Mock
 ) -> None:
     """Test remove_tracks raises ResourceTemporarilyUnavailable on a client error."""
-    entries = [{"type": "tracks", "id": "track_1", "meta": {"itemId": "uuid-1"}}]
-    provider_mock.api.paginate_jsonapi = _entries_page(entries)
-    provider_mock.api.write_jsonapi.side_effect = ClientError()
+    provider_mock.api.get_with_etag.return_value = ({}, "etag-r")
+    provider_mock.api.delete.side_effect = ClientError()
 
     with pytest.raises(ResourceTemporarilyUnavailable):
         await playlist_manager.remove_tracks("1", (1,))
-
-
-async def test_remove_playlist_tracks_empty_positions_skips_pagination(
-    playlist_manager: TidalPlaylistManager, provider_mock: Mock
-) -> None:
-    """Test remove_tracks with no positions returns before paginating or writing."""
-    provider_mock.api.paginate_jsonapi = Mock(side_effect=AssertionError("should not paginate"))
-
-    await playlist_manager.remove_tracks("1", ())
-
-    provider_mock.api.write_jsonapi.assert_not_called()
-
-
-async def test_remove_playlist_tracks_bounded_pagination(
-    playlist_manager: TidalPlaylistManager, provider_mock: Mock
-) -> None:
-    """Test remove_tracks stops paginating once enough entries are collected."""
-    page_1 = [
-        {"type": "tracks", "id": "track_1", "meta": {"itemId": "uuid-1"}},
-        {"type": "tracks", "id": "track_2", "meta": {"itemId": "uuid-2"}},
-    ]
-    page_2 = [
-        {"type": "tracks", "id": "track_3", "meta": {"itemId": "uuid-3"}},
-    ]
-    consumed_pages: list[int] = []
-
-    async def _pages(*_a: Any, **_k: Any) -> Any:
-        consumed_pages.append(1)
-        yield Mock(data_list=page_1)
-        consumed_pages.append(2)
-        yield Mock(data_list=page_2)
-
-    provider_mock.api.paginate_jsonapi = _pages
-
-    await playlist_manager.remove_tracks("1", (2,))
-
-    assert consumed_pages == [1]
-    provider_mock.api.write_jsonapi.assert_called_with(
-        "DELETE",
-        "playlists/1/relationships/items",
-        {"data": [{"type": "tracks", "id": "track_2", "meta": {"itemId": "uuid-2"}}]},
-    )

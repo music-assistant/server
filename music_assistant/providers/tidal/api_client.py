@@ -103,6 +103,34 @@ class TidalAPIClient:
         )
         return result
 
+    async def get_with_etag(self, endpoint: str, **kwargs: Any) -> tuple[dict[str, Any], str]:
+        """Get data from the (unofficial) Tidal API, returning the response ETag as well."""
+        return await self._request("GET", endpoint, **kwargs)
+
+    async def post(
+        self,
+        endpoint: str,
+        data: dict[str, Any] | None = None,
+        as_form: bool = False,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Send POST data to the (unofficial) Tidal API."""
+        if as_form:
+            kwargs.setdefault("headers", {})["Content-Type"] = "application/x-www-form-urlencoded"
+            kwargs["data"] = data
+        else:
+            kwargs["json"] = data
+        result, _ = await self._request("POST", endpoint, **kwargs)
+        return result
+
+    async def delete(
+        self, endpoint: str, data: dict[str, Any] | None = None, **kwargs: Any
+    ) -> dict[str, Any]:
+        """Delete data from the (unofficial) Tidal API."""
+        kwargs["json"] = data
+        result, _ = await self._request("DELETE", endpoint, **kwargs)
+        return result
+
     async def paginate_jsonapi(
         self,
         endpoint: str,
