@@ -295,7 +295,7 @@ class MusicTimelineQuizType(QuizType):
 
         async def _rescue_track(track: Track) -> None:
             async with semaphore:
-                dated_track = await self._musicbrainz_dated_track(track)
+                dated_track, _ = await self._musicbrainz_dated_track(track)
             if dated_track.uri is not None and self._track_is_eligible(dated_track):
                 eligible_tracks[dated_track.uri] = dated_track
 
@@ -313,7 +313,7 @@ class MusicTimelineQuizType(QuizType):
         existing_ids: set[str] | None = None,
     ) -> TimelineEntry:
         """Create a stable timeline entry from an eligible track."""
-        track = await self._musicbrainz_dated_track(track)
+        track, _ = await self._musicbrainz_dated_track(track)
         release_year = self._release_year(track)
         if release_year is None or not track.uri or not track.artist_str:
             raise InvalidDataError("Music Timeline track is missing required timeline metadata")

@@ -437,18 +437,20 @@ class QuizType(ABC):
             track, QUIZ_TRACK_RECENCY_SECONDS
         )
 
-    async def _musicbrainz_dated_track(self, track: Track) -> Track:
+    async def _musicbrainz_dated_track(self, track: Track) -> tuple[Track, int | None]:
         """
         Return the track dated with the first release year MusicBrainz knows for its recording.
 
         The track itself is returned unchanged when MusicBrainz has nothing better to offer.
 
         :param track: Track to date by its ISRC.
+        :return: The dated track and the release year MusicBrainz knows for its recording, which
+            is also reported when the track already carries that year or an earlier one.
         """
         musicbrainz = self.mass.get_provider("musicbrainz")
         isrc = track.get_external_id(ExternalID.ISRC)
         if musicbrainz is None or not isrc:
-            return track
+            return track, None
         release_year: int | None = None
         # callers wait for this and MusicBrainz throttles to 10 requests per 10 seconds, so a
         # lookup that does not resolve within the budget leaves the track on its library year
@@ -463,16 +465,17 @@ class QuizType(ABC):
         # a year outside this range is rejected by get_track_release_year anyway, and a year
         # below 1 cannot be expressed as a datetime at all
         if release_year is None or not MIN_RELEASE_YEAR <= release_year <= utc().year:
-            return track
+            return track, None
         release_date = track.metadata.release_date
         if release_date is not None and release_date.year <= release_year:
-            return track
+            return track, release_year
         # the track controller hands out objects that are shared with the library cache,
         # so the release date is written to a copy instead of the track itself
-        return replace(
+        dated_track = replace(
             track,
             metadata=replace(track.metadata, release_date=datetime(release_year, 1, 1, tzinfo=UTC)),
         )
+        return dated_track, release_year
 
 
 def get_track_release_year(track: Track) -> int | None:
