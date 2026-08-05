@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 from typing import Any, cast
+from unittest import mock
 
 import pytest
+from music_assistant_models.enums import ConfigEntryType
 
+from music_assistant.providers.filesystem_cloud.base import CloudFileSystemProvider
+from music_assistant.providers.filesystem_yandex_disk import get_config_entries
+from music_assistant.providers.filesystem_yandex_disk import music_assistant.providers.filesystem_yandex_disk as provider_module
+from music_assistant.providers.filesystem_yandex_disk.constants import DISK_ROOT
 from music_assistant.providers.filesystem_yandex_disk.provider import YandexDiskFileSystemProvider
 
 
@@ -65,3 +71,99 @@ async def test_api_download_response_forwards_range() -> None:
     prov, _ = _provider_with_fake_api()
     resp: object = await prov._api_download_response("disk:/M/a.flac", {"Range": "bytes=10-"})
     assert resp == ("resp", "disk:/M/a.flac", {"Range": "bytes=10-"})
+
+
+def _construct_provider(
+    folder_id: str | None = "root", *, legacy_root: str | None = None
+) -> tuple[Any, mock.Mock, mock.Mock]:
+    """Construct the provider with setup-data-aware dependencies mocked."""
+    mass = mock.Mock()
+    config = mock.Mock()
+    config.instance_id = "filesystem_yandex_disk--test"
+    config.setup_data = {
+        "client_id": "client-id",
+        "client_secret": "client-secret",
+        "refresh_token": "refresh-token",
+    }
+    if folder_id is not None:
+        config.setup_data["folder_id"] = folder_id
+    config.values = {}
+    config.get_value.side_effect = lambda key, default=None: (
+        legacy_root if key == "root_path" else default
+    )
+    mass.config.decrypt_string.side_effect = lambda value: value
+    mass.config.get.side_effect = lambda key: (
+        config.setup_data if key.endswith("/setup_data") else {}
+    )
+
+    def base_init(
+        instance: YandexDiskFileSystemProvider,
+        base_mass: Any,
+        manifest: Any,
+        base_config: Any,
+        root_folder_id: str,
+    ) -> None:
+        instance.mass = base_mass
+        instance.manifest = manifest
+        instance.config = base_config
+        instance.root_folder_id = root_folder_id
+
+    auth = mock.Mock()
+    api = mock.Mock()
+    with (
+        mock.patch.object(CloudFileSystemProvider, "__init__", base_init),
+        mock.patch.object(provider_module, "MAYandexDiskAuth", return_value=auth) as auth_cls,
+        mock.patch.object(provider_module, "YandexDiskApi", return_value=api),
+    ):
+        provider = YandexDiskFileSystemProvider(mass, mock.Mock(), config)
+    return provider, auth_cls, config
+
+
+def test_init_reads_oauth_values_from_setup_data() -> None:
+    """Provider initialization consumes secrets collected by the guided flow."""
+    provider, auth_cls, _config = _construct_provider()
+
+    assert provider.root_folder_id == DISK_ROOT
+    assert auth_cls.call_args.args[1:4] == ("client-id", "client-secret", "refresh-token")
+
+
+def test_init_preserves_yandex_folder_path() -> None:
+    """A configured Yandex folder path is passed to the cloud base unchanged."""
+    provider, _auth_cls, _config = _construct_provider("disk:/Music")
+
+    assert provider.root_folder_id == "disk:/Music"
+
+
+def test_init_reads_legacy_root_path() -> None:
+    """Existing pre-SetupSession instances retain their configured scan root."""
+    provider, _auth_cls, _config = _construct_provider(None, legacy_root="disk:/Legacy")
+
+    assert provider.root_folder_id == "disk:/Legacy"
+
+
+def test_rotated_refresh_token_updates_setup_data_immediately() -> None:
+    """Refresh-token rotation persists back into encrypted setup data."""
+    provider, auth_cls, _config = _construct_provider()
+    provider._update_setup_data = mock.Mock()
+    persist = auth_cls.call_args.args[4]
+
+    persist("rotated-token")
+
+    provider._update_setup_data.assert_called_once_with(
+        "refresh_token", "rotated-token", immediate=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_config_entries_only_expose_runtime_sync_options() -> None:
+    """Credentials and root stay in setup_data; config contains only runtime options."""
+    mass = mock.Mock()
+    mass.get_provider.return_value = None
+
+    entries = await get_config_entries(mass)
+    keys = {entry.key for entry in entries}
+
+    assert {"client_id", "client_secret", "refresh_token", "folder_id"}.isdisjoint(keys)
+    assert {"library_sync_tracks", "library_sync_playlists"} <= keys
+    content_type = next(entry for entry in entries if entry.key == "content_type")
+    assert content_type.type is ConfigEntryType.LABEL

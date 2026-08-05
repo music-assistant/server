@@ -106,7 +106,7 @@ websocket-client==1.9.0
 wiim==0.1.5
 xmltodict==1.0.4
 ya-dialogs-api==2.4.0
-ya-passport-auth[ma]==1.8.0
+ya-passport-auth[ma]==1.7.0
 yadisk==3.4.1
 yandex-music==3.0.0
 yappi==1.7.6

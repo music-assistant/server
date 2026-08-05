@@ -13,17 +13,18 @@ from typing import TYPE_CHECKING, cast
 
 from music_assistant_models.errors import SetupFailedError
 
-from music_assistant.providers.filesystem_cloud.base import CloudFileSystemProvider
+from music_assistant.providers.filesystem_cloud.base import (
+    CONF_CLIENT_ID,
+    CONF_CLIENT_SECRET,
+    CONF_FOLDER_ID,
+    CONF_REFRESH_TOKEN,
+    CloudFileSystemProvider,
+    read_setup_value,
+)
 
 from .api_client import YandexDiskApi
 from .auth import MAYandexDiskAuth
-from .constants import (
-    CONF_CLIENT_ID,
-    CONF_CLIENT_SECRET,
-    CONF_REFRESH_TOKEN,
-    CONF_ROOT_PATH,
-    DISK_ROOT,
-)
+from .constants import DISK_ROOT
 
 if TYPE_CHECKING:
     import aiohttp
@@ -32,6 +33,8 @@ if TYPE_CHECKING:
 
     from music_assistant import MusicAssistant
     from music_assistant.providers.filesystem_cloud.base import RawItem
+
+_LEGACY_CONF_ROOT_PATH = "root_path"
 
 
 class YandexDiskFileSystemProvider(CloudFileSystemProvider):
@@ -50,17 +53,21 @@ class YandexDiskFileSystemProvider(CloudFileSystemProvider):
         :param manifest: The provider manifest.
         :param config: The provider (instance) configuration.
         """
-        root_path = cast("str", config.get_value(CONF_ROOT_PATH) or DISK_ROOT)
+        legacy_root = config.get_value(_LEGACY_CONF_ROOT_PATH)
+        folder_id = cast(
+            "str",
+            read_setup_value(mass, config, CONF_FOLDER_ID, legacy_root) or "root",
+        )
+        root_path = DISK_ROOT if folder_id == "root" else folder_id
         super().__init__(mass, manifest, config, root_path)
         auth = MAYandexDiskAuth(
             mass,
-            cast("str", config.get_value(CONF_CLIENT_ID) or ""),
-            cast("str", config.get_value(CONF_CLIENT_SECRET) or ""),
-            cast("str", config.get_value(CONF_REFRESH_TOKEN) or ""),
-            lambda token: self._update_config_value(
+            cast("str", self.get_setup_value(CONF_CLIENT_ID) or ""),
+            cast("str", self.get_setup_value(CONF_CLIENT_SECRET) or ""),
+            cast("str", self.get_setup_value(CONF_REFRESH_TOKEN) or ""),
+            lambda token: self._update_setup_data(
                 CONF_REFRESH_TOKEN,
                 token,
-                encrypted=True,
                 immediate=True,
             ),
         )
