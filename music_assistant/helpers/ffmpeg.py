@@ -446,7 +446,10 @@ async def get_ffmpeg_overlay_stream(
             "1",
         ]
     overlay_input_args += ["-stream_loop", "-1", "-i", overlay_input]
-    channel_layout = "mono" if pcm_format.channels == 1 else "stereo"
+    # conform the overlay to the main stream's layout so amix sees two matching inputs;
+    # an unnameable count is left to FFmpeg's own negotiation
+    layout = _get_channel_layout_name(pcm_format.channels)
+    conform_filter = f",aformat=channel_layouts={layout}" if layout else ""
     # silenceremove strips a near-silent intro from the overlay source (e.g. a soft
     # fade-in) so it becomes audible right away; it is a no-op for sources that
     # already start at full level. It runs before volume so detection is based on
@@ -454,8 +457,8 @@ async def get_ffmpeg_overlay_stream(
     filter_complex = (
         f"[0:a]silenceremove=start_periods=1:start_threshold=-40dB,"
         f"volume={overlay_volume / 100},"
-        f"aresample={pcm_format.sample_rate},"
-        f"aformat=channel_layouts={channel_layout}[overlay];"
+        f"aresample={pcm_format.sample_rate}"
+        f"{conform_filter}[overlay];"
         "[1:a][overlay]amix=inputs=2:duration=first:normalize=0[mixed]"
     )
     async with FFMpeg(
@@ -582,7 +585,7 @@ def get_ffmpeg_args(
                 input_args += ["-seekable", "0"]
         if input_format.content_type.is_pcm():
             input_args += [
-                *_get_channel_args(input_format),
+                *get_ffmpeg_channel_args(input_format),
                 "-ar",
                 str(input_format.sample_rate),
                 "-acodec",
@@ -597,7 +600,7 @@ def get_ffmpeg_args(
         input_args += ["-i", input_path]
 
     # collect output args
-    output_args = _get_channel_args(output_format)
+    output_args = get_ffmpeg_channel_args(output_format)
     if output_path.upper() == "NULL":
         # devnull stream: nothing is encoded here, so there is no channel count to declare
         output_path = "-"
@@ -680,6 +683,20 @@ def get_ffmpeg_args(
     return generic_args + input_args + extra_input_args + filter_args + extra_args + output_args
 
 
+def get_ffmpeg_channel_args(audio_format: AudioFormat) -> list[str]:
+    """
+    Return the FFmpeg channel count/layout arguments for the given audio format.
+
+    The layout is only named for channel counts that map to exactly one layout.
+
+    :param audio_format: Format to describe.
+    """
+    args = ["-ac", str(audio_format.channels)]
+    if layout := _get_channel_layout_name(audio_format.channels):
+        args += ["-channel_layout", layout]
+    return args
+
+
 async def check_ffmpeg_version() -> None:
     """Check if ffmpeg is present (with libsoxr support)."""
     # check for FFmpeg presence
@@ -725,22 +742,20 @@ async def check_ffmpeg_version() -> None:
     )
 
 
-def _get_channel_args(audio_format: AudioFormat) -> list[str]:
+def _get_channel_layout_name(channels: int) -> str | None:
     """
-    Return the FFmpeg channel count/layout arguments for the given audio format.
+    Return FFmpeg's layout name for a channel count, or None when it has no unambiguous one.
 
-    :param audio_format: Format to describe.
+    :param channels: Number of channels to name.
     """
-    args = ["-ac", str(audio_format.channels)]
-    # only name the layout where the channel count leaves no doubt: a wider count
-    # maps to several possible layouts (5.1 vs 5.1(side), 7.1 vs 7.1(wide), ...)
-    # and naming the wrong one wins over -ac, so FFmpeg would then misread the
-    # stream as that layout instead. Left alone, it derives the default itself.
-    if audio_format.channels == 1:
-        args += ["-channel_layout", "mono"]
-    elif audio_format.channels == 2:
-        args += ["-channel_layout", "stereo"]
-    return args
+    if channels == 1:
+        return "mono"
+    if channels == 2:
+        return "stereo"
+    # a wider count maps to several possible layouts (5.1 vs 5.1(side), 7.1 vs 7.1(wide), ...)
+    # and a named layout wins over -ac, so naming the wrong one would make FFmpeg misread the
+    # stream as that layout. Left unnamed, it derives the default for the count itself.
+    return None
 
 
 def _get_channel_conform_filter(input_channels: int, output_channels: int) -> str | None:

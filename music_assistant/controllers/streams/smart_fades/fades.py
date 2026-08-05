@@ -23,6 +23,7 @@ from music_assistant.controllers.streams.smart_fades.models import (
 from music_assistant.controllers.streams.smart_fades.planner import SmartCrossFadePlanner
 from music_assistant.controllers.streams.smart_fades.renderer import TransitionRenderer
 from music_assistant.helpers.audio import iter_pcm_slices
+from music_assistant.helpers.ffmpeg import get_ffmpeg_channel_args
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.helpers.util import remove_file
 
@@ -95,12 +96,9 @@ class SmartFade(ABC):
             # Input 1: fadeout part (as file)
             "-acodec",
             pcm_format.content_type.name.lower(),  # e.g., "pcm_f32le" not just "f32le"
-            "-ac",
-            str(pcm_format.channels),
+            *get_ffmpeg_channel_args(pcm_format),
             "-ar",
             str(pcm_format.sample_rate),
-            "-channel_layout",
-            "mono" if pcm_format.channels == 1 else "stereo",
             "-f",
             pcm_format.content_type.value,
             "-i",
@@ -108,12 +106,9 @@ class SmartFade(ABC):
             # Input 2: fade_in part (stdin)
             "-acodec",
             pcm_format.content_type.name.lower(),
-            "-ac",
-            str(pcm_format.channels),
+            *get_ffmpeg_channel_args(pcm_format),
             "-ar",
             str(pcm_format.sample_rate),
-            "-channel_layout",
-            "mono" if pcm_format.channels == 1 else "stereo",
             "-f",
             pcm_format.content_type.value,
             "-i",
@@ -131,12 +126,9 @@ class SmartFade(ABC):
                 # Output format specification - must match input codec format
                 "-acodec",
                 pcm_format.content_type.name.lower(),
-                "-ac",
-                str(pcm_format.channels),
+                *get_ffmpeg_channel_args(pcm_format),
                 "-ar",
                 str(pcm_format.sample_rate),
-                "-channel_layout",
-                "mono" if pcm_format.channels == 1 else "stereo",
                 "-f",
                 pcm_format.content_type.value,
                 "-",
