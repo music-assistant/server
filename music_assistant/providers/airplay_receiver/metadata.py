@@ -48,7 +48,13 @@ class MetadataReader:
     async def start(self) -> None:
         """Start reading metadata from the pipe."""
         self._stop = False
-        self._reader_task = asyncio.create_task(self._read_metadata())
+        # Open the FIFO up front so hook writers never block on a missing reader.
+        try:
+            self._fd = await self._open_pipe()
+        except OSError as err:
+            # _run() retries the open; raising here would take down the whole daemon.
+            self.logger.error("Unable to open metadata pipe %s: %s", self.metadata_pipe, err)
+        self._reader_task = asyncio.create_task(self._run())
 
     async def stop(self) -> None:
         """Stop reading metadata."""
@@ -57,59 +63,79 @@ class MetadataReader:
             self._reader_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._reader_task
+        # The fd stays open for the reader's whole lifetime, so stop() owns closing it.
+        if self._fd is not None:
+            with suppress(OSError):
+                os.close(self._fd)
+            self._fd = None
+
+    async def _run(self) -> None:
+        """
+        Keep the pipe reader alive until stopped.
+
+        A dead reader would silently drop all sessioncontrol markers and leave
+        hook writers blocked on the FIFO, so unexpected errors must not be fatal.
+        """
+        backoff = 1
+        while not self._stop:
+            try:
+                await self._read_metadata()
+            except Exception as err:
+                # Only the first failure of a streak is worth an error, retries are noise.
+                log = self.logger.error if backoff == 1 else self.logger.debug
+                log("Metadata reader failed, retrying in %ss: %s", backoff, err)
+            if not self._stop:
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 30)
+
+    async def _open_pipe(self) -> int:
+        """Open the metadata pipe in non-blocking mode and return its file descriptor."""
+        # O_RDWR keeps a writer attached so the read end never reaches EOF: epoll reports a
+        # writerless FIFO readable forever, which spins the event loop at 100% CPU.
+        return await asyncio.to_thread(os.open, self.metadata_pipe, os.O_RDWR | os.O_NONBLOCK)
 
     async def _read_metadata(self) -> None:
         """Read metadata from the pipe using async file descriptor."""
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
+        # start() already opened the pipe; only open here when start() could not.
+        if self._fd is None:
+            self._fd = await self._open_pipe()
+        fd = self._fd
+
+        # Create an asyncio.Event to signal when data is available
+        data_available = asyncio.Event()
+
+        def on_readable() -> None:
+            """Set data available flag when file descriptor is readable."""
+            data_available.set()
+
+        # Register the file descriptor with the event loop
+        loop.add_reader(fd, on_readable)
+
         try:
-            # Open the metadata pipe in non-blocking mode
-            # Use O_RDONLY | O_NONBLOCK to avoid blocking on open
-            self._fd = await loop.run_in_executor(
-                None, os.open, self.metadata_pipe, os.O_RDONLY | os.O_NONBLOCK
-            )
+            while not self._stop:
+                # Wait for data to be available
+                await data_available.wait()
+                data_available.clear()
 
-            # Create an asyncio.Event to signal when data is available
-            data_available = asyncio.Event()
+                # Read available data from the pipe
+                try:
+                    chunk = os.read(fd, 4096)
+                    # Decode as text and add to buffer
+                    self._buffer += chunk.decode("utf-8", errors="ignore")
+                    # Process all complete metadata items in the buffer
+                    self._process_buffer()
+                except BlockingIOError:
+                    # No data available right now, wait for next notification
+                    continue
+                except OSError as err:
+                    self.logger.debug("Error reading from pipe: %s", err)
+                    await asyncio.sleep(0.1)
 
-            def on_readable() -> None:
-                """Set data available flag when file descriptor is readable."""
-                data_available.set()
-
-            # Register the file descriptor with the event loop
-            loop.add_reader(self._fd, on_readable)
-
-            try:
-                while not self._stop:
-                    # Wait for data to be available
-                    await data_available.wait()
-                    data_available.clear()
-
-                    # Read available data from the pipe
-                    try:
-                        chunk = os.read(self._fd, 4096)
-                        if chunk:
-                            # Decode as text and add to buffer
-                            self._buffer += chunk.decode("utf-8", errors="ignore")
-                            # Process all complete metadata items in the buffer
-                            self._process_buffer()
-                    except BlockingIOError:
-                        # No data available right now, wait for next notification
-                        continue
-                    except OSError as err:
-                        self.logger.debug("Error reading from pipe: %s", err)
-                        await asyncio.sleep(0.1)
-
-            finally:
-                # Remove the reader callback
-                loop.remove_reader(self._fd)
-
-        except Exception as err:
-            self.logger.error("Error reading metadata pipe: %s", err)
         finally:
-            if self._fd is not None:
-                with suppress(OSError):
-                    os.close(self._fd)
-                self._fd = None
+            # Remove the reader callback, but keep the fd open so hook writers
+            # never find the FIFO readerless while _run() restarts the loop.
+            loop.remove_reader(fd)
 
     def _process_buffer(self) -> None:
         """Process all complete metadata items in the buffer (XML format or plain text markers)."""

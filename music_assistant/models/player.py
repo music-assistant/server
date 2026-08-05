@@ -1318,7 +1318,9 @@ class Player(ABC):
     @final
     def icon(self) -> str:
         """Return the player icon."""
-        return cast("str", self._config.get_value(CONF_ENTRY_PLAYER_ICON.key))
+        # players without an icon config entry (e.g. protocol players) serve the fallback id
+        icon = self._config.get_value(CONF_ENTRY_PLAYER_ICON.key)
+        return cast("str", icon or CONF_ENTRY_PLAYER_ICON.default_value)
 
     @cached_property
     @final

@@ -114,6 +114,20 @@ def _get_publish_addresses(
     return addresses
 
 
+def _get_internal_connect_ip(bind_ip: str | None, publish_ip: str) -> str:
+    """
+    Return the IP address to reach a server running on this host.
+
+    :param bind_ip: The server's configured bind IP (None or a wildcard means all interfaces).
+    :param publish_ip: The server's resolved publish IP.
+    """
+    if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
+        # bound to one specific interface, so loopback would not reach the server
+        return bind_ip
+    # Use IPv6 loopback if publish_ip is IPv6 (indicates IPv6-only host)
+    return "::1" if ":" in publish_ip else "127.0.0.1"
+
+
 def _locale_from_request(request: web.Request) -> str | None:
     """
     Determine the UI locale for an HTTP request from the standard ``Accept-Language`` header.
@@ -167,17 +181,24 @@ class WebserverController(CoreController):
         return base_url.removesuffix("/")
 
     @property
+    def internal_base_url(self) -> str:
+        """Return the URL to reach this webserver's own API from this host."""
+        # the advertised address is not necessarily dialable here: a configured base URL
+        # routes out through DNS and a reverse proxy just to come back in, and a published
+        # IP need not exist on this host at all (e.g. a container or NAT setup), so derive
+        # the address from what the webserver actually binds to
+        connect_ip = _get_internal_connect_ip(self.bind_ip, self.publish_ip)
+        protocol = "https" if self.config.get_value(CONF_ENABLE_SSL, False) else "http"
+        return f"{protocol}://{format_ip_for_url(connect_ip)}:{self.publish_port}"
+
+    @property
     def internal_sendspin_url(self) -> str:
         """Return the URL to reach the in-process Sendspin server from this host."""
         # the advertised address is not necessarily dialable here (e.g. a container or
         # NAT setup), so derive the address from what the Sendspin server actually binds to
-        bind_ip = self.mass.streams.bind_ip
-        if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
-            # bound to one specific interface, so loopback would not reach the server
-            connect_ip = bind_ip
-        else:
-            # Use IPv6 loopback if publish_ip is IPv6 (indicates IPv6-only host)
-            connect_ip = "::1" if ":" in str(self.mass.streams.publish_ip) else "127.0.0.1"
+        connect_ip = _get_internal_connect_ip(
+            self.mass.streams.bind_ip, str(self.mass.streams.publish_ip)
+        )
         return f"ws://{format_ip_for_url(connect_ip)}:{SENDSPIN_SERVER_PORT}/sendspin"
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:

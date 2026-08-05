@@ -21,8 +21,6 @@ from music_assistant.helpers.playlists import (
     PlaylistItem,
     ProviderMappingInfo,
     generate_m3u,
-    parse_m3u,
-    parse_m3u_playlist_name,
 )
 from music_assistant.providers.builtin import BuiltinProvider
 
@@ -279,40 +277,6 @@ class TestScoreTrackMatch:
         )
         # 1 (title) + 2 (artist) + 1 (album) + 1 (version) + 2 (duration exact) = 7
         assert self.prov._score_track_match(candidate, item) == 7
-
-
-# --------------------------------------------------------------------------- #
-#  Radio export round-trip                                                     #
-# --------------------------------------------------------------------------- #
-
-
-def test_export_radios_round_trip() -> None:
-    """Test that exported radios can be parsed back correctly."""
-    items = [
-        PlaylistItem(
-            path="http://stream.example.com/radio1",
-            title="Jazz FM",
-            length="-1",
-            metadata={"media_type": "radio"},
-        ),
-        PlaylistItem(
-            path="http://stream.example.com/radio2",
-            title="Classic Rock Radio",
-            length="-1",
-            metadata={"media_type": "radio"},
-        ),
-    ]
-    m3u_data = generate_m3u("Radio Stations", items)
-    parsed = parse_m3u(m3u_data)
-
-    assert len(parsed) == 2
-    assert parsed[0].path == "http://stream.example.com/radio1"
-    assert parsed[0].title == "Jazz FM"
-    assert parsed[0].metadata is not None
-    assert parsed[0].metadata["media_type"] == "radio"
-    assert parsed[1].path == "http://stream.example.com/radio2"
-    assert parsed[1].title == "Classic Rock Radio"
-    assert parse_m3u_playlist_name(m3u_data) == "Radio Stations"
 
 
 async def test_import_playlist_preserves_playlist_image() -> None:

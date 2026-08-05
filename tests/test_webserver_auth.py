@@ -714,6 +714,57 @@ async def test_get_login_providers(auth_manager: AuthenticationManager) -> None:
     assert any(p["provider_id"] == "builtin" for p in providers)
 
 
+class _FakeHassProvider:
+    """Minimal stand-in for the Home Assistant provider."""
+
+    domain = "hass"
+    available = True
+
+    def __init__(self, url: str | None) -> None:
+        self._url = url
+
+    @property
+    def url(self) -> str | None:
+        """Return the configured Home Assistant URL, or None if not configured."""
+        return self._url
+
+
+async def test_get_login_providers_with_ha_provider(
+    auth_manager: AuthenticationManager, mass_minimal: MusicAssistant
+) -> None:
+    """
+    Test that the HA OAuth login provider is registered when the HA provider has a URL.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param mass_minimal: Minimal MusicAssistant instance.
+    """
+    mass_minimal._providers["hass"] = _FakeHassProvider("http://homeassistant.local:8123")  # type: ignore[assignment]
+
+    providers = await auth_manager.get_login_providers()
+
+    assert any(p["provider_id"] == "homeassistant" for p in providers)
+
+
+async def test_get_login_providers_ha_provider_without_url(
+    auth_manager: AuthenticationManager, mass_minimal: MusicAssistant
+) -> None:
+    """
+    Test that a HA provider without a URL does not break the login providers endpoint.
+
+    Regression test for the HA provider storing its URL in setup data instead of
+    config: builtin login must remain available and the endpoint must not raise.
+
+    :param auth_manager: AuthenticationManager instance.
+    :param mass_minimal: Minimal MusicAssistant instance.
+    """
+    mass_minimal._providers["hass"] = _FakeHassProvider(None)  # type: ignore[assignment]
+
+    providers = await auth_manager.get_login_providers()
+
+    assert any(p["provider_id"] == "builtin" for p in providers)
+    assert not any(p["provider_id"] == "homeassistant" for p in providers)
+
+
 async def test_create_user_with_api(auth_manager: AuthenticationManager) -> None:
     """
     Test creating user via API command.

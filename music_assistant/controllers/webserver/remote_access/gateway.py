@@ -107,7 +107,7 @@ class WebRTCGateway:
         :param cert_pem: Persistent DTLS certificate (PEM), enabling client-side pinning.
         :param key_pem: Private key (PEM) matching the DTLS certificate.
         :param signaling_url: WebSocket URL of the signaling server.
-        :param local_ws_url: Local WebSocket URL to bridge to.
+        :param local_ws_url: Same-host WebSocket URL of the Music Assistant API to bridge to.
         :param sendspin_url: Internal Sendspin WebSocket URL to bridge to.
         :param ice_servers: List of ICE server configurations (used at registration time).
         :param ice_servers_callback: Optional callback to fetch fresh ICE servers for each session.
@@ -501,8 +501,10 @@ class WebRTCGateway:
         async with self._http_proxy_semaphore:
             try:
                 # Use shared HTTP session for this request
+                # this dial never leaves the host: TLS verification would fail on the bind
+                # address, and an unfollowed redirect cannot take the unverified dial off-host
                 async with self.http_session.request(
-                    method, local_http_url, headers=headers
+                    method, local_http_url, headers=headers, ssl=False, allow_redirects=False
                 ) as response:
                     body = await response.read()
                     await self._send_http_proxy_response(
@@ -633,9 +635,11 @@ class WebRTCGateway:
         try:
             # Include session_id in URL so server can track WebRTC sessions
             ws_url = f"{self.local_ws_url}?webrtc_session_id={session.session_id}"
-            session.local_ws = await self.http_session.ws_connect(ws_url)
+            # TLS verification would fail on the bind address and adds nothing to a dial
+            # that never leaves this host
+            session.local_ws = await self.http_session.ws_connect(ws_url, ssl=False)
         except Exception:
-            self.logger.exception("Failed to connect to local WebSocket")
+            self.logger.exception("Failed to connect to local WebSocket %s", self.local_ws_url)
             channel.close()
             self._schedule_close(session.session_id)
             return
