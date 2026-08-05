@@ -633,6 +633,8 @@ async def test_abandoning_a_stream_defers_the_leave_off_the_writer() -> None:
     bridge's own teardown — that must not run inside the writer on its way out.
     """
     bridge = _make_bridge()
+    # only the registered writer may give up, which is what every caller is
+    bridge._writer_task = cast("asyncio.Task[None]", asyncio.current_task())
 
     with patch.object(bridge, "_leave_sendspin_session", MagicMock()) as leave:
         bridge._abandon_streaming()
@@ -642,6 +644,44 @@ async def test_abandoning_a_stream_defers_the_leave_off_the_writer() -> None:
     create_task = cast("MagicMock", bridge.mass).create_task
     assert create_task.call_args.args[0] is leave.return_value
     assert create_task.call_args.kwargs["eager_start"] is False
+
+
+async def test_a_writer_a_stream_start_installed_can_still_give_up() -> None:
+    """
+    A writer started by a real stream start is registered before it runs.
+
+    Everything it touches on the bridge is keyed on being the registered
+    writer, so a device failing at the very first open has to still take the
+    player out of the session rather than leave it reporting playback.
+    """
+    bridge = _make_bridge()
+
+    with (
+        _patch_device_open(bridge, OSError("sink vanished")),
+        patch.object(bridge, "_leave_sendspin_session", MagicMock()) as leave,
+    ):
+        bridge._on_bridge_stream_start()
+        await _settle()
+
+    assert bridge._is_streaming is False
+    leave.assert_called_once_with()
+
+
+async def test_a_superseded_writer_cannot_give_up_on_its_replacement() -> None:
+    """
+    A writer a newer stream replaced gives up on nothing.
+
+    Leaving the session would stop the group for a stream that is playing
+    perfectly well, and the flag it would clear now belongs to that stream.
+    """
+    bridge = _make_bridge()
+    bridge._writer_task = MagicMock()  # a newer stream's writer
+
+    with patch.object(bridge, "_leave_sendspin_session", MagicMock()) as leave:
+        bridge._abandon_streaming()
+
+    assert bridge._is_streaming is True
+    leave.assert_not_called()
 
 
 # --- Not giving up: an ordinary end of stream keeps the bridge in its session ---

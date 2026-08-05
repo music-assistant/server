@@ -378,7 +378,10 @@ class SendspinLocalAudioBridge:
         self._is_streaming = True
         while not self._write_queue.empty():
             self._write_queue.get_nowait()
-        self._writer_task = self.mass.create_task(self._audio_writer())
+        # Started on the next loop iteration so the writer is registered before
+        # it runs: everything it touches on the bridge is keyed on being the
+        # registered writer, which an eager start would leave it short of.
+        self._writer_task = self.mass.create_task(self._audio_writer(), eager_start=False)
         self.logger.info("Bridge writer started for %s", self.device_name)
 
     def _on_bridge_stream_end(self) -> None:
@@ -994,8 +997,12 @@ class SendspinLocalAudioBridge:
         Give up on this stream: stop accepting chunks and leave the Sendspin session.
 
         Playback resumes normally on the next stream — the device is only given
-        up on for the remainder of this one.
+        up on for the remainder of this one. Called by a writer a newer stream
+        has already replaced, it does nothing: that stream is not this one's to
+        give up on.
         """
+        if self._writer_task is not asyncio.current_task():
+            return
         # The device is this player's only audio path and nothing restarts the
         # writer within a stream, so leaving is what surfaces the silence
         # instead of letting the group hold the player on PLAYING.
