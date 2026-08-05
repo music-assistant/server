@@ -9,7 +9,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import ContentType, StreamType
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
@@ -24,6 +28,7 @@ from .constants import (
     ATTR_WEB_SEARCH_MODE,
     CLIP_STREAMDETAILS_EXPIRATION,
     DEFERRED_PLACEHOLDERS,
+    TTS_QUERY_TIMEOUT_SECONDS,
 )
 from .helpers import soft_limit_text
 
@@ -181,7 +186,16 @@ class AIRadioRenderMixin:
     async def _render_tts_media(self, text: str) -> tuple[str, StreamType, AudioFormat]:
         """Ask the TTS engine for audio and return the path, stream type and format to play it."""
         engine = await self._get_tts_engine()
-        stream_details = await engine.provider.get_tts_message(text, engine_id=engine.id)
+        try:
+            async with asyncio.timeout(TTS_QUERY_TIMEOUT_SECONDS) as query_timeout:
+                stream_details = await engine.provider.get_tts_message(text, engine_id=engine.id)
+        except TimeoutError as err:
+            # expired() tells our own cap apart from a timeout raised inside the engine
+            if not query_timeout.expired():
+                raise
+            raise MusicAssistantError(
+                f"TTS engine '{engine.uid}' did not respond within {TTS_QUERY_TIMEOUT_SECONDS}s"
+            ) from err
         path = str(getattr(stream_details, "path", "") or "").strip()
         if path.startswith(("http://", "https://", "rtsp://", "rtmp://")):
             stream_type = StreamType.HTTP

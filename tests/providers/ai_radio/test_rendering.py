@@ -11,7 +11,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import ContentType, MediaType, StreamType
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant_models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 from music_assistant_models.media_items import AudioFormat, ProviderMapping, SoundEffect
 from music_assistant_models.queue_item import QueueItem
 
@@ -351,6 +355,40 @@ async def test_render_tts_media_rejects_an_unplayable_path(path: str) -> None:
 
     with pytest.raises(InvalidDataError, match="unusable stream path"):
         await renderer._render_tts_media("hello world")
+
+
+async def test_render_tts_media_gives_up_on_a_stalled_engine(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stalled TTS engine fails the clip instead of pinning the render path."""
+    monkeypatch.setattr(
+        "music_assistant.providers.ai_radio.rendering.TTS_QUERY_TIMEOUT_SECONDS", 0.01
+    )
+
+    async def _answers_too_late(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+        await asyncio.sleep(5)
+        return SimpleNamespace(
+            path="http://example.test/late.mp3",
+            audio_format=AudioFormat(content_type=ContentType.MP3),
+        )
+
+    renderer = _tts_renderer("http://example.test/late.mp3")
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    engine.provider.get_tts_message = AsyncMock(side_effect=_answers_too_late)
+
+    with pytest.raises(MusicAssistantError, match="did not respond within"):
+        await renderer._render_tts_media("hello world")
+
+
+async def test_render_tts_media_reports_an_engine_side_timeout_as_is() -> None:
+    """A timeout raised by the TTS engine itself is not reported as our own cap."""
+    renderer = _tts_renderer("http://example.test/late.mp3")
+    engine = cast("Any", renderer)._get_tts_engine.return_value
+    engine.provider.get_tts_message = AsyncMock(side_effect=TimeoutError)
+
+    with pytest.raises(TimeoutError) as error:
+        await renderer._render_tts_media("hello world")
+    assert "did not respond within" not in str(error.value)
 
 
 async def test_local_file_clip_yields_local_file_streamdetails(tmp_path: Path) -> None:

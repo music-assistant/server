@@ -6,7 +6,7 @@
   "description": "Play music and audiobooks stored on NFS connected network drives.",
   "codeowners": ["@ozgav"],
   "requirements": [],
-  "documentation": "https://music-assistant.io/music-providers/filesystem/",
+  "documentation": "https://music-assistant.io/music-providers/local-files/",
   "multi_instance": true,
   "icon": "network"
 }

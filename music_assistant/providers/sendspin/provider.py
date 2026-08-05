@@ -62,7 +62,7 @@ from music_assistant.constants import (
     SENDSPIN_SERVER_PORT,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.helpers.util import format_ip_for_url
+from music_assistant.helpers.util import format_ip_for_url, select_announce_addresses
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import Player
 from music_assistant.models.player_provider import PlayerProvider
@@ -236,6 +236,7 @@ def _manual_client_url(address: str) -> str:
 class SendspinProvider(PlayerProvider):
     """Player Provider for Sendspin."""
 
+    reload_on_streams_network_change = True
     server_api: SendspinServer
     unregister_cbs: list[Callable[[], None]]
     _pending_unregisters: dict[str, asyncio.Event]
@@ -813,7 +814,7 @@ class SendspinProvider(PlayerProvider):
         await self.server_api.start_server(
             port=SENDSPIN_SERVER_PORT,
             host=self.mass.streams.bind_ip,
-            advertise_addresses=[self.mass.streams.publish_ip],
+            advertise_addresses=select_announce_addresses(self.mass.streams.publish_addresses),
         )
         for address in self._manual_ip_config:
             try:

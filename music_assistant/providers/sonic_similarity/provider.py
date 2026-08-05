@@ -73,6 +73,7 @@ from music_assistant.providers.sonic_similarity.helpers import (
     apply_filters,
     format_text_query,
 )
+from music_assistant.providers.sonic_similarity.index_io import save_index
 from music_assistant.providers.sonic_similarity.models import SimilarParams, _SearchContext
 from music_assistant.providers.sonic_similarity.similarity import (
     Candidate,
@@ -1340,7 +1341,7 @@ class SonicSimilarityPlugin(PluginProvider):
             for label, features in row_entries:
                 normalized = normalize_features(features, new_corpus_means, new_corpus_stds)
                 builder.add(label, np.array(normalized, dtype=np.float32))
-            builder.save(str(new_index_path))
+            save_index(builder, new_index_path)
             viewer = self._make_empty_index()
             viewer.view(str(new_index_path))
             return viewer

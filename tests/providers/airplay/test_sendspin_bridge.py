@@ -1,7 +1,7 @@
 """
 Unit tests for the Sendspin -> AirPlay bridge timing.
 
-Cover eight things, with the Sendspin clock mocked via ``ManualClock`` so the
+Cover ten things, with the Sendspin clock mocked via ``ManualClock`` so the
 tests are deterministic and independent of the host wall-clock:
 
 * the clock-domain conversion turning a Sendspin audible instant (Sendspin's own
@@ -24,10 +24,15 @@ tests are deterministic and independent of the host wall-clock:
   a new Sendspin stream and rides the persistent-stdin flush-refill (FLUSH +
   re-anchoring START) instead of a cold reconnect -- with flush-timeout and
   superseded-task fallback, and the supersession handling that keeps a stale
-  start from tearing down the stream a newer one owns.
+  start from spawning a process or touching the stream a newer one owns;
+* the recovery from a transport lost mid-stream: the dead CLI is released and
+  re-anchored on the group's live timeline. Every give-up then takes the speaker
+  out of the Sendspin session, so the player stops reporting playback nobody can
+  hear, and a bounded re-join brings back one that was only briefly away.
 """
 
 import asyncio
+from collections.abc import Coroutine
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -45,6 +50,7 @@ from music_assistant.providers.airplay.constants import (
 from music_assistant.providers.airplay.sendspin_bridge import (
     BRIDGE_COLD_START_LEAD_MS,
     BRIDGE_MIN_BUFFER_MS,
+    BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS,
     BRIDGE_WARM_START_LEAD_MS,
     MAX_DEVICE_BUFFER_SECONDS,
     MAX_HELD_AUDIO_US,
@@ -52,6 +58,7 @@ from music_assistant.providers.airplay.sendspin_bridge import (
     PAD_BLOCK_FRAMES,
     SILENCE_BLOCK,
     SendspinAirPlayBridge,
+    SendspinBridgeManager,
     device_buffer_ahead_seconds,
     sendspin_audible_instant_to_unix_ms,
     unix_ms_to_sendspin_audible_instant,
@@ -73,6 +80,9 @@ UNIX_NOW_S = 1_784_000_000.0  # fixed unix wall-clock reading for the tests
 UNIX_NOW_MS = int(UNIX_NOW_S * 1000)
 COLD_LEAD_MS = BRIDGE_COLD_START_LEAD_MS
 WARM_LEAD_MS = BRIDGE_WARM_START_LEAD_MS
+# Patched with zero delays so the re-join backoff runs instantly while the
+# attempt-count and give-up logic around it stays real.
+_NO_REJOIN_DELAYS = "music_assistant.providers.airplay.sendspin_bridge.BRIDGE_REJOIN_ATTEMPT_DELAYS"
 
 
 def _audible_instant_us(clock: ManualClock, lead_ms: int) -> int:
@@ -192,6 +202,11 @@ def _make_bridge(
     """Build a bridge with mocked provider/player/server and a ManualClock."""
     provider = MagicMock()
     provider.mass = MagicMock()
+    # Real values: the decision is handed to the CLI verbatim and the group's is
+    # compared against it, both of which a MagicMock would answer truthily
+    # whatever was resolved. None models a group with no live decision.
+    provider.bridge_manager.resolve_shared_ptp = MagicMock(return_value=False)
+    provider.bridge_manager.group_shared_ptp = MagicMock(return_value=None)
     airplay_player = MagicMock()
     airplay_player.player_id = "apc43875e9e53a"
     airplay_player.display_name = "Test Player"
@@ -497,7 +512,7 @@ async def test_cold_start_connects_then_anchors_first_start() -> None:
     ):
         await bridge._start_protocol_from_chunk()
 
-    stream.connect.assert_awaited_once_with()
+    stream.connect.assert_awaited_once_with(False)
     stream.wait_for_connection.assert_awaited_once_with()
     stream.start.assert_awaited_once_with(commanded, join=True)
     assert bridge._airplay_stream is stream
@@ -506,10 +521,19 @@ async def test_cold_start_connects_then_anchors_first_start() -> None:
     assert bridge._airplay_stream_ready.is_set()
 
 
-async def test_cold_start_superseded_before_start_stops_transport() -> None:
-    """A cold bridge start that is superseded after connect stops its transport."""
+async def test_a_superseded_cold_start_never_reaches_the_receiver() -> None:
+    """
+    A cold start that already lost the race bails out before it spawns anything.
+
+    Connecting first would pay a full process spawn and session setup only to
+    kill it again, put a second session on a receiver the newer start is about
+    to claim, and overwrite the shared-clock decision of the process that start
+    is really running.
+    """
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    # the decision the newer start recorded for the process it is spawning
+    bridge._use_shared_ptp = True
     # a different task owns the bridge: this cold start is stale
     bridge._airplay_stream_start_task = MagicMock()
     stream = _make_anchor_stream()
@@ -525,6 +549,79 @@ async def test_cold_start_superseded_before_start_stops_transport() -> None:
         ),
     ):
         await bridge._start_protocol_from_chunk()
+
+    stream.connect.assert_not_awaited()
+    stream.stop.assert_not_awaited()
+    assert bridge._use_shared_ptp is True
+
+
+async def test_a_superseded_start_leaves_the_kept_stream_untouched() -> None:
+    """
+    A start that lost the race never flushes the stream the newer one kept.
+
+    Arming the bridge keeps a warm-eligible stream alive, so the stale and the
+    newer start find the same instance; flushing it here would cut into the
+    audio the newer start is anchoring on it.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    kept_stream = _make_anchor_stream()
+    bridge._airplay_stream = kept_stream
+    # a different task owns the bridge: this start is stale
+    bridge._airplay_stream_start_task = MagicMock()
+
+    await bridge._start_protocol_from_chunk()
+
+    kept_stream.flush.assert_not_awaited()
+    kept_stream.stop.assert_not_awaited()
+    assert bridge._airplay_stream is kept_stream
+
+
+async def test_a_start_superseded_during_the_warm_fallback_spawns_nothing() -> None:
+    """
+    Losing the race while releasing the kept stream still stops short of the receiver.
+
+    A failed warm handover tears the kept stream down before it falls back to a
+    cold start, and that teardown is long enough for a newer start to claim the
+    bridge in the meantime.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    kept_stream = _make_anchor_stream()
+    kept_stream.flush = AsyncMock(return_value=False)
+    bridge._airplay_stream = kept_stream
+    cold_stream = _make_anchor_stream()
+
+    async def stop(**_kwargs: object) -> None:
+        # a newer stream start claimed the bridge while the kept stream went down
+        bridge._airplay_stream_start_task = MagicMock()
+
+    kept_stream.stop = AsyncMock(side_effect=stop)
+
+    with patch(
+        "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+        return_value=cold_stream,
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    cold_stream.connect.assert_not_awaited()
+    cold_stream.stop.assert_not_awaited()
+
+
+async def test_cold_start_superseded_while_connecting_stops_its_transport() -> None:
+    """A cold stream superseded while its process comes up is torn down again."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    stream = _make_anchor_stream()
+
+    async def wait_for_connection() -> None:
+        # a newer stream start claimed the bridge while the process came up
+        bridge._airplay_stream_start_task = MagicMock()
+
+    stream.wait_for_connection = AsyncMock(side_effect=wait_for_connection)
+
+    assert await bridge._start_cold_stream(stream) is False
 
     stream.start.assert_not_awaited()
     stream.stop.assert_awaited_once_with(force=True)
@@ -1387,7 +1484,7 @@ async def test_superseded_start_failure_leaves_the_newer_stream_alone() -> None:
     newer_stream = _make_anchor_stream()
     stale_stream = _make_anchor_stream()
 
-    async def connect() -> None:
+    async def connect(_use_shared_ptp: bool | None) -> None:
         # The newer start won the receiver, so this one cannot have it.
         bridge._airplay_stream_start_task = MagicMock()
         bridge._airplay_stream = newer_stream
@@ -1481,3 +1578,1100 @@ def test_stream_start_reads_the_lead_before_rewinding_the_stream_state() -> None
     role.set_timing.assert_called_once_with(
         required_lead_time_ms=BRIDGE_WARM_START_LEAD_MS, min_buffer_ms=BRIDGE_MIN_BUFFER_MS
     )
+
+
+# --- Mid-stream transport loss: re-anchoring, and giving up when it keeps dropping ---
+
+
+def _make_completed_start_task(*, failed: bool = False) -> MagicMock:
+    """
+    Build a start-task mock the chunk handler reads as a finished protocol start.
+
+    Every predicate must answer a real bool: a bare MagicMock reports itself as
+    cancelled, which the handler reads as a failed start.
+    """
+    task = MagicMock()
+    task.done.return_value = True
+    task.cancelled.return_value = failed
+    task.exception.return_value = None
+    return task
+
+
+def _make_anchored_bridge(*, running: bool) -> tuple[SendspinAirPlayBridge, MagicMock]:
+    """Return a bridge anchored on a transport in the given running state, plus that transport."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    stream = _make_kept_stream(running=running)
+    bridge._airplay_stream = stream
+    bridge.airplay_player.stream = stream
+    bridge._airplay_stream_start_task = _make_completed_start_task()
+    bridge._started = True
+    bridge._anchor_settled = True
+    bridge._drop_until_us = SENDSPIN_EPOCH_US
+    return bridge, stream
+
+
+def test_lost_transport_rearms_a_cold_start_on_the_current_chunk() -> None:
+    """
+    A transport that died mid-stream is released and re-anchored on the live timeline.
+
+    The CLI accepts and discards writes once its process is gone, so the loss is
+    only visible on the stream itself. The chunk that exposes it is also the one
+    the fresh transport anchors to, which is where the group is playing now.
+    """
+    bridge, _ = _make_anchored_bridge(running=False)
+    chunk_ts = SENDSPIN_EPOCH_US + 30_000_000
+
+    bridge._on_audio_chunk(_pcm_chunk(chunk_ts))
+
+    assert bridge._airplay_stream is None
+    assert bridge.airplay_player.stream is None
+    assert bridge._started is False
+    assert bridge._anchor_settled is False
+    # a fresh start is armed and anchored where the group is playing right now
+    assert bridge._drop_until_us == chunk_ts
+    # the chunk is held until the new anchor is acked, not placed against the dead one
+    assert len(bridge._held_chunks) == 1
+
+
+def test_lost_transport_and_its_writer_are_torn_down() -> None:
+    """The dead transport and the writer feeding it are handed to the cleanup path."""
+    bridge, dead_stream = _make_anchored_bridge(running=False)
+    writer_task = MagicMock()
+    bridge._writer_task = writer_task
+    start_task = bridge._airplay_stream_start_task
+
+    with patch.object(bridge, "_cleanup_old_stream", MagicMock()) as cleanup:
+        bridge._on_audio_chunk(_pcm_chunk(SENDSPIN_EPOCH_US + 1_000_000))
+
+    assert cleanup.call_args.args[:3] == (dead_stream, writer_task, start_task)
+
+
+def test_live_transport_keeps_streaming_untouched() -> None:
+    """A running transport is left alone: chunks keep flowing to the same stream."""
+    bridge, stream = _make_anchored_bridge(running=True)
+    start_task = bridge._airplay_stream_start_task
+
+    bridge._on_audio_chunk(_pcm_chunk(SENDSPIN_EPOCH_US + 1_000_000))
+
+    assert bridge._airplay_stream is stream
+    assert bridge._airplay_stream_start_task is start_task
+    assert bridge._started is True
+    assert not bridge._write_queue.empty()
+
+
+def test_transport_is_not_judged_while_a_start_is_in_flight() -> None:
+    """
+    A start owns its transport, so a stream it is tearing down is not a loss.
+
+    A warm handover that fails stops the kept stream before dropping it, leaving
+    a window where the bridge still points at a stopped stream. Restarting from
+    that window would fight the start already falling back to a cold reconnect.
+    """
+    bridge, stopped_stream = _make_anchored_bridge(running=False)
+    cast("MagicMock", bridge._airplay_stream_start_task).done.return_value = False
+
+    bridge._on_audio_chunk(_pcm_chunk(SENDSPIN_EPOCH_US + 1_000_000))
+
+    assert bridge._airplay_stream is stopped_stream
+    assert bridge._started is True
+
+
+def test_unanchored_transport_is_not_treated_as_a_loss() -> None:
+    """
+    A stream that never anchored is the start's to report, not a mid-stream loss.
+
+    Recovery re-joins the group where the current chunk sits, which only means
+    anything once an anchor existed. A start that finished without one has
+    already taken the bridge out of streaming through its own failure path.
+    """
+    bridge, stopped_stream = _make_anchored_bridge(running=False)
+    start_task = bridge._airplay_stream_start_task
+    bridge._started = False
+
+    bridge._on_audio_chunk(_pcm_chunk(SENDSPIN_EPOCH_US + 1_000_000))
+
+    assert bridge._airplay_stream is stopped_stream
+    assert bridge._airplay_stream_start_task is start_task
+
+
+def test_restarting_the_transport_drops_a_deferred_teardown() -> None:
+    """
+    A teardown deferred by an earlier stream end must not fire into the new transport.
+
+    The restart arms a transport that pending timer knows nothing about, so it is
+    cancelled along with the stream it was scheduled for.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+
+    bridge._restart_transport()
+
+    cast("MagicMock", bridge.mass).cancel_timer.assert_called_once_with(bridge._teardown_timer_id)
+
+
+def test_a_new_sendspin_stream_restores_the_recovery_budget() -> None:
+    """
+    Every Sendspin stream starts with a full recovery budget.
+
+    A loss on the previous stream says nothing about the device's health on this
+    one; carrying the stamp over would abandon a speaker on its very first loss.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._last_transport_recovery = 100.0
+
+    bridge._on_stream_start(MagicMock())
+
+    assert bridge._last_transport_recovery is None
+
+
+def test_a_stream_start_on_an_unavailable_player_still_restores_the_budget() -> None:
+    """
+    The recovery budget is settled before any early return can skip it.
+
+    The stream-start callback bails out when the player is unavailable, but the
+    role-side entry point has no such gate; leaving the verdict of the previous
+    stream in place would abandon the speaker on the next stream's first loss.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    cast("MagicMock", bridge.airplay_player).available = False
+    bridge._last_transport_recovery = 100.0
+
+    bridge._on_stream_start(MagicMock())
+
+    assert bridge._last_transport_recovery is None
+
+
+def test_second_transport_loss_within_the_guard_window_gives_up() -> None:
+    """A device dropping its transport again right away is abandoned, not re-anchored."""
+    bridge, _ = _make_anchored_bridge(running=False)
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.monotonic",
+            side_effect=[100.0, 100.0 + BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS - 1],
+        ),
+        patch.object(bridge, "_restart_transport", MagicMock()) as restart,
+        patch.object(bridge, "_abandon_streaming", MagicMock()) as abandon,
+    ):
+        assert bridge._recover_transport() is True
+        assert bridge._recover_transport() is False
+
+    restart.assert_called_once_with()
+    abandon.assert_called_once_with()
+
+
+def test_transport_loss_after_the_guard_window_recovers_again() -> None:
+    """A single blip hours apart is a new incident, not a flapping device."""
+    bridge, _ = _make_anchored_bridge(running=False)
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.monotonic",
+            side_effect=[100.0, 100.0 + BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS + 1],
+        ),
+        patch.object(bridge, "_restart_transport", MagicMock()) as restart,
+        patch.object(bridge, "_abandon_streaming", MagicMock()) as abandon,
+    ):
+        assert bridge._recover_transport() is True
+        assert bridge._recover_transport() is True
+
+    assert restart.call_count == 2
+    abandon.assert_not_called()
+
+
+def test_giving_up_does_not_queue_the_chunk_that_exposed_the_loss() -> None:
+    """
+    The chunk that trips the give-up is dropped, not written into the dead stream.
+
+    Giving up leaves the anchor and the stream reference untouched, so a chunk
+    that carried on through the handler would still be placed and queued.
+    """
+    bridge, _ = _make_anchored_bridge(running=False)
+    bridge._last_transport_recovery = 100.0
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.monotonic",
+            return_value=100.0 + BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS - 1,
+        ),
+        patch.object(bridge, "_restart_transport", MagicMock()) as restart,
+    ):
+        bridge._on_audio_chunk(_pcm_chunk(SENDSPIN_EPOCH_US + 1_000_000))
+
+    restart.assert_not_called()
+    assert bridge._write_queue.empty()
+
+
+async def test_a_failed_protocol_start_leaves_the_session() -> None:
+    """
+    A cold start that raised takes the speaker out of the group it cannot play in.
+
+    Whether the start was the stream's first or a replacement for a transport
+    that died, the outcome is the same silence; leaving is what stops the player
+    reporting playback nobody can hear.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    stream = _make_anchor_stream()
+    stream.connect = AsyncMock(side_effect=OSError("no route to device"))
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=stream,
+        ),
+        patch.object(bridge, "_leave_sendspin_session", MagicMock()) as leave,
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    assert bridge._is_streaming is False
+    leave.assert_called_once_with()
+
+
+async def test_losing_a_speaker_for_good_runs_the_whole_chain() -> None:
+    """
+    End to end: a transport dies, the reconnect is refused, the speaker leaves the group.
+
+    Every step here is the real one -- detection, the recovery decision, the
+    re-arm and the cold start -- so a give-up swallowed anywhere along that
+    chain shows up as a speaker that stays silently "playing" instead of
+    dropping out.
+    """
+    bridge, _ = _make_anchored_bridge(running=False)
+    stream = _make_anchor_stream()
+    stream.connect = AsyncMock(side_effect=OSError("device gone"))
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=stream,
+        ),
+        patch.object(bridge, "_leave_sendspin_session", MagicMock()) as leave,
+    ):
+        # the chunk that exposes the loss re-arms and anchors a replacement
+        bridge._on_audio_chunk(_pcm_chunk(SENDSPIN_EPOCH_US + 1_000_000))
+        assert bridge._airplay_stream_start_task is not None
+        leave.assert_not_called()
+        # run the replacement start the chunk handler scheduled
+        start = cast("MagicMock", bridge.mass).create_task.call_args.args[0]
+        bridge._airplay_stream_start_task = asyncio.current_task()
+        await start
+
+    assert bridge._is_streaming is False
+    leave.assert_called_once_with()
+
+
+def test_abandoning_streaming_stops_the_feed_and_leaves_the_session() -> None:
+    """Giving up stops accepting chunks, unblocks the writer and leaves the session."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._held_chunks.append(_pcm_chunk(SENDSPIN_EPOCH_US))
+    bridge._held_us = 100_000
+
+    with patch.object(bridge, "_leave_sendspin_session", MagicMock()) as leave:
+        bridge._abandon_streaming()
+
+    assert bridge._is_streaming is False
+    assert not bridge._held_chunks
+    assert bridge._held_us == 0
+    assert bridge._airplay_stream_ready.is_set()
+    # scheduled, not merely constructed: an unscheduled coroutine never leaves
+    leave.assert_called_once_with()
+    scheduled = [call.args[0] for call in cast("MagicMock", bridge.mass).create_task.call_args_list]
+    assert leave.return_value in scheduled
+
+
+def test_a_flapping_device_is_taken_out_of_the_sendspin_session() -> None:
+    """
+    Only a device that cannot hold a transport is dropped from the group.
+
+    Its silence is real and permanent, so the visible player must stop reporting
+    playback; the rest of the group keeps going without it.
+    """
+    bridge, _ = _make_anchored_bridge(running=False)
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.monotonic",
+            side_effect=[100.0, 100.0 + BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS - 1],
+        ),
+        patch.object(bridge, "_restart_transport", MagicMock()),
+        patch.object(bridge, "_leave_sendspin_session", MagicMock()) as leave,
+    ):
+        assert bridge._recover_transport() is True
+        # the first loss is recoverable, so the speaker keeps its place
+        leave.assert_not_called()
+        assert bridge._recover_transport() is False
+
+    # scheduled, not merely constructed: an unscheduled coroutine never leaves
+    leave.assert_called_once_with()
+    scheduled = [call.args[0] for call in cast("MagicMock", bridge.mass).create_task.call_args_list]
+    assert leave.return_value in scheduled
+
+
+def test_failed_start_task_gives_up_on_the_stream() -> None:
+    """A protocol start that failed stops the feed and drops out of the group."""
+    bridge, _ = _make_anchored_bridge(running=True)
+    bridge._airplay_stream_start_task = _make_completed_start_task(failed=True)
+
+    with patch.object(bridge, "_leave_sendspin_session", MagicMock()) as leave:
+        bridge._on_audio_chunk(_pcm_chunk(SENDSPIN_EPOCH_US + 1_000_000))
+
+    assert bridge._is_streaming is False
+    leave.assert_called_once_with()
+
+
+async def test_writer_readiness_timeout_gives_up_on_the_stream() -> None:
+    """
+    A protocol that never becomes ready stops the feed and drops out of the group.
+
+    A transport that hangs instead of failing renders the same silence as one
+    that refused the connection, so it is given up on the same way.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._writer_task = asyncio.current_task()
+    bridge._airplay_stream_ready = MagicMock(wait=AsyncMock(side_effect=TimeoutError))
+
+    with patch.object(bridge, "_leave_sendspin_session", MagicMock()) as leave:
+        await bridge._cli_writer()
+
+    assert bridge._is_streaming is False
+    leave.assert_called_once_with()
+
+
+async def test_a_stale_writer_cannot_give_up_on_a_newer_stream() -> None:
+    """
+    Only the writer still feeding the bridge may abandon it.
+
+    A writer left behind by a slow teardown speaks for a stream that is already
+    gone; letting it give up would stop, and un-group, its successor.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    # a newer stream owns the bridge; this writer is the previous stream's
+    bridge._writer_task = MagicMock()
+    bridge._airplay_stream_ready = MagicMock(wait=AsyncMock(side_effect=TimeoutError))
+
+    with patch.object(bridge, "_leave_sendspin_session", MagicMock()) as leave:
+        await bridge._cli_writer()
+
+    assert bridge._is_streaming is True
+    leave.assert_not_called()
+
+
+def _make_grouped_client(*, group_members: int = 2, has_active_stream: bool = False) -> MagicMock:
+    """
+    Build a bridge client mock that reads as having left a shared group.
+
+    Quiescing moves the client on to a solo group, exactly as the real one does,
+    so a caller reading ``client.group`` after leaving no longer sees the group
+    that was left.
+
+    :param group_members: Members in the group the client lands in after
+        leaving; more than one means it was grouped again meanwhile.
+    :param has_active_stream: Whether that group is playing something of its own.
+    """
+    client = MagicMock()
+    client.group.clients = [MagicMock() for _ in range(group_members)]
+    client.group.has_active_stream = has_active_stream
+
+    async def _quiesce() -> str:
+        client.group = MagicMock(clients=[client], has_active_stream=False)
+        return "group-1"
+
+    # a real group id: leaving a shared group is what earns a re-join, and None
+    # (a solo group, which leaving simply stops) must stay distinguishable
+    client.quiesce_to_solo_stopped = AsyncMock(side_effect=_quiesce)
+    return client
+
+
+async def test_leaving_a_shared_group_lines_up_a_rejoin() -> None:
+    """
+    A bridge taken out of a shared group is given an attempt to come back.
+
+    The group it left is captured before quiescing, because that is what moves
+    the client into a solo group of its own.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    client = _make_grouped_client()
+    left_group = client.group
+    bridge._sendspin_client = client
+
+    with patch.object(bridge, "_rejoin_attempts", MagicMock()) as rejoin:
+        await bridge._leave_sendspin_session()
+
+    rejoin.assert_called_once_with(left_group)
+
+
+async def test_leaving_a_solo_group_has_nothing_to_rejoin() -> None:
+    """
+    A solo bridge is stopped by leaving, so there is no group to return to.
+
+    Quiescing reports that by returning no previous group; scheduling a re-join
+    against the group it is already alone in would put it back on PLAYING.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    client = _make_grouped_client()
+    client.quiesce_to_solo_stopped = AsyncMock(return_value=None)
+    bridge._sendspin_client = client
+
+    with patch.object(bridge, "_rejoin_attempts", MagicMock()) as rejoin:
+        await bridge._leave_sendspin_session()
+
+    rejoin.assert_not_called()
+
+
+async def test_a_speaker_that_fails_again_right_after_a_rejoin_stays_out() -> None:
+    """
+    A speaker that keeps dropping out cannot cycle in and out of its group.
+
+    Re-joining re-runs the stream start that just failed, and a device that
+    accepts a START before dying would otherwise earn a fresh attempt every
+    time round, churning CLI processes and group membership indefinitely.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._sendspin_client = _make_grouped_client()
+    bridge._last_rejoin = 100.0
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.monotonic",
+            return_value=100.0 + BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS - 1,
+        ),
+        patch.object(bridge, "_rejoin_attempts", MagicMock()) as rejoin,
+    ):
+        await bridge._leave_sendspin_session()
+
+    rejoin.assert_not_called()
+
+
+async def test_a_speaker_that_held_its_place_earns_another_rejoin() -> None:
+    """A device that played on for a while before failing is worth bringing back again."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._sendspin_client = _make_grouped_client()
+    bridge._last_rejoin = 100.0
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.monotonic",
+            return_value=100.0 + BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS + 1,
+        ),
+        patch.object(bridge, "_rejoin_attempts", MagicMock()) as rejoin,
+    ):
+        await bridge._leave_sendspin_session()
+
+    rejoin.assert_called_once()
+
+
+async def test_the_rejoin_window_is_measured_from_the_actual_rejoin() -> None:
+    """
+    The guard is stamped where the speaker rejoins, not where the attempt was scheduled.
+
+    Stamping at schedule time would tie the guard to the backoff: longer delays
+    would put the stamp far enough in the past for the window to have expired by
+    the time the re-joined speaker fails, letting the cycle run again.
+    """
+    bridge, _, group = _make_rejoin_bridge()
+
+    with (
+        patch(_NO_REJOIN_DELAYS, (0,)),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.monotonic",
+            return_value=1234.0,
+        ),
+    ):
+        await bridge._rejoin_attempts(group)
+
+    group.add_client.assert_awaited_once()
+    assert bridge._last_rejoin == 1234.0
+
+
+async def test_a_failed_rejoin_never_stamps_the_window() -> None:
+    """A speaker that never made it back has not held a place to be judged on."""
+    bridge, _, group = _make_rejoin_bridge()
+    group.add_client = AsyncMock(side_effect=OSError("group is gone"))
+
+    with patch(_NO_REJOIN_DELAYS, (0,)):
+        await bridge._rejoin_attempts(group)
+
+    assert bridge._last_rejoin is None
+
+
+async def test_a_give_up_inside_the_window_drops_a_pending_rejoin() -> None:
+    """
+    Leaving the speaker out means dropping the attempt that would put it back.
+
+    A schedule left running would contradict the decision this give-up just
+    made, and re-add a speaker that was meant to stay out.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._sendspin_client = _make_grouped_client()
+    bridge._last_rejoin = 100.0
+    pending = MagicMock()
+    pending.done.return_value = False
+    bridge._rejoin_task = pending
+
+    with patch(
+        "music_assistant.providers.airplay.sendspin_bridge.time.monotonic",
+        return_value=100.0 + BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS - 1,
+    ):
+        await bridge._leave_sendspin_session()
+
+    assert bridge._rejoin_task is None
+    pending.cancel.assert_called_once_with()  # type: ignore[unreachable]
+
+
+def _make_rejoin_bridge(
+    *, group_members: int = 1, has_active_stream: bool = False
+) -> tuple[SendspinAirPlayBridge, MagicMock, MagicMock]:
+    """
+    Build a bridge in the state a give-up leaves behind, with its client and lost group.
+
+    The AirPlay stream is cleared explicitly: a give-up tears it down, and a
+    bridge still pointing at one reads as a speaker streaming outside the
+    bridge, which is itself a reason not to re-join.
+
+    :param group_members: Members of the group the client sits in now.
+    :param has_active_stream: Whether that group is playing something of its own.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    cast("MagicMock", bridge.airplay_player).stream = None
+    client = _make_grouped_client(group_members=group_members, has_active_stream=has_active_stream)
+    bridge._sendspin_client = client
+    group = MagicMock()
+    group.clients = [MagicMock()]
+    group.add_client = AsyncMock()
+    return bridge, client, group
+
+
+async def test_a_rejoin_puts_the_bridge_back_into_the_group_it_left() -> None:
+    """The bridge re-joins through the ordinary group-add, which re-runs the stream start."""
+    bridge, client, group = _make_rejoin_bridge()
+
+    with patch(_NO_REJOIN_DELAYS, (0,)):
+        await bridge._rejoin_attempts(group)
+
+    group.add_client.assert_awaited_once_with(client)
+
+
+async def test_a_rejoin_leaves_a_regrouped_speaker_alone() -> None:
+    """
+    A speaker grouped again meanwhile is never pulled out of where it was put.
+
+    The re-join answers a failure, not the user; landing anywhere other than the
+    solo group the give-up left means someone else has since decided otherwise.
+    """
+    bridge, _, group = _make_rejoin_bridge(group_members=2)
+
+    with patch(_NO_REJOIN_DELAYS, (0,)):
+        await bridge._rejoin_attempts(group)
+
+    group.add_client.assert_not_awaited()
+
+
+async def test_a_rejoin_leaves_a_speaker_playing_on_its_own_alone() -> None:
+    """
+    A speaker started on its own meanwhile keeps that playback.
+
+    Its solo group has one member, so membership alone cannot tell it apart from
+    the group the give-up left it in -- but adding a client to another group
+    stops the group it came from, which here is the user's own playback.
+    """
+    bridge, _, group = _make_rejoin_bridge(has_active_stream=True)
+
+    with patch(_NO_REJOIN_DELAYS, (0,)):
+        await bridge._rejoin_attempts(group)
+
+    group.add_client.assert_not_awaited()
+
+
+async def test_a_rejoin_leaves_a_natively_streaming_speaker_alone() -> None:
+    """
+    A speaker taken over by native AirPlay is not dragged back into Sendspin.
+
+    Re-joining restarts the bridge transport, which would tear down a session
+    the bridge does not own.
+    """
+    bridge, _, group = _make_rejoin_bridge()
+    cast("MagicMock", bridge.airplay_player).stream = MagicMock()
+
+    with patch(_NO_REJOIN_DELAYS, (0,)):
+        await bridge._rejoin_attempts(group)
+
+    group.add_client.assert_not_awaited()
+
+
+async def test_an_offline_speaker_is_looked_for_again_before_giving_up() -> None:
+    """
+    A speaker missing from discovery is never re-joined, but is looked for again.
+
+    A rebooting device is absent from discovery for a while after it starts
+    answering, so abandoning on the first look would spend the whole re-join
+    budget inside the window where such a device is always missing. Running out
+    of attempts, rather than returning on the first one, is what shows the later
+    look happened.
+    """
+    bridge, _, group = _make_rejoin_bridge()
+    cast("MagicMock", bridge.airplay_player).available = False
+    logger = MagicMock()
+    bridge.logger = logger
+
+    with patch(_NO_REJOIN_DELAYS, (0, 0)):
+        await bridge._rejoin_attempts(group)
+
+    group.add_client.assert_not_awaited()
+    assert logger.debug.call_count == 2
+    # the give-up is only reached once the attempts run out
+    logger.warning.assert_called_once()
+
+
+async def test_a_rejoin_is_abandoned_when_the_group_is_gone() -> None:
+    """
+    A group everyone else has left is not a group to return to.
+
+    Its object outlives the members holding it, so adding the bridge back would
+    strand it alone in a group nothing streams to.
+    """
+    bridge, _, group = _make_rejoin_bridge()
+    group.clients = []
+
+    with patch(_NO_REJOIN_DELAYS, (0,)):
+        await bridge._rejoin_attempts(group)
+
+    group.add_client.assert_not_awaited()
+
+
+async def test_a_rejoin_that_keeps_failing_gives_up() -> None:
+    """Every attempt is tried, and a speaker that never returns leaves the player idle."""
+    bridge, _, group = _make_rejoin_bridge()
+    group.add_client = AsyncMock(side_effect=OSError("group is gone"))
+
+    with patch(_NO_REJOIN_DELAYS, (0, 0)):
+        await bridge._rejoin_attempts(group)
+
+    assert group.add_client.await_count == 2
+
+
+async def test_a_new_stream_supersedes_a_pending_rejoin() -> None:
+    """Joining a session by any means makes the pending re-join stale."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    pending = MagicMock()
+    pending.done.return_value = False
+    bridge._rejoin_task = pending
+
+    bridge._on_stream_start(MagicMock())
+
+    assert bridge._rejoin_task is None
+    pending.cancel.assert_called_once_with()  # type: ignore[unreachable]
+
+
+async def test_a_rejoin_never_cancels_itself() -> None:
+    """
+    The re-join survives the stream start it causes.
+
+    Adding the bridge back to the group runs the stream-start path that clears
+    stale schedules, and that path cannot be allowed to kill the attempt making
+    the call.
+    """
+    bridge, client, group = _make_rejoin_bridge()
+
+    async def _add_client(_client: MagicMock) -> None:
+        bridge._rejoin_task = asyncio.current_task()
+        bridge._on_stream_start(MagicMock())
+
+    group.add_client = AsyncMock(side_effect=_add_client)
+
+    with patch(_NO_REJOIN_DELAYS, (0,)):
+        await bridge._rejoin_attempts(group)
+
+    group.add_client.assert_awaited_once_with(client)
+
+
+async def test_stopping_the_bridge_drops_a_pending_rejoin() -> None:
+    """An unloaded bridge has no group to return to."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    pending = MagicMock()
+    pending.done.return_value = False
+    bridge._rejoin_task = pending
+
+    await bridge.stop()
+
+    assert bridge._rejoin_task is None
+    pending.cancel.assert_called_once_with()  # type: ignore[unreachable]
+
+
+async def test_leaving_the_session_quiesces_the_bridge_client() -> None:
+    """The bridge leaves a shared group (or stops a solo one) but stays registered."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    client = _make_grouped_client()
+    bridge._sendspin_client = client
+
+    await bridge._leave_sendspin_session()
+
+    client.quiesce_to_solo_stopped.assert_awaited_once_with()
+    # staying registered is what keeps the player around for the next stream
+    cast("MagicMock", bridge.sendspin_server).remove_client.assert_not_called()
+
+
+async def test_leaving_the_session_without_a_client_is_a_noop() -> None:
+    """
+    Giving up before registration completed has no session to leave.
+
+    The call has to return without touching anything: swallowing an error from
+    an absent client would look identical from the outside, so the absence of a
+    complaint is what distinguishes the two.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    logger = MagicMock()
+    bridge.logger = logger
+    assert bridge._sendspin_client is None
+
+    await bridge._leave_sendspin_session()
+
+    logger.warning.assert_not_called()
+
+
+# --- One shared-PTP decision per Sendspin group --------------------------------
+
+
+def _group_bridges(*bridges: SendspinAirPlayBridge, daemon_ready: bool) -> SendspinBridgeManager:
+    """
+    Put the given bridges in one Sendspin group behind a shared bridge manager.
+
+    :param bridges: Bridges to place in the group.
+    :param daemon_ready: What the shared PTP daemon answers a fresh resolve.
+    """
+    provider = MagicMock()
+    provider.ptp_daemon_ready = daemon_ready
+    manager = SendspinBridgeManager(provider)
+    provider.bridge_manager = manager
+    group = MagicMock()
+    for index, bridge in enumerate(bridges):
+        bridge.provider = provider
+        bridge._sendspin_client = MagicMock()
+        bridge._sendspin_client.group = group
+        manager._bridges[f"player{index}"] = bridge
+    return manager
+
+
+def test_the_first_group_member_asks_the_daemon() -> None:
+    """With no live decision in the group, the daemon's readiness decides."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    _group_bridges(bridge, daemon_ready=True)
+
+    assert bridge._resolve_shared_ptp() is True
+
+
+@pytest.mark.parametrize(("live_decision", "daemon_ready"), [(True, False), (False, True)])
+def test_a_later_member_adopts_the_groups_live_decision(
+    live_decision: bool, daemon_ready: bool
+) -> None:
+    """
+    A member starting later joins on the clock the group is already running.
+
+    Bridges in one group can start minutes apart, so what the daemon answers at
+    the second start says nothing about the source the first member's process
+    was spawned against. Parametrised both ways so the decision is proven to
+    follow the sibling rather than the daemon.
+    """
+    playing = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    joiner = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    _group_bridges(playing, joiner, daemon_ready=daemon_ready)
+    playing._use_shared_ptp = live_decision
+
+    assert joiner._resolve_shared_ptp() is live_decision
+
+
+def test_a_warm_member_still_speaks_for_the_group() -> None:
+    """
+    A process kept for a warm reuse keeps deciding for its group.
+
+    Its Sendspin stream ended, but the next one rides that same cli process with
+    the flag it was spawned with, so a sibling cold-starting alongside it has to
+    match that flag rather than resolve against the daemon.
+    """
+    warm = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    joiner = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    _group_bridges(warm, joiner, daemon_ready=False)
+    warm._use_shared_ptp = True
+    warm._airplay_stream = _make_kept_stream()
+    warm._started = True
+    warm._is_streaming = False
+
+    assert warm.active_shared_ptp is True
+    assert joiner._resolve_shared_ptp() is True
+
+
+def test_an_idle_member_does_not_decide() -> None:
+    """A bridge with no cli process left leaves the group to resolve fresh."""
+    idle = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    starter = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    _group_bridges(idle, starter, daemon_ready=True)
+    idle._use_shared_ptp = False
+    idle._is_streaming = False
+
+    assert idle.active_shared_ptp is None
+    assert starter._resolve_shared_ptp() is True
+
+
+def test_another_groups_decision_is_not_adopted() -> None:
+    """Only members of the same Sendspin group share one timing source."""
+    stranger = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    starter = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    _group_bridges(stranger, starter, daemon_ready=False)
+    stranger._use_shared_ptp = True
+    # the stranger moved on to a group of its own
+    stranger_client = MagicMock()
+    stranger_client.group = MagicMock()
+    stranger._sendspin_client = stranger_client
+
+    assert starter._resolve_shared_ptp() is False
+
+
+def test_a_raop_member_carries_no_decision() -> None:
+    """A legacy RAOP process has no shared-clock flag to hand its group."""
+    raop = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US, protocol=StreamingProtocol.RAOP)
+    _group_bridges(raop, daemon_ready=True)
+
+    assert raop._resolve_shared_ptp() is None
+
+
+async def test_a_cold_start_spawns_the_cli_with_the_groups_decision() -> None:
+    """The adopted decision reaches the cli process and is recorded on the bridge."""
+    playing = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    joiner = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    _group_bridges(playing, joiner, daemon_ready=False)
+    playing._use_shared_ptp = True
+    joiner._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    joiner._airplay_stream_start_task = asyncio.current_task()
+    stream = _make_anchor_stream(ack=UNIX_NOW_MS + COLD_LEAD_MS)
+
+    with patch(
+        "music_assistant.providers.airplay.sendspin_bridge.time.time",
+        return_value=UNIX_NOW_S,
+    ):
+        assert await joiner._start_cold_stream(stream) is True
+
+    stream.connect.assert_awaited_once_with(True)
+    assert joiner.active_shared_ptp is True
+
+
+async def test_a_daemon_lost_mid_start_cannot_split_the_group() -> None:
+    """
+    Members starting together agree even when the daemon goes away between them.
+
+    The first member records its decision before it awaits its connect, so the
+    second one finds it however the daemon answers by the time it resolves.
+    """
+    first = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    second = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    manager = _group_bridges(first, second, daemon_ready=True)
+    first_stream = _make_anchor_stream(ack=UNIX_NOW_MS + COLD_LEAD_MS)
+    second_stream = _make_anchor_stream(ack=UNIX_NOW_MS + COLD_LEAD_MS)
+
+    async def connect(_use_shared_ptp: bool | None) -> None:
+        # the daemon dies while the first member is still connecting
+        cast("MagicMock", manager.provider).ptp_daemon_ready = False
+        await asyncio.sleep(0)
+
+    first_stream.connect = AsyncMock(side_effect=connect)
+
+    async def cold_start(bridge: SendspinAirPlayBridge, stream: MagicMock) -> None:
+        bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+        bridge._airplay_stream_start_task = asyncio.current_task()
+        await bridge._start_cold_stream(stream)
+
+    with patch(
+        "music_assistant.providers.airplay.sendspin_bridge.time.time",
+        return_value=UNIX_NOW_S,
+    ):
+        await asyncio.gather(cold_start(first, first_stream), cold_start(second, second_stream))
+
+    assert first.active_shared_ptp is True
+    assert second.active_shared_ptp is True
+    second_stream.connect.assert_awaited_once_with(True)
+
+
+async def test_a_torn_down_bridge_stops_deciding() -> None:
+    """
+    The decision dies with the cli process it was spawned for.
+
+    A new Sendspin stream arms the bridge before it resolves, so a decision left
+    behind by the torn-down process would be handed to the group on its behalf.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._use_shared_ptp = True
+
+    await bridge._stop_streaming()
+    bridge._on_stream_start(MagicMock())
+
+    assert bridge._is_streaming is True
+    assert bridge.active_shared_ptp is None
+
+
+def _make_warm_bridge(
+    *,
+    use_shared_ptp: bool | None,
+    protocol: StreamingProtocol = StreamingProtocol.AIRPLAY2,
+) -> SendspinAirPlayBridge:
+    """
+    Build a bridge holding a connected, anchored cli process on the given flag.
+
+    :param use_shared_ptp: The shared-PTP flag its process was spawned with,
+        None for a process that carries no such decision.
+    :param protocol: The streaming protocol the bridged player speaks.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US, protocol=protocol)
+    bridge._airplay_stream = _make_kept_stream()
+    bridge._started = True
+    bridge._use_shared_ptp = use_shared_ptp
+    return bridge
+
+
+def test_a_regrouped_warm_process_is_not_reused() -> None:
+    """
+    A process whose flag no longer matches its group has to be respawned.
+
+    The flag is baked in at spawn, so reusing the process would keep the bridge
+    on the clock its old group ran on. Its start lead has to report the cold
+    figure too, or the respawn lands past the audio Sendspin already scheduled.
+    """
+    regrouped = _make_warm_bridge(use_shared_ptp=False)
+    playing = _make_warm_bridge(use_shared_ptp=True)
+    _group_bridges(regrouped, playing, daemon_ready=True)
+    regrouped._bridge_role = MagicMock()
+
+    assert regrouped._stream_is_warm_eligible() is True
+    assert regrouped._can_reuse_stream_warm() is False
+
+    regrouped._refresh_bridge_timing()
+
+    regrouped._bridge_role.set_timing.assert_called_once_with(
+        required_lead_time_ms=BRIDGE_COLD_START_LEAD_MS, min_buffer_ms=BRIDGE_MIN_BUFFER_MS
+    )
+
+
+def test_a_warm_process_matching_its_group_is_reused() -> None:
+    """A group already on the process's flag costs it no respawn."""
+    warm = _make_warm_bridge(use_shared_ptp=True)
+    playing = _make_warm_bridge(use_shared_ptp=True)
+    _group_bridges(warm, playing, daemon_ready=False)
+
+    assert warm._can_reuse_stream_warm() is True
+
+
+def test_a_group_without_a_live_decision_reuses_the_warm_process() -> None:
+    """
+    A bridge whose group has no other live decision keeps its process.
+
+    Its own process is the group's decision, so a daemon that changed state
+    since must not churn the transport on every track change.
+    """
+    solo = _make_warm_bridge(use_shared_ptp=True)
+    _group_bridges(solo, daemon_ready=False)
+
+    assert solo._can_reuse_stream_warm() is True
+
+
+def test_a_raop_member_keeps_its_warm_process_beside_an_ap2_member() -> None:
+    """
+    A RAOP process is never respawned over a group's shared-clock decision.
+
+    It carries no such decision of its own, and no respawn could give it one, so
+    comparing it against an AirPlay 2 sibling's would cost the group a cold
+    reconnect (and its longer start lead) on every track change for nothing.
+    """
+    raop = _make_warm_bridge(use_shared_ptp=None, protocol=StreamingProtocol.RAOP)
+    ap2 = _make_warm_bridge(use_shared_ptp=True)
+    _group_bridges(raop, ap2, daemon_ready=True)
+    raop._bridge_role = MagicMock()
+
+    assert raop._can_reuse_stream_warm() is True
+
+    raop._refresh_bridge_timing()
+
+    raop._bridge_role.set_timing.assert_called_once_with(
+        required_lead_time_ms=BRIDGE_WARM_START_LEAD_MS, min_buffer_ms=BRIDGE_MIN_BUFFER_MS
+    )
+
+
+async def test_the_real_chunk_path_records_the_decision_it_spawns_with() -> None:
+    """
+    Driving the bridge the way Sendspin does still records what the CLI got.
+
+    The start path tells whether it still owns the bridge by comparing itself
+    against the task handle the chunk handler publishes, so the start task must
+    not run before that handle is set. Started eagerly it would read None on its
+    very first check and give up as if a newer start had claimed the bridge.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    _group_bridges(bridge, daemon_ready=True)
+    stream = _make_anchor_stream(ack=UNIX_NOW_MS + COLD_LEAD_MS)
+    started: list[asyncio.Task[None]] = []
+
+    async def connect(_use_shared_ptp: bool | None) -> None:
+        # a real connect does I/O, so the task suspends here
+        await asyncio.sleep(0)
+
+    stream.connect = AsyncMock(side_effect=connect)
+
+    loop = asyncio.get_running_loop()
+
+    def create_task(
+        coro: Coroutine[None, None, None], *, eager_start: bool = True, **_kwargs: object
+    ) -> asyncio.Task[None]:
+        # mirrors mass.create_task, whose default eager start would run the
+        # coroutine to its first await before this returns
+        task = asyncio.Task(coro, loop=loop, eager_start=eager_start)
+        started.append(task)
+        return task
+
+    cast("MagicMock", bridge.mass).create_task = create_task
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=stream,
+        ),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            return_value=UNIX_NOW_S,
+        ),
+    ):
+        bridge._on_audio_chunk(_pcm_chunk(SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000))
+        await asyncio.gather(*started)
+
+    stream.connect.assert_awaited_once_with(True)
+    assert bridge.active_shared_ptp is True
+
+
+@pytest.mark.parametrize("arm", ["sendspin_stream_start", "transport_restart"])
+def test_a_released_process_stops_deciding_for_its_group(arm: str) -> None:
+    """
+    A process the bridge is about to tear down no longer speaks for its group.
+
+    Arming the bridge for its next stream happens well before that stream
+    resolves, so a decision left over from the released process would be handed
+    to a sibling resolving in between - and after a regroup it is the wrong one.
+    """
+    regrouped = _make_warm_bridge(use_shared_ptp=False)
+    playing = _make_warm_bridge(use_shared_ptp=True)
+    _group_bridges(regrouped, playing, daemon_ready=True)
+
+    if arm == "sendspin_stream_start":
+        regrouped._on_stream_start(MagicMock())
+    else:
+        regrouped._on_bridge_stream_start()
+
+    assert regrouped._is_streaming is True
+    assert regrouped.active_shared_ptp is None
+    # the sibling still holding a live process keeps deciding for the group
+    assert playing.active_shared_ptp is True
+
+
+def test_an_abandoned_process_stops_deciding_for_its_group() -> None:
+    """Giving up on a transport takes its decision out of the group with it."""
+    abandoned = _make_warm_bridge(use_shared_ptp=True)
+    _group_bridges(abandoned, daemon_ready=True)
+
+    abandoned._abandon_streaming()
+
+    assert abandoned._use_shared_ptp is None
+    assert abandoned.active_shared_ptp is None

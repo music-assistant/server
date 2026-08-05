@@ -659,6 +659,43 @@ async def test_volume_set_skipped_while_muted(airplay_player: AirPlayPlayer) -> 
 
 
 @pytest.mark.asyncio
+async def test_volume_set_records_level_before_sending(airplay_player: AirPlayPlayer) -> None:
+    """A resync reading the level mid-send must observe the new volume, not the old one."""
+    send_cmd = _setup_running_stream(airplay_player)
+    airplay_player._attr_volume_level = 20
+    observed: list[int | None] = []
+
+    async def read_level_while_sending(_command: str) -> bool:
+        # stands in for the connect-time volume resync, which reads the player's
+        # level while this send is still suspended
+        await asyncio.sleep(0)
+        observed.append(airplay_player.volume_level)
+        return True
+
+    send_cmd.side_effect = read_level_while_sending
+
+    await airplay_player.volume_set(80)
+
+    assert observed == [80]
+    assert airplay_player.volume_level == 80
+
+
+@pytest.mark.asyncio
+async def test_volume_set_records_level_when_the_send_fails(
+    airplay_player: AirPlayPlayer,
+) -> None:
+    """A dropped command must not lose the requested level; the resync repairs the device."""
+    send_cmd = _setup_running_stream(airplay_player)
+    send_cmd.return_value = False
+    airplay_player._attr_volume_level = 20
+
+    await airplay_player.volume_set(80)
+
+    send_cmd.assert_awaited_once_with("VOLUME=80")
+    assert airplay_player.volume_level == 80
+
+
+@pytest.mark.asyncio
 async def test_volume_unmute_restores_volume(airplay_player: AirPlayPlayer) -> None:
     """Unmuting with a running stream should send VOLUME={current_volume}."""
     send_cmd = _setup_running_stream(airplay_player)

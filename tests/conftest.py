@@ -18,7 +18,20 @@ from music_assistant.controllers.discovery import DiscoveryController
 from music_assistant.controllers.music import MusicController
 from music_assistant.controllers.tasks import TasksController
 from music_assistant.mass import MusicAssistant
-from tests.common import suppress_auto_loaded_providers, use_ephemeral_server_ports
+from tests.common import suppress_auto_loaded_providers, use_ephemeral_server_ports, utf8_safe
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_report_to_serializable() -> Generator[None, object, object]:
+    """
+    Make serialized test reports strict-UTF-8 safe for pytest-xdist.
+
+    Lone surrogates in a captured report (e.g. undecodable filesystem paths) kill
+    the execnet worker channel. Covers test reports only; other xdist payloads
+    (warnings, log-start nodeids) are serialized outside this hook.
+    """
+    data = yield
+    return utf8_safe(data)
 
 
 @pytest.fixture(autouse=True)
