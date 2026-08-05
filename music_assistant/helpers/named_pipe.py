@@ -117,6 +117,10 @@ class AsyncNamedPipeWriter:
                             stall_ends_at = now + WRITE_STALL_TIMEOUT
                         if now < stall_ends_at and now < give_up_at:
                             self._wait_writable(write_fd)
+                            # a cancelled write releases the lock but keeps this thread
+                            # going, so stop once remove() has taken the descriptor
+                            if self._write_fd != write_fd:
+                                return False
                             continue
                         _LOGGER.debug(
                             "Named pipe write stalled on %s "

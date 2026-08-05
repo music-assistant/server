@@ -892,6 +892,28 @@ async def test_pipe_write_resumes_after_the_buffer_drains() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pipe_write_stops_when_the_descriptor_is_taken_mid_stall() -> None:
+    """A stalled write gives up once the pipe is removed out from under it."""
+    writer = AsyncNamedPipeWriter("/tmp/audio")  # noqa: S108
+    writer._write_fd = 42
+
+    def take_descriptor(pipe_writer: AsyncNamedPipeWriter, _write_fd: int) -> None:
+        pipe_writer._write_fd = None
+
+    with (
+        patch(
+            "music_assistant.helpers.named_pipe.os.write",
+            side_effect=[4, BlockingIOError(errno.EAGAIN, "buffer full")],
+        ) as write,
+        patch.object(AsyncNamedPipeWriter, "_wait_writable", take_descriptor),
+    ):
+        assert await writer.write(b"\x00" * 10) is False
+
+    # writing on would land in whatever reopened that descriptor number
+    assert write.call_count == 2
+
+
+@pytest.mark.asyncio
 async def test_pipe_write_resets_fd_when_the_reader_closes_during_a_stall(
     tmp_path: Path,
 ) -> None:
