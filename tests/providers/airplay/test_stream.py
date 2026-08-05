@@ -1673,8 +1673,8 @@ async def test_wait_for_connection_pushes_metadata_immediately() -> None:
 
 
 @pytest.mark.asyncio
-async def test_deferred_volume_resend_reads_the_level_when_it_fires() -> None:
-    """The repeated volume push must carry the level at fire time, not at connect time."""
+async def test_deferred_volume_resend_reads_the_state_when_it_fires() -> None:
+    """The repeated volume push must carry the volume at fire time, not at connect time."""
     player = _make_player()
     player.volume_muted = False
     player.volume_level = 40
@@ -1690,13 +1690,18 @@ async def test_deferred_volume_resend_reads_the_level_when_it_fires() -> None:
     ):
         await stream.wait_for_connection()
         send_command.assert_awaited_with("VOLUME=40")
+        deferred = player.provider.mass.call_later.call_args_list[0].args[1]
 
-        # the volume changes between the connect and the deferred resend firing
+        # a volume change between the connect and the resend firing must survive
         player.volume_level = 75
-        deferred = player.provider.mass.call_later.call_args.args[1]
+        await deferred()
+        send_command.assert_awaited_with("VOLUME=75")
+
+        # ...and so must a mute
+        player.volume_muted = True
         await deferred()
 
-    send_command.assert_awaited_with("VOLUME=75")
+    send_command.assert_awaited_with("VOLUME=0")
 
 
 @pytest.mark.asyncio
