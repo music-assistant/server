@@ -1218,12 +1218,12 @@ class StorytelHelper:
             for format_data in (item_data.get("formats") or [])
             if isinstance(format_data, dict) and format_data.get("type") == "abook"
         ]
+        cover_url = None
         for format_data in audiobook_formats_data:
-            cover_url = (
-                (format_data.get("cover") or {}).get("url")
-                if isinstance(format_data.get("cover"), dict)
-                else None
-            )
+            if isinstance(format_data.get("cover"), dict) and (
+                cover_url := format_data["cover"].get("url")
+            ):
+                break
         if cover_url:
             media_item.metadata.images = UniqueList(
                 [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=self.provider_id)]
