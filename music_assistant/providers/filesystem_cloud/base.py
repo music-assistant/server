@@ -37,7 +37,7 @@ from music_assistant.providers.filesystem_local.constants import (
     SUPPORTED_EXTENSIONS,
     TRACK_EXTENSIONS,
 )
-from music_assistant.providers.filesystem_local.helpers import FileSystemItem
+from music_assistant.providers.filesystem_local.helpers import FileSystemItem, ScanErrors
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -309,7 +309,7 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
         items_to_process: list[tuple[FileSystemItem, str | None]],
         unchanged_cue_items: list[FileSystemItem],
         cue_stems: set[str],
-        root_scan_errors: list[OSError],
+        scan_errors: ScanErrors,
     ) -> None:
         """Walk the cloud folder tree via the API and populate the sync buckets."""
         ignore_album_playlists = self.media_content_type == "music" and bool(
@@ -330,16 +330,18 @@ class CloudFileSystemProvider(LocalFileSystemProvider):
                 # picked up no matter how recently a folder was browsed
                 items = await self._scandir(path, use_cache=False)
             except ProviderUnavailableError as err:
-                # only a root-level failure aborts the sync; subfolder failures
-                # are logged and skipped, matching the local-filesystem walker
-                if is_root:
-                    root_scan_errors.append(OSError(str(err)))
-                else:
+                # a root-level failure aborts the sync right away, subfolder failures only
+                # once too many happen in a row, matching the local-filesystem walker
+                if not is_root:
                     self.logger.warning("Error scanning folder %s: %s", path, err)
+                scan_errors.record_dir_error(err, is_root=is_root, path=path)
                 return
+            scan_errors.record_dir_read()
             for item in items:
                 if item.is_dir:
                     await _walk(item.relative_path, is_root=False)
+                    if scan_errors.aborted:
+                        return
                     continue
                 if item.ext not in SUPPORTED_EXTENSIONS:
                     continue

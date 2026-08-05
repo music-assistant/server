@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from music_assistant.providers.filesystem_local.helpers import FileSystemItem
+from music_assistant.providers.filesystem_local.helpers import FileSystemItem, ScanErrors
 from music_assistant.providers.webdav.helpers import WebDAVItem
 from music_assistant.providers.webdav.provider import WebDAVFileSystemProvider
 
@@ -30,6 +30,7 @@ async def _run_enumerate(
     *,
     file_checksums: dict[str, str] | None = None,
     cur_filenames: set[str] | None = None,
+    scan_errors: ScanErrors | None = None,
 ) -> None:
     """Drive _enumerate_files_for_sync with empty sync buckets."""
     await provider._enumerate_files_for_sync(
@@ -39,7 +40,7 @@ async def _run_enumerate(
         items_to_process=[],
         unchanged_cue_items=[],
         cue_stems=set(),
-        root_scan_errors=[],
+        scan_errors=scan_errors if scan_errors is not None else ScanErrors(),
     )
 
 
