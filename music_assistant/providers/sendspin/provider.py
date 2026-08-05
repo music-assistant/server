@@ -133,6 +133,7 @@ class PinPairingSession:
     method: PairMethod
     pin_future: asyncio.Future[str]
     verify: bool = False
+    static: bool = False
     task: asyncio.Task[None] | None = None
     pin_request_event: asyncio.Event = field(default_factory=asyncio.Event)
     error: Exception | None = None
@@ -628,9 +629,7 @@ class SendspinProvider(PlayerProvider):
         :param static: Pair with the static PIN even when a dynamic PIN is offered.
         """
         session = self._pin_sessions.get(client_id)
-        if session is not None and (
-            session.verify != verify or (static and session.method is not PairMethod.STATIC_PIN)
-        ):
+        if session is not None and (session.verify != verify or session.static != static):
             # a stale session from an earlier run never resumes; the caller's
             # static/verify choice must win
             if session.attempt_running:
@@ -657,6 +656,7 @@ class SendspinProvider(PlayerProvider):
             method=method,
             pin_future=self.mass.loop.create_future(),
             verify=verify,
+            static=static,
         )
         self._pin_sessions[client_id] = session
         self._begin_pin_attempt(session)

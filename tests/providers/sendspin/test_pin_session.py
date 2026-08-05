@@ -375,6 +375,24 @@ async def test_parked_mode_mismatch_restarts(monkeypatch: pytest.MonkeyPatch) ->
     assert api.initiate_calls == 2
 
 
+async def test_parked_static_session_not_resumed_by_default_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A parked static-PIN session is not resumed by a later dynamic-first request."""
+    api = _FakeServerApi([_desc(PairMethod.DYNAMIC_PIN), _desc(PairMethod.STATIC_PIN)])
+    api.outcomes.append(RemotePairingAbortError(PairAbortReason.PIN_MISMATCH))
+    provider, _refreshed = _make_provider(api, monkeypatch)
+    session = await provider.start_pin_pairing("c", static=True)
+    assert session.method is PairMethod.STATIC_PIN
+    await _submit_and_settle(provider, "00000000")
+    assert session.can_retry
+
+    fresh = await provider.start_pin_pairing("c")
+    assert fresh is not session
+    assert fresh.method is PairMethod.DYNAMIC_PIN
+    assert api.end_pairing_calls == 1
+
+
 async def test_running_mode_mismatch_raises_concurrent(monkeypatch: pytest.MonkeyPatch) -> None:
     """An attempt in flight with a different mode cannot be co-opted."""
     api = _FakeServerApi([_desc(PairMethod.DYNAMIC_PIN)])
