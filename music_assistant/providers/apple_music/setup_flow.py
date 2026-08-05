@@ -49,8 +49,7 @@ async def run_setup(session: SetupSession) -> None:
     # prefer the bundled developer token; only prompt for (and store) a manual one when
     # the bundle ships an empty/expired token, e.g. on development builds
     app_token = MUSIC_APP_TOKEN
-    # only prompt when Apple actually rejected the bundled token: /v1/test also answers
-    # 429 while the (shared) token is being throttled, which says nothing about validity
+    # a throttled /v1/test says nothing about validity, so only an explicit rejection counts
     if await _app_token_accepted(mass, app_token) is False:
         app_token_errors: dict[str, str] | None = None
         while True:
@@ -66,7 +65,7 @@ async def run_setup(session: SetupSession) -> None:
                 errors=app_token_errors,
             )
             app_token = str(values.get(CONF_MUSIC_APP_TOKEN) or "")
-            # a token the user just typed must be positively accepted before we store it
+            # a typed token must be positively accepted, not merely un-rejected
             if await _app_token_accepted(mass, app_token):
                 break
             app_token_errors = {CONF_MUSIC_APP_TOKEN: "invalid_value"}
@@ -117,8 +116,7 @@ async def _app_token_accepted(mass: MusicAssistant, app_token: str) -> bool | No
     """
     Return whether the API accepted the given Apple Music developer (app) token.
 
-    True when Apple accepted it, False when Apple rejected it and None when the check was
-    inconclusive (throttled, server error or unreachable).
+    True when accepted, False when rejected, None when inconclusive (throttled/unreachable).
 
     :param mass: The MusicAssistant instance.
     :param app_token: The developer (app) token to validate.
@@ -136,7 +134,6 @@ async def _app_token_accepted(mass: MusicAssistant, app_token: str) -> bool | No
                 return True
             return False if response.status in (401, 403) else None
     except ClientError, TimeoutError:
-        # a transient network error tells us nothing about the token itself
         return None
 
 

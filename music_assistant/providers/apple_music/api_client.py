@@ -73,11 +73,8 @@ def _raise_on_auth_error(status: int, endpoint: str) -> None:
 class AppleMusicAPIClient:
     """Handles all HTTP communication with the Apple Music API."""
 
-    # period=0.25 -> 4 req/s. Apple throttles per developer account, so these 429s come
-    # from the fleet-wide load on the bundled token rather than from this rate: measured
-    # against the catalog search endpoint, every 429 cleared on a retry, 97% of them
-    # after 0.5s and all within 3.5s. So retry quickly (and let the backoff escalate)
-    # instead of stalling playback for 15s.
+    # period=0.25 -> 4 req/s. Apple throttles per developer account, so 429s follow the
+    # fleet-wide load on the bundled token, not our rate - and they clear within a second.
     throttler = ThrottlerManager(rate_limit=1, period=0.25, initial_backoff=1)
 
     def __init__(self, provider: AppleMusicProvider) -> None:
