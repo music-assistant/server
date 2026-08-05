@@ -81,11 +81,14 @@ from music_assistant.constants import (
     CONF_GROUP_MEMBERS,
     CONF_MAX_VOLUME,
     CONF_MIN_VOLUME,
+    CONF_MUTE_CONTROL,
     CONF_PLAY_MEDIA_OVERRIDES_GROUP,
     CONF_PLAYER_DSP,
     CONF_PLAYERS,
+    CONF_POWER_CONTROL,
     CONF_PROTOCOL_PARENT_ID,
     CONF_REPORTED_MAC,
+    CONF_VOLUME_CONTROL,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.controllers.webserver.helpers.auth_middleware import (
@@ -1825,7 +1828,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         )
 
         # always call update to update any attached players etc.
-        self.update_player_control(player_control.id)
+        self.update_player_control(player_control.id, include_configured=True)
 
     async def register_or_update_player_control(self, player_control: PlayerControl) -> None:
         """Register a new playercontrol on the controller or update existing one."""
@@ -1833,12 +1836,20 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             return
         if player_control.id in self._controls:
             self._controls[player_control.id] = player_control
-            self.update_player_control(player_control.id)
+            self.update_player_control(player_control.id, include_configured=True)
             return
         await self.register_player_control(player_control)
 
-    def update_player_control(self, control_id: str) -> None:
-        """Update playercontrol state."""
+    def update_player_control(self, control_id: str, include_configured: bool = False) -> None:
+        """
+        Refresh the players that use the given player control.
+
+        :param control_id: The control whose state or availability changed.
+        :param include_configured: Also refresh the players that select this control in their
+            config but do not currently resolve to it. Needed when a control (re)appears,
+            because such a player has already fallen back to another control and would
+            otherwise never pick this one back up.
+        """
         if self.mass.closing:
             return
         # update all players that are using this control
@@ -1847,6 +1858,8 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                 player.state.power_control,
                 player.state.volume_control,
                 player.state.mute_control,
+            ) or (
+                include_configured and control_id in self._configured_control_ids(player.player_id)
             ):
                 self.mass.loop.call_soon(player.refresh_state)
 
@@ -2347,6 +2360,14 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             next_item.image, size=512, prefer_stream_server=True
         )
         self._schedule_palette_fetch(player_id, next_url, trigger_update=False)
+
+    def _configured_control_ids(self, player_id: str) -> set[str]:
+        """Return the player control ids the given player's config selects."""
+        return {
+            str(value)
+            for conf_key in (CONF_POWER_CONTROL, CONF_VOLUME_CONTROL, CONF_MUTE_CONTROL)
+            if (value := self.mass.config.get_raw_player_config_value(player_id, conf_key))
+        }
 
     def _get_volume_limits(self, player_id: str) -> tuple[int, int]:
         """Get the configured min/max volume limits for a player."""
