@@ -880,6 +880,22 @@ def test_build_filtergraph_multiple_inputs() -> None:
     )
 
 
+def test_build_filtergraph_input_args_precede_the_input() -> None:
+    """An input's own ffmpeg options are emitted directly before its -i."""
+    result = _build_filtergraph_args(
+        [
+            ComplexFilter(
+                "amix=inputs=2",
+                [ComplexFilterInput("/loop.wav", input_args=["-stream_loop", "-1"])],
+            )
+        ]
+    )
+    assert result == (
+        ["-stream_loop", "-1", "-i", "/loop.wav"],
+        ["-filter_complex", "[0:a][1:a]amix=inputs=2[dsp1]", "-map", "[dsp1]"],
+    )
+
+
 def test_get_ffmpeg_args_uses_af_without_complex_filter() -> None:
     """Plain filter chains keep the -af path (no -filter_complex/-map)."""
     fmt = AudioFormat(
@@ -904,56 +920,6 @@ def test_get_ffmpeg_args_uses_filter_complex_with_complex_filter() -> None:
     # the impulse response is a real input, so it never passes through graph quoting
     assert args.count("-i") == 2
     assert args.index("/ir.wav") > args.index("-i")
-
-
-PASSTHROUGH_ARG_LISTS = ["extra_args", "extra_input_args", "extra_output_args"]
-
-
-def _args_with_caller_filtergraph(
-    input_format: AudioFormat,
-    output_format: AudioFormat,
-    filter_params: list[str],
-    arg_list: str,
-) -> list[str]:
-    """Build ffmpeg args with a caller-owned filter graph in the named passthrough list."""
-    graph = ["-filter_complex", "[0:a][1:a]amix[mixed]"]
-    return get_ffmpeg_args(
-        input_format,
-        output_format,
-        filter_params,
-        extra_args=graph if arg_list == "extra_args" else [],
-        extra_input_args=graph if arg_list == "extra_input_args" else [],
-        extra_output_args=graph if arg_list == "extra_output_args" else [],
-    )
-
-
-@pytest.mark.parametrize("arg_list", PASSTHROUGH_ARG_LISTS)
-def test_get_ffmpeg_args_yields_filtergraph_to_caller(arg_list: str) -> None:
-    """A caller-owned graph keeps our simple -af chain out of the command."""
-    fmt = AudioFormat(
-        content_type=ContentType.PCM_S16LE, sample_rate=48000, bit_depth=16, channels=2
-    )
-
-    args = _args_with_caller_filtergraph(fmt, fmt, ["volume=-1dB"], arg_list)
-
-    assert "-af" not in args
-    assert "volume=-1dB" not in args
-
-
-@pytest.mark.parametrize("arg_list", PASSTHROUGH_ARG_LISTS)
-def test_get_ffmpeg_args_channel_conform_yields_to_caller(arg_list: str) -> None:
-    """The auto-injected channel filter is dropped too when the caller owns the graph."""
-    input_format = AudioFormat(
-        content_type=ContentType.PCM_S16LE, sample_rate=48000, bit_depth=16, channels=1
-    )
-    output_format = AudioFormat(
-        content_type=ContentType.PCM_S16LE, sample_rate=48000, bit_depth=16, channels=2
-    )
-
-    args = _args_with_caller_filtergraph(input_format, output_format, [], arg_list)
-
-    assert "-af" not in args
-    assert not any(arg.startswith("pan=") for arg in args)
 
 
 def _rms_db(path: Path) -> float:

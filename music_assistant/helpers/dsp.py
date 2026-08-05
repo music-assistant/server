@@ -39,10 +39,13 @@ class ComplexFilterInput:
     :param path: Audio file to read.
     :param filters: Optional chain applied to the input before the body consumes
         it (e.g. "aresample=48000").
+    :param input_args: Optional FFmpeg options for reading this input, placed
+        before its ``-i`` (e.g. ["-stream_loop", "-1"]).
     """
 
     path: str
     filters: str = ""
+    input_args: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
