@@ -1673,6 +1673,38 @@ async def test_wait_for_connection_pushes_metadata_immediately() -> None:
 
 
 @pytest.mark.asyncio
+async def test_deferred_volume_resend_reads_the_state_when_it_fires() -> None:
+    """The repeated volume push must carry the volume at fire time, not at connect time."""
+    player = _make_player()
+    player.volume_muted = False
+    player.volume_level = 40
+    stream = AirPlayStream(player)
+    stream._connected.set()  # connection already established
+    player.provider.mass.call_later = MagicMock()
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),  # non-None so the method proceeds
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
+    ):
+        await stream.wait_for_connection()
+        send_command.assert_awaited_with("VOLUME=40")
+        deferred = player.provider.mass.call_later.call_args_list[0].args[1]
+
+        # a volume change between the connect and the resend firing must survive
+        player.volume_level = 75
+        await deferred()
+        send_command.assert_awaited_with("VOLUME=75")
+
+        # ...and so must a mute
+        player.volume_muted = True
+        await deferred()
+
+    send_command.assert_awaited_with("VOLUME=0")
+
+
+@pytest.mark.asyncio
 async def test_wait_for_connection_reports_an_unread_command_pipe() -> None:
     """A binary that never attaches to the command pipe is reported for the player it serves."""
     player = _make_player()
