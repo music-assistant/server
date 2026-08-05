@@ -12,7 +12,7 @@ from music_assistant_models.config_entries import ProviderConfig
 from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState, ProviderType
 from music_assistant_models.errors import ActionUnavailable, InvalidDataError
 
-from music_assistant.controllers.config.controller import ConfigController
+from music_assistant.controllers.config import ConfigController
 from music_assistant.helpers.shared_playback import SharedPlaybackMode
 from music_assistant.providers.party import (
     CONF_ENABLE_ADD_QUEUE,
@@ -347,7 +347,8 @@ async def test_stored_guest_access_value_survives_a_save(guest_access_enabled: b
 @pytest.mark.asyncio
 async def test_unload_revokes_guest_tokens_after_a_real_save_of_guest_access_off() -> None:
     """Switching guest access off and reloading revokes the tokens against real stored config."""
-    plugin = _create_unload_plugin(guest_access_enabled=False)
+    plugin = _create_unload_plugin(guest_access_enabled=True)
+    # the real stored config replaces the stub, so the absent key is what drives the outcome
     plugin.mass.config = await _create_stored_config_controller(guest_access_enabled=False)
 
     await plugin.unload()
