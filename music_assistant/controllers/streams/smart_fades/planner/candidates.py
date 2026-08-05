@@ -325,7 +325,7 @@ class RescueAnchorGenerator(CandidateGenerator):
 
 
 class TrimClosingAnchorGenerator(CandidateGenerator):
-    """Emits the tier ladder at the audible end when a large audible tail is stranded."""
+    """Emits the tier's ladder at that anchor, at the audible end, when a large tail is stranded."""
 
     name = "trim-closing-anchor"
 
@@ -334,10 +334,13 @@ class TrimClosingAnchorGenerator(CandidateGenerator):
         anchor = ctx.audio_end
         if anchor - ctx.default_anchor < _TRIM_CLOSING_MIN_GAP_S:
             return
-        ladder = bars_ladder(ctx, ctx.tier)
+        # the context tier is decided at the early anchor; these rungs sit at the audible
+        # end, where a grid the early window was too short for may be fully blendable
+        _, tier = choose_tier(ctx.outgoing, ctx.incoming, anchor)
+        ladder = bars_ladder(ctx, tier)
         for bars in ladder:
             yield CandidateSpec(
-                tier=ctx.tier,
+                tier=tier,
                 bars=bars,
                 anchor_s=anchor,
                 entry_s=None,

@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import logging
 
-from music_assistant.controllers.streams.smart_fades.models import TransitionStrategy
+from music_assistant.controllers.streams.smart_fades.models import (
+    TransitionStrategy,
+    TransitionTier,
+)
 from music_assistant.controllers.streams.smart_fades.planner.candidates import (
     EnergyLadderGenerator,
     LazyOverlayGenerator,
@@ -166,6 +169,60 @@ def test_trim_closing_not_emitted_for_small_gap() -> None:
     """A tail whose energy anchor already sits near the audible end emits nothing."""
     specs = list(TrimClosingAnchorGenerator().generate(_small_trim_gap_ctx()))
     assert specs == []
+
+
+def _late_blendable_only_ctx() -> TransitionContext:
+    """
+    Build a context whose early window is too sparse to blend but the late one qualifies.
+
+    A full 4/4 grid runs to the end of both 124 BPM decks with matching keys,
+    so the tier at the audible end is FULL_BLEND. The outgoing rms_energy
+    stays loud for only a few bars into the buffer before dropping to a
+    still-audible level and then real silence, so the early mix-out anchor
+    lands with too few downbeats behind it for the early window's tier check
+    to pass, while the audible tail runs on for many more bars past it.
+    """
+    beats = [i * 60 / 124 for i in range(int(240 * 124 / 60))]
+    downbeats = beats[::4]
+    rms_energy = [0.9] * 1550 + [0.25] * (1730 - 1550) + [0.0] * (1800 - 1730)
+    aa_out = AudioAnalysisData(
+        duration=240.0,
+        bpm=124.0,
+        beats=beats,
+        downbeats=downbeats,
+        beats_per_bar=4,
+        rms_energy=rms_energy,
+        key="A",
+        mode="minor",
+        extra_data={},
+    )
+    aa_in = AudioAnalysisData(
+        duration=240.0,
+        bpm=124.0,
+        beats=beats,
+        downbeats=downbeats,
+        beats_per_bar=4,
+        rms_energy=[0.8] * 1800,
+        key="A",
+        mode="minor",
+        extra_data={},
+    )
+    ctx = build_transition_context(aa_out, aa_in, 45.0, logging.getLogger("test"))
+    assert ctx.audio_end - ctx.default_anchor >= 8.0
+    early_downbeats = [d for d in ctx.outgoing.downbeats if d <= ctx.default_anchor]
+    assert len(early_downbeats) < 8
+    return ctx
+
+
+def test_trim_closing_ladder_uses_the_tier_at_its_own_anchor() -> None:
+    """A grid that only becomes blendable at the audible end still earns the long rungs."""
+    ctx = _late_blendable_only_ctx()
+    assert ctx.tier is TransitionTier.QUICK_FADE  # the early window has too few downbeats
+    specs = list(TrimClosingAnchorGenerator().generate(ctx))
+    assert specs
+    assert max(spec.bars for spec in specs) == 8
+    assert all(spec.tier is not TransitionTier.QUICK_FADE for spec in specs)
+    assert all(spec.ideal_bars == 8 for spec in specs)
 
 
 def _ctx_with_late_natural_entry() -> TransitionContext:
