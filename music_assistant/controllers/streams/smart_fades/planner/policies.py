@@ -180,7 +180,7 @@ class OverlapPreferencePolicy(Policy):
 
     rung_penalty_per_step: float = 10.0
     tier_penalty_per_step: float = 15.0
-    lazy_overlay_penalty: float = 2.0
+    lazy_overlay_penalty: float = 0.0
 
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Judge one candidate against the shared per-transition context."""
@@ -204,6 +204,8 @@ class AnchorAlignmentPolicy(Policy):
 
     def evaluate(self, candidate: Candidate, ctx: TransitionContext) -> Verdict:
         """Judge one candidate against the shared per-transition context."""
+        if candidate.spec.strategy is TransitionStrategy.LAZY_OVERLAY:
+            return Verdict.ok()  # an unphrased overlay doesn't pretend beat alignment
         penalty = 0.0
         if not candidate.metrics.anchor_on_downbeat:
             penalty += self.downbeat_penalty
