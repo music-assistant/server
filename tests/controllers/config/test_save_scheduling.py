@@ -93,12 +93,12 @@ async def _change_made_while_saving(
 
     def blocking_save_to_disk(json_data: str) -> None:
         writing.set()
-        release.wait(5)
+        assert release.wait(5), "the test never released the save"
         save_to_disk(json_data)
 
     with patch.object(controller, "_save_to_disk", new=blocking_save_to_disk):
         controller.set("first", 1, immediate=True)
-        await asyncio.to_thread(writing.wait, 5)
+        assert await asyncio.to_thread(writing.wait, 5), "the save never reached the write"
         controller.set("second", 2)
         release.set()
         await asyncio.gather(*mass.tasks)
@@ -250,6 +250,41 @@ async def test_close_saves_change_made_while_a_save_was_writing(tmp_path: Path) 
     assert json.loads(Path(controller.filename).read_text()) == {"first": 1, "second": 2}
 
 
+async def test_close_saves_change_whose_save_waited_for_a_running_one(tmp_path: Path) -> None:
+    """
+    A change whose save queued up behind a running save must survive a stop.
+
+    The running save finishes first and marks the settings saved, but its write was
+    prepared before the change, so the queued save is the one that still owes a write.
+    """
+    controller, mass = _make_controller(tmp_path)
+    save_to_disk = controller._save_to_disk
+    writing = threading.Event()
+    release = threading.Event()
+
+    def blocking_save_to_disk(json_data: str) -> None:
+        writing.set()
+        assert release.wait(5), "the test never released the save"
+        save_to_disk(json_data)
+
+    with patch.object(controller, "_save_to_disk", new=blocking_save_to_disk):
+        controller.set("first", 1, immediate=True)
+        assert await asyncio.to_thread(writing.wait, 5), "the save never reached the write"
+        running = mass.tasks.pop()
+        with patch(
+            "music_assistant.controllers.config.controller.async_json_dumps",
+            new=_stalled_json_dumps,
+        ):
+            controller.set("second", 2, immediate=True)
+            release.set()
+            await running
+            await _cancel_save_tasks(mass)
+
+    await controller.close()
+
+    assert json.loads(Path(controller.filename).read_text()) == {"first": 1, "second": 2}
+
+
 async def test_close_saves_that_change_once_its_timer_has_fired(tmp_path: Path) -> None:
     """
     The same change must also survive once its debounce timer has already fired.
@@ -260,7 +295,7 @@ async def test_close_saves_that_change_once_its_timer_has_fired(tmp_path: Path) 
     controller, mass = _make_controller(tmp_path)
 
     async with _change_made_while_saving(controller, mass):
-        assert controller._save_pending is False
+        assert controller._save_written == controller._save_requested - 1
         assert controller._timer_handle is not None
 
     with patch(

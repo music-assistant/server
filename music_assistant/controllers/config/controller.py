@@ -68,7 +68,8 @@ class ConfigController(
         self._data: dict[str, Any] = {}
         self.filename = os.path.join(self.mass.storage_path, "settings.json")
         self._timer_handle: asyncio.TimerHandle | None = None
-        self._save_pending = False
+        self._save_requested = 0
+        self._save_written = 0
         self._save_lock = asyncio.Lock()
 
     async def setup(self) -> None:
@@ -129,14 +130,11 @@ class ConfigController(
     async def close(self) -> None:
         """Handle logic on server stop."""
         if self._timer_handle is not None:
-            # a change that is still waiting out the debounce delay counts as pending on
-            # its own: a save that was already writing may have cleared the marker for it
             self._timer_handle.cancel()
             self._timer_handle = None
-            self._save_pending = True
-        if self._save_pending:
-            # the save never made it to disk: its task was either cancelled on stop or
-            # never started, so write the data here
+        if self._save_written != self._save_requested:
+            # the latest change never made it to disk: its save is either still waiting
+            # out the debounce delay or was cancelled on stop, so write it here
             await self._async_save()
         LOGGER.debug("Stopped.")
 
@@ -207,7 +205,7 @@ class ConfigController(
             self._timer_handle.cancel()
             self._timer_handle = None
 
-        self._save_pending = True
+        self._save_requested += 1
         if immediate:
             self.mass.loop.create_task(self._async_save())
         else:
@@ -303,19 +301,17 @@ class ConfigController(
     def _start_save(self) -> None:
         """Start the save task, called by the save timer."""
         self._timer_handle = None
-        # re-assert the marker: a save that finished while this timer was armed may have
-        # cleared it for a change that was not part of that write
-        self._save_pending = True
         self.mass.create_task(self._async_save)
 
     async def _async_save(self) -> None:
         """Save persistent data to disk."""
         async with self._save_lock:
+            # remember which change we are about to write: anything requested after this
+            # point is not part of it, and must leave the settings marked as unsaved
+            requested = self._save_requested
             json_data = await async_json_dumps(self._data, indent=True)
             await asyncio.to_thread(self._save_to_disk, json_data)
-            # only clear the marker once the data is actually on disk, so a save that
-            # fails or gets cancelled is still flushed on stop
-            self._save_pending = False
+            self._save_written = requested
         LOGGER.debug("Saved data to persistent storage")
 
     def _save_to_disk(self, json_data: str) -> None:
