@@ -1093,7 +1093,7 @@ class AirPlayStreamSession:
         """
         Return the latest receiver-clock readiness any member reported.
 
-        Members that report nothing are not represented in the result; the
+        Members that report nothing contribute no instant to the maximum; the
         caller anchors those on its lead alone.
 
         :return: Unix epoch ms of the latest projection any member reported, or 0
