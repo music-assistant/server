@@ -265,6 +265,36 @@ async def test_finalize_login_sessions_error(http_session: AsyncMock) -> None:
 
 @patch("music_assistant.providers.tidal.auth_manager.asyncio.sleep")
 @patch("music_assistant.providers.tidal.auth_manager.app_var")
+async def test_poll_device_login_survives_gateway_error(
+    mock_app_var: Mock, mock_sleep: AsyncMock, http_session: AsyncMock
+) -> None:
+    """A transient 5xx mid-poll keeps polling instead of aborting the login."""
+    mock_app_var.side_effect = ["client_id", "client_secret"]
+    device = {"deviceCode": "dev", "interval": 0}
+
+    gateway_error = AsyncMock()
+    gateway_error.status = 502
+    gateway_error.json.side_effect = json.JSONDecodeError("Expecting value", "<html>", 0)
+    ok = AsyncMock()
+    ok.status = 200
+    ok.json.return_value = {"access_token": "a", "refresh_token": "r", "expires_in": 3600}
+    user = AsyncMock()
+    user.status = 200
+    user.json.return_value = {"userId": "u"}
+
+    http_session.post.return_value.__aenter__.side_effect = [gateway_error, ok]
+    http_session.get.return_value.__aenter__.return_value = user
+
+    result = await TidalAuthManager.poll_device_login(http_session, device)
+
+    assert result["access_token"] == "a"
+    assert http_session.post.call_count == 2
+    # slept before each poll: the 502 waited for the next interval, no tight retry
+    assert mock_sleep.await_count == 2
+
+
+@patch("music_assistant.providers.tidal.auth_manager.asyncio.sleep")
+@patch("music_assistant.providers.tidal.auth_manager.app_var")
 async def test_poll_device_login_slow_down(
     mock_app_var: Mock, mock_sleep: AsyncMock, http_session: AsyncMock
 ) -> None:

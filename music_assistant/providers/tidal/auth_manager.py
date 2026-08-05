@@ -203,6 +203,11 @@ class TidalAuthManager:
             async with http_session.post(
                 f"{AUTH_URL}/token", data=data, headers=headers
             ) as response:
+                # A transient gateway error (5xx) must not abort a login the user
+                # may be mid-approval on; keep polling, the setup flow's step
+                # deadline bounds the wait.
+                if response.status >= 500:
+                    continue
                 token_data = await _read_json(response, "Device login")
                 if response.status == 200:
                     return await TidalAuthManager._finalize_login(http_session, token_data)
