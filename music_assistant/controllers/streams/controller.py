@@ -1704,16 +1704,11 @@ class StreamsController(CoreController):
         :param all_ip_addresses: All detected host IP addresses, in ranked order.
         """
         self._bind_ip = bind_ip
-        if self._configured_publish_ip:
-            self.publish_ip = self._configured_publish_ip
-        elif bind_ip and bind_ip not in WILDCARD_BIND_IPS:
-            # only this interface serves the stream, so no other address can reach it
-            self.publish_ip = bind_ip
-        else:
-            self.publish_ip = all_ip_addresses[0]
         self.publish_addresses = _get_publish_addresses(
             bind_ip, self._configured_publish_ip, all_ip_addresses
         )
+        # players that can only be handed one address get the highest ranked one
+        self.publish_ip = self.publish_addresses[0]
         self._base_url = f"http://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
 
 

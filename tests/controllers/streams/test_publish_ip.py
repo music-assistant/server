@@ -51,6 +51,7 @@ async def _setup_streams(
     bind_ip: str,
     publish_ip: str = CONF_VALUE_AUTO,
     all_ip_addresses: tuple[str, ...] = ALL_ADDRESSES,
+    bind_port: int | None = None,
 ) -> None:
     """
     Run the streamserver's setup against the given bind and publish configuration.
@@ -60,10 +61,15 @@ async def _setup_streams(
     :param bind_ip: Address to configure as bind IP.
     :param publish_ip: Address to configure as publish IP ("auto" to have it resolved).
     :param all_ip_addresses: Host addresses the setup detects, in ranked order.
+    :param bind_port: Port to configure as bind port (0 to have the OS assign one).
     """
     config = await mass.config.get_core_config(controller.domain)
     config.update(
-        {CONF_BIND_IP: bind_ip, CONF_PUBLISH_IP: publish_ip, CONF_BIND_PORT: unused_port()}
+        {
+            CONF_BIND_IP: bind_ip,
+            CONF_PUBLISH_IP: publish_ip,
+            CONF_BIND_PORT: unused_port() if bind_port is None else bind_port,
+        }
     )
     with (
         patch(
@@ -118,6 +124,16 @@ async def test_unavailable_bind_ip_publishes_dialable_address(
 
     assert controller.publish_ip == ALL_ADDRESSES[0]
     assert controller.base_url == f"http://{ALL_ADDRESSES[0]}:{controller.publish_port}"
+
+
+async def test_os_assigned_port_lands_in_base_url(
+    controller: StreamsController, mass_minimal: MusicAssistant
+) -> None:
+    """A port the OS only assigns at bind time ends up in the URLs handed to players."""
+    await _setup_streams(controller, mass_minimal, bind_ip=LOOPBACK_IP, bind_port=0)
+
+    assert controller.publish_port != 0
+    assert controller.base_url == f"http://{LOOPBACK_IP}:{controller.publish_port}"
 
 
 async def test_ipv6_publish_ip_is_bracketed_in_base_url(
