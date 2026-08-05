@@ -1682,8 +1682,8 @@ class StreamsController(CoreController):
                     str(err) or err.__class__.__name__,
                     exc_info=err,
                 )
-        # only mark the new network as applied once every provider moved over, so a run
-        # cut short by a second config change is retried on the next reload
+        # only mark the new network as applied once the loop completed, so a run cut short
+        # by a second config change runs again on the next reload
         self._network_fingerprint = current
 
     def _setup_smart_fades_logger(self, config: CoreConfig) -> None:

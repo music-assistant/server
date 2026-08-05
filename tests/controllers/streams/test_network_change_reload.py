@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from music_assistant.controllers.streams.controller import StreamsController
+from music_assistant.models.provider import Provider
 
 BIND_IP = "0.0.0.0"
 PUBLISH_IP = "192.168.1.5"
@@ -111,8 +112,8 @@ async def test_applied_network_is_not_reloaded_again() -> None:
 
 
 @pytest.mark.asyncio
-async def test_interrupted_run_is_retried_on_the_next_reload() -> None:
-    """A second config change cancels the reload, so the new network must not count as applied."""
+async def test_interrupted_run_does_not_mark_the_network_applied() -> None:
+    """A second config change cancels the run, so the next reload goes over them again."""
     controller = _streams_controller(_provider("sendspin", follows_network=True))
     await controller._reload_network_dependent_providers()
     controller.publish_ip = "10.45.0.20"
@@ -120,8 +121,41 @@ async def test_interrupted_run_is_retried_on_the_next_reload() -> None:
     with pytest.raises(asyncio.CancelledError):
         await controller._reload_network_dependent_providers()
     await controller._reload_network_dependent_providers()
-    # the cancelled attempt plus the retry that the stale fingerprint triggered
+    # the cancelled attempt plus the one the still-unapplied network triggered
     assert _reloaded(controller) == ["sendspin", "sendspin"]
+
+
+def test_providers_do_not_follow_the_network_by_default() -> None:
+    """Only a provider that opts in is ever disturbed by a network change."""
+    assert Provider.reload_on_streams_network_change is False
+
+
+@pytest.mark.asyncio
+async def test_unreadable_config_does_not_block_the_others() -> None:
+    """A provider removed while the loop runs no longer has a config to reload it from."""
+    controller = _streams_controller(
+        _provider("snapcast", follows_network=True),
+        _provider("sendspin", follows_network=True),
+    )
+    _mass(controller).config.get_provider_config = AsyncMock(
+        side_effect=[KeyError("gone"), _provider_config("sendspin")]
+    )
+    await controller._reload_network_dependent_providers()
+    controller.publish_ip = "10.45.0.20"
+    await controller._reload_network_dependent_providers()
+    assert _reloaded(controller) == ["sendspin"]
+
+
+@pytest.mark.asyncio
+async def test_failed_reload_still_marks_the_network_applied() -> None:
+    """A provider that stays broken must not re-bounce the others on every later reload."""
+    controller = _streams_controller(_provider("sendspin", follows_network=True))
+    _mass(controller).load_provider_config = AsyncMock(side_effect=RuntimeError("boom"))
+    await controller._reload_network_dependent_providers()
+    controller.publish_ip = "10.45.0.20"
+    await controller._reload_network_dependent_providers()
+    await controller._reload_network_dependent_providers()
+    assert _reloaded(controller) == ["sendspin"]
 
 
 @pytest.mark.asyncio
