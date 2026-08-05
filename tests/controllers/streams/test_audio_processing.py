@@ -552,6 +552,112 @@ def test_player_output_plan_matches_ffmpeg_filters() -> None:
     )
 
 
+def test_player_output_plan_downmixes_to_mono() -> None:
+    """The mono output mode folds both source channels into a single channel."""
+    mass = MagicMock()
+    mass.players.get_player.return_value = None
+    mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
+    mass.config.get_raw_player_config_value.return_value = "mono"
+    audio = StreamsAudio(cast("Any", mass))
+    input_format = _format(ContentType.PCM_F32LE, 48000, 32)
+    output_format = _format(ContentType.FLAC, 48000, 16, channels=1)
+
+    plan = audio.get_player_output_plan(
+        "player-1",
+        input_format,
+        output_format,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    assert plan.filter_params == ["pan=mono|c0=0.5*FL+0.5*FR"]
+    assert plan.output_details.source_channel == AudioChannel.ALL
+
+
+def test_player_output_plan_feeds_every_output_channel() -> None:
+    """A stereo output carries the downmix on both channels instead of being upmixed."""
+    mass = MagicMock()
+    mass.players.get_player.return_value = None
+    mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
+    mass.config.get_raw_player_config_value.return_value = "mono"
+    audio = StreamsAudio(cast("Any", mass))
+    audio_format = _format(ContentType.PCM_F32LE, 48000, 32)
+
+    plan = audio.get_player_output_plan(
+        "player-1",
+        audio_format,
+        audio_format,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    assert plan.filter_params == ["pan=stereo|c0=0.5*FL+0.5*FR|c1=0.5*FL+0.5*FR"]
+    assert plan.output_details.source_channel == AudioChannel.ALL
+
+
+def test_player_output_plan_skips_channel_selection_for_mono_source() -> None:
+    """A single channel source has no channels to select, so it is left untouched."""
+    mass = MagicMock()
+    mass.players.get_player.return_value = None
+    mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
+    mass.config.get_raw_player_config_value.return_value = "mono"
+    audio = StreamsAudio(cast("Any", mass))
+    audio_format = _format(ContentType.PCM_F32LE, 48000, 32, channels=1)
+
+    plan = audio.get_player_output_plan(
+        "player-1",
+        audio_format,
+        audio_format,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    assert plan.filter_params == []
+    assert plan.output_details.source_channel is None
+
+
+def test_player_output_plan_pans_for_the_handoff_format() -> None:
+    """The pan follows the format FFmpeg emits, not a later provider side encode."""
+    mass = MagicMock()
+    mass.players.get_player.return_value = None
+    mass.config.get_player_dsp_config.return_value = DSPConfig(enabled=False)
+    mass.config.get_raw_player_config_value.return_value = "mono"
+    audio = StreamsAudio(cast("Any", mass))
+    pcm_format = _format(ContentType.PCM_F32LE, 48000, 32)
+
+    plan = audio.get_player_output_plan(
+        "player-1",
+        pcm_format,
+        _format(ContentType.FLAC, 48000, 16, channels=1),
+        handoff_format=pcm_format,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    assert plan.filter_params == ["pan=stereo|c0=0.5*FL+0.5*FR|c1=0.5*FL+0.5*FR"]
+
+
+def test_mono_downmix_prevents_bit_perfect_claim() -> None:
+    """A mono downmix alters the samples, even when every format stays stereo."""
+    manager, _mass, _queue_data, streamdetails, output_plan, _lossy_plan = _manager_context()
+    output_plan.output_details.source_channel = AudioChannel.ALL
+
+    manager.update_output(
+        "player-1",
+        output_plan,
+        queue_id="queue-1",
+        session_id="session-1",
+        queue_item_id="item-1",
+    )
+
+    assert streamdetails.audio_processing is not None
+    assert streamdetails.audio_processing.outputs[0].fidelity.bit_perfect is False
+
+
 def test_player_output_plan_excludes_neutral_filters() -> None:
     """A filter that emits no FFmpeg params is left out of the reported chain."""
     mass = MagicMock()
@@ -643,7 +749,7 @@ def test_player_output_plan_prefers_rendering_player_channels() -> None:
     )
 
     assert plan.output_details.source_channel == AudioChannel.FL
-    assert "pan=mono|c0=FL" in plan.filter_params
+    assert "pan=stereo|c0=FL|c1=FL" in plan.filter_params
     # processing attribution still points at the visible parent player
     assert mass.streams.audio_processing.update_output.call_args.args[0] == "parent-1"
 

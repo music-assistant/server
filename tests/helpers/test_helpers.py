@@ -398,11 +398,29 @@ def test_get_zeroconf_args_dual_stack() -> None:
     adapters = [
         _make_mock_adapter("eth0", ["192.168.1.10"], [("fd00::1", 0, 2)]),
     ]
-    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+    with (
+        patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters),
+        patch("music_assistant.helpers.util.sys.platform", "linux"),
+    ):
         result = util.get_zeroconf_args(use_all_interfaces=False)
     assert result["ip_version"] == IPVersion.All
     assert isinstance(result["interfaces"], list)
     assert "192.168.1.10" in result["interfaces"]
+
+
+@pytest.mark.parametrize("platform", ["darwin", "freebsd14"])
+def test_get_zeroconf_args_dual_stack_ipv4_fallback(platform: str) -> None:
+    """Test that a dual-stack host falls back to IPv4-only on macOS/FreeBSD."""
+    adapters = [
+        _make_mock_adapter("eth0", ["192.168.1.10"], [("fd00::1", 0, 2)]),
+    ]
+    with (
+        patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters),
+        patch("music_assistant.helpers.util.sys.platform", platform),
+    ):
+        result = util.get_zeroconf_args(use_all_interfaces=False)
+    assert result["ip_version"] == IPVersion.V4Only
+    assert result["interfaces"] == InterfaceChoice.Default
 
 
 def test_get_zeroconf_args_ipv4_only() -> None:
@@ -444,7 +462,10 @@ def test_get_zeroconf_args_all_interfaces() -> None:
     adapters = [
         _make_mock_adapter("eth0", ["192.168.1.10"], [("fd00::1", 0, 2)]),
     ]
-    with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters):
+    with (
+        patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=adapters),
+        patch("music_assistant.helpers.util.sys.platform", "linux"),
+    ):
         result = util.get_zeroconf_args(use_all_interfaces=True)
     assert result["ip_version"] == IPVersion.All
     assert isinstance(result["interfaces"], list)

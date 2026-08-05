@@ -20,6 +20,28 @@ if TYPE_CHECKING:
     from music_assistant_models.event import MassEvent
 
 
+def utf8_safe(value: object) -> object:
+    """
+    Return ``value`` with any non-UTF-8-encodable strings made encodable.
+
+    Lone surrogates (e.g. from undecodable filesystem paths) are replaced with
+    their backslash escapes so the value survives strict-UTF-8 serialization.
+    """
+    if isinstance(value, str):
+        try:
+            value.encode()
+        except UnicodeEncodeError:
+            return value.encode("utf-8", "backslashreplace").decode()
+        return value
+    if isinstance(value, list):
+        return [utf8_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(utf8_safe(item) for item in value)
+    if isinstance(value, dict):
+        return {utf8_safe(key): utf8_safe(item) for key, item in value.items()}
+    return value
+
+
 def _get_fixture_folder(provider: str | None = None) -> pathlib.Path:
     tests_base = pathlib.Path(__file__).parent
     if provider:
@@ -106,8 +128,7 @@ def use_ephemeral_server_ports() -> Iterator[None]:
         patch("music_assistant.controllers.streams.controller.DEFAULT_PORT", 0),
         patch("music_assistant.controllers.webserver.controller.DEFAULT_HOST", LOOPBACK_IP),
         patch("music_assistant.controllers.streams.controller.DEFAULT_HOST", LOOPBACK_IP),
-        # the streamserver advertises its publish IP independently of the bind IP, so
-        # pin that too to keep the URLs it hands out pointing at the socket it listens on
+        # keep address detection off the host's real interfaces
         patch(
             "music_assistant.controllers.streams.controller.get_ip_addresses",
             AsyncMock(return_value=(LOOPBACK_IP,)),

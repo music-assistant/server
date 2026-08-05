@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.auth import Scope
-from music_assistant_models.enums import MediaType, PlaybackState
-from music_assistant_models.errors import InvalidDataError
+from music_assistant_models.enums import ConfigEntryType, MediaType, PlaybackState
+from music_assistant_models.errors import ActionUnavailable, InvalidDataError
 
 from music_assistant.helpers.shared_playback import SharedPlaybackMode
 from music_assistant.providers.party import (
@@ -209,3 +209,96 @@ async def test_get_party_url_passes_configured_expiry(expiry: int) -> None:
     assert url == "http://example/?join=abc123"
     mock_get_code.assert_awaited_once()
     assert mock_get_code.call_args.kwargs["expires_in_hours"] == expiry
+
+
+def _create_config_entries_plugin(*, guest_access_enabled: bool) -> PartyPlugin:
+    """Create a party plugin for exercising get_config_entries/handle_config_action."""
+    plugin = PartyPlugin.__new__(PartyPlugin)
+    plugin.mass = MagicMock()
+    plugin.mass.players.all_players.return_value = []
+    plugin.config = MagicMock()
+    # an empty (real) dict, so get_config_value falls through to config.get_value below
+    # instead of taking the "typed entry present" branch a MagicMock would fake
+    plugin.config.values = {}
+    plugin.config.get_value.side_effect = {CONF_ENABLE_GUEST_ACCESS: guest_access_enabled}.get
+    return plugin
+
+
+@pytest.mark.parametrize("guest_access_enabled", [True, False])
+@pytest.mark.asyncio
+async def test_get_config_entries_guest_access_is_a_visible_toggle(
+    guest_access_enabled: bool,
+) -> None:
+    """Guest access is a plain visible boolean; the two removed action buttons are gone."""
+    plugin = _create_config_entries_plugin(guest_access_enabled=guest_access_enabled)
+
+    entries = await plugin.get_config_entries()
+    by_key = {entry.key: entry for entry in entries}
+
+    toggle = by_key[CONF_ENABLE_GUEST_ACCESS]
+    assert toggle.type == ConfigEntryType.BOOLEAN
+    assert toggle.hidden is False
+    assert toggle.immediate_apply is True
+    assert "action_enable_guest_access" not in by_key
+    assert "action_disable_guest_access" not in by_key
+    # the two notes still toggle their visibility from the live guest_access_enabled value
+    assert by_key["guest_disabled_note"].hidden is guest_access_enabled
+    assert by_key["guest_enabled_note"].hidden is (not guest_access_enabled)
+
+
+@pytest.mark.asyncio
+async def test_handle_config_action_rejects_former_guest_access_actions() -> None:
+    """With the buttons removed, their old action ids fall through to the base rejection."""
+    plugin = _create_config_entries_plugin(guest_access_enabled=False)
+
+    with pytest.raises(ActionUnavailable):
+        await plugin.handle_config_action("action_enable_guest_access")
+
+
+def _create_unload_plugin(*, guest_access_enabled: bool) -> PartyPlugin:
+    """Create a party plugin wired for a bare unload() call, with no session and no handles."""
+    plugin = PartyPlugin.__new__(PartyPlugin)
+    plugin.mass = MagicMock()
+    plugin.mass.config.get_raw_provider_config_value.return_value = guest_access_enabled
+    plugin.logger = MagicMock()
+    plugin.config = MagicMock()
+    plugin.config.instance_id = "party--test"
+    plugin._unregister_handles = []
+    plugin._session = None
+    plugin._session_lock = asyncio.Lock()
+    plugin._revoke_guest_tokens = AsyncMock()  # type: ignore[method-assign]
+    return plugin
+
+
+@pytest.mark.asyncio
+async def test_unload_revokes_guest_tokens_when_guest_access_is_off() -> None:
+    """Switching guest access off makes the ensuing unload revoke the guest tokens."""
+    plugin = _create_unload_plugin(guest_access_enabled=False)
+
+    await plugin.unload()
+
+    cast("AsyncMock", plugin._revoke_guest_tokens).assert_awaited_once()
+    # the live stored value is what decides, not the config snapshot taken at init
+    cast("MagicMock", plugin.mass.config.get_raw_provider_config_value).assert_called_once_with(
+        "party--test", CONF_ENABLE_GUEST_ACCESS, default=True
+    )
+
+
+@pytest.mark.asyncio
+async def test_unload_keeps_guest_tokens_while_guest_access_is_on() -> None:
+    """A plain reload with guest access still on leaves the guest tokens intact."""
+    plugin = _create_unload_plugin(guest_access_enabled=True)
+
+    await plugin.unload()
+
+    cast("AsyncMock", plugin._revoke_guest_tokens).assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unload_revokes_guest_tokens_on_removal() -> None:
+    """Removing the plugin revokes the guest tokens even with guest access still on."""
+    plugin = _create_unload_plugin(guest_access_enabled=True)
+
+    await plugin.unload(is_removed=True)
+
+    cast("AsyncMock", plugin._revoke_guest_tokens).assert_awaited_once()

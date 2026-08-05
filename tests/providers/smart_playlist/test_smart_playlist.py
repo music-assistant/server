@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -1976,6 +1977,44 @@ async def test_generate_ai_description_provider_error_returns_none(tmp_path: Any
     result = await plugin._generate_ai_description("X", SmartPlaylistRules(favorites_only=True))
 
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_generate_ai_description_stalled_provider_returns_none(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A stalled AI provider gives up instead of leaving the task pending forever."""
+    monkeypatch.setattr("music_assistant.providers.smart_playlist.AI_QUERY_TIMEOUT_SECONDS", 0.01)
+
+    async def _answers_too_late(*_args: Any, **_kwargs: Any) -> str:
+        await asyncio.sleep(5)
+        return "A mellow mix for the evening."
+
+    ai_provider = _make_ai_provider()
+    ai_provider.ai_query = AsyncMock(side_effect=_answers_too_late)
+    plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_provider=ai_provider)
+    caplog.set_level(logging.DEBUG, logger=plugin.logger.name)
+
+    result = await plugin._generate_ai_description("X", SmartPlaylistRules(favorites_only=True))
+
+    assert result is None
+    assert "no response within" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_generate_ai_description_reports_a_provider_side_timeout_as_a_failure(
+    tmp_path: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A timeout raised by the provider itself is not reported as our own cap."""
+    ai_provider = _make_ai_provider()
+    ai_provider.ai_query = AsyncMock(side_effect=TimeoutError)
+    plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_provider=ai_provider)
+    caplog.set_level(logging.DEBUG, logger=plugin.logger.name)
+
+    result = await plugin._generate_ai_description("X", SmartPlaylistRules(favorites_only=True))
+
+    assert result is None
+    assert "no response within" not in caplog.text
 
 
 @pytest.mark.asyncio

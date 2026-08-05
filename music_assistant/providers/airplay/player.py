@@ -476,15 +476,15 @@ class AirPlayPlayer(Player):
                 media,
             )
             await stream_session.start(audio_source)
-            self._attr_elapsed_time = time.time() - stream_session.start_time
-            self._attr_elapsed_time_last_updated = time.time()
             self._transitioning = False
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
+        # Record before sending: the connect-time volume resync reads this attribute,
+        # so a send that suspends first would let the resync push the stale level.
+        self._attr_volume_level = volume_level
         if self.stream and self.stream.running and self.volume_muted is not True:
             await self.stream.send_cli_command(f"VOLUME={volume_level}")
-        self._attr_volume_level = volume_level
         self.update_state()
         # store last state in playerconfig
         self.mass.config.set_raw_player_config_value(

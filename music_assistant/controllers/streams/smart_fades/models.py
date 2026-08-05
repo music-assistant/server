@@ -242,6 +242,8 @@ class TransitionStrategy(StrEnum):
     ENERGY_ALIGNED = "energy_aligned"
     # every phrased candidate collided; shipped the click-free equal-power fallback
     SHORT_VOCAL_HANDOFF = "short_vocal_handoff"
+    # grid unusable but both decks ambient: long unphrased equal-power overlay
+    LAZY_OVERLAY = "lazy_overlay"
 
 
 @dataclass(frozen=True, slots=True)

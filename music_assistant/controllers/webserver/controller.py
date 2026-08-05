@@ -114,6 +114,20 @@ def _get_publish_addresses(
     return addresses
 
 
+def _get_internal_connect_ip(bind_ip: str | None, publish_ip: str) -> str:
+    """
+    Return the IP address to reach a server running on this host.
+
+    :param bind_ip: The server's configured bind IP (None or a wildcard means all interfaces).
+    :param publish_ip: The server's resolved publish IP.
+    """
+    if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
+        # bound to one specific interface, so loopback would not reach the server
+        return bind_ip
+    # Use IPv6 loopback if publish_ip is IPv6 (indicates IPv6-only host)
+    return "::1" if ":" in publish_ip else "127.0.0.1"
+
+
 def _locale_from_request(request: web.Request) -> str | None:
     """
     Determine the UI locale for an HTTP request from the standard ``Accept-Language`` header.
@@ -144,6 +158,10 @@ class WebserverController(CoreController):
         self.clients: set[WebsocketClientHandler] = set()
         # the URL that the "auto" base_url setting resolves to, detected at setup
         self._auto_base_url: str = ""
+        # whether SSL is switched on in the config, resolved at setup
+        self._ssl_configured: bool = False
+        # whether the webserver actually serves TLS, resolved at setup
+        self._ssl_active: bool = False
         self.bind_ip: str | None = None
         self.publish_addresses: list[str] = []
         self.manifest.name = "Web Server (frontend and api)"
@@ -167,24 +185,31 @@ class WebserverController(CoreController):
         return base_url.removesuffix("/")
 
     @property
+    def internal_base_url(self) -> str:
+        """Return the URL to reach this webserver's own API from this host."""
+        # the advertised address is not necessarily dialable here: a configured base URL
+        # routes out through DNS and a reverse proxy just to come back in, and a published
+        # IP need not exist on this host at all (e.g. a container or NAT setup), so derive
+        # the address from what the webserver actually binds to
+        connect_ip = _get_internal_connect_ip(self.bind_ip, self.publish_ip)
+        protocol = "https" if self._ssl_active else "http"
+        return f"{protocol}://{format_ip_for_url(connect_ip)}:{self.publish_port}"
+
+    @property
     def internal_sendspin_url(self) -> str:
         """Return the URL to reach the in-process Sendspin server from this host."""
         # the advertised address is not necessarily dialable here (e.g. a container or
         # NAT setup), so derive the address from what the Sendspin server actually binds to
-        bind_ip = self.mass.streams.bind_ip
-        if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
-            # bound to one specific interface, so loopback would not reach the server
-            connect_ip = bind_ip
-        else:
-            # Use IPv6 loopback if publish_ip is IPv6 (indicates IPv6-only host)
-            connect_ip = "::1" if ":" in str(self.mass.streams.publish_ip) else "127.0.0.1"
+        connect_ip = _get_internal_connect_ip(
+            self.mass.streams.bind_ip, str(self.mass.streams.publish_ip)
+        )
         return f"ws://{format_ip_for_url(connect_ip)}:{SENDSPIN_SERVER_PORT}/sendspin"
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         return await self._build_config_entries()
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
         """Handle a one-shot action button press and re-render the config entries."""
         if action == CONF_ACTION_VERIFY_SSL:
             # the certificate/key are read from the stored config, so they must be saved
@@ -262,12 +287,11 @@ class WebserverController(CoreController):
         await self.auth.setup()
         # start the webserver
         all_ip_addresses = await get_ip_addresses(include_ipv6=True)
-        default_publish_ip = all_ip_addresses[0]
         if self.mass.running_as_hass_addon:
             # if we're running on the HA supervisor we start an additional TCP site
             # on the internal ("172.30.32.) IP for the HA ingress proxy
             ingress_host = next(
-                (x for x in all_ip_addresses if x.startswith("172.30.32.")), default_publish_ip
+                (x for x in all_ip_addresses if x.startswith("172.30.32.")), all_ip_addresses[0]
             )
             ingress_tcp_site_params = (ingress_host, INGRESS_SERVER_PORT)
         else:
@@ -276,32 +300,24 @@ class WebserverController(CoreController):
         assert isinstance(port_value, int)
         self.publish_port = port_value
         bind_ip = cast("str | None", config.get_value(CONF_BIND_IP))
-        self.bind_ip = bind_ip
-        if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
-            self.publish_ip = bind_ip
-        else:
-            self.publish_ip = default_publish_ip
-        self.publish_addresses = _get_publish_addresses(bind_ip, self.publish_ip, all_ip_addresses)
-        ssl_enabled = config.get_value(CONF_ENABLE_SSL, False)
-        # resolve the URL that the "auto" base_url default (or an unset value) translates to
-        protocol = "https" if ssl_enabled else "http"
-        self._auto_base_url = (
-            f"{protocol}://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
-        )
-
         # Create SSL context if SSL is enabled
         ssl_context = None
-        if ssl_enabled:
+        self._ssl_configured = bool(config.get_value(CONF_ENABLE_SSL, False))
+        if self._ssl_configured:
             ssl_context = await create_server_ssl_context(
                 str(config.get_value(CONF_SSL_CERTIFICATE) or ""),
                 str(config.get_value(CONF_SSL_PRIVATE_KEY) or ""),
                 logger=self.logger,
             )
+        # a missing or invalid certificate falls back to plain HTTP, so every URL we hand
+        # out must follow the context that was actually created, not the configured value
+        self._ssl_active = ssl_context is not None
+        protocol = "https" if self._ssl_active else "http"
+        self._resolve_publish_state(bind_ip, all_ip_addresses, protocol)
 
         await self._server.setup(
             bind_ip=bind_ip,
             bind_port=self.publish_port,
-            base_url=self._auto_base_url,
             static_routes=routes,
             # add assets subdir as static_content
             static_content=("/assets", os.path.join(frontend_dir, "assets"), "assets"),
@@ -310,10 +326,10 @@ class WebserverController(CoreController):
             app_state={"mass": self.mass},
             ssl_context=ssl_context,
         )
-        # adopt the port the server actually bound to: a configured port of 0 is only
-        # resolved by the OS at bind time
+        # adopt what the server actually bound to: a configured port of 0 is only resolved
+        # by the OS at bind time and an unavailable bind IP falls back to all interfaces
         self.publish_port = cast("int", self._server.port)
-        self._auto_base_url = self._server.base_url
+        self._resolve_publish_state(self._server.bind_ip, all_ip_addresses, protocol)
         base_url = self.base_url
         # print a big fat message in the log where the webserver is running
         # because this is a common source of issues for people with more complex setups
@@ -453,6 +469,28 @@ class WebserverController(CoreController):
                 await resp.write(chunk)
         return resp
 
+    def _resolve_publish_state(
+        self, bind_ip: str | None, all_ip_addresses: tuple[str, ...], protocol: str
+    ) -> None:
+        """
+        Resolve the addresses and base URL to advertise for the given bind address.
+
+        Reads ``self.publish_port``, so set that first.
+
+        :param bind_ip: Address the webserver binds to (None or a wildcard means all interfaces).
+        :param all_ip_addresses: All detected host IP addresses, in ranked order.
+        :param protocol: URL scheme the webserver serves.
+        """
+        self.bind_ip = bind_ip
+        if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
+            self.publish_ip = bind_ip
+        else:
+            self.publish_ip = all_ip_addresses[0]
+        self.publish_addresses = _get_publish_addresses(bind_ip, self.publish_ip, all_ip_addresses)
+        self._auto_base_url = (
+            f"{protocol}://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
+        )
+
     async def _build_config_entries(self, ssl_verify_result: str = "") -> tuple[ConfigEntry, ...]:
         """Build this module's config entries, optionally carrying an SSL verify result."""
         ip_addresses = await get_ip_addresses(include_ipv6=True)
@@ -476,12 +514,23 @@ class WebserverController(CoreController):
                 default_value=DEFAULT_SERVER_PORT,
                 requires_reload=True,
             ),
+            # the two alerts are mutually exclusive: the generic one while SSL is switched off,
+            # and the SSL specific one when a certificate failed to load and left the webserver
+            # on plain HTTP
             ConfigEntry(
                 key="webserver_warn",
                 type=ConfigEntryType.ALERT,
                 required=False,
+                hidden=self._ssl_configured,
                 depends_on=CONF_ENABLE_SSL,
                 depends_on_value=False,
+            ),
+            ConfigEntry(
+                key="ssl_inactive_warn",
+                type=ConfigEntryType.ALERT,
+                required=False,
+                hidden=not self._ssl_configured or self._ssl_active,
+                depends_on=CONF_ENABLE_SSL,
             ),
             ConfigEntry(
                 key=CONF_ENABLE_SSL,
