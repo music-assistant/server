@@ -116,7 +116,9 @@ class TransitionContext:
     # no explicit anchor cues the tail
     default_anchor: float
     # the pure full-band mix-out anchor, kept as a diagnostic fact only: no
-    # generator anchors here (a full-band variant would defeat the kick fold)
+    # generator anchors here (a full-band variant would defeat the kick fold;
+    # trim-closing may still anchor later when >=8s of audible tail would
+    # otherwise be stranded)
     mix_out_anchor: float | None
     kick_anchor: float | None
     fade_onset: float | None

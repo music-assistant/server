@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from .index_io import save_index
 from .similarity import ScoredCandidate
 
 if TYPE_CHECKING:
@@ -317,7 +318,7 @@ class ClapIndex:
             encoding="utf-8",
         )
         tmp_keys_path.replace(self._keys_path)
-        self._index.save(str(self._index_path))
+        save_index(self._index, self._index_path)
         self._logger.debug(
             "Saved CLAP index to %s (%d vectors)",
             self._index_path,

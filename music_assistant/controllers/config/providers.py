@@ -218,7 +218,10 @@ class ProviderConfigMixin:
         self, instance_id: str, action: str
     ) -> list[ConfigEntry]:
         """
-        Run a one-shot action button from a provider's options and return the entries.
+        Run a one-shot action button from a provider's options.
+
+        An empty list means the action ran with nothing to re-render; a non-empty list
+        holds the entries the options page should re-render with.
 
         :param instance_id: The provider instance id (must be loaded).
         :param action: The action id of the pressed button.
@@ -227,9 +230,9 @@ class ProviderConfigMixin:
         if provider is None:
             msg = f"Provider {instance_id} is not loaded"
             raise ActionUnavailable(msg)
-        return self._wrap_provider_config_entries(
-            provider, await provider.handle_config_action(action)
-        )
+        if (result := await provider.handle_config_action(action)) is None:
+            return []
+        return self._wrap_provider_config_entries(provider, result)
 
     def seed_stored_config_values(self, config: ProviderConfig) -> None:
         """

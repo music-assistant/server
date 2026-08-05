@@ -446,7 +446,10 @@ async def get_ffmpeg_overlay_stream(
             "1",
         ]
     overlay_input_args += ["-stream_loop", "-1", "-i", overlay_input]
-    channel_layout = "mono" if pcm_format.channels == 1 else "stereo"
+    # conform the overlay to the main stream's layout so amix sees two matching inputs;
+    # an unnameable count is left to FFmpeg's own negotiation
+    layout = _get_channel_layout_name(pcm_format.channels)
+    conform_filter = f",aformat=channel_layouts={layout}" if layout else ""
     # silenceremove strips a near-silent intro from the overlay source (e.g. a soft
     # fade-in) so it becomes audible right away; it is a no-op for sources that
     # already start at full level. It runs before volume so detection is based on
@@ -454,8 +457,8 @@ async def get_ffmpeg_overlay_stream(
     filter_complex = (
         f"[0:a]silenceremove=start_periods=1:start_threshold=-40dB,"
         f"volume={overlay_volume / 100},"
-        f"aresample={pcm_format.sample_rate},"
-        f"aformat=channel_layouts={channel_layout}[overlay];"
+        f"aresample={pcm_format.sample_rate}"
+        f"{conform_filter}[overlay];"
         "[1:a][overlay]amix=inputs=2:duration=first:normalize=0[mixed]"
     )
     async with FFMpeg(
@@ -582,10 +585,7 @@ def get_ffmpeg_args(
                 input_args += ["-seekable", "0"]
         if input_format.content_type.is_pcm():
             input_args += [
-                "-ac",
-                str(input_format.channels),
-                "-channel_layout",
-                "mono" if input_format.channels == 1 else "stereo",
+                *get_ffmpeg_channel_args(input_format),
                 "-ar",
                 str(input_format.sample_rate),
                 "-acodec",
@@ -600,14 +600,9 @@ def get_ffmpeg_args(
         input_args += ["-i", input_path]
 
     # collect output args
-    output_args = [
-        "-ac",
-        str(output_format.channels),
-        "-channel_layout",
-        "mono" if output_format.channels == 1 else "stereo",
-    ]
+    output_args = get_ffmpeg_channel_args(output_format)
     if output_path.upper() == "NULL":
-        # devnull stream
+        # devnull stream: nothing is encoded here, so there is no channel count to declare
         output_path = "-"
         output_args = ["-f", "null"]
     elif output_format.content_type.is_pcm():
@@ -621,7 +616,8 @@ def get_ffmpeg_args(
             output_format.content_type.value,
         ]
     elif output_format.content_type == ContentType.NUT:
-        # passthrough-mode (for creating the cache) using NUT container
+        # passthrough-mode (for creating the cache) using NUT container.
+        # -acodec copy leaves the source untouched, so there is no channel count to declare
         output_args = [
             "-vn",
             "-dn",
@@ -632,12 +628,12 @@ def get_ffmpeg_args(
             "nut",
         ]
     elif output_format.content_type == ContentType.AAC:
-        output_args = ["-f", "adts", "-c:a", "aac", "-b:a", "256k"]
+        output_args += ["-f", "adts", "-c:a", "aac", "-b:a", "256k"]
     elif output_format.content_type == ContentType.MP3:
-        output_args = ["-f", "mp3", "-b:a", f"{DEFAULT_MP3_BIT_RATE}k"]
+        output_args += ["-f", "mp3", "-b:a", f"{DEFAULT_MP3_BIT_RATE}k"]
     elif output_format.content_type == ContentType.WAV:
         pcm_format = ContentType.from_bit_depth(output_format.bit_depth)
-        output_args = [
+        output_args += [
             "-ar",
             str(output_format.sample_rate),
             "-acodec",
@@ -665,14 +661,10 @@ def get_ffmpeg_args(
     # append (final) output path at the end of the args
     output_args.append(output_path)
 
-    # edge case: source file is not stereo - downmix to stereo. a single channel
-    # output needs this too, otherwise a mono/left/right pan filter would only see
-    # the front channels and silently drop the center and surround content.
-    if input_format.channels > 2 and output_format.channels <= 2:
-        filter_params = [
-            "pan=stereo|FL=1.0*FL+0.707*FC+0.707*SL+0.707*LFE|FR=1.0*FR+0.707*FC+0.707*SR+0.707*LFE",
-            *filter_params,
-        ]
+    # runs ahead of the caller's own filters, so channel-aware ones such as the
+    # per-channel preamp see the conformed layout instead of the source layout
+    if channel_filter := _get_channel_conform_filter(input_format.channels, output_format.channels):
+        filter_params = [channel_filter, *filter_params]
 
     if resample_filter := get_ffmpeg_resample_filter(
         input_format,
@@ -689,6 +681,20 @@ def get_ffmpeg_args(
     )
 
     return generic_args + input_args + extra_input_args + filter_args + extra_args + output_args
+
+
+def get_ffmpeg_channel_args(audio_format: AudioFormat) -> list[str]:
+    """
+    Return the FFmpeg channel count/layout arguments for the given audio format.
+
+    The layout is only named for channel counts that map to exactly one layout.
+
+    :param audio_format: Format to describe.
+    """
+    args = ["-ac", str(audio_format.channels)]
+    if layout := _get_channel_layout_name(audio_format.channels):
+        args += ["-channel_layout", layout]
+    return args
 
 
 async def check_ffmpeg_version() -> None:
@@ -734,6 +740,46 @@ async def check_ffmpeg_version() -> None:
         version,
         "with libsoxr support" if libsoxr_support else "",
     )
+
+
+def _get_channel_layout_name(channels: int) -> str | None:
+    """
+    Return FFmpeg's layout name for a channel count, or None when it has no unambiguous one.
+
+    :param channels: Number of channels to name.
+    """
+    if channels == 1:
+        return "mono"
+    if channels == 2:
+        return "stereo"
+    # a wider count maps to several possible layouts (5.1 vs 5.1(side), 7.1 vs 7.1(wide), ...)
+    # and a named layout wins over -ac, so naming the wrong one would make FFmpeg misread the
+    # stream as that layout. Left unnamed, it derives the default for the count itself.
+    return None
+
+
+def _get_channel_conform_filter(input_channels: int, output_channels: int) -> str | None:
+    """
+    Return the filter that maps the source onto the output channel count, if one is needed.
+
+    :param input_channels: Channel count entering FFmpeg.
+    :param output_channels: Channel count the output is encoded at.
+    :return: The filter to run before any caller supplied ones, or None when the
+        source already carries the requested channel count.
+    """
+    if input_channels > 2 and output_channels <= 2:
+        # a single channel output needs this fold too, otherwise a mono/left/right pan
+        # would only see the front channels and silently drop the center and surround.
+        # aformat leaves the rematrix to ffmpeg, which picks the correct coefficients
+        # for whatever layout the input turns out to have (and, for an integer output,
+        # scales them to stay clip-safe). A fixed pan expression, naming channels that
+        # a given layout may not even have, can do neither.
+        return "aformat=channel_layouts=stereo"
+    if input_channels == 1 and output_channels > 1:
+        # duplicate rather than leaving the widening to ffmpeg, whose rematrix
+        # spreads the source at 1/sqrt(2) per channel and so costs 3 dB
+        return "pan=stereo|c0=c0|c1=c0"
+    return None
 
 
 def _build_filtergraph_args(

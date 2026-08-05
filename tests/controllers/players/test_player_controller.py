@@ -1627,6 +1627,47 @@ class TestMuteControlGuard:
             await controller.cmd_volume_mute("player_1", False)
         assert ATTR_MUTE_LOCK not in player.extra_data
 
+    async def test_failed_mute_sets_no_mute_lock(self, mock_mass: MagicMock) -> None:
+        """A grouped player whose mute command failed is not left holding a mute lock."""
+        control = PlayerControl(
+            id="ext_mute",
+            provider="test",
+            name="External Mute",
+            supports_mute=False,
+        )
+        controller, player = self._make_player(
+            mock_mass,
+            mute_control="ext_mute",
+            volume_control=PLAYER_CONTROL_NONE,
+            controls={"ext_mute": control},
+        )
+        player.state.synced_to = "leader"
+
+        with pytest.raises(UnsupportedFeaturedException):
+            await controller.cmd_volume_mute("player_1", True)
+        assert ATTR_MUTE_LOCK not in player.extra_data
+
+    async def test_failed_mute_keeps_existing_mute_lock(self, mock_mass: MagicMock) -> None:
+        """A failed mute leaves the lock of an earlier successful mute in place."""
+        control = PlayerControl(
+            id="ext_mute",
+            provider="test",
+            name="External Mute",
+            supports_mute=False,
+        )
+        controller, player = self._make_player(
+            mock_mass,
+            mute_control="ext_mute",
+            volume_control=PLAYER_CONTROL_NONE,
+            controls={"ext_mute": control},
+        )
+        player.state.synced_to = "leader"
+        player.extra_data[ATTR_MUTE_LOCK] = True
+
+        with pytest.raises(UnsupportedFeaturedException):
+            await controller.cmd_volume_mute("player_1", True)
+        assert player.extra_data[ATTR_MUTE_LOCK] is True
+
 
 class TestGroupMuteMemberFilter:
     """Group mute skips members that have no mute control of their own."""
@@ -1651,6 +1692,64 @@ class TestGroupMuteMemberFilter:
 
         await controller.cmd_group_volume_mute("leader", True)
         leader_mute.assert_awaited_once_with(True)
+
+
+class TestGroupPlayerMuteRedirect:
+    """A mute command on a group player is handled at group level."""
+
+    def _setup(self, mock_mass: MagicMock) -> tuple[PlayerController, MockPlayer, MockPlayer]:
+        """Build a controller with a group player holding a single mute capable member."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        group = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
+        group._attr_supported_features = {PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE}
+        group._attr_group_members = ["member"]
+        member = MockPlayer(provider, "member", "Member")
+        member._attr_supported_features = {PlayerFeature.VOLUME_SET, PlayerFeature.VOLUME_MUTE}
+        controller._players = {"group": group, "member": member}
+        mock_mass.players = controller
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        for player in (group, member):
+            player.set_initialized()
+            player.update_state(signal_event=False)
+        return controller, group, member
+
+    async def test_mute_on_group_player_is_forwarded_to_members(self, mock_mass: MagicMock) -> None:
+        """A group player has no mute of its own, so the members must be muted instead."""
+        controller, _group, member = self._setup(mock_mass)
+        member_mute = AsyncMock()
+        member.volume_mute = member_mute  # type: ignore[method-assign]
+
+        await controller.cmd_volume_mute("group", True)
+
+        member_mute.assert_awaited_once_with(True)
+
+    async def test_mute_on_group_player_without_own_mute_control(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A group that has no mute control of its own must still mute its members."""
+        controller, group, member = self._setup(mock_mass)
+        group._attr_supported_features = {PlayerFeature.VOLUME_SET}
+        group._cache.clear()
+        group.update_state(signal_event=False)
+        assert group.mute_control == PLAYER_CONTROL_NONE
+        member_mute = AsyncMock()
+        member.volume_mute = member_mute  # type: ignore[method-assign]
+
+        await controller.cmd_volume_mute("group", True)
+
+        member_mute.assert_awaited_once_with(True)
+
+    async def test_mute_on_group_player_without_mute_capable_members(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A group whose members cannot mute must not raise, just like group mute itself."""
+        controller, _group, member = self._setup(mock_mass)
+        member._attr_supported_features = {PlayerFeature.VOLUME_SET}
+        member._cache.clear()
+        member.update_state(signal_event=False)
+
+        await controller.cmd_volume_mute("group", True)
 
 
 class TestCurrentMediaTimeUpdates:

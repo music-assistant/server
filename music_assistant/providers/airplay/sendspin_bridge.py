@@ -846,7 +846,7 @@ class SendspinAirPlayBridge:
         # Always a join: the Sendspin timeline is the group's, never the bridge's
         # to set, so the binary must hold its ack until the receiver clock
         # verification resolves and report the instant it really scheduled.
-        actual = await stream.start(commanded_ms, join=True)
+        acked_adjusted = await stream.start(commanded_ms, join=True)
 
         # The ack can be held for seconds, so re-check ownership before touching
         # any state a newer stream start may already own.
@@ -855,14 +855,6 @@ class SendspinAirPlayBridge:
             or self._airplay_stream is not stream
         ):
             return False
-        if actual is None:
-            self.logger.warning(
-                "AirPlay start for %s was not acknowledged, trusting the commanded "
-                "instant %d - playback may start slightly late",
-                self.airplay_player.display_name,
-                commanded_ms,
-            )
-        acked_adjusted = actual if actual is not None else commanded_ms
         # The command carries the device's sync_adjust; the group timeline does not.
         acked_timeline_ms = acked_adjusted - adjust_ms
         sendspin_now_us = self.sendspin_server.clock.now_us()

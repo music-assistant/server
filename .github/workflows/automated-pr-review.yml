@@ -1,0 +1,99 @@
+name: Automated PR Review (manual)
+
+# Reviews a PR against the project's coding standards and posts the result as an automated review.
+# Manual-only for now (workflow_dispatch) so it can be run against existing PRs to evaluate the
+# output before enabling it automatically. To make it automatic later, add a `pull_request`
+# trigger and disable Copilot's auto-review ruleset.
+
+on:  # yamllint disable-line rule:truthy
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number to review"
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  copilot-requests: write
+
+jobs:
+  pr-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install GitHub Copilot CLI
+        run: npm install -g @github/copilot
+
+      # Mint a token that posts the review as musicassistant-bot[bot]. Model access is separate
+      # (the built-in token + copilot-requests below). Pinned to the SHA the repo already uses.
+      - name: Create Music Assistant Bot token
+        id: bot
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.MUSIC_ASSISTANT_BOT_CLIENT_ID }}
+          private-key: ${{ secrets.MUSIC_ASSISTANT_BOT_PRIVATE_KEY }}
+
+      # The standards doc is read in place at .github/pr-review/standards.md. The corpus of past
+      # review discussions is committed gzipped (public PR/issue comments); decompress it for grep.
+      - name: Decompress the review corpus (bundled in-repo)
+        run: gunzip -c .github/pr-review/review-corpus.jsonl.gz > review-corpus.jsonl
+
+      - name: Get PR diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # Passed via env and validated, never inlined into the shell command (untrusted input).
+          PR: ${{ inputs.pr }}
+        run: |
+          case "$PR" in
+            ''|*[!0-9]*)
+              echo "::error::pr input must be a positive integer"
+              exit 1
+              ;;
+          esac
+          gh pr diff "$PR" --repo "$GITHUB_REPOSITORY" > pr.diff
+
+      - name: Review via Copilot CLI
+        env:
+          # Model access: with `copilot-requests: write` (permissions above), the built-in token
+          # authenticates Copilot inference and billing flows to the ORG's Copilot plan — no seat
+          # PAT. Requires an org-owned repo with the org's Copilot policy enabled. On a personal
+          # fork this won't bill the org; set this to a Copilot-seated PAT instead.
+          COPILOT_GITHUB_TOKEN: ${{ github.token }}
+          # Set repo/org variable REVIEW_MODEL to your exact Claude id (`copilot` -> /model to list).
+          REVIEW_MODEL: ${{ vars.REVIEW_MODEL || 'claude-opus-4.8' }}
+        run: |
+          cat > prompt.txt <<'EOF'
+          You are an automated PR reviewer for this project. Read .github/pr-review/standards.md for
+          the project's coding standards and the review protocol, then review the diff in ./pr.diff.
+          Walk the WHOLE diff. When a standard does not cover something you see, grep
+          ./review-corpus.jsonl (case-insensitive keyword alternation) for a prior project decision
+          and cite its link. Present every finding as a project standard — do NOT name individual
+          maintainers. When a finding's fix is small and self-contained — a correct edit to line(s)
+          already in the diff (a log call where a logger is in scope, wrapping a return,
+          `raise X from err`, a guard clause) — set "suggestion" to the exact replacement for the
+          line at "line" (keep indentation, no diff +/- prefix; may span multiple lines), and read
+          surrounding code so it is idiomatic. Leave "suggestion" null when unsure it is exactly
+          right, or when the fix needs a new file, a new import elsewhere, or edits in more than one
+          place. For a missing-tests finding you MAY set "scaffold" to a short pytest starter
+          (imports + 1-2 test functions with realistic names and assertions) — a copy-paste
+          starting point, NOT applied automatically — otherwise null.
+          Output ONLY a JSON array of findings; each element:
+          {"severity":"CRITICAL|PROBLEM|SUGGESTION","path":"file/path","line":<int or null>,"issue":"1-2 sentences","principle":"the project standard","citation_url":"source link","suggestion":"<replacement, or null>","scaffold":"<pytest starter, or null>"}
+          No prose outside the JSON array. Never invent a standard or citation.
+          EOF
+          # Minimal tools: read (diff + standards) and grep (history search) only — no write, no network.
+          copilot -p "$(cat prompt.txt)" -s --model "$REVIEW_MODEL" \
+            --allow-tool 'shell(grep:*)' --allow-tool 'read' \
+            --no-ask-user | tee findings.json
+
+      - name: Post the review as the bot
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr }}
+        run: python3 .github/scripts/post_pr_review.py findings.json
