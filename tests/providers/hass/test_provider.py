@@ -29,6 +29,7 @@ from music_assistant.providers.hass import (
     setup,
 )
 from music_assistant.providers.hass.constants import MediaPlayerEntityFeature
+from tests.common import use_real_create_task
 
 LAST_CHANGED = 1683832716.072648
 LAST_CHANGED_ISO = "2023-05-11T19:18:36.072648+00:00"
@@ -115,7 +116,7 @@ def _mass() -> MagicMock:
     mass.cache = _Cache()
     mass.http_session = MagicMock()
     mass.http_session_no_ssl = MagicMock()
-    mass.create_task.side_effect = asyncio.create_task
+    use_real_create_task(mass)
     mass.players.register_or_update_player_control = AsyncMock()
     # get_setup_value reads the (empty, here) live setup_data blob from the store, then
     # falls through to the provider config mock's get_value for the persisted test values
