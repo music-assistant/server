@@ -89,6 +89,7 @@ ENV_PYATV_DEBUG: Final[str] = "MASS_PYATV_DEBUG"
 class AirPlayProvider(PlayerProvider):
     """Player provider for AirPlay based players."""
 
+    reload_on_streams_network_change = True
     _dacp_server: asyncio.Server
     _dacp_info: AsyncServiceInfo
     _bridge_manager: SendspinBridgeManager

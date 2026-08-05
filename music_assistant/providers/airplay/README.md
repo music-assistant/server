@@ -448,8 +448,16 @@ Native AirPlay 2 receivers that advertise `SupportsPTP` are timed via PTP
 (UDP 319/320) and every receiver in a sync group must lock to the same
 grandmaster, so the provider runs **one** `cliairplay --ptp-daemon` for its
 whole lifetime (spawned at setup, terminated at unload, restarted once if it
-crashes). Every AirPlay 2-capable stream is started with `--ptp-shared` while
-the daemon runs, attaching it to the daemon's elected clock via shared memory.
+crashes). AirPlay 2-capable streams are started with `--ptp-shared` once the
+daemon reports it is serving, attaching them to its elected clock via shared
+memory. A sync group resolves that choice once and applies it to every member,
+so a group never mixes members on the shared clock with members off it.
+
+Sendspin-bridged players hold the same line across their Sendspin group. Their
+processes are spawned independently and can outlive several tracks, so a bridge
+adopts the choice a live group member is already running with and only asks the
+daemon when the group has no such member. That keeps members which start minutes
+apart, or which keep a warm process across a track change, on one clock.
 
 The official Music Assistant container runs as root, allowing the daemon to bind
 these ports. A custom container running Music Assistant as a non-root user must
@@ -635,7 +643,9 @@ The bridge consists of:
 
 The CLI accepts and discards audio once its process is gone, so a lost transport is only visible on the `AirPlayStream` itself. The bridge checks it on every chunk: the dead stream is released and a fresh one is cold-started and re-anchored on the group's live timeline, so the speaker rejoins where the rest of the group is playing.
 
-Giving up comes in two strengths, and what separates them is whether the transport was ever playing. A start that simply failed — a sleeping device, one connect timeout, a protocol that never became ready — only stops the current stream; the bridge stays grouped and the next Sendspin stream starts it over. Giving up on a transport that *had* been playing means the speaker went away mid-stream: either its recovery could not reconnect, or it dropped the transport again within `BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS` of the last one. The bridge then also leaves the Sendspin session, because that silence is not going to end on its own and the visible player must stop reporting playback nobody can hear.
+Giving up on a stream — a start that raised, a protocol that never became ready, or a transport that dropped again within `BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS` of a recovery — takes the speaker out of the Sendspin session. Sendspin reports playback from the group's own state, and the protocol gives a player no way to report that it went silent, so a bridge that merely stopped feeding its speaker would hold the visible player on PLAYING for the rest of the stream. Leaving is what surfaces that silence: a shared group plays on without this speaker, a solo one stops.
+
+Leaving a shared group schedules a bounded re-join through the ordinary `SendspinGroup.add_client`, on the delays in `BRIDGE_REJOIN_ATTEMPT_DELAYS`, so a speaker that was only briefly away comes back on its own. A bridge that gives up again within `BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS` of being put back is left out for good — that is what keeps a device which cannot hold a connection from cycling in and out of the group, since re-joining re-runs the very start that just failed. The attempt is abandoned when the speaker has meanwhile been given a group or a stream of its own, is streaming outside the bridge, or the group it left no longer exists. A speaker missing from discovery is not re-joined but is looked for again on the next attempt, because a device that rebooted stays absent for a while after it starts answering. A solo bridge has nothing to re-join, since leaving is what stops it.
 
 The group re-join recovery in `stream.py` only covers native AirPlay grouping — a bridged player's group membership lives on its Sendspin player, not on the AirPlay one.
 

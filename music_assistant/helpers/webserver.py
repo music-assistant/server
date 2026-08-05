@@ -61,6 +61,7 @@ class Webserver:
             {} if enable_dynamic_routes else None
         )
         self._bind_port: int | None = None
+        self._bind_ip: str | None = None
         self._ingress_tcp_site: web.TCPSite | None = None
 
     async def setup(
@@ -77,7 +78,8 @@ class Webserver:
         """
         Async initialize of module.
 
-        :param bind_ip: IP address to bind to.
+        :param bind_ip: IP address to bind to. An unavailable address falls back to all
+            interfaces. The effective address is available as the ``bind_ip`` property.
         :param bind_port: Port to bind to, or 0 to let the OS assign a free one, which
             requires a specific ``bind_ip``. The assigned port is available as the
             ``port`` property and replaces the port in ``base_url``.
@@ -138,10 +140,12 @@ class Webserver:
             self.logger.error(
                 "Could not bind to %s, will start on all interfaces as fallback!", host
             )
+            host = None
             self._tcp_site = web.TCPSite(
-                self._apprunner, host=None, port=bind_port, ssl_context=ssl_context
+                self._apprunner, host=host, port=bind_port, ssl_context=ssl_context
             )
             await self._tcp_site.start()
+        self._bind_ip = host
         # port 0 asks the OS for a free port, which it only picks at bind time
         if bind_port == 0:
             self._bind_port = self._apprunner.addresses[0][1]
@@ -181,6 +185,11 @@ class Webserver:
     def port(self) -> int | None:
         """Return the port of this webserver."""
         return self._bind_port
+
+    @property
+    def bind_ip(self) -> str | None:
+        """Return the IP address this webserver is bound to (None for all interfaces)."""
+        return self._bind_ip
 
     def register_dynamic_route(
         self,

@@ -665,8 +665,10 @@ def get_ffmpeg_args(
     # append (final) output path at the end of the args
     output_args.append(output_path)
 
-    # edge case: source file is not stereo - downmix to stereo
-    if input_format.channels > 2 and output_format.channels == 2:
+    # edge case: source file is not stereo - downmix to stereo. a single channel
+    # output needs this too, otherwise a mono/left/right pan filter would only see
+    # the front channels and silently drop the center and surround content.
+    if input_format.channels > 2 and output_format.channels <= 2:
         filter_params = [
             "pan=stereo|FL=1.0*FL+0.707*FC+0.707*SL+0.707*LFE|FR=1.0*FR+0.707*FC+0.707*SR+0.707*LFE",
             *filter_params,

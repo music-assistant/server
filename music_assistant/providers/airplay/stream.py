@@ -70,6 +70,10 @@ _CLI_ERROR_CODE_RE = re.compile(r"\bcode=(\S+)")
 _CLI_ERROR_HTTP_RE = re.compile(r"\bhttp=(\d+)")
 _CLI_ERROR_DETAIL_RE = re.compile(r'\bdetail="([^"]*)"')
 
+# Seconds to wait for the binary's command pipe reader. It attaches right after
+# the connection is reported, so this only bridges the reader thread starting up.
+_COMMAND_PIPE_READER_TIMEOUT: Final[float] = 2.0
+
 
 @dataclass
 class CliError:
@@ -237,8 +241,7 @@ class AirPlayStream:
         :param use_shared_ptp: Session-wide decision on whether native AirPlay 2
             members attach to the shared PTP clock daemon. The stream session
             passes the same value to every member so a group never mixes PTP and
-            NTP timing. None (single-stream callers) falls back to the daemon's
-            live state.
+            NTP timing. None lets the stream decide from the daemon's readiness.
         """
         self._check_password_preflight()
         # A fresh cliairplay process re-anchors from scratch, so drop any shift
@@ -252,7 +255,6 @@ class AirPlayStream:
             await self._cli_proc.start()
             self._cli_proc.attach_stderr_reader(self.mass.create_task(self._stderr_reader()))
             self._stdout_reader_task = self.mass.create_task(self._stdout_reader())
-            await self._send_current_metadata(send_artwork=False)
         except BaseException:
             try:
                 await self._cleanup_failed_start()
@@ -264,6 +266,10 @@ class AirPlayStream:
         """
         Wait for device connection to be established.
 
+        Also gives the binary's command pipe a moment to open, so the first
+        commands are not dropped. A pipe that never opens is reported but does
+        not fail the wait.
+
         :raises PlayerCommandFailed: If the binary reported that the device needs
             a password, or rejected the configured one.
         :raises TimeoutError: If the connection was not established for any other
@@ -272,13 +278,19 @@ class AirPlayStream:
         if not self._cli_proc:
             raise RuntimeError("cliairplay process is not running")
         await self._await_connected()
-        # Send the mute-aware volume right away — audio can start within a
-        # second now that metadata goes out immediately — and repeat it after
-        # 2 seconds because some players ignore the first volume command
-        # (https://github.com/music-assistant/support/issues/3330).
-        volume = 0 if self.player.volume_muted else self.player.volume_level
-        await self.send_cli_command(f"VOLUME={volume}")
-        self.mass.call_later(2, self.send_cli_command(f"VOLUME={volume}"))
+        # The binary attaches to its command pipe only once it is connected, so
+        # the first command waits for that reader instead of being dropped. A
+        # stream torn down while connecting takes its pipe along, which is not a
+        # fault worth reporting.
+        if not await self.commands_pipe.wait_for_reader(_COMMAND_PIPE_READER_TIMEOUT):
+            if self.running:
+                self.player.logger.warning(
+                    "cliairplay did not open its command pipe for %s; "
+                    "playback commands cannot be delivered",
+                    self.player.display_name,
+                )
+        # Nothing has reached this binary yet, so clear the delivery state to
+        # make sure the pushes below are really sent.
         async with self._metadata_lock:
             self._metadata_text_checksum = ""
             self._metadata_artwork_checksum = ""
@@ -287,6 +299,15 @@ class AirPlayStream:
         # Push track metadata before START. Some receivers (notably Sonos) hold
         # back audio rendering until they receive track metadata; deferring it
         # can keep them silent past the commanded start.
+        await self._send_current_metadata(send_artwork=False)
+        # Send the mute-aware volume right away — audio can start within a
+        # second now that metadata goes out immediately — and repeat it after
+        # 2 seconds because some players ignore the first volume command
+        # (https://github.com/music-assistant/support/issues/3330). The repeat reads
+        # the level when it fires, so it never replays a value that changed since.
+        await self._send_current_volume()
+        self.mass.call_later(2, self._send_current_volume)
+        # settle artwork and the position on top of the identity push above
         self.player._on_player_media_updated()
 
     async def stop(self, force: bool = False) -> None:
@@ -376,7 +397,7 @@ class AirPlayStream:
         """
         if not self.running or not self.connected:
             return False
-        self._flushed.clear()
+        self._arm_flush_answer()
         # The flush drain re-arms the binary's one-shot audio signal; the next
         # [STATUS] audio belongs to the new track.
         self._audio_present.clear()
@@ -478,8 +499,7 @@ class AirPlayStream:
         # the binary's first status arrives, interpolation would otherwise keep
         # extending the previous anchor's clock, briefly mapping a bogus position.
         self.player.set_state_from_stream(elapsed_time=self._start_position, stream=self)
-        self._started.clear()
-        self._start_ack = None
+        self._arm_start_answer()
         self._start_was_join = join
         start_cmd = f"START_UNIX_MS={start_unix_ms}\nACTION=START"
         if join:
@@ -714,7 +734,7 @@ class AirPlayStream:
         :param use_shared_ptp: Whether a native AirPlay 2 stream attaches to the
             shared PTP clock daemon. The stream session passes an explicit
             group-wide decision so members never mix PTP and NTP timing; None
-            (single-stream callers) falls back to the daemon's live state.
+            reads the daemon's current readiness and decides from that.
         """
         cli_binary = await get_cli_binary()
         prov = cast("AirPlayProvider", self.prov)
@@ -811,10 +831,12 @@ class AirPlayStream:
         # Shared PTP daemon clock (multi-room sync for native AP2 streams). The
         # decision is made once per session and passed in, so every native AP2
         # member of a sync group uses the same timing source and cannot drift.
-        # A single-stream caller (use_shared_ptp is None) falls back to the
-        # daemon's live state.
+        # Without a caller-supplied decision (use_shared_ptp is None) the stream
+        # gates on the daemon serving rather than merely running: between spawn and
+        # the daemon publishing its clock there is nothing to attach to, and a
+        # stream that asks anyway silently takes its own timing instead.
         if target_protocol == StreamingProtocol.AIRPLAY2:
-            shared_ptp = prov.ptp_daemon_running if use_shared_ptp is None else use_shared_ptp
+            shared_ptp = prov.ptp_daemon_ready if use_shared_ptp is None else use_shared_ptp
             if shared_ptp:
                 args += ["--ptp-shared"]
 
@@ -979,10 +1001,14 @@ class AirPlayStream:
             return
         # Only a 2xx means the device took the push. Nothing else on this
         # control channel does - a redirect is as much "not accepted" as a 4xx.
+        # A status of 0 is the "unreported" reading (the field is missing or
+        # unusable), which says nothing about how the push landed, so only a
+        # reported status is judged - warning about a field the binary never
+        # sent would report a rejection that nothing observed.
         status = _status_int(fields, "status")
-        accepted = HTTPStatus.OK <= status < HTTPStatus.MULTIPLE_CHOICES
+        rejected = bool(status) and not (HTTPStatus.OK <= status < HTTPStatus.MULTIPLE_CHOICES)
         self.player.logger.log(
-            logging.DEBUG if accepted else logging.WARNING,
+            logging.WARNING if rejected else logging.DEBUG,
             "MRP now-playing push (%s path) for %s: HTTP %s",
             fields.get("path", "?"),
             display_name,
@@ -1234,6 +1260,11 @@ class AirPlayStream:
             self._flushed.set()
         elif "[STATUS] audio " in line:
             self._audio_present.set()
+        elif "[STATUS] mrp" in line:
+            # The artwork reports arrive on stderr; the now-playing push
+            # status arrives on stdout. One parser serves both shapes, so
+            # each reader dispatches the mrp lines its own pipe carries.
+            self._parse_mrp_status(line)
         elif "[STATUS] idle_timeout" in line:
             # a parked (paused) session outlived the binary's idle cap;
             # treat it as a normal end of stream
@@ -1374,6 +1405,11 @@ class AirPlayStream:
             return
         await self.send_metadata(None, metadata)
 
+    async def _send_current_volume(self) -> None:
+        """Send the player's current volume level to the device, muted as zero."""
+        volume = 0 if self.player.volume_muted else self.player.volume_level
+        await self.send_cli_command(f"VOLUME={volume}")
+
     async def _cleanup_failed_start(self) -> None:
         """Release all resources owned by a cliairplay process that failed to start."""
         self._stopping = True
@@ -1394,6 +1430,21 @@ class AirPlayStream:
             await self.commands_pipe.remove()
             self._cleanup_complete = True
             self._cli_proc = None
+
+    def _arm_start_answer(self) -> None:
+        """Clear the slots the binary answers a START in, so only this one's answer is read."""
+        # The ack and the failure are filled by the stderr reader while start()
+        # waits, so both slots have to be emptied at the command itself: a
+        # rejection left over from the previous START would otherwise be read
+        # as this one's answer the moment an ack releases the wait.
+        self._started.clear()
+        self._start_ack = None
+        self._start_error = None
+
+    def _arm_flush_answer(self) -> None:
+        """Clear the slots the binary answers a FLUSH in, so only this one's answer is read."""
+        self._flushed.clear()
+        self._flush_error = None
 
     async def _write_cli_command(self, command: str) -> bool:
         """Write an interactive command regardless of stream teardown state."""
@@ -1547,7 +1598,11 @@ class AirPlayStream:
         # The binary's elapsed counts only the retained content, so the
         # position base moves by the cut to keep reported progress exact.
         self._start_position += content_cut_ms / 1000
-        self._pending_content_cut_ms = content_cut_ms
+        # Track the cut owed the same way the base above tracks it: both
+        # accumulate over an anchor and both are zeroed at every anchor
+        # boundary. Overwriting here would settle only the newest correction
+        # against a base that carries all of them.
+        self._pending_content_cut_ms += content_cut_ms
         # Routine for a join start: the low join headroom defers to this
         # correction, which lands the anchor at exact receiver readiness. A
         # post-commit correction on any other START stays loud.
@@ -1600,8 +1655,12 @@ class AirPlayStream:
                 cut_ms,
             )
             return
+        # A cut can miss the amount it was asked for in either direction, and
+        # both leave the base wrong by the difference, so the magnitude decides
+        # whether it settled cleanly. Re-basing by the signed difference then
+        # corrects either one; only the report differs.
         shortfall_ms = applied_ms - cut_ms
-        if shortfall_ms < AIRPLAY_CONTENT_CUT_TOLERANCE_MS:
+        if abs(shortfall_ms) < AIRPLAY_CONTENT_CUT_TOLERANCE_MS:
             self.player.logger.debug(
                 "AirPlay content cut on %s took the full %d ms (%d bytes in %d ms)",
                 self.player.display_name,
@@ -1611,17 +1670,32 @@ class AirPlayStream:
             )
             return
         self._start_position -= shortfall_ms / 1000
+        if shortfall_ms > 0:
+            self.player.logger.warning(
+                "AirPlay content cut on %s fell %d ms short: the corrected anchor asked "
+                "for %d ms and the cut took %d ms (%d bytes in %d ms). Reported position "
+                "re-based by -%d ms; playback is that much ahead of the group timeline.",
+                self.player.display_name,
+                shortfall_ms,
+                applied_ms,
+                cut_ms,
+                cut_bytes,
+                drain_ms,
+                shortfall_ms,
+            )
+            return
+        overcut_ms = -shortfall_ms
         self.player.logger.warning(
-            "AirPlay content cut on %s fell %d ms short: the corrected anchor asked "
+            "AirPlay content cut on %s overran by %d ms: the corrected anchor asked "
             "for %d ms and the cut took %d ms (%d bytes in %d ms). Reported position "
-            "re-based by -%d ms; playback is that much ahead of the group timeline.",
+            "was under-advanced by that much and is re-based by +%d ms.",
             self.player.display_name,
-            shortfall_ms,
+            overcut_ms,
             applied_ms,
             cut_ms,
             cut_bytes,
             drain_ms,
-            shortfall_ms,
+            overcut_ms,
         )
 
     def _parse_clock_ready(self, line: str) -> None:
