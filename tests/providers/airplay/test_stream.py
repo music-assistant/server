@@ -6,6 +6,7 @@ import logging
 import os
 import threading
 from collections.abc import AsyncGenerator, Callable, Coroutine
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -801,18 +802,25 @@ async def test_pipe_write_completes_a_large_write_while_the_reader_drains(
         received = 0
         while received < len(payload):
             try:
-                received += len(os.read(read_fd, 65536))
+                chunk = os.read(read_fd, 65536)
             except BlockingIOError:
-                await asyncio.sleep(0)
+                chunk = b""
+            if not chunk:
+                # no writer attached yet or nothing buffered: yield instead of spinning
+                await asyncio.sleep(0.001)
+                continue
+            received += len(chunk)
         return received
 
     reader = asyncio.create_task(drain())
     try:
-        assert await writer.write(payload) is True
-        async with asyncio.timeout(5):
+        async with asyncio.timeout(10):
+            assert await writer.write(payload) is True
             assert await reader == len(payload)
     finally:
         reader.cancel()
+        with suppress(asyncio.CancelledError):
+            await reader
         os.close(read_fd)
         await writer.remove()
 
