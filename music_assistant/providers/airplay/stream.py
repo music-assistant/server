@@ -843,7 +843,7 @@ class AirPlayStream:
             if not depth_ms and is_linkplay:
                 depth_ms = AIRPLAY_LINKPLAY_BUFFER_DEPTH_MS
             if depth_ms:
-                args += ["--buffer-depth-ms", str(depth_ms)]
+                args += ["--latency", str(depth_ms)]
             shared_ptp = prov.ptp_daemon_ready if use_shared_ptp is None else use_shared_ptp
             if shared_ptp:
                 args += ["--ptp-shared"]
