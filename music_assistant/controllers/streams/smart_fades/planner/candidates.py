@@ -334,8 +334,7 @@ class TrimClosingAnchorGenerator(CandidateGenerator):
         anchor = ctx.audio_end
         if anchor - ctx.default_anchor < _TRIM_CLOSING_MIN_GAP_S:
             return
-        # the context tier is decided at the early anchor; these rungs sit at the audible
-        # end, where a grid the early window was too short for may be fully blendable
+        # ctx.tier is decided at the early anchor; the grid can be blendable at the audible end
         _, tier = choose_tier(ctx.outgoing, ctx.incoming, anchor)
         ladder = bars_ladder(ctx, tier)
         for bars in ladder:
@@ -360,7 +359,7 @@ class LazyOverlayGenerator(CandidateGenerator):
             return
         if ctx.bpm_diff_percent > TIME_STRETCH_BPM_PERCENTAGE_THRESHOLD:
             return
-        duties = _vocal_duties(ctx)
+        duties = _window_duties(ctx, _LAZY_OVERLAY_SECONDS)
         if duties is None or duties[0] > _LAZY_DUTY_MAX or duties[1] > _LAZY_DUTY_MAX:
             return
         yield CandidateSpec(
@@ -957,6 +956,33 @@ def _vocal_duties(ctx: TransitionContext) -> tuple[float, float] | None:
         SMART_CROSSFADE_DURATION
     )
     return out_duty, in_duty
+
+
+def _window_duties(ctx: TransitionContext, seconds: float) -> tuple[float, float] | None:
+    """
+    Vocal duty per deck over the window an unphrased overlay of ``seconds`` actually spans.
+
+    :param ctx: The transition context.
+    :param seconds: Requested overlay length; the outgoing window is the last
+        ``seconds`` before the audible end, the incoming window its first ``seconds``.
+    """
+    if ctx.vocal_out_scoring is None or ctx.vocal_in_scoring is None:
+        return None
+    # mirrors the anchored tail: a sub-half-second gap to the buffer end is not trimmed
+    effective_end = ctx.audio_end
+    if effective_end >= ctx.buffer_duration - 0.5:
+        effective_end = ctx.buffer_duration
+    span = min(seconds, effective_end)
+    if span <= 0.0:
+        return None
+    out_secs = sum(
+        max(0.0, min(right, effective_end) - max(left, effective_end - span))
+        for left, right in ctx.vocal_out_scoring.windows
+    )
+    in_secs = sum(
+        max(0.0, min(right, span) - max(left, 0.0)) for left, right in ctx.vocal_in_scoring.windows
+    )
+    return out_secs / span, in_secs / span
 
 
 def _fade_onset_pin(ctx: TransitionContext) -> float:
