@@ -46,8 +46,8 @@ class ClockReadiness(StrEnum):
     NOT_APPLICABLE = "not_applicable"
     # The receiver never answered our PTP clock and will render silence.
     STALLED = "stalled"
-    # Nothing arrived within the wait: a slow device (retryable) or a binary
-    # too old to report readiness at all.
+    # Nothing arrived within the wait: a slow device (retryable) or a receiver
+    # whose readiness went unreported.
     UNREPORTED = "unreported"
 
 

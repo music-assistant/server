@@ -478,7 +478,14 @@ def _make_anchor_stream(
     must be real numbers: the anchor compares ``warm_lead_ms`` /
     ``flushed_head_unix_ms`` with ``> 0`` and the shift fold subtracts
     ``cumulative_shift_seconds``, none of which a bare MagicMock can answer.
+
+    :param ack: Instant the binary acks the START at. None acks the commanded
+        instant, as a feasible one is.
     """
+
+    async def _ack_start(start_unix_ms: int = 0, **_kwargs: object) -> int:
+        return start_unix_ms if ack is None else ack
+
     stream = MagicMock()
     stream.cumulative_shift_seconds = 0.0
     stream.connect = AsyncMock()
@@ -486,7 +493,7 @@ def _make_anchor_stream(
     stream.stop = AsyncMock()
     stream.flush = AsyncMock(return_value=True)
     stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.PROJECTED, ready_at_unix_ms))
-    stream.start = AsyncMock(return_value=ack)
+    stream.start = AsyncMock(side_effect=_ack_start)
     stream.warm_lead_ms = warm_lead_ms
     stream.flushed_head_unix_ms = flushed_head_unix_ms
     return stream
@@ -1205,21 +1212,6 @@ async def test_warm_anchor_clears_the_receivers_queued_audio(
     assert await _anchor(bridge, stream, warm=True) is True
 
     assert _commanded_instant(stream) == UNIX_NOW_MS + expected_anchor_offset_ms + adjust_ms
-
-
-async def test_missing_ack_falls_back_to_the_commanded_instant() -> None:
-    """An older binary that never acks must not wedge the writer."""
-    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
-    stream = _make_anchor_stream(ack=None)
-    _prepare_anchor(bridge, stream, first_chunk_lead_ms=250)
-
-    assert await _anchor(bridge, stream) is True
-
-    commanded = UNIX_NOW_MS + AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS
-    assert bridge._start_unix_ms == commanded
-    assert bridge._drop_until_us == SENDSPIN_EPOCH_US + AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS * 1_000
-    assert bridge._anchor_settled is True
-    assert bridge._airplay_stream_ready.is_set()
 
 
 async def test_superseded_during_the_ack_mutates_nothing() -> None:

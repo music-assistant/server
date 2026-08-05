@@ -476,8 +476,6 @@ class AirPlayPlayer(Player):
                 media,
             )
             await stream_session.start(audio_source)
-            self._attr_elapsed_time = time.time() - stream_session.start_time
-            self._attr_elapsed_time_last_updated = time.time()
             self._transitioning = False
 
     async def volume_set(self, volume_level: int) -> None:
