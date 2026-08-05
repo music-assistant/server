@@ -713,7 +713,7 @@ class AirPlayStream:
         :param use_shared_ptp: Whether a native AirPlay 2 stream attaches to the
             shared PTP clock daemon. The stream session passes an explicit
             group-wide decision so members never mix PTP and NTP timing; None
-            waits for the daemon to be ready to serve and decides from that.
+            reads the daemon's current readiness and decides from that.
         """
         cli_binary = await get_cli_binary()
         prov = cast("AirPlayProvider", self.prov)
@@ -811,13 +811,11 @@ class AirPlayStream:
         # decision is made once per session and passed in, so every native AP2
         # member of a sync group uses the same timing source and cannot drift.
         # Without a caller-supplied decision (use_shared_ptp is None) the stream
-        # gates on the daemon actually serving: only one process per host can bind
-        # the privileged PTP ports, so attaching to a daemon that is alive but has
-        # not bound them yet fails and drops that stream to NTP without saying so.
+        # gates on the daemon serving rather than merely running: between spawn and
+        # the daemon publishing its clock there is nothing to attach to, and a
+        # stream that asks anyway silently takes its own timing instead.
         if target_protocol == StreamingProtocol.AIRPLAY2:
-            shared_ptp = (
-                await prov.wait_ptp_daemon_ready() if use_shared_ptp is None else use_shared_ptp
-            )
+            shared_ptp = prov.ptp_daemon_ready if use_shared_ptp is None else use_shared_ptp
             if shared_ptp:
                 args += ["--ptp-shared"]
 

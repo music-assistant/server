@@ -67,7 +67,7 @@ def _make_player() -> MagicMock:
 
     prov = MagicMock()
     prov.dacp_id = "ABCDEF0123456789"
-    prov.wait_ptp_daemon_ready = AsyncMock(return_value=True)
+    prov.ptp_daemon_ready = True
     prov.logger = logging.getLogger("test.airplay.prov")
     # auto-detected publish ip: reachable address of this host, but not the interface
     # the stream to this device leaves from - so it is never handed to the binary
@@ -260,22 +260,6 @@ async def test_cli_args_raop_override() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cli_args_raop_override_skips_the_ptp_daemon_wait() -> None:
-    """
-    A forced RAOP protocol never waits on the PTP daemon's readiness.
-
-    RAOP has no shared clock to attach to, so paying the bounded readiness
-    wait here would only eat into a bridge's cold-connect budget for nothing.
-    """
-    player = _make_player()
-    player.protocol_override = StreamingProtocol.RAOP
-    args = await _build_args(player)
-
-    assert "--ptp-shared" not in args
-    player.provider.wait_ptp_daemon_ready.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_cli_args_raop_encryption_can_be_disabled() -> None:
     """The legacy encryption preference remains available for incompatible receivers."""
     player = _make_player()
@@ -290,26 +274,17 @@ async def test_cli_args_raop_encryption_can_be_disabled() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cli_args_no_ptp_shared_when_daemon_not_ready() -> None:
-    """--ptp-shared is only passed once the provider's PTP daemon reports ready."""
-    player = _make_player()
-    player.provider.wait_ptp_daemon_ready = AsyncMock(return_value=False)
-    args = await _build_args(player)
-    assert "--ptp-shared" not in args
-
-
-@pytest.mark.asyncio
 async def test_cli_args_no_ptp_shared_when_daemon_alive_but_not_ready() -> None:
     """
     A daemon that is merely alive must not get --ptp-shared.
 
-    Only one process per host can bind the privileged PTP ports, so liveness
-    alone does not mean the daemon is serving: attaching to one that is alive
-    but has not bound them yet fails and silently drops the stream to NTP.
+    Liveness does not mean the daemon is serving: until it publishes its clock
+    there is nothing to attach to, and a stream that asks anyway silently takes
+    its own timing instead - drifting away from the members that got the clock.
     """
     player = _make_player()
     player.provider.ptp_daemon_running = True
-    player.provider.wait_ptp_daemon_ready = AsyncMock(return_value=False)
+    player.provider.ptp_daemon_ready = False
     args = await _build_args(player)
     assert "--ptp-shared" not in args
 

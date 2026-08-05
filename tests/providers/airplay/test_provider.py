@@ -757,7 +757,7 @@ def _stream_player(*, ptp_daemon_ready: bool) -> MagicMock:
 
     prov = MagicMock()
     prov.dacp_id = "ABCDEF0123456789"
-    prov.wait_ptp_daemon_ready = AsyncMock(return_value=ptp_daemon_ready)
+    prov.ptp_daemon_ready = ptp_daemon_ready
     prov.logger = logging.getLogger("test.airplay.prov")
     prov.mass.streams.publish_ip = "192.168.1.99"
     prov.mass.streams.get_source_ip = AsyncMock(return_value="192.168.1.5")
