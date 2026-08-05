@@ -291,6 +291,9 @@ class SendspinAirPlayBridge:
         self._start_unix_ms: int = 0
         self._write_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._writer_task: asyncio.Task[None] | None = None
+        # The start that currently owns the bridge. Every step of the start path
+        # compares itself against this to tell whether it may still touch the
+        # bridge, so it is published before that task runs (see _on_audio_chunk).
         self._airplay_stream_start_task: asyncio.Task[None] | None = None
         self._airplay_stream_ready = asyncio.Event()
         # Whether the current stream has been anchored with its first START.
@@ -647,6 +650,11 @@ class SendspinAirPlayBridge:
             if cleanup and not cleanup.done():
                 await cleanup
 
+            if asyncio.current_task() is not self._airplay_stream_start_task:
+                # A newer stream start owns the bridge and everything it holds:
+                # neither the kept stream nor the receiver is this task's to touch.
+                return
+
             # A kept, still-connected stream (see _stream_is_warm_eligible,
             # checked by the stream-start callbacks) absorbs the new media via a
             # flush-refill on the SAME cli stdin instead of a cold reconnect.
@@ -693,6 +701,12 @@ class SendspinAirPlayBridge:
         :param stream: New AirPlay stream to start.
         :return: True when the stream is anchored, False when superseded.
         """
+        if asyncio.current_task() is not self._airplay_stream_start_task:
+            # A newer stream start owns the bridge. The stream handed in is not
+            # connected yet, so there is nothing to tear down: returning here
+            # keeps a second session off the receiver and leaves the timing
+            # decision the newer start recorded alone.
+            return False
         try:
             # Resolving and recording the decision never awaits, so two bridges
             # starting together cannot both find their group still undecided.
@@ -1124,8 +1138,12 @@ class SendspinAirPlayBridge:
             #     group's current playback position, so the joiner lands in sync.
             # _anchor_stream re-bases this onto the instant the binary acks.
             self._drop_until_us = chunk.timestamp_us
+            # Started on the next loop iteration so the handle below is published
+            # first: the start path compares itself against that handle to tell
+            # whether it still owns the bridge, and an eager start would run its
+            # first checks while the handle is still unset.
             self._airplay_stream_start_task = self.mass.create_task(
-                self._start_protocol_from_chunk()
+                self._start_protocol_from_chunk(), eager_start=False
             )
 
         if not self._anchor_settled:
