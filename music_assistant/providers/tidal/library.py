@@ -141,18 +141,20 @@ class TidalLibraryManager:
         result = await self.api.write_jsonapi(
             "POST", f"{resource_name}/me/relationships/items", body
         )
-        if "data" not in result:
-            # No per-item feedback (e.g. a 204 response): the write succeeded
-            # and there's nothing to diff against.
+        # The add response reports rejected ids in meta.skipped. NOT_FOUND means the
+        # id is stale (Tidal churns tracks, re-adding them under new ids), so heal it
+        # via the live equivalent; ALREADY_PRESENT is a success. The top-level "data"
+        # is the paginated collection listing (new items append at the end), not an
+        # echo of what was accepted, so it must not be diffed to infer rejection.
+        skipped = (result.get("meta") or {}).get("skipped") or []
+        if not any(s.get("id") == send_id and s.get("reason") == "NOT_FOUND" for s in skipped):
             return True
-        added = {d["id"] for d in result.get("data", [])}
-        if send_id not in added:
-            live = await self.provider.resolve_live_track_id(original_id)
-            if live:
-                retry_body = {"data": [{"type": resource_type, "id": live}]}
-                await self.api.write_jsonapi(
-                    "POST", f"{resource_name}/me/relationships/items", retry_body
-                )
+        live = await self.provider.resolve_live_track_id(original_id)
+        if live and live != send_id:
+            retry_body = {"data": [{"type": resource_type, "id": live}]}
+            await self.api.write_jsonapi(
+                "POST", f"{resource_name}/me/relationships/items", retry_body
+            )
         return True
 
 

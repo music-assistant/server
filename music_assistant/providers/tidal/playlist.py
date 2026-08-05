@@ -55,30 +55,17 @@ class TidalPlaylistManager:
 
     async def add_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add tracks to playlist."""
+        # Unlike the user-collection add, the playlist items-add response carries no
+        # per-item skip feedback, so a stale id can only be healed up front via the
+        # redirect cache. The response body is the paginated listing (appended tracks
+        # never appear on page one), so diffing it to detect rejects would misclassify
+        # a successful add as stale and re-POST a duplicate.
         try:
             sent = [await self.provider.redirect_cached_id(str(tid)) for tid in prov_track_ids]
             body = {"data": [{"type": "tracks", "id": i} for i in sent]}
-            result = await self.api.write_jsonapi(
+            await self.api.write_jsonapi(
                 "POST", f"playlists/{prov_playlist_id}/relationships/items", body
             )
-            if "data" not in result:
-                # No per-item feedback (e.g. a 204 response): the write succeeded
-                # and there's nothing to diff against.
-                return
-            added = {d["id"] for d in result.get("data", [])}
-            stale_originals = [
-                str(orig) for orig, s in zip(prov_track_ids, sent, strict=True) if s not in added
-            ]
-            resolved = [
-                live
-                for orig in stale_originals
-                if (live := await self.provider.resolve_live_track_id(orig))
-            ]
-            if resolved:
-                retry_body = {"data": [{"type": "tracks", "id": i} for i in resolved]}
-                await self.api.write_jsonapi(
-                    "POST", f"playlists/{prov_playlist_id}/relationships/items", retry_body
-                )
         except ClientError as err:
             raise ResourceTemporarilyUnavailable("Failed to add tracks") from err
 

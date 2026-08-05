@@ -122,42 +122,18 @@ async def test_add_playlist_tracks_failure(
         await playlist_manager.add_tracks("1", ["track_1"])
 
 
-async def test_add_playlist_tracks_stale_id_heals(
+async def test_add_playlist_tracks_never_reactively_heals(
     playlist_manager: TidalPlaylistManager, provider_mock: Mock
 ) -> None:
-    """Test a stale track id omitted from the response is resolved and retried."""
+    """
+    Test add_tracks does not resolve/retry when a sent id is absent from the response.
+
+    The playlist items-add response has no per-item skip signal and its data is the
+    paginated listing (appended tracks are not on page one). Diffing it would re-POST a
+    track that actually succeeded, duplicating it; add_tracks must never do that.
+    """
     provider_mock.api.write_jsonapi.return_value = {"data": [{"type": "tracks", "id": "track_1"}]}
     provider_mock.resolve_live_track_id = AsyncMock(return_value="track_2_live")
-
-    await playlist_manager.add_tracks("1", ["track_1", "track_2"])
-
-    provider_mock.resolve_live_track_id.assert_called_once_with("track_2")
-    assert provider_mock.api.write_jsonapi.call_count == 2
-    provider_mock.api.write_jsonapi.assert_called_with(
-        "POST",
-        "playlists/1/relationships/items",
-        {"data": [{"type": "tracks", "id": "track_2_live"}]},
-    )
-
-
-async def test_add_playlist_tracks_stale_id_unresolvable(
-    playlist_manager: TidalPlaylistManager, provider_mock: Mock
-) -> None:
-    """Test a stale track id that cannot be resolved results in no retry POST."""
-    provider_mock.api.write_jsonapi.return_value = {"data": [{"type": "tracks", "id": "track_1"}]}
-    # resolve_live_track_id default (from fixture) already returns None.
-
-    await playlist_manager.add_tracks("1", ["track_1", "track_2"])
-
-    provider_mock.resolve_live_track_id.assert_called_once_with("track_2")
-    assert provider_mock.api.write_jsonapi.call_count == 1
-
-
-async def test_add_playlist_tracks_no_data_in_response(
-    playlist_manager: TidalPlaylistManager, provider_mock: Mock
-) -> None:
-    """Test a 204-style response without a "data" key skips healing entirely."""
-    provider_mock.api.write_jsonapi.return_value = {"success": True}
 
     await playlist_manager.add_tracks("1", ["track_1", "track_2"])
 

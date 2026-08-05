@@ -202,8 +202,10 @@ async def test_add_item_returns_false_on_error(
 async def test_add_item_track_stale_id_heals(
     library_manager: TidalLibraryManager, provider_mock: Mock
 ) -> None:
-    """Test a stale favorite track id omitted from the response is resolved and retried."""
-    provider_mock.api.write_jsonapi.return_value = {"data": []}
+    """Test a favorite track reported NOT_FOUND in meta.skipped is resolved and retried."""
+    provider_mock.api.write_jsonapi.return_value = {
+        "meta": {"skipped": [{"id": "123", "reason": "NOT_FOUND", "type": "tracks"}]}
+    }
     provider_mock.resolve_live_track_id = AsyncMock(return_value="123_live")
     item = Mock(item_id="123", media_type=MediaType.TRACK)
 
@@ -218,10 +220,49 @@ async def test_add_item_track_stale_id_heals(
     )
 
 
-async def test_add_item_track_no_data_in_response(
+async def test_add_item_track_paginated_listing_does_not_false_heal(
     library_manager: TidalLibraryManager, provider_mock: Mock
 ) -> None:
-    """Test a 204-style response without a "data" key skips healing entirely."""
+    """
+    Test a successful add is not misread as stale just because data omits the id.
+
+    The response data is the paginated collection listing, not an accepted-items echo;
+    a newly added track appends at the end and is absent from page one. With an empty
+    meta.skipped, that must not trigger a heal that would add a different ISRC match.
+    """
+    provider_mock.api.write_jsonapi.return_value = {
+        "data": [{"type": "tracks", "id": "999"}],
+        "meta": {"skipped": []},
+    }
+    provider_mock.resolve_live_track_id = AsyncMock(return_value="123_live")
+    item = Mock(item_id="123", media_type=MediaType.TRACK)
+
+    assert await library_manager.add_item(item) is True
+
+    provider_mock.resolve_live_track_id.assert_not_called()
+    assert provider_mock.api.write_jsonapi.call_count == 1
+
+
+async def test_add_item_track_already_present_no_heal(
+    library_manager: TidalLibraryManager, provider_mock: Mock
+) -> None:
+    """Test an ALREADY_PRESENT skip is a success and never triggers healing."""
+    provider_mock.api.write_jsonapi.return_value = {
+        "meta": {"skipped": [{"id": "123", "reason": "ALREADY_PRESENT", "type": "tracks"}]}
+    }
+    provider_mock.resolve_live_track_id = AsyncMock(return_value="123_live")
+    item = Mock(item_id="123", media_type=MediaType.TRACK)
+
+    assert await library_manager.add_item(item) is True
+
+    provider_mock.resolve_live_track_id.assert_not_called()
+    assert provider_mock.api.write_jsonapi.call_count == 1
+
+
+async def test_add_item_track_no_skipped_meta(
+    library_manager: TidalLibraryManager, provider_mock: Mock
+) -> None:
+    """Test a response without a skipped meta (e.g. a 204 body) skips healing entirely."""
     provider_mock.api.write_jsonapi.return_value = {"success": True}
     item = Mock(item_id="123", media_type=MediaType.TRACK)
 
@@ -234,8 +275,10 @@ async def test_add_item_track_no_data_in_response(
 async def test_add_item_track_stale_id_unresolvable(
     library_manager: TidalLibraryManager, provider_mock: Mock
 ) -> None:
-    """Test a stale favorite track id that cannot be resolved results in no retry POST."""
-    provider_mock.api.write_jsonapi.return_value = {"data": []}
+    """Test a NOT_FOUND track id that cannot be resolved results in no retry POST."""
+    provider_mock.api.write_jsonapi.return_value = {
+        "meta": {"skipped": [{"id": "123", "reason": "NOT_FOUND", "type": "tracks"}]}
+    }
     # resolve_live_track_id default (from fixture) already returns None.
     item = Mock(item_id="123", media_type=MediaType.TRACK)
 
