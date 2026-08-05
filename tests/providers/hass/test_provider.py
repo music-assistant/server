@@ -788,7 +788,7 @@ async def test_shared_registry_rejects_writes() -> None:
                 platform="test", device_id=None
             )
         with pytest.raises(AttributeError):
-            next(iter(registry.values())).platform = "test"  # type: ignore[misc]
+            registry["tts.only"].platform = "test"  # type: ignore[misc]
 
 
 async def test_registry_reuses_repeated_strings() -> None:

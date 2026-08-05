@@ -101,7 +101,11 @@ class DeviceMediaPlayerInfo(TypedDict):
 
 
 class HassRegistryEntity(NamedTuple):
-    """Home Assistant entity registry entry, limited to the fields Music Assistant uses."""
+    """
+    Home Assistant entity registry entry, limited to the fields Music Assistant uses.
+
+    The entity ID is not a field: entries are always keyed by it.
+    """
 
     platform: str
     device_id: str | None
