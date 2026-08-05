@@ -92,8 +92,9 @@ FEATURE_DOMAIN_PREFIXES = tuple(f"{domain}." for domain in FEATURE_DOMAINS)
 
 # Entity registry fields a change to which can alter the mirrored registry. Beyond the
 # mirrored fields themselves, disabled_by decides whether an entity is listed at all, and
-# a move to another config entry can clear disabled_by without reporting that field.
-MIRRORED_REGISTRY_FIELDS = frozenset(
+# config_entry_id joins them because Home Assistant can clear disabled_by while reporting
+# only the move to the other config entry.
+REGISTRY_FIELDS_AFFECTING_MIRROR = frozenset(
     {"entity_id", "platform", "device_id", "disabled_by", "config_entry_id"}
 )
 
@@ -1041,6 +1042,15 @@ class HomeAssistantProvider(PluginProvider):
         if _affects_mirrored_registry(data):
             self._entity_registry = None
             self._entity_registry_generation += 1
+        elif self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            # the kept mirror rests on which fields Home Assistant reports, so leave a
+            # trail that tells a stale entity listing apart from a lookup that never ran
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Keeping the mirrored entity registry, %s changed on %s",
+                ", ".join(data["changes"]),
+                data.get("entity_id", "?"),
+            )
         entity_id = data.get("entity_id", "")
         if not entity_id.startswith(FEATURE_DOMAIN_PREFIXES):
             return
@@ -1161,7 +1171,7 @@ def _affects_mirrored_registry(data: Mapping[str, Any]) -> bool:
     # that Home Assistant strips from the report, so treat that as a change of unknown reach
     if not (changes := data.get("changes")):
         return True
-    return not MIRRORED_REGISTRY_FIELDS.isdisjoint(changes)
+    return not REGISTRY_FIELDS_AFFECTING_MIRROR.isdisjoint(changes)
 
 
 def _decompress_state(entity_id: str, compressed_state: CompressedState) -> State:
