@@ -482,16 +482,8 @@ def overlay_file_wide_stereo(tmp_path: Path) -> Path:
             "lavfi",
             "-i",
             "sine=frequency=440:duration=1",
-            "-f",
-            "lavfi",
-            "-i",
-            "anullsrc=cl=mono:d=1",
-            "-filter_complex",
-            "[0:a][1:a]amerge=inputs=2,aformat=channel_layouts=stereo[out]",
-            "-map",
-            "[out]",
-            "-t",
-            "1",
+            "-af",
+            "pan=stereo|c0=c0",
             str(overlay_path),
         ],
         check=True,
@@ -659,14 +651,15 @@ async def test_overlay_stream_preserves_stereo_image(overlay_file_wide_stereo: P
 # -- overlay volume filter --
 
 
-def test_overlay_volume_filter_compensates_only_where_widening_happens() -> None:
-    """Only a stereo output widens a mono source, so only there is the level compensated."""
+def test_overlay_volume_filter_compensates_only_for_a_stereo_output() -> None:
+    """Only the widening to stereo costs a mono source level, so only there is it scaled up."""
     stereo_output = _get_overlay_volume_filter(100, 2)
     assert "nb_channels" in stereo_output
     # a comma would read as the end of this filter in the graph
     assert "," not in stereo_output
-    # nothing is widened towards a single channel, so nothing needs compensating
+    # a mono source keeps its level when it is widened further, or not at all
     assert _get_overlay_volume_filter(100, 1) == "volume=1.0"
+    assert _get_overlay_volume_filter(60, 6) == "volume=0.6"
 
 
 # -- _log_reader_task (decode-error flood guard) --

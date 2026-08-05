@@ -32,9 +32,10 @@ CACHE_ATTR_LIBSOXR_PRESENT: Final[str] = "libsoxr_present"
 CACHE_ATTR_FFMPEG_VERSION: Final[str] = "ffmpeg_version"
 DEFAULT_MP3_BIT_RATE: Final[int] = 320
 
-# added to unity gain to cancel the 1/sqrt(2) per channel that FFmpeg's
-# mono->stereo rematrix applies, so a mono source keeps its original level
-_MONO_WIDEN_COMPENSATION: Final[float] = 2**0.5 - 1
+# FFmpeg's mono->stereo rematrix spreads a source at 1/sqrt(2) per channel; this factor
+# restores its original level. _get_channel_conform_filter avoids the same loss on the
+# main decode path by duplicating the channel instead.
+_MONO_WIDEN_COMPENSATION: Final[float] = 2**0.5
 
 # Regex patterns to extract audio format details from ffmpeg's stderr output.
 # Examples of the lines we parse:
@@ -426,9 +427,9 @@ async def get_ffmpeg_overlay_stream(
     Mix a looping audio overlay into a PCM audio stream.
 
     The overlay is looped for the full duration of the main stream and the mixed
-    output has the exact same PCM format and duration as the main input. It mixes
-    in at the same level regardless of its own channel count. If the overlay input
-    fails mid-stream, the main audio continues unaffected.
+    output has the exact same PCM format and duration as the main input. A mono
+    overlay mixes in at the same level as an equivalent stereo one. If the overlay
+    input fails mid-stream, the main audio continues unaffected.
 
     :param audio_input: The main audio stream (raw PCM in ``pcm_format``).
     :param overlay_input: File path or URL of the overlay audio.
@@ -804,14 +805,13 @@ def _get_overlay_volume_filter(overlay_volume: int, output_channels: int) -> str
     """
     gain = overlay_volume / 100
     if output_channels != 2:
+        # a mono source widened to more than two channels is routed to the centre at full
+        # level, so only a stereo output loses any. No overlay call site is non-stereo today.
         return f"volume={gain}"
-    # widening a mono source to stereo is left to FFmpeg, whose rematrix spreads it at
-    # 1/sqrt(2) per channel and so drops it 3 dB below an equally loud stereo source.
-    # nb_channels is evaluated where this filter sits, ahead of any layout conversion,
-    # so it still reports the source's own count and only a mono source is compensated,
-    # leaving a stereo one (and its image) untouched. Kept free of commas, which would
-    # otherwise read as the end of this filter in the graph.
-    return f"volume={gain}*(1+{_MONO_WIDEN_COMPENSATION}*not(nb_channels-1))"
+    # nb_channels is evaluated where this filter sits, ahead of any layout conversion, so it
+    # still reports the source's own count: only a mono source is scaled up, leaving a stereo
+    # one and its image untouched. Comma-free, as a comma would end this filter in the graph.
+    return f"volume={gain}*{_MONO_WIDEN_COMPENSATION}^not(nb_channels-1)"
 
 
 def _build_filtergraph_args(
