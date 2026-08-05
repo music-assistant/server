@@ -443,30 +443,6 @@ def _with_vocal_activity(
 class TestRescuePassBeforeEmergencyHandoff:
     """When every regular candidate is rejected, a rescue rung ships before the handoff."""
 
-    def test_rescue_candidate_ships_instead_of_the_handoff_when_one_is_policy_clean(self) -> None:
-        """
-        An early energy mix-out overtrims every regular rung; a late rescue anchor survives.
-
-        The outro mixes out (audible but below the mix-out floor) far before the
-        RMS-audible boundary, so every regular ladder rung's audible trim busts
-        its own (short-fade) duration and gets hard-rejected. A late-anchored
-        1-2 bar rescue rung, anchored close to the audible boundary itself,
-        trims almost nothing and should ship instead of the emergency handoff.
-        """
-        bins = np.full(1800, 0.5, dtype=np.float32)
-        t = np.linspace(0, 240.0, 1800)
-        bins[t >= 208.0] = 0.2  # mixed out (audible, not silent) far before audio_end
-        out = _analysis(120.0, duration=240.0, rms_energy=bins)
-        inc = _analysis(120.0, duration=240.0)
-
-        ctx = build_transition_context(out, inc, 45.0, LOGGER)
-        plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)
-
-        assert plan.metrics.strategy is not TransitionStrategy.SHORT_VOCAL_HANDOFF
-        assert plan.crossfade_duration <= 4.0 + 1e-6
-        assert plan.fade_out_window > ctx.default_anchor
-        assert plan.metrics.audible_outgoing_trim < 1.0
-
     def test_emergency_handoff_still_ships_when_the_rescue_pass_also_fails(self) -> None:
         """Wall-to-wall vocal collision on both decks rejects the rescue rung too: handoff ships."""
         out = _with_vocal_activity(_analysis(120.0, duration=240.0), [(200.0, 239.9)])

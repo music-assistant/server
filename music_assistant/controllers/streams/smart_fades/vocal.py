@@ -90,7 +90,11 @@ class VocalMask:
 
 @dataclass(frozen=True, slots=True)
 class VocalHysteresisConfig:
-    """Tunable hysteresis/padding/gap-bridging thresholds for ``build_vocal_windows``."""
+    """
+    Tunable hysteresis/padding/gap-bridging thresholds for ``build_vocal_windows``.
+
+    A run also needs a confident peak or mean probability to survive as a window.
+    """
 
     open_threshold: float = VOCAL_OPEN_THRESHOLD
     close_threshold: float = VOCAL_CLOSE_THRESHOLD
@@ -168,8 +172,9 @@ def build_vocal_windows(
     A run opens once probability reaches ``config.open_threshold`` and only
     closes once it drops below ``config.close_threshold``, then gets padded
     left/right and bridged across short gaps so one phrase doesn't fragment
-    into several windows. Probabilities are indexed from the same time origin
-    as ``start_s``/``end_s``; windows outside that range are dropped.
+    into several windows - and dropped if it never reaches a confident peak
+    or mean. Probabilities are indexed from the same time origin as
+    ``start_s``/``end_s``; windows outside that range are dropped.
 
     :param probabilities: Validated per-bin vocal probabilities (0..1).
     :param frame_duration: Seconds spanned by each probability bin.
