@@ -135,11 +135,11 @@ class PandoraProvider(MusicProvider):
             ),
         )
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
-        """Handle a one-shot config action button press and re-render the entries."""
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
+        """Handle a one-shot config action button press."""
         if action == CONF_TAKEOVER_ACTION:
             await self.takeover_stream()
-            return await self.get_config_entries()
+            return None
         return await super().handle_config_action(action)
 
     async def handle_async_init(self) -> None:
