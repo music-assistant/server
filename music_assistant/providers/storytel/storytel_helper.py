@@ -305,7 +305,7 @@ class StorytelHelper:
         """
         payload = {
             "consumableId": consumable_id,
-            "kidsMode": "true" if kids_mode else "false",
+            "kidsMode": kids_mode,
             # MA provides seconds; Storytel expects milliseconds
             "position": int(position * 1000),
             "secondsSinceCreated": 0,
