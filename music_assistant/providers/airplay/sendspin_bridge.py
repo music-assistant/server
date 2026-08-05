@@ -53,7 +53,12 @@ from .helpers import player_id_to_mac_address
 from .stream import AirPlayStream
 
 if TYPE_CHECKING:
-    from aiosendspin.server import ExternalStreamStartRequest, SendspinClient, SendspinServer
+    from aiosendspin.server import (
+        ExternalStreamStartRequest,
+        SendspinClient,
+        SendspinGroup,
+        SendspinServer,
+    )
     from aiosendspin.server.roles import AudioChunk
 
     from music_assistant.models.player import Player
@@ -123,8 +128,17 @@ SILENCE_BLOCK: bytes = b"\x00" * (PAD_BLOCK_FRAMES * BRIDGE_CHANNELS * BRIDGE_BY
 # bridge gives up instead. Measured from the moment the loss is noticed, which
 # includes the several seconds a cold recovery needs before audio resumes (a
 # process spawn, the clock-readiness wait and the join headroom), so this sits
-# far enough beyond that for a recovered transport to prove itself.
+# far enough beyond that for a recovered transport to prove itself. The same
+# window guards the session re-join below: a bridge that gives up again this
+# soon after being put back was not fixed by returning it.
 BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS: float = 30.0
+
+# Delays (seconds) before each attempt to put a bridge back into the Sendspin
+# group a give-up took it out of. The first clears a brief blackout or a receiver
+# that was slow to answer; the second is what covers a speaker that rebooted,
+# which is typically absent from mDNS for far longer than the first. Once they
+# run out the player stays out and idle.
+BRIDGE_REJOIN_ATTEMPT_DELAYS: tuple[int, ...] = (5, 30)
 
 
 def get_bridge_client_id(airplay_player: AirPlayPlayer) -> str | None:
@@ -289,10 +303,11 @@ class SendspinAirPlayBridge:
         # Monotonic instant of the last recovery from a lost transport (None when
         # none happened yet), used to tell a one-off loss from a flapping device.
         self._last_transport_recovery: float | None = None
-        # Whether the transport being started is replacing one that was already
-        # playing. Giving up then means a speaker that went away mid-stream, as
-        # opposed to one that was never reachable to begin with.
-        self._recovering_transport = False
+        self._rejoin_task: asyncio.Task[None] | None = None
+        # Monotonic instant the bridge was last put back into the group a give-up
+        # took it out of (None when never). Giving up again this soon after means
+        # the speaker did not hold its place, so it is left out instead.
+        self._last_rejoin: float | None = None
         # Timer id for the deferred teardown on stream end. A seek/next ends the
         # sendspin stream and immediately starts a new one; deferring the CLI
         # teardown across that gap lets the next stream reuse the connected
@@ -398,6 +413,7 @@ class SendspinAirPlayBridge:
     async def stop(self) -> None:
         """Stop and unregister the Sendspin bridge."""
         self.mass.cancel_timer(self._teardown_timer_id)
+        self._cancel_rejoin()
         async with self._lock:
             await self._stop_streaming()
             if self._sendspin_client and self._bridge_client_id:
@@ -456,7 +472,8 @@ class SendspinAirPlayBridge:
         # is settled before anything can return early, so no stream ever
         # inherits the previous one's verdict.
         self._last_transport_recovery = None
-        self._recovering_transport = False
+        # Joining a session by any means supersedes a pending re-join.
+        self._cancel_rejoin()
         if not self.airplay_player.available:
             self.logger.warning(
                 "Cannot start Sendspin stream for %s: player not available",
@@ -842,11 +859,10 @@ class SendspinAirPlayBridge:
         """
         Give up on this stream: stop accepting chunks and tear the transport down.
 
-        A transport that was never established (a sleeping device, one connect
-        timeout) leaves the bridge grouped, so the next Sendspin stream simply
-        starts it over. Giving up on one that was already playing means the
-        speaker went away for good, and the bridge leaves the session so its
-        silence reaches the player instead of hiding behind the group state.
+        Sendspin reports playback from the group's own state, so a bridge that
+        stops feeding its speaker would otherwise hold the visible player on
+        PLAYING while nothing is audible. The bridge leaves the session instead,
+        so that silence reaches the player.
         """
         self._is_streaming = False
         self._held_chunks.clear()
@@ -854,30 +870,121 @@ class SendspinAirPlayBridge:
         # unblock a writer still waiting for a stream that will never be ready
         self._airplay_stream_ready.set()
         self._schedule_cleanup()
-        if self._recovering_transport:
-            self._recovering_transport = False
-            self.mass.create_task(self._leave_sendspin_session())
+        self.mass.create_task(self._leave_sendspin_session())
 
     async def _leave_sendspin_session(self) -> None:
         """
-        Take the bridge out of Sendspin playback, keeping it registered.
+        Take the bridge out of Sendspin playback and line up its return.
 
-        Sendspin reports playback from the group's own state, so a bridge whose
-        speaker is unreachable would hold the visible player on PLAYING while
-        nothing is audible. Leaving surfaces that silence: a shared group plays
-        on without this speaker, a solo one stops. The client stays registered,
-        so the player survives to be grouped again.
+        A shared group plays on without this speaker, and the bridge is given a
+        bounded attempt to re-join it so a device that was only briefly away
+        comes back on its own. A solo group has nothing to re-join: leaving is
+        what stops it. Either way the client stays registered, so the player
+        survives to be grouped again.
         """
         if not (client := self._sendspin_client):
             return
+        # Captured before leaving, which is what moves the client to a solo group.
+        group = client.group
         try:
-            await client.quiesce_to_solo_stopped()
+            previous_group_id = await client.quiesce_to_solo_stopped()
         except Exception as err:
             self.logger.warning(
                 "Could not take %s out of its Sendspin session: %s",
                 self.airplay_player.display_name,
                 err,
             )
+            return
+        if previous_group_id is None:
+            return
+        # Whichever way this give-up goes, an older schedule must not outlive it.
+        self._cancel_rejoin()
+        last_rejoin = self._last_rejoin
+        if (
+            last_rejoin is not None
+            and time.monotonic() - last_rejoin < BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS
+        ):
+            self.logger.warning(
+                "%s gave up again within %.0fs of being re-joined, leaving it out of the group",
+                self.airplay_player.display_name,
+                BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS,
+            )
+            return
+        self._rejoin_task = self.mass.create_task(self._rejoin_attempts(group))
+
+    async def _rejoin_attempts(self, group: SendspinGroup) -> None:
+        """
+        Put the bridge back into the group a give-up took it out of.
+
+        :param group: The Sendspin group the bridge left.
+        """
+        max_attempts = len(BRIDGE_REJOIN_ATTEMPT_DELAYS)
+        for attempt, delay in enumerate(BRIDGE_REJOIN_ATTEMPT_DELAYS, start=1):
+            await asyncio.sleep(delay)
+            if not (client := self._sendspin_client):
+                return
+            if len(client.group.clients) > 1 or client.group.has_active_stream:
+                # given a group or a stream of its own meanwhile: re-joining
+                # would take the speaker away from whatever it was just given,
+                # and adding it elsewhere stops the session it is playing
+                self.logger.debug(
+                    "Not re-joining %s: it is in use again already",
+                    self.airplay_player.display_name,
+                )
+                return
+            if self.airplay_player.stream is not None and not self.owns_airplay_stream:
+                # the speaker is streaming natively: the re-join would restart
+                # the transport and tear down a session that is not the bridge's
+                self.logger.debug(
+                    "Not re-joining %s: it is streaming outside the bridge",
+                    self.airplay_player.display_name,
+                )
+                return
+            if not self.airplay_player.available:
+                # a speaker that rebooted is missing from discovery for a while
+                # after it starts answering again, so this is worth another go
+                self.logger.debug(
+                    "Not re-joining %s yet: the speaker is offline",
+                    self.airplay_player.display_name,
+                )
+                continue
+            if not group.clients:
+                self.logger.debug(
+                    "Not re-joining %s: the group it left no longer exists",
+                    self.airplay_player.display_name,
+                )
+                return
+            try:
+                await group.add_client(client)
+            except Exception as err:
+                self.logger.warning(
+                    "Could not re-join %s to its Sendspin group (attempt %d/%d): %s",
+                    self.airplay_player.display_name,
+                    attempt,
+                    max_attempts,
+                    err,
+                )
+                continue
+            # Stamped where the speaker actually rejoins, not where the attempt
+            # was scheduled, so the guard holds whatever the delays above are.
+            self._last_rejoin = time.monotonic()
+            self.logger.info("Re-joined %s to its Sendspin group", self.airplay_player.display_name)
+            return
+        self.logger.warning(
+            "Giving up on re-joining %s to its Sendspin group after %d attempt(s); "
+            "the player stays idle",
+            self.airplay_player.display_name,
+            max_attempts,
+        )
+
+    def _cancel_rejoin(self) -> None:
+        """Drop any pending attempt to re-join the Sendspin group."""
+        rejoin_task = self._rejoin_task
+        self._rejoin_task = None
+        # never self-cancel: a re-join announces itself through the same
+        # stream-start path that clears stale schedules
+        if rejoin_task and not rejoin_task.done() and rejoin_task is not asyncio.current_task():
+            rejoin_task.cancel()
 
     async def _stop_streaming_locked(self) -> None:
         """Serialize streaming teardown with other stop/start operations."""
@@ -1055,9 +1162,6 @@ class SendspinAirPlayBridge:
             "AirPlay transport for %s was lost mid-stream, re-joining the Sendspin timeline",
             self.airplay_player.display_name,
         )
-        # From here the bridge is replacing a transport that was playing, so
-        # failing to bring it back means the speaker is gone rather than late.
-        self._recovering_transport = True
         self._restart_transport()
         return True
 
