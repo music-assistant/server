@@ -67,6 +67,7 @@ test = [
   "pytest-codspeed==5.0.3",
   "pytest-cov==7.0.0",
   "pytest-timeout==2.4.0",
+  "pytest-xdist==3.8.0",
   "syrupy==5.5.3",
   "tomli==2.4.1",
   "ruff==0.15.22",
@@ -183,7 +184,6 @@ module = ["plexapi", "plexapi.*"]
 line-ending = "lf"
 
 [tool.pytest.ini_options]
-addopts = "--cov music_assistant"
 asyncio_mode = "auto"
 timeout = 120
 filterwarnings = [
