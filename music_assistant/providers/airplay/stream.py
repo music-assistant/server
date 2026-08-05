@@ -376,7 +376,7 @@ class AirPlayStream:
         """
         if not self.running or not self.connected:
             return False
-        self._flushed.clear()
+        self._arm_flush_answer()
         # The flush drain re-arms the binary's one-shot audio signal; the next
         # [STATUS] audio belongs to the new track.
         self._audio_present.clear()
@@ -478,8 +478,7 @@ class AirPlayStream:
         # the binary's first status arrives, interpolation would otherwise keep
         # extending the previous anchor's clock, briefly mapping a bogus position.
         self.player.set_state_from_stream(elapsed_time=self._start_position, stream=self)
-        self._started.clear()
-        self._start_ack = None
+        self._arm_start_answer()
         self._start_was_join = join
         start_cmd = f"START_UNIX_MS={start_unix_ms}\nACTION=START"
         if join:
@@ -979,10 +978,14 @@ class AirPlayStream:
             return
         # Only a 2xx means the device took the push. Nothing else on this
         # control channel does - a redirect is as much "not accepted" as a 4xx.
+        # A status of 0 is the "unreported" reading (the field is missing or
+        # unusable), which says nothing about how the push landed, so only a
+        # reported status is judged - warning about a field the binary never
+        # sent would report a rejection that nothing observed.
         status = _status_int(fields, "status")
-        accepted = HTTPStatus.OK <= status < HTTPStatus.MULTIPLE_CHOICES
+        rejected = bool(status) and not (HTTPStatus.OK <= status < HTTPStatus.MULTIPLE_CHOICES)
         self.player.logger.log(
-            logging.DEBUG if accepted else logging.WARNING,
+            logging.WARNING if rejected else logging.DEBUG,
             "MRP now-playing push (%s path) for %s: HTTP %s",
             fields.get("path", "?"),
             display_name,
@@ -1234,6 +1237,11 @@ class AirPlayStream:
             self._flushed.set()
         elif "[STATUS] audio " in line:
             self._audio_present.set()
+        elif "[STATUS] mrp" in line:
+            # The artwork reports arrive on stderr; the now-playing push
+            # status arrives on stdout. One parser serves both shapes, so
+            # each reader dispatches the mrp lines its own pipe carries.
+            self._parse_mrp_status(line)
         elif "[STATUS] idle_timeout" in line:
             # a parked (paused) session outlived the binary's idle cap;
             # treat it as a normal end of stream
@@ -1395,6 +1403,21 @@ class AirPlayStream:
             self._cleanup_complete = True
             self._cli_proc = None
 
+    def _arm_start_answer(self) -> None:
+        """Clear the slots the binary answers a START in, so only this one's answer is read."""
+        # The ack and the failure are filled by the stderr reader while start()
+        # waits, so both slots have to be emptied at the command itself: a
+        # rejection left over from the previous START would otherwise be read
+        # as this one's answer the moment an ack releases the wait.
+        self._started.clear()
+        self._start_ack = None
+        self._start_error = None
+
+    def _arm_flush_answer(self) -> None:
+        """Clear the slots the binary answers a FLUSH in, so only this one's answer is read."""
+        self._flushed.clear()
+        self._flush_error = None
+
     async def _write_cli_command(self, command: str) -> bool:
         """Write an interactive command regardless of stream teardown state."""
         if not self._cli_proc or self._cli_proc.closed:
@@ -1547,7 +1570,11 @@ class AirPlayStream:
         # The binary's elapsed counts only the retained content, so the
         # position base moves by the cut to keep reported progress exact.
         self._start_position += content_cut_ms / 1000
-        self._pending_content_cut_ms = content_cut_ms
+        # Track the cut owed the same way the base above tracks it: both
+        # accumulate over an anchor and both are zeroed at every anchor
+        # boundary. Overwriting here would settle only the newest correction
+        # against a base that carries all of them.
+        self._pending_content_cut_ms += content_cut_ms
         # Routine for a join start: the low join headroom defers to this
         # correction, which lands the anchor at exact receiver readiness. A
         # post-commit correction on any other START stays loud.
@@ -1600,8 +1627,12 @@ class AirPlayStream:
                 cut_ms,
             )
             return
+        # A cut can miss the amount it was asked for in either direction, and
+        # both leave the base wrong by the difference, so the magnitude decides
+        # whether it settled cleanly. Re-basing by the signed difference then
+        # corrects either one; only the report differs.
         shortfall_ms = applied_ms - cut_ms
-        if shortfall_ms < AIRPLAY_CONTENT_CUT_TOLERANCE_MS:
+        if abs(shortfall_ms) < AIRPLAY_CONTENT_CUT_TOLERANCE_MS:
             self.player.logger.debug(
                 "AirPlay content cut on %s took the full %d ms (%d bytes in %d ms)",
                 self.player.display_name,
@@ -1611,17 +1642,32 @@ class AirPlayStream:
             )
             return
         self._start_position -= shortfall_ms / 1000
+        if shortfall_ms > 0:
+            self.player.logger.warning(
+                "AirPlay content cut on %s fell %d ms short: the corrected anchor asked "
+                "for %d ms and the cut took %d ms (%d bytes in %d ms). Reported position "
+                "re-based by -%d ms; playback is that much ahead of the group timeline.",
+                self.player.display_name,
+                shortfall_ms,
+                applied_ms,
+                cut_ms,
+                cut_bytes,
+                drain_ms,
+                shortfall_ms,
+            )
+            return
+        overcut_ms = -shortfall_ms
         self.player.logger.warning(
-            "AirPlay content cut on %s fell %d ms short: the corrected anchor asked "
+            "AirPlay content cut on %s overran by %d ms: the corrected anchor asked "
             "for %d ms and the cut took %d ms (%d bytes in %d ms). Reported position "
-            "re-based by -%d ms; playback is that much ahead of the group timeline.",
+            "was under-advanced by that much and is re-based by +%d ms.",
             self.player.display_name,
-            shortfall_ms,
+            overcut_ms,
             applied_ms,
             cut_ms,
             cut_bytes,
             drain_ms,
-            shortfall_ms,
+            overcut_ms,
         )
 
     def _parse_clock_ready(self, line: str) -> None:
