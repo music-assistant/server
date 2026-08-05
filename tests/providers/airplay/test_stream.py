@@ -513,6 +513,23 @@ def test_mrp_artwork_rejection_is_reported(caplog: pytest.LogCaptureFixture) -> 
     assert "HTTP ?" not in caplog.text
 
 
+def test_mrp_artwork_rejection_reaches_the_parser_from_the_stderr_reader(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The binary reports artwork on stderr, so the status dispatcher must route it."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.WARNING):
+        ends_the_loop = stream._handle_status_line(
+            "[STATUS] mrp artwork=rejected reason=progressive_jpeg bytes=48123 "
+            "width=512 height=512 precision=8 sof=0xc2 components=3 progressive=1 "
+            "clear_status=200 staging_max_bytes=131072"
+        )
+
+    assert ends_the_loop is False
+    assert "rejected the now-playing artwork" in caplog.text
+
+
 def test_mrp_channel_status_is_not_read_as_an_http_status(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
