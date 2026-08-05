@@ -779,14 +779,16 @@ async def test_registry_changed_during_the_fetch_is_not_cached() -> None:
 
 
 async def test_shared_registry_rejects_writes() -> None:
-    """Reject writes to the registry that is shared between all callers."""
+    """Reject writes to the registry (and its entries) shared between all callers."""
     async with _start_provider([_state("tts.only", "Only")]) as (provider, _):
         registry = await provider.get_entity_registry()
 
         with pytest.raises(TypeError):
             registry["light.kitchen"] = HassRegistryEntity(  # type: ignore[index]
-                entity_id="light.kitchen", platform="test", device_id=None
+                platform="test", device_id=None
             )
+        with pytest.raises(AttributeError):
+            next(iter(registry.values())).platform = "test"  # type: ignore[misc]
 
 
 async def test_registry_reuses_repeated_strings() -> None:
@@ -808,13 +810,11 @@ async def test_registry_reuses_repeated_strings() -> None:
             registry = await provider._fetch_entity_registry()
 
         assert len(registry) == 3
-        assert registry["light.lamp_0"] == {
-            "entity_id": "light.lamp_0",
-            "platform": "esphome",
-            "device_id": "device",
-        }
-        assert len({id(entry["platform"]) for entry in registry.values()}) == 1
-        assert len({id(entry["device_id"]) for entry in registry.values()}) == 1
+        assert registry["light.lamp_0"] == HassRegistryEntity(
+            platform="esphome", device_id="device"
+        )
+        assert len({id(entry.platform) for entry in registry.values()}) == 1
+        assert len({id(entry.device_id) for entry in registry.values()}) == 1
 
 
 async def test_device_registry_is_reused_within_the_cache_window() -> None:

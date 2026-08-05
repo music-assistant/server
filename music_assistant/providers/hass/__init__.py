@@ -100,10 +100,9 @@ class DeviceMediaPlayerInfo(TypedDict):
     announce_entity_id: str | None
 
 
-class HassRegistryEntity(TypedDict):
+class HassRegistryEntity(NamedTuple):
     """Home Assistant entity registry entry, limited to the fields Music Assistant uses."""
 
-    entity_id: str
     platform: str
     device_id: str | None
 
@@ -389,9 +388,8 @@ class HomeAssistantProvider(PluginProvider):
         Entities that are disabled in Home Assistant are absent from the result, and so are
         entities without a unique ID: those are not part of Home Assistant's registry at all.
 
-        The result is shared between all callers and must be treated as read-only: the
-        mapping itself rejects writes, but the entries are plain dicts, so copy an entry
-        before changing it.
+        The result is shared between all callers and is read-only: both the mapping and
+        its entries reject writes.
         """
         if (registry := self._entity_registry) is not None:
             return registry
@@ -465,13 +463,13 @@ class HomeAssistantProvider(PluginProvider):
         if not device_by_mac:
             return {}
         media_players_by_device: dict[str, list[str]] = {}
-        for entry in (await self.get_entity_registry()).values():
+        for entity_id, entry in (await self.get_entity_registry()).items():
             if (
-                entry["platform"] == platform
-                and entry["entity_id"].startswith("media_player.")
-                and (device_id := entry["device_id"])
+                entry.platform == platform
+                and entity_id.startswith("media_player.")
+                and (device_id := entry.device_id)
             ):
-                media_players_by_device.setdefault(device_id, []).append(entry["entity_id"])
+                media_players_by_device.setdefault(device_id, []).append(entity_id)
         candidates_by_mac = {
             mac: media_players_by_device.get(device["id"], [])
             for mac, device in device_by_mac.items()
@@ -1071,7 +1069,6 @@ class HomeAssistantProvider(PluginProvider):
             if (device_id := entry.get("di")) is not None:
                 device_id = device_ids.setdefault(device_id, device_id)
             registry[entry["ei"]] = HassRegistryEntity(
-                entity_id=entry["ei"],
                 platform=intern(entry["pl"]),
                 device_id=device_id,
             )
