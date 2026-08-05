@@ -82,6 +82,8 @@ DYNAMIC_SAMPLE_CACHE_EXPIRATION = 24 * 3600  # 24h; stale entries are still serv
 CONF_AI_DESCRIPTIONS = "ai_descriptions"
 CONF_AI_ENGINE = "ai_engine"
 DESCRIPTION_PREFIX = "[Smart Playlist] "
+# descriptions are a sentence or two, so this only has to cover a slow local model
+AI_QUERY_TIMEOUT_SECONDS = 60
 
 SUPPORTED_FEATURES: set[ProviderFeature] = {
     ProviderFeature.BROWSE,
@@ -1389,11 +1391,18 @@ class SmartPlaylistProvider(PluginProvider):
         if engine is None:
             return None
         try:
-            response = await engine.provider.ai_query(
-                self._build_ai_prompt(name, rules, locale), engine_id=engine.id
-            )
+            async with asyncio.timeout(AI_QUERY_TIMEOUT_SECONDS) as query_timeout:
+                response = await engine.provider.ai_query(
+                    self._build_ai_prompt(name, rules, locale), engine_id=engine.id
+                )
         except Exception as exc:
-            self.logger.debug("AI description generation failed for '%s': %s", name, exc)
+            # expired() tells our own cap apart from a timeout raised inside the engine
+            details: str | Exception = (
+                f"no response within {AI_QUERY_TIMEOUT_SECONDS}s"
+                if isinstance(exc, TimeoutError) and query_timeout.expired()
+                else exc
+            )
+            self.logger.debug("AI description generation failed for '%s': %s", name, details)
             return None
         return response.strip() or None
 

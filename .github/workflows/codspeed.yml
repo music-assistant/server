@@ -69,6 +69,4 @@ jobs:
           # instruction counts are reproducible under simulation. Server-level / async
           # scenarios are non-deterministic under instruction counting and are covered by
           # the scripts/perf/ deep-dive suite instead.
-          # -o addopts="" clears the default "--cov music_assistant" so coverage
-          # instrumentation does not interfere with the CodSpeed measurements.
-          run: pytest tests/benchmarks/ --codspeed -o addopts=""
+          run: pytest tests/benchmarks/ --codspeed

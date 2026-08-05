@@ -44,6 +44,27 @@ def test_get_ffmpeg_args_does_not_mutate_filters() -> None:
     assert filter_params == ["volume=-1dB"]
 
 
+def test_get_ffmpeg_args_downmixes_multichannel_for_single_channel_output() -> None:
+    """A surround source is folded to stereo before the output is narrowed to one channel."""
+    input_format = AudioFormat(
+        content_type=ContentType.PCM_F32LE,
+        sample_rate=48000,
+        bit_depth=32,
+        channels=6,
+    )
+    output_format = AudioFormat(
+        content_type=ContentType.FLAC,
+        sample_rate=48000,
+        bit_depth=16,
+        channels=1,
+    )
+
+    args = get_ffmpeg_args(input_format, output_format, ["pan=mono|c0=0.5*FL+0.5*FR"])
+
+    filter_graph = args[args.index("-af") + 1]
+    assert filter_graph.index("pan=stereo|FL=") < filter_graph.index("pan=mono|c0=0.5*FL+0.5*FR")
+
+
 # -- parse_ffmpeg_stream_info --
 
 

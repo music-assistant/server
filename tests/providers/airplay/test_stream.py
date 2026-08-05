@@ -4,8 +4,10 @@ import asyncio
 import errno
 import logging
 import os
+import select
 import threading
 from collections.abc import AsyncGenerator, Callable, Coroutine
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -15,7 +17,7 @@ from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter, open_named_pipe_writer
+from music_assistant.helpers.named_pipe import WRITE_POLL_INTERVAL_MS, AsyncNamedPipeWriter
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
@@ -67,7 +69,7 @@ def _make_player() -> MagicMock:
 
     prov = MagicMock()
     prov.dacp_id = "ABCDEF0123456789"
-    prov.ptp_daemon_running = True
+    prov.ptp_daemon_ready = True
     prov.logger = logging.getLogger("test.airplay.prov")
     # auto-detected publish ip: reachable address of this host, but not the interface
     # the stream to this device leaves from - so it is never handed to the binary
@@ -274,10 +276,17 @@ async def test_cli_args_raop_encryption_can_be_disabled() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cli_args_no_ptp_shared_without_daemon() -> None:
-    """--ptp-shared is only passed while the provider's PTP daemon is running."""
+async def test_cli_args_no_ptp_shared_when_daemon_alive_but_not_ready() -> None:
+    """
+    A daemon that is merely alive must not get --ptp-shared.
+
+    Liveness does not mean the daemon is serving: until it publishes its clock
+    there is nothing to attach to, and a stream that asks anyway silently takes
+    its own timing instead - drifting away from the members that got the clock.
+    """
     player = _make_player()
-    player.provider.ptp_daemon_running = False
+    player.provider.ptp_daemon_running = True
+    player.provider.ptp_daemon_ready = False
     args = await _build_args(player)
     assert "--ptp-shared" not in args
 
@@ -504,6 +513,23 @@ def test_mrp_artwork_rejection_is_reported(caplog: pytest.LogCaptureFixture) -> 
     assert "HTTP ?" not in caplog.text
 
 
+def test_mrp_artwork_rejection_reaches_the_parser_from_the_stderr_reader(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The binary reports artwork on stderr, so the status dispatcher must route it."""
+    stream = AirPlayStream(_make_player())
+
+    with caplog.at_level(logging.WARNING):
+        ends_the_loop = stream._handle_status_line(
+            "[STATUS] mrp artwork=rejected reason=progressive_jpeg bytes=48123 "
+            "width=512 height=512 precision=8 sof=0xc2 components=3 progressive=1 "
+            "clear_status=200 staging_max_bytes=131072"
+        )
+
+    assert ends_the_loop is False
+    assert "rejected the now-playing artwork" in caplog.text
+
+
 def test_mrp_channel_status_is_not_read_as_an_http_status(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -619,14 +645,23 @@ def test_command_pipe_paths_are_unique_per_stream() -> None:
 
 
 @pytest.mark.asyncio
-async def test_command_pipe_write_returns_false_without_reader(tmp_path: Path) -> None:
-    """A command pipe write reports when no reader can receive the command."""
+async def test_command_pipe_write_returns_false_without_reader(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A command pipe write reports a missing reader without retrying or warning."""
     pipe_path = tmp_path / "commands"
     os.mkfifo(pipe_path)
     writer = AsyncNamedPipeWriter(str(pipe_path))
 
-    with patch("music_assistant.helpers.named_pipe.time.sleep"):
+    with (
+        caplog.at_level(logging.WARNING),
+        patch("music_assistant.helpers.named_pipe.os.open", wraps=os.open) as open_pipe,
+    ):
         assert await writer.write(b"ACTION=STANDBY\n") is False
+
+    # the missing reader is reported once, without retrying or crying wolf
+    open_pipe.assert_called_once()
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
 
 
 @pytest.mark.asyncio
@@ -745,6 +780,306 @@ async def test_command_pipe_write_propagates_non_epipe_errors() -> None:
 
 
 @pytest.mark.asyncio
+async def test_pipe_write_reports_a_stalled_reader_without_raising(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A write bigger than the pipe buffer reports failure instead of raising."""
+    pipe_path = tmp_path / "audio"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+    # a reader that never reads, so the pipe buffer fills up and stays full
+    read_fd = os.open(pipe_path, os.O_RDONLY | os.O_NONBLOCK)
+
+    try:
+        with (
+            caplog.at_level(logging.WARNING),
+            patch("music_assistant.helpers.named_pipe.WRITE_STALL_TIMEOUT", 0.05),
+        ):
+            assert await writer.write(b"\x00" * 176400) is False
+
+        # the reader is still attached, so the descriptor stays usable
+        assert writer._write_fd is not None
+        assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+    finally:
+        os.close(read_fd)
+        await writer.remove()
+
+
+@pytest.mark.asyncio
+async def test_pipe_write_completes_a_large_write_while_the_reader_drains(
+    tmp_path: Path,
+) -> None:
+    """A write bigger than the pipe buffer completes against a reader that keeps up."""
+    pipe_path = tmp_path / "audio"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+    read_fd = os.open(pipe_path, os.O_RDONLY | os.O_NONBLOCK)
+    payload = b"\x00" * 176400
+
+    async def drain() -> bytes:
+        received = bytearray()
+        while len(received) < len(payload):
+            try:
+                chunk = os.read(read_fd, 65536)
+            except BlockingIOError:
+                chunk = b""
+            if not chunk:
+                # no writer attached yet or nothing buffered: yield instead of spinning
+                await asyncio.sleep(0.001)
+                continue
+            received += chunk
+        return bytes(received)
+
+    reader = asyncio.create_task(drain())
+    try:
+        async with asyncio.timeout(10):
+            assert await writer.write(payload) is True
+            # every byte arrives exactly once, so a resumed write never repeats itself
+            assert await reader == payload
+    finally:
+        reader.cancel()
+        with suppress(asyncio.CancelledError):
+            await reader
+        os.close(read_fd)
+        await writer.remove()
+
+
+@pytest.mark.asyncio
+async def test_pipe_write_outlasts_a_reader_slower_than_the_stall_timeout(
+    tmp_path: Path,
+) -> None:
+    """The stall budget covers a lack of progress, not the total time a write takes."""
+    pipe_path = tmp_path / "audio"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+    read_fd = os.open(pipe_path, os.O_RDONLY | os.O_NONBLOCK)
+    payload = b"\x00" * 176400
+    stall_timeout = 0.15
+
+    async def drain_slowly() -> int:
+        received = 0
+        while received < len(payload):
+            await asyncio.sleep(0.02)
+            with suppress(BlockingIOError):
+                received += len(os.read(read_fd, 8192))
+        return received
+
+    reader = asyncio.create_task(drain_slowly())
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    try:
+        async with asyncio.timeout(30):
+            with patch("music_assistant.helpers.named_pipe.WRITE_STALL_TIMEOUT", stall_timeout):
+                assert await writer.write(payload) is True
+            assert await reader == len(payload)
+        # a reader this slow only completes because each pause resets the budget
+        assert loop.time() - started > stall_timeout
+    finally:
+        reader.cancel()
+        with suppress(asyncio.CancelledError):
+            await reader
+        os.close(read_fd)
+        await writer.remove()
+
+
+@pytest.mark.asyncio
+async def test_pipe_write_resumes_after_the_buffer_drains() -> None:
+    """A write that fills the pipe buffer continues once the reader catches up."""
+    data = b"\x00" * 10
+    writer = AsyncNamedPipeWriter("/tmp/audio")  # noqa: S108
+    writer._write_fd = 42
+
+    with (
+        patch(
+            "music_assistant.helpers.named_pipe.os.write",
+            side_effect=[4, BlockingIOError(errno.EAGAIN, "buffer full"), 6],
+        ) as write,
+        patch("music_assistant.helpers.named_pipe.select.poll") as poll,
+    ):
+        assert await writer.write(data) is True
+
+    # the retry picks up where the short write stopped, it never resends
+    assert write.call_args_list == [
+        call(42, memoryview(data)),
+        call(42, memoryview(data)[4:]),
+        call(42, memoryview(data)[4:]),
+    ]
+    poll.return_value.register.assert_called_once_with(42, select.POLLOUT)
+    poll.return_value.poll.assert_called_once_with(WRITE_POLL_INTERVAL_MS)
+
+
+@pytest.mark.asyncio
+async def test_pipe_write_gives_up_when_the_pipe_goes_before_the_first_write() -> None:
+    """A pipe removed the instant a write starts fails cleanly rather than blowing up."""
+    writer = AsyncNamedPipeWriter("/tmp/audio")  # noqa: S108
+
+    with (
+        patch.object(AsyncNamedPipeWriter, "_ensure_write_fd", return_value=True),
+        patch("music_assistant.helpers.named_pipe.os.write") as write,
+    ):
+        assert await writer.write(b"\x00" * 10) is False
+
+    write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_pipe_write_stops_when_the_descriptor_is_taken_mid_stall() -> None:
+    """A stalled write gives up once the pipe is removed out from under it."""
+    writer = AsyncNamedPipeWriter("/tmp/audio")  # noqa: S108
+    writer._write_fd = 42
+
+    def take_descriptor(pipe_writer: AsyncNamedPipeWriter, _write_fd: int) -> None:
+        pipe_writer._write_fd = None
+
+    with (
+        patch(
+            "music_assistant.helpers.named_pipe.os.write",
+            side_effect=[4, BlockingIOError(errno.EAGAIN, "buffer full")],
+        ) as write,
+        patch.object(AsyncNamedPipeWriter, "_wait_writable", take_descriptor),
+    ):
+        assert await writer.write(b"\x00" * 10) is False
+
+    # writing on would land in whatever reopened that descriptor number
+    assert write.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_pipe_write_resets_fd_when_the_reader_closes_during_a_stall(
+    tmp_path: Path,
+) -> None:
+    """A reader that goes away while the buffer is full still resets the writer."""
+    pipe_path = tmp_path / "audio"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+    read_fd = os.open(pipe_path, os.O_RDONLY | os.O_NONBLOCK)
+
+    async def close_reader_mid_stall() -> None:
+        await asyncio.sleep(0.05)
+        os.close(read_fd)
+
+    closer = asyncio.create_task(close_reader_mid_stall())
+    try:
+        async with asyncio.timeout(30):
+            assert await writer.write(b"\x00" * 176400) is False
+            await closer
+        # the departed reader is what ends the write, so it must not be left mid-stall
+        assert writer._write_fd is None
+    finally:
+        closer.cancel()
+        with suppress(asyncio.CancelledError):
+            await closer
+        with suppress(OSError):
+            os.close(read_fd)
+        await writer.remove()
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_wait_for_reader_resolves_when_the_reader_attaches(
+    tmp_path: Path,
+) -> None:
+    """The reader wait ends as soon as the binary opens its end of the command pipe."""
+    pipe_path = tmp_path / "commands"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+    read_fds: list[int] = []
+
+    async def attach_reader() -> None:
+        await asyncio.sleep(0.01)
+        read_fds.append(os.open(pipe_path, os.O_RDONLY | os.O_NONBLOCK))
+
+    reader = asyncio.create_task(attach_reader())
+    try:
+        assert await writer.wait_for_reader(timeout=1) is True
+        assert read_fds  # resolved on the attach, not before it
+    finally:
+        await reader
+        for read_fd in read_fds:
+            os.close(read_fd)
+        await writer.remove()
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_wait_for_reader_gives_up_at_its_timeout(tmp_path: Path) -> None:
+    """A command pipe nothing ever reads fails the wait within the requested window."""
+    pipe_path = tmp_path / "commands"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+    loop = asyncio.get_running_loop()
+
+    started = loop.time()
+    assert await writer.wait_for_reader(timeout=0.1) is False
+
+    assert 0.1 <= loop.time() - started < 1
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_wait_for_reader_uses_no_worker_thread(tmp_path: Path) -> None:
+    """Waiting for the binary's reader never strands a blocking worker thread."""
+    pipe_path = tmp_path / "commands"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+
+    with (
+        patch(
+            "music_assistant.helpers.named_pipe.os.open",
+            side_effect=OSError(errno.ENXIO, "no reader"),
+        ),
+        patch(
+            "music_assistant.helpers.named_pipe.asyncio.to_thread",
+            new_callable=AsyncMock,
+        ) as to_thread,
+    ):
+        assert await writer.wait_for_reader(timeout=0.1) is False
+
+    to_thread.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_wait_for_reader_defers_to_an_in_flight_write(tmp_path: Path) -> None:
+    """The reader wait leaves the descriptor to a write that is already under way."""
+    pipe_path = tmp_path / "commands"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+    read_fd = os.open(pipe_path, os.O_RDONLY | os.O_NONBLOCK)
+
+    try:
+        await writer._write_lock.acquire()
+        wait = asyncio.create_task(writer.wait_for_reader(timeout=1))
+        await asyncio.sleep(0)
+
+        # a reader is attached the whole time, so only the write lock holds this up
+        assert not wait.done()
+
+        writer._write_lock.release()
+        assert await wait is True
+    finally:
+        os.close(read_fd)
+        await writer.remove()
+
+
+@pytest.mark.asyncio
+async def test_command_pipe_write_reuses_the_fd_from_the_reader_wait(tmp_path: Path) -> None:
+    """A command written after the reader wait rides the descriptor that wait opened."""
+    pipe_path = tmp_path / "commands"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+    read_fd = os.open(pipe_path, os.O_RDONLY | os.O_NONBLOCK)
+
+    try:
+        assert await writer.wait_for_reader(timeout=1) is True
+
+        with patch("music_assistant.helpers.named_pipe.os.open") as open_pipe:
+            assert await writer.write(b"ACTION=STANDBY\n") is True
+
+        open_pipe.assert_not_called()
+        assert os.read(read_fd, 64) == b"ACTION=STANDBY\n"
+    finally:
+        os.close(read_fd)
+        await writer.remove()
+
+
+@pytest.mark.asyncio
 async def test_cli_command_updates_timestamp_after_successful_delivery() -> None:
     """A delivered command updates the player's last command timestamp."""
     player = _make_player()
@@ -797,12 +1132,12 @@ async def test_cli_command_preserves_timestamp_when_delivery_raises() -> None:
 
 
 @pytest.mark.asyncio
-async def test_connect_queues_text_metadata_before_connection() -> None:
-    """Text metadata is queued as soon as cliairplay starts."""
+async def test_connect_does_not_write_before_the_binary_can_read() -> None:
+    """Connecting lays out the command pipe and starts cliairplay, pushing nothing into it."""
     player = _make_player()
     stream = AirPlayStream(player)
-    metadata = MagicMock(corrected_elapsed_time=12.5)
-    player.current_media = metadata
+    # media is available, so a push that never happens is by design and not a missing source
+    player.current_media = MagicMock(corrected_elapsed_time=12.5)
     process = MagicMock(closed=False)
     process.start = AsyncMock(return_value=None)
     operation_order: list[str] = []
@@ -812,9 +1147,6 @@ async def test_connect_queues_text_metadata_before_connection() -> None:
 
     async def start_process() -> None:
         operation_order.append("process")
-
-    async def send_metadata(*_args: Any, **_kwargs: Any) -> None:
-        operation_order.append("metadata")
 
     def consume_task(awaitable: Any) -> MagicMock:
         awaitable.close()
@@ -831,32 +1163,23 @@ async def test_connect_queues_text_metadata_before_connection() -> None:
             return_value=process,
         ),
         patch.object(stream.commands_pipe, "create", side_effect=create_pipe),
-        patch.object(stream, "send_metadata", side_effect=send_metadata) as send_metadata_mock,
+        patch.object(stream, "send_metadata", new_callable=AsyncMock) as send_metadata_mock,
     ):
         await stream.connect()
 
-    assert operation_order == ["pipe", "process", "metadata"]
-    send_metadata_mock.assert_awaited_once_with(12, metadata, send_artwork=False)
+    assert operation_order == ["pipe", "process"]
+    send_metadata_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_connect_failure_cleans_up_process_and_pipe() -> None:
-    """A metadata write failure cannot leave a live cliairplay process or FIFO."""
+    """A cliairplay process that fails to start cannot leave a live process or FIFO."""
     player = _make_player()
     stream = AirPlayStream(player)
-    metadata = MagicMock(corrected_elapsed_time=0)
-    player.current_media = metadata
     process = MagicMock(closed=False)
-    process.start = AsyncMock(return_value=None)
+    process.start = AsyncMock(side_effect=OSError("process start failed"))
     process.kill = AsyncMock()
 
-    def consume_task(awaitable: Any) -> MagicMock:
-        awaitable.close()
-        task = MagicMock()
-        task.done.return_value = True
-        return task
-
-    player.provider.mass.create_task.side_effect = consume_task
     with (
         patch.object(stream, "_build_cli_args", new_callable=AsyncMock, return_value=["binary"]),
         patch(
@@ -865,13 +1188,7 @@ async def test_connect_failure_cleans_up_process_and_pipe() -> None:
         ),
         patch.object(stream.commands_pipe, "create", new_callable=AsyncMock),
         patch.object(stream.commands_pipe, "remove", new_callable=AsyncMock) as remove_pipe,
-        patch.object(
-            stream,
-            "send_metadata",
-            new_callable=AsyncMock,
-            side_effect=OSError("metadata write failed"),
-        ),
-        pytest.raises(OSError, match="metadata write failed"),
+        pytest.raises(OSError, match="process start failed"),
     ):
         await stream.connect()
 
@@ -1213,59 +1530,6 @@ async def test_flush_returns_false_when_not_connected() -> None:
     write_command.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_named_pipe_writer_open_is_bounded_without_worker_thread() -> None:
-    """A missing FIFO reader times out without stranding a blocking worker thread."""
-    open_error = OSError(errno.ENXIO, "no reader")
-    with (
-        patch(
-            "music_assistant.helpers.named_pipe.os.open",
-            side_effect=open_error,
-        ),
-        patch(
-            "music_assistant.helpers.named_pipe.asyncio.to_thread",
-            new_callable=AsyncMock,
-        ) as to_thread,
-        pytest.raises(TimeoutError, match="Timed out opening named pipe writer"),
-    ):
-        await open_named_pipe_writer("/tmp/generation.pcm", timeout=0)  # noqa: S108
-
-    to_thread.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_named_pipe_writer_open_cancellation_has_no_fd_to_leak() -> None:
-    """Cancellation while waiting for a reader leaves no worker or descriptor behind."""
-    with (
-        patch(
-            "music_assistant.helpers.named_pipe.os.open",
-            side_effect=OSError(errno.ENXIO, "no reader"),
-        ),
-        patch("music_assistant.helpers.named_pipe.os.close") as close_fd,
-    ):
-        open_task = asyncio.create_task(
-            open_named_pipe_writer("/tmp/generation.pcm", timeout=10)  # noqa: S108
-        )
-        await asyncio.sleep(0)
-        open_task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await open_task
-
-    close_fd.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_named_pipe_writer_open_restores_blocking_mode() -> None:
-    """The descriptor inherited by ffmpeg is switched out of nonblocking mode."""
-    with (
-        patch("music_assistant.helpers.named_pipe.os.open", return_value=42),
-        patch("music_assistant.helpers.named_pipe.os.set_blocking") as set_blocking,
-    ):
-        assert await open_named_pipe_writer("/tmp/generation.pcm") == 42  # noqa: S108
-
-    set_blocking.assert_called_once_with(42, True)
-
-
 def test_flushed_status_sets_flush_event() -> None:
     """The [STATUS] flushed line releases the flush acknowledgement event."""
     stream = AirPlayStream(_make_player())
@@ -1525,7 +1789,6 @@ async def test_connect_resets_accumulated_shift() -> None:
     stream = AirPlayStream(player)
     stream.cumulative_shift_seconds = 5.0
     stream._reanchor_status_seen = True
-    player.current_media = MagicMock(corrected_elapsed_time=0)
     process = MagicMock(closed=False)
     process.start = AsyncMock(return_value=None)
 
@@ -1540,7 +1803,6 @@ async def test_connect_resets_accumulated_shift() -> None:
         patch.object(stream, "_build_cli_args", new_callable=AsyncMock, return_value=["binary"]),
         patch("music_assistant.providers.airplay.stream.AsyncProcess", return_value=process),
         patch.object(stream.commands_pipe, "create", new_callable=AsyncMock),
-        patch.object(stream, "send_metadata", new_callable=AsyncMock),
     ):
         await stream.connect()
 
@@ -1583,7 +1845,7 @@ async def test_initial_metadata_skips_artwork() -> None:
 @pytest.mark.asyncio
 async def test_wait_for_connection_pushes_metadata_immediately() -> None:
     """
-    Track metadata is pushed the instant the device connects.
+    Track metadata is pushed the instant the binary can receive it.
 
     Receivers that gate audio rendering on receiving timeline-anchored metadata
     (e.g. Sonos over native AirPlay 2) must not be left silent while a deferred
@@ -1595,13 +1857,25 @@ async def test_wait_for_connection_pushes_metadata_immediately() -> None:
     stream = AirPlayStream(player)
     stream._connected.set()  # connection already established
     player.provider.mass.call_later = MagicMock()
+    operation_order: list[str] = []
+
+    async def wait_for_reader(_timeout: float) -> bool:
+        operation_order.append("reader")
+        return True
+
+    async def send_current_metadata(**_kwargs: Any) -> None:
+        operation_order.append("metadata")
 
     with (
         patch.object(stream, "_cli_proc", MagicMock()),  # non-None so the method proceeds
+        patch.object(stream.commands_pipe, "wait_for_reader", side_effect=wait_for_reader),
+        patch.object(stream, "_send_current_metadata", side_effect=send_current_metadata),
         patch.object(stream, "send_cli_command", return_value=None),  # avoid a real coroutine
     ):
         await stream.wait_for_connection()
 
+    # Nothing is written before the binary has a reader on the command pipe.
+    assert operation_order == ["reader", "metadata"]
     # Metadata pushed synchronously on connect...
     player._on_player_media_updated.assert_called_once_with()
     # ...and never routed through the delayed call_later path.
@@ -1610,6 +1884,83 @@ async def test_wait_for_connection_pushes_metadata_immediately() -> None:
     # The volume resend is still deferred (existing behavior preserved).
     assert player.provider.mass.call_later.call_count == 1
     assert player.provider.mass.call_later.call_args_list[0].args[0] == 2
+
+
+@pytest.mark.asyncio
+async def test_deferred_volume_resend_reads_the_state_when_it_fires() -> None:
+    """The repeated volume push must carry the volume at fire time, not at connect time."""
+    player = _make_player()
+    player.volume_muted = False
+    player.volume_level = 40
+    stream = AirPlayStream(player)
+    stream._connected.set()  # connection already established
+    player.provider.mass.call_later = MagicMock()
+
+    with (
+        patch.object(stream, "_cli_proc", MagicMock()),  # non-None so the method proceeds
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=True)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", new_callable=AsyncMock) as send_command,
+    ):
+        await stream.wait_for_connection()
+        send_command.assert_awaited_with("VOLUME=40")
+        deferred = player.provider.mass.call_later.call_args_list[0].args[1]
+
+        # a volume change between the connect and the resend firing must survive
+        player.volume_level = 75
+        await deferred()
+        send_command.assert_awaited_with("VOLUME=75")
+
+        # ...and so must a mute
+        player.volume_muted = True
+        await deferred()
+
+    send_command.assert_awaited_with("VOLUME=0")
+
+
+@pytest.mark.asyncio
+async def test_wait_for_connection_reports_an_unread_command_pipe() -> None:
+    """A binary that never attaches to the command pipe is reported for the player it serves."""
+    player = _make_player()
+    player.logger = MagicMock()
+    player.volume_muted = False
+    stream = AirPlayStream(player)
+    stream._connected.set()
+    stream._cli_proc = MagicMock(closed=False)
+
+    with (
+        patch.object(
+            stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=False)
+        ) as wait_for_reader,
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", return_value=None),
+    ):
+        await stream.wait_for_connection()
+
+    wait_for_reader.assert_awaited_once()
+    player.logger.warning.assert_called_once()
+    assert player.display_name in player.logger.warning.call_args.args
+
+
+@pytest.mark.asyncio
+async def test_wait_for_connection_stays_quiet_about_a_stopped_stream() -> None:
+    """A stream torn down while connecting took its command pipe along, which is no fault."""
+    player = _make_player()
+    player.logger = MagicMock()
+    player.volume_muted = False
+    stream = AirPlayStream(player)
+    stream._connected.set()
+    stream._cli_proc = MagicMock(closed=False)
+    stream._stopping = True
+
+    with (
+        patch.object(stream.commands_pipe, "wait_for_reader", new=AsyncMock(return_value=False)),
+        patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
+        patch.object(stream, "send_cli_command", return_value=None),
+    ):
+        await stream.wait_for_connection()
+
+    player.logger.warning.assert_not_called()
 
 
 @pytest.mark.asyncio

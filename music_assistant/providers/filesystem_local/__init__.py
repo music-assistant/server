@@ -125,6 +125,7 @@ from .cue import (
 )
 from .helpers import (
     FileSystemItem,
+    ScanErrors,
     get_absolute_path,
     get_album_dir,
     get_artist_dir,
@@ -473,9 +474,9 @@ class LocalFileSystemProvider(MusicProvider):
         # absolute paths of every CUE sheet in this scan with the ".cue" stripped,
         # used for O(1) companion-CUE lookups per audio file
         cue_stems: set[str] = set()
-        # populated only when the provider root itself is unreadable;
-        # per-subdirectory failures are logged and skipped
-        root_scan_errors: list[OSError] = []
+        # collects the errors raised while walking the tree; any error means the
+        # scan is incomplete, a fatal one means the provider is unreachable
+        scan_errors = ScanErrors()
 
         self.sync_running = True
         try:
@@ -486,8 +487,15 @@ class LocalFileSystemProvider(MusicProvider):
                 items_to_process=items_to_process,
                 unchanged_cue_items=unchanged_cue_items,
                 cue_stems=cue_stems,
-                root_scan_errors=root_scan_errors,
+                scan_errors=scan_errors,
             )
+            if scan_errors.fatal:
+                # the storage is gone, so reading the files collected before it went
+                # away would only add a timeout each
+                self.logger.error("Aborting sync for %s: %s", self.name, scan_errors.fatal)
+                report_current_task_failure("Sync aborted: filesystem unavailable during scan")
+                self._set_available(False)
+                return
             # a CUE may name an audio file other than its own; hide that companion too
             if self.media_content_type == "music":
                 for cue_item in (
@@ -534,7 +542,9 @@ class LocalFileSystemProvider(MusicProvider):
 
             async def _process(item: FileSystemItem, prev_checksum: str | None) -> None:
                 nonlocal processed_count
-                if await self._process_item_async(item, prev_checksum, cur_filenames, cue_stems):
+                if await self._process_item_async(
+                    item, prev_checksum, cur_filenames, cue_stems, prev_filenames
+                ):
                     cur_filenames.add(item.relative_path)
                 processed_count += 1
                 if processed_count % 50 == 0 or processed_count == total_items:
@@ -550,17 +560,6 @@ class LocalFileSystemProvider(MusicProvider):
         finally:
             self.sync_running = False
 
-        # do not run deletions if the root base path could not be scanned
-        if root_scan_errors:
-            self.logger.error(
-                "Aborting sync for %s: %d root scan error(s)",
-                self.name,
-                len(root_scan_errors),
-            )
-            report_current_task_failure("Sync aborted: filesystem unavailable during scan")
-            self._set_available(False)
-            return
-
         # do not run deletions on a clean but empty scan of a previously non-empty library
         # (wrong share mounted, empty backup mount, ...)
         if prev_filenames and not cur_filenames:
@@ -575,9 +574,16 @@ class LocalFileSystemProvider(MusicProvider):
             )
             return
 
-        deleted_files = prev_filenames - cur_filenames
-        await self._process_deletions(deleted_files)
-        await self._process_orphaned_albums_and_artists()
+        # a scan that skipped folders or files is incomplete: what it missed is still
+        # there, so deleting it from the library would throw away valid content
+        if scan_errors.incomplete:
+            summary = scan_errors.describe()
+            self.logger.warning("Skipping deletions for %s: %s", self.name, summary)
+            report_current_task_failure(f"Deletions skipped: {summary}")
+        else:
+            deleted_files = prev_filenames - cur_filenames
+            await self._process_deletions(deleted_files)
+            await self._process_orphaned_albums_and_artists()
 
         # flag provider as available again if an earlier sync had marked it down
         self._set_available(True)
@@ -1061,15 +1067,15 @@ class LocalFileSystemProvider(MusicProvider):
         items_to_process: list[tuple[FileSystemItem, str | None]],
         unchanged_cue_items: list[FileSystemItem],
         cue_stems: set[str],
-        root_scan_errors: list[OSError],
+        scan_errors: ScanErrors,
     ) -> None:
         """
         Walk every supported file under the provider root and populate the sync buckets.
 
         Override in subclasses that cannot use a local ``os.scandir`` walk.
         Implementations must route each discovered file through
-        :meth:`_classify_scan_item` and append to ``root_scan_errors`` only
-        when the provider root itself is unreadable.
+        :meth:`_classify_scan_item`, report every unreadable directory to
+        ``scan_errors`` and stop the walk once it reports ``aborted``.
 
         :param file_checksums: Previously stored checksum per provider item id.
         :param cue_file_checksums: Previously stored checksum keyed by CUE relative_path.
@@ -1077,7 +1083,7 @@ class LocalFileSystemProvider(MusicProvider):
         :param items_to_process: Receives changed or new items to process.
         :param unchanged_cue_items: Receives CUE sheets whose checksum matches.
         :param cue_stems: Receives absolute paths (minus extension) of CUE sheets.
-        :param root_scan_errors: Receives errors that indicate the root is unreadable.
+        :param scan_errors: Receives the errors raised while walking the tree.
         """
         ignore_album_playlists = self.media_content_type == "music" and bool(
             self.config.get_value(CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS.key)
@@ -1090,7 +1096,7 @@ class LocalFileSystemProvider(MusicProvider):
                     self.base_path,
                     SUPPORTED_EXTENSIONS,
                     self.logger,
-                    scan_errors=root_scan_errors,
+                    scan_errors=scan_errors,
                 ),
                 start=1,
             ):
@@ -1168,6 +1174,7 @@ class LocalFileSystemProvider(MusicProvider):
         prev_checksum: str | None,
         cur_filenames: set[str] | None = None,
         cue_stems: set[str] | None = None,
+        prev_filenames: set[str] | None = None,
     ) -> bool:
         """
         Process a single item asynchronously.
@@ -1177,6 +1184,8 @@ class LocalFileSystemProvider(MusicProvider):
         :param cur_filenames: Set of current filenames being tracked (for CUE track IDs).
         :param cue_stems: Absolute paths (without extension) of CUE sheets in this scan,
             used to detect companion-CUE audio files without a filesystem stat.
+        :param prev_filenames: The ids/paths the previous scan found, used to keep the
+            ids of a CUE sheet that fails to parse.
         """
         try:
             self.logger.log(VERBOSE_LOG_LEVEL, "Processing: %s", item.relative_path)
@@ -1255,7 +1264,40 @@ class LocalFileSystemProvider(MusicProvider):
                 exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
             )
             report_current_task_failure(f"Failed to process {item.relative_path}: {err}")
+            # the file is still on the storage, so keep it in the scan result:
+            # leaving it out makes the deletion step treat it as removed
+            self._keep_failed_item(item, cur_filenames, prev_filenames)
         return False
+
+    def _keep_failed_item(
+        self,
+        item: FileSystemItem,
+        cur_filenames: set[str] | None,
+        prev_filenames: set[str] | None,
+    ) -> None:
+        """
+        Keep an item that could not be processed in the scan result.
+
+        :param item: The item that failed to process.
+        :param cur_filenames: Receives the ids/paths present in this scan.
+        :param prev_filenames: The ids/paths the previous scan found.
+        """
+        if cur_filenames is None:
+            return
+        cur_filenames.add(item.relative_path)
+        if (
+            item.ext not in CUE_EXTENSIONS
+            or self.media_content_type != "music"
+            or not prev_filenames
+        ):
+            return
+        # a CUE sheet stands in for one id per track it describes and those cannot be
+        # rebuilt without parsing it, so carry over the ids of the previous scan
+        cur_filenames.update(
+            item_id
+            for item_id in prev_filenames
+            if (parsed := parse_cue_track_id(item_id)) and parsed[0] == item.relative_path
+        )
 
     async def _process_orphaned_albums_and_artists(self) -> None:
         """Process deletion of orphaned albums and artists."""

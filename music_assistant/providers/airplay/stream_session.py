@@ -40,14 +40,14 @@ if TYPE_CHECKING:
     from .player import AirPlayPlayer
     from .provider import AirPlayProvider
 
-# What each readiness outcome means for the join anchor. They all end up
-# anchoring on the join floor, so only the reason distinguishes a device that
-# needs longer from one that will not play at all.
+# What each readiness outcome means for the join anchor: only a projection moves
+# it, every other outcome leaves the join floor carrying it alone, so the note
+# says which of the two happened and why. STALLED has no note because it never
+# reaches an anchor - a stalled joiner is refused the join before that.
 _CLOCK_READINESS_NOTES: dict[ClockReadiness, str] = {
     ClockReadiness.PROJECTED: "usable in {out:.2f}s; anchoring just past that",
     ClockReadiness.NOT_APPLICABLE: "runs on NTP timing, so there is none to wait for; "
     "anchoring on the join floor",
-    ClockReadiness.STALLED: "never answered ours; anchoring on the join floor",
     ClockReadiness.UNREPORTED: "was not reported within {timeout:.1f}s (a slow device, or a "
     "binary too old to report it); anchoring on the join floor",
 }
@@ -1098,9 +1098,12 @@ class AirPlayStreamSession:
             caller then anchors on its lead alone.
         """
         if len(self.sync_clients) == 1:
-            # A lone receiver seats a fresh session by itself within ~20 ms and
-            # has no partner to be late against, so waiting only delays it. The
-            # instant matters once members have to agree on one.
+            # A lone receiver has no partner to be late against, so waiting only
+            # delays it; the instant matters once members have to agree on one.
+            # This assumes it seats a fresh session quickly, which holds for the
+            # receivers measured (Sonos, Apple, Samsung) but not for every one:
+            # a receiver that does need its clock up front - a multiroom master,
+            # say - is covered by a separate readiness decision, not this one.
             return 0
         results = await asyncio.gather(
             *[
@@ -1138,6 +1141,8 @@ class AirPlayStreamSession:
         misplaced). When any member was corrected, every member is re-STARTed
         at the largest reported instant so the group converges on one shared
         instant; the recorded session anchor is always the verified truth.
+        A solo member is never re-STARTed: its corrected instant is simply
+        adopted as the anchor, since there is no partner to converge with.
 
         :param position_ms: Media position mapped to the first sample of the anchor.
         :param start_unix_ms: Shared audible-start instant in unix epoch ms.
@@ -1168,6 +1173,17 @@ class AirPlayStreamSession:
                     continue  # older binary without a started ack
                 corrected_ms = max(corrected_ms, actual - adjust_ms)
             if corrected_ms <= target_ms + 2:
+                break
+            if len(member_tasks) == 1:
+                # A lone member has no partner to converge with and its binary
+                # already scheduled the corrected instant exactly, so adopt that
+                # as the anchor. Re-STARTing it only does damage: the command
+                # re-bases reported position on the raw position_ms (start()
+                # writes that base unconditionally), throwing away the
+                # correction the anchor already folded into it, and if the
+                # second ack times out the session records an instant the
+                # binary never played on.
+                target_ms = corrected_ms
                 break
             self.prov.logger.warning(
                 "AirPlay group start corrected: a member could not honor %d, "
