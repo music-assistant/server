@@ -118,6 +118,7 @@ async def test_discovery_controller_owns_async_zeroconf(mass_minimal: MusicAssis
         ),
         patch(
             "music_assistant.controllers.discovery.controller.get_zeroconf_args",
+            autospec=True,
             return_value=zc_args,
         ) as mock_get_zeroconf_args,
     ):
