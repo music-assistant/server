@@ -925,7 +925,7 @@ def _fade_onset_pin(ctx: TransitionContext) -> float:
 
 
 def _entry_options(ctx: TransitionContext, bars: int) -> list[float]:
-    """B entries for a rung: exact groove alignment first (when legal), else the natural entry."""
+    """B entries for a rung: groove alignment, intro-keeping 0.0 (bars<=2), then natural entry."""
     import numpy as np  # noqa: PLC0415
 
     bar_b = ctx.incoming.beats_per_bar * 60.0 / ctx.incoming.bpm
@@ -939,12 +939,13 @@ def _entry_options(ctx: TransitionContext, bars: int) -> list[float]:
         )
         if snapped >= 0.0 and not in_mask:
             options.append(snapped)
-    if ctx.natural_entry not in options:
-        options.append(ctx.natural_entry)
     # at 1-2 bars the overlap is a handover, not a blend: keeping B's whole
-    # intro (zero trim) lets it build naturally after A's tail rides out
+    # intro (zero trim) lets it build naturally after A's tail rides out; it
+    # goes before the natural entry so a scoring tie prefers keeping the intro
     if bars <= 2 and ctx.natural_entry > 0.0 and 0.0 not in options:
         options.append(0.0)
+    if ctx.natural_entry not in options:
+        options.append(ctx.natural_entry)
     return options
 
 

@@ -195,4 +195,7 @@ def test_short_rungs_offer_intro_keeping_entry() -> None:
     options = _entry_options(ctx, 2)
     assert 0.0 in options
     assert ctx.natural_entry in options
+    # 0.0 must precede the natural entry: the selector ties break to the
+    # earlier candidate, so order decides which one a tie actually prefers
+    assert options.index(0.0) < options.index(ctx.natural_entry)
     assert 0.0 not in _entry_options(ctx, 8)
