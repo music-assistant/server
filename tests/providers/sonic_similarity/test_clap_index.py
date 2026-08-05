@@ -19,7 +19,6 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pytest
 
-from music_assistant.providers.sonic_similarity import index_io
 from music_assistant.providers.sonic_similarity.clap_index import (
     CLAP_EMBEDDING_DIM,
     ClapIndex,
@@ -86,12 +85,9 @@ async def test_round_trip_persists_under_sonic_similarity_stem(
 
 @pytest.mark.asyncio
 async def test_saved_index_reloads_with_its_embeddings(
-    tmp_path: Path, logger: logging.Logger, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, logger: logging.Logger
 ) -> None:
-    """A saved index comes back intact through a fresh instance, chunk boundaries included."""
-    # well under the payload, so the write loop runs many times over
-    monkeypatch.setattr(index_io, "WRITE_CHUNK_BYTES", 4096)
-
+    """A saved index comes back intact through a fresh instance."""
     idx = ClapIndex(_make_mass(tmp_path), logger)  # type: ignore[arg-type]
     await idx.load()
     vectors = {f"track{n}": _unit_vec(n) for n in range(20)}

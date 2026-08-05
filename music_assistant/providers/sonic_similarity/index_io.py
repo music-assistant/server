@@ -7,9 +7,6 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from pathlib import Path
 
-# Keeps any single write syscall short enough not to park the worker for long.
-WRITE_CHUNK_BYTES = 4 * 1024 * 1024
-
 
 def save_index(index: Any, path: Path) -> None:
     """
@@ -23,7 +20,4 @@ def save_index(index: Any, path: Path) -> None:
     # path returns the serialized bytes instead of writing them, which costs a
     # fraction of that; the bytes then go out through plain file I/O, which does
     # release the GIL.
-    blob = memoryview(index.save())
-    with path.open("wb") as index_file:
-        for offset in range(0, len(blob), WRITE_CHUNK_BYTES):
-            index_file.write(blob[offset : offset + WRITE_CHUNK_BYTES])
+    path.write_bytes(index.save())
