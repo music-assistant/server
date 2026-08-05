@@ -24,7 +24,7 @@ tests are deterministic and independent of the host wall-clock:
   a new Sendspin stream and rides the persistent-stdin flush-refill (FLUSH +
   re-anchoring START) instead of a cold reconnect -- with flush-timeout and
   superseded-task fallback, and the supersession handling that keeps a stale
-  start from tearing down the stream a newer one owns;
+  start from spawning a process or touching the stream a newer one owns;
 * the recovery from a transport lost mid-stream: the dead CLI is released and
   re-anchored on the group's live timeline. Every give-up then takes the speaker
   out of the Sendspin session, so the player stops reporting playback nobody can
@@ -521,10 +521,19 @@ async def test_cold_start_connects_then_anchors_first_start() -> None:
     assert bridge._airplay_stream_ready.is_set()
 
 
-async def test_cold_start_superseded_before_start_stops_transport() -> None:
-    """A cold bridge start that is superseded after connect stops its transport."""
+async def test_a_superseded_cold_start_never_reaches_the_receiver() -> None:
+    """
+    A cold start that already lost the race bails out before it spawns anything.
+
+    Connecting first would pay a full process spawn and session setup only to
+    kill it again, put a second session on a receiver the newer start is about
+    to claim, and overwrite the shared-clock decision of the process that start
+    is really running.
+    """
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    # the decision the newer start recorded for the process it is spawning
+    bridge._use_shared_ptp = True
     # a different task owns the bridge: this cold start is stale
     bridge._airplay_stream_start_task = MagicMock()
     stream = _make_anchor_stream()
@@ -541,8 +550,82 @@ async def test_cold_start_superseded_before_start_stops_transport() -> None:
     ):
         await bridge._start_protocol_from_chunk()
 
+    stream.connect.assert_not_awaited()
+    stream.stop.assert_not_awaited()
+    assert bridge._use_shared_ptp is True
+
+
+async def test_a_superseded_start_leaves_the_kept_stream_untouched() -> None:
+    """
+    A start that lost the race never flushes the stream the newer one kept.
+
+    Arming the bridge keeps a warm-eligible stream alive, so the stale and the
+    newer start find the same instance; flushing it here would cut into the
+    audio the newer start is anchoring on it.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    kept_stream = _make_anchor_stream()
+    bridge._airplay_stream = kept_stream
+    # a different task owns the bridge: this start is stale
+    bridge._airplay_stream_start_task = MagicMock()
+
+    await bridge._start_protocol_from_chunk()
+
+    kept_stream.flush.assert_not_awaited()
+    kept_stream.stop.assert_not_awaited()
+    assert bridge._airplay_stream is kept_stream
+
+
+async def test_a_start_superseded_during_the_warm_fallback_spawns_nothing() -> None:
+    """
+    Losing the race while releasing the kept stream still stops short of the receiver.
+
+    A failed warm handover tears the kept stream down before it falls back to a
+    cold start, and that teardown is long enough for a newer start to claim the
+    bridge in the meantime.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    kept_stream = _make_anchor_stream()
+    kept_stream.flush = AsyncMock(return_value=False)
+    bridge._airplay_stream = kept_stream
+    cold_stream = _make_anchor_stream()
+
+    async def stop(**_kwargs: object) -> None:
+        # a newer stream start claimed the bridge while the kept stream went down
+        bridge._airplay_stream_start_task = MagicMock()
+
+    kept_stream.stop = AsyncMock(side_effect=stop)
+
+    with patch(
+        "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+        return_value=cold_stream,
+    ):
+        await bridge._start_protocol_from_chunk()
+
+    cold_stream.connect.assert_not_awaited()
+    cold_stream.stop.assert_not_awaited()
+
+
+async def test_cold_start_superseded_while_connecting_stops_its_transport() -> None:
+    """A cold stream superseded while its process comes up is torn down again."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    bridge._airplay_stream_start_task = asyncio.current_task()
+    stream = _make_anchor_stream()
+
+    async def wait_for_connection() -> None:
+        # a newer stream start claimed the bridge while the process came up
+        bridge._airplay_stream_start_task = MagicMock()
+
+    stream.wait_for_connection = AsyncMock(side_effect=wait_for_connection)
+
+    assert await bridge._start_cold_stream(stream) is False
+
     stream.start.assert_not_awaited()
     stream.stop.assert_awaited_once_with(force=True)
+    assert bridge._airplay_stream is None
 
 
 async def test_cold_start_superseded_during_the_anchor_stops_its_transport() -> None:
@@ -2514,10 +2597,10 @@ async def test_the_real_chunk_path_records_the_decision_it_spawns_with() -> None
     """
     Driving the bridge the way Sendspin does still records what the CLI got.
 
-    The start task is created eagerly, so it runs to its first await before the
-    caller has published the task handle. Anything in the start path that reads
-    that handle before then sees None, and a decision gated on it would be lost
-    while the process it describes is already running.
+    The start path tells whether it still owns the bridge by comparing itself
+    against the task handle the chunk handler publishes, so the start task must
+    not run before that handle is set. Started eagerly it would read None on its
+    very first check and give up as if a newer start had claimed the bridge.
     """
     bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
     _group_bridges(bridge, daemon_ready=True)
@@ -2525,18 +2608,19 @@ async def test_the_real_chunk_path_records_the_decision_it_spawns_with() -> None
     started: list[asyncio.Task[None]] = []
 
     async def connect(_use_shared_ptp: bool | None) -> None:
-        # a real connect does I/O, so the eagerly started task suspends here and
-        # its caller gets to publish the task handle
+        # a real connect does I/O, so the task suspends here
         await asyncio.sleep(0)
 
     stream.connect = AsyncMock(side_effect=connect)
 
     loop = asyncio.get_running_loop()
 
-    def create_task(coro: Coroutine[None, None, None], **_kwargs: object) -> asyncio.Task[None]:
-        # mirrors mass.create_task, whose eager start runs the coroutine to its
-        # first await before this returns
-        task = asyncio.Task(coro, loop=loop, eager_start=True)
+    def create_task(
+        coro: Coroutine[None, None, None], *, eager_start: bool = True, **_kwargs: object
+    ) -> asyncio.Task[None]:
+        # mirrors mass.create_task, whose default eager start would run the
+        # coroutine to its first await before this returns
+        task = asyncio.Task(coro, loop=loop, eager_start=eager_start)
         started.append(task)
         return task
 
