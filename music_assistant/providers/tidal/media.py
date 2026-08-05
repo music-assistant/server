@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import urllib.parse
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from aiohttp.client_exceptions import ClientError
 from music_assistant_models.enums import MediaType
@@ -266,25 +266,16 @@ class TidalMediaManager:
     async def _get_mix_details(self, prov_mix_id: str) -> Playlist:
         """Get details for a Tidal Mix."""
         try:
-            params = {"mixId": prov_mix_id, "deviceType": "BROWSER"}
-            tidal_mix = await self.api.get(PAGES_MIX, params=params)
-
+            tidal_mix = await self._fetch_mix_page(prov_mix_id)
             mix_obj = {
                 "id": prov_mix_id,
                 "title": tidal_mix.get("title", "Unknown Mix"),
                 "updated": tidal_mix.get("lastUpdated", ""),
+                "subTitle": tidal_mix.get("subTitle", ""),
                 "images": {},
             }
-
-            # Try to extract images from rows/modules structure
-            rows = tidal_mix.get("rows", [])
-            if rows and (modules := rows[0].get("modules")):
-                if mix_data := modules[0].get("mix"):
-                    mix_obj["images"] = mix_data.get("images", {})
-
-            if "subTitle" not in mix_obj:
-                mix_obj["subTitle"] = tidal_mix.get("subTitle", "")
-
+            if module := self._find_mix_module(tidal_mix.get("rows", []), "mix"):
+                mix_obj["images"] = (module.get("mix") or {}).get("images", {})
             return parse_playlist(self.provider, mix_obj, is_mix=True)
         except (ClientError, KeyError, ValueError) as err:
             raise MediaNotFoundError(f"Mix {prov_mix_id} not found") from err
@@ -312,20 +303,12 @@ class TidalMediaManager:
     async def _get_mix_tracks(self, mix_id: str, limit: int, offset: int) -> list[Track]:
         """Get tracks from a mix."""
         try:
-            params = {"mixId": mix_id, "deviceType": "BROWSER"}
-            data = await self.api.get(PAGES_MIX, params=params)
-
-            # Mix tracks are usually in the second row
-            rows = data.get("rows", [])
-            if len(rows) < 2:
+            data = await self._fetch_mix_page(mix_id)
+            module = self._find_mix_module(data.get("rows", []), "pagedList")
+            if not module:
                 raise MediaNotFoundError(f"Mix {mix_id} has no tracks")
-
-            modules = rows[1].get("modules", [])
-            if not modules or "pagedList" not in modules[0]:
-                raise MediaNotFoundError(f"Mix {mix_id} has no tracks")
-
-            all_items = modules[0]["pagedList"].get("items", [])
-            # Manual pagination for mixes
+            all_items = module["pagedList"].get("items", [])
+            # The mix feed is not itself paginated, so slice MA's page window in memory.
             paged_items = all_items[offset : offset + limit]
             return self._process_tracks(paged_items, offset)
         except (ClientError, KeyError, ValueError) as err:
@@ -351,3 +334,36 @@ class TidalMediaManager:
             except KeyError, TypeError:
                 continue
         return result
+
+    async def _fetch_mix_page(self, mix_id: str) -> dict[str, Any]:
+        """
+        Fetch the raw pages/mix feed for a mix, cached and shared.
+
+        The single feed carries both the mix header and its track list, so caching it
+        here lets get_playlist (details) and get_playlist_tracks share one upstream
+        request per mix instead of fetching the same feed twice.
+        """
+        cache = self.provider.mass.cache
+        cache_key = f"mix_page.{mix_id}"
+        if (cached := await cache.get(cache_key, provider=self.provider.instance_id)) is not None:
+            return cast("dict[str, Any]", cached)
+        data = await self.api.get(PAGES_MIX, params={"mixId": mix_id, "deviceType": "BROWSER"})
+        self.provider.mass.create_task(
+            cache.set(cache_key, data, expiration=3600 * 3, provider=self.provider.instance_id)
+        )
+        return data
+
+    @staticmethod
+    def _find_mix_module(rows: list[dict[str, Any]], key: str) -> dict[str, Any] | None:
+        """
+        Return the first pages/mix module carrying the given key.
+
+        The mix header (``mix``) and track list (``pagedList``) live in separate rows
+        whose order Tidal does not guarantee, so locate them by content rather than by a
+        fixed row/module index.
+        """
+        for row in rows:
+            for module in row.get("modules") or []:
+                if key in module:
+                    return cast("dict[str, Any]", module)
+        return None

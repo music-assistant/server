@@ -22,6 +22,10 @@ def provider_mock() -> Mock:
     provider.api = AsyncMock()
     provider.api.get.return_value = {}
     provider.logger = Mock()
+    # The shared mix fetch caches the raw pages/mix feed; default to a cache miss.
+    provider.mass.cache.get = AsyncMock(return_value=None)
+    provider.mass.cache.set = Mock()
+    provider.mass.create_task = Mock()
 
     def get_item_mapping(media_type: MediaType, key: str, name: str) -> ItemMapping:
         return ItemMapping(
@@ -164,6 +168,70 @@ async def test_get_mix_details_no_rows(
 
     with pytest.raises(MediaNotFoundError, match="Mix 123 has no tracks"):
         await media_manager.get_playlist_tracks("mix_123")
+
+
+@patch("music_assistant.providers.tidal.media.parse_track")
+@patch("music_assistant.providers.tidal.media.parse_playlist")
+async def test_mix_feed_fetched_once(
+    mock_parse_playlist: Mock,
+    mock_parse_track: Mock,
+    media_manager: TidalMediaManager,
+    provider_mock: Mock,
+) -> None:
+    """Test opening a mix (details then tracks) fetches the shared pages/mix feed once."""
+    feed = {
+        "title": "My Mix",
+        "rows": [
+            {"modules": [{"mix": {"images": {}}}]},
+            {"modules": [{"pagedList": {"items": [{"id": 1}, {"id": 2}]}}]},
+        ],
+    }
+    # Back the cache with a real dict so the second fetch is a hit.
+    store: dict[str, object] = {}
+
+    async def _get(key: str, **_kw: object) -> object:
+        return store.get(key)
+
+    def _set(key: str, data: object, **_kw: object) -> None:
+        store[key] = data
+
+    provider_mock.mass.cache.get = _get
+    provider_mock.mass.cache.set = _set
+    provider_mock.api.get.return_value = feed
+    mock_parse_playlist.return_value = Mock(item_id="mix_123")
+    mock_parse_track.side_effect = [Mock(item_id="1"), Mock(item_id="2")]
+
+    await media_manager.get_playlist("mix_123")
+    await media_manager.get_playlist_tracks("mix_123")
+
+    provider_mock.api.get.assert_called_once()
+
+
+@patch("music_assistant.providers.tidal.media.parse_track")
+@patch("music_assistant.providers.tidal.media.parse_playlist")
+async def test_mix_modules_found_regardless_of_row_order(
+    mock_parse_playlist: Mock,
+    mock_parse_track: Mock,
+    media_manager: TidalMediaManager,
+    provider_mock: Mock,
+) -> None:
+    """Test the mix header and track list are located by content, not a fixed row index."""
+    # pagedList in row 0, mix header in row 1 (reverse of the usual layout).
+    provider_mock.api.get.return_value = {
+        "title": "My Mix",
+        "rows": [
+            {"modules": [{"pagedList": {"items": [{"id": 1}]}}]},
+            {"modules": [{"mix": {"images": {"MEDIUM": {"url": "http://img"}}}}]},
+        ],
+    }
+    mock_parse_playlist.return_value = Mock(item_id="mix_123")
+    mock_parse_track.side_effect = [Mock(item_id="1")]
+
+    await media_manager.get_playlist("mix_123")
+    tracks = await media_manager.get_playlist_tracks("mix_123")
+
+    assert mock_parse_playlist.call_args.args[1]["images"] == {"MEDIUM": {"url": "http://img"}}
+    assert [t.item_id for t in tracks] == ["1"]
 
 
 async def test_search_empty_results(media_manager: TidalMediaManager, provider_mock: Mock) -> None:
