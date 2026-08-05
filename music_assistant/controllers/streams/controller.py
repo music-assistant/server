@@ -450,10 +450,7 @@ class StreamsController(CoreController):
         # resolve the "auto" default (or an unset value) to this server's primary IP
         all_ip_addresses = await get_ip_addresses(include_ipv6=True)
         self.publish_ip = self._configured_publish_ip or all_ip_addresses[0]
-        self._bind_ip = bind_ip = str(config.get_value(CONF_BIND_IP))
-        self.publish_addresses = _get_publish_addresses(
-            bind_ip, self._configured_publish_ip, all_ip_addresses
-        )
+        bind_ip = str(config.get_value(CONF_BIND_IP))
         await self._server.setup(
             bind_ip=bind_ip,
             bind_port=cast("int", self.publish_port),
@@ -473,9 +470,13 @@ class StreamsController(CoreController):
                 ("*", "/announcement/{player_id}.{fmt}", self.serve_announcement_stream),
             ],
         )
-        # adopt the port the server actually bound to: a configured port of 0 is only
-        # resolved by the OS at bind time
+        # adopt what the server actually bound to: a configured port of 0 is only resolved
+        # by the OS at bind time and an unavailable bind IP falls back to all interfaces
         self.publish_port = cast("int", self._server.port)
+        self._bind_ip = self._server.bind_ip or DEFAULT_HOST
+        self.publish_addresses = _get_publish_addresses(
+            self._bind_ip, self._configured_publish_ip, all_ip_addresses
+        )
         # print a big fat message in the log where the streamserver is running
         # because this is a common source of issues for people with more complex setups
         self.logger.log(
