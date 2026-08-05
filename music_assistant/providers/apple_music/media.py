@@ -203,7 +203,7 @@ class AppleMusicMediaManager:
             track_ids = [track_data["id"]]
             rating_response = await self.api.get_ratings(track_ids, MediaType.TRACK)
             return parse_track(self.provider, track_data, rating_response.get(track_data["id"]))
-        except MediaNotFoundError, KeyError, IndexError:
+        except (MediaNotFoundError, KeyError, IndexError):  # fmt: skip
             return None
 
     @use_cache(3600 * 24 * 7, cache_checksum=PARSED_ITEM_CACHE_CHECKSUM, allow_expired_cache=True)
@@ -229,7 +229,7 @@ class AppleMusicMediaManager:
                 "Album | None",
                 parse_album(self.provider, album_data, rating_response.get(album_data["id"])),
             )
-        except MediaNotFoundError, KeyError, IndexError:
+        except (MediaNotFoundError, KeyError, IndexError):  # fmt: skip
             return None
 
     @use_cache(cache_checksum=PARSED_ITEM_CACHE_CHECKSUM)
