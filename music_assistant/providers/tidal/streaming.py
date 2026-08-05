@@ -6,7 +6,7 @@ import base64
 import hashlib
 from contextlib import suppress
 from sqlite3 import OperationalError
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 from music_assistant_models.enums import ContentType, StreamType
@@ -52,15 +52,17 @@ class TidalStreamingManager:
         quality = self.provider.config.get_value(CONF_QUALITY)
 
         # 3. Get playback info
-        async with self.api.throttler.bypass():
-            stream_data = await self.api.get(
-                f"tracks/{track.item_id}/playbackinfopostpaywall",
-                params={
-                    "playbackmode": "STREAM",
-                    "assetpresentation": "FULL",
-                    "audioquality": quality,
-                },
-            )
+        try:
+            stream_data = await self._fetch_playback_info(track.item_id, quality)
+        except MediaNotFoundError:
+            # The track lookup is cached for days, so a track that churned after
+            # being cached passes step 1 and the 404 first surfaces here. Heal
+            # (also rewrites the stored mapping) and retry once with the live id.
+            live_id = await self.provider.resolve_live_track_id(item_id)
+            if not live_id or live_id == track.item_id:
+                raise
+            track = await self.provider.get_track(live_id)
+            stream_data = await self._fetch_playback_info(live_id, quality)
 
         # 4. Parse stream URL
         manifest_type = stream_data.get("manifestMimeType", "")
@@ -153,6 +155,18 @@ class TidalStreamingManager:
             can_seek=True,
             allow_seek=True,
         )
+
+    async def _fetch_playback_info(self, track_id: str, quality: Any) -> dict[str, Any]:
+        """Fetch the (unofficial) playback info for a track."""
+        async with self.api.throttler.bypass():
+            return await self.api.get(
+                f"tracks/{track_id}/playbackinfopostpaywall",
+                params={
+                    "playbackmode": "STREAM",
+                    "assetpresentation": "FULL",
+                    "audioquality": quality,
+                },
+            )
 
     async def _async_update_provider_mapping_audio_format(
         self,

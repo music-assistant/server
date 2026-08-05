@@ -316,6 +316,53 @@ async def test_get_stream_details_with_isrc_fallback(
     assert stream_details.path == "https://example.com/stream.flac"
 
 
+async def test_get_stream_details_heals_on_playback_info_404(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock, mock_track: Mock
+) -> None:
+    """
+    Test a cached track whose id churned is healed when the playback info 404s.
+
+    The track lookup is cached for days, so a churned id passes the lookup and the
+    404 first surfaces on the playbackinfo request; that must trigger the resolver
+    and one retry with the live id instead of failing playback.
+    """
+    live_track = Mock(spec=Track)
+    live_track.item_id = "456"
+    live_track.duration = 180
+    provider_mock.get_track.side_effect = [mock_track, live_track]
+    provider_mock.resolve_live_track_id.return_value = "456"
+    provider_mock.api.get.side_effect = [
+        MediaNotFoundError("Track not found"),  # playback info for the dead cached id
+        {
+            "urls": ["https://example.com/stream.flac"],
+            "audioQuality": "LOSSLESS",
+            "sampleRate": 44100,
+            "bitDepth": 16,
+        },
+    ]
+
+    stream_details = await streaming_manager.get_stream_details("123")
+
+    provider_mock.resolve_live_track_id.assert_called_once_with("123")
+    assert provider_mock.api.get.call_count == 2
+    assert provider_mock.api.get.call_args_list[1][0][0] == "tracks/456/playbackinfopostpaywall"
+    assert stream_details.path == "https://example.com/stream.flac"
+
+
+async def test_get_stream_details_playback_info_404_unresolvable(
+    streaming_manager: TidalStreamingManager, provider_mock: Mock, mock_track: Mock
+) -> None:
+    """Test an unresolvable playback-info 404 propagates instead of retrying blindly."""
+    provider_mock.get_track.return_value = mock_track
+    provider_mock.resolve_live_track_id.return_value = None
+    provider_mock.api.get.side_effect = MediaNotFoundError("Track not found")
+
+    with pytest.raises(MediaNotFoundError):
+        await streaming_manager.get_stream_details("123")
+
+    assert provider_mock.api.get.call_count == 1
+
+
 async def test_get_stream_details_schedules_background_mapping_update(
     streaming_manager: TidalStreamingManager,
     provider_mock: Mock,

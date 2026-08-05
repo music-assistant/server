@@ -211,12 +211,16 @@ class TidalAuthManager:
                 token_data = await _read_json(response, "Device login")
                 if response.status == 200:
                     return await TidalAuthManager._finalize_login(http_session, token_data)
-            # Anything other than the two "keep waiting" signals is terminal.
+            # Anything other than the "keep waiting" signals is terminal. An
+            # expired_token is also non-terminal: Tidal's clock may declare the
+            # code expired moments before our step deadline does, and the setup
+            # flow re-mints a fresh code on that deadline, so keep polling
+            # rather than aborting a flow that is about to recover.
             error = token_data.get("error")
             if error == "slow_down":
                 # RFC 8628 section 3.5: increase the poll interval by 5 seconds.
                 interval += 5
-            elif error != "authorization_pending":
+            elif error not in ("authorization_pending", "expired_token"):
                 raise LoginFailed(f"Device login failed: {token_data}")
 
     async def _perform_refresh(self) -> bool:

@@ -126,6 +126,11 @@ class TidalLibraryManager:
         try:
             if method == "POST" and media_type == MediaType.TRACK:
                 return await self._add_track_with_healing(resource_name, resource_type, item_id)
+            if media_type == MediaType.TRACK:
+                # A track removal sent under a churned id is skipped server-side
+                # while looking successful; the cache-only redirect maps a
+                # known-stale id to the live one actually in the collection.
+                item_id = await self.provider.redirect_cached_id(item_id)
             body = {"data": [{"type": resource_type, "id": item_id}]}
             await self.api.write_jsonapi(method, f"{resource_name}/me/relationships/items", body)
             return True

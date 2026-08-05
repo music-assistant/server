@@ -316,6 +316,27 @@ async def test_add_item_non_track_no_healing(
     assert provider_mock.api.write_jsonapi.call_count == 1
 
 
+async def test_remove_item_track_redirects_cached_stale_id(
+    library_manager: TidalLibraryManager, provider_mock: Mock
+) -> None:
+    """
+    Test a track removal maps a cache-known stale id to the live id in the collection.
+
+    A DELETE for a churned id is skipped server-side while looking successful, so the
+    cache-only redirect must rewrite it to the live id actually stored.
+    """
+    provider_mock.redirect_cached_id = AsyncMock(return_value="123_live")
+
+    assert await library_manager.remove_item("123", MediaType.TRACK) is True
+
+    provider_mock.redirect_cached_id.assert_called_once_with("123")
+    provider_mock.api.write_jsonapi.assert_called_with(
+        "DELETE",
+        "userCollectionTracks/me/relationships/items",
+        {"data": [{"type": "tracks", "id": "123_live"}]},
+    )
+
+
 async def test_remove_item_track_no_healing(
     library_manager: TidalLibraryManager, provider_mock: Mock
 ) -> None:
