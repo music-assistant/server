@@ -886,25 +886,23 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
     @handle_player_command
     async def cmd_group_volume_mute(self, player_id: str, muted: bool) -> None:
         """
-        Send VOLUME_MUTE command to all players in a group.
+        Handle muting a playergroup (or synced players) as a whole.
 
-        - player_id: player_id of the group player or sync leader.
-        - muted: bool if group should be muted.
+        :param player_id: Player ID of group player or syncleader to handle the command.
+        :param muted: bool if the group should be muted.
         """
         player = self.get_player(player_id, True)
         assert player is not None  # for type checker
         if player.state.type == PlayerType.GROUP or player.state.group_members:
             # dedicated group player or sync leader
-            coros = []
-            for child_player in self.iter_group_members(
-                player, only_powered=True, exclude_self=False
-            ):
-                if child_player.mute_control == PLAYER_CONTROL_NONE:
-                    # members without a mute control are left alone, just like the
-                    # group mute state itself is calculated from the capable members only
-                    continue
-                coros.append(self.cmd_volume_mute(child_player.player_id, muted))
-            await asyncio.gather(*coros)
+            await self._mute_group_members(player, muted)
+            return
+        if player.state.synced_to and (sync_leader := self.get_player(player.state.synced_to)):
+            # redirect to sync leader
+            await self._mute_group_members(sync_leader, muted)
+            return
+        # treat as normal player mute
+        await self.cmd_volume_mute(player_id, muted)
 
     @api_command("players/cmd/volume_mute", required_scope=Scope.PLAYERS_CONTROL)
     @handle_player_command(lock=PlayerLockPurpose.VOLUME)
@@ -3502,6 +3500,24 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             )
             await self._handle_cmd_volume_set(protocol_player.player_id, device_volume)
             return
+
+    async def _mute_group_members(self, group_player: Player, muted: bool) -> None:
+        """
+        Mute or unmute all mute capable members of a player group or synced players.
+
+        :param group_player: The group player or sync leader.
+        :param muted: bool if the group should be muted.
+        """
+        coros = []
+        for child_player in self.iter_group_members(
+            group_player, only_powered=True, exclude_self=False
+        ):
+            if child_player.mute_control == PLAYER_CONTROL_NONE:
+                # members without a mute control are left alone, just like the
+                # group mute state itself is calculated from the capable members only
+                continue
+            coros.append(self.cmd_volume_mute(child_player.player_id, muted))
+        await asyncio.gather(*coros)
 
     async def _handle_cmd_volume_mute(self, player: Player, mute_control: str, muted: bool) -> None:
         """
