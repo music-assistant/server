@@ -305,7 +305,7 @@ async def test_cli_args_linkplay_gets_deeper_buffer() -> None:
     player = _make_player()
     player.airplay_discovery_info.decoded_properties["fv"] = "p20.Linkplay.4.6.430230"
     args = await _build_args(player)
-    assert _arg_value(args, "--splice-depth-ms") == "1000"
+    assert _arg_value(args, "--buffer-depth-ms") == "1000"
     assert "--no-ptp" not in args
     assert "--ptp-shared" in args
 
@@ -313,12 +313,12 @@ async def test_cli_args_linkplay_gets_deeper_buffer() -> None:
     player.airplay_discovery_info.decoded_properties["fv"] = "p20.4.8.814756"
     player.airplay_discovery_info.decoded_properties["manufacturer"] = "Linkplay Technology Inc."
     args = await _build_args(player)
-    assert _arg_value(args, "--splice-depth-ms") == "1000"
+    assert _arg_value(args, "--buffer-depth-ms") == "1000"
 
     # Non-LinkPlay devices stay on the binary's stock depth.
     player = _make_player()
     args = await _build_args(player)
-    assert "--splice-depth-ms" not in args
+    assert "--buffer-depth-ms" not in args
 
 
 @pytest.mark.asyncio
@@ -329,7 +329,7 @@ async def test_cli_args_buffer_depth_config_overrides_auto() -> None:
         side_effect=lambda key, default=None: 1500 if key == CONF_BUFFER_DEPTH else default
     )
     args = await _build_args(player)
-    assert _arg_value(args, "--splice-depth-ms") == "1500"
+    assert _arg_value(args, "--buffer-depth-ms") == "1500"
 
 
 @pytest.mark.asyncio
