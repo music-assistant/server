@@ -796,7 +796,12 @@ class SendspinLocalAudioBridge:
             if self._writer_task is asyncio.current_task():
                 self._is_streaming = False
             if stream is not None:
-                self._close_sounddevice_stream(stream)
+                # Closing waits for the device to play out what it still holds,
+                # which is not something to do on the event loop.
+                with suppress(OSError):
+                    await asyncio.shield(
+                        self.mass.loop.run_in_executor(None, self._close_sounddevice_stream, stream)
+                    )
             if self._writer_task is asyncio.current_task():
                 self._writer_task = None
 
@@ -880,9 +885,10 @@ class SendspinLocalAudioBridge:
         :param drain: Let buffered audio play out first. Pass False for a device
             that is no longer responding, where that wait cannot finish.
         """
-        with suppress(OSError):
-            if drain:
+        if drain:
+            with suppress(OSError):
                 stream.stop()
+        with suppress(OSError):
             stream.close()
 
     def _start_device_reopen(self) -> bool:
