@@ -2,7 +2,7 @@
 Smart Fades - candidate value objects and the timed-candidate factory.
 
 A ``CandidateSpec`` is a generator's declared intent (which tier rung, which
-anchor/entry, which relaxation was applied) before any plan exists; a
+anchor/entry, which generator produced it) before any plan exists; a
 ``Candidate`` is that spec paired with its timed ``TransitionPlan`` and
 computed ``PlanMetrics``, ready for policies to score. The factory builds
 TIMED candidates only - anchor, overlap timing, tempo ramp, trims and metrics.

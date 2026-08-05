@@ -109,24 +109,19 @@ def _base_ctx(**overrides: Any) -> TransitionContext:
     return dataclasses.replace(base, **overrides)
 
 
-def _out_analysis_with_quiet_tail(*, elevated_spike: bool) -> AudioAnalysisData:
+def _out_analysis_with_quiet_tail() -> AudioAnalysisData:
     """
     Build an outgoing analysis: loud mid before media 195s, quiet mid after (the blend region).
-
-    :param elevated_spike: When True, injects one elevated mid bar at media
-        210-212s inside the otherwise-quiet blend region.
     """
     t = np.linspace(0.0, 240.0, 1800)
     mid = np.where(t < 195.0, 0.5, 0.02).astype(np.float32)
-    if elevated_spike:
-        mid[(t >= 210.0) & (t < 212.0)] = 0.5
     low = np.full(1800, 0.05, dtype=np.float32)
     analysis = _analysis_with_bands(low, low, mid, low, duration=240.0)
     return _with_vocal_activity(analysis, [])
 
 
 class TestEnergyLadderGenerator:
-    """The primary energy ladder: default anchor, kick anchor, one-sided instrumental rule."""
+    """The primary energy ladder: default anchor, kick anchor."""
 
     def test_emits_full_ladder_at_default_anchor_when_energy_only(self) -> None:
         """Without vocal data, every rung is emitted once at the default anchor."""
@@ -175,9 +170,9 @@ class TestEnergyLadderGenerator:
         assert sixteens
         assert all(s.ideal_bars == _INSTRUMENTAL_BLEND_BARS for s in sixteens)
 
-    def test_one_sided_instrumental_denied_emits_no_extra_16_bar_rung(self) -> None:
-        """An elevated mid bar inside the VAD-silent blend region denies the one-sided rule."""
-        out = _out_analysis_with_quiet_tail(elevated_spike=True)
+    def test_mixed_vocal_instrumental_pair_never_earns_16_bars(self) -> None:
+        """A near-instrumental deck paired with a clearly vocal one earns no 16-bar rung."""
+        out = _out_analysis_with_quiet_tail()
         inc = _with_vocal_activity(_analysis(120.0, duration=240.0), [(5.0, 25.0)])
         ctx = build_transition_context(out, inc, 45.0, LOGGER)
 
