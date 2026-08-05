@@ -237,8 +237,7 @@ class AirPlayStream:
         :param use_shared_ptp: Session-wide decision on whether native AirPlay 2
             members attach to the shared PTP clock daemon. The stream session
             passes the same value to every member so a group never mixes PTP and
-            NTP timing. None (single-stream callers) falls back to the daemon's
-            live state.
+            NTP timing. None lets the stream decide from the daemon's readiness.
         """
         self._check_password_preflight()
         # A fresh cliairplay process re-anchors from scratch, so drop any shift
@@ -714,7 +713,7 @@ class AirPlayStream:
         :param use_shared_ptp: Whether a native AirPlay 2 stream attaches to the
             shared PTP clock daemon. The stream session passes an explicit
             group-wide decision so members never mix PTP and NTP timing; None
-            (single-stream callers) falls back to the daemon's live state.
+            reads the daemon's current readiness and decides from that.
         """
         cli_binary = await get_cli_binary()
         prov = cast("AirPlayProvider", self.prov)
@@ -811,10 +810,12 @@ class AirPlayStream:
         # Shared PTP daemon clock (multi-room sync for native AP2 streams). The
         # decision is made once per session and passed in, so every native AP2
         # member of a sync group uses the same timing source and cannot drift.
-        # A single-stream caller (use_shared_ptp is None) falls back to the
-        # daemon's live state.
+        # Without a caller-supplied decision (use_shared_ptp is None) the stream
+        # gates on the daemon serving rather than merely running: between spawn and
+        # the daemon publishing its clock there is nothing to attach to, and a
+        # stream that asks anyway silently takes its own timing instead.
         if target_protocol == StreamingProtocol.AIRPLAY2:
-            shared_ptp = prov.ptp_daemon_running if use_shared_ptp is None else use_shared_ptp
+            shared_ptp = prov.ptp_daemon_ready if use_shared_ptp is None else use_shared_ptp
             if shared_ptp:
                 args += ["--ptp-shared"]
 

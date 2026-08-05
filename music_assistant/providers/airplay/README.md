@@ -448,8 +448,10 @@ Native AirPlay 2 receivers that advertise `SupportsPTP` are timed via PTP
 (UDP 319/320) and every receiver in a sync group must lock to the same
 grandmaster, so the provider runs **one** `cliairplay --ptp-daemon` for its
 whole lifetime (spawned at setup, terminated at unload, restarted once if it
-crashes). Every AirPlay 2-capable stream is started with `--ptp-shared` while
-the daemon runs, attaching it to the daemon's elected clock via shared memory.
+crashes). AirPlay 2-capable streams are started with `--ptp-shared` once the
+daemon reports it is serving, attaching them to its elected clock via shared
+memory. A sync group resolves that choice once and applies it to every member,
+so a group never mixes members on the shared clock with members off it.
 
 The official Music Assistant container runs as root, allowing the daemon to bind
 these ports. A custom container running Music Assistant as a non-root user must

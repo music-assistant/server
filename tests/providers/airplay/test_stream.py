@@ -67,7 +67,7 @@ def _make_player() -> MagicMock:
 
     prov = MagicMock()
     prov.dacp_id = "ABCDEF0123456789"
-    prov.ptp_daemon_running = True
+    prov.ptp_daemon_ready = True
     prov.logger = logging.getLogger("test.airplay.prov")
     # auto-detected publish ip: reachable address of this host, but not the interface
     # the stream to this device leaves from - so it is never handed to the binary
@@ -274,10 +274,17 @@ async def test_cli_args_raop_encryption_can_be_disabled() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cli_args_no_ptp_shared_without_daemon() -> None:
-    """--ptp-shared is only passed while the provider's PTP daemon is running."""
+async def test_cli_args_no_ptp_shared_when_daemon_alive_but_not_ready() -> None:
+    """
+    A daemon that is merely alive must not get --ptp-shared.
+
+    Liveness does not mean the daemon is serving: until it publishes its clock
+    there is nothing to attach to, and a stream that asks anyway silently takes
+    its own timing instead - drifting away from the members that got the clock.
+    """
     player = _make_player()
-    player.provider.ptp_daemon_running = False
+    player.provider.ptp_daemon_running = True
+    player.provider.ptp_daemon_ready = False
     args = await _build_args(player)
     assert "--ptp-shared" not in args
 
