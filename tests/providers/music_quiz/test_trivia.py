@@ -811,8 +811,8 @@ async def test_musicbrainz_adds_a_year_target_to_an_undated_track() -> None:
 
 
 @pytest.mark.asyncio
-async def test_compilation_release_year_stays_suppressed_after_dating() -> None:
-    """Keep compilation year facts suppressed even when MusicBrainz can date the recording."""
+async def test_compilation_release_year_uses_the_musicbrainz_recording_year() -> None:
+    """Offer a year target on a compilation track once MusicBrainz dates the recording."""
     track = _with_isrc(_track("compilation", "Africa", "Toto", release_year=1998), "ISRC-COMP")
     track.album = _full_album(
         "party-hits",
@@ -823,11 +823,52 @@ async def test_compilation_release_year_stays_suppressed_after_dating() -> None:
     quiz, mass = _quiz([track])
     _with_musicbrainz(mass, {"ISRC-COMP": 1982})
 
-    facts = quiz._track_facts(await quiz._musicbrainz_dated_track(track))
+    facts = quiz._track_facts(await quiz._musicbrainz_dated_track(track), musicbrainz_dated=True)
+
+    assert facts is not None
+    assert facts.album is None
+    assert facts.release_year == 1982
+    assert TriviaTarget.YEAR in quiz._available_targets(facts)
+
+
+def test_compilation_release_year_stays_suppressed_without_dating() -> None:
+    """Keep the compilation's own year suppressed while MusicBrainz has not dated the track."""
+    track = _track("compilation", "Africa", "Toto", release_year=1998)
+    track.album = _full_album(
+        "party-hits",
+        "Party Hits",
+        album_type=AlbumType.COMPILATION,
+        year=1998,
+    )
+
+    facts = TriviaQuizType._track_facts(track)
 
     assert facts is not None
     assert facts.release_year is None
-    assert TriviaTarget.YEAR not in quiz._available_targets(facts)
+    assert TriviaTarget.YEAR not in TriviaQuizType._available_targets(facts)
+
+
+@pytest.mark.asyncio
+async def test_prepare_round_grounds_a_dated_compilation_on_its_musicbrainz_year() -> None:
+    """Ground a compilation round on the MusicBrainz year while hiding the compilation album."""
+    track = _with_isrc(_track("compilation", "Africa", "Toto", release_year=1998), "ISRC-COMP")
+    track.album = _full_album(
+        "party-hits",
+        "Party Hits",
+        album_type=AlbumType.COMPILATION,
+        year=1998,
+    )
+    provider = _ai_provider(_valid_response())
+    quiz, mass = _quiz([track], providers=[provider])
+    _with_musicbrainz(mass, {"ISRC-COMP": 1982})
+
+    await quiz.prepare_round(0, [])
+
+    assert _prompt_payload(provider.ai_query.await_args.args[0])["track_metadata"] == {
+        "title": "Africa",
+        "artist": "Toto",
+        "release_year": 1982,
+    }
 
 
 @pytest.mark.asyncio

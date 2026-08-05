@@ -270,8 +270,11 @@ class TriviaQuizType(QuizType):
         # an album can carry a reissue year, which would be scored as the correct answer to a
         # release year question; dating only the track that becomes this round's question keeps
         # the lookups bounded where dating the eligible pool would not
-        dated_track = await self._musicbrainz_dated_track(source_pool[track_facts.source_uri])
-        track_facts = self._track_facts(dated_track) or track_facts
+        source_track = source_pool[track_facts.source_uri]
+        dated_track = await self._musicbrainz_dated_track(source_track)
+        musicbrainz_dated = dated_track.metadata.release_date != source_track.metadata.release_date
+        dated_facts = self._track_facts(dated_track, musicbrainz_dated=musicbrainz_dated)
+        track_facts = dated_facts or track_facts
         fact = self._select_fact(track_facts, round_index)
         generation = await self._generate_question(fact)
         correct = SuggestionCandidate(
@@ -545,8 +548,14 @@ class TriviaQuizType(QuizType):
         return used_source_uris
 
     @staticmethod
-    def _track_facts(track: Track) -> TriviaTrackFacts | None:
-        """Return bounded factual metadata available on a selected track."""
+    def _track_facts(track: Track, *, musicbrainz_dated: bool = False) -> TriviaTrackFacts | None:
+        """
+        Return bounded factual metadata available on a selected track.
+
+        :param track: Selected source track to read the facts from.
+        :param musicbrainz_dated: Whether the track carries a release date supplied by
+            MusicBrainz, which makes its year usable even on an untrusted compilation album.
+        """
         if not track.uri or not (title := _bounded_metadata_value(track.name)):
             return None
         artist = _bounded_metadata_value(track.artist_str or None)
@@ -561,7 +570,13 @@ class TriviaQuizType(QuizType):
                 if untrusted_compilation
                 else _bounded_metadata_value(album.name if album else None)
             ),
-            release_year=None if untrusted_compilation else get_track_release_year(track),
+            # get_track_release_year already refuses an untrusted album's own year, so a dated
+            # compilation track is left with the recording year MusicBrainz supplied
+            release_year=(
+                None
+                if untrusted_compilation and not musicbrainz_dated
+                else get_track_release_year(track)
+            ),
         )
         return facts if TriviaQuizType._available_targets(facts) else None
 
