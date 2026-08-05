@@ -355,8 +355,8 @@ class AirPlayPlayer(Player):
             elif cast("AirPlayProvider", self.provider).bridge_manager.stop_streaming(
                 self.player_id
             ):
-                # Sendspin bridge active: trigger full bridge cleanup
-                # which stops streaming, kills the CLI, and cancels writer tasks
+                # Sendspin bridge active: it tears the transport down straight
+                # away and takes the player out of the Sendspin session
                 pass
             elif self.stream and self.stream.running:
                 # Fallback: stop protocol directly

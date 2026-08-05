@@ -120,6 +120,10 @@ class AirPlayStream:
         # wait watches it so a process that died (for example on a rejected
         # password) fails right away instead of running out its timeout.
         self._process_ended = asyncio.Event()
+        # Whether the binary reported the end of the stream itself ([STATUS] eof
+        # or its idle timeout) instead of dying. Both leave the process gone and
+        # `running` reading False, so this is what tells the two apart.
+        self.ended_cleanly: bool = False
         # Structured fatal failure the binary reported before exiting; stays
         # None with an older binary that does not emit the line.
         self._connect_error: CliError | None = None
@@ -1093,14 +1097,13 @@ class AirPlayStream:
         """
         player = self.player
         logger = player.logger
-        expected_eof = False
         if not self._cli_proc:
             return
         async for line in self._cli_proc.iter_stderr():
             if self._stopped:
                 break
             if self._handle_status_line(line):
-                expected_eof = True
+                self.ended_cleanly = True
                 break
             # Routine binary output is verbose-only so it never floods a user's log, but
             # its own diagnostics (a failed socket bind, a missing receiver clock) are the
@@ -1120,7 +1123,7 @@ class AirPlayStream:
         if not self._stopped and not self._stopping:
             self._stopped = True
             try:
-                if not expected_eof:
+                if not self.ended_cleanly:
                     logger.warning(
                         "cliairplay process stopped unexpectedly for %s", player.display_name
                     )
