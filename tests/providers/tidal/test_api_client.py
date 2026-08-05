@@ -252,17 +252,45 @@ async def test_paginate_jsonapi_follows_cursor(
 
 async def test_paginate_jsonapi_caps_pages(api_client: TidalAPIClient, provider_mock: Mock) -> None:
     """Test paginate_jsonapi stops at max_pages and warns when more pages remain."""
-    response = AsyncMock(spec=ClientResponse)
-    response.status = 200
-    # every page advertises a next cursor, so the cap is what stops iteration
-    response.json.return_value = {"data": [], "links": {"next": "/x?page[cursor]=C"}}
-    ctx = AsyncMock()
-    ctx.__aenter__.return_value = response
-    provider_mock.mass.http_session.request = MagicMock(return_value=ctx)
+    # every page advertises a fresh next cursor, so the cap is what stops iteration
+    pages = iter(f"C{n}" for n in range(10))
+
+    def _next_ctx(*_a: object, **_k: object) -> AsyncMock:
+        response = AsyncMock(spec=ClientResponse)
+        response.status = 200
+        response.json.return_value = {
+            "data": [],
+            "links": {"next": f"/x?page[cursor]={next(pages)}"},
+        }
+        ctx = AsyncMock()
+        ctx.__aenter__.return_value = response
+        return ctx
+
+    provider_mock.mass.http_session.request = MagicMock(side_effect=_next_ctx)
 
     docs = [doc async for doc in api_client.paginate_jsonapi("x", max_pages=2)]
 
     assert len(docs) == 2
+    provider_mock.logger.warning.assert_called_once()
+
+
+async def test_paginate_jsonapi_stops_on_repeated_cursor(
+    api_client: TidalAPIClient, provider_mock: Mock
+) -> None:
+    """Test a server re-serving the same next cursor stops the walk instead of spinning."""
+    response = AsyncMock(spec=ClientResponse)
+    response.status = 200
+    # every page advertises the SAME next cursor
+    response.json.return_value = {"data": [], "links": {"next": "/x?page[cursor]=LOOP"}}
+    ctx = AsyncMock()
+    ctx.__aenter__.return_value = response
+    provider_mock.mass.http_session.request = MagicMock(return_value=ctx)
+
+    docs = [doc async for doc in api_client.paginate_jsonapi("x")]
+
+    # page 1 yields the cursor, page 2 repeats it: two pages, then a warning, no spin
+    assert len(docs) == 2
+    assert provider_mock.mass.http_session.request.call_count == 2
     provider_mock.logger.warning.assert_called_once()
 
 

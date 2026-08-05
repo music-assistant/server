@@ -291,6 +291,9 @@ class TidalMediaManager:
         async for doc in self.api.paginate_jsonapi(
             "userCollectionTracks/me/relationships/items",
             include=["items.artists", "items.albums.coverArt"],
+            # Request the newest-first order explicitly rather than relying on the
+            # server default, since the positions below encode it.
+            params={"sort": "-addedAt"},
             replace_media="items",
         ):
             for item in doc.data_list:

@@ -142,6 +142,7 @@ class TidalAPIClient:
     ) -> AsyncGenerator[JsonApiDocument]:
         """Yield successive JSON:API document pages, following the cursor links."""
         cursor: str | None = None
+        seen_cursors: set[str] = set()
         for _ in range(max_pages):
             page_params = dict(params or {})
             if cursor:
@@ -157,6 +158,14 @@ class TidalAPIClient:
             cursor = doc.next_cursor
             if not cursor:
                 return
+            # A server re-serving an already-followed cursor would loop all the way
+            # to the page cap before warning; stop at the first repeat instead.
+            if cursor in seen_cursors:
+                self.logger.warning(
+                    "Stopped paginating %s: server repeated cursor %s", endpoint, cursor
+                )
+                return
+            seen_cursors.add(cursor)
         # Reached the page cap while more pages remained: surface the truncation.
         self.logger.warning(
             "Stopped paginating %s after %d pages; results may be truncated", endpoint, max_pages
