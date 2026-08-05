@@ -10,6 +10,7 @@ Music Assistant is an async Python music library manager that connects to stream
 
 - `scripts/setup.sh` - Initial setup (venv, dependencies, pre-commit hooks). Re-run after pulling latest code.
 - `pytest` - Run all tests (add `-n auto --dist loadfile` to run in parallel)
+- `pytest --cov music_assistant` - Run all tests with coverage
 - `pytest tests/specific_test.py` - Run a specific test file
 - `pre-commit run --all-files` - Run all pre-commit hooks
 - `python -m music_assistant --log-level debug` - Run server locally (localhost:8095)

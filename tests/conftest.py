@@ -26,9 +26,9 @@ def pytest_report_to_serializable() -> Generator[None, object, object]:
     """
     Make serialized test reports strict-UTF-8 safe for pytest-xdist.
 
-    Tests that exercise undecodable filesystem paths leak lone surrogates into
-    the captured report; execnet's channel serializer rejects those and kills
-    the whole worker.
+    Lone surrogates in a captured report (e.g. undecodable filesystem paths) kill
+    the execnet worker channel. Covers test reports only; other xdist payloads
+    (warnings, log-start nodeids) are serialized outside this hook.
     """
     data = yield
     return utf8_safe(data)

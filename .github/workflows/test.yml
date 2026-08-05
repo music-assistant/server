@@ -168,8 +168,8 @@ jobs:
       - name: Pytest
         # mode=partial runs only the changed providers' tests with coverage scoped to
         # those provider packages; mode=full runs everything with full coverage.
-        # --dist loadfile keeps each test file on one xdist worker so syrupy
-        # snapshot handling works correctly.
+        # --dist loadfile keeps each test file on one xdist worker: snapshot updates
+        # never race on an .ambr file and module-scoped fixtures are reused.
         env:
           MODE: ${{ needs.changes.outputs.mode }}
           TEST_PATHS: ${{ needs.changes.outputs.test_paths }}
