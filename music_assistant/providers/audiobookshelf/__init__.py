@@ -2197,13 +2197,12 @@ for more details.
             await asyncio.sleep(STREAMDETAILS_EXPIRATION_S)
             current_time = time.time()
 
-            sessions_to_close = [
-                (session_key, session)
-                for session_key, session in self.sessions.items()
-                if current_time - session.last_sync_time > (STREAMDETAILS_EXPIRATION_S * 2)
-            ]
-
             async with self.create_session_lock:
+                sessions_to_close = [
+                    (session_key, session)
+                    for session_key, session in self.sessions.items()
+                    if current_time - session.last_sync_time > (STREAMDETAILS_EXPIRATION_S * 2)
+                ]
                 results = await asyncio.gather(
                     *(
                         self._client.close_open_session(session_id=session.abs_session_id)
