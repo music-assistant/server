@@ -3161,8 +3161,9 @@ class StreamsAudio:
         The format matches the source's native sample rate, bit depth and
         channel count whenever the player can accept them; if the player does
         not support the source's sample rate, it is snapped down to the
-        closest supported rate. No F32 widening, no forced stereo — realtime
-        sources skip every processing stage that would otherwise need them.
+        closest supported rate. No F32 widening — realtime sources skip every
+        processing stage that would otherwise need it. Surround sources are
+        still folded down to stereo, which every output path requires anyway.
 
         :param player: The player requesting the stream.
         :param streamdetails: Stream details for the AudioSource item.
@@ -3186,7 +3187,10 @@ class StreamsAudio:
             content_type=ContentType.from_bit_depth(bit_depth),
             sample_rate=output_sample_rate,
             bit_depth=bit_depth,
-            channels=streamdetails.audio_format.channels,
+            # a realtime source may announce more channels than anything downstream can
+            # carry (a VBAN stream can be configured up to 8), and player handoff formats
+            # copy this count straight through, so fold it here
+            channels=min(streamdetails.audio_format.channels, 2),
         )
 
     def _flow_restart_context(

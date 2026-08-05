@@ -109,10 +109,11 @@ def test_get_ffmpeg_args_omits_layout_above_stereo() -> None:
         assert "-channel_layout" not in part
 
 
-def test_multichannel_pcm_keeps_its_duration_in_ffmpeg(tmp_path: Path) -> None:
-    """Raw surround PCM is read at its real width, so it is not stretched out in time."""
+def test_multichannel_pcm_folds_down_without_stretching(tmp_path: Path) -> None:
+    """Raw surround PCM keeps its real width and length, and its rear channels survive."""
     source = tmp_path / "surround.pcm"
     out = tmp_path / "out.flac"
+    # only the rear channels carry a tone: a downmix that drops them yields silence
     subprocess.run(  # noqa: S603
         [  # noqa: S607
             "ffmpeg",
@@ -122,7 +123,7 @@ def test_multichannel_pcm_keeps_its_duration_in_ffmpeg(tmp_path: Path) -> None:
             "-i",
             "sine=frequency=1000:duration=1:sample_rate=48000",
             "-af",
-            "pan=5.1|FL=c0|FR=c0|FC=c0|LFE=c0|BL=c0|BR=c0",
+            "pan=5.1|BL=c0|BR=c0",
             "-f",
             "s16le",
             str(source),
@@ -165,6 +166,7 @@ def test_multichannel_pcm_keeps_its_duration_in_ffmpeg(tmp_path: Path) -> None:
         check=True,
     ).stdout
     assert float(duration) == pytest.approx(1.0, abs=0.05)
+    assert _rms_db(out) > -40
 
 
 def _output_args(args: list[str]) -> list[str]:
@@ -800,8 +802,8 @@ def test_get_ffmpeg_args_uses_filter_complex_with_complex_filter() -> None:
     assert args.index("/ir.wav") > args.index("-i")
 
 
-def _wav_rms_db(path: Path) -> float:
-    """Return the overall RMS level of a wav file in dB via ffmpeg astats."""
+def _rms_db(path: Path) -> float:
+    """Return the overall RMS level of an audio file in dB via ffmpeg astats."""
     output = subprocess.run(  # noqa: S603
         [  # noqa: S607
             "ffmpeg",
@@ -882,7 +884,7 @@ def test_filtergraph_complex_runs_in_ffmpeg(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert out.exists()
     # identity IR => output level matches input level
-    assert abs(_wav_rms_db(out) - _wav_rms_db(main)) < 0.5
+    assert abs(_rms_db(out) - _rms_db(main)) < 0.5
 
 
 def test_mono_source_keeps_its_level_when_widened_to_stereo(tmp_path: Path) -> None:
@@ -914,4 +916,4 @@ def test_mono_source_keeps_its_level_when_widened_to_stereo(tmp_path: Path) -> N
     result = subprocess.run(args, capture_output=True, text=True, check=False)  # noqa: S603
 
     assert result.returncode == 0, result.stderr
-    assert abs(_wav_rms_db(out) - _wav_rms_db(main)) < 0.5
+    assert abs(_rms_db(out) - _rms_db(main)) < 0.5
