@@ -171,7 +171,8 @@ class ClapIndex:
         :param embedding: 1024-dim query embedding (from CLAP text encoder).
         :param k: Max number of neighbors to return.
         """
-        if self._index is None or len(self._index) == 0:
+        # pinned in a local: teardown runs on a worker thread and can land between reads
+        if (index := self._index) is None or len(index) == 0:
             return []
         vec = np.asarray(embedding, dtype=np.float32).reshape(-1)
         matches = await asyncio.to_thread(self._search_sync, vec, k)

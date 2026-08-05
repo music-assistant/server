@@ -166,30 +166,41 @@ async def test_close_waits_for_a_save_whose_task_was_cancelled(
 
     real_save = idx._index.save
     in_save = threading.Event()
-    active = 0
-    max_active = 0
+    release = threading.Event()
+    writers_lock = threading.Lock()
+    writers = 0
 
     def _slow_save(path: str) -> None:
-        nonlocal active, max_active
-        active += 1
-        max_active = max(max_active, active)
+        nonlocal writers
+        with writers_lock:
+            writers += 1
         in_save.set()
-        time.sleep(0.2)
+        # parked here rather than sleeping, so the assertion below can never
+        # be decided by how fast the machine happens to be
+        assert release.wait(10), "close() never let the save finish"
         real_save(path)
-        active -= 1
 
     monkeypatch.setattr(idx._index, "save", _slow_save)
 
     save_task = asyncio.create_task(idx.save())
-    await asyncio.to_thread(in_save.wait)
+    assert await asyncio.to_thread(in_save.wait, 10)
     save_task.cancel()
     with suppress(asyncio.CancelledError):
         await save_task
 
     # the unload that follows task cancellation on shutdown
-    await idx.close()
+    close_task = asyncio.create_task(idx.close())
 
-    assert max_active == 1
+    # an unguarded close would start writing here; the lock keeps it queued
+    # behind the worker still parked above
+    deadline = time.monotonic() + 0.25
+    while time.monotonic() < deadline and writers < 2:
+        await asyncio.sleep(0.01)
+    assert writers == 1
+
+    release.set()
+    await close_task
+
     keys_path = tmp_path / "sonic_similarity_clap_keys.json"
     assert "track1" in keys_path.read_text(encoding="utf-8")
     assert idx._index is None
