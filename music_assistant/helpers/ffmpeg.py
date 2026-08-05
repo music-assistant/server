@@ -673,10 +673,10 @@ def get_ffmpeg_args(
     ):
         filter_params.append(resample_filter)
 
-    # ffmpeg refuses a simple -af chain alongside a complex graph on the same stream, so a
-    # caller that declares its own graph (through either extra arg list) keeps sole ownership
-    caller_owns_filtergraph = (
-        "-filter_complex" in extra_args or "-filter_complex" in extra_output_args
+    # ffmpeg refuses a simple -af chain alongside a complex graph on the same stream, so we
+    # leave the graph to any caller that declares one in one of the passthrough arg lists
+    caller_owns_filtergraph = any(
+        "-filter_complex" in args for args in (extra_args, extra_input_args, extra_output_args)
     )
 
     # a complex fragment brings its own inputs, which must follow the main input
