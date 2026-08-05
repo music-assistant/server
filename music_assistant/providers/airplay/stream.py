@@ -27,6 +27,7 @@ from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
+    AIRPLAY_BROKEN_PTP_FIRMWARE_PREFIXES,
     AIRPLAY_CONTENT_CUT_TOLERANCE_MS,
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
     AIRPLAY_PCM_FORMAT,
@@ -827,9 +828,24 @@ class AirPlayStream:
         # the daemon publishing its clock there is nothing to attach to, and a
         # stream that asks anyway silently takes its own timing instead.
         if target_protocol == StreamingProtocol.AIRPLAY2:
-            shared_ptp = prov.ptp_daemon_ready if use_shared_ptp is None else use_shared_ptp
-            if shared_ptp:
-                args += ["--ptp-shared"]
+            device_fv = str(
+                (airplay_info.decoded_properties.get("fv") if airplay_info else None) or ""
+            )
+            if device_fv.startswith(AIRPLAY_BROKEN_PTP_FIRMWARE_PREFIXES):
+                # This receiver would render silence at any PTP anchor; NTP
+                # timing keeps it audible and still anchored to our clock. A
+                # mixed group is coherent: this member follows the session
+                # timeline over NTP while the others follow it over PTP.
+                args += ["--no-ptp"]
+                self.player.logger.debug(
+                    "Using NTP timing for %s: firmware %s never renders a PTP-timed stream",
+                    self.player.display_name,
+                    device_fv,
+                )
+            else:
+                shared_ptp = prov.ptp_daemon_ready if use_shared_ptp is None else use_shared_ptp
+                if shared_ptp:
+                    args += ["--ptp-shared"]
 
         # Local interface binding
         target_ip = str(self.player.device_info.ip_address)

@@ -292,6 +292,29 @@ async def test_cli_args_no_ptp_shared_when_daemon_alive_but_not_ready() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cli_args_broken_ptp_firmware_routes_to_ntp() -> None:
+    """
+    Old-LinkPlay platform firmware gets --no-ptp instead of the shared clock.
+
+    These receivers advertise SupportsPTP but render silence at any PTP anchor
+    (Edifier MS50A), so the stream routes them to NTP timing. The newer LinkPlay
+    platform (WiiM, fv without the Linkplay token) renders PTP fine and must
+    keep the shared clock.
+    """
+    player = _make_player()
+    player.airplay_discovery_info.decoded_properties["fv"] = "p20.Linkplay.4.6.430230"
+    args = await _build_args(player)
+    assert "--no-ptp" in args
+    assert "--ptp-shared" not in args
+
+    player = _make_player()
+    player.airplay_discovery_info.decoded_properties["fv"] = "p20.4.8.814756"
+    args = await _build_args(player)
+    assert "--no-ptp" not in args
+    assert "--ptp-shared" in args
+
+
+@pytest.mark.asyncio
 async def test_cli_args_no_latency_override() -> None:
     """The playback lead/buffer is binary-managed; MA never passes --latency."""
     player = _make_player()
