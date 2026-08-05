@@ -1325,9 +1325,9 @@ class StreamsAudio:
         rate the player supports that is <= the source rate, so the source is never
         upsampled. The bit depth follows the source unless audio processing
         (crossfade, volume normalization, DSP) is active — those need F32 headroom
-        to avoid clipping/precision loss. Realtime AudioSource items skip all
-        processing and get a pure passthrough format (source rate/bit depth when
-        the player supports them).
+        to avoid clipping/precision loss. Surround sources are folded down to stereo.
+        Realtime AudioSource items skip all processing and get a pure passthrough
+        format (source rate/bit depth when the player supports them).
 
         :param player: The player requesting the stream.
         :param streamdetails: Stream details for the current item.
@@ -1355,7 +1355,10 @@ class StreamsAudio:
             sample_rate=output_sample_rate,
             content_type=content_type,
             bit_depth=bit_depth,
-            channels=streamdetails.audio_format.channels,
+            # fold surround sources down to stereo right at the decode step: no
+            # output format carries more than two channels, so a wider PCM format
+            # only makes every bytes-to-seconds sum on the stream come out short
+            channels=min(streamdetails.audio_format.channels, 2),
         )
         if crossfade_enabled or overlay_active:
             pcm_format.channels = 2
