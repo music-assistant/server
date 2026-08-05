@@ -450,7 +450,7 @@ class StorytelHelper:
 
         return success
 
-    async def parse_podcast(self, podcast_data: dict[str, Any]) -> Podcast:
+    def parse_podcast(self, podcast_data: dict[str, Any]) -> Podcast:
         """Parse Storytel podcast data to Music Assistant Podcast."""
         list_metadata = podcast_data.get("listMetadata") or {}
         media_type = list_metadata.get("type") or ""
@@ -567,7 +567,7 @@ class StorytelHelper:
             self.logger.warning("Unsupported media item type for parsing: %s", item_type)
             raise UnsupportedFeaturedException(f"Unsupported media item type: {item_type}")
 
-        return await self._apply_media_item_metadata(media_item, item_data)
+        return self._apply_media_item_metadata(media_item, item_data)
 
     async def get_podcast_details(self, consumable_id: str) -> dict[str, Any]:
         """
@@ -1066,10 +1066,10 @@ class StorytelHelper:
 
         return list(chapters)
 
-    async def _parse_chapters(self, chapters_data: list[dict[str, Any]]) -> list[MediaItemChapter]:
+    def _parse_chapters(self, chapters_data: list[dict[str, Any]]) -> list[MediaItemChapter]:
         """Parse raw chapter data into MediaChapter objects."""
         chapters: list[MediaItemChapter] = []
-        chapters_data = await self._compute_chapter_start(chapters_data)
+        chapters_data = self._compute_chapter_start(chapters_data)
         for chap in chapters_data:
             chapter_number = int(chap.get("number") or 0)
             title = chap.get("title") or f"Chapter {chapter_number}"
@@ -1084,9 +1084,7 @@ class StorytelHelper:
             chapters.append(chapter)
         return chapters
 
-    async def _compute_chapter_start(
-        self, chapters_data: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
+    def _compute_chapter_start(self, chapters_data: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Augment the chapters data with computed start positions."""
         for i, chap in enumerate(chapters_data):
             if i == 0:
@@ -1150,7 +1148,7 @@ class StorytelHelper:
             favorite=False,
         )
         chapters = await self._fetch_chapters(consumable_id=consumable_id)
-        chapters_list = await self._parse_chapters(chapters)
+        chapters_list = self._parse_chapters(chapters)
         if authors:
             media_item.authors.set(authors)
         if narrators:
@@ -1159,7 +1157,7 @@ class StorytelHelper:
             media_item.metadata.chapters = chapters_list
         return media_item
 
-    async def _apply_media_item_metadata(
+    def _apply_media_item_metadata(
         self,
         media_item: Audiobook | PodcastEpisode,
         item_data: dict[str, Any],

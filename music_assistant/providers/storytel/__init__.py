@@ -437,7 +437,7 @@ class Storytel(RecommendationPayloadMixin, MusicProvider):
         if item_data is None:
             raise MediaNotFoundError(f"Storytel podcast not found: {prov_podcast_id}")
 
-        podcast = await self.api.parse_podcast(item_data)
+        podcast = self.api.parse_podcast(item_data)
 
         await self.mass.cache.set(
             key=prov_podcast_id,
