@@ -157,7 +157,9 @@ class ClapIndex:
         """
         if self._index is None:
             return None
-        for label, (prov, iid) in self._reverse.items():
+        # snapshot: a rebuild inserts into the map from its worker thread, which
+        # would otherwise break this scan mid-iteration
+        for label, (prov, iid) in list(self._reverse.items()):
             if iid != item_id:
                 continue
             arr = self._embedding_for_label(label)

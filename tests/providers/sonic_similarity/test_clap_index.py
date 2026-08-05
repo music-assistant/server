@@ -207,6 +207,44 @@ async def test_close_waits_for_a_save_whose_task_was_cancelled(
 
 
 @pytest.mark.asyncio
+async def test_lookup_survives_inserts_from_the_rebuild_worker(
+    tmp_path: Path, logger: logging.Logger
+) -> None:
+    """A lookup on the event loop must not break while a rebuild inserts from its thread."""
+
+    class _StubIndex:
+        """Stand-in so the insert loop costs the map, not usearch."""
+
+        def __contains__(self, label: int) -> bool:
+            return False
+
+        def add(self, label: int, vec: np.ndarray) -> None:
+            """Accept the vector and discard it."""
+
+    idx = ClapIndex(_make_mass(tmp_path), logger)  # type: ignore[arg-type]
+    idx._index = _StubIndex()
+    idx._reverse = {label: ("spotify", f"track{label}") for label in range(40_000)}
+
+    stop = threading.Event()
+    vec = _unit_vec(1)
+
+    def _insert_until_stopped() -> None:
+        for label in range(10_000_000, 10_050_000):
+            if stop.is_set():
+                return
+            idx._add_sync(label, vec, "spotify", f"new{label}")
+
+    worker = threading.Thread(target=_insert_until_stopped, daemon=True)
+    worker.start()
+    try:
+        for _ in range(20):
+            assert idx.get_embedding_by_item_id("absent_track") is None
+    finally:
+        stop.set()
+        worker.join(timeout=5)
+
+
+@pytest.mark.asyncio
 async def test_add_landing_after_release_leaves_no_phantom_entry(
     tmp_path: Path, logger: logging.Logger
 ) -> None:
