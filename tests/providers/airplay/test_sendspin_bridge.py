@@ -1,7 +1,7 @@
 """
 Unit tests for the Sendspin -> AirPlay bridge timing.
 
-Cover nine things, with the Sendspin clock mocked via ``ManualClock`` so the
+Cover ten things, with the Sendspin clock mocked via ``ManualClock`` so the
 tests are deterministic and independent of the host wall-clock:
 
 * the clock-domain conversion turning a Sendspin audible instant (Sendspin's own
@@ -57,6 +57,7 @@ from music_assistant.providers.airplay.sendspin_bridge import (
     PAD_BLOCK_FRAMES,
     SILENCE_BLOCK,
     SendspinAirPlayBridge,
+    SendspinBridgeManager,
     device_buffer_ahead_seconds,
     sendspin_audible_instant_to_unix_ms,
     unix_ms_to_sendspin_audible_instant,
@@ -200,6 +201,11 @@ def _make_bridge(
     """Build a bridge with mocked provider/player/server and a ManualClock."""
     provider = MagicMock()
     provider.mass = MagicMock()
+    # Real values: the decision is handed to the CLI verbatim and the group's is
+    # compared against it, both of which a MagicMock would answer truthily
+    # whatever was resolved. None models a group with no live decision.
+    provider.bridge_manager.resolve_shared_ptp = MagicMock(return_value=False)
+    provider.bridge_manager.group_shared_ptp = MagicMock(return_value=None)
     airplay_player = MagicMock()
     airplay_player.player_id = "apc43875e9e53a"
     airplay_player.display_name = "Test Player"
@@ -505,7 +511,7 @@ async def test_cold_start_connects_then_anchors_first_start() -> None:
     ):
         await bridge._start_protocol_from_chunk()
 
-    stream.connect.assert_awaited_once_with()
+    stream.connect.assert_awaited_once_with(False)
     stream.wait_for_connection.assert_awaited_once_with()
     stream.start.assert_awaited_once_with(commanded, join=True)
     assert bridge._airplay_stream is stream
@@ -1395,7 +1401,7 @@ async def test_superseded_start_failure_leaves_the_newer_stream_alone() -> None:
     newer_stream = _make_anchor_stream()
     stale_stream = _make_anchor_stream()
 
-    async def connect() -> None:
+    async def connect(_use_shared_ptp: bool | None) -> None:
         # The newer start won the receiver, so this one cannot have it.
         bridge._airplay_stream_start_task = MagicMock()
         bridge._airplay_stream = newer_stream
@@ -2237,3 +2243,239 @@ async def test_leaving_the_session_without_a_client_is_a_noop() -> None:
     await bridge._leave_sendspin_session()
 
     logger.warning.assert_not_called()
+
+
+# --- One shared-PTP decision per Sendspin group --------------------------------
+
+
+def _group_bridges(*bridges: SendspinAirPlayBridge, daemon_ready: bool) -> SendspinBridgeManager:
+    """
+    Put the given bridges in one Sendspin group behind a shared bridge manager.
+
+    :param bridges: Bridges to place in the group.
+    :param daemon_ready: What the shared PTP daemon answers a fresh resolve.
+    """
+    provider = MagicMock()
+    provider.ptp_daemon_ready = daemon_ready
+    manager = SendspinBridgeManager(provider)
+    provider.bridge_manager = manager
+    group = MagicMock()
+    for index, bridge in enumerate(bridges):
+        bridge.provider = provider
+        bridge._sendspin_client = MagicMock()
+        bridge._sendspin_client.group = group
+        manager._bridges[f"player{index}"] = bridge
+    return manager
+
+
+def test_the_first_group_member_asks_the_daemon() -> None:
+    """With no live decision in the group, the daemon's readiness decides."""
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    _group_bridges(bridge, daemon_ready=True)
+
+    assert bridge._resolve_shared_ptp() is True
+
+
+@pytest.mark.parametrize(("live_decision", "daemon_ready"), [(True, False), (False, True)])
+def test_a_later_member_adopts_the_groups_live_decision(
+    live_decision: bool, daemon_ready: bool
+) -> None:
+    """
+    A member starting later joins on the clock the group is already running.
+
+    Bridges in one group can start minutes apart, so what the daemon answers at
+    the second start says nothing about the source the first member's process
+    was spawned against. Parametrised both ways so the decision is proven to
+    follow the sibling rather than the daemon.
+    """
+    playing = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    joiner = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    _group_bridges(playing, joiner, daemon_ready=daemon_ready)
+    playing._use_shared_ptp = live_decision
+
+    assert joiner._resolve_shared_ptp() is live_decision
+
+
+def test_a_warm_member_still_speaks_for_the_group() -> None:
+    """
+    A process kept for a warm reuse keeps deciding for its group.
+
+    Its Sendspin stream ended, but the next one rides that same cli process with
+    the flag it was spawned with, so a sibling cold-starting alongside it has to
+    match that flag rather than resolve against the daemon.
+    """
+    warm = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    joiner = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    _group_bridges(warm, joiner, daemon_ready=False)
+    warm._use_shared_ptp = True
+    warm._airplay_stream = _make_kept_stream()
+    warm._started = True
+    warm._is_streaming = False
+
+    assert warm.active_shared_ptp is True
+    assert joiner._resolve_shared_ptp() is True
+
+
+def test_an_idle_member_does_not_decide() -> None:
+    """A bridge with no cli process left leaves the group to resolve fresh."""
+    idle = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    starter = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    _group_bridges(idle, starter, daemon_ready=True)
+    idle._use_shared_ptp = False
+    idle._is_streaming = False
+
+    assert idle.active_shared_ptp is None
+    assert starter._resolve_shared_ptp() is True
+
+
+def test_another_groups_decision_is_not_adopted() -> None:
+    """Only members of the same Sendspin group share one timing source."""
+    stranger = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    starter = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    _group_bridges(stranger, starter, daemon_ready=False)
+    stranger._use_shared_ptp = True
+    # the stranger moved on to a group of its own
+    stranger_client = MagicMock()
+    stranger_client.group = MagicMock()
+    stranger._sendspin_client = stranger_client
+
+    assert starter._resolve_shared_ptp() is False
+
+
+def test_a_raop_member_carries_no_decision() -> None:
+    """A legacy RAOP process has no shared-clock flag to hand its group."""
+    raop = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US, protocol=StreamingProtocol.RAOP)
+    _group_bridges(raop, daemon_ready=True)
+
+    assert raop._resolve_shared_ptp() is None
+
+
+async def test_a_cold_start_spawns_the_cli_with_the_groups_decision() -> None:
+    """The adopted decision reaches the cli process and is recorded on the bridge."""
+    playing = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    joiner = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    _group_bridges(playing, joiner, daemon_ready=False)
+    playing._use_shared_ptp = True
+    joiner._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+    joiner._airplay_stream_start_task = asyncio.current_task()
+    stream = _make_anchor_stream(ack=UNIX_NOW_MS + COLD_LEAD_MS)
+
+    with patch(
+        "music_assistant.providers.airplay.sendspin_bridge.time.time",
+        return_value=UNIX_NOW_S,
+    ):
+        assert await joiner._start_cold_stream(stream) is True
+
+    stream.connect.assert_awaited_once_with(True)
+    assert joiner.active_shared_ptp is True
+
+
+async def test_a_daemon_lost_mid_start_cannot_split_the_group() -> None:
+    """
+    Members starting together agree even when the daemon goes away between them.
+
+    The first member records its decision before it awaits its connect, so the
+    second one finds it however the daemon answers by the time it resolves.
+    """
+    first = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    second = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    manager = _group_bridges(first, second, daemon_ready=True)
+    first_stream = _make_anchor_stream(ack=UNIX_NOW_MS + COLD_LEAD_MS)
+    second_stream = _make_anchor_stream(ack=UNIX_NOW_MS + COLD_LEAD_MS)
+
+    async def connect(_use_shared_ptp: bool | None) -> None:
+        # the daemon dies while the first member is still connecting
+        cast("MagicMock", manager.provider).ptp_daemon_ready = False
+        await asyncio.sleep(0)
+
+    first_stream.connect = AsyncMock(side_effect=connect)
+
+    async def cold_start(bridge: SendspinAirPlayBridge, stream: MagicMock) -> None:
+        bridge._drop_until_us = SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000
+        bridge._airplay_stream_start_task = asyncio.current_task()
+        await bridge._start_cold_stream(stream)
+
+    with patch(
+        "music_assistant.providers.airplay.sendspin_bridge.time.time",
+        return_value=UNIX_NOW_S,
+    ):
+        await asyncio.gather(cold_start(first, first_stream), cold_start(second, second_stream))
+
+    assert first.active_shared_ptp is True
+    assert second.active_shared_ptp is True
+    second_stream.connect.assert_awaited_once_with(True)
+
+
+async def test_a_torn_down_bridge_stops_deciding() -> None:
+    """
+    The decision dies with the cli process it was spawned for.
+
+    A new Sendspin stream arms the bridge before it resolves, so a decision left
+    behind by the torn-down process would be handed to the group on its behalf.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._use_shared_ptp = True
+
+    await bridge._stop_streaming()
+    bridge._on_stream_start(MagicMock())
+
+    assert bridge._is_streaming is True
+    assert bridge.active_shared_ptp is None
+
+
+def _make_warm_bridge(*, use_shared_ptp: bool) -> SendspinAirPlayBridge:
+    """
+    Build a bridge holding a connected, anchored cli process on the given flag.
+
+    :param use_shared_ptp: The shared-PTP flag its process was spawned with.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge._airplay_stream = _make_kept_stream()
+    bridge._started = True
+    bridge._use_shared_ptp = use_shared_ptp
+    return bridge
+
+
+def test_a_regrouped_warm_process_is_not_reused() -> None:
+    """
+    A process whose flag no longer matches its group has to be respawned.
+
+    The flag is baked in at spawn, so reusing the process would keep the bridge
+    on the clock its old group ran on. Its start lead has to report the cold
+    figure too, or the respawn lands past the audio Sendspin already scheduled.
+    """
+    regrouped = _make_warm_bridge(use_shared_ptp=False)
+    playing = _make_warm_bridge(use_shared_ptp=True)
+    _group_bridges(regrouped, playing, daemon_ready=True)
+    regrouped._bridge_role = MagicMock()
+
+    assert regrouped._stream_is_warm_eligible() is True
+    assert regrouped._can_reuse_stream_warm() is False
+
+    regrouped._refresh_bridge_timing()
+
+    regrouped._bridge_role.set_timing.assert_called_once_with(
+        required_lead_time_ms=BRIDGE_COLD_START_LEAD_MS, min_buffer_ms=BRIDGE_MIN_BUFFER_MS
+    )
+
+
+def test_a_warm_process_matching_its_group_is_reused() -> None:
+    """A group already on the process's flag costs it no respawn."""
+    warm = _make_warm_bridge(use_shared_ptp=True)
+    playing = _make_warm_bridge(use_shared_ptp=True)
+    _group_bridges(warm, playing, daemon_ready=False)
+
+    assert warm._can_reuse_stream_warm() is True
+
+
+def test_a_group_without_a_live_decision_reuses_the_warm_process() -> None:
+    """
+    A bridge whose group has no other live decision keeps its process.
+
+    Its own process is the group's decision, so a daemon that changed state
+    since must not churn the transport on every track change.
+    """
+    solo = _make_warm_bridge(use_shared_ptp=True)
+    _group_bridges(solo, daemon_ready=False)
+
+    assert solo._can_reuse_stream_warm() is True

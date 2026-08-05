@@ -48,6 +48,7 @@ from .constants import (
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
     ClockReadiness,
+    StreamingProtocol,
 )
 from .helpers import player_id_to_mac_address
 from .stream import AirPlayStream
@@ -267,6 +268,11 @@ class SendspinAirPlayBridge:
         self._bridge_role: BridgePlayerRole | None = None
         self._airplay_stream: AirPlayStream | None = None
         self._is_streaming = False
+        # Shared-PTP decision the bridge's current cli process was spawned with
+        # (None when no process carries one). A warm reuse keeps the flag baked
+        # into that process, so the group matches what is really running instead
+        # of deciding again per stream.
+        self._use_shared_ptp: bool | None = None
         # Frames handed to the CLI since the start anchor. Byte 0 of that stream is
         # audible at _drop_until_us and the device plays on at a fixed rate, so this
         # counter is also the write cursor's position on the Sendspin timeline.
@@ -331,6 +337,25 @@ class SendspinAirPlayBridge:
         return (
             self._airplay_stream is not None and self.airplay_player.stream is self._airplay_stream
         )
+
+    @property
+    def sendspin_group(self) -> SendspinGroup | None:
+        """Return the Sendspin group this bridge belongs to, or None when unregistered."""
+        return self._sendspin_client.group if self._sendspin_client else None
+
+    @property
+    def active_shared_ptp(self) -> bool | None:
+        """
+        Return the shared-PTP decision this bridge's live cli process runs with.
+
+        None when the bridge has no process carrying one, so a group member
+        resolving its own start never matches a decision nothing is running. A
+        process kept for a warm reuse still answers: the next stream rides it
+        with the flag it was spawned with.
+        """
+        if self._is_streaming or self._stream_is_warm_eligible():
+            return self._use_shared_ptp
+        return None
 
     async def start(self) -> None:
         """Register the AirPlay player as an external Sendspin client."""
@@ -435,7 +460,7 @@ class SendspinAirPlayBridge:
             return
         lead_ms = (
             BRIDGE_WARM_START_LEAD_MS
-            if self._stream_is_warm_eligible()
+            if self._can_reuse_stream_warm()
             else BRIDGE_COLD_START_LEAD_MS
         )
         self._bridge_role.set_timing(
@@ -453,6 +478,30 @@ class SendspinAirPlayBridge:
         """
         stream = self._airplay_stream
         return stream is not None and stream.running and stream.connected and self._started
+
+    def _can_reuse_stream_warm(self) -> bool:
+        """
+        Return whether the next Sendspin stream can ride the current cli process.
+
+        On top of the process being reusable, the shared-PTP flag it was spawned
+        with has to still be the one its group runs on: a bridge regrouped onto
+        the other timing source needs a fresh process to change that flag.
+        """
+        if not self._stream_is_warm_eligible():
+            return False
+        group_decision = self.provider.bridge_manager.group_shared_ptp(self)
+        return group_decision is None or group_decision == self._use_shared_ptp
+
+    def _resolve_shared_ptp(self) -> bool | None:
+        """
+        Decide whether the cli process about to be spawned attaches to the shared PTP clock.
+
+        None for a player that does not stream native AirPlay 2, whose process
+        carries no timing decision for the group to match.
+        """
+        if self.airplay_player.protocol != StreamingProtocol.AIRPLAY2:
+            return None
+        return self.provider.bridge_manager.resolve_shared_ptp(self)
 
     def _on_stream_start(self, request: ExternalStreamStartRequest) -> None:
         """
@@ -491,7 +540,7 @@ class SendspinAirPlayBridge:
         # stream's resources, which reuse the same instance variables. A warm-
         # eligible stream is kept out of the snapshot entirely so it survives
         # into the new stream instead of being torn down.
-        keep_stream = self._stream_is_warm_eligible()
+        keep_stream = self._can_reuse_stream_warm()
         old_stream = None if keep_stream else self._airplay_stream
         old_writer_task = self._writer_task
         old_stream_start_task = self._airplay_stream_start_task
@@ -543,8 +592,8 @@ class SendspinAirPlayBridge:
         self.mass.cancel_timer(self._teardown_timer_id)
         # The stream might not yet be cleaned up completely (on rapid skips for example).
         # A warm-eligible stream is kept out of the snapshot so it survives into the
-        # new stream instead of being torn down (see _stream_is_warm_eligible).
-        keep_stream = self._stream_is_warm_eligible()
+        # new stream instead of being torn down (see _can_reuse_stream_warm).
+        keep_stream = self._can_reuse_stream_warm()
         old_stream = None if keep_stream else self._airplay_stream
         old_writer_task = self._writer_task
         old_stream_start_task = self._airplay_stream_start_task
@@ -638,7 +687,10 @@ class SendspinAirPlayBridge:
         :return: True when the stream is anchored, False when superseded.
         """
         try:
-            await stream.connect()
+            # Resolving and recording the decision never awaits, so two bridges
+            # starting together cannot both find their group still undecided.
+            self._use_shared_ptp = self._resolve_shared_ptp()
+            await stream.connect(self._use_shared_ptp)
             await stream.wait_for_connection()
             if asyncio.current_task() is not self._airplay_stream_start_task:
                 await stream.stop(force=True)
@@ -1312,6 +1364,7 @@ class SendspinAirPlayBridge:
     async def _stop_streaming(self) -> None:
         """Stop streaming (internal, called with lock held)."""
         self._is_streaming = False
+        self._use_shared_ptp = None
         self._queued_frames = 0
         self._applied_shift_seconds = 0.0
         self._absorbing_shift = False
@@ -1340,6 +1393,42 @@ class SendspinAirPlayBridge:
 
 class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinAirPlayBridge]):
     """Manages Sendspin bridges for all AirPlay players."""
+
+    def resolve_shared_ptp(self, bridge: SendspinAirPlayBridge) -> bool:
+        """
+        Return whether a bridge's next cli process attaches to the shared PTP clock.
+
+        One Sendspin group must not mix the two timing sources: a member that
+        does not attach times itself off NTP instead, which the binary anchors
+        differently from PTP, and the two drift audibly apart. Bridges in a group
+        can start minutes apart and keep a warm process across a track change, so
+        the decision its group already runs on wins; only a group without one
+        asks the daemon.
+
+        :param bridge: The bridge about to spawn a cli process.
+        """
+        decision = self.group_shared_ptp(bridge)
+        if decision is None:
+            decision = cast("AirPlayProvider", self.provider).ptp_daemon_ready
+        return decision
+
+    def group_shared_ptp(self, bridge: SendspinAirPlayBridge) -> bool | None:
+        """
+        Return the shared-PTP decision the rest of a bridge's Sendspin group runs on.
+
+        None when no other member of the group has a cli process carrying one,
+        which leaves the bridge free to decide for the group itself.
+
+        :param bridge: The bridge asking about its group.
+        """
+        if not (group := bridge.sendspin_group):
+            return None
+        for sibling in self._bridges.values():
+            if sibling is bridge or sibling.sendspin_group is not group:
+                continue
+            if (decision := sibling.active_shared_ptp) is not None:
+                return decision
+        return None
 
     def get_transport_command_target(self, airplay_player_id: str) -> str | None:
         """
