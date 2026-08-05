@@ -383,7 +383,8 @@ class SendspinLocalAudioBridge:
 
     def _on_bridge_stream_end(self) -> None:
         """Stop streaming when the stream ends."""
-        self._is_streaming = False
+        # Clearing the streaming flag is left to the teardown, which is the only
+        # thing that knows whether this end still owns the running writer.
         self.mass.create_task(self._stop_streaming_locked(self._writer_task))
         if self._volume_controller is None and self.backend == "pulse":
             # Master/base sink (software volume control): re-pin PA sink
@@ -868,10 +869,16 @@ class SendspinLocalAudioBridge:
         :param close_stream: How to release the device it produces.
         """
 
+        def _close_device(stream: _StreamT) -> None:
+            # nobody is left to hand a failed release to, and the executor
+            # future it would surface on is never retrieved
+            with suppress(Exception):
+                close_stream(stream)
+
         def _close_when_open(finished: asyncio.Future[_StreamT]) -> None:
             if finished.cancelled() or finished.exception() is not None:
                 return
-            self.mass.loop.run_in_executor(None, close_stream, finished.result())
+            self.mass.loop.run_in_executor(None, _close_device, finished.result())
 
         open_future.add_done_callback(_close_when_open)
 

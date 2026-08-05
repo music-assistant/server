@@ -59,7 +59,9 @@ def _import_sounddevice() -> ModuleType | None:
     """Return the sounddevice module, or None where the PortAudio library is missing."""
     try:
         return importlib.import_module("sounddevice")
-    except Exception:
+    except OSError:
+        # only the missing shared library is a reason to skip; anything else is
+        # a real problem and silently skipping it would report green on nothing
         return None
 
 
@@ -864,6 +866,35 @@ async def test_a_stream_end_tears_down_the_writer_that_was_running() -> None:
     assert writer.cancelled()
     assert bridge._writer_task is None
     assert bridge._is_streaming is False
+
+
+async def test_a_stream_end_behind_a_running_teardown_leaves_the_newer_writer_alone() -> None:
+    """
+    A stream end whose teardown turns out to be stale leaves the streaming flag alone.
+
+    Every chunk is checked against that flag, so clearing it on behalf of a
+    stream that has already finished would silence the one that replaced it.
+    """
+    bridge = _make_bridge()
+    old_writer = _install_writer(bridge, _never_returns())
+    await _settle()
+
+    await bridge._lock.acquire()  # a teardown is already in progress
+    bridge._on_bridge_stream_end()
+    await _settle()
+    # a new stream installs its writer before the queued teardown gets the lock
+    newer_writer = _install_writer(bridge, _never_returns())
+    bridge._lock.release()
+    await _settle()
+
+    assert bridge._is_streaming is True
+    assert bridge._writer_task is newer_writer
+    assert not newer_writer.cancelled()
+
+    for task in (old_writer, newer_writer):
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
 
 async def test_a_timed_out_stop_cancels_the_writer_it_captured() -> None:
