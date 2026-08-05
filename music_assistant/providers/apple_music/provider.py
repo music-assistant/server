@@ -193,6 +193,22 @@ class AppleMusicProvider(RecommendationPayloadMixin, MusicProvider):
         return await self.recommendation_manager.get_similar_artists(prov_artist_id, limit)
 
     # ------------------------------------------------------------------
+    # External ID lookups
+    # ------------------------------------------------------------------
+
+    async def get_track_by_external_id(
+        self, external_id: str, external_id_type: str
+    ) -> Track | None:
+        """Retrieve track by external ID (ISRC)."""
+        return await self.media_manager.get_track_by_external_id(external_id, external_id_type)
+
+    async def get_album_by_external_id(
+        self, external_id: str, external_id_type: str
+    ) -> Album | None:
+        """Retrieve album by external ID (UPC/Barcode)."""
+        return await self.media_manager.get_album_by_external_id(external_id, external_id_type)
+
+    # ------------------------------------------------------------------
     # Library generators
     # ------------------------------------------------------------------
 
