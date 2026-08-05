@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from collections.abc import Callable, Coroutine
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,7 +36,9 @@ class _FakeMass:
         return self._track(target(*args, **kwargs))
 
     def _track(self, coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
-        task = self._loop.create_task(coro)
+        # eager start, like the real server: the save already runs up to its first
+        # suspension before the caller gets the task back
+        task = asyncio.Task(coro, loop=self._loop, eager_start=True)
         self.tasks.append(task)
         return task
 
@@ -67,6 +70,20 @@ async def _await_save_task(mass: _FakeMass) -> None:
     mass.tasks.clear()
 
 
+async def _stalled_json_dumps(*_args: Any, **_kwargs: Any) -> str:
+    """Stand in for the serialization step of a save that is still busy when the server stops."""
+    await asyncio.Event().wait()
+    return ""
+
+
+async def _cancel_save_tasks(mass: _FakeMass) -> None:
+    """Cancel the running save tasks, as the server does on stop."""
+    for task in mass.tasks:
+        task.cancel()
+    await asyncio.gather(*mass.tasks, return_exceptions=True)
+    mass.tasks.clear()
+
+
 async def test_close_skips_save_when_nothing_changed(tmp_path: Path) -> None:
     """A stop without config changes may not rewrite the settings file."""
     controller, mass = _make_controller(tmp_path)
@@ -78,6 +95,15 @@ async def test_close_skips_save_when_nothing_changed(tmp_path: Path) -> None:
 
     save_to_disk.assert_not_called()
     assert json.loads(Path(controller.filename).read_text()) == {"generation": 1}
+
+
+async def test_save_timer_handle_is_cleared_when_it_fires(tmp_path: Path) -> None:
+    """The timer handle may not outlive the timer it belongs to."""
+    controller, mass = _make_controller(tmp_path)
+    _set_without_delay(controller, "generation", 1)
+    await _await_save_task(mass)
+
+    assert controller._timer_handle is None
 
 
 async def test_close_skips_save_after_immediate_save(tmp_path: Path) -> None:
@@ -127,13 +153,81 @@ async def test_close_saves_change_whose_save_task_was_cancelled(tmp_path: Path) 
     save that was already scheduled is cancelled and can only complete here.
     """
     controller, mass = _make_controller(tmp_path)
-    _set_without_delay(controller, "generation", 1)
-    await _wait_for_save_task(mass)
-    for task in mass.tasks:
-        task.cancel()
-    await asyncio.gather(*mass.tasks, return_exceptions=True)
+    with patch(
+        "music_assistant.controllers.config.controller.async_json_dumps", new=_stalled_json_dumps
+    ):
+        _set_without_delay(controller, "generation", 1)
+        await _wait_for_save_task(mass)
+        await _cancel_save_tasks(mass)
     assert not Path(controller.filename).exists()
 
     await controller.close()
 
     assert json.loads(Path(controller.filename).read_text()) == {"generation": 1}
+
+
+async def test_close_saves_immediate_save_that_was_cancelled(tmp_path: Path) -> None:
+    """An immediate save that did not finish before the stop must still be written."""
+    controller, mass = _make_controller(tmp_path)
+    with patch(
+        "music_assistant.controllers.config.controller.async_json_dumps", new=_stalled_json_dumps
+    ):
+        controller.set("generation", 1, immediate=True)
+        await _cancel_save_tasks(mass)
+    assert not Path(controller.filename).exists()
+
+    await controller.close()
+
+    assert json.loads(Path(controller.filename).read_text()) == {"generation": 1}
+
+
+async def test_close_saves_change_whose_save_failed(tmp_path: Path) -> None:
+    """A save that could not be written must be retried on stop."""
+    controller, mass = _make_controller(tmp_path)
+    with patch.object(controller, "_save_to_disk", side_effect=OSError("no space left on device")):
+        _set_without_delay(controller, "generation", 1)
+        await _wait_for_save_task(mass)
+        await asyncio.gather(*mass.tasks, return_exceptions=True)
+        mass.tasks.clear()
+    assert not Path(controller.filename).exists()
+
+    await controller.close()
+
+    assert json.loads(Path(controller.filename).read_text()) == {"generation": 1}
+
+
+async def test_close_cancels_the_pending_save_timer(tmp_path: Path) -> None:
+    """The stop may not leave a timer behind that still fires a save afterwards."""
+    controller, mass = _make_controller(tmp_path)
+    _set_without_delay(controller, "generation", 1)
+
+    await controller.close()
+    await asyncio.sleep(0)
+
+    assert controller._timer_handle is None
+    assert not mass.tasks
+
+
+async def test_close_saves_change_made_while_a_save_was_writing(tmp_path: Path) -> None:
+    """A change made after a save took its snapshot is not in that write, so the stop must do it."""
+    controller, mass = _make_controller(tmp_path)
+    save_to_disk = controller._save_to_disk
+    writing = threading.Event()
+    release = threading.Event()
+
+    def blocking_save_to_disk(json_data: str) -> None:
+        writing.set()
+        release.wait(5)
+        save_to_disk(json_data)
+
+    with patch.object(controller, "_save_to_disk", new=blocking_save_to_disk):
+        controller.set("first", 1, immediate=True)
+        await asyncio.to_thread(writing.wait, 5)
+        controller.set("second", 2)
+        release.set()
+        await asyncio.gather(*mass.tasks)
+        mass.tasks.clear()
+
+    await controller.close()
+
+    assert json.loads(Path(controller.filename).read_text()) == {"first": 1, "second": 2}

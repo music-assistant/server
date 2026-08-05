@@ -129,11 +129,14 @@ class ConfigController(
     async def close(self) -> None:
         """Handle logic on server stop."""
         if self._timer_handle is not None:
+            # a change that is still waiting out the debounce delay counts as pending on
+            # its own: a save that was already writing may have cleared the marker for it
             self._timer_handle.cancel()
             self._timer_handle = None
+            self._save_pending = True
         if self._save_pending:
-            # a scheduled save did not make it to disk: it is either still waiting out
-            # the debounce delay or its task was cancelled on stop, so write it here
+            # the save never made it to disk: its task was either cancelled on stop or
+            # never started, so write the data here
             await self._async_save()
         LOGGER.debug("Stopped.")
 
