@@ -486,8 +486,12 @@ class StorytelHelper:
                 [MediaItemImage(type=ImageType.THUMB, path=cover_url, provider=self.provider_id)]
             )
         podcast.metadata.description = list_metadata.get("description") or ""
-        podcast.metadata.languages = UniqueList([list_metadata.get("language") or ""])
-        podcast.metadata.genres = {list_metadata.get("genre", "")}
+        language = list_metadata.get("language") or ""
+        if language:
+            podcast.metadata.languages = UniqueList([language])
+        genre = list_metadata.get("genre") or ""
+        if genre:
+            podcast.metadata.genres = {genre}
         podcast.metadata.performers = set(hosts)
         latest_episode_date_text = (list_metadata.get("followingInfo") or {}).get(
             "newestItemReleaseDate"
