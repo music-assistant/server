@@ -62,7 +62,111 @@ def test_get_ffmpeg_args_downmixes_multichannel_for_single_channel_output() -> N
     args = get_ffmpeg_args(input_format, output_format, ["pan=mono|c0=0.5*FL+0.5*FR"])
 
     filter_graph = args[args.index("-af") + 1]
-    assert filter_graph.index("pan=stereo|FL=") < filter_graph.index("pan=mono|c0=0.5*FL+0.5*FR")
+    assert filter_graph.index("aformat=channel_layouts=stereo") < filter_graph.index(
+        "pan=mono|c0=0.5*FL+0.5*FR"
+    )
+
+
+def _split_at_input(args: list[str]) -> tuple[list[str], list[str]]:
+    """Split generated ffmpeg args into the part describing the input and the output."""
+    idx = args.index("-i")
+    return args[:idx], args[idx + 2 :]
+
+
+@pytest.mark.parametrize(
+    ("channels", "expected_layout"),
+    [(1, "mono"), (2, "stereo")],
+)
+def test_get_ffmpeg_args_names_layout_up_to_stereo(channels: int, expected_layout: str) -> None:
+    """Mono and stereo PCM are described by both their channel count and their layout."""
+    fmt = AudioFormat(
+        content_type=ContentType.PCM_S24LE,
+        sample_rate=48000,
+        bit_depth=24,
+        channels=channels,
+    )
+
+    input_args, output_args = _split_at_input(get_ffmpeg_args(fmt, fmt, []))
+
+    for part in (input_args, output_args):
+        assert part[part.index("-ac") + 1] == str(channels)
+        assert part[part.index("-channel_layout") + 1] == expected_layout
+
+
+def test_get_ffmpeg_args_omits_layout_above_stereo() -> None:
+    """Surround PCM is described by its channel count alone, never as a stereo layout."""
+    fmt = AudioFormat(
+        content_type=ContentType.PCM_S24LE,
+        sample_rate=48000,
+        bit_depth=24,
+        channels=6,
+    )
+
+    input_args, output_args = _split_at_input(get_ffmpeg_args(fmt, fmt, []))
+
+    for part in (input_args, output_args):
+        assert part[part.index("-ac") + 1] == "6"
+        assert "-channel_layout" not in part
+
+
+def test_multichannel_pcm_folds_down_without_stretching(tmp_path: Path) -> None:
+    """Raw surround PCM keeps its real width and length, and its rear channels survive."""
+    source = tmp_path / "surround.pcm"
+    out = tmp_path / "out.flac"
+    # only the rear channels carry a tone: a downmix that drops them yields silence
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:duration=1:sample_rate=48000",
+            "-af",
+            "pan=5.1|BL=c0|BR=c0",
+            "-f",
+            "s16le",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE,
+        sample_rate=48000,
+        bit_depth=16,
+        channels=6,
+    )
+    output_format = AudioFormat(
+        content_type=ContentType.FLAC,
+        sample_rate=48000,
+        bit_depth=16,
+        channels=2,
+    )
+    args = get_ffmpeg_args(
+        pcm_format, output_format, [], input_path=str(source), output_path=str(out)
+    )
+
+    result = subprocess.run([*args, "-y"], capture_output=True, text=True, check=False)  # noqa: S603
+    assert result.returncode == 0, result.stderr
+
+    duration = subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+            str(out),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert float(duration) == pytest.approx(1.0, abs=0.05)
+    assert _rms_db(out) > -40
 
 
 def _output_args(args: list[str]) -> list[str]:
@@ -698,8 +802,8 @@ def test_get_ffmpeg_args_uses_filter_complex_with_complex_filter() -> None:
     assert args.index("/ir.wav") > args.index("-i")
 
 
-def _wav_rms_db(path: Path) -> float:
-    """Return the overall RMS level of a wav file in dB via ffmpeg astats."""
+def _rms_db(path: Path) -> float:
+    """Return the overall RMS level of an audio file in dB via ffmpeg astats."""
     output = subprocess.run(  # noqa: S603
         [  # noqa: S607
             "ffmpeg",
@@ -780,7 +884,7 @@ def test_filtergraph_complex_runs_in_ffmpeg(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert out.exists()
     # identity IR => output level matches input level
-    assert abs(_wav_rms_db(out) - _wav_rms_db(main)) < 0.5
+    assert abs(_rms_db(out) - _rms_db(main)) < 0.5
 
 
 def test_mono_source_keeps_its_level_when_widened_to_stereo(tmp_path: Path) -> None:
@@ -812,4 +916,4 @@ def test_mono_source_keeps_its_level_when_widened_to_stereo(tmp_path: Path) -> N
     result = subprocess.run(args, capture_output=True, text=True, check=False)  # noqa: S603
 
     assert result.returncode == 0, result.stderr
-    assert abs(_wav_rms_db(out) - _wav_rms_db(main)) < 0.5
+    assert abs(_rms_db(out) - _rms_db(main)) < 0.5
