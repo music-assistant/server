@@ -129,6 +129,7 @@ from .constants import (
     CONF_URL,
     CONF_USERNAME,
     CONF_VERIFY_SSL,
+    STREAMDETAILS_EXPIRATION_S,
     AbsBrowseItemsBookTranslationKey,
     AbsBrowseItemsPodcastTranslationKey,
     AbsBrowsePaths,
@@ -333,6 +334,9 @@ for more details.
         self.playlist_lock = asyncio.Lock()
         self.playlist_last = 0.0
 
+        # create close sessions task
+        self._close_sessions_task = self.mass.create_task(self._cleanup_open_sessions_loop())
+
         # register dynamic stream route for audiobook parts
         self._on_unload_callbacks.append(
             self.mass.streams.register_dynamic_route(
@@ -350,6 +354,23 @@ for more details.
         # run the unload chain first: RecommendationPayloadMixin cancels and awaits its
         # payload tasks, so no fetch is still running against the clients logging out below
         await super().unload(is_removed)
+
+        # cancel close sessions task, and close remaining
+        if self._close_sessions_task:
+            self._close_sessions_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._close_sessions_task
+
+        # close the tracked sessions concurrently, so an unreachable server can neither
+        # stall nor abort the unload below
+        await asyncio.gather(
+            *(
+                self._client.close_open_session(session_id=x.abs_session_id)
+                for x in self.sessions.values()
+            ),
+            return_exceptions=True,
+        )
+        self.sessions.clear()
         try:
             await self._client.logout()
             await self._client_socket.logout()
@@ -930,6 +951,7 @@ for more details.
             path=file_parts[0].path if len(file_parts) == 1 else file_parts,
             can_seek=True,
             allow_seek=True,
+            expiration=STREAMDETAILS_EXPIRATION_S,
         )
 
     async def _get_playback_session(self, mass_item_id: str) -> AbsPlaybackSessionExpanded:
@@ -948,9 +970,12 @@ for more details.
             abs_item_id = item_ids[0]
             episode_id = item_ids[1] if len(item_ids) == 2 else None
 
+            # Abs allows a single session per device id.
+
             client_name = f"Music Assistant {self.instance_id}"
+            device_id = f"{self.instance_id}_{mass_item_id}"
             device_info = AbsDeviceInfo(
-                device_id=self.instance_id,
+                device_id=device_id,
                 client_name=client_name,
                 client_version=self.mass.version,
                 manufacturer="",
@@ -1016,30 +1041,27 @@ for more details.
         self, item_id: str, media_type: MediaType
     ) -> tuple[bool, int, datetime | None]:
         """Return finished:bool, position_ms: int."""
-        # this method is called _before_ get_stream_details, so the playback session
-        # is created here.
-        session = await self._get_playback_session(mass_item_id=item_id)
-
+        # do not create a session here, as this method is called outside of stream acquisition
         item_ids = item_id.split(" ")
         abs_item_id = item_ids[0]
         episode_id = item_ids[1] if len(item_ids) == 2 else None
         progress = await self._client.get_my_media_progress(
             item_id=abs_item_id, episode_id=episode_id
         )
-        # only the progress object has a timestamp of the progress (not the session)
-        # last_update is in ms epoch
-        # If there is an open session, that session might have the old progress time,
-        # whereas the explicit progress call above gives the most recent time.
+        if progress is None:
+            # fallback to internal position
+            raise NotImplementedError
+        # The progress' last_update is in ms epoch
         timestamp = from_utc_timestamp(progress.last_update / 1000) if progress else None
-        current_time = (
-            progress.current_time
-            if progress is not None and progress.current_time is not None
-            else session.current_time
+        current_time = progress.current_time if progress.current_time is not None else 0.0
+        self.logger.debug(
+            "Acquired resume position %s for %s with item_id %s.",
+            current_time,
+            media_type.value,
+            item_id,
         )
-        finished = current_time > session.duration - PLAYBACK_REPORT_INTERVAL_SECONDS
-        self.logger.debug("Resume position %s: obtained.", current_time)
         return (
-            finished,
+            progress.is_finished,
             int(current_time * 1000),
             timestamp,
         )
@@ -2132,3 +2154,39 @@ for more details.
         else:
             browse_items = list(self._browse_root())
         return UniqueList(browse_items)
+
+    async def _cleanup_open_sessions_loop(self) -> None:
+        """Close unused open sessions."""
+        while True:
+            await asyncio.sleep(STREAMDETAILS_EXPIRATION_S)
+            current_time = time.time()
+
+            async with self.create_session_lock:
+                sessions_to_close = [
+                    (session_key, session)
+                    for session_key, session in self.sessions.items()
+                    if current_time - session.last_sync_time > (STREAMDETAILS_EXPIRATION_S * 2)
+                ]
+                results = await asyncio.gather(
+                    *(
+                        self._client.close_open_session(session_id=session.abs_session_id)
+                        for (_, session) in sessions_to_close
+                    ),
+                    return_exceptions=True,
+                )
+
+                for (session_key, session), result in zip(sessions_to_close, results, strict=True):
+                    if isinstance(result, Exception):
+                        self.logger.warning(
+                            "Failed to close session %s: %s",
+                            session.abs_session_id,
+                            result,
+                        )
+                    else:
+                        self.logger.debug(
+                            "Closed session %s",
+                            session.abs_session_id,
+                        )
+                    # We do not try again after a failure. _get_playback_session verifies if a session
+                    # exists.
+                    self.sessions.pop(session_key, None)

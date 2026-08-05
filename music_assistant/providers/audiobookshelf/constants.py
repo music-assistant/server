@@ -9,6 +9,9 @@ from aiohttp.client import ClientTimeout
 # we use twice the default values
 AIOHTTP_TIMEOUT = ClientTimeout(total=10 * 60, sock_connect=60)
 
+# expire after 5 min of not using them
+STREAMDETAILS_EXPIRATION_S = 300
+
 # CONFIG
 CONF_URL = "url"
 CONF_USERNAME = "username"
