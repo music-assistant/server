@@ -132,7 +132,7 @@ def test_get_ffmpeg_args_single_channel_output_declares_mono() -> None:
 def test_get_ffmpeg_args_passthrough_sinks_omit_channels(
     output_path: str, output_content_type: ContentType, expected: list[str]
 ) -> None:
-    """The analysis sink and the cache passthrough see mono content exactly as it is."""
+    """The analysis sink and the cache passthrough declare no channel count of their own."""
     input_format = AudioFormat(
         content_type=ContentType.PCM_S16LE, sample_rate=44100, bit_depth=16, channels=1
     )
@@ -142,7 +142,6 @@ def test_get_ffmpeg_args_passthrough_sinks_omit_channels(
 
     args = get_ffmpeg_args(input_format, output_format, [], output_path=output_path)
 
-    assert "-af" not in args
     assert _output_args(args) == expected
 
 

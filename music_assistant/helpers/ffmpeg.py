@@ -607,8 +607,7 @@ def get_ffmpeg_args(
         "mono" if output_format.channels == 1 else "stereo",
     ]
     if output_path.upper() == "NULL":
-        # devnull stream. the channel args are deliberately dropped here: this sink
-        # feeds the loudness analysis, which must measure the source as it is.
+        # devnull stream: nothing is encoded here, so there is no channel count to declare
         output_path = "-"
         output_args = ["-f", "null"]
     elif output_format.content_type.is_pcm():
@@ -623,8 +622,7 @@ def get_ffmpeg_args(
         ]
     elif output_format.content_type == ContentType.NUT:
         # passthrough-mode (for creating the cache) using NUT container.
-        # the channel args are deliberately dropped here: they carry no meaning
-        # next to an -acodec copy.
+        # -acodec copy leaves the source untouched, so there is no channel count to declare
         output_args = [
             "-vn",
             "-dn",
@@ -668,8 +666,8 @@ def get_ffmpeg_args(
     # append (final) output path at the end of the args
     output_args.append(output_path)
 
-    # runs ahead of the caller's own filters, so the channel-aware ones among them
-    # (per-channel preamp, left/right selection) are handed a real FL/FR pair
+    # runs ahead of the caller's own filters, so channel-aware ones such as the
+    # per-channel preamp see the conformed layout instead of the source layout
     if channel_filter := _get_channel_conform_filter(input_format.channels, output_format.channels):
         filter_params = [channel_filter, *filter_params]
 
@@ -741,6 +739,8 @@ def _get_channel_conform_filter(input_channels: int, output_channels: int) -> st
 
     :param input_channels: Channel count entering FFmpeg.
     :param output_channels: Channel count the output is encoded at.
+    :return: The filter to run before any caller supplied ones, or None when the
+        source already carries the requested channel count.
     """
     if input_channels > 2 and output_channels <= 2:
         # a single channel output needs this fold too, otherwise a mono/left/right pan
