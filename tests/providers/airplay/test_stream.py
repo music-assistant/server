@@ -1498,6 +1498,20 @@ async def test_start_accepts_a_malformed_ack_as_the_commanded_instant() -> None:
 
 
 @pytest.mark.asyncio
+async def test_start_treats_a_missing_scheduled_instant_as_malformed() -> None:
+    """An ack without at_unix_ms parses cleanly to 0, which must never be returned."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
+        start_task = asyncio.create_task(stream.start(START_UNIX_MS, 0))
+        await asyncio.sleep(0)
+        stream._handle_status_line(f"[STATUS] started requested_unix_ms={START_UNIX_MS}")
+        assert await start_task == START_UNIX_MS
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("join", "expected_timeout"),
     [

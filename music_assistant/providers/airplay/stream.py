@@ -1204,7 +1204,11 @@ class AirPlayStream:
                 # the ack timeout.
                 pass
             else:
-                self._start_ack = (requested, actual)
+                # A line missing at_unix_ms parses as 0, which is never a real
+                # instant: treat it like the malformed ack above rather than
+                # handing the caller 0 as the scheduled instant.
+                if actual:
+                    self._start_ack = (requested, actual)
                 if requested and actual and abs(actual - requested) > 2:
                     # A correction on its own is self-healed: a join lands on it
                     # by design, and a solo start simply adopts it as the anchor.
