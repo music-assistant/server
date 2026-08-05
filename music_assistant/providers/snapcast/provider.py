@@ -288,8 +288,8 @@ class SnapCastProvider(PlayerProvider):
             self._snapcast_stream_format = DEFAULT_SNAPCAST_FORMAT
         else:
             self._snapcast_stream_format = snapcast_stream_format(
-                int(cast("int", self.config.get_value(CONF_STREAM_SAMPLE_RATE) or 48000)),
-                int(cast("int", self.config.get_value(CONF_STREAM_BIT_DEPTH) or 16)),
+                cast("int", self.config.get_value(CONF_STREAM_SAMPLE_RATE)),
+                cast("int", self.config.get_value(CONF_STREAM_BIT_DEPTH)),
             )
         self._ids_map = bidict({})
         self._last_status_refresh = 0.0

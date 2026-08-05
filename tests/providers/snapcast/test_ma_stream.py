@@ -281,6 +281,27 @@ async def test_name_collision_with_local_stream_cached_adopts_it(
 
 
 @pytest.mark.asyncio
+async def test_name_collision_with_incompatible_format_recreates_stream(
+    fake_provider: MagicMock, fake_snapserver: FakeSnapserver
+) -> None:
+    """Orphan streams with a different sample format must be removed and recreated."""
+    target_name = "Music Assistant - hires"
+    fake_provider.stream_audio_format = snapcast_stream_format(96000, 24)
+    fake_snapserver.cache_stream_directly("orphan-id", target_name)
+    fake_snapserver.queue_name_collision()
+    fake_snapserver.queue_success(stream_id="recreated-id")
+
+    stream = _make_stream(fake_provider, name=target_name)
+    await stream._register_tcp_server_source()
+
+    assert stream.snap_stream is not None
+    assert stream.snap_stream.identifier == "recreated-id"
+    assert fake_snapserver.stream_remove_stream.await_count == 1
+    assert "sampleformat=96000:24:2" in fake_snapserver.add_stream_calls[-1]
+    assert "packed_s24le=true" in fake_snapserver.add_stream_calls[-1]
+
+
+@pytest.mark.asyncio
 async def test_orphan_stream_after_ma_restart_gets_adopted_via_resync(
     fake_provider: MagicMock, fake_snapserver: FakeSnapserver
 ) -> None:
