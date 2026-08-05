@@ -1196,6 +1196,19 @@ def format_ip_for_url(ip_address: str) -> str:
     return ip_address
 
 
+def select_announce_addresses(addresses: list[str]) -> list[str]:
+    """
+    Return the addresses to announce to devices on the local network.
+
+    :param addresses: Every address this host publishes, best candidate first.
+    """
+    # IPv6 privacy extensions add a fresh temporary address on every rotation, so a host
+    # can hold a whole prefix worth of them at once and there is no portable way to tell
+    # them apart from the stable one. Announcing them fills the record with addresses
+    # that expire, so stick to IPv4 unless this host has none at all.
+    return [address for address in addresses if ":" not in address] or list(addresses)
+
+
 async def get_folder_size(folderpath: str) -> float:
     """Return folder size in gb."""
 
