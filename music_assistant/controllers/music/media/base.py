@@ -811,6 +811,9 @@ class MediaControllerBase[ItemCls: "MediaItemType"](metaclass=ABCMeta):
         ):
             return library_item
 
+        if external_id_type is None:
+            return None
+
         provider_feature_map = {
             MediaType.TRACK: ProviderFeature.TRACK_BY_EXTERNAL_ID,
             MediaType.ALBUM: ProviderFeature.ALBUM_BY_EXTERNAL_ID,
