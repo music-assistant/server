@@ -315,7 +315,11 @@ class TestEnergyMixOut:
         """An outro whose energy decays below the mix-out floor anchors at that (downbeat) point."""
         bins = np.full(1800, 0.5, dtype=np.float32)
         t = np.linspace(0, 240.0, 1800)
-        bins[t >= 220.0] = 0.2  # audible but below 0.7*sustained: mixed out, not silent
+        # audible but below 0.7*sustained (mixed out, not silent) for a few seconds,
+        # then real silence - a short stranded tail keeps this under the
+        # trim-closing gate, so the mix-out anchor wins on its own merits
+        bins[(t >= 220.0) & (t < 224.0)] = 0.2
+        bins[t >= 224.0] = 0.0
         out = _analysis(120.0, rms_energy=bins)
         inc = _analysis(120.0)
         ctx = build_transition_context(out, inc, 45.0, LOGGER)
@@ -336,6 +340,12 @@ class TestEnergyMixOut:
         low = env(1.0)
         low[t >= 218.0] = 0.05  # the kick drops out ~22s before the buffer end
         out = _analysis_with_bands(low, env(0.5), env(0.5), env(0.3))
+        # the shared helper's overall rms_energy is flat forever; give this track a
+        # real (silent) ending shortly after the kick dies, so the stranded-audible
+        # gap stays under the trim-closing gate and the kick anchor wins on its own
+        rms = np.full(1800, 0.5, dtype=np.float32)
+        rms[t >= 222.0] = 0.0
+        out.rms_energy = rms.tolist()
         inc = _analysis_with_bands(env(1.0), env(0.5), env(0.5), env(0.3))
         ctx = build_transition_context(out, inc, 45.0, LOGGER)
         plan = SmartCrossFadePlanner(LOGGER).plan(out, inc, 45.0)

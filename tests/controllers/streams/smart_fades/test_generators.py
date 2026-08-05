@@ -472,11 +472,18 @@ class TestDefaultGenerators:
     """The standard generator set and its preference order."""
 
     def test_default_generators_preference_order(self) -> None:
-        """Generators run best-first: energy ladder, coda anchor, protective anchor, onset entry."""
+        """
+        Generators run best-first.
+
+        Order: energy ladder, coda anchor, protective anchor, onset entry,
+        lazy overlay, trim closing.
+        """
         names = [g.name for g in default_generators()]
         assert names == [
             "energy-ladder",
             "coda-anchor",
             "protective-anchor",
             "vocal-onset-entry",
+            "lazy-overlay",
+            "trim-closing-anchor",
         ]
