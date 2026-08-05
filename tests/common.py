@@ -128,8 +128,7 @@ def use_ephemeral_server_ports() -> Iterator[None]:
         patch("music_assistant.controllers.streams.controller.DEFAULT_PORT", 0),
         patch("music_assistant.controllers.webserver.controller.DEFAULT_HOST", LOOPBACK_IP),
         patch("music_assistant.controllers.streams.controller.DEFAULT_HOST", LOOPBACK_IP),
-        # the streamserver advertises its publish IP independently of the bind IP, so
-        # pin that too to keep the URLs it hands out pointing at the socket it listens on
+        # keep address detection off the host's real interfaces
         patch(
             "music_assistant.controllers.streams.controller.get_ip_addresses",
             AsyncMock(return_value=(LOOPBACK_IP,)),

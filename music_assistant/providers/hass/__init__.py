@@ -193,6 +193,14 @@ class HomeAssistantProvider(PluginProvider):
     _wanted_controls: dict[str, _ControlCapabilities] | None = None
     _control_reconcile_lock: asyncio.Lock
 
+    @property
+    def url(self) -> str | None:
+        """Return the configured Home Assistant URL, or None if not configured."""
+        url = self.get_setup_value(CONF_URL)
+        if isinstance(url, str) and url:
+            return url
+        return None
+
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
         Return the (options) config entries for the Home Assistant provider.

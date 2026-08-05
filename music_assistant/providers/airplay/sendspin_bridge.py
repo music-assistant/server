@@ -48,12 +48,18 @@ from .constants import (
     AIRPLAY_LATE_JOIN_MIN_HEADROOM_MS,
     AIRPLAY_SPLICE_LEAD_MARGIN_MS,
     ClockReadiness,
+    StreamingProtocol,
 )
 from .helpers import player_id_to_mac_address
 from .stream import AirPlayStream
 
 if TYPE_CHECKING:
-    from aiosendspin.server import ExternalStreamStartRequest, SendspinClient, SendspinServer
+    from aiosendspin.server import (
+        ExternalStreamStartRequest,
+        SendspinClient,
+        SendspinGroup,
+        SendspinServer,
+    )
     from aiosendspin.server.roles import AudioChunk
 
     from music_assistant.models.player import Player
@@ -123,8 +129,17 @@ SILENCE_BLOCK: bytes = b"\x00" * (PAD_BLOCK_FRAMES * BRIDGE_CHANNELS * BRIDGE_BY
 # bridge gives up instead. Measured from the moment the loss is noticed, which
 # includes the several seconds a cold recovery needs before audio resumes (a
 # process spawn, the clock-readiness wait and the join headroom), so this sits
-# far enough beyond that for a recovered transport to prove itself.
+# far enough beyond that for a recovered transport to prove itself. The same
+# window guards the session re-join below: a bridge that gives up again this
+# soon after being put back was not fixed by returning it.
 BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS: float = 30.0
+
+# Delays (seconds) before each attempt to put a bridge back into the Sendspin
+# group a give-up took it out of. The first clears a brief blackout or a receiver
+# that was slow to answer; the second is what covers a speaker that rebooted,
+# which is typically absent from mDNS for far longer than the first. Once they
+# run out the player stays out and idle.
+BRIDGE_REJOIN_ATTEMPT_DELAYS: tuple[int, ...] = (5, 30)
 
 
 def get_bridge_client_id(airplay_player: AirPlayPlayer) -> str | None:
@@ -253,6 +268,11 @@ class SendspinAirPlayBridge:
         self._bridge_role: BridgePlayerRole | None = None
         self._airplay_stream: AirPlayStream | None = None
         self._is_streaming = False
+        # Shared-PTP decision the bridge's current cli process was spawned with
+        # (None when no process carries one). A warm reuse keeps the flag baked
+        # into that process, so the group matches what is really running instead
+        # of deciding again per stream.
+        self._use_shared_ptp: bool | None = None
         # Frames handed to the CLI since the start anchor. Byte 0 of that stream is
         # audible at _drop_until_us and the device plays on at a fixed rate, so this
         # counter is also the write cursor's position on the Sendspin timeline.
@@ -271,6 +291,9 @@ class SendspinAirPlayBridge:
         self._start_unix_ms: int = 0
         self._write_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._writer_task: asyncio.Task[None] | None = None
+        # The start that currently owns the bridge. Every step of the start path
+        # compares itself against this to tell whether it may still touch the
+        # bridge, so it is published before that task runs (see _on_audio_chunk).
         self._airplay_stream_start_task: asyncio.Task[None] | None = None
         self._airplay_stream_ready = asyncio.Event()
         # Whether the current stream has been anchored with its first START.
@@ -289,10 +312,11 @@ class SendspinAirPlayBridge:
         # Monotonic instant of the last recovery from a lost transport (None when
         # none happened yet), used to tell a one-off loss from a flapping device.
         self._last_transport_recovery: float | None = None
-        # Whether the transport being started is replacing one that was already
-        # playing. Giving up then means a speaker that went away mid-stream, as
-        # opposed to one that was never reachable to begin with.
-        self._recovering_transport = False
+        self._rejoin_task: asyncio.Task[None] | None = None
+        # Monotonic instant the bridge was last put back into the group a give-up
+        # took it out of (None when never). Giving up again this soon after means
+        # the speaker did not hold its place, so it is left out instead.
+        self._last_rejoin: float | None = None
         # Timer id for the deferred teardown on stream end. A seek/next ends the
         # sendspin stream and immediately starts a new one; deferring the CLI
         # teardown across that gap lets the next stream reuse the connected
@@ -316,6 +340,25 @@ class SendspinAirPlayBridge:
         return (
             self._airplay_stream is not None and self.airplay_player.stream is self._airplay_stream
         )
+
+    @property
+    def sendspin_group(self) -> SendspinGroup | None:
+        """Return the Sendspin group this bridge belongs to, or None when unregistered."""
+        return self._sendspin_client.group if self._sendspin_client else None
+
+    @property
+    def active_shared_ptp(self) -> bool | None:
+        """
+        Return the shared-PTP decision this bridge's live cli process runs with.
+
+        None when the bridge has no process carrying one, so a group member
+        resolving its own start never matches a decision nothing is running. A
+        process kept for a warm reuse still answers: the next stream rides it
+        with the flag it was spawned with.
+        """
+        if self._is_streaming or self._stream_is_warm_eligible():
+            return self._use_shared_ptp
+        return None
 
     async def start(self) -> None:
         """Register the AirPlay player as an external Sendspin client."""
@@ -398,6 +441,7 @@ class SendspinAirPlayBridge:
     async def stop(self) -> None:
         """Stop and unregister the Sendspin bridge."""
         self.mass.cancel_timer(self._teardown_timer_id)
+        self._cancel_rejoin()
         async with self._lock:
             await self._stop_streaming()
             if self._sendspin_client and self._bridge_client_id:
@@ -419,7 +463,7 @@ class SendspinAirPlayBridge:
             return
         lead_ms = (
             BRIDGE_WARM_START_LEAD_MS
-            if self._stream_is_warm_eligible()
+            if self._can_reuse_stream_warm()
             else BRIDGE_COLD_START_LEAD_MS
         )
         self._bridge_role.set_timing(
@@ -437,6 +481,34 @@ class SendspinAirPlayBridge:
         """
         stream = self._airplay_stream
         return stream is not None and stream.running and stream.connected and self._started
+
+    def _can_reuse_stream_warm(self) -> bool:
+        """
+        Return whether the next Sendspin stream can ride the current cli process.
+
+        On top of the process being reusable, the shared-PTP flag it was spawned
+        with has to still be the one its group runs on: a bridge regrouped onto
+        the other timing source needs a fresh process to change that flag.
+        """
+        if not self._stream_is_warm_eligible():
+            return False
+        if self._use_shared_ptp is None:
+            # A legacy RAOP process carries no timing decision, so it cannot be
+            # on the wrong one and respawning it would change nothing.
+            return True
+        group_decision = self.provider.bridge_manager.group_shared_ptp(self)
+        return group_decision is None or group_decision == self._use_shared_ptp
+
+    def _resolve_shared_ptp(self) -> bool | None:
+        """
+        Decide whether the cli process about to be spawned attaches to the shared PTP clock.
+
+        None for a player that does not stream native AirPlay 2, whose process
+        carries no timing decision for the group to match.
+        """
+        if self.airplay_player.protocol != StreamingProtocol.AIRPLAY2:
+            return None
+        return self.provider.bridge_manager.resolve_shared_ptp(self)
 
     def _on_stream_start(self, request: ExternalStreamStartRequest) -> None:
         """
@@ -456,7 +528,8 @@ class SendspinAirPlayBridge:
         # is settled before anything can return early, so no stream ever
         # inherits the previous one's verdict.
         self._last_transport_recovery = None
-        self._recovering_transport = False
+        # Joining a session by any means supersedes a pending re-join.
+        self._cancel_rejoin()
         if not self.airplay_player.available:
             self.logger.warning(
                 "Cannot start Sendspin stream for %s: player not available",
@@ -474,7 +547,7 @@ class SendspinAirPlayBridge:
         # stream's resources, which reuse the same instance variables. A warm-
         # eligible stream is kept out of the snapshot entirely so it survives
         # into the new stream instead of being torn down.
-        keep_stream = self._stream_is_warm_eligible()
+        keep_stream = self._can_reuse_stream_warm()
         old_stream = None if keep_stream else self._airplay_stream
         old_writer_task = self._writer_task
         old_stream_start_task = self._airplay_stream_start_task
@@ -482,6 +555,7 @@ class SendspinAirPlayBridge:
         if not keep_stream:
             self._airplay_stream = None
             self.airplay_player.stream = None
+            self._use_shared_ptp = None
         self._writer_task = None
         self._airplay_stream_start_task = None
         self._airplay_stream_ready.clear()
@@ -526,8 +600,8 @@ class SendspinAirPlayBridge:
         self.mass.cancel_timer(self._teardown_timer_id)
         # The stream might not yet be cleaned up completely (on rapid skips for example).
         # A warm-eligible stream is kept out of the snapshot so it survives into the
-        # new stream instead of being torn down (see _stream_is_warm_eligible).
-        keep_stream = self._stream_is_warm_eligible()
+        # new stream instead of being torn down (see _can_reuse_stream_warm).
+        keep_stream = self._can_reuse_stream_warm()
         old_stream = None if keep_stream else self._airplay_stream
         old_writer_task = self._writer_task
         old_stream_start_task = self._airplay_stream_start_task
@@ -535,6 +609,7 @@ class SendspinAirPlayBridge:
         if not keep_stream:
             self._airplay_stream = None
             self.airplay_player.stream = None
+            self._use_shared_ptp = None
         self._writer_task = None
         self._airplay_stream_start_task = None
 
@@ -575,6 +650,11 @@ class SendspinAirPlayBridge:
             if cleanup and not cleanup.done():
                 await cleanup
 
+            if asyncio.current_task() is not self._airplay_stream_start_task:
+                # A newer stream start owns the bridge and everything it holds:
+                # neither the kept stream nor the receiver is this task's to touch.
+                return
+
             # A kept, still-connected stream (see _stream_is_warm_eligible,
             # checked by the stream-start callbacks) absorbs the new media via a
             # flush-refill on the SAME cli stdin instead of a cold reconnect.
@@ -592,6 +672,7 @@ class SendspinAirPlayBridge:
                     await kept_stream.stop(force=True)
                 self._airplay_stream = None
                 self.airplay_player.stream = None
+                self._use_shared_ptp = None
 
             # On a rapid skip, _on_bridge_stream_start snapshots self._airplay_stream
             # for cleanup. If we assigned it earlier, the new stream would be missed
@@ -620,8 +701,17 @@ class SendspinAirPlayBridge:
         :param stream: New AirPlay stream to start.
         :return: True when the stream is anchored, False when superseded.
         """
+        if asyncio.current_task() is not self._airplay_stream_start_task:
+            # A newer stream start owns the bridge. The stream handed in is not
+            # connected yet, so there is nothing to tear down: returning here
+            # keeps a second session off the receiver and leaves the timing
+            # decision the newer start recorded alone.
+            return False
         try:
-            await stream.connect()
+            # Resolving and recording the decision never awaits, so two bridges
+            # starting together cannot both find their group still undecided.
+            self._use_shared_ptp = self._resolve_shared_ptp()
+            await stream.connect(self._use_shared_ptp)
             await stream.wait_for_connection()
             if asyncio.current_task() is not self._airplay_stream_start_task:
                 await stream.stop(force=True)
@@ -842,42 +932,133 @@ class SendspinAirPlayBridge:
         """
         Give up on this stream: stop accepting chunks and tear the transport down.
 
-        A transport that was never established (a sleeping device, one connect
-        timeout) leaves the bridge grouped, so the next Sendspin stream simply
-        starts it over. Giving up on one that was already playing means the
-        speaker went away for good, and the bridge leaves the session so its
-        silence reaches the player instead of hiding behind the group state.
+        Sendspin reports playback from the group's own state, so a bridge that
+        stops feeding its speaker would otherwise hold the visible player on
+        PLAYING while nothing is audible. The bridge leaves the session instead,
+        so that silence reaches the player.
         """
         self._is_streaming = False
+        self._use_shared_ptp = None
         self._held_chunks.clear()
         self._held_us = 0
         # unblock a writer still waiting for a stream that will never be ready
         self._airplay_stream_ready.set()
         self._schedule_cleanup()
-        if self._recovering_transport:
-            self._recovering_transport = False
-            self.mass.create_task(self._leave_sendspin_session())
+        self.mass.create_task(self._leave_sendspin_session())
 
     async def _leave_sendspin_session(self) -> None:
         """
-        Take the bridge out of Sendspin playback, keeping it registered.
+        Take the bridge out of Sendspin playback and line up its return.
 
-        Sendspin reports playback from the group's own state, so a bridge whose
-        speaker is unreachable would hold the visible player on PLAYING while
-        nothing is audible. Leaving surfaces that silence: a shared group plays
-        on without this speaker, a solo one stops. The client stays registered,
-        so the player survives to be grouped again.
+        A shared group plays on without this speaker, and the bridge is given a
+        bounded attempt to re-join it so a device that was only briefly away
+        comes back on its own. A solo group has nothing to re-join: leaving is
+        what stops it. Either way the client stays registered, so the player
+        survives to be grouped again.
         """
         if not (client := self._sendspin_client):
             return
+        # Captured before leaving, which is what moves the client to a solo group.
+        group = client.group
         try:
-            await client.quiesce_to_solo_stopped()
+            previous_group_id = await client.quiesce_to_solo_stopped()
         except Exception as err:
             self.logger.warning(
                 "Could not take %s out of its Sendspin session: %s",
                 self.airplay_player.display_name,
                 err,
             )
+            return
+        if previous_group_id is None:
+            return
+        # Whichever way this give-up goes, an older schedule must not outlive it.
+        self._cancel_rejoin()
+        last_rejoin = self._last_rejoin
+        if (
+            last_rejoin is not None
+            and time.monotonic() - last_rejoin < BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS
+        ):
+            self.logger.warning(
+                "%s gave up again within %.0fs of being re-joined, leaving it out of the group",
+                self.airplay_player.display_name,
+                BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS,
+            )
+            return
+        self._rejoin_task = self.mass.create_task(self._rejoin_attempts(group))
+
+    async def _rejoin_attempts(self, group: SendspinGroup) -> None:
+        """
+        Put the bridge back into the group a give-up took it out of.
+
+        :param group: The Sendspin group the bridge left.
+        """
+        max_attempts = len(BRIDGE_REJOIN_ATTEMPT_DELAYS)
+        for attempt, delay in enumerate(BRIDGE_REJOIN_ATTEMPT_DELAYS, start=1):
+            await asyncio.sleep(delay)
+            if not (client := self._sendspin_client):
+                return
+            if len(client.group.clients) > 1 or client.group.has_active_stream:
+                # given a group or a stream of its own meanwhile: re-joining
+                # would take the speaker away from whatever it was just given,
+                # and adding it elsewhere stops the session it is playing
+                self.logger.debug(
+                    "Not re-joining %s: it is in use again already",
+                    self.airplay_player.display_name,
+                )
+                return
+            if self.airplay_player.stream is not None and not self.owns_airplay_stream:
+                # the speaker is streaming natively: the re-join would restart
+                # the transport and tear down a session that is not the bridge's
+                self.logger.debug(
+                    "Not re-joining %s: it is streaming outside the bridge",
+                    self.airplay_player.display_name,
+                )
+                return
+            if not self.airplay_player.available:
+                # a speaker that rebooted is missing from discovery for a while
+                # after it starts answering again, so this is worth another go
+                self.logger.debug(
+                    "Not re-joining %s yet: the speaker is offline",
+                    self.airplay_player.display_name,
+                )
+                continue
+            if not group.clients:
+                self.logger.debug(
+                    "Not re-joining %s: the group it left no longer exists",
+                    self.airplay_player.display_name,
+                )
+                return
+            try:
+                await group.add_client(client)
+            except Exception as err:
+                self.logger.warning(
+                    "Could not re-join %s to its Sendspin group (attempt %d/%d): %s",
+                    self.airplay_player.display_name,
+                    attempt,
+                    max_attempts,
+                    err,
+                )
+                continue
+            # Stamped where the speaker actually rejoins, not where the attempt
+            # was scheduled, so the guard holds whatever the delays above are.
+            self._last_rejoin = time.monotonic()
+            self.logger.info("Re-joined %s to its Sendspin group", self.airplay_player.display_name)
+            return
+        self.logger.warning(
+            "Giving up on re-joining %s to its Sendspin group after %d attempt(s); "
+            "the player stays idle",
+            self.airplay_player.display_name,
+            max_attempts,
+        )
+
+    def _cancel_rejoin(self) -> None:
+        """Drop any pending attempt to re-join the Sendspin group."""
+        rejoin_task = self._rejoin_task
+        self._rejoin_task = None
+        # never self-cancel: a re-join announces itself through the same
+        # stream-start path that clears stale schedules
+        if rejoin_task and not rejoin_task.done() and rejoin_task is not asyncio.current_task():
+            rejoin_task.cancel()
 
     async def _stop_streaming_locked(self) -> None:
         """Serialize streaming teardown with other stop/start operations."""
@@ -957,8 +1138,12 @@ class SendspinAirPlayBridge:
             #     group's current playback position, so the joiner lands in sync.
             # _anchor_stream re-bases this onto the instant the binary acks.
             self._drop_until_us = chunk.timestamp_us
+            # Started on the next loop iteration so the handle below is published
+            # first: the start path compares itself against that handle to tell
+            # whether it still owns the bridge, and an eager start would run its
+            # first checks while the handle is still unset.
             self._airplay_stream_start_task = self.mass.create_task(
-                self._start_protocol_from_chunk()
+                self._start_protocol_from_chunk(), eager_start=False
             )
 
         if not self._anchor_settled:
@@ -1055,9 +1240,6 @@ class SendspinAirPlayBridge:
             "AirPlay transport for %s was lost mid-stream, re-joining the Sendspin timeline",
             self.airplay_player.display_name,
         )
-        # From here the bridge is replacing a transport that was playing, so
-        # failing to bring it back means the speaker is gone rather than late.
-        self._recovering_transport = True
         self._restart_transport()
         return True
 
@@ -1208,6 +1390,7 @@ class SendspinAirPlayBridge:
     async def _stop_streaming(self) -> None:
         """Stop streaming (internal, called with lock held)."""
         self._is_streaming = False
+        self._use_shared_ptp = None
         self._queued_frames = 0
         self._applied_shift_seconds = 0.0
         self._absorbing_shift = False
@@ -1236,6 +1419,48 @@ class SendspinAirPlayBridge:
 
 class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinAirPlayBridge]):
     """Manages Sendspin bridges for all AirPlay players."""
+
+    def resolve_shared_ptp(self, bridge: SendspinAirPlayBridge) -> bool:
+        """
+        Return whether a bridge's next cli process attaches to the shared PTP clock.
+
+        One Sendspin group must not mix the two timing sources: a member that
+        does not attach times itself off NTP instead, which the binary anchors
+        differently from PTP, and the two drift audibly apart. Bridges in a group
+        can start minutes apart and keep a warm process across a track change, so
+        the decision its group already runs on wins; only a group without one
+        asks the daemon.
+
+        The daemon is read as it stands rather than waited for (unlike a native
+        sync group, which can afford the wait): a bridge's start lead is fixed
+        before this point, so waiting here would push its anchor past the audio
+        Sendspin already scheduled. A group starting inside the daemon's spawn
+        window therefore degrades to NTP together, for that session.
+
+        :param bridge: The bridge about to spawn a cli process.
+        """
+        decision = self.group_shared_ptp(bridge)
+        if decision is None:
+            decision = cast("AirPlayProvider", self.provider).ptp_daemon_ready
+        return decision
+
+    def group_shared_ptp(self, bridge: SendspinAirPlayBridge) -> bool | None:
+        """
+        Return the shared-PTP decision the rest of a bridge's Sendspin group runs on.
+
+        None when no other member of the group has a cli process carrying one,
+        which leaves the bridge free to decide for the group itself.
+
+        :param bridge: The bridge asking about its group.
+        """
+        if not (group := bridge.sendspin_group):
+            return None
+        for sibling in self._bridges.values():
+            if sibling is bridge or sibling.sendspin_group is not group:
+                continue
+            if (decision := sibling.active_shared_ptp) is not None:
+                return decision
+        return None
 
     def get_transport_command_target(self, airplay_player_id: str) -> str | None:
         """
