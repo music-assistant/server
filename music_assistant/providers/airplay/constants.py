@@ -105,14 +105,19 @@ AIRPLAY_CLOCK_READY_TIMEOUT_MS: Final[int] = 2500
 # for the command reaching the binary and for the convergence error of a
 # projection made from the receiver's very first probe.
 AIRPLAY_CLOCK_READY_LEAD_MS: Final[int] = 500
-# Firmware families that advertise SupportsPTP but never render a PTP-timed
-# stream: the receiver runs the full PTP delay exchange yet stays silent at any
-# anchor (verified on the Edifier MS50A), while NTP timing plays fine - Apple
-# senders end up on non-PTP timing with these devices too. Matched as a prefix
-# of the _airplay fv record; a firmware update changes that string, so a fixed
-# generation gets PTP again automatically (the newer LinkPlay platform, e.g.
-# WiiM Pro on p20.4.x, renders PTP correctly and must not match).
-AIRPLAY_BROKEN_PTP_FIRMWARE_PREFIXES: Final[tuple[str, ...]] = ("p20.Linkplay.",)
+# LinkPlay-based receivers route playback through an internal pipeline that
+# starves below ~1 s of queued audio: at the stock 600 ms splice depth the
+# renderer stays silent (Edifier MS50A even solo; a WiiM acting as native
+# multiroom master) while the sender sees a perfectly healthy session. A
+# deeper receiver queue feeds the pipeline - verified live at 1000 ms on the
+# worst known device - at the cost of slower warm seeks on these players.
+# Detected via the _airplay TXT: the old platform embeds "Linkplay" in fv,
+# the newer one names Linkplay as manufacturer.
+AIRPLAY_LINKPLAY_FV_PREFIX: Final[str] = "p20.Linkplay."
+AIRPLAY_LINKPLAY_MANUFACTURER: Final[str] = "linkplay"
+AIRPLAY_LINKPLAY_BUFFER_DEPTH_MS: Final[int] = 1000
+# Per-player override of the splice receiver-queue depth in ms (0 = automatic).
+CONF_BUFFER_DEPTH: Final[str] = "buffer_depth"
 # How long a plain (non-join) START waits for the binary's [STATUS] started ack.
 # Nothing holds that ack back, so the window only has to cover the command's trip
 # down the pipe and the answer coming back - unlike a join's ack below, which is

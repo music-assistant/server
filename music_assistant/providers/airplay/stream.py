@@ -27,13 +27,16 @@ from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
 from music_assistant.helpers.process import AsyncProcess
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
-    AIRPLAY_BROKEN_PTP_FIRMWARE_PREFIXES,
     AIRPLAY_CONTENT_CUT_TOLERANCE_MS,
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
+    AIRPLAY_LINKPLAY_BUFFER_DEPTH_MS,
+    AIRPLAY_LINKPLAY_FV_PREFIX,
+    AIRPLAY_LINKPLAY_MANUFACTURER,
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_START_ACK_TIMEOUT_MS,
     CLI_PROBLEM_MARKERS,
     CONF_AIRPLAY_CREDENTIALS,
+    CONF_BUFFER_DEPTH,
     CONF_ENCRYPTION,
     CONF_PASSWORD,
     CONF_RAOP_CREDENTIALS,
@@ -828,24 +831,22 @@ class AirPlayStream:
         # the daemon publishing its clock there is nothing to attach to, and a
         # stream that asks anyway silently takes its own timing instead.
         if target_protocol == StreamingProtocol.AIRPLAY2:
-            device_fv = str(
-                (airplay_info.decoded_properties.get("fv") if airplay_info else None) or ""
+            # LinkPlay-based receivers starve below ~1 s of queued audio (see
+            # the constants); give them a deeper receiver queue. A configured
+            # per-player depth always wins, for other starving devices too.
+            props = airplay_info.decoded_properties if airplay_info else {}
+            is_linkplay = (
+                str(props.get("fv") or "").startswith(AIRPLAY_LINKPLAY_FV_PREFIX)
+                or AIRPLAY_LINKPLAY_MANUFACTURER in str(props.get("manufacturer") or "").lower()
             )
-            if device_fv.startswith(AIRPLAY_BROKEN_PTP_FIRMWARE_PREFIXES):
-                # This receiver would render silence at any PTP anchor; NTP
-                # timing keeps it audible and still anchored to our clock. A
-                # mixed group is coherent: this member follows the session
-                # timeline over NTP while the others follow it over PTP.
-                args += ["--no-ptp"]
-                self.player.logger.debug(
-                    "Using NTP timing for %s: firmware %s never renders a PTP-timed stream",
-                    self.player.display_name,
-                    device_fv,
-                )
-            else:
-                shared_ptp = prov.ptp_daemon_ready if use_shared_ptp is None else use_shared_ptp
-                if shared_ptp:
-                    args += ["--ptp-shared"]
+            depth_ms = cast("int", self.player.config.get_value(CONF_BUFFER_DEPTH, 0) or 0)
+            if not depth_ms and is_linkplay:
+                depth_ms = AIRPLAY_LINKPLAY_BUFFER_DEPTH_MS
+            if depth_ms:
+                args += ["--splice-depth-ms", str(depth_ms)]
+            shared_ptp = prov.ptp_daemon_ready if use_shared_ptp is None else use_shared_ptp
+            if shared_ptp:
+                args += ["--ptp-shared"]
 
         # Local interface binding
         target_ip = str(self.player.device_info.ip_address)
