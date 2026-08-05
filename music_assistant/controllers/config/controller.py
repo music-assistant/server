@@ -68,6 +68,7 @@ class ConfigController(
         self._data: dict[str, Any] = {}
         self.filename = os.path.join(self.mass.storage_path, "settings.json")
         self._timer_handle: asyncio.TimerHandle | None = None
+        self._save_pending = False
         self._save_lock = asyncio.Lock()
 
     async def setup(self) -> None:
@@ -127,10 +128,13 @@ class ConfigController(
 
     async def close(self) -> None:
         """Handle logic on server stop."""
-        if not self._timer_handle:
-            # no point in forcing a save when there are no changes pending
-            return
-        await self._async_save()
+        if self._timer_handle is not None:
+            self._timer_handle.cancel()
+            self._timer_handle = None
+        if self._save_pending:
+            # a scheduled save did not make it to disk: it is either still waiting out
+            # the debounce delay or its task was cancelled on stop, so write it here
+            await self._async_save()
         LOGGER.debug("Stopped.")
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -200,13 +204,12 @@ class ConfigController(
             self._timer_handle.cancel()
             self._timer_handle = None
 
+        self._save_pending = True
         if immediate:
             self.mass.loop.create_task(self._async_save())
         else:
             # schedule the save for later
-            self._timer_handle = self.mass.loop.call_later(
-                DEFAULT_SAVE_DELAY, self.mass.create_task, self._async_save
-            )
+            self._timer_handle = self.mass.loop.call_later(DEFAULT_SAVE_DELAY, self._start_save)
 
     def encrypt_string(self, str_value: str) -> str:
         """Encrypt a (password)string with Fernet."""
@@ -294,11 +297,19 @@ class ConfigController(
                 LOGGER.exception("Error while reading persistent storage file %s", filename)
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
 
+    def _start_save(self) -> None:
+        """Start the save task, called by the save timer."""
+        self._timer_handle = None
+        self.mass.create_task(self._async_save)
+
     async def _async_save(self) -> None:
         """Save persistent data to disk."""
         async with self._save_lock:
             json_data = await async_json_dumps(self._data, indent=True)
             await asyncio.to_thread(self._save_to_disk, json_data)
+            # only clear the marker once the data is actually on disk, so a save that
+            # fails or gets cancelled is still flushed on stop
+            self._save_pending = False
         LOGGER.debug("Saved data to persistent storage")
 
     def _save_to_disk(self, json_data: str) -> None:
