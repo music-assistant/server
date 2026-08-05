@@ -15,7 +15,7 @@ from music_assistant_models.enums import ContentType, PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 from music_assistant_models.media_items import AudioFormat
 
-from music_assistant.helpers.named_pipe import AsyncNamedPipeWriter
+from music_assistant.helpers.named_pipe import WRITE_STALL_TIMEOUT, AsyncNamedPipeWriter
 from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
@@ -758,6 +758,118 @@ async def test_command_pipe_write_propagates_non_epipe_errors() -> None:
         pytest.raises(OSError, match="bad file descriptor"),
     ):
         await writer.write(b"ACTION=STANDBY\n")
+
+
+@pytest.mark.asyncio
+async def test_pipe_write_reports_a_stalled_reader_without_raising(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A write bigger than the pipe buffer reports failure instead of raising."""
+    pipe_path = tmp_path / "audio"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+    # a reader that never reads, so the pipe buffer fills up and stays full
+    read_fd = os.open(pipe_path, os.O_RDONLY | os.O_NONBLOCK)
+
+    try:
+        with (
+            caplog.at_level(logging.WARNING),
+            patch("music_assistant.helpers.named_pipe.WRITE_STALL_TIMEOUT", 0.05),
+        ):
+            assert await writer.write(b"\x00" * 176400) is False
+
+        # the reader is still attached, so the descriptor stays usable
+        assert writer._write_fd is not None
+        assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+    finally:
+        os.close(read_fd)
+        await writer.remove()
+
+
+@pytest.mark.asyncio
+async def test_pipe_write_completes_a_large_write_while_the_reader_drains(
+    tmp_path: Path,
+) -> None:
+    """A write bigger than the pipe buffer completes against a reader that keeps up."""
+    pipe_path = tmp_path / "audio"
+    os.mkfifo(pipe_path)
+    writer = AsyncNamedPipeWriter(str(pipe_path))
+    read_fd = os.open(pipe_path, os.O_RDONLY | os.O_NONBLOCK)
+    payload = b"\x00" * 176400
+
+    async def drain() -> int:
+        received = 0
+        while received < len(payload):
+            try:
+                received += len(os.read(read_fd, 65536))
+            except BlockingIOError:
+                await asyncio.sleep(0)
+        return received
+
+    reader = asyncio.create_task(drain())
+    try:
+        assert await writer.write(payload) is True
+        async with asyncio.timeout(5):
+            assert await reader == len(payload)
+    finally:
+        reader.cancel()
+        os.close(read_fd)
+        await writer.remove()
+
+
+@pytest.mark.asyncio
+async def test_pipe_write_resumes_after_the_buffer_drains() -> None:
+    """A write that fills the pipe buffer continues once the reader catches up."""
+    data = b"\x00" * 10
+    writer = AsyncNamedPipeWriter("/tmp/audio")  # noqa: S108
+    writer._write_fd = 42
+
+    with (
+        patch(
+            "music_assistant.helpers.named_pipe.os.write",
+            side_effect=[4, BlockingIOError(errno.EAGAIN, "buffer full"), 6],
+        ) as write,
+        patch(
+            "music_assistant.helpers.named_pipe.select.select",
+            return_value=([], [42], []),
+        ) as wait_writable,
+    ):
+        assert await writer.write(data) is True
+
+    assert write.call_args_list == [
+        call(42, memoryview(data)),
+        call(42, memoryview(data)[4:]),
+        call(42, memoryview(data)[4:]),
+    ]
+    wait_writable.assert_called_once_with([], [42], [], WRITE_STALL_TIMEOUT)
+
+
+@pytest.mark.asyncio
+async def test_pipe_write_resets_fd_when_the_reader_closes_during_a_stall() -> None:
+    """A reader that goes away while the buffer is full still resets the writer."""
+    data = b"\x00" * 10
+    writer = AsyncNamedPipeWriter("/tmp/audio")  # noqa: S108
+    writer._write_fd = 42
+
+    with (
+        patch(
+            "music_assistant.helpers.named_pipe.os.write",
+            side_effect=[
+                4,
+                BlockingIOError(errno.EAGAIN, "buffer full"),
+                OSError(errno.EPIPE, "reader closed"),
+            ],
+        ),
+        patch(
+            "music_assistant.helpers.named_pipe.select.select",
+            return_value=([], [42], []),
+        ),
+        patch("music_assistant.helpers.named_pipe.os.close") as close_fd,
+    ):
+        assert await writer.write(data) is False
+
+    close_fd.assert_called_once_with(42)
+    assert writer._write_fd is None
 
 
 @pytest.mark.asyncio

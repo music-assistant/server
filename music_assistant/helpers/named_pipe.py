@@ -6,12 +6,16 @@ import asyncio
 import errno as errno_module
 import logging
 import os
+import select
 from collections.abc import AsyncGenerator
 from contextlib import suppress
 from functools import partial
 from pathlib import Path
 
 _LOGGER = logging.getLogger("named_pipe")
+
+# How long a write waits for a full pipe buffer to drain before giving up.
+WRITE_STALL_TIMEOUT = 2.0
 
 
 class AsyncNamedPipeWriter:
@@ -92,7 +96,23 @@ class AsyncNamedPipeWriter:
             try:
                 assert self._write_fd is not None
                 while total_bytes_written < len(data_view):
-                    bytes_written = os.write(self._write_fd, data_view[total_bytes_written:])
+                    try:
+                        bytes_written = os.write(self._write_fd, data_view[total_bytes_written:])
+                    except BlockingIOError:
+                        # A full buffer means the reader is behind, not gone, so wait for
+                        # it to drain. A reader that did go away also reports as writable,
+                        # which lets the retried write surface its EPIPE as usual.
+                        if self._wait_writable():
+                            continue
+                        _LOGGER.debug(
+                            "Named pipe write stalled on %s "
+                            "(owner=%s, %d of %d bytes written): reader is not draining",
+                            self._pipe_path,
+                            self._log_owner,
+                            total_bytes_written,
+                            len(data),
+                        )
+                        return False
                     if bytes_written == 0:
                         _LOGGER.debug(
                             "Named pipe write made no progress on %s "
@@ -148,6 +168,12 @@ class AsyncNamedPipeWriter:
     def _log_owner(self) -> str:
         """Return a short descriptor for logging (owner_id or pipe path)."""
         return self._owner_id or self._pipe_path
+
+    def _wait_writable(self) -> bool:
+        """Wait for the pipe to accept data again. Returns False if it stayed full."""
+        assert self._write_fd is not None
+        _, writable, _ = select.select([], [self._write_fd], [], WRITE_STALL_TIMEOUT)
+        return bool(writable)
 
     def _ensure_write_fd(self) -> bool:
         """Open the write end while a reader is attached. Returns True if successful."""
