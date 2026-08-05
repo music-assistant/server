@@ -371,3 +371,64 @@ class TestSupportedFeaturesPower:
         ugp = _make_ugp(mass)
         await ugp.on_config_updated()
         assert PlayerFeature.POWER in ugp.supported_features
+
+
+class TestSupportedFeaturesFromMembers:
+    """VOLUME_MUTE is inherited from the members the mute command is fanned out to."""
+
+    @staticmethod
+    def _attach_members(mass: MagicMock, *members: MagicMock) -> None:
+        """Register the given mock members on the mock player controller."""
+        by_id = {member.player_id: member for member in members}
+        mass.players.get_player = MagicMock(
+            side_effect=lambda pid, *_args, **_kwargs: by_id.get(pid)
+        )
+
+    def test_mute_not_advertised_without_capable_members(self) -> None:
+        """Members that can't be muted leave the group without a mute capability."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass)
+        member = _make_mock_player("m1")
+        self._attach_members(mass, member)
+        ugp._attr_group_members = ["m1"]
+
+        assert PlayerFeature.VOLUME_MUTE not in ugp.supported_features
+
+    def test_mute_advertised_when_a_member_supports_it(self) -> None:
+        """A single mute-capable member is enough to advertise mute on the group."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass)
+        plain_member = _make_mock_player("m1")
+        mute_member = _make_mock_player("m2")
+        mute_member.state.supported_features = {
+            PlayerFeature.PLAY_MEDIA,
+            PlayerFeature.VOLUME_MUTE,
+        }
+        self._attach_members(mass, plain_member, mute_member)
+        ugp._attr_group_members = ["m1", "m2"]
+
+        assert PlayerFeature.VOLUME_MUTE in ugp.supported_features
+
+    def test_unavailable_members_do_not_contribute(self) -> None:
+        """An offline member's capabilities are not advertised by the group."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass)
+        member = _make_mock_player("m1", available=False)
+        member.state.supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.VOLUME_MUTE}
+        self._attach_members(mass, member)
+        ugp._attr_group_members = ["m1"]
+
+        assert PlayerFeature.VOLUME_MUTE not in ugp.supported_features
+
+    def test_dormant_group_inherits_from_configured_members(self) -> None:
+        """Mute stays advertised while the group is idle, so HA keeps the control."""
+        mass = _make_mock_mass()
+        ugp = _make_ugp(mass)
+        member = _make_mock_player("m1")
+        member.state.supported_features = {PlayerFeature.PLAY_MEDIA, PlayerFeature.VOLUME_MUTE}
+        self._attach_members(mass, member)
+        ugp._attr_static_group_members = ["m1"]
+        ugp._attr_group_members = ["m1"]
+
+        assert not ugp.is_active_session
+        assert PlayerFeature.VOLUME_MUTE in ugp.supported_features

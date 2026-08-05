@@ -40,6 +40,7 @@ from .constants import (
     CONF_ENTRY_UGP_OUTPUT_FORMAT,
     CONF_UGP_OUTPUT_FORMAT,
     CONFIG_ENTRY_UGP_NOTE,
+    EXTRA_FEATURES_FROM_MEMBERS,
     IDLE_GRACE_SECONDS,
     UGP_OUTPUT_MP3,
     resolve_ugp_output_format,
@@ -99,6 +100,22 @@ class UniversalGroupPlayer(Player):
             )
         )
         self._set_attributes()
+
+    @property
+    def supported_features(self) -> set[PlayerFeature]:
+        """Return the supported features of the player."""
+        features = {*self._attr_supported_features}
+        # derive the member-inherited features from all (configured) members, so a
+        # capability like muting is advertised whether or not the group is active.
+        # Resolved on read (not cached in _attr_supported_features) because member
+        # availability and controls change independently of the group's own state.
+        for member_id in self._attr_group_members:
+            member_player = self.mass.players.get_player(member_id)
+            if member_player and member_player.state.available:
+                for feature in EXTRA_FEATURES_FROM_MEMBERS:
+                    if feature in member_player.state.supported_features:
+                        features.add(feature)
+        return features
 
     @property
     def requires_flow_mode(self) -> bool:
@@ -275,6 +292,10 @@ class UniversalGroupPlayer(Player):
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
         # group volume is already handled in the player manager
+
+    async def volume_mute(self, muted: bool) -> None:
+        """Send VOLUME_MUTE command to given player."""
+        # group mute is already handled in the player manager
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""

@@ -5,12 +5,19 @@ from __future__ import annotations
 from typing import Final
 
 from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
-from music_assistant_models.enums import ConfigEntryType, ContentType
+from music_assistant_models.enums import ConfigEntryType, ContentType, PlayerFeature
 from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.ffmpeg import DEFAULT_MP3_BIT_RATE
 
 UGP_PREFIX: Final[str] = "ugp_"
+
+# Features the group has no hardware of its own for, but which the player manager
+# fans out to the members. They are advertised as soon as a single member can
+# handle them, matching how the group state for those features is derived.
+EXTRA_FEATURES_FROM_MEMBERS: Final[set[PlayerFeature]] = {
+    PlayerFeature.VOLUME_MUTE,
+}
 
 # Grace period (seconds) before a universal group releases its members after
 # the active stream naturally ends (playback_state transitions to IDLE without
