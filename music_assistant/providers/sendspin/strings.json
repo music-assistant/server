@@ -40,24 +40,6 @@
     "pairing_error_timeout": {
       "label": "The pairing attempt timed out."
     },
-    "pairing_error_concurrent": {
-      "label": "Another pairing attempt is already in progress."
-    },
-    "pairing_error_locked_out": {
-      "label": "PIN pairing is locked out on the device."
-    },
-    "pairing_error_method_unsupported": {
-      "label": "The device does not support this pairing method."
-    },
-    "pairing_error_pin_length": {
-      "label": "The device rejected the PIN length."
-    },
-    "pairing_error_pin_mismatch": {
-      "label": "The PIN did not match. Please try again."
-    },
-    "pairing_error_cancelled": {
-      "label": "Pairing was cancelled on the device."
-    },
     "pairing_error_aborted": {
       "label": "Pairing aborted: {0}."
     },
@@ -70,70 +52,30 @@
     "pairing_error_storage": {
       "label": "Saving the pairing data failed: {0}."
     },
-    "pairing_error_not_connected": {
-      "label": "The device is not connected."
-    },
-    "pairing_error_no_pin_session": {
-      "label": "No PIN pairing is in progress."
-    },
-    "pairing_error_no_pin_method": {
-      "label": "The device does not offer PIN pairing."
-    },
-    "pairing_error_token_invalid": {
-      "label": "The pairing token is not valid. Make sure it was copied completely."
-    },
-    "pairing_error_token_mismatch": {
-      "label": "The token was issued by a different device."
-    },
-    "pin_required": {
-      "label": "Enter the PIN first."
-    },
     "pairing_method": {
       "label": "Pairing method",
       "options": {
         "pin": "PIN",
         "static_pin": "Static PIN",
-        "token": "Pairing token"
+        "token": "Pairing token",
+        "unpaired": "Allow playback without pairing"
+      },
+      "option_descriptions": {
+        "pin": "Enter a PIN from the device: a code it shows while pairing, or a fixed PIN printed on it.",
+        "static_pin": "Enter the fixed PIN printed on (or shipped with) the device.",
+        "token": "Paste a pairing token you copy from the device.",
+        "unpaired": "The connection stays encrypted but is not authenticated, so it can be intercepted (man-in-the-middle) on the local network."
       }
-    },
-    "pair_pin_retry": {
-      "label": "Try again"
-    },
-    "pairing_pin_prompt_gesture": {
-      "label": "Put the device in pairing mode, then enter its PIN."
-    },
-    "pairing_pin_prompt": {
-      "label": "Enter the device's PIN."
     },
     "pairing_pin": {
       "label": "PIN"
     },
-    "pair_pin_submit": {
-      "label": "Submit PIN"
-    },
-    "pairing_pin_progress_gesture": {
-      "label": "PIN received. Put the device in pairing mode to finish pairing."
-    },
-    "pairing_pin_progress": {
-      "label": "Pairing is in progress. Check back in a moment."
-    },
-    "pair_pin_cancel": {
-      "label": "Cancel pairing"
-    },
     "pairing_token": {
       "label": "Pairing token"
-    },
-    "verify_pin_start": {
-      "label": "Verify device presence",
-      "description": "Confirm this is the physical device in front of you by entering its dynamic PIN. Briefly interrupts playback."
     },
     "unpair": {
       "label": "Unpair",
       "description": "Remove the pairing with this device. Both sides forget the stored credential and the device reconnects as unpaired."
-    },
-    "allow_unpaired": {
-      "label": "Allow playback without pairing",
-      "description": "Let this device play audio without being paired. Warning: unpaired connections are encrypted but not authenticated and can be intercepted (man-in-the-middle) on the local network."
     },
     "revoke_unpaired": {
       "label": "Revoke playback without pairing",
@@ -200,8 +142,7 @@
   },
   "setup_flow": {
     "select_method": {
-      "title": "Pair this device",
-      "description": "Choose how to pair with this device. PIN pairing uses a code the device shows while pairing (or a static PIN printed on it); token pairing uses a pairing token you copy from the device."
+      "title": "Pair this device"
     },
     "awaiting_gesture": {
       "title": "Put the device in pairing mode",
@@ -221,12 +162,19 @@
       "title": "Enter the pairing token",
       "description": "Paste the device's pairing token to pair it. This briefly interrupts playback on the device."
     },
+    "verify_pin": {
+      "title": "Verify device presence",
+      "description": "Enter the PIN shown on the device to confirm it is the physical device in front of you."
+    },
     "abort": {
       "nothing_to_configure": "This player has nothing to pair. Bridge and web players, and devices connected without encryption, do not require pairing.",
+      "already_paired": "This device is already securely paired. To pair it afresh, unpair it first from the player settings.",
       "no_pair_methods": "The device does not offer any pairing method.",
+      "pairing_error_concurrent": "Another pairing attempt is already in progress.",
       "pairing_error_locked_out": "PIN pairing is locked out on the device. Wait a moment, then try again from the device's settings.",
       "pairing_error_not_connected": "The device is no longer connected.",
-      "pairing_failed": "Pairing with the device failed. Please try again."
+      "pairing_failed": "Pairing with the device failed. Please try again.",
+      "timed_out": "The device did not respond in time. Run the setup again to retry."
     }
   },
   "manifest": {
@@ -246,6 +194,7 @@
     "pairing_error_failed": "Pairing failed. Please check the details and try again.",
     "pairing_error_handshake": "The secure connection to the device failed during pairing. Please try again.",
     "pairing_error_storage": "Saving the pairing data failed. Please try again.",
+    "pairing_error_no_pin_session": "The pairing attempt was interrupted. Please try again.",
     "pairing_error_token_invalid": "The pairing token is not valid. Make sure it was copied completely.",
     "pairing_error_token_mismatch": "The token was issued by a different device."
   }

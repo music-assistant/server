@@ -931,59 +931,19 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
         # Set mute lock for players in a group
         # This prevents auto-unmute when group volume changes
+        had_mute_lock = ATTR_MUTE_LOCK in player.extra_data
         is_in_group = bool(player.state.synced_to or player.state.active_group)
         if muted and is_in_group:
             player.extra_data[ATTR_MUTE_LOCK] = True
 
-        if mute_control == PLAYER_CONTROL_NATIVE:
-            # player supports mute command natively: forward to player
-            await player.volume_mute(muted)
-            return
-        if mute_control == PLAYER_CONTROL_FAKE:
-            # user wants to use fake mute control - so we use volume instead
-            self.logger.debug(
-                "Using volume for muting for player %s",
-                player.state.name,
-            )
-            if muted:
-                already_muted = bool(player.extra_data.get(ATTR_FAKE_MUTE))
-                if not already_muted:
-                    # on a repeated mute command the volume is already 0
-                    player.extra_data[ATTR_PREVIOUS_VOLUME] = player.state.volume_level
-                await self._handle_cmd_volume_set(player_id, 0)
-                # set the flag after the volume command, as that clears it
-                player.extra_data[ATTR_FAKE_MUTE] = True
-                player.update_state()
-            else:
-                prev_volume = player.extra_data.get(ATTR_PREVIOUS_VOLUME, 1)
-                player.extra_data[ATTR_FAKE_MUTE] = False
-                player.update_state()
-                await self._handle_cmd_volume_set(player_id, prev_volume)
-            return
-
-        # handle external player control
-        if player_control := self._controls.get(mute_control):
-            control_name = player_control.name
-            self.logger.debug("Redirecting mute command to PlayerControl %s", control_name)
-            if not player_control.supports_mute:
-                raise UnsupportedFeaturedException(
-                    f"Player control {control_name} is not available"
-                )
-            assert player_control.mute_set is not None
-            await player_control.mute_set(muted)
-            return
-
-        # handle to protocol player as volume_mute control
-        if protocol_player := self.get_player(mute_control):
-            self.logger.debug(
-                "Redirecting mute command to protocol player %s",
-                protocol_player.provider.manifest.name,
-            )
-            await protocol_player.volume_mute(muted)
-            return
-
-        # the configured control disappeared after the mute control was resolved
-        raise UnsupportedFeaturedException(f"Player {player.state.name} does not support muting")
+        try:
+            await self._handle_cmd_volume_mute(player, mute_control, muted)
+        except Exception:
+            # a mute that did not happen may not leave a lock behind, but a lock
+            # earned by an earlier successful mute must survive
+            if not had_mute_lock:
+                player.extra_data.pop(ATTR_MUTE_LOCK, None)
+            raise
 
     @handle_player_command
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
@@ -3537,6 +3497,66 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             )
             await self._handle_cmd_volume_set(protocol_player.player_id, device_volume)
             return
+
+    async def _handle_cmd_volume_mute(self, player: Player, mute_control: str, muted: bool) -> None:
+        """
+        Send the mute command to the given player's mute control.
+
+        Skips permission checks, locking and mute lock bookkeeping (internal use only).
+
+        :param player: the player to handle the command.
+        :param mute_control: the already resolved mute control of the player.
+        :param muted: bool if player should be muted.
+        """
+        if mute_control == PLAYER_CONTROL_NATIVE:
+            # player supports mute command natively: forward to player
+            await player.volume_mute(muted)
+            return
+        if mute_control == PLAYER_CONTROL_FAKE:
+            # user wants to use fake mute control - so we use volume instead
+            self.logger.debug(
+                "Using volume for muting for player %s",
+                player.state.name,
+            )
+            if muted:
+                already_muted = bool(player.extra_data.get(ATTR_FAKE_MUTE))
+                if not already_muted:
+                    # on a repeated mute command the volume is already 0
+                    player.extra_data[ATTR_PREVIOUS_VOLUME] = player.state.volume_level
+                await self._handle_cmd_volume_set(player.player_id, 0)
+                # set the flag after the volume command, as that clears it
+                player.extra_data[ATTR_FAKE_MUTE] = True
+                player.update_state()
+            else:
+                prev_volume = player.extra_data.get(ATTR_PREVIOUS_VOLUME, 1)
+                player.extra_data[ATTR_FAKE_MUTE] = False
+                player.update_state()
+                await self._handle_cmd_volume_set(player.player_id, prev_volume)
+            return
+
+        # handle external player control
+        if player_control := self._controls.get(mute_control):
+            control_name = player_control.name
+            self.logger.debug("Redirecting mute command to PlayerControl %s", control_name)
+            if not player_control.supports_mute:
+                raise UnsupportedFeaturedException(
+                    f"Player control {control_name} is not available"
+                )
+            assert player_control.mute_set is not None
+            await player_control.mute_set(muted)
+            return
+
+        # handle to protocol player as volume_mute control
+        if protocol_player := self.get_player(mute_control):
+            self.logger.debug(
+                "Redirecting mute command to protocol player %s",
+                protocol_player.provider.manifest.name,
+            )
+            await protocol_player.volume_mute(muted)
+            return
+
+        # the configured control disappeared after the mute control was resolved
+        raise UnsupportedFeaturedException(f"Player {player.state.name} does not support muting")
 
     async def _handle_play_media(self, player_id: str, media: PlayerMedia) -> None:
         """

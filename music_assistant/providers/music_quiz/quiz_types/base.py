@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Iterable
+from contextlib import suppress
+from dataclasses import replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar, Final, cast
 
-from music_assistant_models.enums import AlbumType, MediaType
+from music_assistant_models.enums import AlbumType, ExternalID, MediaType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Album,
@@ -42,6 +46,7 @@ if TYPE_CHECKING:
         MusicQuizGame,
         MusicQuizRound,
     )
+    from music_assistant.providers.musicbrainz import MusicbrainzProvider
     from music_assistant.providers.radio_playlist import RadioPlaylistProvider
 
 LOGGER = logging.getLogger(__name__)
@@ -55,6 +60,7 @@ MAX_SUGGESTION_COUNT = 12
 PLAYBACK_REPLACEMENT_RESERVE = 4
 QUIZ_TRACK_RECENCY_SECONDS = 24 * 60 * 60
 MIN_RELEASE_YEAR = 1000
+RELEASE_YEAR_LOOKUP_BUDGET_SECONDS = 2.0
 SUPPORTED_SOURCE_MEDIA_TYPES: Final = frozenset(
     {
         MediaType.TRACK,
@@ -429,6 +435,43 @@ class QuizType(ABC):
             return True
         return self._recency_snapshot is not None and self._recency_snapshot.track_recent(
             track, QUIZ_TRACK_RECENCY_SECONDS
+        )
+
+    async def _musicbrainz_dated_track(self, track: Track) -> Track:
+        """
+        Return the track dated with the first release year MusicBrainz knows for its recording.
+
+        The track itself is returned unchanged when MusicBrainz has nothing better to offer.
+
+        :param track: Track to date by its ISRC.
+        """
+        musicbrainz = self.mass.get_provider("musicbrainz")
+        isrc = track.get_external_id(ExternalID.ISRC)
+        if musicbrainz is None or not isrc:
+            return track
+        release_year: int | None = None
+        # callers wait for this and MusicBrainz throttles to 10 requests per 10 seconds, so a
+        # lookup that does not resolve within the budget leaves the track on its library year
+        with suppress(TimeoutError):
+            async with asyncio.timeout(RELEASE_YEAR_LOOKUP_BUDGET_SECONDS):
+                try:
+                    release_year = await cast(
+                        "MusicbrainzProvider", musicbrainz
+                    ).get_release_year_by_isrc(isrc)
+                except Exception as err:
+                    LOGGER.debug("Could not date Music Quiz track %s: %s", track.uri, err)
+        # a year outside this range is rejected by get_track_release_year anyway, and a year
+        # below 1 cannot be expressed as a datetime at all
+        if release_year is None or not MIN_RELEASE_YEAR <= release_year <= utc().year:
+            return track
+        release_date = track.metadata.release_date
+        if release_date is not None and release_date.year <= release_year:
+            return track
+        # the track controller hands out objects that are shared with the library cache,
+        # so the release date is written to a copy instead of the track itself
+        return replace(
+            track,
+            metadata=replace(track.metadata, release_date=datetime(release_year, 1, 1, tzinfo=UTC)),
         )
 
 

@@ -267,6 +267,11 @@ class TriviaQuizType(QuizType):
         track_facts = SYSTEM_RANDOM.choice(
             [facts for facts in available_tracks if facts.source_uri in preferred_uris]
         )
+        # an album can carry a reissue year, which would be scored as the correct answer to a
+        # release year question; dating only the track that becomes this round's question keeps
+        # the lookups bounded where dating the eligible pool would not
+        dated_track = await self._musicbrainz_dated_track(source_pool[track_facts.source_uri])
+        track_facts = self._track_facts(dated_track) or track_facts
         fact = self._select_fact(track_facts, round_index)
         generation = await self._generate_question(fact)
         correct = SuggestionCandidate(
