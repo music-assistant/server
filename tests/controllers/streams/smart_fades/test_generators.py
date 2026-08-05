@@ -110,9 +110,7 @@ def _base_ctx(**overrides: Any) -> TransitionContext:
 
 
 def _out_analysis_with_quiet_tail() -> AudioAnalysisData:
-    """
-    Build an outgoing analysis: loud mid before media 195s, quiet mid after (the blend region).
-    """
+    """Outgoing analysis: loud mid before media 195s, quiet mid after (the blend region)."""
     t = np.linspace(0.0, 240.0, 1800)
     mid = np.where(t < 195.0, 0.5, 0.02).astype(np.float32)
     low = np.full(1800, 0.05, dtype=np.float32)

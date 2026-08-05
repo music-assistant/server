@@ -153,7 +153,8 @@ def test_trim_closing_ladder_emitted_for_big_trim_gap() -> None:
     specs = list(TrimClosingAnchorGenerator().generate(ctx))
     assert specs
     for spec in specs:
-        assert spec.anchor_s is not None and spec.anchor_s > ctx.default_anchor
+        assert spec.anchor_s is not None
+        assert spec.anchor_s > ctx.default_anchor
         assert spec.anchor_s <= ctx.audio_end
     # the ladder is walked, not just one rung
     assert len({spec.bars for spec in specs}) >= 2
