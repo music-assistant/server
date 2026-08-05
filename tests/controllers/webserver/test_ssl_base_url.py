@@ -1,4 +1,4 @@
-"""Tests for the URL scheme the webserver advertises when SSL is enabled."""
+"""Tests for the URL scheme and settings alerts that follow the webserver's SSL state."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
+from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.constants import WILDCARD_BIND_IPS
 from music_assistant.controllers.webserver.controller import WebserverController
@@ -54,6 +55,7 @@ def mock_mass() -> MagicMock:
     mass = MagicMock()
     mass.config.get_raw_core_config_value.return_value = "GLOBAL"
     mass.running_as_hass_addon = False
+    mass.providers = []
     return mass
 
 
@@ -95,6 +97,40 @@ async def test_invalid_certificate_advertises_plain_http(
     assert server.setup.await_args.kwargs["ssl_context"] is None
 
 
+async def test_valid_certificate_shows_no_alert(
+    mock_mass: MagicMock, tmp_path: Path, self_signed_cert: tuple[str, str]
+) -> None:
+    """Verify a served HTTPS webserver is not flagged as unencrypted."""
+    certificate, private_key = self_signed_cert
+    webserver, _ = await _setup_webserver(
+        mock_mass, tmp_path, certificate=certificate, private_key=private_key
+    )
+
+    assert await _visible_alerts(webserver) == set()
+
+
+async def test_invalid_certificate_alerts_ssl_did_not_take_effect(
+    mock_mass: MagicMock, tmp_path: Path
+) -> None:
+    """Verify enabling SSL with an unusable certificate is reported as such."""
+    webserver, _ = await _setup_webserver(
+        mock_mass, tmp_path, certificate="not a certificate", private_key="not a private key"
+    )
+
+    assert await _visible_alerts(webserver) == {"ssl_inactive_warn"}
+
+
+async def test_ssl_disabled_alerts_the_webserver_is_unencrypted(
+    mock_mass: MagicMock, tmp_path: Path
+) -> None:
+    """Verify the generic warning is the only alert when SSL was never switched on."""
+    webserver, _ = await _setup_webserver(
+        mock_mass, tmp_path, certificate="", private_key="", enable_ssl=False
+    )
+
+    assert await _visible_alerts(webserver) == {"webserver_warn"}
+
+
 def _make_server_mock() -> MagicMock:
     """Create a Webserver double that adopts the address it is set up with."""
     server = MagicMock()
@@ -108,20 +144,38 @@ def _make_server_mock() -> MagicMock:
     return server
 
 
+async def _visible_alerts(webserver: WebserverController) -> set[str]:
+    """
+    Return the keys of the alert entries the settings UI renders for a controller.
+
+    :param webserver: The controller to read the config entries from.
+    """
+    with patch(
+        "music_assistant.controllers.webserver.controller.get_ip_addresses",
+        AsyncMock(return_value=("192.168.1.5",)),
+    ):
+        entries = await webserver._build_config_entries()
+    return {
+        entry.key for entry in entries if entry.type == ConfigEntryType.ALERT and not entry.hidden
+    }
+
+
 async def _setup_webserver(
     mock_mass: MagicMock,
     tmp_path: Path,
     *,
     certificate: str,
     private_key: str,
+    enable_ssl: bool = True,
 ) -> tuple[WebserverController, MagicMock]:
     """
-    Run the real setup of a WebserverController with SSL enabled.
+    Run the real setup of a WebserverController.
 
     :param mock_mass: Mocked Music Assistant instance to build the controller on.
     :param tmp_path: Directory to serve as the frontend, in place of the bundled one.
     :param certificate: Value for the ssl_certificate config option.
     :param private_key: Value for the ssl_private_key config option.
+    :param enable_ssl: Value for the enable_ssl config option.
     :return: The controller and the Webserver double it was set up against.
     """
     webserver = WebserverController(mock_mass)
@@ -133,7 +187,7 @@ async def _setup_webserver(
     config_values: dict[str, Any] = {
         "bind_port": 8095,
         "bind_ip": None,
-        "enable_ssl": True,
+        "enable_ssl": enable_ssl,
         "ssl_certificate": certificate,
         "ssl_private_key": private_key,
     }

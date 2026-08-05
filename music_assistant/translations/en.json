@@ -803,6 +803,7 @@
   "core.webserver.config_entries.enable_ssl.label": "Enable SSL/TLS",
   "core.webserver.config_entries.ssl_certificate.description": "Provide your SSL certificate in PEM format. You can either:\n- Paste the full contents of your certificate file, or\n- Enter an absolute file path (e.g., /ssl/fullchain.pem)\n\nThis should include the full certificate chain if applicable.\nBoth RSA and ECDSA certificates are supported.",
   "core.webserver.config_entries.ssl_certificate.label": "SSL Certificate",
+  "core.webserver.config_entries.ssl_inactive_warn.label": "SSL/TLS is enabled, but the certificate could not be loaded, so the webserver is still running unencrypted. \n\nCheck the certificate and private key below and use the Verify button to test them. The webserver switches to HTTPS as soon as a valid certificate is saved.",
   "core.webserver.config_entries.ssl_private_key.description": "Provide your SSL private key in PEM format. You can either:\n- Paste the full contents of your private key file, or\n- Enter an absolute file path (e.g., /ssl/privkey.pem)\n\nBoth RSA and ECDSA keys are supported. The key must be unencrypted.\nThis is securely encrypted and stored.",
   "core.webserver.config_entries.ssl_private_key.label": "SSL Private Key",
   "core.webserver.config_entries.verify_ssl.action_label": "Verify",
