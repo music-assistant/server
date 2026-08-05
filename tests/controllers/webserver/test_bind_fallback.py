@@ -3,14 +3,16 @@
 import logging
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, cast
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
 from aiohttp.test_utils import unused_port
 
+from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT
 from music_assistant.controllers.webserver.controller import WebserverController
 from music_assistant.helpers.webserver import Webserver
+from music_assistant.mass import MusicAssistant
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import CoreConfig
@@ -41,6 +43,22 @@ def controller() -> WebserverController:
     webserver.config = cast("CoreConfig", config)
     webserver.publish_port = 8095
     return webserver
+
+
+@pytest.fixture
+async def booted_controller(mass_minimal: MusicAssistant) -> AsyncGenerator[WebserverController]:
+    """
+    Yield a WebserverController attached to a minimal server, closed afterwards.
+
+    :param mass_minimal: Minimal MusicAssistant instance.
+    """
+    controller = WebserverController(mass_minimal)
+    mass_minimal.webserver = controller
+    try:
+        yield controller
+    finally:
+        # close unconditionally: a failed assertion must not leave the socket bound
+        await controller.close()
 
 
 async def test_unavailable_bind_ip_falls_back_to_all_interfaces(server: Webserver) -> None:
@@ -104,3 +122,23 @@ def test_successful_bind_pins_to_the_configured_address(controller: WebserverCon
     assert controller.publish_addresses == ["192.168.1.10"]
     assert controller.base_url == "http://192.168.1.10:8095"
     assert controller.internal_base_url == "http://192.168.1.10:8095"
+
+
+async def test_setup_publishes_dialable_addresses_after_fallback(
+    booted_controller: WebserverController, mass_minimal: MusicAssistant
+) -> None:
+    """Setting up on an un-bindable address leaves the webserver advertising what answers."""
+    port = unused_port()
+    config = await mass_minimal.config.get_core_config(booted_controller.domain)
+    config.update({CONF_BIND_IP: UNBINDABLE_IP, CONF_BIND_PORT: port})
+
+    with patch(
+        "music_assistant.controllers.webserver.controller.get_ip_addresses",
+        AsyncMock(return_value=ALL_ADDRESSES),
+    ):
+        await booted_controller.setup(config)
+
+    assert booted_controller.bind_ip is None
+    assert booted_controller.publish_addresses == list(ALL_ADDRESSES)
+    assert booted_controller.base_url == f"http://192.168.1.10:{port}"
+    assert booted_controller.internal_base_url == f"http://127.0.0.1:{port}"

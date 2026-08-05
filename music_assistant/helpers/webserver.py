@@ -188,7 +188,7 @@ class Webserver:
 
     @property
     def bind_ip(self) -> str | None:
-        """Return the IP address this webserver is bound to, or None when bound to all interfaces."""
+        """Return the IP address this webserver is bound to (None for all interfaces)."""
         return self._bind_ip
 
     def register_dynamic_route(
