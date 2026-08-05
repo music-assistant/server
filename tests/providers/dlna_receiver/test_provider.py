@@ -196,7 +196,7 @@ async def test_loaded_publishes_registry_instances_while_start_is_in_progress(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A started renderer must expose its AudioSource before the full batch finishes."""
-    from music_assistant.providers.dlna_receiver import music_assistant.providers.dlna_receiver as provider_module  # noqa: PLC0415
+    import music_assistant.providers.dlna_receiver.provider as provider_module  # noqa: PLC0415
 
     entered = asyncio.Event()
     release = asyncio.Event()
@@ -245,7 +245,7 @@ async def test_loaded_reports_registry_start_failure_and_returns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A post-load startup failure must schedule provider unload with its original error."""
-    from music_assistant.providers.dlna_receiver import music_assistant.providers.dlna_receiver as provider_module  # noqa: PLC0415
+    import music_assistant.providers.dlna_receiver.provider as provider_module  # noqa: PLC0415
 
     start_error = SetupFailedError("SSDP unavailable")
 
