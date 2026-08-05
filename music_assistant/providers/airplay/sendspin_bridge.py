@@ -489,6 +489,10 @@ class SendspinAirPlayBridge:
         """
         if not self._stream_is_warm_eligible():
             return False
+        if self._use_shared_ptp is None:
+            # A legacy RAOP process carries no timing decision, so it cannot be
+            # on the wrong one and respawning it would change nothing.
+            return True
         group_decision = self.provider.bridge_manager.group_shared_ptp(self)
         return group_decision is None or group_decision == self._use_shared_ptp
 
@@ -660,6 +664,7 @@ class SendspinAirPlayBridge:
                     await kept_stream.stop(force=True)
                 self._airplay_stream = None
                 self.airplay_player.stream = None
+                self._use_shared_ptp = None
 
             # On a rapid skip, _on_bridge_stream_start snapshots self._airplay_stream
             # for cleanup. If we assigned it earlier, the new stream would be missed
@@ -691,12 +696,8 @@ class SendspinAirPlayBridge:
         try:
             # Resolving and recording the decision never awaits, so two bridges
             # starting together cannot both find their group still undecided.
-            # A start that has already been superseded still spawns the process
-            # it is holding, but the record belongs to whoever owns the bridge.
-            decision = self._resolve_shared_ptp()
-            if asyncio.current_task() is self._airplay_stream_start_task:
-                self._use_shared_ptp = decision
-            await stream.connect(decision)
+            self._use_shared_ptp = self._resolve_shared_ptp()
+            await stream.connect(self._use_shared_ptp)
             await stream.wait_for_connection()
             if asyncio.current_task() is not self._airplay_stream_start_task:
                 await stream.stop(force=True)
@@ -923,6 +924,7 @@ class SendspinAirPlayBridge:
         so that silence reaches the player.
         """
         self._is_streaming = False
+        self._use_shared_ptp = None
         self._held_chunks.clear()
         self._held_us = 0
         # unblock a writer still waiting for a stream that will never be ready
@@ -1410,6 +1412,12 @@ class SendspinBridgeManager(SendspinBridgeManagerBase[SendspinAirPlayBridge]):
         can start minutes apart and keep a warm process across a track change, so
         the decision its group already runs on wins; only a group without one
         asks the daemon.
+
+        The daemon is read as it stands rather than waited for (unlike a native
+        sync group, which can afford the wait): a bridge's start lead is fixed
+        before this point, so waiting here would push its anchor past the audio
+        Sendspin already scheduled. A group starting inside the daemon's spawn
+        window therefore degrades to NTP together, for that session.
 
         :param bridge: The bridge about to spawn a cli process.
         """

@@ -32,6 +32,7 @@ tests are deterministic and independent of the host wall-clock:
 """
 
 import asyncio
+from collections.abc import Coroutine
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -2423,13 +2424,19 @@ async def test_a_torn_down_bridge_stops_deciding() -> None:
     assert bridge.active_shared_ptp is None
 
 
-def _make_warm_bridge(*, use_shared_ptp: bool) -> SendspinAirPlayBridge:
+def _make_warm_bridge(
+    *,
+    use_shared_ptp: bool | None,
+    protocol: StreamingProtocol = StreamingProtocol.AIRPLAY2,
+) -> SendspinAirPlayBridge:
     """
     Build a bridge holding a connected, anchored cli process on the given flag.
 
-    :param use_shared_ptp: The shared-PTP flag its process was spawned with.
+    :param use_shared_ptp: The shared-PTP flag its process was spawned with,
+        None for a process that carries no such decision.
+    :param protocol: The streaming protocol the bridged player speaks.
     """
-    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US, protocol=protocol)
     bridge._airplay_stream = _make_kept_stream()
     bridge._started = True
     bridge._use_shared_ptp = use_shared_ptp
@@ -2481,30 +2488,75 @@ def test_a_group_without_a_live_decision_reuses_the_warm_process() -> None:
     assert solo._can_reuse_stream_warm() is True
 
 
-async def test_a_superseded_cold_start_does_not_record_its_decision() -> None:
+def test_a_raop_member_keeps_its_warm_process_beside_an_ap2_member() -> None:
     """
-    Only the start that owns the bridge records what its process runs with.
+    A RAOP process is never respawned over a group's shared-clock decision.
 
-    A superseded start still spawns the process it is holding and tears it down,
-    so recording its decision would advertise a dead process to the group.
+    It carries no such decision of its own, and no respawn could give it one, so
+    comparing it against an AirPlay 2 sibling's would cost the group a cold
+    reconnect (and its longer start lead) on every track change for nothing.
     """
-    superseded = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
-    _group_bridges(superseded, daemon_ready=False)
-    # the newer start already spawned its process on the shared clock, while a
-    # fresh resolve would now answer the other way
-    superseded._use_shared_ptp = True
-    # ...and that newer start owns the bridge, so this one is stale
-    superseded._airplay_stream_start_task = MagicMock()
-    stream = _make_anchor_stream()
+    raop = _make_warm_bridge(use_shared_ptp=None, protocol=StreamingProtocol.RAOP)
+    ap2 = _make_warm_bridge(use_shared_ptp=True)
+    _group_bridges(raop, ap2, daemon_ready=True)
+    raop._bridge_role = MagicMock()
 
-    with patch(
-        "music_assistant.providers.airplay.sendspin_bridge.time.time",
-        return_value=UNIX_NOW_S,
+    assert raop._can_reuse_stream_warm() is True
+
+    raop._refresh_bridge_timing()
+
+    raop._bridge_role.set_timing.assert_called_once_with(
+        required_lead_time_ms=BRIDGE_WARM_START_LEAD_MS, min_buffer_ms=BRIDGE_MIN_BUFFER_MS
+    )
+
+
+async def test_the_real_chunk_path_records_the_decision_it_spawns_with() -> None:
+    """
+    Driving the bridge the way Sendspin does still records what the CLI got.
+
+    The start task is created eagerly, so it runs to its first await before the
+    caller has published the task handle. Anything in the start path that reads
+    that handle before then sees None, and a decision gated on it would be lost
+    while the process it describes is already running.
+    """
+    bridge = _make_bridge(clock_now_us=SENDSPIN_EPOCH_US)
+    _group_bridges(bridge, daemon_ready=True)
+    stream = _make_anchor_stream(ack=UNIX_NOW_MS + COLD_LEAD_MS)
+    started: list[asyncio.Task[None]] = []
+
+    async def connect(_use_shared_ptp: bool | None) -> None:
+        # a real connect does I/O, so the eagerly started task suspends here and
+        # its caller gets to publish the task handle
+        await asyncio.sleep(0)
+
+    stream.connect = AsyncMock(side_effect=connect)
+
+    loop = asyncio.get_running_loop()
+
+    def create_task(coro: Coroutine[None, None, None], **_kwargs: object) -> asyncio.Task[None]:
+        # mirrors mass.create_task, whose eager start runs the coroutine to its
+        # first await before this returns
+        task = asyncio.Task(coro, loop=loop, eager_start=True)
+        started.append(task)
+        return task
+
+    cast("MagicMock", bridge.mass).create_task = create_task
+
+    with (
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.AirPlayStream",
+            return_value=stream,
+        ),
+        patch(
+            "music_assistant.providers.airplay.sendspin_bridge.time.time",
+            return_value=UNIX_NOW_S,
+        ),
     ):
-        assert await superseded._start_cold_stream(stream) is False
+        bridge._on_audio_chunk(_pcm_chunk(SENDSPIN_EPOCH_US + COLD_LEAD_MS * 1_000))
+        await asyncio.gather(*started)
 
-    assert superseded._use_shared_ptp is True
-    stream.stop.assert_awaited_once_with(force=True)
+    stream.connect.assert_awaited_once_with(True)
+    assert bridge.active_shared_ptp is True
 
 
 @pytest.mark.parametrize("arm", ["sendspin_stream_start", "transport_restart"])
@@ -2529,3 +2581,14 @@ def test_a_released_process_stops_deciding_for_its_group(arm: str) -> None:
     assert regrouped.active_shared_ptp is None
     # the sibling still holding a live process keeps deciding for the group
     assert playing.active_shared_ptp is True
+
+
+def test_an_abandoned_process_stops_deciding_for_its_group() -> None:
+    """Giving up on a transport takes its decision out of the group with it."""
+    abandoned = _make_warm_bridge(use_shared_ptp=True)
+    _group_bridges(abandoned, daemon_ready=True)
+
+    abandoned._abandon_streaming()
+
+    assert abandoned._use_shared_ptp is None
+    assert abandoned.active_shared_ptp is None
