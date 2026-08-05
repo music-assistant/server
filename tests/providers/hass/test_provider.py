@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from math import ceil
@@ -23,6 +24,7 @@ from music_assistant.providers.hass import (
     CONF_VERIFY_SSL,
     CONF_VOLUME_CONTROLS,
     STATE_FETCH_BATCH_SIZE,
+    HassRegistryEntity,
     HomeAssistantProvider,
     setup,
 )
@@ -774,6 +776,45 @@ async def test_registry_changed_during_the_fetch_is_not_cached() -> None:
         registry_fetches = hass.calls.count(REGISTRY_LIST_COMMAND)
         await provider.get_states(domains=("tts",))
         assert hass.calls.count(REGISTRY_LIST_COMMAND) == registry_fetches + 1
+
+
+async def test_shared_registry_rejects_writes() -> None:
+    """Reject writes to the registry that is shared between all callers."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, _):
+        registry = await provider.get_entity_registry()
+
+        with pytest.raises(TypeError):
+            registry["light.kitchen"] = HassRegistryEntity(  # type: ignore[index]
+                entity_id="light.kitchen", platform="test", device_id=None
+            )
+
+
+async def test_registry_reuses_repeated_strings() -> None:
+    """Hold on to a single string object per distinct platform and device id."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, _):
+        # decode the listing like a real response, so the repeated platform and device id
+        # arrive as distinct string objects instead of shared literals
+        entities = json.loads(
+            json.dumps(
+                [
+                    {"ei": f"light.lamp_{index}", "pl": "esphome", "di": "device"}
+                    for index in range(3)
+                ]
+            )
+        )
+        with patch.object(
+            provider.hass, "send_command", AsyncMock(return_value={"entities": entities})
+        ):
+            registry = await provider._fetch_entity_registry()
+
+        assert len(registry) == 3
+        assert registry["light.lamp_0"] == {
+            "entity_id": "light.lamp_0",
+            "platform": "esphome",
+            "device_id": "device",
+        }
+        assert len({id(entry["platform"]) for entry in registry.values()}) == 1
+        assert len({id(entry["device_id"]) for entry in registry.values()}) == 1
 
 
 async def test_device_registry_is_reused_within_the_cache_window() -> None:
