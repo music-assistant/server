@@ -318,7 +318,7 @@ class StorytelHelper:
         """Fetch and cache the resource version for the Storytel API."""
         url = URL_LIBRARY_MANAGEMENT
         headers = self.headers_api()
-        headers["Accept"] = "application/vnd.storytel.library-delta+json;v=1.4"
+        headers["Accept"] = API_HEADER_CONTENT_TYPE_LIBRARY_DELTA
         request_data: dict[str, Any] = {
             "resourceVersion": self.resource_version,
             "followingItems": {},
@@ -347,7 +347,7 @@ class StorytelHelper:
         """
         url = URL_LIBRARY_MANAGEMENT
         headers = self.headers_api()
-        headers["Accept"] = "application/vnd.storytel.library-delta+json;v=1.4"
+        headers["Accept"] = API_HEADER_CONTENT_TYPE_LIBRARY_DELTA
         request_data: dict[str, Any] = {
             "resourceVersion": self.resource_version,
             "followingItems": {},
@@ -407,7 +407,7 @@ class StorytelHelper:
         """
         url = URL_LIBRARY_MANAGEMENT
         headers = self.headers_api()
-        headers["Accept"] = "application/vnd.storytel.library-delta+json;v=1.4"
+        headers["Accept"] = API_HEADER_CONTENT_TYPE_LIBRARY_DELTA
         request_data: dict[str, Any] = {
             "resourceVersion": self.resource_version,
             "followingItems": {},
