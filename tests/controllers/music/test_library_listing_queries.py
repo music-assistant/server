@@ -414,6 +414,57 @@ async def test_track_listing_artist_join_matches_legacy(seeded_mass: MusicAssist
     assert len(new_items) > 0
 
 
+async def test_track_artist_name_sorting(seeded_mass: MusicAssistant) -> None:
+    """Tracks can be sorted by artist name, with secondary sorting by track name."""
+    # Test ascending artist name sort
+    tracks_asc = await seeded_mass.music.tracks.library_items(order_by="track_artist_name")
+    # Build list of (artist_name, track_name) tuples for validation
+    artist_track_pairs_asc = [(t.artists[0].name, t.name) for t in tracks_asc if t.artists]
+    # Sort should be by artist name first, then track name
+    expected_asc = sorted(artist_track_pairs_asc, key=lambda x: (x[0], x[1]))
+    assert artist_track_pairs_asc == expected_asc, "Should sort by artist name, then track name"
+    assert len(artist_track_pairs_asc) > 0, "Should return tracks with artists"
+
+    # Test descending artist name sort
+    tracks_desc = await seeded_mass.music.tracks.library_items(order_by="track_artist_name_desc")
+    artist_track_pairs_desc = [(t.artists[0].name, t.name) for t in tracks_desc if t.artists]
+    # DESC sort: artist name descending, but track name still ascending within each artist
+    grouped: dict[str, list[str]] = {}
+    for pair in artist_track_pairs_asc:
+        artist, track = pair
+        if artist not in grouped:
+            grouped[artist] = []
+        grouped[artist].append(track)
+    # Sort artists descending, tracks within artist ascending
+    expected_desc = []
+    for artist in sorted(grouped.keys(), reverse=True):
+        for track in sorted(grouped[artist]):
+            expected_desc.append((artist, track))
+    assert artist_track_pairs_desc == expected_desc, "Should sort by artist name descending"
+
+
+async def test_album_artist_name_sorting(seeded_mass: MusicAssistant) -> None:
+    """Albums can be sorted by artist name, with secondary sorting by year."""
+    # Test ascending artist name sort
+    albums_asc = await seeded_mass.music.albums.library_items(order_by="album_artist_name")
+    # Build list of (artist_name, album_name, year) tuples for validation
+    artist_album_pairs_asc = [(a.artists[0].name, a.name, a.year) for a in albums_asc if a.artists]
+    # Sort should be by artist name first, then year descending
+    expected_asc = sorted(artist_album_pairs_asc, key=lambda x: (x[0], -x[2] if x[2] else 0))
+    assert artist_album_pairs_asc == expected_asc, "Should sort by artist name, then year desc"
+    assert len(artist_album_pairs_asc) > 0, "Should return albums with artists"
+
+    # Test descending artist name sort
+    albums_desc = await seeded_mass.music.albums.library_items(order_by="album_artist_name_desc")
+    artist_album_pairs_desc = [
+        (a.artists[0].name, a.name, a.year) for a in albums_desc if a.artists
+    ]
+    expected_desc = sorted(
+        artist_album_pairs_asc, key=lambda x: (x[0], -x[2] if x[2] else 0), reverse=True
+    )
+    assert artist_album_pairs_desc == expected_desc, "Should sort by artist name descending"
+
+
 async def test_hidden_track_excluded_from_library_listing(seeded_mass: MusicAssistant) -> None:
     """A track whose only mapping has in_library=0 is hidden from library listings."""
     items = await seeded_mass.music.tracks.get_library_items_by_query(in_library_only=True)

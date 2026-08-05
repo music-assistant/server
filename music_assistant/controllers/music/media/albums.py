@@ -163,7 +163,7 @@ class AlbumsController(MediaControllerBase[Album]):
         if album_types:
             extra_query_parts.append("albums.album_type IN :album_types")
             extra_query_params["album_types"] = [x.value for x in album_types]
-        if order_by and "artist_name" in order_by:
+        if order_by and "album_artist_name" in order_by:
             # join artist table to allow sorting on artist name
             extra_join_parts.append(
                 "JOIN album_artists ON album_artists.album_id = albums.item_id "

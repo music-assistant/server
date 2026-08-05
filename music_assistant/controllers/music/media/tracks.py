@@ -278,6 +278,18 @@ class TracksController(MediaControllerBase[Track]):
                     "(json_extract(tracks.metadata, '$.explicit') IS NULL "
                     "OR json_extract(tracks.metadata, '$.explicit') = 0)"
                 )
+
+        # Check if we need to join artist table
+        need_artist_join = (order_by and "track_artist_name" in order_by) or (
+            search and " - " in search
+        )
+
+        if need_artist_join:
+            extra_join_parts.append(
+                "JOIN track_artists ON track_artists.track_id = tracks.item_id "
+                "JOIN artists ON artists.item_id = track_artists.artist_id "
+            )
+
         if search and " - " in search:
             # handle combined artist + title search
             artist_str, title_str = search.split(" - ", 1)
@@ -287,14 +299,8 @@ class TracksController(MediaControllerBase[Track]):
             extra_query_parts.append(
                 search_name_match_clause("tracks", title_str, "search_title", extra_query_params)
             )
-            # use join with artists table to filter on artist name
-            extra_join_parts.append(
-                "JOIN track_artists ON track_artists.track_id = tracks.item_id "
-                "JOIN artists ON artists.item_id = track_artists.artist_id "
-                "AND "
-                + search_name_match_clause(
-                    "artists", artist_str, "search_artist", extra_query_params
-                )
+            extra_query_parts.append(
+                search_name_match_clause("artists", artist_str, "search_artist", extra_query_params)
             )
         result = await self.get_library_items_by_query(
             favorite=favorite,
