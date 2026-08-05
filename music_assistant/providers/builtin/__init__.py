@@ -575,20 +575,6 @@ class BuiltinProvider(MusicProvider):
         await self._write_m3u_file(playlist_id, name, [])
         return await self.get_playlist(playlist_id)
 
-    async def export_radios(self) -> str:
-        """Export all stored radio stations to M3U8 format."""
-        stored_radios: list[StoredItem] = self.mass.config.get(CONF_KEY_RADIOS, [])
-        items: list[PlaylistItem] = [
-            PlaylistItem(
-                path=radio["item_id"],
-                title=radio["name"],
-                length="-1",
-                metadata={"media_type": "radio"},
-            )
-            for radio in stored_radios
-        ]
-        return generate_m3u("Radio Stations", items)
-
     async def import_playlist(self, m3u_data: str) -> Playlist:
         """
         Import a playlist from M3U8 format.
@@ -619,35 +605,6 @@ class BuiltinProvider(MusicProvider):
             playlist_image_url,
         )
         return await self.get_playlist(playlist.item_id)
-
-    async def import_radios(self, m3u_data: str) -> int:
-        """
-        Import radio stations from M3U8 format.
-
-        :param m3u_data: The M3U8 data as a string.
-        """
-        parsed_items = parse_m3u(m3u_data)
-        if not parsed_items:
-            msg = "No items found in M3U data"
-            raise InvalidDataError(msg)
-        stored_radios: list[StoredItem] = self.mass.config.get(CONF_KEY_RADIOS, [])
-        existing_ids = {r["item_id"] for r in stored_radios}
-        count = 0
-        for item in parsed_items:
-            if item.path in existing_ids:
-                continue
-            name = item.title or item.path
-            stored_radios.append(StoredItem(item_id=item.path, name=name))
-            count += 1
-        if count > 0:
-            self.mass.config.set(CONF_KEY_RADIOS, stored_radios)
-            self.mass.call_later(
-                1,
-                self.mass.music.start_sync,
-                [MediaType.RADIO],
-                [self.instance_id],
-            )
-        return count
 
     async def match_imported_playlist_tracks(
         self,

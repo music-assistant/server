@@ -3,12 +3,16 @@
 import asyncio
 import os
 import re
+from typing import Final
 
 from music_assistant_models.enums import MediaType
 from music_assistant_models.errors import InvalidProviderID, InvalidProviderURI
 from music_assistant_models.helpers import create_uri as create_uri_org
 
 base62_length22_id_pattern = re.compile(r"^[a-zA-Z0-9]{22}$")
+
+# plain stream URLs that resolve to the builtin provider, which takes the URL as its item_id
+BUILTIN_URL_SCHEMES: Final[tuple[str, ...]] = ("http://", "https://", "rtsp://", "rtmp://")
 
 # create alias to original create_uri function
 create_uri = create_uri_org
@@ -109,7 +113,7 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
             provider_instance_id_or_domain = "deezer"
             media_type = _deezer_type_map[deezer_type]
             item_id = deezer_id
-        elif uri.startswith(("http://", "https://", "rtsp://", "rtmp://")):
+        elif uri.startswith(BUILTIN_URL_SCHEMES):
             # Translate a plain URL to the builtin provider
             provider_instance_id_or_domain = "builtin"
             media_type = MediaType.UNKNOWN
