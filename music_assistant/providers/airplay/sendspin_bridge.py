@@ -291,6 +291,9 @@ class SendspinAirPlayBridge:
         self._start_unix_ms: int = 0
         self._write_queue: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._writer_task: asyncio.Task[None] | None = None
+        # The start that currently owns the bridge. Every step of the start path
+        # compares itself against this to tell whether it may still touch the
+        # bridge, so it is published before that task runs (see _on_audio_chunk).
         self._airplay_stream_start_task: asyncio.Task[None] | None = None
         self._airplay_stream_ready = asyncio.Event()
         # Whether the current stream has been anchored with its first START.

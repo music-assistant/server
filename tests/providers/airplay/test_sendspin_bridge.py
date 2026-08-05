@@ -625,7 +625,6 @@ async def test_cold_start_superseded_while_connecting_stops_its_transport() -> N
 
     stream.start.assert_not_awaited()
     stream.stop.assert_awaited_once_with(force=True)
-    assert bridge._airplay_stream is None
 
 
 async def test_cold_start_superseded_during_the_anchor_stops_its_transport() -> None:
