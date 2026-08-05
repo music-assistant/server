@@ -75,7 +75,9 @@ class AppleMusicAPIClient:
 
     # period=0.25 -> 4 req/s. Apple throttles per developer account, so 429s follow the
     # fleet-wide load on the bundled token, not our rate - and they clear within a second.
-    throttler = ThrottlerManager(rate_limit=1, period=0.25, initial_backoff=1)
+    # 8 attempts keep the 1/2/4/8/16/32/64s ladder spanning ~2 minutes, so a sustained
+    # throttle (or outage) is still ridden out instead of failing the request in ~15s.
+    throttler = ThrottlerManager(rate_limit=1, period=0.25, retry_attempts=8, initial_backoff=1)
 
     def __init__(self, provider: AppleMusicProvider) -> None:
         """Initialize the API client."""
