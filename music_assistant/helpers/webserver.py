@@ -6,7 +6,6 @@ from collections.abc import Callable, Coroutine, Mapping
 from typing import TYPE_CHECKING, Any, Final
 
 from aiohttp import web
-from yarl import URL
 
 from music_assistant.constants import WILDCARD_BIND_IPS
 
@@ -68,7 +67,6 @@ class Webserver:
         self,
         bind_ip: str | None,
         bind_port: int,
-        base_url: str,
         static_routes: list[tuple[str, str, Handler]] | None = None,
         static_content: tuple[str, str, str] | None = None,
         ingress_tcp_site_params: tuple[str, int] | None = None,
@@ -82,15 +80,13 @@ class Webserver:
             interfaces. The effective address is available as the ``bind_ip`` property.
         :param bind_port: Port to bind to, or 0 to let the OS assign a free one, which
             requires a specific ``bind_ip``. The assigned port is available as the
-            ``port`` property and replaces the port in ``base_url``.
-        :param base_url: Base URL for the server.
+            ``port`` property.
         :param static_routes: List of static routes to register.
         :param static_content: Tuple of (path, directory, name) for static content.
         :param ingress_tcp_site_params: Tuple of (host, port) for ingress TCP site.
         :param app_state: Optional dict of key-value pairs to set on app before starting.
         :param ssl_context: Optional SSL context for HTTPS support.
         """
-        self._base_url = base_url.removesuffix("/")
         self._bind_port = bind_port
         self._static_routes = static_routes
         self._webapp = web.Application(
@@ -149,7 +145,6 @@ class Webserver:
         # port 0 asks the OS for a free port, which it only picks at bind time
         if bind_port == 0:
             self._bind_port = self._apprunner.addresses[0][1]
-            self._base_url = str(URL(self._base_url).with_port(self._bind_port))
         # start additional ingress TCP site if configured
         # this is only used if we're running in the context of an HA add-on
         # which proxies our frontend and api through ingress
@@ -175,11 +170,6 @@ class Webserver:
         if self._webapp:
             await self._webapp.shutdown()
             await self._webapp.cleanup()
-
-    @property
-    def base_url(self) -> str:
-        """Return the base URL of this webserver."""
-        return self._base_url
 
     @property
     def port(self) -> int | None:

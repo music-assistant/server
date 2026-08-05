@@ -315,7 +315,6 @@ class WebserverController(CoreController):
         await self._server.setup(
             bind_ip=bind_ip,
             bind_port=self.publish_port,
-            base_url=self._auto_base_url,
             static_routes=routes,
             # add assets subdir as static_content
             static_content=("/assets", os.path.join(frontend_dir, "assets"), "assets"),

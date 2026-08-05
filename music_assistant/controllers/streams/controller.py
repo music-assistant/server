@@ -456,7 +456,6 @@ class StreamsController(CoreController):
         await self._server.setup(
             bind_ip=bind_ip,
             bind_port=cast("int", self.publish_port),
-            base_url=self._base_url,
             static_routes=[
                 (
                     "*",
