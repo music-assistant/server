@@ -802,6 +802,41 @@ def test_get_ffmpeg_args_uses_filter_complex_with_complex_filter() -> None:
     assert args.index("/ir.wav") > args.index("-i")
 
 
+def test_get_ffmpeg_args_yields_filtergraph_to_caller_output_args() -> None:
+    """A caller-owned graph in the output args keeps the simple -af chain out of the command."""
+    fmt = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=48000, bit_depth=16, channels=2
+    )
+    args = get_ffmpeg_args(
+        fmt,
+        fmt,
+        ["volume=-1dB"],
+        extra_output_args=["-filter_complex", "[0:a][1:a]amix[mixed]", "-map", "[mixed]"],
+    )
+    assert "-af" not in args
+    assert args.count("-filter_complex") == 1
+    assert "volume=-1dB" not in args
+
+
+def test_get_ffmpeg_args_channel_conform_yields_to_caller_output_args() -> None:
+    """The auto-injected channel filter is dropped too when the caller owns the graph."""
+    input_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=48000, bit_depth=16, channels=1
+    )
+    output_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE, sample_rate=48000, bit_depth=16, channels=2
+    )
+    args = get_ffmpeg_args(
+        input_format,
+        output_format,
+        [],
+        extra_output_args=["-filter_complex", "[0:a][1:a]amix[mixed]", "-map", "[mixed]"],
+    )
+    assert "-af" not in args
+    assert args.count("-filter_complex") == 1
+    assert not any(arg.startswith("pan=") for arg in args)
+
+
 def _rms_db(path: Path) -> float:
     """Return the overall RMS level of an audio file in dB via ffmpeg astats."""
     output = subprocess.run(  # noqa: S603
