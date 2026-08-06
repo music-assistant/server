@@ -1474,9 +1474,12 @@ async def test_system_user_allowed_admin_commands(auth_manager: AuthenticationMa
 
     assert is_system_user_allowed_admin_command(system_user, "players/remove")
     assert is_system_user_allowed_admin_command(system_user, "config/players/remove")
+    # the integration lists users to resolve the calling Home Assistant user
+    assert is_system_user_allowed_admin_command(system_user, "auth/users")
     # other admin commands remain off limits for the system user
     assert not is_system_user_allowed_admin_command(system_user, "config/core/save")
     # regular users are not exempt
+    assert not is_system_user_allowed_admin_command(standard_user, "auth/users")
     assert not is_system_user_allowed_admin_command(standard_user, "players/remove")
 
 
