@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from music_assistant_models.enums import MediaType
+from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -549,3 +550,19 @@ async def test_library_only_detail_fetches_are_batched() -> None:
     assert all(len(kwargs["ids"].split(",")) <= _DETAIL_BATCH_SIZE for _endpoint, kwargs in calls)
     # the batched detail response still resolves the album that the listing lacked
     assert all(track.album is not None for track in tracks)
+
+
+@pytest.mark.asyncio
+async def test_library_only_detail_batch_failure_reports_how_many_lost_detail() -> None:
+    """A failed detail batch keeps the listing tracks and warns with the number affected."""
+    count = 20
+    items = [_library_song(idx, catalog_id=None) for idx in range(count)]
+    manager, _calls = _make_library_only_manager(items)
+    manager.api.get_data = AsyncMock(side_effect=MusicAssistantError("boom"))
+
+    tracks = [track async for track in manager.get_library_tracks()]
+
+    assert len(tracks) == count
+    assert all(track.album is None for track in tracks)
+    manager.logger.warning.assert_called_once()
+    assert count in manager.logger.warning.call_args.args

@@ -180,7 +180,7 @@ class AppleMusicLibraryManager:
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> None:
         """Remove item from library."""
-        self.logger.warning(
+        self.logger.debug(
             "Deleting items from your library is not yet supported by the Apple Music API. "
             f"Skipping deletion of {media_type} - {prov_item_id}."
         )
@@ -404,7 +404,9 @@ class AppleMusicLibraryManager:
                 )
             except MusicAssistantError as err:
                 # the listing parse stays usable, so a failed batch only costs album detail
-                self.logger.debug("Unable to fetch library song details: %s", err)
+                self.logger.warning(
+                    "Unable to fetch library song details for %s tracks: %s", len(batch), err
+                )
                 continue
             details.update(
                 {item["id"]: item for item in response.get("data", []) if item.get("id")}
