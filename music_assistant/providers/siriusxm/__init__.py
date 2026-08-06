@@ -133,7 +133,6 @@ class SiriusXMProvider(MusicProvider):
         await self._sxm_server.setup(
             bind_ip=bind_ip,
             bind_port=bind_port,
-            base_url=self._base_url,
             static_routes=[
                 ("*", "/{tail:.*}", http_handler),
             ],

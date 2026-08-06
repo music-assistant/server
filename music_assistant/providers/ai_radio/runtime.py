@@ -35,6 +35,7 @@ from music_assistant.helpers.plugin_engines import resolve_ai_engine, resolve_tt
 from music_assistant.helpers.uri import create_uri
 
 from .constants import (
+    AI_QUERY_TIMEOUT_SECONDS,
     ATTR_MAX_CHARS,
     ATTR_PROMPT,
     ATTR_SESSION_ID,
@@ -1164,8 +1165,14 @@ class AIRadioRuntimeMixin:
             len(query),
         )
         try:
-            response = await engine.provider.ai_query(query, engine_id=engine.id)
+            async with asyncio.timeout(AI_QUERY_TIMEOUT_SECONDS) as query_timeout:
+                response = await engine.provider.ai_query(query, engine_id=engine.id)
         except Exception as err:
+            # expired() tells our own cap apart from a timeout raised inside the engine
+            if isinstance(err, TimeoutError) and query_timeout.expired():
+                raise MusicAssistantError(
+                    f"AI engine '{engine.uid}' did not respond within {AI_QUERY_TIMEOUT_SECONDS}s"
+                ) from err
             error_name = err.__class__.__name__
             error_text = str(err).strip()
             if error_name == "NotConnected":
