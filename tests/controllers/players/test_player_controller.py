@@ -19,6 +19,7 @@ from typing import cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
+from music_assistant_models.auth import User, UserRole
 from music_assistant_models.constants import (
     PLAYER_CONTROL_FAKE,
     PLAYER_CONTROL_NATIVE,
@@ -51,6 +52,7 @@ from music_assistant.constants import (
     CONF_VOLUME_CONTROL,
 )
 from music_assistant.controllers.players import PlayerController
+from music_assistant.controllers.webserver.helpers.auth_middleware import current_user
 from tests.common import MockPlayer, MockProvider
 
 
@@ -389,6 +391,117 @@ class TestStateForwarding:
 
         on_group_member_updated.assert_called_once_with(leader, changed_values)
         on_sync_parent_updated.assert_called_once_with(leader, changed_values)
+
+    def test_group_player_is_notified_under_restricted_user_context(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """The fan-out must not be narrowed by the user that triggered the update."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+        group_player = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
+        member = MockPlayer(provider, "member", "Member")
+
+        controller._players = {"group": group_player, "member": member}
+        mock_mass.players = controller
+
+        group_player._attr_group_members = ["member"]
+        for player in (group_player, member):
+            player.initialized.set()
+            player.update_state(signal_event=False)
+
+        # a non-admin user that may only see the member; the contextvar is copied into
+        # the task an API command runs in, so it is live during the state fan-out
+        restricted_user = User(
+            user_id="user_1",
+            username="restricted",
+            role=UserRole.USER,
+            player_filter=["member"],
+        )
+        token = current_user.set(restricted_user)
+        try:
+            assert group_player not in controller.all_players()
+            with patch.object(group_player, "on_group_member_updated") as on_group_member_updated:
+                changed_values = {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)}
+                controller._forward_state_update(member, changed_values)
+        finally:
+            current_user.reset(token)
+
+        on_group_member_updated.assert_called_once_with(member, changed_values)
+
+    def test_unavailable_group_player_is_still_notified(self, mock_mass: MagicMock) -> None:
+        """A group player mirrors its members, so it must update while unavailable too."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+        group_player = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
+        member = MockPlayer(provider, "member", "Member")
+
+        controller._players = {"group": group_player, "member": member}
+        mock_mass.players = controller
+
+        group_player._attr_group_members = ["member"]
+        for player in (group_player, member):
+            player.initialized.set()
+            player.update_state(signal_event=False)
+        group_player._attr_available = False
+        group_player.update_state(signal_event=False)
+        assert group_player.state.available is False
+
+        with patch.object(group_player, "on_group_member_updated") as on_group_member_updated:
+            changed_values = {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)}
+            controller._forward_state_update(member, changed_values)
+
+        on_group_member_updated.assert_called_once_with(member, changed_values)
+
+    def test_disabled_group_player_is_not_notified(self, mock_mass: MagicMock) -> None:
+        """A disabled player takes no part, unlike one that is merely unavailable."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+        group_player = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
+        member = MockPlayer(provider, "member", "Member")
+
+        controller._players = {"group": group_player, "member": member}
+        mock_mass.players = controller
+
+        group_player._attr_group_members = ["member"]
+        for player in (group_player, member):
+            player.initialized.set()
+            player.update_state(signal_event=False)
+        group_player._config.enabled = False
+        group_player.update_state(signal_event=False, force_update=True)
+        assert group_player.state.enabled is False
+
+        with patch.object(group_player, "on_group_member_updated") as on_group_member_updated:
+            controller._forward_state_update(
+                member, {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)}
+            )
+
+        on_group_member_updated.assert_not_called()
+
+    def test_uninitialized_group_player_is_not_notified(self, mock_mass: MagicMock) -> None:
+        """A player the controller is still registering has no config to derive state from."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+        group_player = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
+        member = MockPlayer(provider, "member", "Member")
+
+        controller._players = {"group": group_player, "member": member}
+        mock_mass.players = controller
+
+        group_player._attr_group_members = ["member"]
+        member.initialized.set()
+        for player in (group_player, member):
+            player.update_state(signal_event=False)
+
+        with patch.object(group_player, "on_group_member_updated") as on_group_member_updated:
+            controller._forward_state_update(
+                member, {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)}
+            )
+
+        on_group_member_updated.assert_not_called()
 
 
 class TestSleepTimer:
