@@ -25,7 +25,7 @@ USER_CONTEXT_KEY = "authenticated_user"
 # TEMPORARY workaround for the 2.9 stable branch until the scope based authorization
 # from 2.10 lands: admin-only commands the Home Assistant system user may execute,
 # so add-on users are not blocked by the insufficient rights error.
-SYSTEM_USER_ALLOWED_ADMIN_COMMANDS = ("players/remove", "config/players/remove")
+SYSTEM_USER_ALLOWED_ADMIN_COMMANDS = ("players/remove", "config/players/remove", "auth/users")
 
 # ContextVar for tracking current user and token across async calls
 current_user: ContextVar[User | None] = ContextVar("current_user", default=None)
