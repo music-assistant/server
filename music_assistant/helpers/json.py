@@ -16,15 +16,10 @@ JSON_DECODE_EXCEPTIONS = (orjson.JSONDecodeError,)
 
 DO_NOT_SERIALIZE_TYPES = (MethodType, asyncio.Task)
 
-# A markdown code fence wrapping the entire text, with an optional language tag on the
-# opening line. The fence length is backreferenced so the closing fence must match.
-_CODE_FENCE_PATTERN = re.compile(
-    r"(?P<fence>`{3,})[^\S\n]*"
-    r"(?:[A-Za-z0-9+#._-]*[^\S\n]*\n)?"
-    r"(?P<body>.*?)\n?"
-    r"(?P=fence)",
-    re.DOTALL,
-)
+_MIN_CODE_FENCE_LENGTH = 3
+# Applied to the opening line only, so a fence that carries anything other than a bare
+# language tag is left alone instead of having that line silently discarded.
+_CODE_FENCE_TAG_PATTERN = re.compile(r"[A-Za-z0-9+#._-]*")
 
 # Type alias for plain, JSON-serializable data.
 # Note: tuples are accepted but will be returned as lists after a JSON round-trip.
@@ -90,16 +85,32 @@ def strip_code_fence(text: str) -> str:
     """
     Remove a markdown code fence that wraps an entire text, plus surrounding whitespace.
 
-    Only a fence around the complete text is removed, so text that merely contains a
-    fenced block, or JSON embedded in prose, is returned with its whitespace trimmed
-    and remains as invalid to a strict parser as it was before.
+    Anything else is returned with only its whitespace trimmed: a fence around part of
+    the text, more than one fenced block, an unterminated fence, or a fence whose opening
+    line carries more than a language tag. Text that is not exactly one fenced block
+    therefore stays as invalid to a strict parser as it was before.
 
     :param text: Text that may be wrapped in a markdown code fence.
+    :return: The fenced content, or the trimmed text when it is not a single fenced block.
     """
     stripped = text.strip()
-    if (match := _CODE_FENCE_PATTERN.fullmatch(stripped)) is None:
+    fence_length = len(stripped) - len(stripped.lstrip("`"))
+    if fence_length < _MIN_CODE_FENCE_LENGTH:
         return stripped
-    return match["body"].strip()
+    fence = "`" * fence_length
+    inner = stripped[fence_length:]
+    if not inner.endswith(fence):
+        return stripped
+    # A closing fence must be the final run of backticks, matching the opening length.
+    inner = inner[:-fence_length]
+    if inner.endswith("`"):
+        return stripped
+    tag, separator, body = inner.partition("\n")
+    if not separator or not _CODE_FENCE_TAG_PATTERN.fullmatch(tag.strip()):
+        return stripped
+    if fence in body:
+        return stripped
+    return body.strip()
 
 
 TargetT = TypeVar("TargetT", bound=DataClassORJSONMixin)
