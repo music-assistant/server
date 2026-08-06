@@ -310,10 +310,23 @@ def _with_isrc(track: Track, isrc: str) -> Track:
     return track
 
 
-def _with_musicbrainz(mass: MagicMock, years: dict[str, int]) -> MagicMock:
-    """Attach a MusicBrainz provider that dates the given ISRCs to the mock MusicAssistant."""
+def _with_musicbrainz(
+    mass: MagicMock,
+    years: dict[str, int],
+    name_years: dict[tuple[str, str], int] | None = None,
+) -> MagicMock:
+    """
+    Attach a MusicBrainz provider to the mock MusicAssistant.
+
+    :param mass: Mock MusicAssistant to attach the provider to.
+    :param years: Release year per ISRC.
+    :param name_years: Release year per (artist name, track name), for tracks without an ISRC.
+    """
     provider = MagicMock()
     provider.get_release_year_by_isrc = AsyncMock(side_effect=lambda isrc: years.get(isrc))
+    provider.get_release_year_by_track_name = AsyncMock(
+        side_effect=lambda artist, track: (name_years or {}).get((artist, track))
+    )
     mass.get_provider = MagicMock(
         side_effect=lambda domain: provider if domain == "musicbrainz" else None
     )
