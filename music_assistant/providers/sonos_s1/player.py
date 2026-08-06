@@ -471,9 +471,8 @@ class SonosPlayer(Player):
                     raise SonosSubscriptionsFailed
             except SonosSubscriptionsFailed:
                 self.logger.warning("Creating subscriptions failed for %s", self.display_name)
-                assert self._subscription_lock is not None
-                async with self._subscription_lock:
-                    await self.offline()
+                # the subscription lock is already held here and is not reentrant
+                await self.offline()
 
     async def unsubscribe(self) -> None:
         """Cancel all subscriptions."""
