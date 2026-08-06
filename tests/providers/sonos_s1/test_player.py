@@ -2,30 +2,78 @@
 
 from __future__ import annotations
 
+import asyncio
+import threading
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, PlaybackState
 
+from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import PlayerMedia
+from music_assistant.providers.sonos_s1 import player as player_module
 from music_assistant.providers.sonos_s1.constants import POLL_INTERVAL, TRANSITION_POLL_INTERVAL
 from music_assistant.providers.sonos_s1.player import SonosPlayer
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
 STREAM_URL = "http://192.168.1.2:8097/single/sessionabc/queue1/item1/player1.flac"
+
+
+def _make_soco(uid: str = "RINCON_000E58AAAAAA01400", name: str = "Test Sonos") -> MagicMock:
+    """Create a mocked soco device."""
+    soco = MagicMock()
+    soco.uid = uid
+    soco.household_id = "Sonos_household"
+    soco.player_name = name
+    soco.ip_address = "127.0.0.1"
+    soco.speaker_info = {"model_name": "Sonos Play:1"}
+    return soco
 
 
 @pytest.fixture
 def sonos_player() -> SonosPlayer:
     """Create a SonosPlayer with a mocked soco device and provider."""
-    soco = MagicMock()
-    soco.uid = "RINCON_000E58AAAAAA01400"
-    soco.household_id = "Sonos_household"
-    soco.player_name = "Test Sonos"
-    soco.ip_address = "127.0.0.1"
-    soco.speaker_info = {"model_name": "Sonos Play:1"}
     provider = MagicMock()
     provider.mass.streams.resolve_stream_url = AsyncMock(return_value=STREAM_URL)
-    return SonosPlayer(provider=provider, soco=soco)
+    return SonosPlayer(provider=provider, soco=_make_soco())
+
+
+@pytest.fixture
+async def timer_mass() -> AsyncGenerator[MusicAssistant]:
+    """Create a bare MusicAssistant exposing the real call_later/cancel_timer machinery."""
+    mass = object.__new__(MusicAssistant)
+    mass.loop = asyncio.get_running_loop()
+    mass.loop_thread_id = threading.get_ident()
+    mass._tracked_timers = {}
+    mass._tracked_tasks = {}
+    mass.config = MagicMock()
+    mass.players = MagicMock()
+    mass.players.all_players.return_value = []
+    yield mass
+    for handle in mass._tracked_timers.values():
+        handle.cancel()
+    for task in mass._tracked_tasks.values():
+        task.cancel()
+
+
+def _make_player(mass: MusicAssistant, uid: str, name: str) -> SonosPlayer:
+    """Create a SonosPlayer bound to the given MusicAssistant."""
+    provider = MagicMock()
+    provider.mass = mass
+    return SonosPlayer(provider=provider, soco=_make_soco(uid, name))
+
+
+def _poll_id(player: SonosPlayer) -> str:
+    """Return the task id that debounces the follow-up poll of the given speaker."""
+    return f"sonos_poll_{player.player_id}"
+
+
+def _pending_polls(mass: MusicAssistant) -> list[str]:
+    """Return the task ids of all pending speaker polls."""
+    return sorted(task_id for task_id in mass._tracked_timers if task_id.startswith("sonos_poll_"))
 
 
 def _make_media() -> PlayerMedia:
@@ -101,3 +149,80 @@ def test_transitional_event_shortens_the_poll_interval(sonos_player: SonosPlayer
     sonos_player._handle_avtransport_event(event)
 
     assert sonos_player.poll_interval == TRANSITION_POLL_INTERVAL
+
+
+async def test_repeated_commands_collapse_to_one_pending_poll(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A burst of commands leaves a single pending poll instead of one poll per command."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+
+    await player.volume_set(30)
+    first_handle = timer_mass._tracked_timers[_poll_id(player)]
+    await player.volume_set(40)
+    await player.volume_mute(True)
+    await player.play()
+
+    assert _pending_polls(timer_mass) == [_poll_id(player)]
+    assert first_handle.cancelled()
+
+
+async def test_each_speaker_keeps_its_own_pending_poll(timer_mass: MusicAssistant) -> None:
+    """Commands to different speakers are polled independently."""
+    kitchen = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    study = _make_player(timer_mass, "RINCON_000E58BBBBBB01400", "Study")
+
+    await kitchen.volume_set(30)
+    await study.volume_set(40)
+
+    assert _pending_polls(timer_mass) == sorted([_poll_id(kitchen), _poll_id(study)])
+
+
+async def test_set_members_polls_the_speakers_it_regrouped(timer_mass: MusicAssistant) -> None:
+    """Grouping polls each speaker that was joined or unjoined, not the coordinator."""
+    kitchen = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    study = _make_player(timer_mass, "RINCON_000E58BBBBBB01400", "Study")
+    hallway = _make_player(timer_mass, "RINCON_000E58CCCCCC01400", "Hallway")
+    cast("MagicMock", timer_mass.players).get_player.side_effect = {
+        study.player_id: study,
+        hallway.player_id: hallway,
+    }.get
+
+    await kitchen.set_members(player_ids_to_add=[study.player_id, hallway.player_id])
+
+    assert _pending_polls(timer_mass) == sorted([_poll_id(study), _poll_id(hallway)])
+
+
+async def test_unload_cancels_the_pending_poll(timer_mass: MusicAssistant) -> None:
+    """An unloaded speaker is not polled by a command that was still in flight."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    await player.volume_set(30)
+    handle = timer_mass._tracked_timers[_poll_id(player)]
+
+    await player.on_unload()
+
+    assert _pending_polls(timer_mass) == []
+    assert handle.cancelled()
+
+
+async def test_unload_cancels_a_poll_that_already_started(
+    timer_mass: MusicAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A poll that started just before the speaker was unloaded is aborted."""
+    monkeypatch.setattr(player_module, "COMMAND_POLL_DELAY", 0)
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    polling = asyncio.Event()
+
+    async def _slow_poll() -> None:
+        polling.set()
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(player, "poll", _slow_poll)
+    player.schedule_poll()
+    await polling.wait()
+    task = timer_mass._tracked_tasks[_poll_id(player)]
+
+    await player.on_unload()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
