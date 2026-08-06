@@ -2766,13 +2766,7 @@ class StreamsAudio:
     def _notify_provider_streamed(
         self, streamdetails: StreamDetails, finished: bool, seconds_streamed: float
     ) -> None:
-        """
-        Report a (mostly) streamed item back to the provider that owns it.
-
-        :param streamdetails: StreamDetails of the item that was streamed.
-        :param finished: Whether the stream ran to completion.
-        :param seconds_streamed: Amount of audio streamed, in seconds.
-        """
+        """Report a (mostly) streamed item back to the provider that owns it."""
         if not finished and seconds_streamed < 90:
             return
         provider = self.mass.get_provider(streamdetails.provider)
