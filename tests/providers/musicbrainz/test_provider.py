@@ -202,14 +202,19 @@ def _recording(
     *releases: dict[str, Any],
     title: str = "Bohemian Rhapsody",
     artist: str = "Queen",
+    artist_id: str = "artist-1",
+    first_release: str | None = None,
 ) -> dict[str, Any]:
     """Return one searched recording credited to the given artist."""
-    return {
+    recording: dict[str, Any] = {
         "id": f"recording-{title}-{releases[0]['date'] if releases else 'none'}",
         "title": title,
-        "artist-credit": [{"artist": {"id": "artist-1", "name": artist, "sort-name": artist}}],
+        "artist-credit": [{"artist": {"id": artist_id, "name": artist, "sort-name": artist}}],
         "releases": list(releases),
     }
+    if first_release is not None:
+        recording["first-release-date"] = first_release
+    return recording
 
 
 async def test_release_year_by_track_name_returns_the_earliest_studio_release() -> None:
@@ -250,6 +255,18 @@ async def test_release_year_by_track_name_ignores_untrustworthy_releases() -> No
     assert await provider.get_release_year_by_track_name("Queen", "Bohemian Rhapsody") == 1975
 
 
+async def test_release_year_by_track_name_ignores_an_undated_release_group() -> None:
+    """Date a song by the oldest release group that has a date, not by an undated one."""
+    provider, _ = _provider(
+        _search_result(
+            _recording(_release("", title="Unknown Pressing")),
+            _recording(_release("1975-11-21")),
+        )
+    )
+
+    assert await provider.get_release_year_by_track_name("Queen", "Bohemian Rhapsody") == 1975
+
+
 async def test_release_year_by_track_name_accepts_a_single_named_after_the_song() -> None:
     """Date a song by its own single when no studio album carries it."""
     provider, _ = _provider(
@@ -276,11 +293,19 @@ async def test_release_year_by_track_name_is_none_without_a_confident_match() ->
 
 
 async def test_release_group_by_track_name_returns_the_artist_and_oldest_groups_first() -> None:
-    """Hand out the matched artist and their release groups, oldest release first."""
+    """Hand out the artist of the oldest recording, and their release groups oldest first."""
     provider, _ = _provider(
         _search_result(
-            _recording(_release("2011-05-16", title="The Platinum Collection")),
-            _recording(_release("1975-11-21")),
+            _recording(
+                _release("2011-05-16", title="The Platinum Collection"),
+                first_release="2011-05-16",
+                artist_id="artist-reissue",
+            ),
+            _recording(
+                _release("1975-11-21"),
+                first_release="1975-11-21",
+                artist_id="artist-original",
+            ),
         )
     )
 
@@ -288,7 +313,9 @@ async def test_release_group_by_track_name_returns_the_artist_and_oldest_groups_
 
     assert result is not None
     artist, release_groups = result
-    assert artist.name == "Queen"
+    # MusicBrainz can hold several artist entries under one name, and the oldest recording
+    # is the one that identifies the original
+    assert artist.id == "artist-original"
     assert [group.title for group in release_groups] == [
         "A Night at the Opera",
         "The Platinum Collection",

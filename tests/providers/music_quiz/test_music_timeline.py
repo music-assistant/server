@@ -797,23 +797,22 @@ async def test_musicbrainz_dates_a_track_without_an_isrc_by_name() -> None:
 
 
 @pytest.mark.asyncio
-async def test_musicbrainz_name_lookup_only_wins_when_it_predates_the_library_year() -> None:
-    """Never let a name lookup push a track to a later year than the library knows."""
-    later = _track("later", "Africa", "Toto", album_year=1982)
-    other = _track("other", "Genesis", "Justice", album_year=2007)
-    quiz, mass = _quiz([later, other])
+async def test_musicbrainz_name_lookup_never_pushes_a_track_to_a_later_year() -> None:
+    """Never let a name lookup overwrite a release date the track already carries."""
+    # the track carries the year itself, so only the "already earlier" guard can keep it
+    dated = _track("dated", "Africa", "Toto", release_year=1982)
+    quiz, mass = _quiz([dated])
     _with_musicbrainz(mass, {}, name_years={("Toto", "Africa"): 2005})
 
-    await quiz.initialize()
-    game_round = await _prepare_round_with_tracks(quiz, [later, other])
+    dated_track, release_year = await quiz._musicbrainz_dated_track(dated)
 
-    assert isinstance(game_round.answer_state, TimelineRoundState)
-    assert game_round.answer_state.placement_snapshot[0].release_year == 1982
+    assert release_year == 2005
+    assert MusicTimelineQuizType._release_year(dated_track) == 1982
 
 
 @pytest.mark.asyncio
-async def test_musicbrainz_does_not_look_up_by_name_when_the_track_has_an_isrc() -> None:
-    """Spend one MusicBrainz request per track: the ISRC identifies the recording exactly."""
+async def test_musicbrainz_does_not_look_up_by_name_when_the_isrc_dates_the_track() -> None:
+    """Spend one MusicBrainz request per track while the ISRC identifies the recording."""
     dated = _with_isrc(_track("dated", "Africa", "Toto", album_year=1998), "ISRC-DATED")
     quiz, mass = _quiz([dated])
     musicbrainz = _with_musicbrainz(
@@ -826,6 +825,20 @@ async def test_musicbrainz_does_not_look_up_by_name_when_the_track_has_an_isrc()
 
     assert release_year == 1982
     musicbrainz.get_release_year_by_track_name.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_musicbrainz_falls_back_to_the_name_when_it_does_not_know_the_isrc() -> None:
+    """Date a track by name when MusicBrainz has no recording for its ISRC."""
+    unknown = _with_isrc(_track("unknown", "Africa", "Toto", album_year=1998), "ISRC-UNKNOWN")
+    quiz, mass = _quiz([unknown])
+    musicbrainz = _with_musicbrainz(mass, {}, name_years={("Toto", "Africa"): 1982})
+
+    _, release_year = await quiz._musicbrainz_dated_track(unknown)
+
+    assert release_year == 1982
+    musicbrainz.get_release_year_by_isrc.assert_awaited_once_with("ISRC-UNKNOWN")
+    musicbrainz.get_release_year_by_track_name.assert_awaited_once_with("Toto", "Africa")
 
 
 @pytest.mark.asyncio

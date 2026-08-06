@@ -905,6 +905,31 @@ def test_compilation_release_year_stays_suppressed_without_dating() -> None:
 
 
 @pytest.mark.asyncio
+async def test_prepare_round_grounds_a_compilation_without_an_isrc_on_its_name_lookup() -> None:
+    """Ground a compilation round on the name lookup when the track carries no ISRC."""
+    # a compilation has no usable year of its own, so the name lookup is the only thing
+    # that can answer a release year question about tracks from an ISRC-less provider
+    track = _track("compilation", "Africa", "Toto", release_year=1998)
+    track.album = _full_album(
+        "party-hits",
+        "Party Hits",
+        album_type=AlbumType.COMPILATION,
+        year=1998,
+    )
+    provider = _ai_provider(_valid_response())
+    quiz, mass = _quiz([track], providers=[provider])
+    _with_musicbrainz(mass, {}, name_years={("Toto", "Africa"): 1982})
+
+    await quiz.prepare_round(0, [])
+
+    assert _prompt_payload(provider.ai_query.await_args.args[0])["track_metadata"] == {
+        "title": "Africa",
+        "artist": "Toto",
+        "release_year": 1982,
+    }
+
+
+@pytest.mark.asyncio
 async def test_prepare_round_grounds_a_dated_compilation_on_its_musicbrainz_year() -> None:
     """Ground a compilation round on the MusicBrainz year while hiding the compilation album."""
     track = _with_isrc(_track("compilation", "Africa", "Toto", release_year=1998), "ISRC-COMP")

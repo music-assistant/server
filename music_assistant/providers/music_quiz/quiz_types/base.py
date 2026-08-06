@@ -439,12 +439,12 @@ class QuizType(ABC):
 
     async def _musicbrainz_dated_track(self, track: Track) -> tuple[Track, int | None]:
         """
-        Return the track dated with the first release year MusicBrainz knows for its recording.
+        Return the track dated with the first release year MusicBrainz knows for the song.
 
         The track itself is returned unchanged when MusicBrainz has nothing better to offer.
 
         :param track: Track to date.
-        :return: The dated track and the usable release year MusicBrainz knows for its recording.
+        :return: The dated track and the usable release year MusicBrainz knows for the song.
             The year is reported even when the track already carries that year or an earlier one,
             and is None when MusicBrainz knows no year or only an implausible one.
         """
@@ -482,15 +482,16 @@ class QuizType(ABC):
         musicbrainz: MusicbrainzProvider, track: Track
     ) -> int | None:
         """
-        Return the first release year MusicBrainz knows for a track's recording.
+        Return the first release year MusicBrainz knows for a track.
 
         :param musicbrainz: The loaded MusicBrainz provider.
         :param track: Track to date.
         """
+        # an ISRC identifies the exact recording, so it is always the better evidence and
+        # the search below is only reached when it is absent or MusicBrainz does not know it
         if isrc := track.get_external_id(ExternalID.ISRC):
-            return await musicbrainz.get_release_year_by_isrc(isrc)
-        # YouTube Music, Plex, Jellyfin and Subsonic never hand out an ISRC, so their tracks
-        # can only be dated by name; that costs the single request the ISRC lookup skipped
+            if (release_year := await musicbrainz.get_release_year_by_isrc(isrc)) is not None:
+                return release_year
         artist_name = track.artists[0].name if track.artists else None
         if not artist_name or not track.name:
             return None
