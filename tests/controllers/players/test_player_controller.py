@@ -367,6 +367,35 @@ class TestStateForwarding:
         )
         on_sync_parent_updated.assert_not_called()
 
+    def test_sync_leader_updates_also_reach_its_group_player(self, mock_mass: MagicMock) -> None:
+        """A sync leader must notify its group player as well as its own sync children."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+        group_player = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
+        leader = MockPlayer(provider, "leader", "Leader")
+        follower = MockPlayer(provider, "follower", "Follower")
+
+        controller._players = {"group": group_player, "leader": leader, "follower": follower}
+        mock_mass.players = controller
+
+        group_player._attr_group_members = ["leader", "follower"]
+        leader._attr_group_members = ["leader", "follower"]
+        for player in (group_player, leader, follower):
+            # _get_player_groups only considers players the controller finished registering
+            player.initialized.set()
+            player.update_state(signal_event=False)
+
+        with (
+            patch.object(group_player, "on_group_member_updated") as on_group_member_updated,
+            patch.object(follower, "on_sync_parent_updated") as on_sync_parent_updated,
+        ):
+            changed_values = {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)}
+            controller._forward_state_update(leader, changed_values)
+
+        on_group_member_updated.assert_called_once_with(leader, changed_values)
+        on_sync_parent_updated.assert_called_once_with(leader, changed_values)
+
 
 class TestSleepTimer:
     """Test native sleep timer handling."""

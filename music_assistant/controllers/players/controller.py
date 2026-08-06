@@ -2397,10 +2397,11 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
                     child_player.on_group_updated(player, changed_values)
                 else:
                     child_player.on_sync_parent_updated(player, changed_values)
-        # update/signal group player(s) when child updates
-        else:
-            for group_player in self._get_player_groups(player, powered_only=False):
-                group_player.on_group_member_updated(player, changed_values)
+        # update/signal group player(s) when a member updates. A sync leader is a member of the
+        # group player that formed the sync group and gaining members of its own does not change
+        # that: a group player mirrors its leader, so it depends on exactly these updates.
+        for group_player in self._get_player_groups(player, powered_only=False):
+            group_player.on_group_member_updated(player, changed_values)
 
         # update/signal manually sync-parent player when child updates
         if (_sync_parent_id := player.state.synced_to) and (
