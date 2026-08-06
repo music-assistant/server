@@ -124,6 +124,31 @@ async def test_resolve_dashboard_url_encodes_player_id() -> None:
     assert query["path"] == "/now-playing?player=a%26b%3Dc+d"
 
 
+@pytest.mark.parametrize(
+    ("player_id", "expected"),
+    [
+        # dlna/wiim UDNs and MAC-based ids (bluesound, squeezelite, samsung_wam)
+        ("uuid:FF98F7F4-EEC9-70AF", "uuid:FF98F7F4-EEC9-70AF"),
+        ("20:F8:3B:09:6B:92", "20:F8:3B:09:6B:92"),
+        # alexa uses the device name the user typed, verbatim
+        ("Marvin's Echo (Kitchen)!", "Marvin's+Echo+(Kitchen)!"),
+    ],
+)
+async def test_resolve_dashboard_url_keeps_route_safe_chars_literal(
+    player_id: str, expected: str
+) -> None:
+    """The now_playing route leaves the characters the frontend's router keeps literal."""
+    controller = _make_controller()
+    controller.mass.webserver.base_url = "https://mass.example.com"  # type: ignore[misc]
+
+    with patch.object(
+        DashboardController, "_get_dashboard_code", AsyncMock(return_value="code456")
+    ):
+        url = await controller.resolve_dashboard_url(DashboardType.NOW_PLAYING, player_id)
+
+    assert _query(url)["path"] == f"/now-playing?player={expected}"
+
+
 async def test_resolve_dashboard_url_rejects_unknown_dashboard_type() -> None:
     """An UNKNOWN dashboard type is never a valid target to cast."""
     controller = _make_controller()
