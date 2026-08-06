@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import AlbumType, ExternalID, MediaType
-from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant_models.errors import InvalidDataError, MediaNotFoundError, RateLimited
 from music_assistant_models.media_items import (
     Album,
     Artist,
@@ -811,27 +811,10 @@ async def test_musicbrainz_name_lookup_never_pushes_a_track_to_a_later_year() ->
 
 
 @pytest.mark.asyncio
-async def test_musicbrainz_does_not_look_up_by_name_when_the_isrc_year_is_not_late() -> None:
-    """Spend one MusicBrainz request while the ISRC dates a track before the library does."""
-    dated = _with_isrc(_track("dated", "Africa", "Toto", album_year=1998), "ISRC-DATED")
-    quiz, mass = _quiz([dated])
-    musicbrainz = _with_musicbrainz(
-        mass,
-        {"ISRC-DATED": 1982},
-        name_years={("Toto", "Africa"): 1955},
-    )
-
-    _, release_year = await quiz._musicbrainz_dated_track(dated)
-
-    assert release_year == 1982
-    musicbrainz.get_release_year_by_track_name.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_musicbrainz_looks_up_the_name_when_the_isrc_dates_a_track_late() -> None:
-    """Date a song by name when its ISRC points at a remaster released after the album."""
+async def test_musicbrainz_dates_a_remastered_recording_on_the_name_lookup() -> None:
+    """Date a song by name when its ISRC points at a remaster released after the song."""
     remastered = _with_isrc(
-        _track("remastered", "Africa", "Toto", album_year=1982), "ISRC-REMASTER"
+        _track("remastered", "Africa", "Toto", album_year=1998), "ISRC-REMASTER"
     )
     quiz, mass = _quiz([remastered])
     musicbrainz = _with_musicbrainz(
@@ -872,8 +855,65 @@ async def test_musicbrainz_keeps_the_isrc_year_when_the_name_lookup_finds_nothin
 
 
 @pytest.mark.asyncio
-async def test_musicbrainz_looks_up_the_name_without_a_library_year_to_check_against() -> None:
-    """Date a compilation track by both lookups, since its album year cannot vouch for either."""
+async def test_musicbrainz_keeps_the_isrc_year_when_the_name_lookup_fails() -> None:
+    """Never drop a year the ISRC supplied because the name search errored."""
+    late = _with_isrc(_track("late", "Africa", "Toto", album_year=1998), "ISRC-LATE")
+    quiz, mass = _quiz([late])
+    musicbrainz = _with_musicbrainz(mass, {"ISRC-LATE": 2005})
+    musicbrainz.get_release_year_by_track_name.side_effect = RateLimited("rate limited")
+
+    _, release_year = await quiz._musicbrainz_dated_track(late)
+
+    assert release_year == 2005
+
+
+@pytest.mark.asyncio
+async def test_musicbrainz_keeps_the_isrc_year_when_the_name_lookup_never_answers() -> None:
+    """Never drop a year the ISRC supplied because the name search outlasted the budget."""
+
+    async def _never_answer(*_args: object) -> int:
+        await asyncio.Event().wait()
+        return 0
+
+    late = _with_isrc(_track("late", "Africa", "Toto", album_year=1998), "ISRC-LATE")
+    quiz, mass = _quiz([late])
+    musicbrainz = _with_musicbrainz(mass, {"ISRC-LATE": 2005})
+    musicbrainz.get_release_year_by_track_name.side_effect = _never_answer
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.base.RELEASE_YEAR_LOOKUP_BUDGET_SECONDS",
+        0.01,
+    ):
+        _, release_year = await quiz._musicbrainz_dated_track(late)
+
+    assert release_year == 2005
+
+
+@pytest.mark.asyncio
+async def test_rescuing_undated_tracks_spends_one_request_per_track() -> None:
+    """Keep the shared rescue budget within the MusicBrainz request allowance."""
+    candidates = [
+        _with_isrc(_track(f"undated-{index}", f"Song {index}", f"Artist {index}"), f"ISRC-{index}")
+        for index in range(5)
+    ]
+    quiz, mass = _quiz(candidates)
+    musicbrainz = _with_musicbrainz(
+        mass,
+        {f"ISRC-{index}": 1990 for index in range(5)},
+        name_years={(f"Artist {index}", f"Song {index}"): 1985 for index in range(5)},
+    )
+    eligible_tracks: dict[str, Track] = {}
+
+    await quiz._rescue_undated_tracks(eligible_tracks, candidates)
+
+    assert len(eligible_tracks) == 5
+    assert musicbrainz.get_release_year_by_isrc.await_count == 5
+    musicbrainz.get_release_year_by_track_name.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rescued_tracks_still_reach_the_name_lookup_as_timeline_entries() -> None:
+    """Cross-check a rescued track once it becomes an entry and has a budget of its own."""
     compilation = _with_isrc(_track("compilation", "Africa", "Toto"), "ISRC-COMPILATION")
     compilation.album = _full_album(
         "album-compilation",
@@ -882,16 +922,17 @@ async def test_musicbrainz_looks_up_the_name_without_a_library_year_to_check_aga
         year=1998,
     )
     quiz, mass = _quiz([compilation])
-    musicbrainz = _with_musicbrainz(
+    _with_musicbrainz(
         mass,
         {"ISRC-COMPILATION": 2005},
         name_years={("Toto", "Africa"): 1982},
     )
+    eligible_tracks: dict[str, Track] = {}
+    await quiz._rescue_undated_tracks(eligible_tracks, [compilation])
 
-    _, release_year = await quiz._musicbrainz_dated_track(compilation)
+    entry = await quiz._create_entry(next(iter(eligible_tracks.values())))
 
-    assert release_year == 1982
-    musicbrainz.get_release_year_by_track_name.assert_awaited_once_with("Toto", "Africa")
+    assert entry.release_year == 1982
 
 
 @pytest.mark.asyncio

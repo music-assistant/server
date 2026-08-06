@@ -1127,8 +1127,13 @@ async def test_compilation_year_round_is_scored_on_the_musicbrainz_year() -> Non
 @pytest.mark.asyncio
 async def test_compilation_year_round_prefers_the_older_of_both_lookups() -> None:
     """Score a compilation year round on the older year, since a remaster carries its own ISRC."""
+    # the track carries the compilation's own date, which is exactly the year Trivia may not
+    # fall back on, so it must not decide whether the song is dated by name as well
     tracks = [
-        _with_isrc(_track(f"track-{index}", f"Song {index}", f"Artist {index}"), f"ISRC-{index}")
+        _with_isrc(
+            _track(f"track-{index}", f"Song {index}", f"Artist {index}", release_year=2012),
+            f"ISRC-{index}",
+        )
         for index in range(3)
     ]
     for index, track in enumerate(tracks):
