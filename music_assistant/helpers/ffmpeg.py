@@ -522,7 +522,7 @@ def get_ffmpeg_args(
         extra_input_args = []
     if extra_output_args is None:
         extra_output_args = []
-    # args that apply to the command as a whole
+    # the binary plus the options that apply to the command as a whole
     global_args = [
         "ffmpeg",
         "-hide_banner",
@@ -654,11 +654,11 @@ def get_ffmpeg_args(
         filter_params.append(resample_filter)
 
     # a complex fragment brings its own inputs, which must follow the main input
-    extra_input_args, filter_args = (
+    filter_input_args, filter_args = (
         _build_filtergraph_args(filter_params) if filter_params else ([], [])
     )
 
-    return global_args + input_args + extra_input_args + filter_args + extra_args + output_args
+    return global_args + input_args + filter_input_args + filter_args + extra_args + output_args
 
 
 def get_ffmpeg_channel_args(audio_format: AudioFormat) -> list[str]:
