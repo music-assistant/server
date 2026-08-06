@@ -98,6 +98,15 @@ def has_untrusted_release_year(album: Album | ItemMapping) -> bool:
         return False
     if album.album_type in UNTRUSTED_RELEASE_ALBUM_TYPES:
         return True
+    return has_various_artists_credit(album)
+
+
+def has_various_artists_credit(album: Album) -> bool:
+    """
+    Return whether an album is credited to Various Artists.
+
+    :param album: Album whose artist credits should be inspected.
+    """
     return any(
         artist.mbid == VARIOUS_ARTISTS_MBID
         or compare_strings(artist.name, VARIOUS_ARTISTS_NAME, strict=False)

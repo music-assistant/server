@@ -42,7 +42,10 @@ from music_assistant.providers.music_quiz.models import (
     TimelineBonusMode,
 )
 from music_assistant.providers.music_quiz.quiz_types import get_quiz_type
-from music_assistant.providers.music_quiz.quiz_types.base import MAX_SUGGESTION_COUNT
+from music_assistant.providers.music_quiz.quiz_types.base import (
+    MAX_SUGGESTION_COUNT,
+    has_untrusted_release_year,
+)
 from music_assistant.providers.music_quiz.quiz_types.trivia import (
     AI_GENERATION_ATTEMPTS,
     MAX_ANSWER_LENGTH,
@@ -54,6 +57,7 @@ from music_assistant.providers.music_quiz.quiz_types.trivia import (
     TriviaQuizType,
     TriviaTarget,
     TriviaTrackFacts,
+    _has_untrusted_release_facts,
 )
 
 
@@ -714,6 +718,70 @@ def test_various_artists_album_omits_album_and_year(
         TriviaTarget.ARTIST,
         TriviaTarget.TITLE,
     )
+
+
+@pytest.mark.parametrize(
+    ("album_type", "album_artists", "expected_album"),
+    [
+        (AlbumType.LIVE, [], "The Long Night"),
+        (AlbumType.SOUNDTRACK, [], "The Long Night"),
+        (
+            AlbumType.LIVE,
+            [_album_artist("primary", "Primary Artist"), _album_artist("va", VARIOUS_ARTISTS_NAME)],
+            None,
+        ),
+        (AlbumType.SOUNDTRACK, [_album_artist("va", VARIOUS_ARTISTS_NAME)], None),
+    ],
+    ids=["live", "soundtrack", "live-various-artists", "soundtrack-various-artists"],
+)
+def test_live_and_soundtrack_album_names_stay_usable_answers(
+    album_type: AlbumType,
+    album_artists: list[Artist],
+    expected_album: str | None,
+) -> None:
+    """Keep a live or soundtrack album name as an answer while distrusting its own year."""
+    # the track carries no year of its own, so the album's year is the only one that could
+    # surface and a trusted album type would leak it into the grounding
+    track = _track("live", "Teardrop", "Massive Attack")
+    track.album = _full_album(
+        "the-long-night",
+        "The Long Night",
+        album_type=album_type,
+        artists=album_artists,
+        year=2015,
+    )
+
+    facts = TriviaQuizType._track_facts(track)
+
+    assert facts is not None
+    assert facts.album == expected_album
+    assert facts.release_year is None
+
+
+def test_trivia_album_distrust_stays_a_subset_of_untrusted_release_years() -> None:
+    """Pin Trivia's album distrust as a subset of the shared untrusted release year rule."""
+    artist_credits: dict[str, list[Artist]] = {
+        "own": [_album_artist("own", "Album Artist")],
+        "various": [_album_artist("va", VARIOUS_ARTISTS_NAME)],
+    }
+    distrusted = set()
+    for album_type in AlbumType:
+        for credit, album_artists in artist_credits.items():
+            album = _full_album(
+                "album", "Album", album_type=album_type, artists=album_artists, year=2015
+            )
+            if _has_untrusted_release_facts(album):
+                distrusted.add((album_type, credit))
+                # _track_facts only bypasses get_track_release_year for albums Trivia distrusts,
+                # so every such album must also be one whose own year is never trusted
+                assert has_untrusted_release_year(album)
+
+    assert (AlbumType.COMPILATION, "own") in distrusted
+    assert (AlbumType.ALBUM, "various") in distrusted
+    assert (AlbumType.LIVE, "various") in distrusted
+    assert (AlbumType.SOUNDTRACK, "various") in distrusted
+    assert (AlbumType.LIVE, "own") not in distrusted
+    assert (AlbumType.SOUNDTRACK, "own") not in distrusted
 
 
 def test_normal_full_album_retains_release_grounding() -> None:
