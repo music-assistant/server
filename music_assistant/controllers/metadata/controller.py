@@ -117,11 +117,14 @@ class MetaDataController(
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         return (
+            # deliberately without a default_value: only values that differ from the entry
+            # default are persisted, so declaring one would make a chosen DEFAULT_LANGUAGE
+            # indistinguishable from "never chosen" for set_default_preferred_language.
+            # DEFAULT_LANGUAGE is applied when reading instead, see the locale property.
             ConfigEntry(
                 key=CONF_LANGUAGE,
                 type=ConfigEntryType.STRING,
                 required=False,
-                default_value=DEFAULT_LANGUAGE,
                 options=[ConfigValueOption(key, title=value) for key, value in LOCALES.items()],
             ),
             ConfigEntry(
