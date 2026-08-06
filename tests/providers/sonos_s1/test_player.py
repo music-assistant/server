@@ -283,3 +283,36 @@ async def test_unsubscribe_drops_subscriptions_even_when_cancelled() -> None:
 
     assert player._subscriptions == []
     assert player.missing_subscriptions == SUBSCRIPTION_SERVICES
+
+
+async def _subscribe_with_failing_speaker(player: SonosPlayer) -> None:
+    """Let the given player attempt to subscribe to a speaker that cannot be reached."""
+    with (
+        patch.object(player, "_subscribe_target", AsyncMock(side_effect=OSError("unreachable"))),
+        patch.object(player, "update_state"),
+    ):
+        async with asyncio.timeout(5):
+            await player.subscribe()
+
+
+async def test_failed_subscribe_marks_the_speaker_offline() -> None:
+    """A failed subscription must take the speaker offline and release the lock."""
+    player = SonosPlayer(provider=MagicMock(), soco=_make_soco())
+
+    await _subscribe_with_failing_speaker(player)
+
+    assert player.available is False
+    assert player._subscription_lock is not None
+    assert not player._subscription_lock.locked()
+
+
+async def test_speaker_can_resubscribe_after_a_failed_subscribe() -> None:
+    """A speaker that failed to subscribe must still be able to subscribe later."""
+    player = SonosPlayer(provider=MagicMock(), soco=_make_soco())
+    await _subscribe_with_failing_speaker(player)
+
+    with patch.object(player, "_subscribe_target", AsyncMock()) as subscribe_target:
+        async with asyncio.timeout(5):
+            await player.subscribe()
+
+    assert subscribe_target.await_count == len(SUBSCRIPTION_SERVICES)
