@@ -12,10 +12,12 @@ from music_assistant.helpers.ffmpeg import DEFAULT_MP3_BIT_RATE
 
 UGP_PREFIX: Final[str] = "ugp_"
 
-# Features the group has no hardware of its own for, but which the player manager
-# fans out to the members. They are advertised as soon as a single member can
-# handle them, matching how the group state for those features is derived.
+# Features the group has no hardware of its own for: the player manager fans these
+# commands out to the members. They are advertised only when a member can actually
+# carry them out, which is the same condition under which the group state for them
+# (group_volume / group_volume_muted) resolves to a value.
 EXTRA_FEATURES_FROM_MEMBERS: Final[set[PlayerFeature]] = {
+    PlayerFeature.VOLUME_SET,
     PlayerFeature.VOLUME_MUTE,
 }
 
