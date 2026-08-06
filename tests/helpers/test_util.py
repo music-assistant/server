@@ -454,10 +454,10 @@ class TestGetPublishIpCandidates:
 
     @pytest.mark.asyncio
     async def test_real_lan_bridge_is_kept(self) -> None:
-        """A host whose LAN lives on a bridge (Proxmox, Unraid) still publishes it."""
+        """A host whose LAN lives on a bridge (Proxmox, Unraid, OpenWrt) still publishes it."""
         with _fake_adapters(
             _adapter("vmbr0", "192.168.1.10"),
-            _adapter("br0", "10.0.0.5"),
+            _adapter("br-lan", "10.0.0.5"),
             _adapter("br-1a2b3c4d5e6f", "172.18.0.1"),
         ):
             assert await util.get_publish_ip_candidates() == ("192.168.1.10", "10.0.0.5")

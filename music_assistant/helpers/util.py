@@ -929,30 +929,35 @@ _ip_addresses_cache: dict[tuple[bool, bool], tuple[float, tuple[str, ...]]] = {}
 _ip_addresses_pending: dict[tuple[bool, bool], asyncio.Task[tuple[str, ...]]] = {}
 
 # Interfaces that only ever carry container, VM or VPN traffic, so a device on the local
-# network can never reach us on their addresses. Real LAN bridges (br0, vmbr0, bond0) are
-# deliberately not matched - only the hyphenated form docker gives its user-defined
-# networks. "veth" doubles as the match for the Windows "vEthernet (...)" adapters.
+# network can never reach us on their addresses.
 _VIRTUAL_INTERFACE_PREFIXES = (
-    "br-",
     "cali",
     "cni",
     "docker",
     "flannel",
     "hassio",
+    "incusbr",
+    "lxcbr",
+    "lxdbr",
+    "nordlynx",
     "podman",
     "ppp",
     "tailscale",
     "tap",
     "tun",
     "utun",
+    "vboxnet",
     "veth",
     "virbr",
     "vmnet",
     "wg",
     "zt",
-    # macOS host-only bridges for Docker Desktop, Parallels and VMware start at bridge100
-    "bridge1",
 )
+# Docker names its user-defined bridges br-<12 hex> and the macOS host-only bridges of
+# Docker Desktop, Parallels and VMware start at bridge100. Both are matched in full, so a
+# hand-named LAN bridge (br-lan on OpenWrt, a second macOS bridge1) is left alone - as are
+# the regular LAN bridge names br0, vmbr0 and bond0.
+_VIRTUAL_INTERFACE_NAMES = re.compile(r"br-[0-9a-f]{12}|bridge\d{3}")
 
 
 async def get_ip_addresses(include_ipv6: bool = False) -> tuple[str, ...]:
@@ -1100,7 +1105,10 @@ def _enumerate_ip_addresses(include_ipv6: bool, publish_candidates_only: bool) -
 
 def _is_virtual_interface(name: str) -> bool:
     """Return whether the named interface belongs to a container, VM or VPN network."""
-    return name.lower().startswith(_VIRTUAL_INTERFACE_PREFIXES)
+    name = name.lower()
+    return name.startswith(_VIRTUAL_INTERFACE_PREFIXES) or bool(
+        _VIRTUAL_INTERFACE_NAMES.fullmatch(name)
+    )
 
 
 def interface_name_for_ip(ip: str) -> str | None:

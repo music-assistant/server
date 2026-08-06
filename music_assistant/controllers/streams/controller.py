@@ -163,7 +163,7 @@ def _get_publish_addresses(
     bind_ip: str, configured_publish_ip: str | None, publish_candidates: tuple[str, ...]
 ) -> list[str]:
     """
-    Return the addresses this host should advertise to players on the local network.
+    Return the addresses this host publishes on, best candidate first.
 
     :param bind_ip: The configured bind IP (a wildcard means all interfaces).
     :param configured_publish_ip: The explicitly configured publish IP, or None when auto.
@@ -175,10 +175,8 @@ def _get_publish_addresses(
     if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
         # only one interface is served, so no other address can be reached
         return [bind_ip]
-    # Auto-detected: the primary address is only a guess at which interface the players
-    # live on, so keep every candidate (highest ranked first) for the callers that can
-    # carry more than one. On a multi-homed host the primary-route address is regularly
-    # not the one on the players' network.
+    # auto-detected: keep the whole ranked list - publish_ip takes the best of them and
+    # the network fingerprint watches all of them to spot an interface change
     return list(publish_candidates)
 
 
