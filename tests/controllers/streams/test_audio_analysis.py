@@ -39,6 +39,7 @@ from music_assistant.models.audio_analysis_provider import (
     InstrumentedSemaphore,
 )
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 
 
 @pytest.mark.asyncio
@@ -485,7 +486,7 @@ async def test_find_candidates_handles_sqlite_row_without_get(
     )
 
     # Make the filesystem-providers gate succeed
-    fs_prov = MagicMock()
+    fs_prov = MagicMock(spec=LocalFileSystemProvider)
     fs_prov.domain = "filesystem_local"
     fs_prov.available = True
     controller.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
@@ -539,7 +540,7 @@ async def test_find_candidates_query_gates_on_current_version(
         property(lambda _self: [p1]),
     )
 
-    fs_prov = MagicMock()
+    fs_prov = MagicMock(spec=LocalFileSystemProvider)
     fs_prov.domain = "filesystem_local"
     fs_prov.available = True
     controller.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
@@ -1273,8 +1274,8 @@ async def test_count_candidates_missing_analysis_zero_without_filesystem() -> No
 async def test_count_candidates_missing_analysis_queries_with_available_filesystem() -> None:
     """With an available filesystem provider, the NOT EXISTS count query runs with bound params."""
     c, db = _stub_controller(count_result=7)
-    domain = next(iter(audio_analysis_mod.FILESYSTEM_PROVIDER_DOMAINS))
-    fs_prov = MagicMock()
+    domain = "filesystem_local"
+    fs_prov = MagicMock(spec=LocalFileSystemProvider)
     fs_prov.domain = domain
     fs_prov.available = True
     c.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]

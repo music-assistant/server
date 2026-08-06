@@ -41,6 +41,7 @@ from music_assistant.models.audio_analysis_provider import (
     InstrumentedSemaphore,
 )
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.filesystem_local import LocalFileSystemProvider
 
 LOUDNESS_ANALYSIS_DOMAIN = "loudness_analysis"
 SMART_FADES_ANALYSIS_DOMAIN = "smart_fades"
@@ -75,11 +76,6 @@ ANALYSIS_MIN_COMPLETENESS_RATIO = 0.9
 # on the next track. Long enough that gaps between tracks/sessions don't thrash the reload.
 MODEL_IDLE_UNLOAD_SECONDS = 300
 MODEL_IDLE_CHECK_INTERVAL_SECONDS = 60
-FILESYSTEM_PROVIDER_DOMAINS: tuple[str, ...] = (
-    "filesystem_local",
-    "filesystem_smb",
-    "filesystem_nfs",
-)
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio_analysis")
 
@@ -1156,14 +1152,11 @@ class AudioAnalysisController:
             self._finalize_providers(session_key)
 
     def _available_filesystem_domains(self) -> tuple[str, ...]:
-        """Return configured filesystem provider domains that are currently available."""
+        """Return domains of currently available local-filesystem-style music providers."""
         return tuple(
-            domain
-            for domain in FILESYSTEM_PROVIDER_DOMAINS
-            if any(
-                p.domain == domain and p.available
-                for p in self.mass.get_providers(ProviderType.MUSIC)
-            )
+            p.domain
+            for p in self.mass.get_providers(ProviderType.MUSIC)
+            if isinstance(p, LocalFileSystemProvider) and p.available
         )
 
     async def _find_candidates_missing_analysis(
