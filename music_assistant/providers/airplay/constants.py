@@ -46,8 +46,8 @@ class ClockReadiness(StrEnum):
     NOT_APPLICABLE = "not_applicable"
     # The receiver never answered our PTP clock and will render silence.
     STALLED = "stalled"
-    # Nothing arrived within the wait: a slow device (retryable) or a binary
-    # too old to report readiness at all.
+    # Nothing arrived within the wait: a slow device (retryable) or a receiver
+    # whose readiness went unreported.
     UNREPORTED = "unreported"
 
 
@@ -105,6 +105,19 @@ AIRPLAY_CLOCK_READY_TIMEOUT_MS: Final[int] = 2500
 # for the command reaching the binary and for the convergence error of a
 # projection made from the receiver's very first probe.
 AIRPLAY_CLOCK_READY_LEAD_MS: Final[int] = 500
+# LinkPlay-based receivers route playback through an internal pipeline that
+# starves below ~1 s of queued audio: at the stock 600 ms splice depth the
+# renderer stays silent (Edifier MS50A even solo; a WiiM acting as native
+# multiroom master) while the sender sees a perfectly healthy session. A
+# deeper receiver queue feeds the pipeline - verified live at 1000 ms on the
+# worst known device - at the cost of slower warm seeks on these players.
+# Detected via the _airplay TXT: the old platform embeds "Linkplay" in fv,
+# the newer one names Linkplay as manufacturer.
+AIRPLAY_LINKPLAY_FV_PREFIX: Final[str] = "p20.Linkplay."
+AIRPLAY_LINKPLAY_MANUFACTURER: Final[str] = "linkplay"
+AIRPLAY_LINKPLAY_BUFFER_DEPTH_MS: Final[int] = 1000
+# Per-player override of the splice receiver-queue depth in ms (0 = automatic).
+CONF_BUFFER_DEPTH: Final[str] = "buffer_depth"
 # How long a plain (non-join) START waits for the binary's [STATUS] started ack.
 # Nothing holds that ack back, so the window only has to cover the command's trip
 # down the pipe and the answer coming back - unlike a join's ack below, which is

@@ -32,6 +32,11 @@ CACHE_ATTR_LIBSOXR_PRESENT: Final[str] = "libsoxr_present"
 CACHE_ATTR_FFMPEG_VERSION: Final[str] = "ffmpeg_version"
 DEFAULT_MP3_BIT_RATE: Final[int] = 320
 
+# FFmpeg's mono->stereo rematrix spreads a source at 1/sqrt(2) per channel; this factor
+# restores its original level. _get_channel_conform_filter avoids the same loss on the
+# main decode path by duplicating the channel instead.
+_MONO_WIDEN_COMPENSATION: Final[float] = 2**0.5
+
 # Regex patterns to extract audio format details from ffmpeg's stderr output.
 # Examples of the lines we parse:
 #   Stream #0:0: Audio: mp3, 44100 Hz, stereo, fltp, 320 kb/s
@@ -422,8 +427,9 @@ async def get_ffmpeg_overlay_stream(
     Mix a looping audio overlay into a PCM audio stream.
 
     The overlay is looped for the full duration of the main stream and the mixed
-    output has the exact same PCM format and duration as the main input. If the
-    overlay input fails mid-stream, the main audio continues unaffected.
+    output has the exact same PCM format and duration as the main input. For a stereo
+    output, a mono overlay mixes in at the same level as an equivalent stereo one. If
+    the overlay input fails mid-stream, the main audio continues unaffected.
 
     :param audio_input: The main audio stream (raw PCM in ``pcm_format``).
     :param overlay_input: File path or URL of the overlay audio.
@@ -446,16 +452,21 @@ async def get_ffmpeg_overlay_stream(
             "1",
         ]
     overlay_input_args += ["-stream_loop", "-1", "-i", overlay_input]
-    channel_layout = "mono" if pcm_format.channels == 1 else "stereo"
+    # conform the overlay to the main stream's layout so amix sees two matching inputs;
+    # an unnameable count is left to FFmpeg's own negotiation
+    layout = _get_channel_layout_name(pcm_format.channels)
+    conform_filter = f",aformat=channel_layouts={layout}" if layout else ""
     # silenceremove strips a near-silent intro from the overlay source (e.g. a soft
     # fade-in) so it becomes audible right away; it is a no-op for sources that
     # already start at full level. It runs before volume so detection is based on
-    # the source's own levels rather than the scaled output.
+    # the source's own levels rather than the scaled output. volume in turn has to
+    # stay ahead of the resample and conform steps, which replace the source's own
+    # channel count with the output's.
     filter_complex = (
         f"[0:a]silenceremove=start_periods=1:start_threshold=-40dB,"
-        f"volume={overlay_volume / 100},"
-        f"aresample={pcm_format.sample_rate},"
-        f"aformat=channel_layouts={channel_layout}[overlay];"
+        f"{_get_overlay_volume_filter(overlay_volume, pcm_format.channels)},"
+        f"aresample={pcm_format.sample_rate}"
+        f"{conform_filter}[overlay];"
         "[1:a][overlay]amix=inputs=2:duration=first:normalize=0[mixed]"
     )
     async with FFMpeg(
@@ -582,10 +593,7 @@ def get_ffmpeg_args(
                 input_args += ["-seekable", "0"]
         if input_format.content_type.is_pcm():
             input_args += [
-                "-ac",
-                str(input_format.channels),
-                "-channel_layout",
-                "mono" if input_format.channels == 1 else "stereo",
+                *get_ffmpeg_channel_args(input_format),
                 "-ar",
                 str(input_format.sample_rate),
                 "-acodec",
@@ -600,14 +608,9 @@ def get_ffmpeg_args(
         input_args += ["-i", input_path]
 
     # collect output args
-    output_args = [
-        "-ac",
-        str(output_format.channels),
-        "-channel_layout",
-        "mono" if output_format.channels == 1 else "stereo",
-    ]
+    output_args = get_ffmpeg_channel_args(output_format)
     if output_path.upper() == "NULL":
-        # devnull stream
+        # devnull stream: nothing is encoded here, so there is no channel count to declare
         output_path = "-"
         output_args = ["-f", "null"]
     elif output_format.content_type.is_pcm():
@@ -621,7 +624,8 @@ def get_ffmpeg_args(
             output_format.content_type.value,
         ]
     elif output_format.content_type == ContentType.NUT:
-        # passthrough-mode (for creating the cache) using NUT container
+        # passthrough-mode (for creating the cache) using NUT container.
+        # -acodec copy leaves the source untouched, so there is no channel count to declare
         output_args = [
             "-vn",
             "-dn",
@@ -632,12 +636,12 @@ def get_ffmpeg_args(
             "nut",
         ]
     elif output_format.content_type == ContentType.AAC:
-        output_args = ["-f", "adts", "-c:a", "aac", "-b:a", "256k"]
+        output_args += ["-f", "adts", "-c:a", "aac", "-b:a", "256k"]
     elif output_format.content_type == ContentType.MP3:
-        output_args = ["-f", "mp3", "-b:a", f"{DEFAULT_MP3_BIT_RATE}k"]
+        output_args += ["-f", "mp3", "-b:a", f"{DEFAULT_MP3_BIT_RATE}k"]
     elif output_format.content_type == ContentType.WAV:
         pcm_format = ContentType.from_bit_depth(output_format.bit_depth)
-        output_args = [
+        output_args += [
             "-ar",
             str(output_format.sample_rate),
             "-acodec",
@@ -665,14 +669,10 @@ def get_ffmpeg_args(
     # append (final) output path at the end of the args
     output_args.append(output_path)
 
-    # edge case: source file is not stereo - downmix to stereo. a single channel
-    # output needs this too, otherwise a mono/left/right pan filter would only see
-    # the front channels and silently drop the center and surround content.
-    if input_format.channels > 2 and output_format.channels <= 2:
-        filter_params = [
-            "pan=stereo|FL=1.0*FL+0.707*FC+0.707*SL+0.707*LFE|FR=1.0*FR+0.707*FC+0.707*SR+0.707*LFE",
-            *filter_params,
-        ]
+    # runs ahead of the caller's own filters, so channel-aware ones such as the
+    # per-channel preamp see the conformed layout instead of the source layout
+    if channel_filter := _get_channel_conform_filter(input_format.channels, output_format.channels):
+        filter_params = [channel_filter, *filter_params]
 
     if resample_filter := get_ffmpeg_resample_filter(
         input_format,
@@ -681,14 +681,34 @@ def get_ffmpeg_args(
     ):
         filter_params.append(resample_filter)
 
+    # ffmpeg refuses a simple -af chain alongside a complex graph on the same stream, so we
+    # leave the graph to any caller that declares one in one of the passthrough arg lists
+    caller_owns_filtergraph = any(
+        "-filter_complex" in args for args in (extra_args, extra_input_args, extra_output_args)
+    )
+
     # a complex fragment brings its own inputs, which must follow the main input
     extra_input_args, filter_args = (
         _build_filtergraph_args(filter_params)
-        if filter_params and "-filter_complex" not in extra_args
+        if filter_params and not caller_owns_filtergraph
         else ([], [])
     )
 
     return generic_args + input_args + extra_input_args + filter_args + extra_args + output_args
+
+
+def get_ffmpeg_channel_args(audio_format: AudioFormat) -> list[str]:
+    """
+    Return the FFmpeg channel count/layout arguments for the given audio format.
+
+    The layout is only named for channel counts that map to exactly one layout.
+
+    :param audio_format: Format to describe.
+    """
+    args = ["-ac", str(audio_format.channels)]
+    if layout := _get_channel_layout_name(audio_format.channels):
+        args += ["-channel_layout", layout]
+    return args
 
 
 async def check_ffmpeg_version() -> None:
@@ -734,6 +754,64 @@ async def check_ffmpeg_version() -> None:
         version,
         "with libsoxr support" if libsoxr_support else "",
     )
+
+
+def _get_channel_layout_name(channels: int) -> str | None:
+    """
+    Return FFmpeg's layout name for a channel count, or None when it has no unambiguous one.
+
+    :param channels: Number of channels to name.
+    """
+    if channels == 1:
+        return "mono"
+    if channels == 2:
+        return "stereo"
+    # a wider count maps to several possible layouts (5.1 vs 5.1(side), 7.1 vs 7.1(wide), ...)
+    # and a named layout wins over -ac, so naming the wrong one would make FFmpeg misread the
+    # stream as that layout. Left unnamed, it derives the default for the count itself.
+    return None
+
+
+def _get_channel_conform_filter(input_channels: int, output_channels: int) -> str | None:
+    """
+    Return the filter that maps the source onto the output channel count, if one is needed.
+
+    :param input_channels: Channel count entering FFmpeg.
+    :param output_channels: Channel count the output is encoded at.
+    :return: The filter to run before any caller supplied ones, or None when the
+        source already carries the requested channel count.
+    """
+    if input_channels > 2 and output_channels <= 2:
+        # a single channel output needs this fold too, otherwise a mono/left/right pan
+        # would only see the front channels and silently drop the center and surround.
+        # aformat leaves the rematrix to ffmpeg, which picks the correct coefficients
+        # for whatever layout the input turns out to have (and, for an integer output,
+        # scales them to stay clip-safe). A fixed pan expression, naming channels that
+        # a given layout may not even have, can do neither.
+        return "aformat=channel_layouts=stereo"
+    if input_channels == 1 and output_channels > 1:
+        # duplicate rather than leaving the widening to ffmpeg, whose rematrix
+        # spreads the source at 1/sqrt(2) per channel and so costs 3 dB
+        return "pan=stereo|c0=c0|c1=c0"
+    return None
+
+
+def _get_overlay_volume_filter(overlay_volume: int, output_channels: int) -> str:
+    """
+    Return the filter that scales an overlay source to the requested loudness.
+
+    :param overlay_volume: Requested overlay loudness in percent.
+    :param output_channels: Channel count of the mixed output.
+    """
+    gain = overlay_volume / 100
+    if output_channels != 2:
+        # a mono source widened to more than two channels is routed to the centre at full
+        # level, so only a stereo output loses any. No overlay call site is non-stereo today.
+        return f"volume={gain}"
+    # nb_channels is evaluated where this filter sits, ahead of any layout conversion, so it
+    # still reports the source's own count: only a mono source is scaled up, leaving a stereo
+    # one and its image untouched. Comma-free, as a comma would end this filter in the graph.
+    return f"volume={gain}*{_MONO_WIDEN_COMPENSATION}^not(nb_channels-1)"
 
 
 def _build_filtergraph_args(

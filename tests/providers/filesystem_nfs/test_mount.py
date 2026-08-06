@@ -126,10 +126,6 @@ async def test_only_the_mountpoint_is_ever_created() -> None:
         patch.object(provider, "mount", AsyncMock()),
         patch("music_assistant.providers.filesystem_nfs.provider.unmount", AsyncMock()),
         patch.object(provider, "check_write_access", AsyncMock()),
-        patch(
-            "music_assistant.providers.filesystem_nfs.provider.exists",
-            AsyncMock(return_value=False),
-        ),
         patch("music_assistant.providers.filesystem_nfs.provider.makedirs", mock_makedirs),
         patch(
             "music_assistant.providers.filesystem_nfs.provider.isdir",
@@ -139,7 +135,7 @@ async def test_only_the_mountpoint_is_ever_created() -> None:
         await provider.handle_async_init()
 
     # created before the mount it would be masked; after it, MA writes to the user's share
-    mock_makedirs.assert_awaited_once_with(MOUNT_PATH)
+    mock_makedirs.assert_awaited_once_with(MOUNT_PATH, exist_ok=True)
 
 
 async def test_diagnostics_report_the_mountpoint_mount_state() -> None:
@@ -198,10 +194,7 @@ async def test_failed_cleanup_never_masks_the_missing_subfolder(
             # only the post-mount cleanup fails; a blocked pre-mount unmount is a real error
             AsyncMock(side_effect=[None, cleanup_error]),
         ),
-        patch(
-            "music_assistant.providers.filesystem_nfs.provider.exists",
-            AsyncMock(return_value=True),
-        ),
+        patch("music_assistant.providers.filesystem_nfs.provider.makedirs", AsyncMock()),
         patch(
             "music_assistant.providers.filesystem_nfs.provider.isdir",
             AsyncMock(return_value=False),
@@ -224,10 +217,7 @@ async def test_missing_subfolder_fails_setup_instead_of_an_empty_library() -> No
         ),
         patch.object(provider, "mount", AsyncMock()),
         patch("music_assistant.providers.filesystem_nfs.provider.unmount", mock_unmount),
-        patch(
-            "music_assistant.providers.filesystem_nfs.provider.exists",
-            AsyncMock(return_value=True),
-        ),
+        patch("music_assistant.providers.filesystem_nfs.provider.makedirs", AsyncMock()),
         patch(
             "music_assistant.providers.filesystem_nfs.provider.isdir",
             AsyncMock(return_value=False),

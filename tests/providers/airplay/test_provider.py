@@ -571,6 +571,11 @@ def _raop_player() -> MagicMock:
     return player
 
 
+async def _ack_commanded_instant(start_unix_ms: int = 0, *_args: object, **_kwargs: object) -> int:
+    """Ack a START at exactly the instant it was commanded, as a feasible one is."""
+    return start_unix_ms
+
+
 def _make_ptp_session(prov: MagicMock, sync_clients: list[MagicMock]) -> AirPlayStreamSession:
     """Build a stream session wired to a mock provider for PTP-decision tests."""
     pcm_format = MagicMock()
@@ -624,6 +629,7 @@ async def test_raop_session_resolves_ptp_for_first_ap2_late_joiner() -> None:
     prov = MagicMock()
     raop_player = _raop_player()
     raop_player.player_id = "raop"
+    raop_player.playback_state = PlaybackState.PLAYING
     raop_player.stream = MagicMock()
     raop_player.stream.running = True
     raop_player.stream.cumulative_shift_seconds = 0.0
@@ -648,10 +654,10 @@ async def test_raop_session_resolves_ptp_for_first_ap2_late_joiner() -> None:
         player.stream = MagicMock(running=True, connected=True)
         player.stream.wait_for_connection = AsyncMock()
         player.stream.flush = AsyncMock(return_value=True)
-        # Verified-start API defaults: no started ack, no warm-lead constraint
-        # and no receiver clock projection (an older binary), so the test
-        # asserts the commanded values directly.
-        player.stream.start = AsyncMock(return_value=None)
+        # Verified-start API defaults: every START is acked at the commanded
+        # instant, with no warm-lead constraint and no receiver clock
+        # projection, so the test asserts the commanded values directly.
+        player.stream.start = AsyncMock(side_effect=_ack_commanded_instant)
         player.stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.UNREPORTED, 0))
         player.stream.warm_lead_ms = 0
         player.stream.flushed_head_unix_ms = 0
@@ -679,7 +685,7 @@ async def test_session_start_applies_uniform_ptp_decision_to_all_members() -> No
         player.stream.wait_for_connection = AsyncMock()
         player.stream.wait_audio_present = AsyncMock(return_value=True)
         player.stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.UNREPORTED, 0))
-        player.stream.start = AsyncMock(return_value=None)
+        player.stream.start = AsyncMock(side_effect=_ack_commanded_instant)
     session = _make_ptp_session(prov, players)
 
     with (
@@ -704,7 +710,7 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
         player.stream.wait_for_connection = AsyncMock()
         player.stream.wait_audio_present = AsyncMock(return_value=True)
         player.stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.UNREPORTED, 0))
-        player.stream.start = AsyncMock(return_value=None)
+        player.stream.start = AsyncMock(side_effect=_ack_commanded_instant)
         player.config.get_value = MagicMock(return_value=0)
     session = _make_ptp_session(prov, players)
     now = 100.0

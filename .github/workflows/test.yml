@@ -147,7 +147,7 @@ jobs:
         run: |
           # Restore cached .deb files to apt cache (if any)
           cp ~/.cache/apt-packages/*.deb /var/cache/apt/archives/ 2>/dev/null || true
-          apt-get update && apt-get install -y ffmpeg libchromaprint1 git build-essential libssl-dev curl gpg
+          apt-get update && apt-get install -y ffmpeg libchromaprint1 libportaudio2 git build-essential libssl-dev curl gpg
           # Save .deb files for next run
           mkdir -p ~/.cache/apt-packages && cp /var/cache/apt/archives/*.deb ~/.cache/apt-packages/ 2>/dev/null || true
       - name: Check out code from GitHub

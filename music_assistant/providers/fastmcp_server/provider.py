@@ -39,7 +39,7 @@ class MCPServerProvider(PluginProvider):
             self.mass, str(self.get_config_value(CONF_MOUNT_PATH, DEFAULT_MOUNT_PATH))
         )
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
         """Handle a one-shot config action button press and re-render the entries."""
         if action == "open_connect":
             from music_assistant_models.config_entries import ConfigEntry  # noqa: PLC0415

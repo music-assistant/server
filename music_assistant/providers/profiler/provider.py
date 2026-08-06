@@ -112,11 +112,11 @@ class ProfilerProvider(PluginProvider):
             ),
         )
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
-        """Handle a one-shot config action button press and re-render the entries."""
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
+        """Handle a one-shot config action button press."""
         if action == CONF_ACTION_RUN_CPU_PROFILE:
             self.start_cpu_profile()
-            return await self.get_config_entries()
+            return None
         return await super().handle_config_action(action)
 
     async def handle_async_init(self) -> None:
