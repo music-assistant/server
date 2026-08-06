@@ -25,7 +25,11 @@ from mashumaro.exceptions import MissingField
 from music_assistant_frontend import where as locate_frontend
 from music_assistant_models.api import CommandMessage
 from music_assistant_models.auth import UserRole
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.config_entries import (
+    ConfigActionResult,
+    ConfigEntry,
+    ConfigValueOption,
+)
 from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
 from music_assistant_models.media_items.metadata import IMAGE_PROXY_ID_RESOLVER
@@ -213,8 +217,10 @@ class WebserverController(CoreController):
         """Return all Config Entries for this core module (if any)."""
         return await self._build_config_entries()
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
-        """Handle a one-shot action button press and re-render the config entries."""
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
+        """Handle a one-shot action button press and report its outcome."""
         if action == CONF_ACTION_VERIFY_SSL:
             # the certificate/key are read from the stored config, so they must be saved
             # before verifying - the action no longer receives the (unsaved) form values
@@ -222,7 +228,7 @@ class WebserverController(CoreController):
                 str(self.get_config_value(CONF_SSL_CERTIFICATE, "")),
                 str(self.get_config_value(CONF_SSL_PRIVATE_KEY, "")),
             )
-            return await self._build_config_entries(format_certificate_info(cert_info))
+            return ConfigActionResult(message=format_certificate_info(cert_info))
         return await super().handle_config_action(action)
 
     async def setup(self, config: CoreConfig) -> None:  # noqa: PLR0915
@@ -499,8 +505,8 @@ class WebserverController(CoreController):
             f"{protocol}://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
         )
 
-    async def _build_config_entries(self, ssl_verify_result: str = "") -> tuple[ConfigEntry, ...]:
-        """Build this module's config entries, optionally carrying an SSL verify result."""
+    async def _build_config_entries(self) -> tuple[ConfigEntry, ...]:
+        """Build this module's config entries."""
         ip_addresses = await get_ip_addresses(include_ipv6=True)
         return (
             ConfigEntry(
@@ -564,14 +570,6 @@ class WebserverController(CoreController):
                 key=CONF_ACTION_VERIFY_SSL,
                 type=ConfigEntryType.ACTION,
                 action=CONF_ACTION_VERIFY_SSL,
-                depends_on=CONF_ENABLE_SSL,
-                required=False,
-            ),
-            ConfigEntry(
-                key="ssl_verify_result",
-                type=ConfigEntryType.LABEL,
-                label=ssl_verify_result,
-                hidden=not ssl_verify_result,
                 depends_on=CONF_ENABLE_SSL,
                 required=False,
             ),

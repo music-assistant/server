@@ -120,6 +120,37 @@ async def test_secret_write_delegates_plaintext_and_never_logs_it(
     assert "sup3rsecret" not in caplog.text  # never logged
 
 
+def test_action_outcome_localizes_a_translation_key() -> None:
+    from unittest.mock import MagicMock
+
+    from music_assistant_models.config_entries import ConfigActionResult
+
+    from music_assistant.providers.fastmcp_server.tools.config import _action_outcome
+
+    mass = MagicMock()
+    mass.translations.get_translation.return_value = "The cache has been cleared"
+    result = ConfigActionResult(
+        translation_key="clear_cache.result", translation_owner="core.cache"
+    )
+
+    assert _action_outcome(mass, result) == {"message": "The cache has been cleared"}
+    mass.translations.get_translation.assert_called_once_with(
+        "config_actions.clear_cache.result", owner="core.cache"
+    )
+
+
+def test_action_outcome_reports_a_url_and_omits_absent_fields() -> None:
+    from unittest.mock import MagicMock
+
+    from music_assistant_models.config_entries import ConfigActionResult
+
+    from music_assistant.providers.fastmcp_server.tools.config import _action_outcome
+
+    result = ConfigActionResult(open_url="/mcp/v1/connect?bootstrap=jwt-xyz")
+
+    assert _action_outcome(MagicMock(), result) == {"open_url": "/mcp/v1/connect?bootstrap=jwt-xyz"}
+
+
 async def test_write_tools_use_interactive_timeout() -> None:
     """
     Confirmation-gated writes must not use the 10s fast timeout.

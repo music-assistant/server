@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from fastmcp import Context, FastMCP
 from fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
+from music_assistant_models.config_entries import ConfigActionResult
 from music_assistant_models.constants import SECURE_STRING_SUBSTITUTE
 from music_assistant_models.enums import ConfigEntryType
 
@@ -169,6 +170,28 @@ async def _resolve_entries(
 def _audit_id() -> str:
     """Return a sortable, unique audit id (monotonic, no Date.now/random)."""
     return f"cfg-{time.time_ns():x}"
+
+
+def _action_outcome(mass: MusicAssistant, result: ConfigActionResult) -> dict[str, Any]:
+    """
+    Render a config action's outcome as the tool's extra_data payload.
+
+    :param mass: The Music Assistant instance, used to localize the outcome message.
+    :param result: The outcome reported by the action handler.
+    """
+    message = result.message
+    if result.translation_key:
+        message = (
+            mass.translations.get_translation(
+                f"config_actions.{result.translation_key}", owner=result.translation_owner
+            )
+            or message
+        )
+    return {
+        key: value
+        for key, value in (("message", message), ("open_url", result.open_url))
+        if value is not None
+    }
 
 
 def _confirm_prompt(target_type: str, target_id: str, keys: list[str]) -> str:
@@ -684,15 +707,23 @@ def _register_provider_write_tools(
             f"Run provider action {action_key!r} on {instance_id!r}?",
             enabled=True,
         )
-        entries = await mass.config.invoke_provider_config_action(instance_id, action_key)
+        result = await mass.config.invoke_provider_config_action(instance_id, action_key)
         audit = _audit_id()
         LOGGER.info(
             "config_action provider=%s action=%s audit_id=%s", instance_id, action_key, audit
         )
+        if isinstance(result, ConfigActionResult):
+            return ActionResult(
+                instance_id=instance_id,
+                action_key=action_key,
+                new_entries=[],
+                extra_data=_action_outcome(mass, result),
+                audit_log_id=audit,
+            )
         return ActionResult(
             instance_id=instance_id,
             action_key=action_key,
-            new_entries=[_entry_dump(e, getattr(e, "value", None)) for e in entries],
+            new_entries=[_entry_dump(e, getattr(e, "value", None)) for e in result],
             extra_data={},
             audit_log_id=audit,
         )

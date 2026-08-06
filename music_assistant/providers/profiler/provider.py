@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 import psutil
 import yappi
 from music_assistant_models.auth import Scope
-from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.config_entries import ConfigActionResult, ConfigEntry
 from music_assistant_models.enums import ConfigEntryType
 
 from music_assistant.helpers.datetime import utc
@@ -112,7 +112,9 @@ class ProfilerProvider(PluginProvider):
             ),
         )
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
         """Handle a one-shot config action button press."""
         if action == CONF_ACTION_RUN_CPU_PROFILE:
             self.start_cpu_profile()

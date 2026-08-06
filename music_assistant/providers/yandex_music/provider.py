@@ -12,7 +12,11 @@ from collections.abc import AsyncGenerator, Sequence
 from io import BytesIO
 from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant_models.config_entries import (
+    ConfigActionResult,
+    ConfigEntry,
+    ConfigValueOption,
+)
 from music_assistant_models.enums import (
     ConfigEntryType,
     ImageType,
@@ -498,7 +502,9 @@ class YandexMusicProvider(MusicProvider):
             ),
         )
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
         """
         Handle a wave-preset save/delete button press and re-render the entries.
 
