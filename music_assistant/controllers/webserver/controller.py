@@ -292,7 +292,7 @@ class WebserverController(CoreController):
         # start the webserver
         if self.mass.running_as_hass_addon:
             # if we're running on the HA supervisor we start an additional TCP site
-            # on the internal ("172.30.32.) IP for the HA ingress proxy - that address
+            # on the internal ("172.30.32.") IP for the HA ingress proxy - that address
             # lives on a docker bridge, so it needs the unfiltered adapter list
             all_ip_addresses = await get_ip_addresses(include_ipv6=True)
             ingress_host = next(
