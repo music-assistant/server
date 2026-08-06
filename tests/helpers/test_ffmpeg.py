@@ -15,9 +15,11 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.dsp import ComplexFilter, ComplexFilterInput
 from music_assistant.helpers.ffmpeg import (
+    _INPUT_READ_ARGS,
     FFMpeg,
     FFMpegStreamInfo,
     _build_filtergraph_args,
+    _build_overlay_mixer,
     _get_overlay_volume_filter,
     get_ffmpeg_args,
     get_ffmpeg_overlay_stream,
@@ -662,6 +664,36 @@ def test_overlay_volume_filter_compensates_only_for_a_stereo_output() -> None:
     assert _get_overlay_volume_filter(60, 6) == "volume=0.6"
 
 
+def test_overlay_mixer_loops_its_source() -> None:
+    """The overlay source is looped for as long as the main stream runs."""
+    (overlay,) = _build_overlay_mixer("/sound.wav", _PCM_FORMAT, 100).inputs
+    # a local file has nothing to reconnect to
+    assert overlay.input_args == ["-stream_loop", "-1"]
+
+
+def test_overlay_mixer_reconnects_for_http_sources() -> None:
+    """An http overlay source additionally gets the reconnect options."""
+    (overlay,) = _build_overlay_mixer("http://host/sound.mp3", _PCM_FORMAT, 100).inputs
+    assert "-reconnect" in overlay.input_args
+    assert overlay.input_args[-2:] == ["-stream_loop", "-1"]
+
+
+def test_overlay_args_probe_the_main_input_and_add_no_filters() -> None:
+    """Both inputs are read under our own limits and no filter is injected on top."""
+    args = get_ffmpeg_args(
+        _PCM_FORMAT, _PCM_FORMAT, [_build_overlay_mixer("/sound.wav", _PCM_FORMAT, 100)]
+    )
+    main_input = args.index("-i")
+    # the limits must reach the main input, which is the first one, and the overlay
+    assert args.index("-probesize") < main_input
+    assert args.count("-probesize") == 2
+    assert args.index("-stream_loop") > main_input
+    # the overlay format matches the output, so nothing gets resampled or reconformed
+    assert "-af" not in args
+    assert args.count("-filter_complex") == 1
+    assert not any(arg.startswith(("pan=", "aresample=resampler=")) for arg in args)
+
+
 # -- _log_reader_task (decode-error flood guard) --
 
 
@@ -838,7 +870,7 @@ def test_build_filtergraph_single_complex_fragment() -> None:
         [ComplexFilter("afir=irnorm=1", [ComplexFilterInput("/ir.wav", "aresample=48000")])]
     )
     assert result == (
-        ["-i", "/ir.wav"],
+        [*_INPUT_READ_ARGS, "-i", "/ir.wav"],
         [
             "-filter_complex",
             "[1:a]aresample=48000[dsp1];[0:a][dsp1]afir=irnorm=1[dsp2]",
@@ -858,7 +890,7 @@ def test_build_filtergraph_complex_between_simple_runs() -> None:
         ]
     )
     assert result == (
-        ["-i", "/ir.wav"],
+        [*_INPUT_READ_ARGS, "-i", "/ir.wav"],
         [
             "-filter_complex",
             "[0:a]equalizer=x[dsp1];[1:a]aresample=48000[dsp2];"
@@ -875,7 +907,7 @@ def test_build_filtergraph_multiple_inputs() -> None:
         [ComplexFilter("amerge", [ComplexFilterInput("/a.wav"), ComplexFilterInput("/b.wav")])]
     )
     assert result == (
-        ["-i", "/a.wav", "-i", "/b.wav"],
+        [*_INPUT_READ_ARGS, "-i", "/a.wav", *_INPUT_READ_ARGS, "-i", "/b.wav"],
         ["-filter_complex", "[0:a][1:a][2:a]amerge[dsp1]", "-map", "[dsp1]"],
     )
 
@@ -891,7 +923,7 @@ def test_build_filtergraph_input_args_precede_the_input() -> None:
         ]
     )
     assert result == (
-        ["-stream_loop", "-1", "-i", "/loop.wav"],
+        [*_INPUT_READ_ARGS, "-stream_loop", "-1", "-i", "/loop.wav"],
         ["-filter_complex", "[0:a][1:a]amix=inputs=2[dsp1]", "-map", "[dsp1]"],
     )
 
