@@ -31,6 +31,7 @@ from .constants import (
     NEVER_TIME,
     PLAYER_FEATURES,
     PLAYER_SOURCE_MAP,
+    POLL_INTERVAL,
     POSITION_SECONDS,
     RESUB_COOLDOWN_SECONDS,
     SONOS_STATE_TRANSITIONING,
@@ -39,6 +40,7 @@ from .constants import (
     SOURCE_TV,
     SUBSCRIPTION_SERVICES,
     SUBSCRIPTION_TIMEOUT,
+    TRANSITION_POLL_INTERVAL,
 )
 from .helpers import SonosUpdateError, soco_error
 
@@ -85,7 +87,7 @@ class SonosPlayer(Player):
         if mac_address:
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
         self._attr_needs_poll = True
-        self._attr_poll_interval = 5
+        self._attr_poll_interval = POLL_INTERVAL
         self._attr_available = True
         self._attr_can_group_with = {provider.instance_id}
 
@@ -309,7 +311,9 @@ class SonosPlayer(Player):
         new_status = transport_info["current_transport_state"]
 
         if new_status == SONOS_STATE_TRANSITIONING:
+            self._attr_poll_interval = TRANSITION_POLL_INTERVAL
             return
+        self._attr_poll_interval = POLL_INTERVAL
 
         new_status = _convert_state(new_status)
         update_position = new_status != self._attr_playback_state
@@ -636,7 +640,9 @@ class SonosPlayer(Player):
 
         # Ignore transitions, we should get the target state soon
         if new_status == SONOS_STATE_TRANSITIONING:
+            self._attr_poll_interval = TRANSITION_POLL_INTERVAL
             return
+        self._attr_poll_interval = POLL_INTERVAL
 
         evars = event.variables
         new_status = _convert_state(evars["transport_state"])

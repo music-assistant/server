@@ -310,10 +310,23 @@ def _with_isrc(track: Track, isrc: str) -> Track:
     return track
 
 
-def _with_musicbrainz(mass: MagicMock, years: dict[str, int]) -> MagicMock:
-    """Attach a MusicBrainz provider that dates the given ISRCs to the mock MusicAssistant."""
+def _with_musicbrainz(
+    mass: MagicMock,
+    years: dict[str, int],
+    name_years: dict[tuple[str, str], int] | None = None,
+) -> MagicMock:
+    """
+    Attach a MusicBrainz provider to the mock MusicAssistant.
+
+    :param mass: Mock MusicAssistant to attach the provider to.
+    :param years: Release year per ISRC.
+    :param name_years: Release year per (artist name, track name), for tracks without an ISRC.
+    """
     provider = MagicMock()
     provider.get_release_year_by_isrc = AsyncMock(side_effect=lambda isrc: years.get(isrc))
+    provider.get_release_year_by_track_name = AsyncMock(
+        side_effect=lambda artist, track: (name_years or {}).get((artist, track))
+    )
     mass.get_provider = MagicMock(
         side_effect=lambda domain: provider if domain == "musicbrainz" else None
     )
@@ -892,6 +905,31 @@ def test_compilation_release_year_stays_suppressed_without_dating() -> None:
 
 
 @pytest.mark.asyncio
+async def test_prepare_round_grounds_a_compilation_without_an_isrc_on_its_name_lookup() -> None:
+    """Ground a compilation round on the name lookup when the track carries no ISRC."""
+    # a compilation has no usable year of its own, so the name lookup is the only thing
+    # that can answer a release year question about tracks from an ISRC-less provider
+    track = _track("compilation", "Africa", "Toto", release_year=1998)
+    track.album = _full_album(
+        "party-hits",
+        "Party Hits",
+        album_type=AlbumType.COMPILATION,
+        year=1998,
+    )
+    provider = _ai_provider(_valid_response())
+    quiz, mass = _quiz([track], providers=[provider])
+    _with_musicbrainz(mass, {}, name_years={("Toto", "Africa"): 1982})
+
+    await quiz.prepare_round(0, [])
+
+    assert _prompt_payload(provider.ai_query.await_args.args[0])["track_metadata"] == {
+        "title": "Africa",
+        "artist": "Toto",
+        "release_year": 1982,
+    }
+
+
+@pytest.mark.asyncio
 async def test_prepare_round_grounds_a_dated_compilation_on_its_musicbrainz_year() -> None:
     """Ground a compilation round on the MusicBrainz year while hiding the compilation album."""
     track = _with_isrc(_track("compilation", "Africa", "Toto", release_year=1998), "ISRC-COMP")
@@ -1354,6 +1392,27 @@ def test_strict_generation_parser_accepts_exact_valid_shape() -> None:
     )
 
 
+@pytest.mark.parametrize("fence", ["```json", "```"])
+def test_strict_generation_parser_accepts_fenced_response(fence: str) -> None:
+    """Parse a valid response wrapped in a code fence with or without a language tag."""
+    quiz, _ = _quiz([])
+
+    result = quiz._parse_generation(f"{fence}\n{_valid_response()}\n```\n", _artist_fact())
+
+    assert result == TriviaGeneration(
+        question="Which artist recorded this selected track?",
+        wrong_answers=("Portishead", "Radiohead", "Air"),
+    )
+
+
+def test_strict_generation_parser_limits_the_original_response() -> None:
+    """Enforce the response size limit before a code fence is stripped."""
+    quiz, _ = _quiz([])
+
+    with pytest.raises(ValueError, match="size"):
+        quiz._parse_generation(f"```json\n{'x' * MAX_AI_RESPONSE_BYTES}\n```", _artist_fact())
+
+
 @pytest.mark.asyncio
 async def test_generation_repairs_duplicate_answers_from_cached_grounding() -> None:
     """Keep valid AI answers and fill duplicate slots without another AI or source call."""
@@ -1770,6 +1829,8 @@ def test_answer_leak_detection_supports_non_space_scripts(
             }
         ),
         "x" * (MAX_AI_RESPONSE_BYTES + 1),
+        "```json\nnot json\n```",
+        "Here is the JSON you asked for:\n```json\n" + _valid_response() + "\n```",
         42,
     ],
 )

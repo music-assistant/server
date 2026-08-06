@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import MediaType, PlaybackState
 
 from music_assistant.models.player import PlayerMedia
+from music_assistant.providers.sonos_s1.constants import POLL_INTERVAL, TRANSITION_POLL_INTERVAL
 from music_assistant.providers.sonos_s1.player import SonosPlayer
 
 STREAM_URL = "http://192.168.1.2:8097/single/sessionabc/queue1/item1/player1.flac"
@@ -60,3 +61,43 @@ async def test_play_media_builds_didl_from_stream_url(sonos_player: SonosPlayer)
     assert call_args.args[0] == STREAM_URL
     assert STREAM_URL in call_args.kwargs["meta"]
     assert "library://track/123" not in call_args.kwargs["meta"]
+
+
+def _set_transport_state(sonos_player: SonosPlayer, state: str) -> None:
+    """Make the mocked speaker report the given transport state."""
+    sonos_player.soco.get_current_transport_info.return_value = {"current_transport_state": state}
+
+
+def test_transitional_state_shortens_the_poll_interval(sonos_player: SonosPlayer) -> None:
+    """A transitional transport state keeps the last known state and is watched closely."""
+    sonos_player._attr_playback_state = PlaybackState.IDLE
+    _set_transport_state(sonos_player, "TRANSITIONING")
+
+    sonos_player.poll_media()
+
+    assert sonos_player._attr_playback_state == PlaybackState.IDLE
+    assert sonos_player.poll_interval == TRANSITION_POLL_INTERVAL
+
+
+def test_settled_state_restores_the_poll_interval(sonos_player: SonosPlayer) -> None:
+    """A usable transport state returns the speaker to the regular poll interval."""
+    sonos_player._attr_poll_interval = TRANSITION_POLL_INTERVAL
+
+    _set_transport_state(sonos_player, "PLAYING")
+    with (
+        patch.object(sonos_player, "_set_basic_track_info"),
+        patch.object(sonos_player, "update_player"),
+    ):
+        sonos_player.poll_media()
+
+    assert sonos_player.poll_interval == POLL_INTERVAL
+
+
+def test_transitional_event_shortens_the_poll_interval(sonos_player: SonosPlayer) -> None:
+    """A transitional state delivered by subscription event is watched closely too."""
+    event = MagicMock()
+    event.variables = {"transport_state": "TRANSITIONING"}
+
+    sonos_player._handle_avtransport_event(event)
+
+    assert sonos_player.poll_interval == TRANSITION_POLL_INTERVAL

@@ -29,9 +29,6 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_ARTWORK_SIZE,
     AIRPLAY_CONTENT_CUT_TOLERANCE_MS,
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
-    AIRPLAY_LINKPLAY_BUFFER_DEPTH_MS,
-    AIRPLAY_LINKPLAY_FV_PREFIX,
-    AIRPLAY_LINKPLAY_MANUFACTURER,
     AIRPLAY_PCM_FORMAT,
     AIRPLAY_START_ACK_TIMEOUT_MS,
     CLI_PROBLEM_MARKERS,
@@ -45,8 +42,10 @@ from music_assistant.providers.airplay.constants import (
     StreamingProtocol,
 )
 from music_assistant.providers.airplay.helpers import (
+    default_buffer_depth,
     generate_active_remote_id,
     get_cli_binary,
+    get_decoded_property,
     serialize_txt_records,
 )
 
@@ -835,17 +834,17 @@ class AirPlayStream:
         # the daemon publishing its clock there is nothing to attach to, and a
         # stream that asks anyway silently takes its own timing instead.
         if target_protocol == StreamingProtocol.AIRPLAY2:
-            # LinkPlay-based receivers starve below ~1 s of queued audio (see
-            # the constants); give them a deeper receiver queue. A configured
-            # per-player depth always wins, for other starving devices too.
-            props = airplay_info.decoded_properties if airplay_info else {}
-            is_linkplay = (
-                str(props.get("fv") or "").startswith(AIRPLAY_LINKPLAY_FV_PREFIX)
-                or AIRPLAY_LINKPLAY_MANUFACTURER in str(props.get("manufacturer") or "").lower()
-            )
-            depth_ms = cast("int", self.player.config.get_value(CONF_BUFFER_DEPTH, 0) or 0)
-            if not depth_ms and is_linkplay:
-                depth_ms = AIRPLAY_LINKPLAY_BUFFER_DEPTH_MS
+            # Deeper receiver queue for devices whose pipeline starves at the
+            # stock depth. The stored value wins; Automatic (0) resolves
+            # through the same device-family table that seeds the config
+            # entry default, so selecting it never downgrades a device.
+            depth_ms = cast("int", self.player.config.get_value(CONF_BUFFER_DEPTH) or 0)
+            if not depth_ms:
+                depth_ms = default_buffer_depth(
+                    self.player.device_info.manufacturer or "",
+                    self.player.device_info.model or "",
+                    get_decoded_property(airplay_info, "fv") if airplay_info else None,
+                )
             if depth_ms:
                 args += ["--latency", str(depth_ms)]
             shared_ptp = prov.ptp_daemon_ready if use_shared_ptp is None else use_shared_ptp

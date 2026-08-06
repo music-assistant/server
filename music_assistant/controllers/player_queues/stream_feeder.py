@@ -114,6 +114,18 @@ class StreamFeederMixin(_PlayerQueuesBase):
                 or queue_data.session_id != session_id
                 or queue.flow_mode
             ):
+                # nothing re-attempts this handover, so a skip here means the player runs out
+                # of audio when the current track ends - leave a trace of why it was skipped
+                self.logger.debug(
+                    "Not enqueuing next track %s on queue %s "
+                    "(state: %s, source: %s, same session: %s, flow mode: %s)",
+                    next_item.name,
+                    queue.display_name,
+                    player.state.playback_state if player else "player unavailable",
+                    player.state.active_source if player else None,
+                    queue_data.session_id == session_id,
+                    queue.flow_mode,
+                )
                 return
 
             current_item = queue.current_item
