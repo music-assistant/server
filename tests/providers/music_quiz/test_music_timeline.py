@@ -882,8 +882,7 @@ async def test_stalled_musicbrainz_lookups_keep_the_library_year() -> None:
 
     await quiz.initialize()
     with patch(
-        "music_assistant.providers.music_quiz.quiz_types."
-        "music_timeline.RELEASE_YEAR_LOOKUP_BUDGET_SECONDS",
+        "music_assistant.providers.music_quiz.quiz_types.base.RELEASE_YEAR_LOOKUP_BUDGET_SECONDS",
         0.01,
     ):
         game_round = await _prepare_round_with_tracks(quiz, tracks)

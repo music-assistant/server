@@ -420,7 +420,9 @@ class AudioBuffer:
             content_type=ContentType.from_bit_depth(streamdetails.audio_format.bit_depth),
             sample_rate=streamdetails.audio_format.sample_rate,
             bit_depth=streamdetails.audio_format.bit_depth,
-            channels=streamdetails.audio_format.channels,
+            # buffer the stereo fold of a surround source, so audio analysis measures
+            # the same audio that is played back rather than the untouched surround mix
+            channels=min(streamdetails.audio_format.channels, 2),
         )
 
         # determine ready threshold: how many seconds of audio must be buffered

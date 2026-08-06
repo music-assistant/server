@@ -6,7 +6,7 @@ Brotli>=1.0.9
 aioaudiobookshelf==0.1.24
 aiodns>=4.0.4
 aiofiles==24.1.0
-aiohttp==3.14.1
+aiohttp==3.14.3
 aiohttp_asyncmdnsresolver==0.2.0
 aiohttp-fast-zlib==0.3.0
 aiohttp-socks==0.11.0
@@ -21,7 +21,7 @@ aiovban==1.1.0
 alexapy==1.30.0
 async-upnp-client==0.48.0
 audible==0.10.0
-auntie-sounds==2.0.2
+auntie-sounds==2.0.3
 av==16.1.0
 awesomeversion>=24.6.0
 bandcamp-async-api==0.2.2
@@ -50,7 +50,7 @@ lyricsgenius==3.12.2
 markdownify==1.2.3
 mashumaro==3.20
 modern_colorthief==0.2.1
-music-assistant-frontend==2.17.255
+music-assistant-frontend==2.17.259
 music-assistant-models==1.1.180
 mutagen==1.48.1
 niconico.py-ma==2.1.0.post2
