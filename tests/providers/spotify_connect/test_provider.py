@@ -81,11 +81,10 @@ async def test_daemon_runner_reselects_api_port_when_taken() -> None:
 
 
 def _volume_sync_provider(volume_level: int | None) -> tuple[SpotifyConnectProvider, AsyncMock]:
-    """Build a minimal provider with an active player at the given volume."""
+    """Build a minimal provider whose linked player reports the given volume."""
     provider = object.__new__(SpotifyConnectProvider)
     provider.mass = MagicMock()
     provider.logger = MagicMock()
-    provider._active_player_id = "player1"
     provider._last_volume_sent = None
     client = MagicMock()
     set_volume = AsyncMock()
@@ -98,20 +97,30 @@ def _volume_sync_provider(volume_level: int | None) -> tuple[SpotifyConnectProvi
 
 
 async def test_sync_player_volume_pushes_player_volume_to_daemon() -> None:
-    """The active player's volume is pushed to go-librespot and cached for dedupe."""
+    """The player's volume is pushed to go-librespot and cached for echo dedupe."""
     provider, set_volume = _volume_sync_provider(50)
 
-    await provider._sync_player_volume_to_spotify()
+    await provider._sync_player_volume_to_spotify("player1")
 
     set_volume.assert_awaited_once_with(50)
     assert provider._last_volume_sent == 50
+
+
+async def test_sync_player_volume_pushes_when_cache_matches() -> None:
+    """The push is unconditional: the daemon's volume resets between sessions."""
+    provider, set_volume = _volume_sync_provider(50)
+    provider._last_volume_sent = 50
+
+    await provider._sync_player_volume_to_spotify("player1")
+
+    set_volume.assert_awaited_once_with(50)
 
 
 async def test_sync_player_volume_skips_when_volume_unknown() -> None:
     """No push happens when the player does not expose a volume level."""
     provider, set_volume = _volume_sync_provider(None)
 
-    await provider._sync_player_volume_to_spotify()
+    await provider._sync_player_volume_to_spotify("player1")
 
     set_volume.assert_not_awaited()
     assert provider._last_volume_sent is None
@@ -122,6 +131,6 @@ async def test_sync_player_volume_restores_cache_on_failure() -> None:
     provider, set_volume = _volume_sync_provider(50)
     set_volume.side_effect = OSError("daemon gone")
 
-    await provider._sync_player_volume_to_spotify()
+    await provider._sync_player_volume_to_spotify("player1")
 
     assert provider._last_volume_sent is None

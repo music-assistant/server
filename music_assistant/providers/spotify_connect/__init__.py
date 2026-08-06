@@ -401,7 +401,7 @@ class SpotifyConnectProvider(PluginProvider):
         # go-librespot reports 100% volume until told otherwise (with
         # external_volume it ignores initial_volume); push the player's volume
         # so the Spotify app's absolute volume commands start from the real level.
-        await self._sync_player_volume_to_spotify()
+        await self._sync_player_volume_to_spotify(active_player_id)
 
     async def on_source_unselected(
         self, source_id: str, queue_id: str, stream_session_id: str
@@ -456,18 +456,9 @@ class SpotifyConnectProvider(PluginProvider):
         # last sent to / received from the daemon.
         if self._last_volume_sent == volume:
             return
-        assert self._client is not None
-        # Record BEFORE the call: go-librespot echoes a 'volume' event back, and
-        # that echo can arrive over the WS while we're still awaiting set_volume.
-        # Recording up front lets _handle_volume_event dedupe it instead of
-        # bouncing it back as a player volume change.
-        previous_volume = self._last_volume_sent
-        self._last_volume_sent = volume
         try:
-            await self._client.set_volume(round(volume / 100 * VOLUME_STEPS))
+            await self._push_volume_to_daemon(volume)
         except Exception as err:
-            # restore on failure so a retry of this value isn't wrongly deduped
-            self._last_volume_sent = previous_volume
             self.logger.warning("Failed to send volume command to go-librespot: %s", err)
             raise
 
@@ -765,10 +756,11 @@ class SpotifyConnectProvider(PluginProvider):
             # schedules a new one.
             self._cancel_pending_play_media()
             self.logger.info("Spotify Connect session active for %s", self.name)
-            # A reconnect resets the daemon's volume to its 100% default;
-            # re-push the player's volume if a session is already claimed.
-            if self._active_player_id:
-                await self._sync_player_volume_to_spotify()
+            # A new session starts at the daemon's 100% volume default; push the
+            # target player's volume so the Spotify app's slider is correct from
+            # device selection, before any playback starts.
+            if player_id := self._get_target_player_id():
+                await self._sync_player_volume_to_spotify(player_id)
         elif event_type == "inactive":
             self.logger.info("Spotify Connect session inactive for %s", self.name)
             self._spotify_session_active = False
@@ -858,26 +850,43 @@ class SpotifyConnectProvider(PluginProvider):
             self._last_volume_sent = previous_volume
             self.logger.debug("Could not set volume on %s: %s", self._in_use_by_queue, err)
 
-    async def _sync_player_volume_to_spotify(self) -> None:
-        """Push the active player's current volume to go-librespot (best-effort)."""
-        if not self._active_player_id:
-            return
-        player = self.mass.players.get_player(self._active_player_id)
+    async def _sync_player_volume_to_spotify(self, player_id: str) -> None:
+        """
+        Push a player's current volume to go-librespot (best-effort).
+
+        :param player_id: The MA player whose volume to push.
+        """
+        player = self.mass.players.get_player(player_id)
         if player is None or player.state.volume_level is None:
             return
         # clamp: the logical volume can be out of range until volume limit
         # enforcement runs
         volume = max(0, min(100, player.state.volume_level))
-        if self._last_volume_sent == volume:
-            return
+        # No dedupe against _last_volume_sent here: it holds the last value
+        # exchanged with the daemon, not the daemon's current volume, which
+        # resets to its 100% default on a new session or daemon restart.
+        try:
+            await self._push_volume_to_daemon(volume)
+        except Exception as err:
+            self.logger.debug("Failed to sync player volume to Spotify: %s", err)
+
+    async def _push_volume_to_daemon(self, volume: int) -> None:
+        """
+        Send an absolute 0-100 volume to go-librespot.
+
+        :param volume: Volume percentage to send.
+        :raises Exception: If the request to the daemon fails.
+        """
         assert self._client is not None
         previous_volume = self._last_volume_sent
-        # Record BEFORE the call so _handle_volume_event dedupes the echoed
-        # 'volume' event instead of bouncing it back as a player volume change.
+        # Record BEFORE the call: go-librespot echoes a 'volume' event back, and
+        # that echo can arrive over the WS while we're still awaiting set_volume.
+        # Recording up front lets _handle_volume_event dedupe it instead of
+        # bouncing it back as a player volume change.
         self._last_volume_sent = volume
         try:
             await self._client.set_volume(round(volume / 100 * VOLUME_STEPS))
-        except Exception as err:
+        except Exception:
             # restore on failure so a retry of this value isn't wrongly deduped
             self._last_volume_sent = previous_volume
-            self.logger.debug("Failed to sync player volume to Spotify: %s", err)
+            raise
