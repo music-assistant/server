@@ -11,10 +11,12 @@ CONF_WEATHER_CITY = "weather_city"
 CONF_WEATHER_COUNTRY = "weather_country"
 
 # providers load concurrently, so the plugin supplying the engines may still be
-# loading when AI Radio initializes: wait this long for it before giving up.
-# doubles as the grace period when an engine disappears while AI Radio is loaded,
-# so that a plugin reload does not unload AI Radio for the blink it is gone
+# loading when AI Radio initializes: wait this long for it before giving up
 ENGINE_DISCOVERY_TIMEOUT = 30
+
+# grace period for an engine that disappears while AI Radio is loaded. Generous enough
+# to sit out a Home Assistant restart, so a running show survives it untouched
+ENGINE_RECHECK_GRACE = 300
 
 # how long to wait before reloading after an engine stayed missing, matching the
 # cadence the load path uses for its own retries

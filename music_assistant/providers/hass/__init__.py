@@ -1028,7 +1028,8 @@ class HomeAssistantProvider(PluginProvider):
         if ai_engines:
             self._supported_features.add(ProviderFeature.AI_QUERY)
         # the entities can come and go without this provider (un)loading, so tell the
-        # consumers of our engines that their selection may need re-evaluating.
+        # consumers of our engines that their selection may need re-evaluating. They read
+        # the lists straight from their handler, so this has to stay below the assignments.
         # during startup the load itself signals once we are done.
         if changed and self._startup_complete:
             self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())

@@ -712,6 +712,41 @@ async def test_changed_engines_notify_the_consumers_once() -> None:
         assert events[0].kwargs["data"] is mass.get_providers.return_value
 
 
+async def test_a_lost_ai_engine_notifies_the_consumers() -> None:
+    """Announce a vanished AI engine, the selection AI Radio depends on."""
+    states = [_state("tts.only", "Only"), _state("ai_task.only", "Only")]
+
+    async with _start_provider(states) as (provider, hass):
+        await provider.loaded_in_mass()
+        cast("MagicMock", provider.mass).signal_event.reset_mock()
+
+        del hass.compressed_states["ai_task.only"]
+        await _fire_registry_update(provider, hass, "ai_task.only", "remove")
+
+        assert await provider.get_ai_engines() == []
+        assert [engine.id for engine in await provider.get_tts_engines()] == ["tts.only"]
+        assert len(_providers_updated_events(provider)) == 1
+
+
+async def test_engines_are_in_place_before_the_consumers_are_told() -> None:
+    """Expose the rebuilt engine lists before signalling, as consumers read them at once."""
+    states = [_state("tts.only", "Only"), _state("ai_task.only", "Only")]
+
+    async with _start_provider(states) as (provider, hass):
+        await provider.loaded_in_mass()
+        signal_event = cast("MagicMock", provider.mass.signal_event)
+        signal_event.reset_mock()
+        engines_when_told: list[list[str]] = []
+        signal_event.side_effect = lambda *_args, **_kwargs: engines_when_told.append(
+            [engine.id for engine in provider._tts_engines]
+        )
+
+        del hass.compressed_states["tts.only"]
+        await _fire_registry_update(provider, hass, "tts.only", "remove")
+
+        assert engines_when_told == [[]]
+
+
 async def test_unchanged_engines_do_not_notify_the_consumers() -> None:
     """Stay silent when a refresh rebuilds the very same engine lists."""
     states = [_state("tts.only", "Only"), _state("ai_task.only", "Only")]

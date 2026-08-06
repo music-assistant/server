@@ -24,6 +24,7 @@ from .constants import (
     CONF_TTS_ENGINE,
     DEFAULT_MAX_CONCURRENT_RUNS,
     ENGINE_DISCOVERY_TIMEOUT,
+    ENGINE_RECHECK_GRACE,
     ENGINE_RETRY_DELAY,
     MAX_FINISHED_SESSIONS,
     SUPPORTED_FEATURES,
@@ -353,10 +354,11 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
         sessions = sorted(self._sessions.values(), key=lambda item: item.created_at, reverse=True)
         return {"sessions": [session.as_dict() for session in sessions]}
 
-    async def _wait_for_engines(self) -> None:
+    async def _wait_for_engines(self, timeout: float | None = None) -> None:
         """
         Wait (bounded) until a concrete AI and TTS engine are selected for this instance.
 
+        :param timeout: How long to wait, defaulting to the engine discovery timeout.
         :raises SetupFailedError: When either engine is still unavailable at the deadline.
         """
         engines_changed = asyncio.Event()
@@ -364,7 +366,7 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
             lambda _event: engines_changed.set(), EventType.PROVIDERS_UPDATED
         )
         try:
-            async with asyncio.timeout(ENGINE_DISCOVERY_TIMEOUT):
+            async with asyncio.timeout(ENGINE_DISCOVERY_TIMEOUT if timeout is None else timeout):
                 while (error := await self._engine_selection_error()) is not None:
                     await engines_changed.wait()
                     # clearing only after the wait keeps an update that lands during the
@@ -400,6 +402,7 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
 
     async def _on_providers_updated(self, _event: MassEvent) -> None:
         """Re-check the engine selection whenever the set of loaded providers changes."""
+        # engines going away with an instance that is itself going away needs no action
         if self._unloading or self.mass.closing:
             return
         if self._engine_recheck_task and not self._engine_recheck_task.done():
@@ -410,10 +413,10 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
 
     async def _unload_when_engines_stay_missing(self) -> None:
         """Unload with an error when a vanished engine does not come back in time."""
-        # a plugin reload takes its engines with it for a moment, so reuse the bounded
-        # wait from the load path instead of tearing the provider down right away
+        # a plugin reload or a Home Assistant restart takes its engines with it for a
+        # while, so wait that out instead of tearing the provider down right away
         try:
-            await self._wait_for_engines()
+            await self._wait_for_engines(ENGINE_RECHECK_GRACE)
         except SetupFailedError as err:
             # a shutdown (or our own unload) landing during the wait can surface as the
             # timeout instead of a cancellation, and needs no error for the user
@@ -422,8 +425,8 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
             self.logger.warning("%s - unloading the provider", err)
             self.unload_with_error(err)
             # unloading records the error but arms no retry of its own, so schedule the
-            # reload that picks the provider back up once the engines return. The load
-            # path's task id owns the timer, so any earlier load cancels this one.
+            # reload that picks the provider back up once the engines return. Armed under
+            # the load path's task id, so any (re)load starting before it fires cancels it.
             self.mass.call_later(
                 ENGINE_RETRY_DELAY,
                 self.mass.load_provider,

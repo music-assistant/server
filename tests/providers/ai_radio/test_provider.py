@@ -585,7 +585,7 @@ async def test_providers_updated_unloads_when_an_engine_stays_gone(
         setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"},
     )
     errors = _record_unload_with_error(provider)
-    monkeypatch.setattr(ai_radio_provider, "ENGINE_DISCOVERY_TIMEOUT", 0.05)
+    monkeypatch.setattr(ai_radio_provider, "ENGINE_RECHECK_GRACE", 0.05)
     plugins.clear()
 
     await provider._on_providers_updated(MagicMock())
@@ -714,7 +714,7 @@ async def test_engine_recheck_stays_silent_when_the_provider_unloads_during_the_
         [], setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"}
     )
     errors = _record_unload_with_error(provider)
-    monkeypatch.setattr(ai_radio_provider, "ENGINE_DISCOVERY_TIMEOUT", 0.05)
+    monkeypatch.setattr(ai_radio_provider, "ENGINE_RECHECK_GRACE", 0.05)
 
     await provider._on_providers_updated(MagicMock())
     recheck_task = provider._engine_recheck_task
@@ -723,6 +723,7 @@ async def test_engine_recheck_stays_silent_when_the_provider_unloads_during_the_
     await recheck_task
 
     assert errors == []
+    assert cast("Any", provider.mass).call_later.call_count == 0
 
 
 async def test_engine_recheck_stays_silent_when_the_server_closes_during_the_wait(
@@ -733,7 +734,7 @@ async def test_engine_recheck_stays_silent_when_the_server_closes_during_the_wai
         [], setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"}
     )
     errors = _record_unload_with_error(provider)
-    monkeypatch.setattr(ai_radio_provider, "ENGINE_DISCOVERY_TIMEOUT", 0.05)
+    monkeypatch.setattr(ai_radio_provider, "ENGINE_RECHECK_GRACE", 0.05)
 
     await provider._on_providers_updated(MagicMock())
     recheck_task = provider._engine_recheck_task
@@ -742,6 +743,7 @@ async def test_engine_recheck_stays_silent_when_the_server_closes_during_the_wai
     await recheck_task
 
     assert errors == []
+    assert cast("Any", provider.mass).call_later.call_count == 0
 
 
 async def test_engine_watchdog_arms_a_reload_after_unloading(
@@ -752,12 +754,14 @@ async def test_engine_watchdog_arms_a_reload_after_unloading(
         [], setup_values={CONF_AI_ENGINE: "p1/ai", CONF_TTS_ENGINE: "p1/tts"}
     )
     errors = _record_unload_with_error(provider)
-    monkeypatch.setattr(ai_radio_provider, "ENGINE_DISCOVERY_TIMEOUT", 0.05)
+    monkeypatch.setattr(ai_radio_provider, "ENGINE_RECHECK_GRACE", 0.05)
 
     await provider._on_providers_updated(MagicMock())
     recheck_task = provider._engine_recheck_task
     assert recheck_task is not None
-    await recheck_task
+    # the watch waits out the grace, not the (much shorter) discovery timeout of the load
+    async with asyncio.timeout(1):
+        await recheck_task
 
     assert [error.translation_key for error in errors] == ["ai_radio_no_ai_engine"]
     retry = cast("Any", provider.mass).call_later.call_args
