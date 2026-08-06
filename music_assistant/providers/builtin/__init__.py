@@ -190,7 +190,9 @@ class BuiltinProvider(MusicProvider):
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        return cast("Track", await self.parse_item(prov_track_id))
+        parsed_item = await self.parse_item(prov_track_id, requested_media_type=MediaType.TRACK)
+        assert isinstance(parsed_item, Track)
+        return parsed_item
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
@@ -685,8 +687,9 @@ class BuiltinProvider(MusicProvider):
             )
             if media_info.duration:
                 media_item.duration = int(media_info.duration or 0)
-        elif is_radio or force_radio:
-            # treat as radio
+        elif (is_radio or force_radio) and requested_media_type != MediaType.TRACK:
+            # treat as radio, unless a track was explicitly requested: such a track
+            # stays a track, also when its stream carries an ICY name or no duration
             media_item = Radio(
                 item_id=url,
                 provider=self.domain,

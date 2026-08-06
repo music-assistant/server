@@ -12,7 +12,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     UnsupportedFeaturedException,
 )
-from music_assistant_models.media_items import Radio, SoundEffect
+from music_assistant_models.media_items import Radio, SoundEffect, Track
 
 from music_assistant.constants import VACUUM_MIN_RECLAIM_RATIO
 from music_assistant.controllers.music import MusicController
@@ -202,6 +202,35 @@ async def test_get_item_builtin_radio_keeps_user_supplied_details() -> None:
 
     assert result is radio
     builtin_provider.get_radio.assert_awaited_once_with("http://stream.example.com")
+    builtin_provider.parse_item.assert_not_awaited()
+
+
+async def test_get_item_builtin_track_keeps_user_supplied_details() -> None:
+    """A builtin track URI resolves through get_track so it stays a track."""
+    controller = MusicController.__new__(MusicController)
+    track = Track(
+        item_id="http://media.example.com/song.mp3",
+        provider="builtin",
+        name="My Song",
+        provider_mappings=set(),
+    )
+    builtin_provider = MagicMock()
+    builtin_provider.domain = "builtin"
+    builtin_provider.parse_item = AsyncMock()
+    builtin_provider.get_track = AsyncMock(return_value=track)
+    controller.mass = MagicMock()
+    controller.mass.get_provider.side_effect = lambda provider_id: (
+        builtin_provider if provider_id in {"builtin", "builtin_1"} else None
+    )
+
+    result = await controller.get_item(
+        MediaType.TRACK,
+        "http://media.example.com/song.mp3",
+        "builtin_1",
+    )
+
+    assert result is track
+    builtin_provider.get_track.assert_awaited_once_with("http://media.example.com/song.mp3")
     builtin_provider.parse_item.assert_not_awaited()
 
 

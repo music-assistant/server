@@ -958,6 +958,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
                 # a radio station must stay a radio station, also when the stream
                 # reports a duration or carries no ICY name
                 return await builtin_prov.get_radio(item_id)
+            if media_type == MediaType.TRACK:
+                # and a track must stay a track, also when the stream carries an
+                # ICY name or reports no duration
+                return await builtin_prov.get_track(item_id)
             return await builtin_prov.parse_item(item_id, requested_media_type=media_type)
         if media_type == MediaType.PODCAST_EPISODE:
             # special case for podcast episodes
