@@ -105,17 +105,20 @@ AIRPLAY_CLOCK_READY_TIMEOUT_MS: Final[int] = 2500
 # for the command reaching the binary and for the convergence error of a
 # projection made from the receiver's very first probe.
 AIRPLAY_CLOCK_READY_LEAD_MS: Final[int] = 500
-# LinkPlay-based receivers route playback through an internal pipeline that
-# starves below ~1 s of queued audio: at the stock 600 ms splice depth the
-# renderer stays silent (Edifier MS50A even solo; a WiiM acting as native
-# multiroom master) while the sender sees a perfectly healthy session. A
-# deeper receiver queue feeds the pipeline - verified live at 1000 ms on the
-# worst known device - at the cost of slower warm seeks on these players.
-# Detected via the _airplay TXT: the old platform embeds "Linkplay" in fv,
-# the newer one names Linkplay as manufacturer.
-AIRPLAY_LINKPLAY_FV_PREFIX: Final[str] = "p20.Linkplay."
-AIRPLAY_LINKPLAY_MANUFACTURER: Final[str] = "linkplay"
-AIRPLAY_LINKPLAY_BUFFER_DEPTH_MS: Final[int] = 1000
+# Default receiver buffer depth per device family: (manufacturer wildcard,
+# model wildcard, firmware wildcard) -> depth in ms, matched case-insensitively
+# in order, first match wins; unmatched devices stay on Automatic (the binary's
+# stock depth). LinkPlay pipelines starve at the stock depth - silent renderer
+# behind a perfectly healthy session - and need the full 1750 ms once the
+# device is also master of a native multiroom group, at the cost of slower
+# warm seeks. Extend the table as field reports identify more starving devices.
+AIRPLAY_BUFFER_DEPTH_DEFAULTS: Final[tuple[tuple[str, str, str, int], ...]] = (
+    # The newer LinkPlay platform names Linkplay as the manufacturer (WiiM, ...).
+    ("linkplay*", "*", "*", 1750),
+    # The older LinkPlay platform ships under OEM brands (Edifier, ...) but
+    # marks the platform in its firmware string.
+    ("*", "*", "p20.linkplay.*", 1750),
+)
 # Per-player override of the splice receiver-queue depth in ms (0 = automatic).
 CONF_BUFFER_DEPTH: Final[str] = "buffer_depth"
 # How long a plain (non-join) START waits for the binary's [STATUS] started ack.
