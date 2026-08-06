@@ -12,7 +12,11 @@ from typing import Any
 
 import pytest
 from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
-from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    InvalidDataError,
+    UserNotFoundError,
+)
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER
 from music_assistant.controllers.config import ConfigController
@@ -1826,7 +1830,7 @@ async def test_impersonated_user_context_manager(auth_manager: AuthenticationMan
             ...
     # invalid username must raise
     set_current_user(admin_user)
-    with pytest.raises(InvalidDataError):
+    with pytest.raises(UserNotFoundError):
         async with ImpersonatedUser(auth_manager.mass, "wrong_username"):
             ...
 
@@ -2209,10 +2213,78 @@ async def test_resolve_command_impersonation(auth_manager: AuthenticationManager
     assert resolved == standard_user
     assert args == {}
 
+    # the dict form with the builtin provider is equivalent to the plain string form
+    args = {"user": {"provider": "builtin", "user_id": "user_a"}}
+    resolved = await resolve_command_impersonation(auth_manager.mass, args)
+    assert resolved == standard_user
+
     # a caller without the users.impersonate scope may not impersonate another user
     set_current_user(standard_user)
     with pytest.raises(InsufficientPermissions):
         await resolve_command_impersonation(auth_manager.mass, {"user": "admin"})
+
+
+async def test_resolve_command_impersonation_provider_link(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """Test resolving the dict form of the user argument by provider link."""
+    service_user = await auth_manager.create_user(username="ha_service", role=UserRole.SERVICE)
+    linked_user = await auth_manager.create_user(username="linked", role=UserRole.USER)
+    await auth_manager.link_user_to_provider(
+        linked_user, AuthProviderType.HOME_ASSISTANT, "ha-user-1"
+    )
+    set_current_user(service_user)
+    set_impersonated_user(None)
+
+    # a linked HA user resolves to the mapped MA user and pops the argument
+    args: dict[str, object] = {
+        "queue_id": "abc",
+        "user": {"provider": "homeassistant", "user_id": "ha-user-1"},
+    }
+    resolved = await resolve_command_impersonation(auth_manager.mass, args)
+    assert resolved == linked_user
+    assert args == {"queue_id": "abc"}
+
+    # an unknown user is an error by default (required defaults to true)...
+    args = {"user": {"provider": "homeassistant", "user_id": "ha-user-unknown"}}
+    with pytest.raises(UserNotFoundError):
+        await resolve_command_impersonation(auth_manager.mass, args)
+
+    # ...but softly resolves to None (no impersonation) when not required
+    args = {"user": {"provider": "homeassistant", "user_id": "ha-user-unknown", "required": False}}
+    assert await resolve_command_impersonation(auth_manager.mass, args) is None
+    assert args == {}
+
+    # required also applies to the builtin provider
+    args = {"user": {"provider": "builtin", "user_id": "nobody", "required": False}}
+    assert await resolve_command_impersonation(auth_manager.mass, args) is None
+    args = {"user": {"provider": "builtin", "user_id": "nobody"}}
+    with pytest.raises(UserNotFoundError):
+        await resolve_command_impersonation(auth_manager.mass, args)
+
+    # a malformed dict form is rejected (unknown provider, missing user_id, non-bool required);
+    # notably an unknown provider must not fall back to builtin (enum coercion default)
+    for malformed in (
+        {"provider": "nonsense", "user_id": "ha-user-1"},
+        {"provider": None, "user_id": "ha-user-1"},
+        {"user_id": "ha-user-1"},
+        {"provider": "homeassistant"},
+        {"provider": "homeassistant", "user_id": ""},
+        {"provider": "homeassistant", "user_id": "ha-user-1", "required": "yes"},
+    ):
+        with pytest.raises(InvalidDataError):
+            await resolve_command_impersonation(auth_manager.mass, {"user": malformed})
+
+    # an empty dict is treated as "no impersonation requested"
+    assert await resolve_command_impersonation(auth_manager.mass, {"user": {}}) is None
+
+    # resolving another user by provider link requires the users.impersonate scope
+    standard_user = await auth_manager.create_user(username="plain", role=UserRole.USER)
+    set_current_user(standard_user)
+    with pytest.raises(InsufficientPermissions):
+        await resolve_command_impersonation(
+            auth_manager.mass, {"user": {"provider": "homeassistant", "user_id": "ha-user-1"}}
+        )
 
 
 def test_has_scope() -> None:

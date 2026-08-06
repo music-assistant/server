@@ -300,6 +300,7 @@
   "common.errors.unsupported_system_cpu_cores": "This system does not meet the minimal requirements for {0}: at least {1} CPU cores are required ({2} detected).",
   "common.errors.unsupported_system_memory": "This system does not meet the minimal requirements for {0}: at least {1}GB of RAM is required ({2}GB detected).",
   "common.errors.unsupported_system_ml_inference_failed": "On-device audio analysis cannot run on this CPU: it reports AVX2 support but fails to execute the required instructions. This is common on virtual machines without host CPU passthrough -- if you are running in a VM (e.g. Proxmox or TrueNAS), set the CPU type to 'host'.",
+  "common.errors.user_not_found": "The user {0} could not be found.",
   "common.media.audiobook_genre.arts_and_entertainment.description": "Audiobooks on the arts, media and entertainment, from film and music to the performing and visual arts.",
   "common.media.audiobook_genre.arts_and_entertainment.name": "Arts & Entertainment",
   "common.media.audiobook_genre.biography_and_memoir.description": "Life stories — biographies and memoirs of notable people and personal accounts of lived experience.",

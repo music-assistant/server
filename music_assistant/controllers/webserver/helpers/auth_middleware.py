@@ -9,7 +9,11 @@ from types import TracebackType
 from typing import TYPE_CHECKING, Any, Final, Self, cast
 
 from music_assistant_models.auth import AuthProviderType, Scope, User, UserRole
-from music_assistant_models.errors import InsufficientPermissions, InvalidDataError
+from music_assistant_models.errors import (
+    InsufficientPermissions,
+    InvalidDataError,
+    UserNotFoundError,
+)
 
 from music_assistant.constants import HOMEASSISTANT_SYSTEM_USER, MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 
@@ -186,24 +190,50 @@ def has_scope(user: User, scope: Scope) -> bool:
     return Scope.ALL in role_scopes or scope in role_scopes
 
 
-async def resolve_impersonated_user(mass: MusicAssistant, user: str) -> User:
+async def resolve_impersonated_user(
+    mass: MusicAssistant,
+    provider_type: AuthProviderType,
+    provider_user_id: str,
+    required: bool = True,
+) -> User | None:
     """
     Resolve and validate the user to impersonate for the current call.
 
-    The authenticated caller may always impersonate itself, impersonating
-    another user requires the users.impersonate scope.
+    A builtin user is looked up by user_id or username, users of other auth providers
+    by their provider link. The authenticated caller may always impersonate itself,
+    impersonating another user requires the users.impersonate scope.
 
     :param mass: The MusicAssistant instance.
-    :param user: The user_id or username of the user to impersonate.
+    :param provider_type: The auth provider the user reference belongs to.
+    :param provider_user_id: The user's id at that provider.
+    :param required: Raise if the user cannot be found, instead of
+        resolving to None (no impersonation).
     """
     authenticated_user = current_user.get()
     if authenticated_user is None:
         raise InsufficientPermissions("Authentication is necessary to impersonate another user.")
-    target_user = await mass.webserver.auth.get_user(user)
+    if provider_type == AuthProviderType.BUILTIN:
+        # a builtin identity is the MA account itself: resolve directly instead of through
+        # the provider link table, whose builtin rows hold credentials (password hashes)
+        target_user = await mass.webserver.auth.get_user(provider_user_id)
+        if target_user is None:
+            target_user = await mass.webserver.auth.get_user_by_username(provider_user_id)
+    else:
+        target_user = await mass.webserver.auth.get_user_by_provider_link(
+            provider_type, provider_user_id
+        )
     if target_user is None:
-        target_user = await mass.webserver.auth.get_user_by_username(user)
-    if target_user is None:
-        raise InvalidDataError(f"A user with user id or name {user} is not available.")
+        if not required:
+            return None
+        if provider_type == AuthProviderType.BUILTIN:
+            raise UserNotFoundError(
+                f"A user with user id or name {provider_user_id} is not available.",
+                translation_args=[provider_user_id],
+            )
+        raise UserNotFoundError(
+            f"A user linked to {provider_type.value} user id {provider_user_id} is not available.",
+            translation_args=[provider_user_id],
+        )
     if target_user.user_id != authenticated_user.user_id and not has_scope(
         authenticated_user, Scope.USERS_IMPERSONATE
     ):
@@ -217,6 +247,9 @@ async def resolve_command_impersonation(mass: MusicAssistant, args: dict[str, An
     """
     Pop and resolve the optional impersonation argument for an API command invocation.
 
+    The user argument is either a user_id/username string, or a dict referencing the
+    user by auth provider: {"provider": ..., "user_id": ..., "required": ...}.
+
     Returns the user to impersonate for the command, or None if no
     impersonation was requested.
 
@@ -226,11 +259,29 @@ async def resolve_command_impersonation(mass: MusicAssistant, args: dict[str, An
     user_arg = args.pop("user", None)
     # username is accepted as (deprecated) alias for user
     username_arg = args.pop("username", None)
-    # deliberately treat None and empty string as "no impersonation requested":
+    # deliberately treat None and empty values as "no impersonation requested":
     # optional fields in automations/scripts commonly template to an empty string
-    if target := user_arg or username_arg:
-        return await resolve_impersonated_user(mass, str(target))
-    return None
+    target = user_arg or username_arg
+    if not target:
+        return None
+    if isinstance(target, Mapping):
+        return await resolve_impersonated_user(mass, *_parse_provider_user_arg(target))
+    return await resolve_impersonated_user(mass, AuthProviderType.BUILTIN, str(target))
+
+
+def _parse_provider_user_arg(value: Mapping[str, Any]) -> tuple[AuthProviderType, str, bool]:
+    """Validate and unpack the dict form of the user impersonation argument."""
+    provider = value.get("provider")
+    user_id = value.get("user_id")
+    required = value.get("required", True)
+    # explicit membership check: AuthProviderType coerces unknown values to BUILTIN
+    if not isinstance(provider, str) or provider not in AuthProviderType:
+        raise InvalidDataError(f"Invalid auth provider type: {provider}")
+    if not isinstance(user_id, str) or not user_id:
+        raise InvalidDataError("A user_id is required to impersonate a user by auth provider.")
+    if not isinstance(required, bool):
+        raise InvalidDataError("The required field of the user argument must be a boolean.")
+    return AuthProviderType(provider), user_id, required
 
 
 def get_current_user() -> User | None:
@@ -403,7 +454,9 @@ class ImpersonatedUser:
             # no-op: nothing to impersonate (e.g. playback from a hardware button
             # or an external protocol without a user context)
             return self
-        set_impersonated_user(await resolve_impersonated_user(self.mass, self.user))
+        set_impersonated_user(
+            await resolve_impersonated_user(self.mass, AuthProviderType.BUILTIN, self.user)
+        )
         return self
 
     async def __aexit__(
