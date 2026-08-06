@@ -377,7 +377,11 @@ class AppleMusicLibraryManager:
             for item in library_only_items
         ]
         details = await self._fetch_library_song_details(
-            [item["id"] for item, track in parsed_tracks if self._track_has_weak_album_mapping(track)]
+            [
+                item["id"]
+                for item, track in parsed_tracks
+                if self._track_has_weak_album_mapping(track)
+            ]
         )
         for item, parsed_track in parsed_tracks:
             if (detail := details.get(item["id"])) is None:
@@ -387,7 +391,9 @@ class AppleMusicLibraryManager:
                 item, parsed_track, detail, rating_response.get(item["id"])
             )
 
-    async def _fetch_library_song_details(self, library_ids: list[str]) -> dict[str, dict[str, Any]]:
+    async def _fetch_library_song_details(
+        self, library_ids: list[str]
+    ) -> dict[str, dict[str, Any]]:
         """Return the detailed library-song items for the given ids, keyed by id."""
         details: dict[str, dict[str, Any]] = {}
         for offset in range(0, len(library_ids), _DETAIL_BATCH_SIZE):
@@ -400,5 +406,7 @@ class AppleMusicLibraryManager:
                 # the listing parse stays usable, so a failed batch only costs album detail
                 self.logger.debug("Unable to fetch library song details: %s", err)
                 continue
-            details.update({item["id"]: item for item in response.get("data", []) if item.get("id")})
+            details.update(
+                {item["id"]: item for item in response.get("data", []) if item.get("id")}
+            )
         return details
