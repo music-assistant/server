@@ -1647,9 +1647,9 @@ class StreamsController(CoreController):
         :param session_id: Stream session this response was opened for.
         :param keep_alive: Whether the connection will be reused instead of closed.
         """
-        queue_data = self.mass.player_queues.queue_data_or_none(queue_id)
-        if queue_data is None or queue_data.session_id != session_id:
-            # a newer stream session took over: this response's audio is stale
+        if not self.mass.player_queues.flow_queue_exhausted(queue_id, session_id):
+            # either a newer stream session took over, or this flow ended early to be
+            # restarted right away - in both cases there is no tail to play out
             return
         # keep_alive tells us whether the player will actually see the connection close:
         # aiohttp derives that from the request, so our own 'Connection: close' header is
