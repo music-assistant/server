@@ -25,11 +25,6 @@ async def metadata_controller(mass_minimal: MusicAssistant) -> MetaDataControlle
     return controller
 
 
-async def _save_unrelated_metadata_setting(mass: MusicAssistant) -> None:
-    """Save the metadata core config the way the settings UI does."""
-    await mass.config.save_core_config("metadata", {CONF_THUMB_CACHE_MAX_SIZE: 1000})
-
-
 async def test_locale_falls_back_to_the_default_language(
     metadata_controller: MetaDataController,
 ) -> None:
@@ -78,3 +73,8 @@ async def test_set_default_preferred_language_never_overrides_a_chosen_language(
     metadata_controller.set_default_preferred_language("de-DE")
 
     assert metadata_controller.locale == language
+
+
+async def _save_unrelated_metadata_setting(mass: MusicAssistant) -> None:
+    """Save the metadata core config the way the settings UI does."""
+    await mass.config.save_core_config("metadata", {CONF_THUMB_CACHE_MAX_SIZE: 1000})
