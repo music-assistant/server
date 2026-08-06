@@ -330,12 +330,26 @@ async def _wait_for_stored(provider: HomeAssistantProvider) -> None:
             await asyncio.sleep(0)
 
 
+def _registry_event(
+    entity_id: str, action: str = "update", changes: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    """Return the data Home Assistant sends in an entity_registry_updated event."""
+    data: dict[str, Any] = {"action": action, "entity_id": entity_id}
+    if action == "update":
+        # an update carries the old value of every field it touched
+        data["changes"] = changes or {}
+    return data
+
+
 async def _fire_registry_update(
-    provider: HomeAssistantProvider, hass: _HomeAssistantClient, entity_id: str
+    provider: HomeAssistantProvider,
+    hass: _HomeAssistantClient,
+    entity_id: str,
+    action: str,
 ) -> None:
     """Deliver an entity registry update and wait for the engine rebuild it schedules."""
     with patch("music_assistant.providers.hass.ENGINE_REFRESH_DEBOUNCE", 0):
-        hass.fire_event("entity_registry_updated", {"action": "update", "entity_id": entity_id})
+        hass.fire_event("entity_registry_updated", _registry_event(entity_id, action))
         assert provider._engine_refresh_task is not None
         async with asyncio.timeout(1):
             await provider._engine_refresh_task
@@ -644,7 +658,7 @@ async def test_registry_update_refreshes_the_engines() -> None:
         assert ProviderFeature.TTS not in provider.supported_features
 
         hass.compressed_states["tts.new"] = _compressed(_state("tts.new", "New"))
-        await _fire_registry_update(provider, hass, "tts.new")
+        await _fire_registry_update(provider, hass, "tts.new", "create")
 
         assert [engine.id for engine in await provider.get_tts_engines()] == ["tts.new"]
         assert ProviderFeature.TTS in provider.supported_features
@@ -659,7 +673,7 @@ async def test_registry_update_discards_the_feature_of_a_removed_engine() -> Non
         assert ProviderFeature.TTS in provider.supported_features
 
         del hass.compressed_states["tts.only"]
-        await _fire_registry_update(provider, hass, "tts.only")
+        await _fire_registry_update(provider, hass, "tts.only", "remove")
 
         assert await provider.get_tts_engines() == []
         assert ProviderFeature.TTS not in provider.supported_features
@@ -672,11 +686,29 @@ async def test_registry_update_of_another_domain_is_ignored() -> None:
     async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
         await provider.loaded_in_mass()
 
-        hass.fire_event(
-            "entity_registry_updated", {"action": "create", "entity_id": "light.kitchen"}
-        )
+        hass.fire_event("entity_registry_updated", _registry_event("light.kitchen", "create"))
 
         assert provider._engine_refresh_task is None
+
+
+async def test_registry_update_of_a_feature_entity_refreshes_without_a_refetch() -> None:
+    """Rebuild the engine lists for a renamed feature entity without refetching the registry."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        await provider.loaded_in_mass()
+        registry = await provider.get_entity_registry()
+        hass.compressed_states["tts.only"] = _compressed(_state("tts.only", "Renamed"))
+
+        with patch("music_assistant.providers.hass.ENGINE_REFRESH_DEBOUNCE", 0):
+            hass.fire_event(
+                "entity_registry_updated", _registry_event("tts.only", changes={"name": "Only"})
+            )
+            assert provider._engine_refresh_task is not None
+            async with asyncio.timeout(1):
+                await provider._engine_refresh_task
+
+        engines = await provider.get_tts_engines()
+        assert [engine.name for engine in engines] == ["Renamed (tts.only)"]
+        assert provider._entity_registry is registry
 
 
 async def test_burst_of_registry_updates_triggers_a_single_refresh() -> None:
@@ -688,8 +720,7 @@ async def test_burst_of_registry_updates_triggers_a_single_refresh() -> None:
         with patch("music_assistant.providers.hass.ENGINE_REFRESH_DEBOUNCE", 0.05):
             for index in range(3):
                 hass.fire_event(
-                    "entity_registry_updated",
-                    {"action": "create", "entity_id": f"tts.new_{index}"},
+                    "entity_registry_updated", _registry_event(f"tts.new_{index}", "create")
                 )
             assert provider._engine_refresh_task is not None
             async with asyncio.timeout(1):
@@ -699,20 +730,95 @@ async def test_burst_of_registry_updates_triggers_a_single_refresh() -> None:
 
 
 async def test_registry_update_of_another_domain_invalidates_the_registry() -> None:
-    """Refresh the cached registry for a registry update of any domain."""
+    """Refresh the cached registry for an entity that appeared in any domain."""
     async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
         registry_fetches = hass.calls.count(REGISTRY_LIST_COMMAND)
         hass.compressed_states["light.kitchen"] = _compressed(_state("light.kitchen", "Kitchen"))
 
-        hass.fire_event(
-            "entity_registry_updated", {"action": "create", "entity_id": "light.kitchen"}
-        )
+        hass.fire_event("entity_registry_updated", _registry_event("light.kitchen", "create"))
 
         # an entity that can not back a feature must not trigger an engine rebuild
         assert provider._engine_refresh_task is None
         result = await provider.get_states(domains=("light",))
         assert [state["entity_id"] for state in result] == ["light.kitchen"]
         assert hass.calls.count(REGISTRY_LIST_COMMAND) == registry_fetches + 1
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        pytest.param({"name": "Old name"}, id="rename"),
+        pytest.param({"icon": None}, id="icon"),
+        pytest.param({"area_id": None, "labels": []}, id="area_and_labels"),
+        pytest.param({"hidden_by": None}, id="hidden"),
+        # an integration reload re-registers its entities, which touches these
+        pytest.param({"capabilities": None, "supported_features": 0}, id="reload"),
+    ],
+)
+async def test_registry_update_of_unmirrored_fields_keeps_the_registry(
+    changes: dict[str, Any],
+) -> None:
+    """Keep the mirrored registry for an update that cannot change what it holds."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        registry = await provider.get_entity_registry()
+        registry_fetches = hass.calls.count(REGISTRY_LIST_COMMAND)
+
+        hass.fire_event(
+            "entity_registry_updated", _registry_event("light.kitchen", changes=changes)
+        )
+
+        assert await provider.get_entity_registry() is registry
+        assert hass.calls.count(REGISTRY_LIST_COMMAND) == registry_fetches
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        pytest.param({"entity_id": "light.old"}, id="entity_id"),
+        pytest.param({"platform": "old_platform"}, id="platform"),
+        pytest.param({"device_id": None}, id="device_id"),
+        # the listing omits disabled entities, so this one enters or leaves it
+        pytest.param({"disabled_by": None}, id="disabled_by"),
+        # a device rename reports no changed fields at all
+        pytest.param({}, id="changes_empty"),
+        # a move to another config entry can silently re-enable the entity
+        pytest.param({"config_entry_id": "other"}, id="config_entry_id"),
+    ],
+)
+async def test_registry_update_of_mirrored_fields_invalidates_the_registry(
+    changes: dict[str, Any],
+) -> None:
+    """Refetch the mirrored registry for an update that can change what it holds."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        await provider.get_entity_registry()
+        registry_fetches = hass.calls.count(REGISTRY_LIST_COMMAND)
+
+        hass.fire_event(
+            "entity_registry_updated", _registry_event("light.kitchen", changes=changes)
+        )
+
+        assert provider._entity_registry is None
+        await provider.get_entity_registry()
+        assert hass.calls.count(REGISTRY_LIST_COMMAND) == registry_fetches + 1
+
+
+async def test_unmirrored_change_during_the_fetch_is_still_cached() -> None:
+    """Cache a registry listing that only an irrelevant registry update raced."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
+        provider._entity_registry = None
+        # hold back the registry response until the update has been delivered
+        hass._registry_result = asyncio.get_running_loop().create_future()
+        lookup = asyncio.ensure_future(provider.get_states(domains=("tts",)))
+        await asyncio.sleep(0)
+
+        hass.fire_event(
+            "entity_registry_updated", _registry_event("light.kitchen", changes={"name": "Old"})
+        )
+        hass._registry_result.set_result(None)
+        async with asyncio.timeout(1):
+            await lookup
+
+        assert provider._entity_registry is not None
 
 
 async def test_domains_are_resolved_through_the_display_registry() -> None:
@@ -765,9 +871,7 @@ async def test_registry_changed_during_the_fetch_is_not_cached() -> None:
         lookup = asyncio.ensure_future(provider.get_states(domains=("tts",)))
         await asyncio.sleep(0)
 
-        hass.fire_event(
-            "entity_registry_updated", {"action": "create", "entity_id": "light.kitchen"}
-        )
+        hass.fire_event("entity_registry_updated", _registry_event("light.kitchen", "create"))
         hass._registry_result.set_result(None)
         async with asyncio.timeout(1):
             await lookup
@@ -887,7 +991,8 @@ async def test_disabled_entity_is_never_requested() -> None:
         # Home Assistant omits disabled entities from the registry, their state remains
         hass.disabled_entities.add("media_player.spare")
         hass.fire_event(
-            "entity_registry_updated", {"action": "update", "entity_id": "media_player.spare"}
+            "entity_registry_updated",
+            _registry_event("media_player.spare", changes={"disabled_by": None}),
         )
         hass.subscriptions.clear()
 

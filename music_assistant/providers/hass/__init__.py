@@ -90,6 +90,14 @@ CONTROL_DOMAINS = ("media_player", "switch", "input_boolean", "number", "input_n
 FEATURE_DOMAINS = ("tts", "ai_task")
 FEATURE_DOMAIN_PREFIXES = tuple(f"{domain}." for domain in FEATURE_DOMAINS)
 
+# Entity registry fields a change to which can alter the mirrored registry. Beyond the
+# mirrored fields themselves, disabled_by decides whether an entity is listed at all, and
+# config_entry_id joins them because Home Assistant can clear disabled_by while reporting
+# only the move to the other config entry.
+REGISTRY_FIELDS_AFFECTING_MIRROR = frozenset(
+    {"entity_id", "platform", "device_id", "disabled_by", "config_entry_id"}
+)
+
 
 class DeviceMediaPlayerInfo(TypedDict):
     """Home Assistant correlation info for a device that is natively connected elsewhere."""
@@ -1030,10 +1038,20 @@ class HomeAssistantProvider(PluginProvider):
 
     def _on_entity_registry_update(self, event: Event) -> None:
         """Handle an entity registry update event."""
-        # any registry change invalidates the cached registry, whatever domain it concerns
-        self._entity_registry = None
-        self._entity_registry_generation += 1
-        entity_id = event["data"].get("entity_id", "")
+        data = event["data"]
+        if _affects_mirrored_registry(data):
+            self._entity_registry = None
+            self._entity_registry_generation += 1
+        elif self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            # the kept mirror rests on which fields Home Assistant reports, so leave a
+            # trail that tells a stale entity listing apart from a lookup that never ran
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Keeping the mirrored entity registry, %s changed on %s",
+                ", ".join(data["changes"]),
+                data.get("entity_id", "?"),
+            )
+        entity_id = data.get("entity_id", "")
         if not entity_id.startswith(FEATURE_DOMAIN_PREFIXES):
             return
         self._schedule_engine_refresh()
@@ -1136,6 +1154,24 @@ def _get_control_name(entity_id: str, state: State | None) -> str:
     if state and (friendly_name := state["attributes"].get("friendly_name")):
         return f"{friendly_name} ({entity_id})"
     return entity_id
+
+
+def _affects_mirrored_registry(data: Mapping[str, Any]) -> bool:
+    """
+    Return whether an entity registry update can change the mirrored entity registry.
+
+    :param data: The data of a Home Assistant entity_registry_updated event.
+    """
+    if data.get("action") != "update":
+        # a created or removed entity always enters or leaves the listing
+        return True
+    # an update reports the fields it touched, so a change that only concerns fields we do
+    # not mirror (a rename, an icon, an area, a label) leaves our listing accurate. an
+    # update can also report no fields at all, as a device rename re-derives a name field
+    # that Home Assistant strips from the report, so treat that as a change of unknown reach
+    if not (changes := data.get("changes")):
+        return True
+    return not REGISTRY_FIELDS_AFFECTING_MIRROR.isdisjoint(changes)
 
 
 def _decompress_state(entity_id: str, compressed_state: CompressedState) -> State:
