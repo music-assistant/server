@@ -957,6 +957,7 @@ class PlayerConfigMixin:
                 # we grab the config entries from the protocol player
                 # and then prefix them to avoid key collisions
                 protocol_entries = await self._get_player_config_entries(protocol_player)
+                protocol_entry_keys = {entry.key for entry in protocol_entries}
                 for proto_entry in protocol_entries:
                     # deep copy to avoid mutating shared/constant ConfigEntry objects
                     entry = deepcopy(proto_entry)
@@ -969,7 +970,17 @@ class PlayerConfigMixin:
                     entry.translation_key = entry.translation_key or entry.key
                     entry.translation_owner = protocol_player.translation_owner
                     entry.key = f"{protocol_prefix}{entry.key}"
-                    entry.depends_on = None if protocol.is_native else protocol_enabled_key
+                    if entry.depends_on in protocol_entry_keys:
+                        # the entry it depends on is copied into this same block, so follow it
+                        # to its prefixed key and keep the value condition that goes with it
+                        entry.depends_on = f"{protocol_prefix}{entry.depends_on}"
+                    else:
+                        # nothing of its own to depend on, so gate it on the protocol toggle.
+                        # any value condition belonged to the original key and must not carry
+                        # over, or it gets compared against the toggle's boolean instead.
+                        entry.depends_on = protocol_enabled_key
+                        entry.depends_on_value = None
+                        entry.depends_on_value_not = None
                     entry.action = f"{protocol_prefix}{entry.action}" if entry.action else None
                     all_entries.append(entry)
 

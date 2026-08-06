@@ -7,20 +7,31 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
+from music_assistant_models.config_entries import ConfigEntry
+from music_assistant_models.enums import ConfigEntryType
 from music_assistant_models.player import OutputProtocol
 
 from music_assistant import constants as _constants
-from music_assistant.constants import CONF_ENABLED, CONF_PLAYERS, CONF_PREFERRED_OUTPUT_PROTOCOL
+from music_assistant.constants import (
+    CONF_ENABLED,
+    CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES,
+    CONF_ENTRY_FLOW_MODE,
+    CONF_FLOW_MODE,
+    CONF_PLAYERS,
+    CONF_PREFERRED_OUTPUT_PROTOCOL,
+    CONF_PROTOCOL_KEY_SPLITTER,
+)
 from music_assistant.mass import MusicAssistant
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
+    from music_assistant_models.config_entries import ConfigValueOption
 
 # the common strings live next to the constants module, so this path holds from anywhere
 _STRINGS_PATH = Path(_constants.__file__).resolve().parent / "strings.json"
 
 _AIRPLAY_ID = "airplay_aabbccddeeff"
 _DLNA_ID = "dlna_aabbccddeeff"
+_DLNA_PREFIX = f"{_DLNA_ID}{CONF_PROTOCOL_KEY_SPLITTER}"
 
 
 def _make_output_protocol(
@@ -67,6 +78,32 @@ async def _preferred_output_entry(
     with patch.object(mass, "get_provider_manifest", side_effect=_make_provider_manifest):
         entries = await mass.config._create_output_protocol_config_entries(player)
     return next(entry for entry in entries if entry.key == CONF_PREFERRED_OUTPUT_PROTOCOL)
+
+
+async def _protocol_block_entries(
+    mass: MusicAssistant, protocol_entries: list[ConfigEntry]
+) -> dict[str, ConfigEntry]:
+    """
+    Build the config block a player renders for a single (non-native) output protocol.
+
+    :param mass: the MusicAssistant instance to build the entries with.
+    :param protocol_entries: the config entries the protocol's own player reports.
+    """
+    player = MagicMock()
+    player.needs_setup = False
+    player.output_protocols = [_make_output_protocol(_DLNA_ID, "dlna", 50, available=True)]
+    protocol_player = _make_protocol_player(available=True, needs_setup=False)
+    protocol_player.translation_owner = "dlna"
+    mass.players = MagicMock()
+    mass.players.get_player.return_value = protocol_player
+    with (
+        patch.object(mass, "get_provider_manifest", side_effect=_make_provider_manifest),
+        # the block is only built for a protocol whose provider is loaded
+        patch.object(mass, "get_provider", return_value=MagicMock()),
+        patch.object(mass.config, "_get_player_config_entries", return_value=protocol_entries),
+    ):
+        entries = await mass.config._create_output_protocol_config_entries(player)
+    return {entry.key: entry for entry in entries}
 
 
 def _option(entry: ConfigEntry, value: str) -> ConfigValueOption:
@@ -136,3 +173,76 @@ async def test_default_is_never_a_disabled_option(mass_minimal: MusicAssistant) 
     )
     assert entry.default_value == "auto"
     assert _option(entry, entry.default_value).disabled is False
+
+
+async def test_protocol_entry_keeps_dependency_on_its_own_sibling(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """An entry gated on a sibling stays gated on it after being copied into the block."""
+    entries = await _protocol_block_entries(
+        mass_minimal,
+        [
+            ConfigEntry(key="display", type=ConfigEntryType.BOOLEAN, default_value=False),
+            ConfigEntry(
+                key="visualization",
+                type=ConfigEntryType.STRING,
+                default_value="none",
+                depends_on="display",
+                depends_on_value=True,
+            ),
+        ],
+    )
+    visualization = entries[f"{_DLNA_PREFIX}visualization"]
+    assert visualization.depends_on == f"{_DLNA_PREFIX}display"
+    # an entry pointing at a key that is not in the block reads as unmet, so it would hide
+    assert visualization.depends_on in entries
+    assert visualization.depends_on_value is True
+
+
+async def test_protocol_entry_without_dependency_follows_the_protocol_toggle(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """An entry with no dependency of its own is gated on the protocol's enable toggle."""
+    entries = await _protocol_block_entries(
+        mass_minimal,
+        [ConfigEntry(key="buffer_depth", type=ConfigEntryType.INTEGER, default_value=5)],
+    )
+    enabled_key = f"{_DLNA_PREFIX}{CONF_ENABLED}"
+    assert entries[f"{_DLNA_PREFIX}buffer_depth"].depends_on == enabled_key
+    assert enabled_key in entries
+
+
+async def test_unresolvable_dependency_drops_its_value_condition(
+    mass_minimal: MusicAssistant,
+) -> None:
+    """An entry whose dependency is absent falls back without carrying its condition over."""
+    entries = await _protocol_block_entries(
+        mass_minimal,
+        [
+            ConfigEntry(
+                key="flow_mode_sample_rate",
+                type=ConfigEntryType.STRING,
+                default_value="smart",
+                depends_on=CONF_FLOW_MODE,
+                depends_on_value_not=True,
+            )
+        ],
+    )
+    entry = entries[f"{_DLNA_PREFIX}flow_mode_sample_rate"]
+    assert entry.depends_on == f"{_DLNA_PREFIX}{CONF_ENABLED}"
+    # the condition was written for flow mode; against the toggle it would invert the gate
+    assert entry.depends_on_value_not is None
+
+
+async def test_crossfade_entry_still_tracks_flow_mode(mass_minimal: MusicAssistant) -> None:
+    """The shared 'only without flow mode' entries keep their meaning inside a protocol block."""
+    entries = await _protocol_block_entries(
+        mass_minimal,
+        [CONF_ENTRY_FLOW_MODE, CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES],
+    )
+    crossfade = entries[f"{_DLNA_PREFIX}{CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.key}"]
+    assert crossfade.depends_on == f"{_DLNA_PREFIX}{CONF_FLOW_MODE}"
+    assert crossfade.depends_on in entries
+    assert crossfade.depends_on_value_not is True
+    # the shared constant is reused across players, so the block must not have mutated it
+    assert CONF_ENTRY_CROSSFADE_DIFFERENT_SAMPLE_RATES.depends_on == CONF_FLOW_MODE
