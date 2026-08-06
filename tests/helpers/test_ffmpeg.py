@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
-from collections.abc import AsyncGenerator
+from array import array
+from collections.abc import AsyncGenerator, Sequence
+from math import sqrt
 from pathlib import Path
 
 import pytest
@@ -13,9 +15,12 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.dsp import ComplexFilter, ComplexFilterInput
 from music_assistant.helpers.ffmpeg import (
+    _INPUT_READ_ARGS,
     FFMpeg,
     FFMpegStreamInfo,
     _build_filtergraph_args,
+    _build_overlay_mixer,
+    _get_overlay_volume_filter,
     get_ffmpeg_args,
     get_ffmpeg_overlay_stream,
     parse_ffmpeg_duration,
@@ -62,7 +67,111 @@ def test_get_ffmpeg_args_downmixes_multichannel_for_single_channel_output() -> N
     args = get_ffmpeg_args(input_format, output_format, ["pan=mono|c0=0.5*FL+0.5*FR"])
 
     filter_graph = args[args.index("-af") + 1]
-    assert filter_graph.index("pan=stereo|FL=") < filter_graph.index("pan=mono|c0=0.5*FL+0.5*FR")
+    assert filter_graph.index("aformat=channel_layouts=stereo") < filter_graph.index(
+        "pan=mono|c0=0.5*FL+0.5*FR"
+    )
+
+
+def _split_at_input(args: list[str]) -> tuple[list[str], list[str]]:
+    """Split generated ffmpeg args into the part describing the input and the output."""
+    idx = args.index("-i")
+    return args[:idx], args[idx + 2 :]
+
+
+@pytest.mark.parametrize(
+    ("channels", "expected_layout"),
+    [(1, "mono"), (2, "stereo")],
+)
+def test_get_ffmpeg_args_names_layout_up_to_stereo(channels: int, expected_layout: str) -> None:
+    """Mono and stereo PCM are described by both their channel count and their layout."""
+    fmt = AudioFormat(
+        content_type=ContentType.PCM_S24LE,
+        sample_rate=48000,
+        bit_depth=24,
+        channels=channels,
+    )
+
+    input_args, output_args = _split_at_input(get_ffmpeg_args(fmt, fmt, []))
+
+    for part in (input_args, output_args):
+        assert part[part.index("-ac") + 1] == str(channels)
+        assert part[part.index("-channel_layout") + 1] == expected_layout
+
+
+def test_get_ffmpeg_args_omits_layout_above_stereo() -> None:
+    """Surround PCM is described by its channel count alone, never as a stereo layout."""
+    fmt = AudioFormat(
+        content_type=ContentType.PCM_S24LE,
+        sample_rate=48000,
+        bit_depth=24,
+        channels=6,
+    )
+
+    input_args, output_args = _split_at_input(get_ffmpeg_args(fmt, fmt, []))
+
+    for part in (input_args, output_args):
+        assert part[part.index("-ac") + 1] == "6"
+        assert "-channel_layout" not in part
+
+
+def test_multichannel_pcm_folds_down_without_stretching(tmp_path: Path) -> None:
+    """Raw surround PCM keeps its real width and length, and its rear channels survive."""
+    source = tmp_path / "surround.pcm"
+    out = tmp_path / "out.flac"
+    # only the rear channels carry a tone: a downmix that drops them yields silence
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffmpeg",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:duration=1:sample_rate=48000",
+            "-af",
+            "pan=5.1|BL=c0|BR=c0",
+            "-f",
+            "s16le",
+            str(source),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    pcm_format = AudioFormat(
+        content_type=ContentType.PCM_S16LE,
+        sample_rate=48000,
+        bit_depth=16,
+        channels=6,
+    )
+    output_format = AudioFormat(
+        content_type=ContentType.FLAC,
+        sample_rate=48000,
+        bit_depth=16,
+        channels=2,
+    )
+    args = get_ffmpeg_args(
+        pcm_format, output_format, [], input_path=str(source), output_path=str(out)
+    )
+
+    result = subprocess.run([*args, "-y"], capture_output=True, text=True, check=False)  # noqa: S603
+    assert result.returncode == 0, result.stderr
+
+    duration = subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "csv=p=0",
+            str(out),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert float(duration) == pytest.approx(1.0, abs=0.05)
+    assert _rms_db(out) > -40
 
 
 def _output_args(args: list[str]) -> list[str]:
@@ -333,10 +442,52 @@ _BYTES_PER_SECOND = _PCM_FORMAT.pcm_sample_size  # 1 second of PCM audio
 
 @pytest.fixture
 def overlay_file(tmp_path: Path) -> Path:
-    """Generate a 1 second sine-tone wav file to use as overlay source."""
+    """Generate a 1 second mono sine-tone wav file to use as overlay source."""
     overlay_path = tmp_path / "overlay.wav"
     subprocess.run(  # noqa: S603
         ["ffmpeg", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", str(overlay_path)],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    return overlay_path
+
+
+@pytest.fixture
+def overlay_file_stereo(tmp_path: Path) -> Path:
+    """Generate a stereo overlay wav carrying the same tone as ``overlay_file`` on both channels."""
+    overlay_path = tmp_path / "overlay_stereo.wav"
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffmpeg",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            "-af",
+            "pan=stereo|c0=c0|c1=c0",
+            str(overlay_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return overlay_path
+
+
+@pytest.fixture
+def overlay_file_wide_stereo(tmp_path: Path) -> Path:
+    """Generate a 1 second stereo overlay wav with the tone on the left channel only."""
+    overlay_path = tmp_path / "overlay_wide.wav"
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffmpeg",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            "-af",
+            "pan=stereo|c0=c0",
+            str(overlay_path),
+        ],
         check=True,
         capture_output=True,
     )
@@ -372,6 +523,31 @@ async def _silence(seconds: int) -> AsyncGenerator[bytes]:
 
 async def _collect_chunks(stream: AsyncGenerator[bytes]) -> list[bytes]:
     return [chunk async for chunk in stream]
+
+
+def _samples(pcm: bytes, channel: int | None = None) -> Sequence[int]:
+    """Return the samples of the given PCM audio, optionally for one channel only."""
+    samples = array("h")
+    samples.frombytes(pcm)
+    return samples if channel is None else samples[channel :: _PCM_FORMAT.channels]
+
+
+def _rms(samples: Sequence[int]) -> float:
+    """Return the RMS level of the given PCM samples."""
+    return sqrt(sum(sample * sample for sample in samples) / len(samples))
+
+
+async def _mix_overlay(overlay_input: Path) -> bytes:
+    """Mix the given overlay source into 1 second of silence and return the result."""
+    return b"".join(
+        await _collect_chunks(
+            get_ffmpeg_overlay_stream(
+                audio_input=_silence(1),
+                overlay_input=str(overlay_input),
+                pcm_format=_PCM_FORMAT,
+            )
+        )
+    )
 
 
 async def test_overlay_stream_mixes_loops_and_preserves_length(overlay_file: Path) -> None:
@@ -452,6 +628,70 @@ async def test_overlay_stream_trims_leading_silence(
     # without trimming, the first second would be the overlay's silent intro;
     # the trim makes the tone play from the start, so the first second has signal
     assert any(output)
+
+
+async def test_overlay_stream_level_is_independent_of_source_channel_count(
+    overlay_file: Path, overlay_file_stereo: Path
+) -> None:
+    """A mono overlay source mixes in at the same level as an identical stereo one."""
+    mono_level = _rms(_samples(await _mix_overlay(overlay_file)))
+    stereo_level = _rms(_samples(await _mix_overlay(overlay_file_stereo)))
+    assert mono_level > 0
+    # left to FFmpeg, the mono source would be spread at 1/sqrt(2) per channel
+    # and land a factor sqrt(2) (3 dB) below the stereo one
+    assert mono_level == pytest.approx(stereo_level, rel=0.02)
+
+
+async def test_overlay_stream_preserves_stereo_image(overlay_file_wide_stereo: Path) -> None:
+    """A stereo overlay keeps its channels apart instead of being folded to dual mono."""
+    output = await _mix_overlay(overlay_file_wide_stereo)
+    # the source carries the tone on the left only, so a fold would leak it into the right
+    assert _rms(_samples(output, channel=0)) > 0
+    assert not any(_samples(output, channel=1))
+
+
+# -- overlay volume filter --
+
+
+def test_overlay_volume_filter_compensates_only_for_a_stereo_output() -> None:
+    """Only the widening to stereo costs a mono source level, so only there is it scaled up."""
+    stereo_output = _get_overlay_volume_filter(100, 2)
+    assert "nb_channels" in stereo_output
+    # a comma would read as the end of this filter in the graph
+    assert "," not in stereo_output
+    # a mono source keeps its level when it is widened further, or not at all
+    assert _get_overlay_volume_filter(100, 1) == "volume=1.0"
+    assert _get_overlay_volume_filter(60, 6) == "volume=0.6"
+
+
+def test_overlay_mixer_loops_its_source() -> None:
+    """The overlay source is looped for as long as the main stream runs."""
+    (overlay,) = _build_overlay_mixer("/sound.wav", _PCM_FORMAT, 100).inputs
+    # a local file has nothing to reconnect to
+    assert overlay.input_args == ["-stream_loop", "-1"]
+
+
+def test_overlay_mixer_reconnects_for_http_sources() -> None:
+    """An http overlay source additionally gets the reconnect options."""
+    (overlay,) = _build_overlay_mixer("http://host/sound.mp3", _PCM_FORMAT, 100).inputs
+    assert "-reconnect" in overlay.input_args
+    assert overlay.input_args[-2:] == ["-stream_loop", "-1"]
+
+
+def test_overlay_args_probe_the_main_input_and_add_no_filters() -> None:
+    """Both inputs are read under our own limits and no filter is injected on top."""
+    args = get_ffmpeg_args(
+        _PCM_FORMAT, _PCM_FORMAT, [_build_overlay_mixer("/sound.wav", _PCM_FORMAT, 100)]
+    )
+    main_input = args.index("-i")
+    # the limits must reach the main input, which is the first one, and the overlay
+    assert args.index("-probesize") < main_input
+    assert args.count("-probesize") == 2
+    assert args.index("-stream_loop") > main_input
+    # the overlay format matches the output, so nothing gets resampled or reconformed
+    assert "-af" not in args
+    assert args.count("-filter_complex") == 1
+    assert not any(arg.startswith(("pan=", "aresample=resampler=")) for arg in args)
 
 
 # -- _log_reader_task (decode-error flood guard) --
@@ -630,7 +870,7 @@ def test_build_filtergraph_single_complex_fragment() -> None:
         [ComplexFilter("afir=irnorm=1", [ComplexFilterInput("/ir.wav", "aresample=48000")])]
     )
     assert result == (
-        ["-i", "/ir.wav"],
+        [*_INPUT_READ_ARGS, "-i", "/ir.wav"],
         [
             "-filter_complex",
             "[1:a]aresample=48000[dsp1];[0:a][dsp1]afir=irnorm=1[dsp2]",
@@ -650,7 +890,7 @@ def test_build_filtergraph_complex_between_simple_runs() -> None:
         ]
     )
     assert result == (
-        ["-i", "/ir.wav"],
+        [*_INPUT_READ_ARGS, "-i", "/ir.wav"],
         [
             "-filter_complex",
             "[0:a]equalizer=x[dsp1];[1:a]aresample=48000[dsp2];"
@@ -667,8 +907,24 @@ def test_build_filtergraph_multiple_inputs() -> None:
         [ComplexFilter("amerge", [ComplexFilterInput("/a.wav"), ComplexFilterInput("/b.wav")])]
     )
     assert result == (
-        ["-i", "/a.wav", "-i", "/b.wav"],
+        [*_INPUT_READ_ARGS, "-i", "/a.wav", *_INPUT_READ_ARGS, "-i", "/b.wav"],
         ["-filter_complex", "[0:a][1:a][2:a]amerge[dsp1]", "-map", "[dsp1]"],
+    )
+
+
+def test_build_filtergraph_input_args_precede_the_input() -> None:
+    """An input's own ffmpeg options are emitted directly before its -i."""
+    result = _build_filtergraph_args(
+        [
+            ComplexFilter(
+                "amix=inputs=2",
+                [ComplexFilterInput("/loop.wav", input_args=["-stream_loop", "-1"])],
+            )
+        ]
+    )
+    assert result == (
+        [*_INPUT_READ_ARGS, "-stream_loop", "-1", "-i", "/loop.wav"],
+        ["-filter_complex", "[0:a][1:a]amix=inputs=2[dsp1]", "-map", "[dsp1]"],
     )
 
 
@@ -698,8 +954,8 @@ def test_get_ffmpeg_args_uses_filter_complex_with_complex_filter() -> None:
     assert args.index("/ir.wav") > args.index("-i")
 
 
-def _wav_rms_db(path: Path) -> float:
-    """Return the overall RMS level of a wav file in dB via ffmpeg astats."""
+def _rms_db(path: Path) -> float:
+    """Return the overall RMS level of an audio file in dB via ffmpeg astats."""
     output = subprocess.run(  # noqa: S603
         [  # noqa: S607
             "ffmpeg",
@@ -780,7 +1036,7 @@ def test_filtergraph_complex_runs_in_ffmpeg(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert out.exists()
     # identity IR => output level matches input level
-    assert abs(_wav_rms_db(out) - _wav_rms_db(main)) < 0.5
+    assert abs(_rms_db(out) - _rms_db(main)) < 0.5
 
 
 def test_mono_source_keeps_its_level_when_widened_to_stereo(tmp_path: Path) -> None:
@@ -812,4 +1068,4 @@ def test_mono_source_keeps_its_level_when_widened_to_stereo(tmp_path: Path) -> N
     result = subprocess.run(args, capture_output=True, text=True, check=False)  # noqa: S603
 
     assert result.returncode == 0, result.stderr
-    assert abs(_wav_rms_db(out) - _wav_rms_db(main)) < 0.5
+    assert abs(_rms_db(out) - _rms_db(main)) < 0.5
