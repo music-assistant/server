@@ -26,6 +26,12 @@ from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.controllers.music.recency import RecencySnapshot
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.models.plugin import AIEngine, PluginProvider
+from music_assistant.providers.music_quiz.ai_distractors import (
+    AI_QUERY_TIMEOUT_SECONDS,
+    MAX_AI_PROMPT_BYTES,
+    MAX_AI_RESPONSE_BYTES,
+    MAX_AI_RESPONSE_LINES,
+)
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import (
     DEFAULT_TRIVIA_LANGUAGE,
@@ -39,9 +45,6 @@ from music_assistant.providers.music_quiz.quiz_types import get_quiz_type
 from music_assistant.providers.music_quiz.quiz_types.base import MAX_SUGGESTION_COUNT
 from music_assistant.providers.music_quiz.quiz_types.trivia import (
     AI_GENERATION_ATTEMPTS,
-    AI_QUERY_TIMEOUT_SECONDS,
-    MAX_AI_PROMPT_BYTES,
-    MAX_AI_RESPONSE_BYTES,
     MAX_ANSWER_LENGTH,
     MAX_METADATA_VALUE_LENGTH,
     MAX_QUESTION_LENGTH,
@@ -1405,12 +1408,28 @@ def test_strict_generation_parser_accepts_fenced_response(fence: str) -> None:
     )
 
 
-def test_strict_generation_parser_limits_the_original_response() -> None:
-    """Enforce the response size limit before a code fence is stripped."""
+def test_strict_generation_parser_enforces_size_and_line_limits() -> None:
+    """Reject responses outside their explicit resource limits."""
     quiz, _ = _quiz([])
+    oversized_response = "x" * (MAX_AI_RESPONSE_BYTES + 1)
+    too_many_lines = "\n".join("{}" for _ in range(MAX_AI_RESPONSE_LINES + 1))
 
     with pytest.raises(ValueError, match="size"):
-        quiz._parse_generation(f"```json\n{'x' * MAX_AI_RESPONSE_BYTES}\n```", _artist_fact())
+        quiz._parse_generation(oversized_response, _artist_fact())
+    with pytest.raises(ValueError, match="line"):
+        quiz._parse_generation(too_many_lines, _artist_fact())
+
+
+def test_strict_generation_parser_limits_the_original_response() -> None:
+    """Enforce the size and line limits before a code fence is stripped."""
+    quiz, _ = _quiz([])
+    oversized_response = f"```json\n{'x' * MAX_AI_RESPONSE_BYTES}\n```"
+    too_many_lines = "```json\n" + "\n".join("{}" for _ in range(MAX_AI_RESPONSE_LINES)) + "\n```"
+
+    with pytest.raises(ValueError, match="size"):
+        quiz._parse_generation(oversized_response, _artist_fact())
+    with pytest.raises(ValueError, match="line"):
+        quiz._parse_generation(too_many_lines, _artist_fact())
 
 
 @pytest.mark.asyncio
