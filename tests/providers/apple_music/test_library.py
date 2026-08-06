@@ -15,6 +15,7 @@ from music_assistant_models.media_items import (
 )
 
 from music_assistant.providers.apple_music.library import (
+    _DETAIL_BATCH_SIZE,
     _MAX_SEARCH_FALLBACK_PER_WINDOW,
     _TRACK_SYNC_WINDOW,
     AppleMusicLibraryManager,
@@ -498,3 +499,53 @@ async def test_search_replacement_skips_item_mappings() -> None:
 
     # Should return None since ItemMapping should be skipped
     assert result is None
+
+
+def _make_library_only_manager(
+    items: list[dict[str, Any]],
+) -> tuple[AppleMusicLibraryManager, list[tuple[str, dict[str, Any]]]]:
+    """Build a manager streaming library-only songs, recording every api call it makes."""
+    provider = MagicMock()
+    provider.domain = "apple_music"
+    provider.instance_id = "apple_music--test"
+    provider._storefront = "us"
+    api = provider.api_client
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def _iter(*_args: Any, **_kwargs: Any) -> Any:
+        for item in items:
+            yield item
+
+    async def _get_data(endpoint: str, **kwargs: Any) -> dict[str, Any]:
+        calls.append((endpoint, kwargs))
+        requested = kwargs.get("ids", "").split(",") if kwargs.get("ids") else []
+        return {
+            "data": [
+                _library_song_with_metadata(
+                    int(item_id.split(".")[1]), catalog_id=None, album_name=f"Album {item_id}"
+                )
+                for item_id in requested
+            ]
+        }
+
+    api.iter_all_items = _iter
+    api.get_data = AsyncMock(side_effect=_get_data)
+    api.get_ratings = AsyncMock(return_value={})
+    return AppleMusicLibraryManager(provider), calls
+
+
+@pytest.mark.asyncio
+async def test_library_only_detail_fetches_are_batched() -> None:
+    """Weak-mapped library-only tracks are enriched in batches, not one request per track."""
+    count = 250
+    items = [_library_song(idx, catalog_id=None) for idx in range(count)]
+    manager, calls = _make_library_only_manager(items)
+
+    tracks = [track async for track in manager.get_library_tracks()]
+
+    assert len(tracks) == count
+    # two windows (150 + 100), each batching its weak-mapped tracks at _DETAIL_BATCH_SIZE
+    assert len(calls) == 3
+    assert all(len(kwargs["ids"].split(",")) <= _DETAIL_BATCH_SIZE for _endpoint, kwargs in calls)
+    # the batched detail response still resolves the album that the listing lacked
+    assert all(track.album is not None for track in tracks)

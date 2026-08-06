@@ -18,8 +18,11 @@ if TYPE_CHECKING:
 
     from .provider import AppleMusicProvider
 
-# Tracks carry heavy includes, so they page smaller than the library default.
-_TRACK_PAGE_SIZE = 30
+# 100 is the maximum Apple accepts; the heavy includes only cost ~20% latency per page.
+_TRACK_PAGE_SIZE = 100
+
+# Detail lookups for weak-mapped library tracks go out in batches of this many ids.
+_DETAIL_BATCH_SIZE = 100
 
 # Catalog enrichment batch size: 300 (the documented max) returns a 504, so cap at 150. This also
 # bounds the in-flight window, keeping a ~100k library from being materialized at once.
@@ -115,24 +118,15 @@ class AppleMusicLibraryManager:
             and not is_catalog_id(album_item_id)
         )
 
-    async def _parse_library_track_with_detail_fallback(
-        self, item: dict[str, Any], is_favourite: bool | None
+    def _apply_album_detail(
+        self,
+        item: dict[str, Any],
+        parsed_track: Track,
+        detail: dict[str, Any],
+        is_favourite: bool | None,
     ) -> Track:
-        """Parse library track and fetch detail when album mapping is weak."""
-        parsed_track = parse_track(self.provider, item, is_favourite)
-        initial_is_weak = self._track_has_weak_album_mapping(parsed_track)
-        if not initial_is_weak:
-            return parsed_track
-        try:
-            detail_response = await self.api.get_data(
-                f"me/library/songs/{item['id']}", include="catalog,albums,artists"
-            )
-        except MusicAssistantError as err:
-            self.logger.debug("Unable to fetch library song details for %s: %s", item["id"], err)
-            return parsed_track
-        if not detail_response.get("data"):
-            return parsed_track
-        detailed_track = parse_track(self.provider, detail_response["data"][0], is_favourite)
+        """Return the detail-based track when it resolves the album the listing lacked."""
+        detailed_track = parse_track(self.provider, detail, is_favourite)
         if self._track_has_weak_album_mapping(detailed_track):
             # Keep detail album fallback if list had no album.
             if not parsed_track.album and detailed_track.album:
@@ -378,6 +372,33 @@ class AppleMusicLibraryManager:
             return
         library_ids = [item["id"] for item in library_only_items if item and item["id"]]
         rating_response = await self.api.get_ratings(library_ids, MediaType.TRACK)
-        for item in library_only_items:
-            is_favourite = rating_response.get(item["id"])
-            yield await self._parse_library_track_with_detail_fallback(item, is_favourite)
+        parsed_tracks = [
+            (item, parse_track(self.provider, item, rating_response.get(item["id"])))
+            for item in library_only_items
+        ]
+        details = await self._fetch_library_song_details(
+            [item["id"] for item, track in parsed_tracks if self._track_has_weak_album_mapping(track)]
+        )
+        for item, parsed_track in parsed_tracks:
+            if (detail := details.get(item["id"])) is None:
+                yield parsed_track
+                continue
+            yield self._apply_album_detail(
+                item, parsed_track, detail, rating_response.get(item["id"])
+            )
+
+    async def _fetch_library_song_details(self, library_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """Return the detailed library-song items for the given ids, keyed by id."""
+        details: dict[str, dict[str, Any]] = {}
+        for offset in range(0, len(library_ids), _DETAIL_BATCH_SIZE):
+            batch = library_ids[offset : offset + _DETAIL_BATCH_SIZE]
+            try:
+                response = await self.api.get_data(
+                    "me/library/songs", ids=",".join(batch), include="catalog,albums,artists"
+                )
+            except MusicAssistantError as err:
+                # the listing parse stays usable, so a failed batch only costs album detail
+                self.logger.debug("Unable to fetch library song details: %s", err)
+                continue
+            details.update({item["id"]: item for item in response.get("data", []) if item.get("id")})
+        return details
