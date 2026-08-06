@@ -2595,7 +2595,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         # the user context of whichever command happens to trigger the lookup. A group
         # player mirrors its members, so it is also included while unavailable -
         # skipping it there is exactly how its state goes stale. Disabled players take
-        # no part at all and players still registering have no config yet.
+        # no part at all and players still registering are not fully set up yet.
         player_id = player.player_id
         for _player in list(self._players.values()):
             if _player.player_id == player_id:
