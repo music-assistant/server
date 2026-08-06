@@ -496,15 +496,24 @@ class QuizType(ABC):
         :param musicbrainz: The loaded MusicBrainz provider.
         :param track: Track to date.
         """
-        # an ISRC identifies the exact recording, so it is always the better evidence and
-        # the search below is only reached when it is absent or MusicBrainz does not know it
+        isrc_year: int | None = None
         if isrc := track.get_external_id(ExternalID.ISRC):
-            if (release_year := await musicbrainz.get_release_year_by_isrc(isrc)) is not None:
-                return release_year
+            isrc_year = await musicbrainz.get_release_year_by_isrc(isrc)
+        # both lookups can date a song late on their own: a remaster gets a new ISRC, and the
+        # name search dates a release group by the oldest release it finds for it. Taking the
+        # oldest of the two answers cancels a good part of that, but an ISRC year that is not
+        # later than the year the library already carries shows no sign of a remaster and is
+        # not worth a second request
+        library_year = get_track_release_year(track)
+        if isrc_year is not None and library_year is not None and isrc_year <= library_year:
+            return isrc_year
         artist_name = track.artists[0].name if track.artists else None
         if not artist_name or not track.name:
-            return None
-        return await musicbrainz.get_release_year_by_track_name(artist_name, track.name)
+            return isrc_year
+        name_year = await musicbrainz.get_release_year_by_track_name(artist_name, track.name)
+        if name_year is None:
+            return isrc_year
+        return name_year if isrc_year is None else min(isrc_year, name_year)
 
 
 def get_track_release_year(track: Track) -> int | None:
