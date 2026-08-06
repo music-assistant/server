@@ -1084,7 +1084,8 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         best_per_title: dict[str, PlexTrack] = {}
         for plex_track in plex_tracks:
             if not plex_track.ratingCount:
-                # Plex ranks on scrobble count, so a track without one has no rank
+                # ratingCount is the Last.fm scrobble count popularTracks() ranks on,
+                # so a track without one has no rank. viewCount is local plays instead.
                 continue
             title = (plex_track.title or "").casefold()
             best = best_per_title.get(title)
