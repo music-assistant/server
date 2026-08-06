@@ -284,14 +284,6 @@ class UniversalGroupPlayer(Player):
             self._attr_group_members = self._attr_static_group_members.copy()
         self.update_state()
 
-    async def volume_set(self, volume_level: int) -> None:
-        """Send VOLUME_SET command to given player."""
-        # group volume is already handled in the player manager
-
-    async def volume_mute(self, muted: bool) -> None:
-        """Send VOLUME_MUTE command to given player."""
-        # group mute is already handled in the player manager
-
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
         # form on play: cancel any pending idle-grace release, then capture the
