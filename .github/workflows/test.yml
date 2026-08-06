@@ -170,6 +170,10 @@ jobs:
         # those provider packages; mode=full runs everything with full coverage.
         # --dist loadfile keeps each test file on one xdist worker: snapshot updates
         # never race on an .ambr file and module-scoped fixtures are reused.
+        # --max-worker-restart=0: with loadfile, replacing a worker that died on a native
+        # crash leaves the controller blocked on its event queue forever, so the job only
+        # ends at its 30m cap with no summary. Shutting down instead fails in seconds and
+        # names the crashing test; a crashed worker invalidates the run either way.
         env:
           MODE: ${{ needs.changes.outputs.mode }}
           TEST_PATHS: ${{ needs.changes.outputs.test_paths }}
@@ -199,7 +203,7 @@ jobs:
           # it in the saved snapshot so it is never evicted.
           setpriv --reuid=tester --regid=tester --init-groups \
             env HOME=/home/tester \
-            pytest -p numpy -n auto --dist loadfile --durations 10 $cov --cov-report=term-missing --cov-report=xml $targets
+            pytest -p numpy -n auto --dist loadfile --max-worker-restart=0 --durations 10 $cov --cov-report=term-missing --cov-report=xml $targets
       - name: Upload coverage to Codecov
         if: ${{ !github.event.pull_request.head.repo.fork }}
         uses: codecov/codecov-action@v7
