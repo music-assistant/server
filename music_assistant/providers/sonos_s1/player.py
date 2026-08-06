@@ -97,7 +97,8 @@ class SonosPlayer(Player):
         self._subscription_lock: asyncio.Lock | None = None
         self._last_activity: float = NEVER_TIME
         self._resub_cooldown_expires_at: float | None = None
-        self._poll_task_id = f"sonos_poll_{soco.uid}"
+        self._poll_task_id: str = f"sonos_poll_{self.player_id}"
+        self._unloaded: bool = False
 
     @property
     def missing_subscriptions(self) -> set[str]:
@@ -133,6 +134,9 @@ class SonosPlayer(Player):
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
         await super().on_unload()
+        # a poll already running in its worker thread cannot be interrupted, so the flag
+        # is what keeps its results from reaching a player the controller no longer has
+        self._unloaded = True
         # cancel_timer only reaches a poll that is still pending: once the timer fired,
         # the poll runs as a task under the same id and cancel_task is what stops it
         self.mass.cancel_timer(self._poll_task_id)
@@ -366,6 +370,8 @@ class SonosPlayer(Player):
 
     def update_player(self, signal_update: bool = True) -> None:
         """Update Sonos Player."""
+        if self._unloaded:
+            return
         self._update_attributes()
         if signal_update:
             # send update to the player manager right away only if we are triggered from an event
@@ -427,13 +433,16 @@ class SonosPlayer(Player):
         if not self._subscriptions:
             return
         self.logger.log(VERBOSE_LOG_LEVEL, "Unsubscribing from events for %s", self.display_name)
+        # drop the subscriptions before awaiting: if the unsubscribe is cancelled midway
+        # they would stay behind as stale entries, and subscribe() skips the services it
+        # believes are still subscribed, leaving the speaker without events entirely
+        subscriptions, self._subscriptions = self._subscriptions, []
         results = await asyncio.gather(
-            *(subscription.unsubscribe() for subscription in self._subscriptions),
+            *(subscription.unsubscribe() for subscription in subscriptions),
             return_exceptions=True,
         )
         for result in results:
             self.log_subscription_result(result, "Unsubscribe")
-        self._subscriptions = []
 
     def update_groups(self) -> None:
         """Update group topology when polling."""
@@ -500,6 +509,8 @@ class SonosPlayer(Player):
 
         async def _handle_group_event(event: SonosEvent | None) -> None:
             """Get async lock and handle event."""
+            if self._unloaded:
+                return
             _provider = cast("SonosPlayerProvider", self._provider)
             async with _provider.topology_condition:
                 group = await _extract_group(event)

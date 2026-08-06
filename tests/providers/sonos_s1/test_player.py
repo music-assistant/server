@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from functools import partial
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,7 +14,11 @@ from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import PlayerMedia
 from music_assistant.providers.sonos_s1 import player as player_module
-from music_assistant.providers.sonos_s1.constants import POLL_INTERVAL, TRANSITION_POLL_INTERVAL
+from music_assistant.providers.sonos_s1.constants import (
+    POLL_INTERVAL,
+    SUBSCRIPTION_SERVICES,
+    TRANSITION_POLL_INTERVAL,
+)
 from music_assistant.providers.sonos_s1.player import SonosPlayer
 
 if TYPE_CHECKING:
@@ -63,6 +68,7 @@ def _make_player(mass: MusicAssistant, uid: str, name: str) -> SonosPlayer:
     """Create a SonosPlayer bound to the given MusicAssistant."""
     provider = MagicMock()
     provider.mass = mass
+    provider.topology_condition = asyncio.Condition()
     return SonosPlayer(provider=provider, soco=_make_soco(uid, name))
 
 
@@ -226,3 +232,54 @@ async def test_unload_cancels_a_poll_that_already_started(
 
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+async def test_unloaded_player_ignores_results_from_a_running_poll(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A poll left running in its worker thread cannot update an unloaded speaker."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    await player.on_unload()
+
+    with patch.object(player, "_update_attributes") as update_attributes:
+        player.update_player()
+
+    update_attributes.assert_not_called()
+
+
+async def test_unloaded_player_ignores_group_topology_updates(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A group update raised by a running poll cannot update an unloaded speaker."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    # let the speaker report itself as coordinator of a two-speaker group, so a
+    # topology update would regroup and signal the change if it were not unloaded
+    member = MagicMock(uid="RINCON_000E58BBBBBB01400", is_visible=True)
+    player.soco.group.coordinator.uid = player.player_id
+    player.soco.group.members = [player.soco.group.coordinator, member]
+    await player.on_unload()
+
+    with patch.object(player, "update_state") as update_state:
+        await player.create_update_groups_coro()
+        await asyncio.sleep(0)
+
+    assert player.group_members == []
+    update_state.assert_not_called()
+
+
+async def test_unsubscribe_drops_subscriptions_even_when_cancelled() -> None:
+    """A cancelled unsubscribe must not leave stale entries that block resubscribing."""
+    provider = MagicMock()
+    player = SonosPlayer(provider=provider, soco=_make_soco())
+    subscription = MagicMock()
+    subscription.unsubscribe = AsyncMock(side_effect=partial(asyncio.sleep, 5))
+    player._subscriptions = [subscription]
+
+    task = asyncio.create_task(player.unsubscribe())
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert player._subscriptions == []
+    assert player.missing_subscriptions == SUBSCRIPTION_SERVICES
