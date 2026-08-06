@@ -118,6 +118,9 @@ SUBSCRIPTION_SERVICES = {
 # Timing Constants
 NEVER_TIME = 0
 RESUB_COOLDOWN_SECONDS = 10.0
+# S1 speakers apply a command a moment after acknowledging it, so the resulting state is
+# read back with a short delay instead of trusting the response to the command itself.
+COMMAND_POLL_DELAY = 2
 
 # Position/Duration Keys
 DURATION_SECONDS = "duration_in_s"
