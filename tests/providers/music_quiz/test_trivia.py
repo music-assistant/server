@@ -1354,6 +1354,27 @@ def test_strict_generation_parser_accepts_exact_valid_shape() -> None:
     )
 
 
+@pytest.mark.parametrize("fence", ["```json", "```"])
+def test_strict_generation_parser_accepts_fenced_response(fence: str) -> None:
+    """Parse a valid response wrapped in a code fence with or without a language tag."""
+    quiz, _ = _quiz([])
+
+    result = quiz._parse_generation(f"{fence}\n{_valid_response()}\n```\n", _artist_fact())
+
+    assert result == TriviaGeneration(
+        question="Which artist recorded this selected track?",
+        wrong_answers=("Portishead", "Radiohead", "Air"),
+    )
+
+
+def test_strict_generation_parser_limits_the_original_response() -> None:
+    """Enforce the response size limit before a code fence is stripped."""
+    quiz, _ = _quiz([])
+
+    with pytest.raises(ValueError, match="size"):
+        quiz._parse_generation(f"```json\n{'x' * MAX_AI_RESPONSE_BYTES}\n```", _artist_fact())
+
+
 @pytest.mark.asyncio
 async def test_generation_repairs_duplicate_answers_from_cached_grounding() -> None:
     """Keep valid AI answers and fill duplicate slots without another AI or source call."""
@@ -1770,6 +1791,8 @@ def test_answer_leak_detection_supports_non_space_scripts(
             }
         ),
         "x" * (MAX_AI_RESPONSE_BYTES + 1),
+        "```json\nnot json\n```",
+        "Here is the JSON you asked for:\n```json\n" + _valid_response() + "\n```",
         42,
     ],
 )
