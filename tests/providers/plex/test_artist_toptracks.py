@@ -63,10 +63,14 @@ def _make_provider(plex_artist: _FakePlexArtist) -> Any:
     mock_manifest.domain = "plex"
 
     provider = PlexProvider(MagicMock(), mock_manifest, mock_config, SUPPORTED_FEATURES)
-    provider._get_data = AsyncMock(return_value=plex_artist)
-    provider._run_async = AsyncMock(side_effect=lambda call, *args, **kwargs: call(*args, **kwargs))
+    provider._get_data = AsyncMock(return_value=plex_artist)  # type: ignore[method-assign]
+    provider._run_async = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda call, *args, **kwargs: call(*args, **kwargs)
+    )
     # parsing is covered elsewhere; return the key so ordering is easy to assert
-    provider._parse_track = AsyncMock(side_effect=lambda plex_track: plex_track.key)
+    provider._parse_track = AsyncMock(  # type: ignore[method-assign]
+        side_effect=lambda plex_track: plex_track.key
+    )
     return provider
 
 
