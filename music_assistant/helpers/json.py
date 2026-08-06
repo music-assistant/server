@@ -86,9 +86,10 @@ def strip_code_fence(text: str) -> str:
     Remove a markdown code fence that wraps an entire text, plus surrounding whitespace.
 
     Anything else is returned with only its whitespace trimmed: a fence around part of
-    the text, more than one fenced block, an unterminated fence, or a fence whose opening
-    line carries more than a language tag. Text that is not exactly one fenced block
-    therefore stays as invalid to a strict parser as it was before.
+    the text, more than one fenced block, an unterminated fence, a fence whose opening
+    line carries more than a language tag, or a body containing the fence itself. Text
+    that is not exactly one fenced block therefore stays as invalid to a strict parser
+    as it was before.
 
     :param text: Text that may be wrapped in a markdown code fence.
     :return: The fenced content, or the trimmed text when it is not a single fenced block.
@@ -101,8 +102,8 @@ def strip_code_fence(text: str) -> str:
     inner = stripped[fence_length:]
     if not inner.endswith(fence):
         return stripped
-    # A closing fence must be the final run of backticks, matching the opening length.
     inner = inner[:-fence_length]
+    # A closing fence must be the final run of backticks, matching the opening length.
     if inner.endswith("`"):
         return stripped
     tag, separator, body = inner.partition("\n")

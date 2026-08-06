@@ -50,10 +50,10 @@ def test_strip_code_fence_only_trims_whitespace_of_other_text(text: str) -> None
 
 def test_strip_code_fence_handles_long_backtick_runs() -> None:
     """
-    Return a long run of backticks unchanged, without scanning for a fence body.
+    Return long runs of backticks unchanged instead of scanning them for a fence body.
 
-    Guards the linear scan: matching a fence with a backtracking pattern made such input
-    take seconds, which would block the event loop for a caller parsing an AI response.
+    Matching a fence with a backtracking pattern took seconds on these, which would block
+    the event loop of a caller parsing an AI response.
     """
     assert strip_code_fence("`" * 4096) == "`" * 4096
     assert strip_code_fence("`" * 4087 + "jsonjson") == "`" * 4087 + "jsonjson"
