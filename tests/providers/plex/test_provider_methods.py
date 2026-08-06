@@ -430,12 +430,10 @@ class TestStreamDetailsGuards:
         assert result.audio_format.bit_rate is None
 
     @pytest.mark.asyncio
-    async def test_music_stream_without_analysis_metadata_uses_original_download(
-        self,
-    ) -> None:
-        """Tracks missing analysis metadata should keep their original stream format."""
+    async def test_music_stream_transcode_without_size_uses_download(self) -> None:
+        """Tracks without an analyzed size should keep the direct download fallback."""
         provider = _make_provider(stream_quality=STREAM_QUALITY_128)
-        plex_track = _make_stream_track(has_audio_streams=False)
+        plex_track = _make_stream_track()
         plex_track.media[0].parts[0].size = None
         provider._get_data = AsyncMock(return_value=plex_track)
         provider._plex_server.url.return_value = "http://plex.local/file.flac?download=1"

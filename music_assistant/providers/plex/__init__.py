@@ -1017,7 +1017,11 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
             allow_seek=True,
         )
 
-        if (quality_bitrate := self._get_stream_quality_bitrate()) and audio_stream:
+        if (
+            (quality_bitrate := self._get_stream_quality_bitrate())
+            and audio_stream
+            and media_part.size
+        ):
             stream_details.path = self._get_transcode_url(plex_track, quality_bitrate)
             stream_details.stream_type = StreamType.HLS
             stream_details.audio_format.content_type = ContentType.OPUS
