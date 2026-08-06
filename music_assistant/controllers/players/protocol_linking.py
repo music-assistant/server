@@ -1735,9 +1735,9 @@ class ProtocolLinkingMixin:
                     return protocol_player, linked
 
         # 2. Check for user's preferred output protocol.
-        # The value is only stored while it differs from the entry's default, which is
-        # computed per player ("native" when a native output is available, otherwise "auto").
-        # An absent value therefore means "no explicit preference" and falls through below.
+        # The value is only stored while it differs from the entry's default, which is computed
+        # per player: "native" when a native output is available, otherwise "auto". Both of those
+        # are handled identically by the steps below, so an absent value can safely fall through.
         preferred = self.mass.config.get_raw_player_config_value(
             player.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
         )
