@@ -7,7 +7,7 @@ import os
 import platform
 import plistlib
 import re
-from fnmatch import fnmatch
+from fnmatch import fnmatchcase
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientError, ClientTimeout
@@ -179,10 +179,13 @@ def default_buffer_depth(manufacturer: str, model: str, fv: str | None) -> int:
     :param fv: The device's _airplay fv (firmware) TXT record, when known.
     """
     for manufacturer_match, model_match, fv_match, depth_ms in AIRPLAY_BUFFER_DEPTH_DEFAULTS:
+        # fnmatchcase with both sides lowered: plain fnmatch only normalizes
+        # case on case-insensitive platforms, so a capitalized table row would
+        # match on macOS and silently fail on Linux.
         if (
-            fnmatch(manufacturer.lower(), manufacturer_match)
-            and fnmatch(model.lower(), model_match)
-            and fnmatch((fv or "").lower(), fv_match)
+            fnmatchcase(manufacturer.lower(), manufacturer_match.lower())
+            and fnmatchcase(model.lower(), model_match.lower())
+            and fnmatchcase((fv or "").lower(), fv_match.lower())
         ):
             return depth_ms
     return 0
