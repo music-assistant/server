@@ -114,6 +114,20 @@ def test_missing_stored_image_is_stale() -> None:
     assert prov._stored_details_differ(entry, lookup) is True
 
 
+def test_stored_image_as_another_type_is_stale() -> None:
+    """The stored image only counts as present when it is the thumbnail that shows."""
+    prov = _make_provider()
+    entry = _make_entry(image_path=STREAM_URL)
+    entry.images.append(
+        ImageInfo(
+            type=ImageType.FANART.value, path="http://img.example.com/logo.png", provider="builtin"
+        )
+    )
+
+    lookup = _stored(image_url="http://img.example.com/logo.png")
+    assert prov._stored_details_differ(entry, lookup) is True
+
+
 def test_stored_item_without_image_is_not_stale() -> None:
     """Cover art from the stream stays as long as the user set no image of their own."""
     prov = _make_provider()

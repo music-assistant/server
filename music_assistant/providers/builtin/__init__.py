@@ -1017,7 +1017,12 @@ class BuiltinProvider(MusicProvider):
         # a stored item without an image is not a difference: cover art from the stream
         # is a valid fallback for as long as the user has set no image of their own
         if image_url := stored_item.get("image_url"):
-            return not any(image.path == image_url for image in item.images)
+            # only the thumbnail counts: the same url as another image type still leaves
+            # the stream's cover art as the one that shows
+            return not any(
+                image.type == ImageType.THUMB.value and image.path == image_url
+                for image in item.images
+            )
         return False
 
     def _restore_stored_details(
