@@ -132,6 +132,8 @@ async def test_resolve_dashboard_url_encodes_player_id() -> None:
         ("20:F8:3B:09:6B:92", "20:F8:3B:09:6B:92"),
         # alexa uses the device name the user typed, verbatim
         ("Marvin's Echo (Kitchen)!", "Marvin's+Echo+(Kitchen)!"),
+        # every remaining safe character, so the set cannot silently shrink
+        ("a*b@c,d;e$f/g", "a*b@c,d;e$f/g"),
     ],
 )
 async def test_resolve_dashboard_url_keeps_route_safe_chars_literal(
