@@ -1060,7 +1060,8 @@ class BuiltinProvider(MusicProvider):
             return
         media_item.name = stored_item["name"]
         if image_url := stored_item.get("image_url"):
-            # the stored image goes first so it wins over any cover art on the stream
+            # the stored image replaces any cover art on the stream, so exactly one
+            # thumbnail is left to serialise into a playlist entry
             media_item.metadata.images = UniqueList(
                 [
                     MediaItemImage(
@@ -1069,7 +1070,7 @@ class BuiltinProvider(MusicProvider):
                         provider=self.domain,
                         remotely_accessible=image_url.startswith("http"),
                     ),
-                    *(media_item.metadata.images or []),
+                    *(x for x in (media_item.metadata.images or []) if x.type != ImageType.THUMB),
                 ]
             )
 
