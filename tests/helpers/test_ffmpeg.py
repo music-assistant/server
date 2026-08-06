@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import subprocess
-from collections.abc import AsyncGenerator
+from array import array
+from collections.abc import AsyncGenerator, Sequence
+from math import sqrt
 from pathlib import Path
 
 import pytest
@@ -16,6 +18,7 @@ from music_assistant.helpers.ffmpeg import (
     FFMpeg,
     FFMpegStreamInfo,
     _build_filtergraph_args,
+    _get_overlay_volume_filter,
     get_ffmpeg_args,
     get_ffmpeg_overlay_stream,
     parse_ffmpeg_duration,
@@ -437,10 +440,52 @@ _BYTES_PER_SECOND = _PCM_FORMAT.pcm_sample_size  # 1 second of PCM audio
 
 @pytest.fixture
 def overlay_file(tmp_path: Path) -> Path:
-    """Generate a 1 second sine-tone wav file to use as overlay source."""
+    """Generate a 1 second mono sine-tone wav file to use as overlay source."""
     overlay_path = tmp_path / "overlay.wav"
     subprocess.run(  # noqa: S603
         ["ffmpeg", "-f", "lavfi", "-i", "sine=frequency=440:duration=1", str(overlay_path)],  # noqa: S607
+        check=True,
+        capture_output=True,
+    )
+    return overlay_path
+
+
+@pytest.fixture
+def overlay_file_stereo(tmp_path: Path) -> Path:
+    """Generate a stereo overlay wav carrying the same tone as ``overlay_file`` on both channels."""
+    overlay_path = tmp_path / "overlay_stereo.wav"
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffmpeg",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            "-af",
+            "pan=stereo|c0=c0|c1=c0",
+            str(overlay_path),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return overlay_path
+
+
+@pytest.fixture
+def overlay_file_wide_stereo(tmp_path: Path) -> Path:
+    """Generate a 1 second stereo overlay wav with the tone on the left channel only."""
+    overlay_path = tmp_path / "overlay_wide.wav"
+    subprocess.run(  # noqa: S603
+        [  # noqa: S607
+            "ffmpeg",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=1",
+            "-af",
+            "pan=stereo|c0=c0",
+            str(overlay_path),
+        ],
         check=True,
         capture_output=True,
     )
@@ -476,6 +521,31 @@ async def _silence(seconds: int) -> AsyncGenerator[bytes]:
 
 async def _collect_chunks(stream: AsyncGenerator[bytes]) -> list[bytes]:
     return [chunk async for chunk in stream]
+
+
+def _samples(pcm: bytes, channel: int | None = None) -> Sequence[int]:
+    """Return the samples of the given PCM audio, optionally for one channel only."""
+    samples = array("h")
+    samples.frombytes(pcm)
+    return samples if channel is None else samples[channel :: _PCM_FORMAT.channels]
+
+
+def _rms(samples: Sequence[int]) -> float:
+    """Return the RMS level of the given PCM samples."""
+    return sqrt(sum(sample * sample for sample in samples) / len(samples))
+
+
+async def _mix_overlay(overlay_input: Path) -> bytes:
+    """Mix the given overlay source into 1 second of silence and return the result."""
+    return b"".join(
+        await _collect_chunks(
+            get_ffmpeg_overlay_stream(
+                audio_input=_silence(1),
+                overlay_input=str(overlay_input),
+                pcm_format=_PCM_FORMAT,
+            )
+        )
+    )
 
 
 async def test_overlay_stream_mixes_loops_and_preserves_length(overlay_file: Path) -> None:
@@ -556,6 +626,40 @@ async def test_overlay_stream_trims_leading_silence(
     # without trimming, the first second would be the overlay's silent intro;
     # the trim makes the tone play from the start, so the first second has signal
     assert any(output)
+
+
+async def test_overlay_stream_level_is_independent_of_source_channel_count(
+    overlay_file: Path, overlay_file_stereo: Path
+) -> None:
+    """A mono overlay source mixes in at the same level as an identical stereo one."""
+    mono_level = _rms(_samples(await _mix_overlay(overlay_file)))
+    stereo_level = _rms(_samples(await _mix_overlay(overlay_file_stereo)))
+    assert mono_level > 0
+    # left to FFmpeg, the mono source would be spread at 1/sqrt(2) per channel
+    # and land a factor sqrt(2) (3 dB) below the stereo one
+    assert mono_level == pytest.approx(stereo_level, rel=0.02)
+
+
+async def test_overlay_stream_preserves_stereo_image(overlay_file_wide_stereo: Path) -> None:
+    """A stereo overlay keeps its channels apart instead of being folded to dual mono."""
+    output = await _mix_overlay(overlay_file_wide_stereo)
+    # the source carries the tone on the left only, so a fold would leak it into the right
+    assert _rms(_samples(output, channel=0)) > 0
+    assert not any(_samples(output, channel=1))
+
+
+# -- overlay volume filter --
+
+
+def test_overlay_volume_filter_compensates_only_for_a_stereo_output() -> None:
+    """Only the widening to stereo costs a mono source level, so only there is it scaled up."""
+    stereo_output = _get_overlay_volume_filter(100, 2)
+    assert "nb_channels" in stereo_output
+    # a comma would read as the end of this filter in the graph
+    assert "," not in stereo_output
+    # a mono source keeps its level when it is widened further, or not at all
+    assert _get_overlay_volume_filter(100, 1) == "volume=1.0"
+    assert _get_overlay_volume_filter(60, 6) == "volume=0.6"
 
 
 # -- _log_reader_task (decode-error flood guard) --
