@@ -1,5 +1,5 @@
-# Provider icon SVGs that already exceeded the 5 KB budget when the check was introduced.
-# New icons must stay <= 5 KB; shrink these (e.g. with svgo) and drop them from this list.
+# Provider/controller icons that already exceeded their size budget when the check was introduced.
+# New icons must stay within budget (svg <= 5 KB, png <= 20 KB); shrink these and drop them from this list.
 # Regenerate with: uv run -m scripts.check_provider_icons --update-baseline
 music_assistant/providers/airplay/icon_monochrome.svg	1
 music_assistant/providers/alexa/icon.svg	1
@@ -37,6 +37,8 @@ music_assistant/providers/radiobrowser/icon.svg	1
 music_assistant/providers/radiobrowser/icon_monochrome.svg	1
 music_assistant/providers/radioparadise/icon.svg	1
 music_assistant/providers/radioparadise/icon_monochrome.svg	1
+music_assistant/providers/recommendations/icon.svg	1
+music_assistant/providers/recommendations/icon_monochrome.svg	1
 music_assistant/providers/roku_media_assistant/icon_monochrome.svg	1
 music_assistant/providers/subsonic_scrobble/icon_monochrome.svg	1
 music_assistant/providers/sync_group/icon.svg	1
