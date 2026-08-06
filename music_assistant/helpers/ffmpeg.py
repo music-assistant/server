@@ -522,22 +522,20 @@ def get_ffmpeg_args(
         extra_input_args = []
     if extra_output_args is None:
         extra_output_args = []
-    # generic args
-    generic_args = [
+    # the binary plus the options that apply to the command as a whole
+    global_args = [
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
         loglevel,
         "-nostats",
         "-ignore_unknown",
-        *_INPUT_READ_ARGS,
     ]
-    # collect input args
-    if "-f" in extra_input_args:
-        # input format is already specified in the extra input args
-        input_args = extra_input_args
-    else:
-        input_args = [*extra_input_args]
+    # collect args for the main input, mirroring how _build_filtergraph_args opens the
+    # extra inputs: the read args lead the group so the caller can still override them
+    input_args = [*_INPUT_READ_ARGS, *extra_input_args]
+    if "-f" not in extra_input_args:
+        # without an input format of their own, the caller leaves the input spec to us
         if input_path.startswith("http"):
             # append reconnect options for direct stream from http
             input_args += [
@@ -656,11 +654,11 @@ def get_ffmpeg_args(
         filter_params.append(resample_filter)
 
     # a complex fragment brings its own inputs, which must follow the main input
-    extra_input_args, filter_args = (
+    filter_input_args, filter_args = (
         _build_filtergraph_args(filter_params) if filter_params else ([], [])
     )
 
-    return generic_args + input_args + extra_input_args + filter_args + extra_args + output_args
+    return global_args + input_args + filter_input_args + filter_args + extra_args + output_args
 
 
 def get_ffmpeg_channel_args(audio_format: AudioFormat) -> list[str]:
