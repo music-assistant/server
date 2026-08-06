@@ -504,7 +504,7 @@ async def test_search_replacement_skips_item_mappings() -> None:
 
 def _make_library_only_manager(
     items: list[dict[str, Any]],
-) -> tuple[AppleMusicLibraryManager, list[tuple[str, dict[str, Any]]]]:
+) -> tuple[AppleMusicLibraryManager, MagicMock, list[tuple[str, dict[str, Any]]]]:
     """Build a manager streaming library-only songs, recording every api call it makes."""
     provider = MagicMock()
     provider.domain = "apple_music"
@@ -532,7 +532,7 @@ def _make_library_only_manager(
     api.iter_all_items = _iter
     api.get_data = AsyncMock(side_effect=_get_data)
     api.get_ratings = AsyncMock(return_value={})
-    return AppleMusicLibraryManager(provider), calls
+    return AppleMusicLibraryManager(provider), provider, calls
 
 
 @pytest.mark.asyncio
@@ -540,7 +540,7 @@ async def test_library_only_detail_fetches_are_batched() -> None:
     """Weak-mapped library-only tracks are enriched in batches, not one request per track."""
     count = 250
     items = [_library_song(idx, catalog_id=None) for idx in range(count)]
-    manager, calls = _make_library_only_manager(items)
+    manager, _provider, calls = _make_library_only_manager(items)
 
     tracks = [track async for track in manager.get_library_tracks()]
 
@@ -557,12 +557,12 @@ async def test_library_only_detail_batch_failure_reports_how_many_lost_detail() 
     """A failed detail batch keeps the listing tracks and warns with the number affected."""
     count = 20
     items = [_library_song(idx, catalog_id=None) for idx in range(count)]
-    manager, _calls = _make_library_only_manager(items)
-    manager.api.get_data = AsyncMock(side_effect=MusicAssistantError("boom"))
+    manager, provider, _calls = _make_library_only_manager(items)
+    provider.api_client.get_data = AsyncMock(side_effect=MusicAssistantError("boom"))
 
     tracks = [track async for track in manager.get_library_tracks()]
 
     assert len(tracks) == count
     assert all(track.album is None for track in tracks)
-    manager.logger.warning.assert_called_once()
-    assert count in manager.logger.warning.call_args.args
+    provider.logger.warning.assert_called_once()
+    assert count in provider.logger.warning.call_args.args
