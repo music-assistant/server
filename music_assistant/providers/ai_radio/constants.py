@@ -16,6 +16,10 @@ CONF_WEATHER_COUNTRY = "weather_country"
 # so that a plugin reload does not unload AI Radio for the blink it is gone
 ENGINE_DISCOVERY_TIMEOUT = 30
 
+# how long to wait before reloading after an engine stayed missing, matching the
+# cadence the load path uses for its own retries
+ENGINE_RETRY_DELAY = 120
+
 TRANSLATION_OWNER = "provider.ai_radio"
 
 DEFAULT_LLM_INSTRUCTIONS = (

@@ -24,6 +24,7 @@ from .constants import (
     CONF_TTS_ENGINE,
     DEFAULT_MAX_CONCURRENT_RUNS,
     ENGINE_DISCOVERY_TIMEOUT,
+    ENGINE_RETRY_DELAY,
     MAX_FINISHED_SESSIONS,
     SUPPORTED_FEATURES,
     TRANSLATION_OWNER,
@@ -399,8 +400,6 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
 
     async def _on_providers_updated(self, _event: MassEvent) -> None:
         """Re-check the engine selection whenever the set of loaded providers changes."""
-        # during (server) shutdown every provider unloads, so the engines disappearing
-        # along with their plugin is not something the user has to act on
         if self._unloading or self.mass.closing:
             return
         if self._engine_recheck_task and not self._engine_recheck_task.done():
@@ -416,10 +415,22 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
         try:
             await self._wait_for_engines()
         except SetupFailedError as err:
+            # a shutdown (or our own unload) landing during the wait can surface as the
+            # timeout instead of a cancellation, and needs no error for the user
             if self._unloading or self.mass.closing:
                 return
             self.logger.warning("%s - unloading the provider", err)
             self.unload_with_error(err)
+            # unloading records the error but arms no retry of its own, so schedule the
+            # reload that picks the provider back up once the engines return. The load
+            # path's task id owns the timer, so any earlier load cancels this one.
+            self.mass.call_later(
+                ENGINE_RETRY_DELAY,
+                self.mass.load_provider,
+                self.instance_id,
+                allow_retry=True,
+                task_id=f"load_provider_{self.instance_id}",
+            )
 
     def _prune_finished_sessions(self) -> None:
         """Drop the oldest finished sessions beyond the retention limit."""
