@@ -305,6 +305,35 @@ class TestPlayerAvailability:
             asyncio.run(controller.cmd_set_members("leader", player_ids_to_add=["member"]))
 
 
+def _group_with_member(
+    mock_mass: MagicMock, *, initialize_group: bool = True
+) -> tuple[PlayerController, MockPlayer, MockPlayer]:
+    """
+    Build a controller holding one group player with a single member.
+
+    :param mock_mass: The mocked MusicAssistant instance to attach the controller to.
+    :param initialize_group: Whether the group player is marked as fully registered.
+
+    :return: The controller, the group player and its member.
+    """
+    controller = PlayerController(mock_mass)
+    provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+    group_player = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
+    member = MockPlayer(provider, "member", "Member")
+
+    controller._players = {"group": group_player, "member": member}
+    mock_mass.players = controller
+
+    group_player._attr_group_members = ["member"]
+    member.initialized.set()
+    if initialize_group:
+        group_player.initialized.set()
+    for player in (group_player, member):
+        player.update_state(signal_event=False)
+    return controller, group_player, member
+
+
 class TestStateForwarding:
     """Test forwarding of player state changes to related players."""
 
@@ -396,19 +425,7 @@ class TestStateForwarding:
         self, mock_mass: MagicMock
     ) -> None:
         """The fan-out must not be narrowed by the user that triggered the update."""
-        controller = PlayerController(mock_mass)
-        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
-
-        group_player = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
-        member = MockPlayer(provider, "member", "Member")
-
-        controller._players = {"group": group_player, "member": member}
-        mock_mass.players = controller
-
-        group_player._attr_group_members = ["member"]
-        for player in (group_player, member):
-            player.initialized.set()
-            player.update_state(signal_event=False)
+        controller, group_player, member = _group_with_member(mock_mass)
 
         # a non-admin user that may only see the member; the contextvar is copied into
         # the task an API command runs in, so it is live during the state fan-out
@@ -431,19 +448,7 @@ class TestStateForwarding:
 
     def test_unavailable_group_player_is_still_notified(self, mock_mass: MagicMock) -> None:
         """A group player mirrors its members, so it must update while unavailable too."""
-        controller = PlayerController(mock_mass)
-        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
-
-        group_player = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
-        member = MockPlayer(provider, "member", "Member")
-
-        controller._players = {"group": group_player, "member": member}
-        mock_mass.players = controller
-
-        group_player._attr_group_members = ["member"]
-        for player in (group_player, member):
-            player.initialized.set()
-            player.update_state(signal_event=False)
+        controller, group_player, member = _group_with_member(mock_mass)
         group_player._attr_available = False
         group_player.update_state(signal_event=False)
         assert group_player.state.available is False
@@ -456,19 +461,7 @@ class TestStateForwarding:
 
     def test_disabled_group_player_is_not_notified(self, mock_mass: MagicMock) -> None:
         """A disabled player takes no part, unlike one that is merely unavailable."""
-        controller = PlayerController(mock_mass)
-        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
-
-        group_player = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
-        member = MockPlayer(provider, "member", "Member")
-
-        controller._players = {"group": group_player, "member": member}
-        mock_mass.players = controller
-
-        group_player._attr_group_members = ["member"]
-        for player in (group_player, member):
-            player.initialized.set()
-            player.update_state(signal_event=False)
+        controller, group_player, member = _group_with_member(mock_mass)
         group_player._config.enabled = False
         group_player.update_state(signal_event=False, force_update=True)
         assert group_player.state.enabled is False
@@ -481,20 +474,8 @@ class TestStateForwarding:
         on_group_member_updated.assert_not_called()
 
     def test_uninitialized_group_player_is_not_notified(self, mock_mass: MagicMock) -> None:
-        """A player the controller is still registering has no config to derive state from."""
-        controller = PlayerController(mock_mass)
-        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
-
-        group_player = MockPlayer(provider, "group", "Group", player_type=PlayerType.GROUP)
-        member = MockPlayer(provider, "member", "Member")
-
-        controller._players = {"group": group_player, "member": member}
-        mock_mass.players = controller
-
-        group_player._attr_group_members = ["member"]
-        member.initialized.set()
-        for player in (group_player, member):
-            player.update_state(signal_event=False)
+        """A player the controller is still registering is not fully set up yet."""
+        controller, group_player, member = _group_with_member(mock_mass, initialize_group=False)
 
         with patch.object(group_player, "on_group_member_updated") as on_group_member_updated:
             controller._forward_state_update(
