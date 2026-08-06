@@ -12,7 +12,6 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant_models.streamdetails import StreamDetails
 
 from music_assistant.helpers.datetime import iso_from_utc_timestamp, utc_timestamp
-from music_assistant.providers.yousee.constants import CONF_QUALITY
 
 if TYPE_CHECKING:
     from music_assistant.providers.yousee.provider import YouSeeMusikProvider
@@ -43,7 +42,7 @@ class YouSeeStreamingManager:
 
         variables = {
             "id": item_id,
-            "quality": f"KBPS_{self.provider.config.get_value(CONF_QUALITY)}",
+            "quality": f"KBPS_{self.provider.playback_quality}",
         }
 
         result = await self.api.post_graphql(query, variables)

@@ -92,6 +92,7 @@ class YouSeeMusikProvider(RecommendationPayloadMixin, MusicProvider):
         self.playlist = YouSeePlaylistManager(self)
         self.streaming = YouSeeStreamingManager(self)
         self.recommendations_manager = YouSeeRecommendationsManager(self)
+        self.playback_quality = self.config.get_value(CONF_QUALITY)
 
         token = await self.auth.auth_token()
         if not token:
