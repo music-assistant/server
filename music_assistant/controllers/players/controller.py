@@ -888,8 +888,10 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         """
         Handle muting a playergroup (or synced players) as a whole.
 
-        :param player_id: Player ID of the group player, syncleader or (grouped) player
-            to handle the command.
+        A group player or syncleader mutes all of its members, a synced player is
+        redirected to its syncleader and an ungrouped player is muted on its own.
+
+        :param player_id: Player ID of the player to handle the command.
         :param muted: bool if the group should be muted.
         """
         player = self.get_player(player_id, True)
