@@ -12,7 +12,7 @@ from music_assistant_models.errors import (
     MusicAssistantError,
     UnsupportedFeaturedException,
 )
-from music_assistant_models.media_items import SoundEffect
+from music_assistant_models.media_items import Radio, SoundEffect
 
 from music_assistant.constants import VACUUM_MIN_RECLAIM_RATIO
 from music_assistant.controllers.music import MusicController
@@ -174,6 +174,67 @@ async def test_get_item_passes_sound_effect_type_to_builtin_provider() -> None:
         "http://example.com/intro.mp3",
         requested_media_type=MediaType.SOUND_EFFECT,
     )
+
+
+async def test_get_item_builtin_radio_keeps_user_supplied_details() -> None:
+    """A builtin radio URI resolves through get_radio so it stays a radio station."""
+    controller = MusicController.__new__(MusicController)
+    radio = Radio(
+        item_id="http://stream.example.com",
+        provider="builtin",
+        name="My Station",
+        provider_mappings=set(),
+    )
+    builtin_provider = MagicMock()
+    builtin_provider.domain = "builtin"
+    builtin_provider.parse_item = AsyncMock()
+    builtin_provider.get_radio = AsyncMock(return_value=radio)
+    controller.mass = MagicMock()
+    controller.mass.get_provider.side_effect = lambda provider_id: (
+        builtin_provider if provider_id in {"builtin", "builtin_1"} else None
+    )
+
+    result = await controller.get_item(
+        MediaType.RADIO,
+        "http://stream.example.com",
+        "builtin_1",
+    )
+
+    assert result is radio
+    builtin_provider.get_radio.assert_awaited_once_with("http://stream.example.com")
+    builtin_provider.parse_item.assert_not_awaited()
+
+
+async def test_get_item_builtin_unknown_type_still_parses_url() -> None:
+    """A plain URL of unknown media type is probed by the builtin provider."""
+    controller = MusicController.__new__(MusicController)
+    radio = Radio(
+        item_id="http://stream.example.com",
+        provider="builtin",
+        name="My Station",
+        provider_mappings=set(),
+    )
+    builtin_provider = MagicMock()
+    builtin_provider.domain = "builtin"
+    builtin_provider.parse_item = AsyncMock(return_value=radio)
+    builtin_provider.get_radio = AsyncMock()
+    controller.mass = MagicMock()
+    controller.mass.get_provider.side_effect = lambda provider_id: (
+        builtin_provider if provider_id in {"builtin", "builtin_1"} else None
+    )
+
+    result = await controller.get_item(
+        MediaType.UNKNOWN,
+        "http://stream.example.com",
+        "builtin_1",
+    )
+
+    assert result is radio
+    builtin_provider.parse_item.assert_awaited_once_with(
+        "http://stream.example.com",
+        requested_media_type=MediaType.UNKNOWN,
+    )
+    builtin_provider.get_radio.assert_not_awaited()
 
 
 async def test_get_item_builtin_playlist_instance_uses_playlist_controller() -> None:

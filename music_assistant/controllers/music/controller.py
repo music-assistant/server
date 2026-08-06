@@ -954,6 +954,10 @@ class MusicController(MusicDatabaseSetupMixin, CoreController):
         ):
             # handle special case of 'builtin' MusicProvider which allows us to play regular url's
             builtin_prov = cast("BuiltinProvider", provider or self.mass.get_provider("builtin"))
+            if media_type == MediaType.RADIO:
+                # a radio station must stay a radio station, also when the stream
+                # reports a duration or carries no ICY name
+                return await builtin_prov.get_radio(item_id)
             return await builtin_prov.parse_item(item_id, requested_media_type=media_type)
         if media_type == MediaType.PODCAST_EPISODE:
             # special case for podcast episodes

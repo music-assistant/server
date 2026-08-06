@@ -190,39 +190,12 @@ class BuiltinProvider(MusicProvider):
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        parsed_item = cast("Track", await self.parse_item(prov_track_id))
-        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_TRACKS, [])
-        if stored_item := next((x for x in stored_items if x["item_id"] == prov_track_id), None):
-            # always prefer the stored info, such as the name
-            parsed_item.name = stored_item["name"]
-            if image_url := stored_item.get("image_url"):
-                parsed_item.metadata.add_image(
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=image_url,
-                        provider=self.domain,
-                        remotely_accessible=image_url.startswith("http"),
-                    )
-                )
-        return parsed_item
+        return cast("Track", await self.parse_item(prov_track_id))
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
         parsed_item = await self.parse_item(prov_radio_id, force_radio=True)
         assert isinstance(parsed_item, Radio)
-        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_RADIOS, [])
-        if stored_item := next((x for x in stored_items if x["item_id"] == prov_radio_id), None):
-            # always prefer the stored info, such as the name
-            parsed_item.name = stored_item["name"]
-            if image_url := stored_item.get("image_url"):
-                parsed_item.metadata.add_image(
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=image_url,
-                        provider=self.domain,
-                        remotely_accessible=image_url.startswith("http"),
-                    )
-                )
         return parsed_item
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
@@ -746,6 +719,8 @@ class BuiltinProvider(MusicProvider):
                     )
                 ]
             )
+        if isinstance(media_item, Track | Radio):
+            self._apply_stored_details(media_item)
         return media_item
 
     async def resolve_image(self, path: str) -> str | bytes:
@@ -1001,6 +976,31 @@ class BuiltinProvider(MusicProvider):
         if diff <= 5:
             return 1
         return 0
+
+    def _apply_stored_details(self, media_item: Track | Radio) -> None:
+        """Apply the name and image stored for a manually added track or radio station."""
+        key = CONF_KEY_RADIOS if isinstance(media_item, Radio) else CONF_KEY_TRACKS
+        stored_items: list[StoredItem] = self.mass.config.get(key, [])
+        stored_item = next(
+            (x for x in stored_items if x["item_id"] == media_item.item_id),
+            None,
+        )
+        if stored_item is None:
+            return
+        media_item.name = stored_item["name"]
+        if image_url := stored_item.get("image_url"):
+            # the stored image goes first so it wins over any cover art on the stream
+            media_item.metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=image_url,
+                        provider=self.domain,
+                        remotely_accessible=image_url.startswith("http"),
+                    ),
+                    *(media_item.metadata.images or []),
+                ]
+            )
 
     async def _resolve_url(self, url: str) -> str:
         """
