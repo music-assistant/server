@@ -506,7 +506,8 @@ async def test_wait_for_engines_fails_the_load_when_no_engine_appears(
     monkeypatch.setattr(ai_radio_provider, "ENGINE_DISCOVERY_TIMEOUT", 0.05)
 
     with pytest.raises(SetupFailedError) as error:
-        await provider._wait_for_engines()
+        async with asyncio.timeout(1):
+            await provider._wait_for_engines()
 
     assert error.value.translation_key == "ai_radio_no_ai_engine"
     assert stored == {}
@@ -521,7 +522,8 @@ async def test_wait_for_engines_fails_when_only_the_tts_engine_is_missing(
     monkeypatch.setattr(ai_radio_provider, "ENGINE_DISCOVERY_TIMEOUT", 0.05)
 
     with pytest.raises(SetupFailedError) as error:
-        await provider._wait_for_engines()
+        async with asyncio.timeout(1):
+            await provider._wait_for_engines()
 
     assert error.value.translation_key == "ai_radio_no_tts_engine"
 
@@ -555,7 +557,8 @@ async def test_wait_for_engines_rejects_a_configured_engine_that_disappeared(
     monkeypatch.setattr(ai_radio_provider, "ENGINE_DISCOVERY_TIMEOUT", 0.05)
 
     with pytest.raises(SetupFailedError) as error:
-        await provider._wait_for_engines()
+        async with asyncio.timeout(1):
+            await provider._wait_for_engines()
 
     assert error.value.translation_key == "ai_radio_no_ai_engine"
     assert stored[CONF_AI_ENGINE] == "p1/gone"
@@ -590,7 +593,8 @@ async def test_providers_updated_unloads_when_an_engine_stays_gone(
 
     await provider._on_providers_updated(MagicMock())
     assert provider._engine_recheck_task is not None
-    await provider._engine_recheck_task
+    async with asyncio.timeout(1):
+        await provider._engine_recheck_task
 
     assert [error.translation_key for error in errors] == ["ai_radio_no_ai_engine"]
 

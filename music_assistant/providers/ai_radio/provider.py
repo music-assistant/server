@@ -402,7 +402,7 @@ class AIRadioProvider(AIRadioRuntimeMixin, AIRadioRenderMixin, AIRadioStorageMix
 
     async def _on_providers_updated(self, _event: MassEvent) -> None:
         """Re-check the engine selection whenever the set of loaded providers changes."""
-        # engines going away with an instance that is itself going away needs no action
+        # nothing to watch when this instance, or the whole server, is shutting down anyway
         if self._unloading or self.mass.closing:
             return
         if self._engine_recheck_task and not self._engine_recheck_task.done():
