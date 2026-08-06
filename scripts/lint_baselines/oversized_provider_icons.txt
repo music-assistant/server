@@ -37,8 +37,6 @@ music_assistant/providers/radiobrowser/icon.svg	1
 music_assistant/providers/radiobrowser/icon_monochrome.svg	1
 music_assistant/providers/radioparadise/icon.svg	1
 music_assistant/providers/radioparadise/icon_monochrome.svg	1
-music_assistant/providers/recommendations/icon.svg	1
-music_assistant/providers/recommendations/icon_monochrome.svg	1
 music_assistant/providers/roku_media_assistant/icon_monochrome.svg	1
 music_assistant/providers/subsonic_scrobble/icon_monochrome.svg	1
 music_assistant/providers/sync_group/icon.svg	1
