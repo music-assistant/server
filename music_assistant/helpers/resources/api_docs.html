@@ -794,7 +794,7 @@ curl -X POST {BASE_URL}/api \
                 <h3>User Management Commands</h3>
                 <p>The following WebSocket commands are available for authentication management:</p>
                 <ul>
-                    <li><code>auth/users</code> - List all users (admin only)</li>
+                    <li><code>auth/users</code> - List all users (requires the users.impersonate scope)</li>
                     <li><code>auth/user</code> - Get user by ID (admin only)</li>
                     <li><code>auth/user/create</code> - Create a new user (admin only)</li>
                     <li><code>auth/user/update</code> - Update user profile, password, or role (admin for other users)</li>

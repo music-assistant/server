@@ -2241,6 +2241,25 @@ def test_has_scope() -> None:
     assert not has_scope(_user("some_future_role"), Scope.LIBRARY_READ)
 
 
+async def test_homeassistant_system_user_may_list_users(
+    auth_manager: AuthenticationManager,
+) -> None:
+    """
+    Test that the Home Assistant integration may list users to resolve the calling user.
+
+    :param auth_manager: AuthenticationManager instance.
+    """
+    required_scope = getattr(AuthenticationManager.list_users, "api_required_scope", None)
+    assert required_scope is not None
+    system_user = await auth_manager.get_homeassistant_system_user()
+    assert has_scope(system_user, required_scope)
+    # listing users remains off limits for regular users and guests
+    standard_user = await auth_manager.create_user(username="user_a", role=UserRole.USER)
+    assert not has_scope(standard_user, required_scope)
+    guest_user = await auth_manager.create_user(username="guest_a", role=UserRole.GUEST)
+    assert not has_scope(guest_user, required_scope)
+
+
 async def test_homeassistant_system_user_has_service_role(
     auth_manager: AuthenticationManager,
 ) -> None:

@@ -767,10 +767,12 @@ class AuthenticationManager:
         )
         return [AuthToken.from_dict(dict(row)) for row in token_rows]
 
-    @api_command("auth/users", required_scope=Scope.USERS_MANAGE)
+    # a caller that may impersonate any user must be able to see which users exist,
+    # so the (read-only) listing is gated on the impersonation scope
+    @api_command("auth/users", required_scope=Scope.USERS_IMPERSONATE)
     async def list_users(self) -> list[User]:
         """
-        Get all users (admin only).
+        Get all users.
 
         System users are excluded from the list.
 
