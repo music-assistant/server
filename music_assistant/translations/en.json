@@ -939,7 +939,7 @@
   "provider.ard_audiothek.config_entries.token.label": "token",
   "provider.ard_audiothek.config_entries.token_expiry.label": "token_expiry",
   "provider.ard_audiothek.config_entries.user_id.label": "uid",
-  "provider.ard_audiothek.manifest.description": "Stream radio shows, news, and podcasts from ARD’s Audiothek (Germany’s public broadcaster).",
+  "provider.ard_audiothek.manifest.description": "Stream radio shows, news, and podcasts from ARD Sounds (Germany’s public broadcaster).",
   "provider.ariacast_receiver.config_entries.ariacast_name.description": "The name shown to AriaCast senders when they discover this receiver on the network.",
   "provider.ariacast_receiver.config_entries.ariacast_name.label": "AriaCast Device Name",
   "provider.ariacast_receiver.config_entries.mass_player_id.description": "The player to route AriaCast audio to.",
