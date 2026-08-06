@@ -99,11 +99,12 @@ PLAYBACK_STATE_MAP = {
 SONOS_STATE_PLAYING = "PLAYING"
 SONOS_STATE_TRANSITIONING = "TRANSITIONING"
 
+POLL_INTERVAL = 5
 # A speaker that reports TRANSITIONING carries no usable transport state (the coordinator of a
-# group that is still forming reports it for several seconds), so that report is discarded. One
-# follow-up poll this many seconds later picks up the settled state instead of leaving the player
-# stale until the regular poll interval comes round again.
-TRANSITION_POLL_DELAY = 1.0
+# group that is still forming reports it for several seconds), so that report is discarded. It is
+# watched closely until it reports a usable state again, instead of leaving the player stale for a
+# full poll interval.
+TRANSITION_POLL_INTERVAL = 1
 
 # Subscription Settings
 SUBSCRIPTION_TIMEOUT = 1200

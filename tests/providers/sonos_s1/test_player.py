@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, PlaybackState
 
 from music_assistant.models.player import PlayerMedia
-from music_assistant.providers.sonos_s1.constants import TRANSITION_POLL_DELAY
+from music_assistant.providers.sonos_s1.constants import POLL_INTERVAL, TRANSITION_POLL_INTERVAL
 from music_assistant.providers.sonos_s1.player import SonosPlayer
 
 STREAM_URL = "http://192.168.1.2:8097/single/sessionabc/queue1/item1/player1.flac"
@@ -27,13 +26,6 @@ def sonos_player() -> SonosPlayer:
     provider = MagicMock()
     provider.mass.streams.resolve_stream_url = AsyncMock(return_value=STREAM_URL)
     return SonosPlayer(provider=provider, soco=soco)
-
-
-def _mock_mass(sonos_player: SonosPlayer) -> MagicMock:
-    """Return the player's mocked mass, running the threadsafe hop inline so it stays assertable."""
-    mass = cast("MagicMock", sonos_player.mass)
-    mass.loop.call_soon_threadsafe = MagicMock(side_effect=lambda callback: callback())
-    return mass
 
 
 def _make_media() -> PlayerMedia:
@@ -71,71 +63,41 @@ async def test_play_media_builds_didl_from_stream_url(sonos_player: SonosPlayer)
     assert "library://track/123" not in call_args.kwargs["meta"]
 
 
-def test_transitional_state_schedules_a_single_settle_poll(sonos_player: SonosPlayer) -> None:
-    """A transitional transport state keeps the last known state and polls again shortly."""
-    mass = _mock_mass(sonos_player)
-    sonos_player._attr_playback_state = PlaybackState.IDLE
-    sonos_player.soco.get_current_transport_info.return_value = {
-        "current_transport_state": "TRANSITIONING"
-    }
+def _set_transport_state(sonos_player: SonosPlayer, state: str) -> None:
+    """Make the mocked speaker report the given transport state."""
+    sonos_player.soco.get_current_transport_info.return_value = {"current_transport_state": state}
 
-    sonos_player.poll_media()
+
+def test_transitional_state_shortens_the_poll_interval(sonos_player: SonosPlayer) -> None:
+    """A transitional transport state keeps the last known state and is watched closely."""
+    sonos_player._attr_playback_state = PlaybackState.IDLE
+    _set_transport_state(sonos_player, "TRANSITIONING")
+
     sonos_player.poll_media()
 
     assert sonos_player._attr_playback_state == PlaybackState.IDLE
-    assert mass.call_later.call_count == 1
-    assert mass.call_later.call_args.args[0] == TRANSITION_POLL_DELAY
-    assert mass.call_later.call_args.args[1] == sonos_player._settled_state_poll
-    # poll_media runs in a worker thread, so scheduling must hop to the event loop
-    assert mass.loop.call_soon_threadsafe.called
+    assert sonos_player.poll_interval == TRANSITION_POLL_INTERVAL
 
 
-def test_settled_state_re_arms_the_settle_poll(sonos_player: SonosPlayer) -> None:
-    """Once a usable state is reported again, a later transition may schedule a new poll."""
-    mass = _mock_mass(sonos_player)
-    sonos_player.soco.get_current_transport_info.return_value = {
-        "current_transport_state": "TRANSITIONING"
-    }
-    sonos_player.poll_media()
+def test_settled_state_restores_the_poll_interval(sonos_player: SonosPlayer) -> None:
+    """A usable transport state returns the speaker to the regular poll interval."""
+    sonos_player._attr_poll_interval = TRANSITION_POLL_INTERVAL
 
-    sonos_player.soco.get_current_transport_info.return_value = {
-        "current_transport_state": "PLAYING"
-    }
+    _set_transport_state(sonos_player, "PLAYING")
     with (
         patch.object(sonos_player, "_set_basic_track_info"),
         patch.object(sonos_player, "update_player"),
     ):
         sonos_player.poll_media()
 
-    sonos_player.soco.get_current_transport_info.return_value = {
-        "current_transport_state": "TRANSITIONING"
-    }
-    sonos_player.poll_media()
-
-    assert mass.call_later.call_count == 2
+    assert sonos_player.poll_interval == POLL_INTERVAL
 
 
-def test_transitional_event_schedules_a_settle_poll(sonos_player: SonosPlayer) -> None:
-    """A transitional state delivered by subscription event also triggers a follow-up poll."""
-    mass = _mock_mass(sonos_player)
+def test_transitional_event_shortens_the_poll_interval(sonos_player: SonosPlayer) -> None:
+    """A transitional state delivered by subscription event is watched closely too."""
     event = MagicMock()
     event.variables = {"transport_state": "TRANSITIONING"}
 
     sonos_player._handle_avtransport_event(event)
 
-    assert mass.call_later.call_count == 1
-    assert mass.call_later.call_args.args[1] == sonos_player._settled_state_poll
-
-
-async def test_settle_poll_is_skipped_when_the_state_already_arrived(
-    sonos_player: SonosPlayer,
-) -> None:
-    """A settled state reported before the follow-up poll runs makes that poll a no-op."""
-    with patch.object(sonos_player, "poll", new=AsyncMock()) as poll:
-        sonos_player._awaiting_settled_state = False
-        await sonos_player._settled_state_poll()
-        poll.assert_not_awaited()
-
-        sonos_player._awaiting_settled_state = True
-        await sonos_player._settled_state_poll()
-        poll.assert_awaited_once()
+    assert sonos_player.poll_interval == TRANSITION_POLL_INTERVAL
