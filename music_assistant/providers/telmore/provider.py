@@ -94,6 +94,7 @@ class TelmoreMusikProvider(RecommendationPayloadMixin, MusicProvider):
         self.playlist = TelmorePlaylistManager(self)
         self.streaming = TelmoreStreamingManager(self)
         self.recommendations_manager = TelmoreRecommendationsManager(self)
+        self.playback_quality = self.config.get_value(CONF_QUALITY)
 
         token = await self.auth.auth_token()
         if not token:
