@@ -8,9 +8,10 @@ from typing import TYPE_CHECKING, Any
 
 from mashumaro.exceptions import MissingField
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, ExternalID, LinkType
+from music_assistant_models.enums import ArtistEntityType, ConfigEntryType, ExternalID, LinkType
 from music_assistant_models.errors import InvalidDataError
-from music_assistant_models.media_items import MediaItemLink, MediaItemMetadata
+from music_assistant_models.media_items import MediaItemLink, MediaItemMetadata, UniqueList
+from music_assistant_models.media_items.metadata import LifeSpan
 
 from music_assistant.controllers.cache import use_cache
 from music_assistant.helpers.compare import compare_strings
@@ -43,7 +44,6 @@ if TYPE_CHECKING:
         MediaItemType,
         RecommendationFolder,
         Track,
-        UniqueList,
     )
     from music_assistant_models.provider import ProviderManifest
 
@@ -94,17 +94,13 @@ class MusicbrainzProvider(MetadataProvider):
         self._recommendations.cancel()
 
     async def get_recommendations(self) -> list[RecommendationFolder]:
-        """Return birthday/memorial recommendation rows, without items."""
+        """Return MusicBrainz recommendation folders (artist birthdays/memorials and group founded/disbanded)."""
         return await self._recommendations.get_recommendations()
 
     async def get_recommendation_items(
         self, item_id: str
     ) -> UniqueList[MediaItemType | ItemMapping | BrowseFolder]:
-        """
-        Return the items for a single birthday/memorial recommendation row.
-
-        :param item_id: The item_id of the row, as returned by get_recommendations.
-        """
+        """Get items for a MusicBrainz recommendation folder."""
         return await self._recommendations.get_recommendation_items(item_id)
 
     async def search(
@@ -213,24 +209,39 @@ class MusicbrainzProvider(MetadataProvider):
         return results
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
-        """Surface MusicBrainz URL relations (Wikipedia, official site, socials, ...)."""
+        """Surface MusicBrainz artist type, life span, and URL relations."""
         if not artist.mbid:
             return None
         try:
             details = await self.get_artist_details(artist.mbid)
         except InvalidDataError:
             return None
-        if not details.relations:
-            return None
+        artist_entity_type: ArtistEntityType | None = None
+        if details.type:
+            entity_type = ArtistEntityType(details.type.lower())
+            if entity_type != ArtistEntityType.UNKNOWN:
+                artist_entity_type = entity_type
+        life_span: LifeSpan | None = None
+        if details.life_span:
+            life_span = LifeSpan(
+                begin=details.life_span.begin,
+                end=details.life_span.end,
+                ended=details.life_span.ended,
+            )
         links: set[MediaItemLink] = set()
-        for relation in details.relations:
-            if not relation.url:
-                continue
-            if link_type := self._link_type_for_relation(relation):
-                links.add(MediaItemLink(type=link_type, url=relation.url.resource))
-        if not links:
+        if details.relations:
+            for relation in details.relations:
+                if not relation.url:
+                    continue
+                if link_type := self._link_type_for_relation(relation):
+                    links.add(MediaItemLink(type=link_type, url=relation.url.resource))
+        if not artist_entity_type and not life_span and not links:
             return None
-        return MediaItemMetadata(links=links)
+        return MediaItemMetadata(
+            links=links,
+            artist_entity_type=artist_entity_type,
+            life_span=life_span,
+        )
 
     async def get_recording_details(self, recording_id: str) -> MusicBrainzRecording:
         """Get Recording details by providing a MusicBrainz Recording Id."""
@@ -268,6 +279,46 @@ class MusicbrainzProvider(MetadataProvider):
             recording = await self.get_recording_details(recording_id)
             return recording.isrcs or []
         return []
+
+    async def get_recordings_by_isrc(self, isrc: str) -> list[MusicBrainzRecording]:
+        """
+        Get the recordings MusicBrainz has on file for an ISRC.
+
+        Inverse of :meth:`get_isrcs_for_recording`: that one goes from a
+        recording to its ISRCs, this one goes from an ISRC back to recordings.
+
+        :param isrc: ISRC of the recording, with or without separators.
+        :return: Recordings tagged with this ISRC, or empty list if not found.
+        """
+        safe_isrc = isrc.replace("-", "").strip()
+        if not safe_isrc.isalnum():
+            return []
+        # the isrc resource rejects inc= parameters and already carries the release dates
+        result = await self._api_client.get_data(f"isrc/{safe_isrc}")
+        if not result or not (recordings := result.get("recordings")):
+            return []
+        parsed: list[MusicBrainzRecording] = []
+        for recording in recordings:
+            # a single malformed entry should not sink the recordings we did parse
+            with suppress(MissingField):
+                parsed.append(MusicBrainzRecording.from_raw(recording))
+        return parsed
+
+    async def get_release_year_by_isrc(self, isrc: str) -> int | None:
+        """
+        Get the year a recording was first released, by ISRC.
+
+        :param isrc: ISRC of the recording, with or without separators.
+        :return: The earliest known release year, or None if MusicBrainz does not know it.
+        """
+        recordings = await self.get_recordings_by_isrc(isrc)
+        # one ISRC can cover several recordings, the oldest one dates the song
+        years: list[int] = []
+        for recording in recordings:
+            release_date = recording.first_release_date or ""
+            if (year := release_date[:4]).isdigit():
+                years.append(int(year))
+        return min(years, default=None)
 
     async def get_release_details(self, album_id: str) -> MusicBrainzRelease:
         """Get Release/Album details by providing a MusicBrainz Album id."""
@@ -377,6 +428,53 @@ class MusicbrainzProvider(MetadataProvider):
         :param track_name: Track name to search for.
         :returns: Tuple of (artist, release_groups) or None.
         """
+        if not (result := await self._search_release_groups_by_track_name(artist_name, track_name)):
+            return None
+        artist, release_groups = result
+        return (MusicBrainzArtist.from_raw(artist), [rg for rg, _ in release_groups])
+
+    async def get_release_year_by_track_name(self, artist_name: str, track_name: str) -> int | None:
+        """
+        Get the year a song was first released, by artist and track name.
+
+        Weaker evidence than :meth:`get_release_year_by_isrc`, which identifies the exact
+        recording: this matches on name and only counts studio albums and singles named
+        after the song, so an ambiguous or unknown name yields no year rather than a guess.
+
+        :param artist_name: Name of the track's primary artist.
+        :param track_name: Name of the track.
+        :return: The earliest known release year, or None if MusicBrainz does not know it.
+        """
+        result = await self._search_release_groups_by_track_name(artist_name, track_name)
+        if not result or not (release_groups := result[1]):
+            return None
+        # the release groups are sorted oldest first, and undated ones sort last
+        release_date = release_groups[0][1]
+        return int(release_date[:4]) if release_date[:4].isdigit() else None
+
+    @staticmethod
+    def _link_type_for_relation(relation: MusicBrainzRelation) -> LinkType | None:
+        if link_type := URL_RELATION_TYPE_MAPPING.get(relation.type):
+            return link_type
+        if relation.type == "social network" and relation.url:
+            url_lower = relation.url.resource.lower()
+            for host, link_type in SOCIAL_HOST_MAPPING:
+                if host in url_lower:
+                    return link_type
+        return None
+
+    async def _search_release_groups_by_track_name(
+        self, artist_name: str, track_name: str
+    ) -> tuple[dict[str, Any], list[tuple[MusicBrainzReleaseGroup, str]]] | None:
+        """
+        Search recordings by artist and track name and aggregate their release groups.
+
+        :param artist_name: Artist name to search for.
+        :param track_name: Track name to search for.
+        :return: Tuple of (raw artist, release groups with their earliest release date sorted
+            oldest first), or None when no recording matched. The release groups are empty
+            when the matched recordings carry no studio album or same-named single.
+        """
         search_artist = re.sub(LUCENE_SPECIAL, r"\\\1", artist_name)
         search_track = re.sub(LUCENE_SPECIAL, r"\\\1", track_name)
         result = await self._api_client.get_data(
@@ -417,10 +515,7 @@ class MusicbrainzProvider(MetadataProvider):
         # Aggregate release groups from ALL matching recordings
         # This ensures we find albums even if the first recording only has singles
         all_release_groups: dict[str, tuple[MusicBrainzReleaseGroup, str]] = {}
-        first_artist = None
-        for recording, artist, first_release_date in matches:
-            if first_artist is None:
-                first_artist = artist
+        for recording, _, _ in matches:
             for rg, release_date in self._get_release_groups_with_dates(recording, track_name):
                 rg_id = rg.id
                 if rg_id in all_release_groups:
@@ -434,27 +529,12 @@ class MusicbrainzProvider(MetadataProvider):
                 else:
                     all_release_groups[rg_id] = (rg, release_date)
 
-        if all_release_groups:
-            # Sort by release date
-            sorted_groups = sorted(
-                all_release_groups.values(), key=lambda x: x[1] if x[1] else "9999"
-            )
-            return (MusicBrainzArtist.from_raw(first_artist), [rg for rg, _ in sorted_groups])
-
-        # Fall back to the earliest recording (for artist lookup at least)
-        recording, artist, _ = matches[0]
-        return (MusicBrainzArtist.from_raw(artist), [])
-
-    @staticmethod
-    def _link_type_for_relation(relation: MusicBrainzRelation) -> LinkType | None:
-        if link_type := URL_RELATION_TYPE_MAPPING.get(relation.type):
-            return link_type
-        if relation.type == "social network" and relation.url:
-            url_lower = relation.url.resource.lower()
-            for host, link_type in SOCIAL_HOST_MAPPING:
-                if host in url_lower:
-                    return link_type
-        return None
+        if not all_release_groups:
+            # Fall back to the earliest recording (for artist lookup at least)
+            return (matches[0][1], [])
+        # Sort by release date
+        sorted_groups = sorted(all_release_groups.values(), key=lambda x: x[1] if x[1] else "9999")
+        return (matches[0][1], sorted_groups)
 
     def _get_release_groups_with_dates(
         self, recording: dict[str, Any], track_name: str

@@ -232,8 +232,9 @@ The `AirPlayStreamSession` class in [stream_session.py](stream_session.py) manag
    - Connects every member before anchoring playback
    - Wires each member's ffmpeg into its persistent CLI stdin and starts feeding audio
    - Waits until every member's binary confirms the feed flowing (`[STATUS] audio`),
-     then sends one shared audible start instant with a short anchor lead
-     (250 ms solo / 500 ms group); readiness is fully event-driven, so no
+     then sends one shared audible start instant with an anchor lead
+     (400 ms solo / 500 ms warm group / 2500 ms cold group, see
+     `AIRPLAY_COLD_GROUP_START_LEAD_MS`); readiness is fully event-driven, so no
      setup time is guessed and the binary bursts the receiver pre-fill after START
 
 2. **Client Setup** (per player, `_start_client()` method)
@@ -247,7 +248,7 @@ The `AirPlayStreamSession` class in [stream_session.py](stream_session.py) manag
    - Receives PCM audio chunks from Music Assistant core
    - Distributes chunks to all players via FFmpeg
    - Tracks elapsed time based on bytes sent
-   - Handles silence padding if audio source is slow (watchdog mechanism)
+   - Handles silence padding if audio source is slow
 
 4. **Connection Monitoring**
    - Waits for all devices to connect and confirm audio flowing before anchoring playback
@@ -286,16 +287,9 @@ The provider supports synchronized multi-room audio by:
 When adding a player to an already-playing session (`add_client()` in [stream_session.py](stream_session.py)):
 
 1. **Ring buffer**: Session maintains a few seconds of recent audio chunks in memory
-2. **Compensated start time**: The joiner's start instant accounts for the buffer duration: `start_time + (seconds_streamed - buffer_duration)`, shifted forward (with the buffer head trimmed) when it would land in the past
+2. **Anchored past receiver readiness**: The joiner's START is commanded just past the instant its binary projects the receiver's clock becomes usable, and the binary acks the instant it can truly honour
 3. **Anchor first, then prime**: The joiner's START is sent before the buffered chunks; pre-START the binary only buffers its bounded ring and sends nothing, so anchoring first lets it drain the prime as it streams in
-4. **Fast catch-up**: Device processes buffered audio and catches up to real-time position
-5. **Seamless sync**: Joins live stream perfectly synchronized with other players
-
-This approach significantly reduces the delay when adding players to an active session, as the late joiner receives audio data immediately instead of waiting for new chunks.
-
-**Config option**: `enable_late_join` (default: `True`)
-- If disabled: Session restarts with all players when members change
-- If enabled: New players join seamlessly without interrupting others
+4. **Content mapped onto the acked instant**: The stream position due at that instant is primed from the ring tail (when it is at or behind the write head) or skipped off the head of the live feed (when it is ahead). There is no catch-up: the binary makes the first post-START stdin byte audible exactly at the acked instant and freezes the anchor there
 
 ## DACP (Digital Audio Control Protocol)
 
@@ -426,18 +420,20 @@ protocol path (RAOP, AirPlay 2 RAOP-compat and native).
 1. Start every CLI and wait until every group member reports connected
 2. Wire each member's ffmpeg into its persistent stdin, begin feeding PCM and
    wait until every member confirms the feed flowing (`[STATUS] audio`)
-3. Send one shared `START` (now + 250 ms solo / 500 ms group) to every member;
-   readiness is event-confirmed so the anchor covers only the receiver re-anchor,
-   and the binary bursts the receiver pre-fill from START
+3. Send one shared `START` (now + 400 ms solo / 500 ms warm group / 2500 ms cold
+   group, see `AIRPLAY_COLD_GROUP_START_LEAD_MS`) to every member; readiness is
+   event-confirmed so a warm anchor covers only the receiver re-anchor, and the
+   binary bursts the receiver pre-fill from START
 4. **Warm seek / next-track / grouped resume** reuse the live connections: MA
    stops feeding old audio, kills the per-seek ffmpeg (never the persistent
    stdin), sends `ACTION=FLUSH` to every member and awaits `[STATUS] flushed`,
    then feeds a fresh ffmpeg into the same stdin, awaits `[STATUS] audio` and
    sends one shared `START`.
    Standby keeps each protocol connection alive for the same flush-refill resume
-5. Sendspin starts preserve its externally supplied audible instant, riding the
-   same persistent-stdin flush-refill (cold connect + `START`, warm `FLUSH` +
-   `START`) instead of a cold reconnect
+5. Sendspin starts ride the same persistent-stdin flush-refill (cold connect +
+   `START`, warm `FLUSH` + `START`) instead of a cold reconnect. They anchor as
+   a join, so the binary reports the instant it really scheduled and the bridge
+   maps the group's audio onto that instant rather than the one it asked for
 6. Per-player `sync_adjust` config allows fine-tuning (+/- milliseconds)
 
 ### Shared PTP Clock Daemon
@@ -447,8 +443,16 @@ Native AirPlay 2 receivers that advertise `SupportsPTP` are timed via PTP
 (UDP 319/320) and every receiver in a sync group must lock to the same
 grandmaster, so the provider runs **one** `cliairplay --ptp-daemon` for its
 whole lifetime (spawned at setup, terminated at unload, restarted once if it
-crashes). Every AirPlay 2-capable stream is started with `--ptp-shared` while
-the daemon runs, attaching it to the daemon's elected clock via shared memory.
+crashes). AirPlay 2-capable streams are started with `--ptp-shared` once the
+daemon reports it is serving, attaching them to its elected clock via shared
+memory. A sync group resolves that choice once and applies it to every member,
+so a group never mixes members on the shared clock with members off it.
+
+Sendspin-bridged players hold the same line across their Sendspin group. Their
+processes are spawned independently and can outlive several tracks, so a bridge
+adopts the choice a live group member is already running with and only asks the
+daemon when the group has no such member. That keeps members which start minutes
+apart, or which keep a warm process across a track change, on one clock.
 
 The official Music Assistant container runs as root, allowing the daemon to bind
 these ports. A custom container running Music Assistant as a non-root user must
@@ -457,9 +461,9 @@ grant the binary `CAP_NET_BIND_SERVICE` (for example,
 in the container's bounding set. UDP 319/320 must also be free on the container's
 network namespace.
 
-If the daemon cannot bind, the binary exits with code 2. The provider logs a
-warning and native AirPlay 2 streams fall back to NTP timing. Playback keeps
-working, but native AirPlay 2 multi-room sync may be degraded.
+If the daemon cannot bind, the provider logs a warning and native AirPlay 2
+streams fall back to NTP timing. Playback keeps working, but native AirPlay 2
+multi-room sync may be degraded.
 
 After connect, the binary reports the effective lead and the device's
 buffering window on stdout (`[STATUS] latency lead_ms=... device_min_frames=...
@@ -547,12 +551,6 @@ keeps their exposed player id stable and their Universal Player merging intact.
 
 ## Known Issues
 
-### Broken AirPlay Models
-
-Some devices have known broken AirPlay implementations (see `BROKEN_AIRPLAY_MODELS` in [constants.py](constants.py)):
-- **Samsung devices**: Known issues with both RAOP and AirPlay 2
-- These players are disabled by default
-
 ### Limitations
 
 1. **DACP remote control**: Only active while streaming; controlled devices use
@@ -629,6 +627,16 @@ The bridge consists of:
 - **`BridgePlayerRole`**: A custom Sendspin role that receives audio chunks from PushStream
 - **`SendspinAirPlayBridge`**: Manages the bridge for a single AirPlay player
 - **`SendspinBridgeManager`**: Manages bridges for all AirPlay players
+
+### Transport Loss
+
+The CLI accepts and discards audio once its process is gone, so a lost transport is only visible on the `AirPlayStream` itself. The bridge checks it on every chunk: the dead stream is released and a fresh one is cold-started and re-anchored on the group's live timeline, so the speaker rejoins where the rest of the group is playing.
+
+Giving up on a stream — a start that raised, a protocol that never became ready, or a transport that dropped again within `BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS` of a recovery — takes the speaker out of the Sendspin session. Sendspin reports playback from the group's own state, and the protocol gives a player no way to report that it went silent, so a bridge that merely stopped feeding its speaker would hold the visible player on PLAYING for the rest of the stream. Leaving is what surfaces that silence: a shared group plays on without this speaker, a solo one stops.
+
+Leaving a shared group schedules a bounded re-join through the ordinary `SendspinGroup.add_client`, on the delays in `BRIDGE_REJOIN_ATTEMPT_DELAYS`, so a speaker that was only briefly away comes back on its own. A bridge that gives up again within `BRIDGE_TRANSPORT_RECOVERY_GUARD_SECONDS` of being put back is left out for good — that is what keeps a device which cannot hold a connection from cycling in and out of the group, since re-joining re-runs the very start that just failed. The attempt is abandoned when the speaker has meanwhile been given a group or a stream of its own, is streaming outside the bridge, or the group it left no longer exists. A speaker missing from discovery is not re-joined but is looked for again on the next attempt, because a device that rebooted stays absent for a while after it starts answering. A solo bridge has nothing to re-join, since leaving is what stops it.
+
+The group re-join recovery in `stream.py` only covers native AirPlay grouping — a bridged player's group membership lives on its Sendspin player, not on the AirPlay one.
 
 ### Requirements
 

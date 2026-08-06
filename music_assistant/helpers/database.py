@@ -390,6 +390,20 @@ class DatabaseConnection:
         """Execute command on the database."""
         return await self._db.execute(query, values)
 
+    async def execute_write(self, query: str, values: dict[str, Any] | None = None) -> None:
+        """
+        Execute a hand-written write statement and commit it.
+
+        Use instead of `execute` for anything that modifies data, so the write is durable
+        even if nothing else happens to commit the shared connection afterwards. Honors
+        `deferred_commit`, so a batch still commits once at the end of its scope.
+
+        :param query: The statement to execute.
+        :param values: The values to bind to the statement's named parameters.
+        """
+        await self._db.execute(query, values)
+        await self._maybe_commit()
+
     async def commit(self) -> None:
         """Commit the current transaction."""
         return await self._db.commit()

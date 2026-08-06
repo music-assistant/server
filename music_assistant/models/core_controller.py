@@ -64,12 +64,14 @@ class CoreController:
         """
         return ()
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
         """
-        Handle a one-shot action button press from this module's config and re-render.
+        Run the one-shot side effect for a pressed action button from this module's config.
 
         Override to run the side effect for each ``ConfigEntryType.ACTION`` entry this
-        module declares, then return the (possibly refreshed) config entries to display.
+        module declares. Raise to report failure to the caller. Return None when there
+        is nothing to re-render; returning config entries re-renders the config form
+        with those entries instead.
 
         :param action: The action id of the pressed button (an entry's ``action`` key).
         """
@@ -178,6 +180,3 @@ class CoreController:
             self.logger.setLevel(mass_logger.level)
         else:
             self.logger.setLevel(log_level)
-        if logging.getLogger().level > self.logger.level:
-            # if the root logger's level is higher, we need to adjust that too
-            logging.getLogger().setLevel(self.logger.level)

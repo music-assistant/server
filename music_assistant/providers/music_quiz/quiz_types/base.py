@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import AsyncGenerator, Iterable
+from contextlib import suppress
+from dataclasses import replace
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar, Final, cast
 
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import AlbumType, ExternalID, MediaType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import (
     Album,
@@ -18,9 +22,14 @@ from music_assistant_models.media_items import (
     Track,
 )
 
-from music_assistant.constants import DYNAMIC_PLAYLIST_SAMPLE_SIZE
+from music_assistant.constants import (
+    DYNAMIC_PLAYLIST_SAMPLE_SIZE,
+    VARIOUS_ARTISTS_MBID,
+    VARIOUS_ARTISTS_NAME,
+)
 from music_assistant.controllers.music.constants import DYNAMIC_RADIO_DYNAMIC_TARGET
 from music_assistant.controllers.music.recency import RecencyWindows
+from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.datetime import utc
 from music_assistant.helpers.json import SerializableType
 from music_assistant.helpers.uri import parse_uri
@@ -37,6 +46,7 @@ if TYPE_CHECKING:
         MusicQuizGame,
         MusicQuizRound,
     )
+    from music_assistant.providers.musicbrainz import MusicbrainzProvider
     from music_assistant.providers.radio_playlist import RadioPlaylistProvider
 
 LOGGER = logging.getLogger(__name__)
@@ -50,6 +60,7 @@ MAX_SUGGESTION_COUNT = 12
 PLAYBACK_REPLACEMENT_RESERVE = 4
 QUIZ_TRACK_RECENCY_SECONDS = 24 * 60 * 60
 MIN_RELEASE_YEAR = 1000
+RELEASE_YEAR_LOOKUP_BUDGET_SECONDS = 2.0
 SUPPORTED_SOURCE_MEDIA_TYPES: Final = frozenset(
     {
         MediaType.TRACK,
@@ -59,12 +70,38 @@ SUPPORTED_SOURCE_MEDIA_TYPES: Final = frozenset(
         MediaType.GENRE,
     }
 )
+UNTRUSTED_RELEASE_ALBUM_TYPES: Final = frozenset(
+    {
+        AlbumType.COMPILATION,
+        AlbumType.LIVE,
+        AlbumType.SOUNDTRACK,
+    }
+)
 
 
 def is_supported_source(media_type: MediaType, provider: str) -> bool:
     """Return whether a media item can supply Music Quiz tracks."""
     return media_type in SUPPORTED_SOURCE_MEDIA_TYPES and (
         media_type != MediaType.GENRE or provider == "library"
+    )
+
+
+def has_untrusted_release_year(album: Album | ItemMapping) -> bool:
+    """
+    Return whether an album's year is unusable as the release year of its tracks.
+
+    An ``ItemMapping`` carries no album type or artists and is always trusted.
+
+    :param album: Album attached to a selected track.
+    """
+    if not isinstance(album, Album):
+        return False
+    if album.album_type in UNTRUSTED_RELEASE_ALBUM_TYPES:
+        return True
+    return any(
+        artist.mbid == VARIOUS_ARTISTS_MBID
+        or compare_strings(artist.name, VARIOUS_ARTISTS_NAME, strict=False)
+        for artist in album.artists
     )
 
 
@@ -110,7 +147,7 @@ class QuizType(ABC):
         return False
 
     @classmethod
-    def is_available(cls, mass: MusicAssistant) -> bool:  # noqa: ARG003
+    async def is_available(cls, mass: MusicAssistant) -> bool:  # noqa: ARG003
         """
         Return whether this quiz type can be created.
 
@@ -400,6 +437,66 @@ class QuizType(ABC):
             track, QUIZ_TRACK_RECENCY_SECONDS
         )
 
+    async def _musicbrainz_dated_track(self, track: Track) -> tuple[Track, int | None]:
+        """
+        Return the track dated with the first release year MusicBrainz knows for the song.
+
+        The track itself is returned unchanged when MusicBrainz has nothing better to offer.
+
+        :param track: Track to date.
+        :return: The dated track and the usable release year MusicBrainz knows for the song.
+            The year is reported even when the track already carries that year or an earlier one,
+            and is None when MusicBrainz knows no year or only an implausible one.
+        """
+        musicbrainz = self.mass.get_provider("musicbrainz")
+        if musicbrainz is None:
+            return track, None
+        release_year: int | None = None
+        # callers wait for this and MusicBrainz throttles to 10 requests per 10 seconds, so a
+        # lookup that does not resolve within the budget leaves the track on its library year
+        with suppress(TimeoutError):
+            async with asyncio.timeout(RELEASE_YEAR_LOOKUP_BUDGET_SECONDS):
+                try:
+                    release_year = await self._musicbrainz_release_year(
+                        cast("MusicbrainzProvider", musicbrainz), track
+                    )
+                except Exception as err:
+                    LOGGER.debug("Could not date Music Quiz track %s: %s", track.uri, err)
+        # a year outside this range is rejected by get_track_release_year anyway, and a year
+        # below 1 cannot be expressed as a datetime at all
+        if release_year is None or not MIN_RELEASE_YEAR <= release_year <= utc().year:
+            return track, None
+        release_date = track.metadata.release_date
+        if release_date is not None and release_date.year <= release_year:
+            return track, release_year
+        # the track controller hands out objects that are shared with the library cache,
+        # so the release date is written to a copy instead of the track itself
+        dated_track = replace(
+            track,
+            metadata=replace(track.metadata, release_date=datetime(release_year, 1, 1, tzinfo=UTC)),
+        )
+        return dated_track, release_year
+
+    @staticmethod
+    async def _musicbrainz_release_year(
+        musicbrainz: MusicbrainzProvider, track: Track
+    ) -> int | None:
+        """
+        Return the first release year MusicBrainz knows for a track.
+
+        :param musicbrainz: The loaded MusicBrainz provider.
+        :param track: Track to date.
+        """
+        # an ISRC identifies the exact recording, so it is always the better evidence and
+        # the search below is only reached when it is absent or MusicBrainz does not know it
+        if isrc := track.get_external_id(ExternalID.ISRC):
+            if (release_year := await musicbrainz.get_release_year_by_isrc(isrc)) is not None:
+                return release_year
+        artist_name = track.artists[0].name if track.artists else None
+        if not artist_name or not track.name:
+            return None
+        return await musicbrainz.get_release_year_by_track_name(artist_name, track.name)
+
 
 def get_track_release_year(track: Track) -> int | None:
     """
@@ -408,7 +505,11 @@ def get_track_release_year(track: Track) -> int | None:
     :param track: Track whose release year should be resolved.
     """
     album = track.album
-    album_year = album.year if isinstance(album, Album | ItemMapping) else None
+    album_year = (
+        album.year
+        if isinstance(album, Album | ItemMapping) and not has_untrusted_release_year(album)
+        else None
+    )
     track_year = (
         track.metadata.release_date.year if track.metadata.release_date is not None else None
     )

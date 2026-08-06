@@ -51,12 +51,18 @@ async def run_setup(session: SetupSession) -> None:
     app_token = MUSIC_APP_TOKEN
     # a custom developer token stored by an earlier flow run (e.g. a personal token
     # used to escape rate limiting of the shared bundled token) takes precedence and
-    # must survive reconfiguration; fall back to the bundled token if it went stale
+    # must survive reconfiguration; only an explicit rejection drops it in favour of
+    # the bundled token, mirroring how the bundled token itself is judged below
     existing_app_token = str(session.context.setup_data.get(CONF_MUSIC_APP_TOKEN) or "")
-    if existing_app_token != app_token and await _app_token_valid(mass, existing_app_token):
+    if (
+        existing_app_token
+        and existing_app_token != app_token
+        and await _app_token_accepted(mass, existing_app_token) is not False
+    ):
         app_token = existing_app_token
         collected[CONF_MUSIC_APP_TOKEN] = existing_app_token
-    elif not await _app_token_valid(mass, app_token):
+    # a throttled /v1/test says nothing about validity, so only an explicit rejection counts
+    elif await _app_token_accepted(mass, app_token) is False:
         app_token_errors: dict[str, str] | None = None
         while True:
             values = await session.form(
@@ -71,7 +77,8 @@ async def run_setup(session: SetupSession) -> None:
                 errors=app_token_errors,
             )
             app_token = str(values.get(CONF_MUSIC_APP_TOKEN) or "")
-            if await _app_token_valid(mass, app_token):
+            # a typed token must be positively accepted, not merely un-rejected
+            if await _app_token_accepted(mass, app_token):
                 break
             app_token_errors = {CONF_MUSIC_APP_TOKEN: "invalid_value"}
         collected[CONF_MUSIC_APP_TOKEN] = app_token
@@ -117,9 +124,11 @@ async def run_setup(session: SetupSession) -> None:
             errors = {"base": err.translation_key or str(err)}
 
 
-async def _app_token_valid(mass: MusicAssistant, app_token: str) -> bool:
+async def _app_token_accepted(mass: MusicAssistant, app_token: str) -> bool | None:
     """
-    Return whether the given Apple Music developer (app) token is accepted by the API.
+    Return whether the API accepted the given Apple Music developer (app) token.
+
+    True when accepted, False when rejected, None when inconclusive (throttled/unreachable).
 
     :param mass: The MusicAssistant instance.
     :param app_token: The developer (app) token to validate.
@@ -133,11 +142,11 @@ async def _app_token_valid(mass: MusicAssistant, app_token: str) -> bool:
             ssl=True,
             timeout=ClientTimeout(total=10),
         ) as response:
-            return response.status == 200
+            if response.status == 200:
+                return True
+            return False if response.status in (401, 403) else None
     except ClientError, TimeoutError:
-        # a transient network error must not abort the flow; treat the token as
-        # invalid so the user lands on the manual app-token form and can retry
-        return False
+        return None
 
 
 def _validate_user_token(token: ConfigValueType) -> bool:

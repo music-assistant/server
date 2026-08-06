@@ -21,8 +21,8 @@
       "description": "URL of Nextcloud instance."
     },
     "max_num_episodes": {
-      "label": "Maximum number of episodes (0 for unlimited)",
-      "description": "Maximum number of episodes to sync per feed. Use 0 for unlimited"
+      "label": "[%key:common::config_entries::max_num_episodes::label%]",
+      "description": "[%key:common::config_entries::max_num_episodes::description%]"
     },
     "verify_ssl": {
       "label": "[%key:common::config_entries::verify_ssl::label%]",

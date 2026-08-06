@@ -10,10 +10,12 @@ from music_assistant_models.enums import ProviderFeature, ProviderType
 from music_assistant.constants import (
     CONF_ENTRY_LIBRARY_SYNC_ARTISTS,
     CONF_ENTRY_LIBRARY_SYNC_BACK,
+    CONF_ENTRY_LIBRARY_SYNC_DELETIONS,
     CONF_ENTRY_LIBRARY_SYNC_PODCASTS,
     CONF_ENTRY_LIBRARY_SYNC_TRACKS,
 )
 from music_assistant.controllers.config import ConfigController
+from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
     from music_assistant_models.config_entries import ConfigEntry
@@ -70,3 +72,30 @@ def test_no_features_yields_no_entries() -> None:
     entries = _controller()._build_sync_entries(manifest, set(), provider=None)
 
     assert entries == []
+
+
+def _music_provider() -> MusicProvider:
+    """Build a bare MusicProvider (is_streaming_provider defaults to True)."""
+    return MusicProvider.__new__(MusicProvider)
+
+
+def test_streaming_provider_with_library_sync_gets_deletions_entry() -> None:
+    """The deletions option shows for streaming providers that sync a library."""
+    manifest = SimpleNamespace(type=ProviderType.MUSIC)
+
+    entries = _controller()._build_sync_entries(
+        manifest, {ProviderFeature.LIBRARY_TRACKS}, provider=_music_provider()
+    )
+
+    assert CONF_ENTRY_LIBRARY_SYNC_DELETIONS.key in _keys(entries)
+
+
+def test_streaming_provider_without_library_sync_has_no_deletions_entry() -> None:
+    """Without any library feature there is nothing to sync, so no deletions option."""
+    manifest = SimpleNamespace(type=ProviderType.MUSIC)
+
+    entries = _controller()._build_sync_entries(
+        manifest, {ProviderFeature.BROWSE, ProviderFeature.SEARCH}, provider=_music_provider()
+    )
+
+    assert CONF_ENTRY_LIBRARY_SYNC_DELETIONS.key not in _keys(entries)

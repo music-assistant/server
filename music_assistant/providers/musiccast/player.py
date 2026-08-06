@@ -274,20 +274,19 @@ class MusicCastPlayer(Player):
 
         # STATE
 
+        self._attr_elapsed_time = None
         match self.zone_device.state:
             case MusicCastPlayerState.PAUSED:
                 self._attr_playback_state = PlaybackState.PAUSED
             case MusicCastPlayerState.PLAYING:
                 self._attr_playback_state = PlaybackState.PLAYING
+                if self.zone_device.media_position_updated_at is not None:
+                    self._attr_elapsed_time = self.zone_device.media_position
+                    self._attr_elapsed_time_last_updated = (
+                        self.zone_device.media_position_updated_at.timestamp()
+                    )
             case MusicCastPlayerState.IDLE | MusicCastPlayerState.OFF:
                 self._attr_playback_state = PlaybackState.IDLE
-        self._attr_elapsed_time = self.zone_device.media_position
-        if self.zone_device.media_position_updated_at is not None:
-            self._attr_elapsed_time_last_updated = (
-                self.zone_device.media_position_updated_at.timestamp()
-            )
-        else:
-            self._attr_elapsed_time_last_updated = None
 
         # UPDATE UPNP HELPER
         now = time.time()
