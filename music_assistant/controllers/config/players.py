@@ -957,7 +957,7 @@ class PlayerConfigMixin:
                 # we grab the config entries from the protocol player
                 # and then prefix them to avoid key collisions
                 protocol_entries = await self._get_player_config_entries(protocol_player)
-                protocol_keys = {proto_entry.key for proto_entry in protocol_entries}
+                protocol_entry_keys = {entry.key for entry in protocol_entries}
                 for proto_entry in protocol_entries:
                     # deep copy to avoid mutating shared/constant ConfigEntry objects
                     entry = deepcopy(proto_entry)
@@ -970,7 +970,7 @@ class PlayerConfigMixin:
                     entry.translation_key = entry.translation_key or entry.key
                     entry.translation_owner = protocol_player.translation_owner
                     entry.key = f"{protocol_prefix}{entry.key}"
-                    if entry.depends_on in protocol_keys:
+                    if entry.depends_on in protocol_entry_keys:
                         # the entry it depends on is copied into this same block, so follow it
                         # to its prefixed key and keep the value condition that goes with it
                         entry.depends_on = f"{protocol_prefix}{entry.depends_on}"
