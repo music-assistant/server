@@ -60,7 +60,7 @@
     },
     "stream_quality": {
       "label": "Stream quality",
-      "description": "Audio quality to request from Plex for music tracks. Original streams the source file directly. Lower bitrates ask Plex Media Server to transcode before sending audio to Music Assistant.",
+      "description": "Audio quality to request from Plex. Original streams the source file directly. Lower bitrates ask Plex Media Server to transcode before sending audio to Music Assistant.",
       "options": {
         "original": "Original",
         "96": "96 kbps",

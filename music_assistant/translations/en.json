@@ -1807,7 +1807,7 @@
   "provider.plex.config_entries.plex_like_rating.label": "Plex rating when liking in Music Assistant",
   "provider.plex.config_entries.plex_unlike_rating.description": "When you unlike a track or album in Music Assistant, set this rating value in Plex (0.0 = unrated/clear rating, 10.0 = 5 stars).",
   "provider.plex.config_entries.plex_unlike_rating.label": "Plex rating when unliking in Music Assistant",
-  "provider.plex.config_entries.stream_quality.description": "Audio quality to request from Plex for music tracks. Original streams the source file directly. Lower bitrates ask Plex Media Server to transcode before sending audio to Music Assistant.",
+  "provider.plex.config_entries.stream_quality.description": "Audio quality to request from Plex. Original streams the source file directly. Lower bitrates ask Plex Media Server to transcode before sending audio to Music Assistant.",
   "provider.plex.config_entries.stream_quality.label": "Stream quality",
   "provider.plex.config_entries.stream_quality.options.128": "128 kbps",
   "provider.plex.config_entries.stream_quality.options.192": "192 kbps",
