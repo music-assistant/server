@@ -1,4 +1,4 @@
-"""Tests for StreamsAudio.get_media_stream's ffmpeg input_format handling."""
+"""Tests for the ffmpeg input arguments StreamsAudio.get_media_stream builds."""
 
 from __future__ import annotations
 
@@ -16,9 +16,13 @@ from music_assistant_models.streamdetails import StreamDetails
 import music_assistant.controllers.streams.audio as audio_mod
 from music_assistant.controllers.streams.audio import StreamsAudio
 
+# input args a provider may attach to its StreamDetails (podcastfeed does exactly this).
+# Kept as a tuple so the tests below can never assert against a mutated expectation.
+_PROVIDER_INPUT_ARGS = ("-user_agent", "Test/1.0")
+
 
 class _FakeFFMpeg:
-    """FFMpeg test double that records the input_format it was constructed with."""
+    """FFMpeg test double that records the arguments it was constructed with."""
 
     last_instance: _FakeFFMpeg | None = None
 
@@ -27,9 +31,11 @@ class _FakeFFMpeg:
         *,
         audio_input: object,
         input_format: AudioFormat,
+        extra_input_args: list[str] | None = None,
         **_kwargs: Any,
     ) -> None:
         self.audio_input = audio_input
+        self.extra_input_args = extra_input_args
         # Mirror the real FFMpeg, which mutates this object's codec_type after probe.
         # Tests inspect the original `input_format` AudioFormat passed in to confirm
         # which one the controller picked.
@@ -95,6 +101,22 @@ def _make_streamdetails(
         media_type=MediaType.AUDIO_SOURCE,
         stream_type=StreamType.NAMED_PIPE,
         path="/tmp/fake-fifo",  # noqa: S108
+    )
+
+
+def _seekable_streamdetails() -> StreamDetails:
+    """Build seekable StreamDetails carrying provider-supplied ffmpeg input args."""
+    return StreamDetails(
+        provider="test_provider",
+        item_id="episode-1",
+        audio_format=AudioFormat(content_type=ContentType.MP3),
+        media_type=MediaType.PODCAST_EPISODE,
+        stream_type=StreamType.HTTP,
+        path="http://test.invalid/episode-1.mp3",
+        duration=3600,
+        can_seek=True,
+        allow_seek=True,
+        extra_input_args=[*_PROVIDER_INPUT_ARGS],
     )
 
 
@@ -264,3 +286,26 @@ async def test_get_media_stream_writes_back_codec_when_no_decoded_format() -> No
     # decoded format that AudioFormat is the same object as streamdetails.audio_format,
     # so the controller's writeback path is exercised end-to-end.
     assert streamdetails.audio_format.codec_type is ContentType.FLAC
+
+
+@pytest.mark.asyncio
+async def test_get_media_stream_keeps_caller_extra_input_args_intact(
+    patch_ffmpeg: type[_FakeFFMpeg],
+) -> None:
+    """Per-call input args must not leak back onto the caller's StreamDetails."""
+    streamdetails = _seekable_streamdetails()
+    audio = _make_audio_controller()
+
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=30))
+
+    assert patch_ffmpeg.last_instance is not None
+    assert patch_ffmpeg.last_instance.extra_input_args == [*_PROVIDER_INPUT_ARGS, "-ss", "30"]
+    assert streamdetails.extra_input_args == [*_PROVIDER_INPUT_ARGS]
+
+    # StreamDetails are cached on the queue item and reach this method again on a
+    # retry, another seek or from the background analyzer: every call must build its
+    # args from the provider's list alone instead of stacking onto the previous call's.
+    await _drain(audio.get_media_stream(streamdetails, _make_pcm_format(), seek_position=600))
+
+    assert patch_ffmpeg.last_instance.extra_input_args == [*_PROVIDER_INPUT_ARGS, "-ss", "600"]
+    assert streamdetails.extra_input_args == [*_PROVIDER_INPUT_ARGS]
