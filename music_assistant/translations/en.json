@@ -834,7 +834,7 @@
   "provider.ai_radio.setup_flow.abort.no_tts_engine": "AI Radio needs a text-to-speech engine. Set up a plugin that provides text-to-speech first, for example the Home Assistant plugin with a TTS entity.",
   "provider.ai_radio.setup_flow.user.description": "Pick the AI engine that writes the moderator sections and the text-to-speech engine that voices them.",
   "provider.ai_radio.setup_flow.user.title": "Choose the AI Radio engines",
-  "provider.airplay.config_entries.buffer_depth.description": "How much audio the speaker keeps queued ahead of playback. Automatic uses 600 ms, or 1000 ms for LinkPlay-based devices (WiiM, Edifier and others), whose audio pipeline needs a deeper buffer - especially when the speaker is also part of the vendor's own multiroom group. Pick a deeper value if this speaker stays silent while Music Assistant shows it playing; deeper buffers make track skips respond slower.",
+  "provider.airplay.config_entries.buffer_depth.description": "How much audio the speaker keeps queued ahead of playback. Deeper values help speakers that stay silent or drop out while Music Assistant shows them playing - especially when the speaker also plays in a multiroom group of its own brand - at the cost of slower track skips. Automatic picks a default suited to the device.",
   "provider.airplay.config_entries.buffer_depth.label": "Audio buffer depth",
   "provider.airplay.config_entries.buffer_depth.options.0": "Automatic",
   "provider.airplay.config_entries.buffer_depth.options.1000": "1000 ms",

@@ -7,6 +7,7 @@ import os
 import platform
 import plistlib
 import re
+from fnmatch import fnmatch
 from typing import TYPE_CHECKING, Any
 
 from aiohttp import ClientError, ClientTimeout
@@ -15,6 +16,8 @@ from music_assistant_models.media_items import AudioFormat
 
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.util import format_ip_for_url
+
+from .constants import AIRPLAY_BUFFER_DEPTH_DEFAULTS, AIRPLAY_LINKPLAY_FV_PREFIX
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
@@ -165,6 +168,25 @@ def is_apple_tv(manufacturer: str, model: str) -> bool:
     (e.g. "Apple TV 4K", "Apple TV Gen4").
     """
     return manufacturer.lower().startswith("apple") and "apple tv" in model.lower()
+
+
+def default_buffer_depth(manufacturer: str, model: str, fv: str | None) -> int:
+    """
+    Return the default receiver buffer depth in ms for a device, 0 for automatic.
+
+    :param manufacturer: Device manufacturer from discovery.
+    :param model: Device model from discovery.
+    :param fv: The device's _airplay fv (firmware) TXT record, when known.
+    """
+    # The old LinkPlay platform carries OEM brands but identifies itself in fv.
+    if fv and fv.startswith(AIRPLAY_LINKPLAY_FV_PREFIX):
+        manufacturer = "Linkplay"
+    for manufacturer_match, model_match, depth_ms in AIRPLAY_BUFFER_DEPTH_DEFAULTS:
+        if fnmatch(manufacturer.lower(), manufacturer_match) and fnmatch(
+            model.lower(), model_match
+        ):
+            return depth_ms
+    return 0
 
 
 def get_decoded_property(discovery_info: AsyncServiceInfo, key: str) -> str | None:
