@@ -28,14 +28,6 @@ PLAYBACK_STATE_MAP = {
     "connecting": PlaybackState.IDLE,
 }
 
-PLAYBACK_STATE_POLL_MAP = {
-    "play": PlaybackState.PLAYING,
-    "stream": PlaybackState.PLAYING,
-    "stop": PlaybackState.IDLE,
-    "pause": PlaybackState.PAUSED,
-    "connecting": "CONNECTING",
-}
-
 SOURCE_TIDAL = "Tidal"
 SOURCE_AIRPLAY = "AirPlay"
 SOURCE_SPOTIFY = "Spotify"

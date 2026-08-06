@@ -19,6 +19,7 @@ from music_assistant.controllers.config.migrations import (
     PROVIDER_SETUP_FLOW_KEYS,
     _migrate_airplay_apple_power_control,
     _migrate_airplay_receiver_ghost_players,
+    _migrate_bluesound_http_profile,
     _migrate_bose_soundtouch_presets,
     _migrate_output_limiter,
     _migrate_player_icons,
@@ -63,6 +64,31 @@ def test_migrate_output_limiter_noop_when_absent() -> None:
     """Migration reports no change when no player stored the setting."""
     data: dict[str, Any] = {"players": {"p1": {"player_id": "p1", "values": {"flow_mode": True}}}}
     assert _migrate_output_limiter(data) is False
+
+
+def test_migrate_bluesound_http_profile_drops_stored_pick() -> None:
+    """A Bluesound player left on another HTTP profile is returned to the required one."""
+    data: dict[str, Any] = {
+        "players": {
+            "b1": {
+                "provider": "bluesound",
+                "values": {"http_profile": "chunked", "flow_mode": True},
+            },
+            "b2": {"provider": "bluesound--abc1", "values": {"http_profile": "no_content_length"}},
+            "c1": {"provider": "chromecast", "values": {"http_profile": "chunked"}},
+        }
+    }
+    assert _migrate_bluesound_http_profile(data) is True
+    assert data["players"]["b1"]["values"] == {"flow_mode": True}
+    assert data["players"]["b2"]["values"] == {}
+    # other providers still offer the setting, so their pick is left alone
+    assert data["players"]["c1"]["values"] == {"http_profile": "chunked"}
+
+
+def test_migrate_bluesound_http_profile_noop_when_absent() -> None:
+    """Migration reports no change when no Bluesound player stored a profile."""
+    data: dict[str, Any] = {"players": {"b1": {"provider": "bluesound", "values": {}}}}
+    assert _migrate_bluesound_http_profile(data) is False
 
 
 def _airplay_receiver_ghost_data() -> dict[str, Any]:

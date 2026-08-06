@@ -15,7 +15,7 @@ from pyblu.entities import Input, PairedPlayer, Preset
 from pyblu.errors import PlayerUnexpectedResponseError, PlayerUnreachableError
 
 from music_assistant.constants import (
-    CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
+    CONF_ENTRY_HTTP_PROFILE_FORCED_3,
     CONF_ENTRY_ICY_METADATA_DEFAULT_FULL,
     create_sample_rates_config_entry,
 )
@@ -92,7 +92,9 @@ class BluesoundPlayer(Player):
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         return [
-            CONF_ENTRY_HTTP_PROFILE_DEFAULT_3,
+            # BluOS devices loop the audio forever on the other HTTP profiles,
+            # so this is not a choice we can leave to the user.
+            CONF_ENTRY_HTTP_PROFILE_FORCED_3,
             create_sample_rates_config_entry(
                 max_sample_rate=192000,
                 safe_max_sample_rate=192000,
@@ -327,6 +329,16 @@ class BluesoundPlayer(Player):
             duration=cast("int | None", self.status.total_seconds or None),
         )
 
+    def _resolve_playback_state(self) -> PlaybackState:
+        """Resolve the playback state from the reported BluOS transport state."""
+        # BluOS reports 'connecting' whenever it is (re)filling its buffer, including
+        # while it plays out the tail of a stream that stopped sending. Taking that as
+        # idle would end the queue while the player is still making sound, so we hold on
+        # to the playing state until BluOS reports a real stop.
+        if self.status.state == "connecting" and self._attr_playback_state == PlaybackState.PLAYING:
+            return PlaybackState.PLAYING
+        return PLAYBACK_STATE_MAP[self.status.state]
+
     async def update_attributes(self) -> None:
         """Update the BluOS player attributes."""
         self.logger.debug(f"updating {self.player_id} attributes")
@@ -347,7 +359,7 @@ class BluesoundPlayer(Player):
             self.logger.debug(f"Changing bluos poll state from {self.poll_state} to static")
             self.poll_state = POLL_STATE_STATIC
 
-        self._attr_playback_state = PLAYBACK_STATE_MAP[self.status.state]
+        self._attr_playback_state = self._resolve_playback_state()
 
         # Update polling interval
         if self.poll_state != POLL_STATE_DYNAMIC:
