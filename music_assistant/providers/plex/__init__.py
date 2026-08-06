@@ -1167,6 +1167,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
     async def _run_async(
         self, call: Callable[Param, RetType], *args: Param.args, **kwargs: Param.kwargs
     ) -> RetType:
+        await self.get_myplex_account_and_refresh_token(str(self.get_setup_value(CONF_AUTH_TOKEN)))
         return await asyncio.to_thread(call, *args, **kwargs)
 
     async def _get_data(self, key: str, cls: type[PlexObjectT] | None = None) -> PlexObjectT:

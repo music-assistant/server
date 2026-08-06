@@ -564,14 +564,14 @@ class TestStreamDetailsGuards:
         plex_track.getStreamURL.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_run_async_does_not_ping_myplex(self, music_provider: Any) -> None:
-        """Local Plex calls should not depend on plex.tv ping availability."""
-        music_provider._myplex_account.ping.side_effect = RuntimeError("plex.tv unavailable")
+    async def test_run_async_refreshes_myplex_token(self, music_provider: Any) -> None:
+        """Plex API calls should refresh the authenticated account token."""
+        music_provider.get_setup_value = MagicMock(return_value="auth_token")
 
         result = await music_provider._run_async(lambda: "ok")
 
         assert result == "ok"
-        music_provider._myplex_account.ping.assert_not_called()
+        music_provider._myplex_account.ping.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_audiobook_stream_rejects_music_library(self, music_provider: Any) -> None:
