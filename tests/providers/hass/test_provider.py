@@ -931,8 +931,10 @@ async def test_unmirrored_change_during_the_fetch_is_still_cached() -> None:
         provider._entity_registry = None
         # hold back the registry response until the update has been delivered
         hass._registry_result = asyncio.get_running_loop().create_future()
+        # the startup fetch left the event set, so re-arm it for the fetch under test
+        hass.registry_started.clear()
         lookup = asyncio.ensure_future(provider.get_states(domains=("tts",)))
-        await asyncio.sleep(0)
+        await hass.registry_started.wait()
 
         hass.fire_event(
             "entity_registry_updated", _registry_event("light.kitchen", changes={"name": "Old"})
@@ -991,8 +993,10 @@ async def test_registry_changed_during_the_fetch_is_not_cached() -> None:
         provider._entity_registry = None
         # hold back the registry response until the update has been delivered
         hass._registry_result = asyncio.get_running_loop().create_future()
+        # the startup fetch left the event set, so re-arm it for the fetch under test
+        hass.registry_started.clear()
         lookup = asyncio.ensure_future(provider.get_states(domains=("tts",)))
-        await asyncio.sleep(0)
+        await hass.registry_started.wait()
 
         hass.fire_event("entity_registry_updated", _registry_event("light.kitchen", "create"))
         hass._registry_result.set_result(None)
