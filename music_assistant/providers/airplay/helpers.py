@@ -17,7 +17,7 @@ from music_assistant_models.media_items import AudioFormat
 from music_assistant.helpers.process import check_output
 from music_assistant.helpers.util import format_ip_for_url
 
-from .constants import AIRPLAY_BUFFER_DEPTH_DEFAULTS, AIRPLAY_LINKPLAY_FV_PREFIX
+from .constants import AIRPLAY_BUFFER_DEPTH_DEFAULTS
 
 if TYPE_CHECKING:
     from zeroconf.asyncio import AsyncServiceInfo
@@ -178,12 +178,11 @@ def default_buffer_depth(manufacturer: str, model: str, fv: str | None) -> int:
     :param model: Device model from discovery.
     :param fv: The device's _airplay fv (firmware) TXT record, when known.
     """
-    # The old LinkPlay platform carries OEM brands but identifies itself in fv.
-    if fv and fv.startswith(AIRPLAY_LINKPLAY_FV_PREFIX):
-        manufacturer = "Linkplay"
-    for manufacturer_match, model_match, depth_ms in AIRPLAY_BUFFER_DEPTH_DEFAULTS:
-        if fnmatch(manufacturer.lower(), manufacturer_match) and fnmatch(
-            model.lower(), model_match
+    for manufacturer_match, model_match, fv_match, depth_ms in AIRPLAY_BUFFER_DEPTH_DEFAULTS:
+        if (
+            fnmatch(manufacturer.lower(), manufacturer_match)
+            and fnmatch(model.lower(), model_match)
+            and fnmatch((fv or "").lower(), fv_match)
         ):
             return depth_ms
     return 0
