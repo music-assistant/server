@@ -745,7 +745,11 @@ class MusicAssistant:
             task_id = uuid4().hex
 
         def task_done_callback(_task: asyncio.Task[Any]) -> None:
-            self._tracked_tasks.pop(task_id, None)
+            # done callbacks run one event loop iteration after the task finished, so a
+            # caller may already have replaced the entry with a new task under the same
+            # task_id - only untrack when the entry still points at this task
+            if self._tracked_tasks.get(task_id) is _task:
+                del self._tracked_tasks[task_id]
             if _task.cancelled():
                 return
             # always retrieve the exception, otherwise asyncio logs a noisy

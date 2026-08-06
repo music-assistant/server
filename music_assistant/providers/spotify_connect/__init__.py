@@ -110,6 +110,8 @@ async def setup(
 class SpotifyConnectProvider(PluginProvider):
     """Implementation of a Spotify Connect Plugin (backed by go-librespot)."""
 
+    reload_on_streams_network_change = True
+
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:

@@ -40,16 +40,16 @@ if TYPE_CHECKING:
     from .player import AirPlayPlayer
     from .provider import AirPlayProvider
 
-# What each readiness outcome means for the join anchor. They all end up
-# anchoring on the join floor, so only the reason distinguishes a device that
-# needs longer from one that will not play at all.
+# What each readiness outcome means for the join anchor: only a projection moves
+# it, every other outcome leaves the join floor carrying it alone, so the note
+# says which of the two happened and why. STALLED has no note because it never
+# reaches an anchor - a stalled joiner is refused the join before that.
 _CLOCK_READINESS_NOTES: dict[ClockReadiness, str] = {
     ClockReadiness.PROJECTED: "usable in {out:.2f}s; anchoring just past that",
     ClockReadiness.NOT_APPLICABLE: "runs on NTP timing, so there is none to wait for; "
     "anchoring on the join floor",
-    ClockReadiness.STALLED: "never answered ours; anchoring on the join floor",
     ClockReadiness.UNREPORTED: "was not reported within {timeout:.1f}s (a slow device, or a "
-    "binary too old to report it); anchoring on the join floor",
+    "receiver that never answered); anchoring on the join floor",
 }
 
 
@@ -640,11 +640,9 @@ class AirPlayStreamSession:
                     )
                     return
                 # Map the content onto the instant the binary acked — its
-                # verified truth — falling back to the commanded instant when no
-                # ack arrived (older binary). The ring is re-snapshotted here, so
-                # the mapping covers whatever the group was fed while the ack was
-                # outstanding.
-                acked_at = (actual - adjust_ms) / 1000 if actual is not None else requested_at
+                # verified truth. The ring is re-snapshotted here, so the mapping
+                # covers whatever the group was fed while the ack was outstanding.
+                acked_at = (actual - adjust_ms) / 1000
                 start_at, fed_pos_due, prime, skip_bytes = map_to(acked_at, committed=True)
                 self._client_skip_bytes[airplay_player.player_id] = skip_bytes
                 # An instant that moved carries the content mapped onto it
@@ -753,11 +751,17 @@ class AirPlayStreamSession:
         self._pcm_buffer_max = self._ring_bytes_for(lead)
 
     def _session_is_live(self) -> bool:
-        """Return whether the session still has a running reference member (call under the lock)."""
+        """Return whether the session still plays a joinable timeline (call under the lock)."""
         if not self.sync_clients:
             return False
-        reference_stream = self.sync_clients[0].stream
-        return reference_stream is not None and reference_stream.running
+        reference = self.sync_clients[0]
+        reference_stream = reference.stream
+        if reference_stream is None or not reference_stream.running:
+            return False
+        # A parked (standby) session keeps every member's stream running while
+        # its timeline is gone - the anchor is stale and nothing is being fed -
+        # so only a member that is actually playing can absorb a joiner.
+        return reference.playback_state == PlaybackState.PLAYING
 
     async def _resolve_shared_ptp(self, ap2_members: int | None = None) -> bool:
         """
@@ -1089,19 +1093,21 @@ class AirPlayStreamSession:
         """
         Return the latest receiver-clock readiness any member reported.
 
-        Members that report nothing are not represented in the result; the
+        Members that report nothing contribute no instant to the maximum; the
         caller anchors those on its lead alone.
 
         :return: Unix epoch ms of the latest projection any member reported, or 0
-            when there is nothing to wait for — a solo start, a receiver on NTP
-            timing, one that never answered, or a binary too old to report. The
-            caller then anchors on its lead alone.
+            when there is nothing to wait for — a receiver on NTP timing, or one
+            that never answered. The caller then anchors on its lead alone.
         """
-        if len(self.sync_clients) == 1:
-            # A lone receiver seats a fresh session by itself within ~20 ms and
-            # has no partner to be late against, so waiting only delays it. The
-            # instant matters once members have to agree on one.
-            return 0
+        # A solo start waits for the projection too: a receiver that has not
+        # seated its clock renders silence at an anchor it cannot honor, and
+        # enough of them need that time (WiiM, Edifier) that no start may assume
+        # otherwise. It costs a warm clock nothing - the binary reports it ready
+        # with a past instant right after connect - and a cold one anchors just
+        # past its own projection instead of being corrected there by the binary
+        # afterwards: the same instant, planned rather than repaired, with the
+        # readiness lead's slack on top.
         results = await asyncio.gather(
             *[
                 p.stream.wait_clock_ready(timeout=AIRPLAY_CLOCK_READY_TIMEOUT_MS / 1000)
@@ -1138,6 +1144,8 @@ class AirPlayStreamSession:
         misplaced). When any member was corrected, every member is re-STARTed
         at the largest reported instant so the group converges on one shared
         instant; the recorded session anchor is always the verified truth.
+        A solo member is never re-STARTed: its corrected instant is simply
+        adopted as the anchor, since there is no partner to converge with.
 
         :param position_ms: Media position mapped to the first sample of the anchor.
         :param start_unix_ms: Shared audible-start instant in unix epoch ms.
@@ -1145,7 +1153,7 @@ class AirPlayStreamSession:
         target_ms = start_unix_ms
         corrected_ms = start_unix_ms
         for _ in range(4):
-            member_tasks: list[tuple[int, asyncio.Task[int | None]]] = []
+            member_tasks: list[tuple[int, asyncio.Task[int]]] = []
             async with asyncio.TaskGroup() as task_group:
                 for player in self.sync_clients:
                     stream = player.stream
@@ -1163,11 +1171,19 @@ class AirPlayStreamSession:
                     )
             corrected_ms = target_ms
             for adjust_ms, task in member_tasks:
-                actual = task.result()
-                if actual is None:
-                    continue  # older binary without a started ack
-                corrected_ms = max(corrected_ms, actual - adjust_ms)
+                corrected_ms = max(corrected_ms, task.result() - adjust_ms)
             if corrected_ms <= target_ms + 2:
+                break
+            if len(member_tasks) == 1:
+                # A lone member has no partner to converge with and its binary
+                # already scheduled the corrected instant exactly, so adopt that
+                # as the anchor. Re-STARTing it only does damage: the command
+                # re-bases reported position on the raw position_ms (start()
+                # writes that base unconditionally), throwing away the
+                # correction the anchor already folded into it, and if the
+                # second ack times out the session records an instant the
+                # binary never played on.
+                target_ms = corrected_ms
                 break
             self.prov.logger.warning(
                 "AirPlay group start corrected: a member could not honor %d, "

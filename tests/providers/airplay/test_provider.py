@@ -571,6 +571,11 @@ def _raop_player() -> MagicMock:
     return player
 
 
+async def _ack_commanded_instant(start_unix_ms: int = 0, *_args: object, **_kwargs: object) -> int:
+    """Ack a START at exactly the instant it was commanded, as a feasible one is."""
+    return start_unix_ms
+
+
 def _make_ptp_session(prov: MagicMock, sync_clients: list[MagicMock]) -> AirPlayStreamSession:
     """Build a stream session wired to a mock provider for PTP-decision tests."""
     pcm_format = MagicMock()
@@ -624,6 +629,7 @@ async def test_raop_session_resolves_ptp_for_first_ap2_late_joiner() -> None:
     prov = MagicMock()
     raop_player = _raop_player()
     raop_player.player_id = "raop"
+    raop_player.playback_state = PlaybackState.PLAYING
     raop_player.stream = MagicMock()
     raop_player.stream.running = True
     raop_player.stream.cumulative_shift_seconds = 0.0
@@ -648,10 +654,10 @@ async def test_raop_session_resolves_ptp_for_first_ap2_late_joiner() -> None:
         player.stream = MagicMock(running=True, connected=True)
         player.stream.wait_for_connection = AsyncMock()
         player.stream.flush = AsyncMock(return_value=True)
-        # Verified-start API defaults: no started ack, no warm-lead constraint
-        # and no receiver clock projection (an older binary), so the test
-        # asserts the commanded values directly.
-        player.stream.start = AsyncMock(return_value=None)
+        # Verified-start API defaults: every START is acked at the commanded
+        # instant, with no warm-lead constraint and no receiver clock
+        # projection, so the test asserts the commanded values directly.
+        player.stream.start = AsyncMock(side_effect=_ack_commanded_instant)
         player.stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.UNREPORTED, 0))
         player.stream.warm_lead_ms = 0
         player.stream.flushed_head_unix_ms = 0
@@ -679,7 +685,7 @@ async def test_session_start_applies_uniform_ptp_decision_to_all_members() -> No
         player.stream.wait_for_connection = AsyncMock()
         player.stream.wait_audio_present = AsyncMock(return_value=True)
         player.stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.UNREPORTED, 0))
-        player.stream.start = AsyncMock(return_value=None)
+        player.stream.start = AsyncMock(side_effect=_ack_commanded_instant)
     session = _make_ptp_session(prov, players)
 
     with (
@@ -704,7 +710,7 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
         player.stream.wait_for_connection = AsyncMock()
         player.stream.wait_audio_present = AsyncMock(return_value=True)
         player.stream.wait_clock_ready = AsyncMock(return_value=(ClockReadiness.UNREPORTED, 0))
-        player.stream.start = AsyncMock(return_value=None)
+        player.stream.start = AsyncMock(side_effect=_ack_commanded_instant)
         player.config.get_value = MagicMock(return_value=0)
     session = _make_ptp_session(prov, players)
     now = 100.0
@@ -735,10 +741,10 @@ async def test_session_start_calculates_anchor_after_ptp_resolution() -> None:
         assert player.stream.start.await_args.args[0] == expected
 
 
-# --- Session decision reaches the CLI args (overrides bare liveness) ------------
+# --- Session decision reaches the CLI args (overrides bare readiness) ----------
 
 
-def _stream_player(*, ptp_daemon_running: bool) -> MagicMock:
+def _stream_player(*, ptp_daemon_ready: bool) -> MagicMock:
     """Build a minimal AirPlay player mock sufficient for _build_cli_args."""
     player = MagicMock()
     player.player_id = "apaabbccddeeff"
@@ -749,6 +755,8 @@ def _stream_player(*, ptp_daemon_running: bool) -> MagicMock:
     player.volume_level = 40
     player.device_info.mac_address = "AA:BB:CC:DD:EE:FF"
     player.device_info.ip_address = "192.168.1.50"
+    player.device_info.manufacturer = "Acme, Inc."
+    player.device_info.model = "Test1,1"
     player.logger = logging.getLogger("test.airplay.player")
     player.config.get_value = MagicMock(return_value=None)
     # Keep the arg build on its shortest path: no discovery records to expand.
@@ -757,7 +765,7 @@ def _stream_player(*, ptp_daemon_running: bool) -> MagicMock:
 
     prov = MagicMock()
     prov.dacp_id = "ABCDEF0123456789"
-    prov.ptp_daemon_running = ptp_daemon_running
+    prov.ptp_daemon_ready = ptp_daemon_ready
     prov.logger = logging.getLogger("test.airplay.prov")
     prov.mass.streams.publish_ip = "192.168.1.99"
     prov.mass.streams.get_source_ip = AsyncMock(return_value="192.168.1.5")
@@ -776,31 +784,31 @@ async def _build_args(player: MagicMock, use_shared_ptp: bool | None) -> list[st
         return await stream._build_cli_args(use_shared_ptp)
 
 
-async def test_build_cli_args_explicit_shared_ptp_overrides_dead_daemon() -> None:
-    """An explicit True adds --ptp-shared even when the daemon reads as not-live."""
-    player = _stream_player(ptp_daemon_running=False)
+async def test_build_cli_args_explicit_shared_ptp_overrides_unready_daemon() -> None:
+    """An explicit True adds --ptp-shared even when the daemon reads as not-ready."""
+    player = _stream_player(ptp_daemon_ready=False)
 
     args = await _build_args(player, use_shared_ptp=True)
 
     assert "--ptp-shared" in args
 
 
-async def test_build_cli_args_explicit_no_shared_ptp_overrides_live_daemon() -> None:
-    """An explicit False omits --ptp-shared even while the daemon is live."""
-    player = _stream_player(ptp_daemon_running=True)
+async def test_build_cli_args_explicit_no_shared_ptp_overrides_ready_daemon() -> None:
+    """An explicit False omits --ptp-shared even while the daemon is ready."""
+    player = _stream_player(ptp_daemon_ready=True)
 
     args = await _build_args(player, use_shared_ptp=False)
 
     assert "--ptp-shared" not in args
 
 
-async def test_build_cli_args_none_falls_back_to_daemon_liveness() -> None:
-    """Legacy single-stream callers (None) still gate --ptp-shared on daemon liveness."""
+async def test_build_cli_args_none_falls_back_to_daemon_readiness() -> None:
+    """Callers without a group-wide decision (None) gate --ptp-shared on daemon readiness."""
     assert "--ptp-shared" in await _build_args(
-        _stream_player(ptp_daemon_running=True), use_shared_ptp=None
+        _stream_player(ptp_daemon_ready=True), use_shared_ptp=None
     )
     assert "--ptp-shared" not in await _build_args(
-        _stream_player(ptp_daemon_running=False), use_shared_ptp=None
+        _stream_player(ptp_daemon_ready=False), use_shared_ptp=None
     )
 
 

@@ -6,7 +6,7 @@
   "description": "Play music and audiobooks stored on SMB connected network drives.",
   "codeowners": ["@music-assistant"],
   "requirements": [],
-  "documentation": "https://music-assistant.io/music-providers/filesystem/",
+  "documentation": "https://music-assistant.io/music-providers/local-files/",
   "multi_instance": true,
   "icon": "network"
 }

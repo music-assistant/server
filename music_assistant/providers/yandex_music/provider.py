@@ -498,7 +498,7 @@ class YandexMusicProvider(MusicProvider):
             ),
         )
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
         """
         Handle a wave-preset save/delete button press and re-render the entries.
 

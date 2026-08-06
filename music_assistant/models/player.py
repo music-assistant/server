@@ -935,12 +935,15 @@ class Player(ABC):
         """
         return []
 
-    async def handle_config_action(self, action: str) -> list[ConfigEntry]:
+    async def handle_config_action(self, action: str) -> list[ConfigEntry] | None:
         """
-        Handle a one-shot action button press from this player's config and re-render.
+        Run the one-shot side effect for a pressed action button from this player's config.
 
         Override to run the side effect for each ``ConfigEntryType.ACTION`` entry this
-        player declares, then return the (possibly refreshed) config entries to display.
+        player declares. Raise to report failure to the caller. Return None when there is
+        nothing to re-render. Returning entries re-renders the config form from the owning
+        player's freshly resolved entries; the returned entries themselves are not shown,
+        so they serve only as the signal that a re-render is needed.
 
         :param action: The action id of the pressed button (an entry's ``action`` key).
         """
@@ -1318,7 +1321,9 @@ class Player(ABC):
     @final
     def icon(self) -> str:
         """Return the player icon."""
-        return cast("str", self._config.get_value(CONF_ENTRY_PLAYER_ICON.key))
+        # players without an icon config entry (e.g. protocol players) serve the fallback id
+        icon = self._config.get_value(CONF_ENTRY_PLAYER_ICON.key)
+        return cast("str", icon or CONF_ENTRY_PLAYER_ICON.default_value)
 
     @cached_property
     @final

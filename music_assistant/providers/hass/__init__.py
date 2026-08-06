@@ -14,6 +14,8 @@ import logging
 import os
 from functools import partial
 from itertools import batched
+from sys import intern
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NamedTuple, TypedDict, cast
 
 from hass_client import HomeAssistantClient
@@ -46,7 +48,7 @@ from music_assistant.models.plugin import AIEngine, PluginProvider, TTSEngine
 from .constants import OFF_STATES, MediaPlayerEntityFeature, parse_supported_features
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Collection
+    from collections.abc import Callable, Collection, Mapping
 
     from aiohttp import ClientSession
     from hass_client.models import (
@@ -88,6 +90,14 @@ CONTROL_DOMAINS = ("media_player", "switch", "input_boolean", "number", "input_n
 FEATURE_DOMAINS = ("tts", "ai_task")
 FEATURE_DOMAIN_PREFIXES = tuple(f"{domain}." for domain in FEATURE_DOMAINS)
 
+# Entity registry fields a change to which can alter the mirrored registry. Beyond the
+# mirrored fields themselves, disabled_by decides whether an entity is listed at all, and
+# config_entry_id joins them because Home Assistant can clear disabled_by while reporting
+# only the move to the other config entry.
+REGISTRY_FIELDS_AFFECTING_MIRROR = frozenset(
+    {"entity_id", "platform", "device_id", "disabled_by", "config_entry_id"}
+)
+
 
 class DeviceMediaPlayerInfo(TypedDict):
     """Home Assistant correlation info for a device that is natively connected elsewhere."""
@@ -98,10 +108,13 @@ class DeviceMediaPlayerInfo(TypedDict):
     announce_entity_id: str | None
 
 
-class HassRegistryEntity(TypedDict):
-    """Home Assistant entity registry entry, limited to the fields Music Assistant uses."""
+class HassRegistryEntity(NamedTuple):
+    """
+    Home Assistant entity registry entry, limited to the fields Music Assistant uses.
 
-    entity_id: str
+    The entity ID is not a field: entries are always keyed by it.
+    """
+
     platform: str
     device_id: str | None
 
@@ -187,11 +200,19 @@ class HomeAssistantProvider(PluginProvider):
     _ai_engines: list[AIEngine]
     _tts_engines: list[TTSEngine]
     _startup_complete: bool = False
-    _entity_registry: dict[str, HassRegistryEntity] | None = None
+    _entity_registry: Mapping[str, HassRegistryEntity] | None = None
     _entity_registry_generation: int = 0
     _entity_registry_lock: asyncio.Lock
     _wanted_controls: dict[str, _ControlCapabilities] | None = None
     _control_reconcile_lock: asyncio.Lock
+
+    @property
+    def url(self) -> str | None:
+        """Return the configured Home Assistant URL, or None if not configured."""
+        url = self.get_setup_value(CONF_URL)
+        if isinstance(url, str) and url:
+            return url
+        return None
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """
@@ -372,12 +393,15 @@ class HomeAssistantProvider(PluginProvider):
             "player_controls": len(self._player_controls) if self._player_controls else 0,
         }
 
-    async def get_entity_registry(self) -> dict[str, HassRegistryEntity]:
+    async def get_entity_registry(self) -> Mapping[str, HassRegistryEntity]:
         """
         Return the Home Assistant entity registry, keyed by entity ID.
 
         Entities that are disabled in Home Assistant are absent from the result, and so are
         entities without a unique ID: those are not part of Home Assistant's registry at all.
+
+        The result is shared between all callers and is read-only: both the mapping and
+        its entries reject writes.
         """
         if (registry := self._entity_registry) is not None:
             return registry
@@ -451,13 +475,13 @@ class HomeAssistantProvider(PluginProvider):
         if not device_by_mac:
             return {}
         media_players_by_device: dict[str, list[str]] = {}
-        for entry in (await self.get_entity_registry()).values():
+        for entity_id, entry in (await self.get_entity_registry()).items():
             if (
-                entry["platform"] == platform
-                and entry["entity_id"].startswith("media_player.")
-                and (device_id := entry["device_id"])
+                entry.platform == platform
+                and entity_id.startswith("media_player.")
+                and (device_id := entry.device_id)
             ):
-                media_players_by_device.setdefault(device_id, []).append(entry["entity_id"])
+                media_players_by_device.setdefault(device_id, []).append(entity_id)
         candidates_by_mac = {
             mac: media_players_by_device.get(device["id"], [])
             for mac, device in device_by_mac.items()
@@ -1014,10 +1038,20 @@ class HomeAssistantProvider(PluginProvider):
 
     def _on_entity_registry_update(self, event: Event) -> None:
         """Handle an entity registry update event."""
-        # any registry change invalidates the cached registry, whatever domain it concerns
-        self._entity_registry = None
-        self._entity_registry_generation += 1
-        entity_id = event["data"].get("entity_id", "")
+        data = event["data"]
+        if _affects_mirrored_registry(data):
+            self._entity_registry = None
+            self._entity_registry_generation += 1
+        elif self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            # the kept mirror rests on which fields Home Assistant reports, so leave a
+            # trail that tells a stale entity listing apart from a lookup that never ran
+            self.logger.log(
+                VERBOSE_LOG_LEVEL,
+                "Keeping the mirrored entity registry, %s changed on %s",
+                ", ".join(data["changes"]),
+                data.get("entity_id", "?"),
+            )
+        entity_id = data.get("entity_id", "")
         if not entity_id.startswith(FEATURE_DOMAIN_PREFIXES):
             return
         self._schedule_engine_refresh()
@@ -1037,7 +1071,11 @@ class HomeAssistantProvider(PluginProvider):
         except Exception as err:
             self.logger.warning("Failed to refresh Home Assistant engines: %s", err)
 
-    async def _fetch_entity_registry(self) -> dict[str, HassRegistryEntity]:
+    # unlike _fetch_device_registry, this listing is mirrored for the lifetime of the
+    # connection rather than kept behind a TTL: it runs to several megabytes on a large
+    # setup, and Home Assistant announces every change, so the mirror is both the cheaper
+    # and the more accurate option
+    async def _fetch_entity_registry(self) -> Mapping[str, HassRegistryEntity]:
         """Fetch the entity registry from Home Assistant, keyed by entity ID."""
         # the display variant of the registry listing carries abbreviated keys and only the
         # fields the Home Assistant frontend needs, making it several times smaller
@@ -1045,14 +1083,18 @@ class HomeAssistantProvider(PluginProvider):
             "dict[str, Any]",
             await self.hass.send_command("config/entity_registry/list_for_display"),
         )
-        return {
-            entry["ei"]: HassRegistryEntity(
-                entity_id=entry["ei"],
-                platform=entry["pl"],
-                device_id=entry.get("di"),
+        # the listing repeats a handful of platform names and one device id per device over
+        # all of its entities, so hold on to a single string object per distinct value
+        device_ids: dict[str, str] = {}
+        registry: dict[str, HassRegistryEntity] = {}
+        for entry in result["entities"]:
+            if (device_id := entry.get("di")) is not None:
+                device_id = device_ids.setdefault(device_id, device_id)
+            registry[entry["ei"]] = HassRegistryEntity(
+                platform=intern(entry["pl"]),
+                device_id=device_id,
             )
-            for entry in result["entities"]
-        }
+        return MappingProxyType(registry)
 
     # the lock sits outside the cache to keep a burst of lookups from fetching once per
     # caller. use_cache stores in the background, so the callers that reach a still-cold
@@ -1112,6 +1154,24 @@ def _get_control_name(entity_id: str, state: State | None) -> str:
     if state and (friendly_name := state["attributes"].get("friendly_name")):
         return f"{friendly_name} ({entity_id})"
     return entity_id
+
+
+def _affects_mirrored_registry(data: Mapping[str, Any]) -> bool:
+    """
+    Return whether an entity registry update can change the mirrored entity registry.
+
+    :param data: The data of a Home Assistant entity_registry_updated event.
+    """
+    if data.get("action") != "update":
+        # a created or removed entity always enters or leaves the listing
+        return True
+    # an update reports the fields it touched, so a change that only concerns fields we do
+    # not mirror (a rename, an icon, an area, a label) leaves our listing accurate. an
+    # update can also report no fields at all, as a device rename re-derives a name field
+    # that Home Assistant strips from the report, so treat that as a change of unknown reach
+    if not (changes := data.get("changes")):
+        return True
+    return not REGISTRY_FIELDS_AFFECTING_MIRROR.isdisjoint(changes)
 
 
 def _decompress_state(entity_id: str, compressed_state: CompressedState) -> State:
