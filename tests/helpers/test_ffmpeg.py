@@ -694,6 +694,16 @@ def test_overlay_args_probe_the_main_input_and_add_no_filters() -> None:
     assert not any(arg.startswith(("pan=", "aresample=resampler=")) for arg in args)
 
 
+def test_caller_supplied_input_format_still_gets_the_read_args() -> None:
+    """An input the caller specifies in full is still opened under our read limits."""
+    # the concat demuxer needs the protocol whitelist to open the files it lists
+    extra_input_args = ["-safe", "0", "-f", "concat", "-i", "/list.txt"]
+    args = get_ffmpeg_args(_PCM_FORMAT, _PCM_FORMAT, [], extra_input_args=extra_input_args)
+    assert args[args.index("-protocol_whitelist") : args.index("-safe")] == _INPUT_READ_ARGS
+    # the caller's own input spec is used as-is, so we add no second input
+    assert args.count("-i") == 1
+
+
 # -- _log_reader_task (decode-error flood guard) --
 
 
