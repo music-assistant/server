@@ -91,6 +91,16 @@ def test_migrate_bluesound_http_profile_noop_when_absent() -> None:
     assert _migrate_bluesound_http_profile(data) is False
 
 
+def test_migrate_bluesound_http_profile_noop_when_already_required() -> None:
+    """A player already on the required profile needs no rewrite of the settings."""
+    data: dict[str, Any] = {
+        "players": {
+            "b1": {"provider": "bluesound", "values": {"http_profile": "forced_content_length"}}
+        }
+    }
+    assert _migrate_bluesound_http_profile(data) is False
+
+
 def _airplay_receiver_ghost_data() -> dict[str, Any]:
     """Build a config store with AirPlay Receiver ghost players next to real players."""
     return {

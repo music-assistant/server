@@ -1376,13 +1376,17 @@ def _migrate_output_limiter(data: dict[str, Any]) -> bool:
     return changed
 
 
+# the only HTTP profile BluOS devices play back correctly on
+FORCED_HTTP_PROFILE = "forced_content_length"
+
+
 def _migrate_bluesound_http_profile(data: dict[str, Any]) -> bool:
     """
     Drop the stored HTTP profile of Bluesound players.
 
-    BluOS devices keep looping the audio on any profile other than the forced content
-    length one, so the setting is no longer offered. Stored picks are removed rather than
-    kept, otherwise a player left on another profile would stay broken with no way back.
+    BluOS keeps looping the audio on any profile other than the forced content length one,
+    so the setting is no longer offered. Stored picks are removed rather than kept,
+    otherwise a player left on another profile would stay broken with no way back.
     """
     all_player_configs = data.get(CONF_PLAYERS, {})
     if not isinstance(all_player_configs, dict):
@@ -1394,7 +1398,9 @@ def _migrate_bluesound_http_profile(data: dict[str, Any]) -> bool:
         if not str(player_cfg.get("provider", "")).startswith("bluesound"):
             continue
         player_values = player_cfg.get("values")
-        if isinstance(player_values, dict) and CONF_HTTP_PROFILE in player_values:
+        if not isinstance(player_values, dict):
+            continue
+        if player_values.get(CONF_HTTP_PROFILE, FORCED_HTTP_PROFILE) != FORCED_HTTP_PROFILE:
             del player_values[CONF_HTTP_PROFILE]
             changed = True
     if changed:

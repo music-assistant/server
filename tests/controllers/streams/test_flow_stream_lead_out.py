@@ -46,6 +46,17 @@ async def test_skips_lead_out_when_flow_restarts() -> None:
 
 
 @pytest.mark.asyncio
+async def test_skips_lead_out_on_a_kept_alive_connection() -> None:
+    """A connection that outlives the response is not something the player waits on."""
+    controller = _controller(exhausted=True)
+    with patch(
+        "music_assistant.controllers.streams.controller.asyncio.sleep", new=AsyncMock()
+    ) as sleep:
+        await controller._flow_stream_lead_out(QUEUE_ID, SESSION_ID, keep_alive=True)
+    sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_skips_lead_out_when_superseded() -> None:
     """A newer stream session owns playback, so the stale response must not linger."""
     controller = _controller(exhausted=True)

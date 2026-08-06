@@ -92,7 +92,7 @@ class BluesoundPlayer(Player):
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the player."""
         return [
-            # BluOS devices loop the audio forever on the other HTTP profiles,
+            # BluOS keeps looping the audio on the other HTTP profiles,
             # so this is not a choice we can leave to the user.
             CONF_ENTRY_HTTP_PROFILE_FORCED_3,
             create_sample_rates_config_entry(

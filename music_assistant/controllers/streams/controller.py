@@ -1111,7 +1111,9 @@ class StreamsController(CoreController):
             # restarting (or completely failing) the audio stream by keeping the buffer short.
             # this is reported to be an issue especially with Chromecast players.
             # see for example: https://github.com/music-assistant/support/issues/3717
-            # allow buffer ahead of a few seconds and read rest in (near) realtime
+            # allow buffer ahead of a few seconds and read rest in (near) realtime.
+            # staying close to realtime also keeps the amount a player has buffered but not
+            # yet rendered predictable, which is what the lead-out below has to cover.
             extra_input_args=["-readrate", "1.05", "-readrate_initial_burst", "5"],
             chunk_size=icy_meta_interval if enable_icy else calculate_content_length(output_format),
         )
@@ -1651,15 +1653,21 @@ class StreamsController(CoreController):
             # either a newer stream session took over, or this flow ended early to be
             # restarted right away - in both cases there is no tail to play out
             return
-        # keep_alive tells us whether the player will actually see the connection close:
-        # aiohttp derives that from the request, so our own 'Connection: close' header is
-        # relayed to the player but never applied to the response itself.
+        if keep_alive:
+            # aiohttp decides this from the request, so our own 'Connection: close' header
+            # is relayed to the player but never applied to the response: the connection
+            # outlives the handler anyway and there is nothing to postpone.
+            self.logger.debug(
+                "Flow stream for queue %s exhausted - connection is kept alive, "
+                "so the player is not waiting on us to close it",
+                queue_id,
+            )
+            return
         self.logger.debug(
             "Flow stream for queue %s exhausted - holding the connection open for %ss "
-            "so the player can play out its buffer (keep_alive: %s)",
+            "so the player can play out its buffer",
             queue_id,
             FLOW_STREAM_LEAD_OUT_SECONDS,
-            keep_alive,
         )
         await asyncio.sleep(FLOW_STREAM_LEAD_OUT_SECONDS)
 
