@@ -133,6 +133,10 @@ def use_ephemeral_server_ports() -> Iterator[None]:
             "music_assistant.controllers.streams.controller.get_ip_addresses",
             AsyncMock(return_value=(LOOPBACK_IP,)),
         ),
+        patch(
+            "music_assistant.controllers.streams.controller.get_publish_ip_candidates",
+            AsyncMock(return_value=(LOOPBACK_IP,)),
+        ),
     ):
         yield
 
