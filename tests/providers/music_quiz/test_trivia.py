@@ -756,7 +756,8 @@ async def test_musicbrainz_dates_a_reissue_album_mapping() -> None:
     quiz, mass = _quiz([track])
     _with_musicbrainz(mass, {"ISRC-REISSUE": 1998})
 
-    facts = quiz._track_facts(await quiz._musicbrainz_dated_track(track))
+    dated_track, _ = await quiz._musicbrainz_dated_track(track)
+    facts = quiz._track_facts(dated_track)
 
     assert facts is not None
     assert facts.release_year == 1998
@@ -776,8 +777,10 @@ async def test_library_release_year_survives_a_later_musicbrainz_year() -> None:
     quiz, mass = _quiz([dated_album, dated_track])
     _with_musicbrainz(mass, {"ISRC-ALBUM-DATED": 2017, "ISRC-TRACK-DATED": 2017})
 
-    album_facts = quiz._track_facts(await quiz._musicbrainz_dated_track(dated_album))
-    track_facts = quiz._track_facts(await quiz._musicbrainz_dated_track(dated_track))
+    album_dated, album_year = await quiz._musicbrainz_dated_track(dated_album)
+    track_dated, track_year = await quiz._musicbrainz_dated_track(dated_track)
+    album_facts = quiz._track_facts(album_dated, musicbrainz_year=album_year)
+    track_facts = quiz._track_facts(track_dated, musicbrainz_year=track_year)
 
     assert album_facts is not None
     assert album_facts.release_year == 1967
@@ -796,7 +799,8 @@ async def test_musicbrainz_adds_a_year_target_to_an_undated_track() -> None:
     _with_musicbrainz(mass, {"ISRC-UNDATED": 1998})
 
     undated_facts = quiz._track_facts(track)
-    dated_facts = quiz._track_facts(await quiz._musicbrainz_dated_track(track))
+    dated_track, _ = await quiz._musicbrainz_dated_track(track)
+    dated_facts = quiz._track_facts(dated_track)
 
     assert undated_facts is not None
     assert undated_facts.release_year is None
@@ -810,10 +814,19 @@ async def test_musicbrainz_adds_a_year_target_to_an_undated_track() -> None:
     assert quiz._available_targets(dated_facts) == tuple(TriviaTarget)
 
 
+@pytest.mark.parametrize(
+    "library_year",
+    [1998, 1982, 1975, None],
+    ids=["reissue-year", "same-year", "earlier-year", "undated"],
+)
 @pytest.mark.asyncio
-async def test_compilation_release_year_stays_suppressed_after_dating() -> None:
-    """Keep compilation year facts suppressed even when MusicBrainz can date the recording."""
-    track = _with_isrc(_track("compilation", "Africa", "Toto", release_year=1998), "ISRC-COMP")
+async def test_compilation_release_year_uses_the_musicbrainz_recording_year(
+    library_year: int | None,
+) -> None:
+    """Answer a compilation year question with the MusicBrainz year whatever the library says."""
+    track = _with_isrc(
+        _track("compilation", "Africa", "Toto", release_year=library_year), "ISRC-COMP"
+    )
     track.album = _full_album(
         "party-hits",
         "Party Hits",
@@ -823,11 +836,82 @@ async def test_compilation_release_year_stays_suppressed_after_dating() -> None:
     quiz, mass = _quiz([track])
     _with_musicbrainz(mass, {"ISRC-COMP": 1982})
 
-    facts = quiz._track_facts(await quiz._musicbrainz_dated_track(track))
+    dated_track, musicbrainz_year = await quiz._musicbrainz_dated_track(track)
+    facts = quiz._track_facts(dated_track, musicbrainz_year=musicbrainz_year)
 
+    assert facts is not None
+    assert facts.album is None
+    assert facts.release_year == 1982
+    assert quiz._available_targets(facts) == (
+        TriviaTarget.ARTIST,
+        TriviaTarget.TITLE,
+        TriviaTarget.YEAR,
+    )
+    fact = quiz._select_fact(facts, 2)
+    assert fact.target is TriviaTarget.YEAR
+    assert fact.correct_answer == "1982"
+
+
+@pytest.mark.asyncio
+async def test_compilation_release_year_rejects_an_implausible_musicbrainz_year() -> None:
+    """Keep a compilation year suppressed when MusicBrainz answers with an unusable year."""
+    track = _with_isrc(_track("compilation", "Africa", "Toto", release_year=1998), "ISRC-COMP")
+    track.album = _full_album(
+        "party-hits",
+        "Party Hits",
+        album_type=AlbumType.COMPILATION,
+        year=1998,
+    )
+    quiz, mass = _quiz([track])
+    _with_musicbrainz(mass, {"ISRC-COMP": 9999})
+
+    dated_track, musicbrainz_year = await quiz._musicbrainz_dated_track(track)
+    facts = quiz._track_facts(dated_track, musicbrainz_year=musicbrainz_year)
+
+    assert musicbrainz_year is None
     assert facts is not None
     assert facts.release_year is None
     assert TriviaTarget.YEAR not in quiz._available_targets(facts)
+
+
+def test_compilation_release_year_stays_suppressed_without_dating() -> None:
+    """Keep the compilation's own year suppressed while MusicBrainz has not dated the track."""
+    track = _track("compilation", "Africa", "Toto", release_year=1998)
+    track.album = _full_album(
+        "party-hits",
+        "Party Hits",
+        album_type=AlbumType.COMPILATION,
+        year=1998,
+    )
+
+    facts = TriviaQuizType._track_facts(track)
+
+    assert facts is not None
+    assert facts.release_year is None
+    assert TriviaTarget.YEAR not in TriviaQuizType._available_targets(facts)
+
+
+@pytest.mark.asyncio
+async def test_prepare_round_grounds_a_dated_compilation_on_its_musicbrainz_year() -> None:
+    """Ground a compilation round on the MusicBrainz year while hiding the compilation album."""
+    track = _with_isrc(_track("compilation", "Africa", "Toto", release_year=1998), "ISRC-COMP")
+    track.album = _full_album(
+        "party-hits",
+        "Party Hits",
+        album_type=AlbumType.COMPILATION,
+        year=1998,
+    )
+    provider = _ai_provider(_valid_response())
+    quiz, mass = _quiz([track], providers=[provider])
+    _with_musicbrainz(mass, {"ISRC-COMP": 1982})
+
+    await quiz.prepare_round(0, [])
+
+    assert _prompt_payload(provider.ai_query.await_args.args[0])["track_metadata"] == {
+        "title": "Africa",
+        "artist": "Toto",
+        "release_year": 1982,
+    }
 
 
 @pytest.mark.asyncio
@@ -887,8 +971,53 @@ async def test_musicbrainz_lookups_do_not_scale_with_the_source_pool() -> None:
 
 
 @pytest.mark.asyncio
-async def test_compilation_rounds_only_generate_artist_and_title_targets() -> None:
-    """Generate valid rounds without selecting compilation album or year targets."""
+async def test_compilation_year_round_is_scored_on_the_musicbrainz_year() -> None:
+    """Score a compilation release year round on the MusicBrainz recording year."""
+    tracks = [
+        _with_isrc(
+            _track(f"track-{index}", f"Song {index}", f"Artist {index}", release_year=2012),
+            f"ISRC-{index}",
+        )
+        for index in range(3)
+    ]
+    for index, track in enumerate(tracks):
+        track.album = _full_album(
+            f"album-{index}",
+            f"Compilation {index}",
+            album_type=AlbumType.COMPILATION,
+            year=2012,
+        )
+    provider = _ai_provider()
+    provider.ai_query.side_effect = [
+        _valid_response("Who performs the selected song?", ["Portishead", "Radiohead", "Air"]),
+        _valid_response("Which title is this?", ["Teardrop", "Genesis", "Midnight City"]),
+        _valid_response("In which year did this first appear?", ["1975", "1991", "2003"]),
+    ]
+    quiz, mass = _quiz(tracks, providers=[provider], round_count=3)
+    _with_musicbrainz(mass, {f"ISRC-{index}": 1982 for index in range(3)})
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.trivia.SYSTEM_RANDOM.choice",
+        side_effect=lambda candidates: candidates[0],
+    ):
+        first_round = await quiz.prepare_round(0, [])
+        second_round = await quiz.prepare_round(1, [first_round])
+        year_round = await quiz.prepare_round(2, [first_round, second_round])
+
+    assert year_round.answer_label == "1982"
+    payload = _prompt_payload(provider.ai_query.await_args.args[0])
+    assert payload["question_target"] == TriviaTarget.YEAR
+    assert payload["correct_answer"] == "1982"
+    assert payload["track_metadata"] == {
+        "title": "Song 2",
+        "artist": "Artist 2",
+        "release_year": 1982,
+    }
+
+
+@pytest.mark.asyncio
+async def test_undated_compilation_rounds_only_generate_artist_and_title_targets() -> None:
+    """Generate valid rounds without album or year targets while MusicBrainz cannot date them."""
     first_track = _track("one", "First Song", "Artist One", release_year=2012)
     first_track.album = _full_album(
         "first-album",
