@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
+from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads, strip_code_fence
 from music_assistant.helpers.plugin_engines import resolve_ai_engine
 from music_assistant.providers.music_quiz.suggestions import answer_labels_are_too_close
 
@@ -100,7 +100,7 @@ def parse_ai_distractor_response(
     if len(set(candidate_ids)) != len(candidate_ids):
         raise ValueError("candidate IDs must be unique")
     try:
-        payload = json_loads(response)
+        payload = json_loads(strip_code_fence(response))
     except JSON_DECODE_EXCEPTIONS as err:
         raise ValueError("response is not valid JSON") from err
     if not isinstance(payload, dict) or payload.keys() != {"ranked_ids", "synthetic"}:

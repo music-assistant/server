@@ -22,6 +22,7 @@ from music_assistant.helpers.json import (
     SerializableType,
     json_dumps,
     json_loads,
+    strip_code_fence,
 )
 from music_assistant.helpers.plugin_engines import get_ai_engines, resolve_ai_engine
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
@@ -398,7 +399,7 @@ class TriviaQuizType(QuizType):
         if len(response.encode("utf-8")) > MAX_AI_RESPONSE_BYTES:
             raise ValueError("response exceeds the size limit")
         try:
-            payload = json_loads(response)
+            payload = json_loads(strip_code_fence(response))
         except JSON_DECODE_EXCEPTIONS as err:
             raise ValueError("response is not valid JSON") from err
         if not isinstance(payload, dict) or payload.keys() != {"question", "wrong_answers"}:

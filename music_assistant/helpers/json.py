@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import re
 from _collections_abc import dict_keys, dict_values
 from types import MethodType
 from typing import Any, TypeVar
@@ -14,6 +15,16 @@ JSON_ENCODE_EXCEPTIONS = (TypeError, ValueError)
 JSON_DECODE_EXCEPTIONS = (orjson.JSONDecodeError,)
 
 DO_NOT_SERIALIZE_TYPES = (MethodType, asyncio.Task)
+
+# A markdown code fence wrapping the entire text, with an optional language tag on the
+# opening line. The fence length is backreferenced so the closing fence must match.
+_CODE_FENCE_PATTERN = re.compile(
+    r"(?P<fence>`{3,})[^\S\n]*"
+    r"(?:[A-Za-z0-9+#._-]*[^\S\n]*\n)?"
+    r"(?P<body>.*?)\n?"
+    r"(?P=fence)",
+    re.DOTALL,
+)
 
 # Type alias for plain, JSON-serializable data.
 # Note: tuples are accepted but will be returned as lists after a JSON round-trip.
@@ -73,6 +84,22 @@ json_loads = orjson.loads
 async def async_json_loads(data: str) -> Any:
     """Load json string async."""
     return await asyncio.to_thread(json_loads, data)
+
+
+def strip_code_fence(text: str) -> str:
+    """
+    Remove a markdown code fence that wraps an entire text, plus surrounding whitespace.
+
+    Only a fence around the complete text is removed, so text that merely contains a
+    fenced block, or JSON embedded in prose, is returned with its whitespace trimmed
+    and remains as invalid to a strict parser as it was before.
+
+    :param text: Text that may be wrapped in a markdown code fence.
+    """
+    stripped = text.strip()
+    if (match := _CODE_FENCE_PATTERN.fullmatch(stripped)) is None:
+        return stripped
+    return match["body"].strip()
 
 
 TargetT = TypeVar("TargetT", bound=DataClassORJSONMixin)
