@@ -30,9 +30,9 @@ def sonos_player() -> SonosPlayer:
 
 
 def _mock_mass(sonos_player: SonosPlayer) -> MagicMock:
-    """Return the player's mocked mass with the threadsafe hop running inline."""
+    """Return the player's mocked mass, running the threadsafe hop inline so it stays assertable."""
     mass = cast("MagicMock", sonos_player.mass)
-    mass.loop.call_soon_threadsafe = lambda callback: callback()
+    mass.loop.call_soon_threadsafe = MagicMock(side_effect=lambda callback: callback())
     return mass
 
 
@@ -85,6 +85,9 @@ def test_transitional_state_schedules_a_single_settle_poll(sonos_player: SonosPl
     assert sonos_player._attr_playback_state == PlaybackState.IDLE
     assert mass.call_later.call_count == 1
     assert mass.call_later.call_args.args[0] == TRANSITION_POLL_DELAY
+    assert mass.call_later.call_args.args[1] == sonos_player._settled_state_poll
+    # poll_media runs in a worker thread, so scheduling must hop to the event loop
+    assert mass.loop.call_soon_threadsafe.called
 
 
 def test_settled_state_re_arms_the_settle_poll(sonos_player: SonosPlayer) -> None:
@@ -110,3 +113,29 @@ def test_settled_state_re_arms_the_settle_poll(sonos_player: SonosPlayer) -> Non
     sonos_player.poll_media()
 
     assert mass.call_later.call_count == 2
+
+
+def test_transitional_event_schedules_a_settle_poll(sonos_player: SonosPlayer) -> None:
+    """A transitional state delivered by subscription event also triggers a follow-up poll."""
+    mass = _mock_mass(sonos_player)
+    event = MagicMock()
+    event.variables = {"transport_state": "TRANSITIONING"}
+
+    sonos_player._handle_avtransport_event(event)
+
+    assert mass.call_later.call_count == 1
+    assert mass.call_later.call_args.args[1] == sonos_player._settled_state_poll
+
+
+async def test_settle_poll_is_skipped_when_the_state_already_arrived(
+    sonos_player: SonosPlayer,
+) -> None:
+    """A settled state reported before the follow-up poll runs makes that poll a no-op."""
+    with patch.object(sonos_player, "poll", new=AsyncMock()) as poll:
+        sonos_player._awaiting_settled_state = False
+        await sonos_player._settled_state_poll()
+        poll.assert_not_awaited()
+
+        sonos_player._awaiting_settled_state = True
+        await sonos_player._settled_state_poll()
+        poll.assert_awaited_once()

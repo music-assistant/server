@@ -705,10 +705,16 @@ class SonosPlayer(Player):
             partial(
                 self.mass.call_later,
                 TRANSITION_POLL_DELAY,
-                self.poll,
+                self._settled_state_poll,
                 task_id=f"sonos_settled_state_poll_{self.player_id}",
             )
         )
+
+    async def _settled_state_poll(self) -> None:
+        """Poll for the settled transport state, unless an event already delivered it."""
+        if not self._awaiting_settled_state:
+            return
+        await self.poll()
 
     def _update_attributes(self) -> None:
         """Update attributes of the MA Player from SoCo state."""
