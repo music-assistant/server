@@ -12,6 +12,7 @@ import contextlib
 import logging
 import time
 from collections.abc import Callable, Coroutine
+from functools import partial
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState, PlayerState
@@ -39,6 +40,7 @@ from .constants import (
     SOURCE_TV,
     SUBSCRIPTION_SERVICES,
     SUBSCRIPTION_TIMEOUT,
+    TRANSITION_POLL_DELAY,
 )
 from .helpers import SonosUpdateError, soco_error
 
@@ -94,6 +96,7 @@ class SonosPlayer(Player):
         self._subscription_lock: asyncio.Lock | None = None
         self._last_activity: float = NEVER_TIME
         self._resub_cooldown_expires_at: float | None = None
+        self._awaiting_settled_state: bool = False
 
     @property
     def missing_subscriptions(self) -> set[str]:
@@ -309,7 +312,9 @@ class SonosPlayer(Player):
         new_status = transport_info["current_transport_state"]
 
         if new_status == SONOS_STATE_TRANSITIONING:
+            self._schedule_settled_state_poll()
             return
+        self._awaiting_settled_state = False
 
         new_status = _convert_state(new_status)
         update_position = new_status != self._attr_playback_state
@@ -636,7 +641,9 @@ class SonosPlayer(Player):
 
         # Ignore transitions, we should get the target state soon
         if new_status == SONOS_STATE_TRANSITIONING:
+            self._schedule_settled_state_poll()
             return
+        self._awaiting_settled_state = False
 
         evars = event.variables
         new_status = _convert_state(evars["transport_state"])
@@ -685,6 +692,23 @@ class SonosPlayer(Player):
         if "zone_player_uui_ds_in_group" not in event.variables:
             return
         asyncio.run_coroutine_threadsafe(self.create_update_groups_coro(event), self.mass.loop)
+
+    def _schedule_settled_state_poll(self) -> None:
+        """Schedule a single follow-up poll to pick up the speaker's settled transport state."""
+        # only one poll per transition: a speaker that is still transitioning when it runs falls
+        # back to the regular poll interval instead of polling on repeat
+        if self._awaiting_settled_state:
+            return
+        self._awaiting_settled_state = True
+        # reached from both the event callback and the (threaded) poll, so hop to the event loop
+        self.mass.loop.call_soon_threadsafe(
+            partial(
+                self.mass.call_later,
+                TRANSITION_POLL_DELAY,
+                self.poll,
+                task_id=f"sonos_settled_state_poll_{self.player_id}",
+            )
+        )
 
     def _update_attributes(self) -> None:
         """Update attributes of the MA Player from SoCo state."""
