@@ -44,6 +44,7 @@ SOCO_OBJECTS = frozenset(
         "contentDirectory",
         "deviceProperties",
         "groupRenderingControl",
+        "music_library",
         "musicServices",
         "renderingControl",
         "systemProperties",

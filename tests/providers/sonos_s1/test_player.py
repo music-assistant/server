@@ -407,12 +407,25 @@ async def test_update_ip_probes_the_speaker_off_the_event_loop(sonos_player: Son
     new_soco.renderingControl.GetVolume.side_effect = _blocking_probe
 
     # a probe held on the event loop would starve this block until it hits the timeout
-    with patch.object(sonos_player, "setup", AsyncMock()):
+    with patch.object(sonos_player, "setup", AsyncMock()) as setup:
         async with asyncio.timeout(2):
             update = asyncio.create_task(sonos_player.update_ip(new_soco))
             await asyncio.to_thread(probing.wait, 5)
             probe_may_finish.set()
             await update
+
+    setup.assert_awaited_once()
+
+
+async def test_update_ip_marks_the_recovered_speaker_available(sonos_player: SonosPlayer) -> None:
+    """A speaker that answers at its new address counts as reachable again."""
+    sonos_player._attr_available = False
+    new_soco = _make_rediscovered_soco()
+
+    with patch.object(sonos_player, "setup", AsyncMock()):
+        await sonos_player.update_ip(new_soco)
+
+    assert sonos_player.available
 
 
 async def test_update_ip_skips_setup_when_the_new_address_stays_silent(

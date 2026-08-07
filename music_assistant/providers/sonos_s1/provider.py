@@ -168,14 +168,18 @@ class SonosPlayerProvider(PlayerProvider):
 
         def _interrogate() -> tuple[bool, bool]:
             """Read whether the speaker is visible and has a fixed volume (NOT async friendly)."""
+            if not soco.is_visible:
+                # a bridge or the follower of a stereo pair is never registered
+                return False, False
             # Ensure speaker info is available during setup
             if not soco.speaker_info:
                 soco.get_speaker_info(True, timeout=7)
-            # SonosPlayer reads these off the SoCo instance while it is constructed,
-            # resolving them here keeps their lookups off the event loop
+            fixed_volume: bool = soco.fixed_volume
+            # SonosPlayer reads these while it is constructed; the zone group lookup
+            # behind player_name is only cached briefly, so resolve them last
             _ = soco.household_id
             _ = soco.player_name
-            return soco.is_visible, soco.fixed_volume
+            return True, fixed_volume
 
         player_id = await asyncio.to_thread(_read_uid)
 

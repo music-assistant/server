@@ -357,6 +357,8 @@ class SonosPlayer(Player):
         except SonosUpdateError:
             # the regular poll retries the new address until the speaker answers again
             return
+        # mark the speaker alive before reading it back, so its state survives the update
+        self._speaker_activity("IP change")
         await self.setup()
         self._attr_device_info = DeviceInfo(
             model=self._attr_device_info.model,
