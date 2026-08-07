@@ -139,8 +139,11 @@ class DLNAPlayer(Player):
             return
         assert self.device is not None  # for type checking
         self._attr_name = self.device.name
-        self._attr_volume_level = int((self.device.volume_level or 0) * 100)
-        self._attr_volume_muted = self.device.is_volume_muted or False
+        # a device reports an unknown volume as None (RenderingControl Volume/Mute unset
+        # or not reported yet), which must stay unknown instead of collapsing to 0/unmuted
+        volume_level = self.device.volume_level
+        self._attr_volume_level = int(volume_level * 100) if volume_level is not None else None
+        self._attr_volume_muted = self.device.is_volume_muted
         _playback_state = self._get_playback_state()
         assert _playback_state is not None  # for type checking
         self._attr_playback_state = _playback_state
@@ -184,9 +187,11 @@ class DLNAPlayer(Player):
             # No URI - idle or unknown
             self._attr_active_source = None
         # TODO: extend this list with other possible sources
-        if self.device.media_position:
-            # only update elapsed_time if the device actually reports it
-            self._attr_elapsed_time = float(self.device.media_position)
+        # a device reports 'no position' as None (RelativeTimePosition unset, sent as
+        # NOT_IMPLEMENTED or unparsable), so a reported 0 is a position like any other
+        # and is adopted instead of being discarded as 'not reported'.
+        if (media_position := self.device.media_position) is not None:
+            self._attr_elapsed_time = float(media_position)
             if self.device.media_position_updated_at is not None:
                 self._attr_elapsed_time_last_updated = (
                     self.device.media_position_updated_at.timestamp()
