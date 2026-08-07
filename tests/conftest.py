@@ -22,7 +22,7 @@ from music_assistant.controllers.tasks import TasksController
 from music_assistant.mass import MusicAssistant
 from tests.common import suppress_auto_loaded_providers, use_ephemeral_server_ports, utf8_safe
 
-_NUMBA_CACHE_DIR = pytest.StashKey[tempfile.TemporaryDirectory[str]]()
+NUMBA_CACHE_DIR = pytest.StashKey[tempfile.TemporaryDirectory[str]]()
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -36,14 +36,14 @@ def pytest_configure(config: pytest.Config) -> None:
     See https://github.com/numba/numba/issues/10128.
     """
     cache_dir = tempfile.TemporaryDirectory(prefix="ma-numba-cache-")
-    config.stash[_NUMBA_CACHE_DIR] = cache_dir
+    config.stash[NUMBA_CACHE_DIR] = cache_dir
     # numba reads this once, when it is imported; nothing here imports it that early.
     os.environ["NUMBA_CACHE_DIR"] = cache_dir.name
 
 
 def pytest_unconfigure(config: pytest.Config) -> None:
     """Drop this test process's numba kernel cache."""
-    if (cache_dir := config.stash.get(_NUMBA_CACHE_DIR, None)) is not None:
+    if (cache_dir := config.stash.get(NUMBA_CACHE_DIR, None)) is not None:
         cache_dir.cleanup()
 
 
