@@ -1125,6 +1125,51 @@ async def test_compilation_year_round_is_scored_on_the_musicbrainz_year() -> Non
 
 
 @pytest.mark.asyncio
+async def test_compilation_year_round_prefers_the_older_of_both_lookups() -> None:
+    """Score a compilation year round on the older year, since a remaster carries its own ISRC."""
+    # the track carries the compilation's own date, which is exactly the year Trivia may not
+    # fall back on, so it must not decide whether the song is dated by name as well
+    tracks = [
+        _with_isrc(
+            _track(f"track-{index}", f"Song {index}", f"Artist {index}", release_year=2012),
+            f"ISRC-{index}",
+        )
+        for index in range(3)
+    ]
+    for index, track in enumerate(tracks):
+        track.album = _full_album(
+            f"album-{index}",
+            f"Compilation {index}",
+            album_type=AlbumType.COMPILATION,
+            year=2012,
+        )
+    provider = _ai_provider()
+    provider.ai_query.side_effect = [
+        _valid_response("Who performs the selected song?", ["Portishead", "Radiohead", "Air"]),
+        _valid_response("Which title is this?", ["Teardrop", "Genesis", "Midnight City"]),
+        _valid_response("In which year did this first appear?", ["1975", "1991", "2003"]),
+    ]
+    quiz, mass = _quiz(tracks, providers=[provider], round_count=3)
+    _with_musicbrainz(
+        mass,
+        {f"ISRC-{index}": 2005 for index in range(3)},
+        name_years={(f"Artist {index}", f"Song {index}"): 1982 for index in range(3)},
+    )
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.trivia.SYSTEM_RANDOM.choice",
+        side_effect=lambda candidates: candidates[0],
+    ):
+        first_round = await quiz.prepare_round(0, [])
+        second_round = await quiz.prepare_round(1, [first_round])
+        year_round = await quiz.prepare_round(2, [first_round, second_round])
+
+    assert year_round.answer_label == "1982"
+    payload = _prompt_payload(provider.ai_query.await_args.args[0])
+    assert payload["correct_answer"] == "1982"
+
+
+@pytest.mark.asyncio
 async def test_undated_compilation_rounds_only_generate_artist_and_title_targets() -> None:
     """Generate valid rounds without album or year targets while MusicBrainz cannot date them."""
     first_track = _track("one", "First Song", "Artist One", release_year=2012)
