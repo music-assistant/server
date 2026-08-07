@@ -264,7 +264,7 @@ class PlayerConfigMixin:
             *[x for x in default_entries if x.key not in player_entries_keys],
             *player_entries,
         ]
-        return _with_translation_owner(all_entries, f"provider.{player.provider}")
+        return _with_translation_owner(all_entries, player.translation_owner)
 
     @api_command("config/players/invoke_action", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def invoke_player_config_action(
