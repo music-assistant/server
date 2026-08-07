@@ -88,20 +88,30 @@ def vulnerable_packages(audit: str) -> set[tuple[str, str]]:
 
 
 def introduced_packages(
-    findings: set[tuple[str, str]], resolved: dict[str, set[str]]
+    findings: set[tuple[str, str]],
+    resolved: dict[str, set[str]],
+    changed: frozenset[str] | set[str] = frozenset(),
 ) -> set[tuple[str, str]]:
     """
     Return the findings the given resolved dependency set does not already contain.
 
     :param findings: Vulnerable packages as (name, version) pairs.
     :param resolved: Versions the target branch resolves to, keyed on package name.
+    :param changed: Names of the packages whose requirement the pull request changes.
     """
-    return {
-        (name, version)
-        for name, version in findings
-        # A package pinned by URL carries no version to compare, so its name is enough
-        if name not in resolved or (resolved[name] and version not in resolved[name])
-    }
+    introduced = set()
+    for name, version in findings:
+        pinned = resolved.get(name)
+        if pinned is None:
+            introduced.add((name, version))
+        elif pinned:
+            if version not in pinned:
+                introduced.add((name, version))
+        # A package the target branch pins by URL carries no version to compare against,
+        # so only a change to its requirement tells the two branches apart
+        elif name in changed:
+            introduced.add((name, version))
+    return introduced
 
 
 def audit_status(audit: str, requirements: str, base_closure: str = "") -> str:
@@ -122,7 +132,8 @@ def audit_status(audit: str, requirements: str, base_closure: str = "") -> str:
         # A resolution that cannot be read would mark every finding as introduced
         if not resolved:
             raise ValueError("No packages found in the resolved dependency set")
-        return "fail" if introduced_packages(findings, resolved) else "preexisting"
+        changed = changed_packages(requirements)
+        return "fail" if introduced_packages(findings, resolved, changed) else "preexisting"
 
     changed = changed_packages(requirements)
     return "fail" if {name for name, _ in findings} & changed else "preexisting"

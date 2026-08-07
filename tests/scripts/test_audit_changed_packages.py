@@ -120,6 +120,15 @@ def test_introduced_packages_compares_name_and_version() -> None:
     }
 
 
+def test_introduced_packages_reads_a_url_pin_from_the_changed_requirements() -> None:
+    """A package the target branch pins by URL is only introduced when its requirement changes."""
+    findings = {("aiolibdatachannel", "0.1.0")}
+    resolved = {"aiolibdatachannel": set()}
+
+    assert introduced_packages(findings, resolved) == set()
+    assert introduced_packages(findings, resolved, {"aiolibdatachannel"}) == findings
+
+
 def test_no_findings_passes() -> None:
     """A clean audit passes even when the pull request changes dependencies."""
     assert audit_status(audit_report(), "aiohttp==3.14.1", BASE_CLOSURE) == "pass"
@@ -142,6 +151,15 @@ def test_findings_in_a_new_transitive_package_fail() -> None:
     assert audit_status(audit_report("transformers==5.14.1"), "beat-this==1.1.0", BASE_CLOSURE) == (
         "fail"
     )
+
+
+def test_swapping_a_url_pin_for_a_vulnerable_release_fails() -> None:
+    """Replacing a URL requirement with a published version brings that version in."""
+    base_closure = "aiolibdatachannel @ git+https://github.com/example/aiolibdatachannel@v1"
+    report = audit_report("aiolibdatachannel==0.1.0")
+
+    assert audit_status(report, "aiolibdatachannel==0.1.0", base_closure) == "fail"
+    assert audit_status(report, "", base_closure) == "preexisting"
 
 
 def test_an_unreadable_target_branch_set_raises() -> None:
