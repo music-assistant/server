@@ -1,9 +1,9 @@
 """
 Tests for Cast-member readiness handling in SendspinPlayer.set_members.
 
-Adding a Cast-bridged member waits for its Sendspin app to report ready. A member
-that fails after that wait gave up is already turned into a PlayerCommandFailed for
-the caller, so it must not also reach the loop exception handler.
+Adding a Cast-bridged member waits for its Sendspin app to report ready. The caller
+always learns why a member did not join, so a member failing after that wait gave up
+must not also surface through the loop exception handler.
 """
 
 from __future__ import annotations
