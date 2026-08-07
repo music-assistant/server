@@ -1525,6 +1525,123 @@ class TestFakeMuteControl:
         assert unmuted_state.volume_level == 25
 
 
+class TestFakeMuteInGroup:
+    """A fake muted player in a group follows the mute lock, just like a native mute."""
+
+    def _make_synced_pair(
+        self, mock_mass: MagicMock, *, member_mute_control: str = PLAYER_CONTROL_FAKE
+    ) -> tuple[PlayerController, dict[str, MockPlayer]]:
+        """
+        Build a leader synced to one member.
+
+        :param member_mute_control: Mute control of the member, the leader always uses fake mute.
+        """
+
+        def _conf(player_id: str, key: str, default: object = None) -> object:
+            if key == CONF_MUTE_CONTROL and player_id == "member":
+                return member_mute_control
+            return _player_config_stub({CONF_MUTE_CONTROL: PLAYER_CONTROL_FAKE})(
+                player_id, key, default
+            )
+
+        mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        players: dict[str, MockPlayer] = {}
+        for player_id in ("leader", "member"):
+            player = MockPlayer(provider, player_id, player_id.title())
+            player._attr_supported_features = {
+                PlayerFeature.VOLUME_SET,
+                PlayerFeature.VOLUME_MUTE,
+            }
+            player._attr_volume_level = 50
+            # let the mocked native volume control behave like a real device
+            player.volume_set = AsyncMock(  # type: ignore[method-assign]
+                side_effect=lambda volume, _player=player: setattr(
+                    _player, "_attr_volume_level", volume
+                )
+            )
+            players[player_id] = player
+        players["leader"]._attr_group_members = ["member"]
+        controller._players = dict(players)
+        mock_mass.players = controller
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        for player in players.values():
+            player.set_initialized()
+            player._cache.clear()
+            player.update_state(signal_event=False)
+        # a second pass, so the group volume of the leader accounts for its member
+        for player in players.values():
+            player.update_state(signal_event=False)
+        return controller, players
+
+    async def test_group_volume_keeps_a_muted_pair_muted(self, mock_mass: MagicMock) -> None:
+        """A group volume change may not bring a muted fake mute pair back to life."""
+        controller, players = self._make_synced_pair(mock_mass)
+        await controller.cmd_group_volume_mute("leader", True)
+
+        await controller.cmd_group_volume("leader", 30)
+
+        for player in players.values():
+            player.update_state()
+            assert player.state.volume_muted is True
+            assert player.state.volume_level == 0
+
+    async def test_group_volume_down_keeps_a_muted_member_muted(self, mock_mass: MagicMock) -> None:
+        """Turning a group down leaves a single muted member silent, at its own volume."""
+        controller, players = self._make_synced_pair(mock_mass)
+        await controller.cmd_volume_mute("member", True)
+        # let the group volume of the leader account for the muted member
+        players["leader"].update_state(signal_event=False)
+
+        await controller.cmd_group_volume("leader", 25)
+
+        for player in players.values():
+            player.update_state()
+        member_state = players["member"].state
+        assert member_state.volume_muted is True
+        assert member_state.volume_level == 0
+        # the player that is not muted follows the group volume as usual
+        assert players["leader"].state.volume_level == 25
+        # unmuting brings the member back at the volume it had before it was muted
+        await controller.cmd_volume_mute("member", False)
+        players["member"].update_state()
+        assert players["member"].state.volume_level == 50
+
+    async def test_unmute_restores_the_volume_from_before_the_mute(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A group volume change while muted may not alter the volume to restore."""
+        controller, players = self._make_synced_pair(mock_mass)
+        await controller.cmd_group_volume_mute("leader", True)
+        await controller.cmd_group_volume("leader", 30)
+
+        await controller.cmd_group_volume_mute("leader", False)
+
+        for player in players.values():
+            player.update_state()
+            assert player.state.volume_muted is False
+            assert player.state.volume_level == 50
+
+    async def test_group_volume_keeps_a_mixed_pair_muted(self, mock_mass: MagicMock) -> None:
+        """Members with a different mute control stay muted alike on a group volume change."""
+        controller, players = self._make_synced_pair(
+            mock_mass, member_mute_control=PLAYER_CONTROL_NATIVE
+        )
+        mute = AsyncMock(
+            side_effect=lambda muted: setattr(players["member"], "_attr_volume_muted", muted)
+        )
+        players["member"].volume_mute = mute  # type: ignore[method-assign]
+        await controller.cmd_group_volume_mute("leader", True)
+
+        await controller.cmd_group_volume("leader", 30)
+
+        mute.assert_awaited_once_with(True)
+        for player in players.values():
+            player.update_state()
+            assert player.state.volume_muted is True
+
+
 class TestMuteControlGuard:
     """Muting is gated on the mute control, independently of the volume control."""
 

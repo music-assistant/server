@@ -3472,8 +3472,17 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             )
             await self.cmd_volume_mute(player_id, False)
 
-        # always reset fake mute when controlling volume
-        player.extra_data.pop(ATTR_FAKE_MUTE, None)
+        if (
+            has_mute_lock
+            and player.mute_control == PLAYER_CONTROL_FAKE
+            and player.extra_data.get(ATTR_FAKE_MUTE)
+        ):
+            # a locked player stays silent, the volume it holds is the one
+            # that gets restored once it is unmuted again
+            volume_level = 0
+        else:
+            # always reset fake mute when controlling volume
+            player.extra_data.pop(ATTR_FAKE_MUTE, None)
 
         # Scale logical volume (0-100) to device volume (min_volume-max_volume)
         device_volume = self.scale_volume_to_device(player_id, volume_level)
