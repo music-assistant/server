@@ -14,32 +14,16 @@ from music_assistant.providers.tidal.streaming import TidalStreamingManager
 
 
 @pytest.fixture
-def provider_mock() -> Mock:
-    """Return a mock provider."""
-    provider = Mock()
-    provider.domain = "tidal"
-    provider.instance_id = "tidal_instance"
-    provider.config.get_value.return_value = "HIGH"
-    provider.api = AsyncMock()
-    provider.api.OPEN_API_URL = "https://openapi.tidal.com/v2"
+def provider_mock(provider_mock: Mock) -> Mock:
+    """Return the shared provider mock with the streaming quality and throttler bypass wired."""
+    provider_mock.config.get_value.return_value = "HIGH"
+    provider_mock.api.OPEN_API_URL = "https://openapi.tidal.com/v2"
 
-    # Mock throttler bypass as async context manager using MagicMock
-    bypass_ctx = MagicMock()
-    bypass_ctx.__aenter__ = AsyncMock(return_value=None)
-    bypass_ctx.__aexit__ = AsyncMock(return_value=None)
-    provider.api.throttler = Mock()
-    provider.api.throttler.bypass = Mock(return_value=bypass_ctx)
+    # the streaming manager enters api.throttler.bypass() as an async context manager,
+    # which a MagicMock supports out of the box
+    provider_mock.api.throttler.bypass = Mock(return_value=MagicMock())
 
-    provider.get_track = AsyncMock()
-
-    # Mock mass
-    provider.mass = Mock()
-    provider.mass.cache.get = AsyncMock(return_value=None)
-    provider.mass.cache.set = AsyncMock()
-    provider.mass.cache.delete = AsyncMock()
-    provider.mass.music.tracks.get_library_item_by_prov_id = AsyncMock(return_value=None)
-
-    return provider
+    return provider_mock
 
 
 @pytest.fixture
