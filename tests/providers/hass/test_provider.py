@@ -169,6 +169,8 @@ class _HomeAssistantClient:
         self._registry_result = (
             asyncio.get_running_loop().create_future() if block_registry else None
         )
+        # resolve this to make an already running listener return, as a lost connection does
+        self.connection_lost: asyncio.Future[None] = asyncio.get_running_loop().create_future()
         self.send_command = AsyncMock(side_effect=self._send_command)
 
     async def connect(self) -> None:
@@ -179,13 +181,13 @@ class _HomeAssistantClient:
         self.connected = True
 
     async def start_listening(self) -> None:
-        """Listen until the provider stops the listener task."""
+        """Listen until the connection is lost or the provider stops the listener task."""
         self.calls.append("start_listening")
         self.listener_started.set()
         try:
             if self._listener_error:
                 raise self._listener_error
-            await asyncio.Event().wait()
+            await self.connection_lost
         except asyncio.CancelledError:
             self.listener_cancelled.set()
             raise
@@ -554,6 +556,23 @@ async def test_connection_failure_cleans_up_client() -> None:
 
     assert hass.disconnected
     assert provider._listen_task is None
+
+
+async def test_lost_connection_arms_the_reconnect_under_the_load_task_id() -> None:
+    """A lost connection arms the reconnect so a (re)load starting first cancels it."""
+    async with _start_provider([]) as (provider, hass):
+        mass = cast("MagicMock", provider.mass)
+        mass.call_later.reset_mock()
+        assert provider._listen_task is not None
+
+        hass.connection_lost.set_exception(BaseHassClientError("connection lost"))
+        async with asyncio.timeout(1):
+            await provider._listen_task
+
+        assert provider.available is False
+        retry = mass.call_later.call_args
+        assert retry.args == (5, mass.load_provider, "hass--test")
+        assert retry.kwargs == {"allow_retry": True, "task_id": "load_provider_hass--test"}
 
 
 async def test_engines_are_listed_for_every_feature_entity() -> None:

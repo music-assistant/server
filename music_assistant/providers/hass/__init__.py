@@ -702,9 +702,16 @@ class HomeAssistantProvider(PluginProvider):
         if not self._startup_complete:
             return
         self.logger.info("Connection to HA lost. Connection will be automatically retried later.")
-        # schedule a reload of the provider
+        # schedule a reload of the provider, armed under the load path's task id so any
+        # (re)load starting before it fires cancels it
         self.available = False
-        self.mass.call_later(5, self.mass.load_provider, self.instance_id, allow_retry=True)
+        self.mass.call_later(
+            5,
+            self.mass.load_provider,
+            self.instance_id,
+            allow_retry=True,
+            task_id=f"load_provider_{self.instance_id}",
+        )
 
     def _on_entity_state_update(self, event: EntityStateEvent) -> None:
         """Handle Entity State event."""
