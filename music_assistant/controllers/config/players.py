@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast, overload
 
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
+    ConfigActionResult,
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
@@ -266,15 +267,18 @@ class PlayerConfigMixin:
         return _with_translation_owner(all_entries, f"provider.{player.provider}")
 
     @api_command("config/players/invoke_action", required_scope=Scope.CONFIG_PLAYERS_WRITE)
-    async def invoke_player_config_action(self, player_id: str, action: str) -> list[ConfigEntry]:
+    async def invoke_player_config_action(
+        self, player_id: str, action: str
+    ) -> list[ConfigEntry] | ConfigActionResult:
         """
         Run a one-shot action button from a player's config.
 
         A protocol-prefixed action (``<protocol_player_id>||protocol||<action>``) is routed to
         the linked protocol player; the parent player's entries are then re-rendered so the
-        injected protocol entries pick up any state change. An empty list means the action
-        ran with nothing to re-render; a non-empty list holds the parent player's entries
-        the config form should re-render with.
+        injected protocol entries pick up any state change. A ``ConfigActionResult`` holds the
+        outcome to report to the user; an empty list means the action ran with nothing to
+        report; a non-empty list holds the parent player's entries the config form should
+        re-render with.
 
         :param player_id: The player whose config surface holds the action.
         :param action: The action id of the pressed button (may be protocol-prefixed).
@@ -289,9 +293,15 @@ class PlayerConfigMixin:
                 raise KeyError(msg)
             result = await target.handle_config_action(protocol_action)
         else:
+            target = player
             result = await player.handle_config_action(action)
         if result is None:
             return []
+        if isinstance(result, ConfigActionResult):
+            # the strings belong to the provider that handled the action, which for a
+            # protocol-prefixed action is the protocol player's, not the host player's
+            result.translation_owner = result.translation_owner or target.translation_owner
+            return result
         # re-render the full (parent) player entries so injected protocol entries refresh
         return await self.get_player_config_entries(player_id)
 
@@ -816,11 +826,13 @@ class PlayerConfigMixin:
         player: Player,
     ) -> list[ConfigEntry]:
         """
-        Create config entry for preferred output protocol.
+        Create the output protocol config entries for a player.
 
-        Returns empty list if there are no output protocol options (native only or no protocols).
-        The player.output_protocols property includes native, active, and disabled protocols,
-        with the available flag indicating their status.
+        The preferred output protocol entry is always returned, listing outputs that can not
+        be selected right now as disabled options and hidden altogether when the player has
+        at most one output. The settings of each output whose provider is loaded follow.
+
+        :param player: The player to create the output protocol config entries for.
         """
         all_entries: list[ConfigEntry] = []
         output_protocols = player.output_protocols

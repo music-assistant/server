@@ -67,7 +67,7 @@ async def test_unavailable_bind_ip_publishes_dialable_addresses(
     await _setup_with_bind_ip(controller, mass_minimal, UNBINDABLE_IP)
 
     assert controller.bind_ip == "0.0.0.0"
-    assert controller.publish_addresses == list(ALL_ADDRESSES)
+    assert controller._publish_addresses == list(ALL_ADDRESSES)
 
 
 async def test_available_bind_ip_publishes_only_that_address(
@@ -77,4 +77,4 @@ async def test_available_bind_ip_publishes_only_that_address(
     await _setup_with_bind_ip(controller, mass_minimal, "127.0.0.1")
 
     assert controller.bind_ip == "127.0.0.1"
-    assert controller.publish_addresses == ["127.0.0.1"]
+    assert controller._publish_addresses == ["127.0.0.1"]

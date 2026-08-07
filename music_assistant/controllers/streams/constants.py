@@ -43,6 +43,13 @@ BUFFER_SIZE_MAP: Final[dict[str, int]] = {
 # Buffer size for radio streams (short rolling buffer)
 RADIO_BUFFER_SIZE: Final[int] = 15
 
+# Time to keep the flow stream response open after the last audio byte of a queue.
+# Players buffer a few seconds ahead of what they actually render; some of them drop
+# that buffer the moment the connection is closed, cutting off the end of the queue.
+# Holding the (idle) connection open gives them time to play it out first. Kept below
+# the webserver shutdown timeout so a lead-out never stalls a restart of the server.
+FLOW_STREAM_LEAD_OUT_SECONDS: Final[int] = 8
+
 
 # Configuration keys
 CONF_BUFFER_SIZE: Final[str] = "buffer_size"

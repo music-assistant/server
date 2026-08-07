@@ -652,6 +652,13 @@ CONF_ENTRY_HTTP_PROFILE_FORCED_2 = ConfigEntry.from_dict(
         "hidden": True,
     }
 )
+CONF_ENTRY_HTTP_PROFILE_FORCED_3 = ConfigEntry.from_dict(
+    {
+        **CONF_ENTRY_HTTP_PROFILE.to_dict(),
+        "default_value": "forced_content_length",
+        "hidden": True,
+    }
+)
 CONF_ENTRY_HTTP_PROFILE_HIDDEN = ConfigEntry.from_dict(
     {**CONF_ENTRY_HTTP_PROFILE.to_dict(), "hidden": True}
 )

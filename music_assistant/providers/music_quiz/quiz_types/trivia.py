@@ -9,14 +9,12 @@ import re
 from collections.abc import Collection, Iterator, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from music_assistant_models.enums import AlbumType
 from music_assistant_models.errors import InvalidDataError
 from music_assistant_models.media_items import Album
 
-from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
-from music_assistant.helpers.compare import compare_strings
 from music_assistant.helpers.json import (
     JSON_DECODE_EXCEPTIONS,
     SerializableType,
@@ -25,6 +23,12 @@ from music_assistant.helpers.json import (
     strip_code_fence,
 )
 from music_assistant.helpers.plugin_engines import get_ai_engines, resolve_ai_engine
+from music_assistant.providers.music_quiz.constants import (
+    AI_QUERY_TIMEOUT_SECONDS,
+    MAX_AI_PROMPT_BYTES,
+    MAX_AI_RESPONSE_BYTES,
+    MAX_AI_RESPONSE_LINES,
+)
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import (
     MultipleChoiceRoundState,
@@ -37,6 +41,8 @@ from music_assistant.providers.music_quiz.quiz_types.base import (
     MAX_SUGGESTION_COUNT,
     QuizType,
     get_track_release_year,
+    has_untrusted_release_year,
+    has_various_artists_credit,
 )
 from music_assistant.providers.music_quiz.suggestions import (
     SuggestionCandidate,
@@ -55,14 +61,13 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 AI_GENERATION_ATTEMPTS = 2
-AI_QUERY_TIMEOUT_SECONDS = 30.0
-MAX_AI_PROMPT_BYTES = 8192
-MAX_AI_RESPONSE_BYTES = 4096
 MAX_METADATA_VALUE_LENGTH = 500
 MAX_ANSWER_LENGTH = 200
 MAX_QUESTION_LENGTH = 300
 MAX_TRIVIA_LANGUAGE_TAG_LENGTH = 16
 TRIVIA_REVEAL_AUTO_ADVANCE_SECONDS = 15.0
+# album types whose release year is untrusted while their name remains a usable Trivia answer
+TRUSTED_ALBUM_NAME_TYPES: Final = frozenset({AlbumType.LIVE, AlbumType.SOUNDTRACK})
 SYSTEM_RANDOM = random.SystemRandom()
 _LANGUAGE_TAG_PATTERN = re.compile(
     r"(?P<language>[A-Za-z]{2,3})"
@@ -398,6 +403,8 @@ class TriviaQuizType(QuizType):
             raise TypeError("response must be a string")
         if len(response.encode("utf-8")) > MAX_AI_RESPONSE_BYTES:
             raise ValueError("response exceeds the size limit")
+        if len(response.splitlines()) > MAX_AI_RESPONSE_LINES:
+            raise ValueError("response exceeds the line limit")
         try:
             payload = json_loads(strip_code_fence(response))
         except JSON_DECODE_EXCEPTIONS as err:
@@ -557,28 +564,24 @@ class TriviaQuizType(QuizType):
 
         :param track: Selected source track to read the facts from.
         :param musicbrainz_year: Release year MusicBrainz knows for the track's recording, which
-            is the only year usable when the track sits on an untrusted compilation album.
+            is the only year usable when the track's album carries untrusted release facts.
         """
         if not track.uri or not (title := _bounded_metadata_value(track.name)):
             return None
         artist = _bounded_metadata_value(track.artist_str or None)
         album = track.album
-        untrusted_compilation = isinstance(album, Album) and _is_untrusted_compilation_album(album)
+        untrusted_album = isinstance(album, Album) and _has_untrusted_release_facts(album)
         facts = TriviaTrackFacts(
             source_uri=track.uri,
             title=title,
             artist=artist,
             album=(
-                None
-                if untrusted_compilation
-                else _bounded_metadata_value(album.name if album else None)
+                None if untrusted_album else _bounded_metadata_value(album.name if album else None)
             ),
-            # on an untrusted compilation both available years are unusable: the album carries
-            # the reissue year and the track its position on that reissue, so only the year
-            # MusicBrainz knows for the recording can answer a release year question
-            release_year=(
-                musicbrainz_year if untrusted_compilation else get_track_release_year(track)
-            ),
+            # on such an album both available years are unusable: the album carries the reissue
+            # year and the track its position on that reissue, so only the year MusicBrainz knows
+            # for the recording can answer a release year question
+            release_year=(musicbrainz_year if untrusted_album else get_track_release_year(track)),
         )
         return facts if TriviaQuizType._available_targets(facts) else None
 
@@ -622,19 +625,21 @@ def _bounded_metadata_value(value: str | None) -> str | None:
     return cleaned if len(cleaned) <= MAX_METADATA_VALUE_LENGTH else None
 
 
-def _is_untrusted_compilation_album(album: Album) -> bool:
+def _has_untrusted_release_facts(album: Album) -> bool:
     """
-    Return whether Trivia must omit release facts supplied with an album.
+    Return whether Trivia must omit the release facts supplied with an album.
 
     :param album: Full album metadata attached to a selected Trivia track.
     """
-    if album.album_type == AlbumType.COMPILATION:
-        return True
-    return any(
-        artist.mbid == VARIOUS_ARTISTS_MBID
-        or compare_strings(artist.name, VARIOUS_ARTISTS_NAME, strict=False)
-        for artist in album.artists
-    )
+    if not has_untrusted_release_year(album):
+        return False
+    # the name of a live album or soundtrack still answers "which album is this from?", so such
+    # an album is only untrusted here when it also carries a Various Artists credit. Remaining a
+    # strict subset of has_untrusted_release_year is what keeps an album's own untrusted year out
+    # of the trusted release year branch in _track_facts.
+    if album.album_type in TRUSTED_ALBUM_NAME_TYPES:
+        return has_various_artists_credit(album)
+    return True
 
 
 def _normalize_trivia_language(language: str) -> str:

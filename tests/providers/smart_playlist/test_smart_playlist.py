@@ -37,6 +37,7 @@ from music_assistant.providers.smart_playlist.helpers import (
     SmartPlaylistRules,
     write_json,
 )
+from tests.common import use_real_create_task
 
 # ---------------------------------------------------------------------------
 # SmartPlaylistRules unit tests
@@ -1107,7 +1108,7 @@ async def test_get_playlist_tracks_dynamic_cold_evaluates_and_caches(tmp_path: A
     mass.storage_path = str(tmp_path)
     mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     mass.cache.set = AsyncMock()
-    mass.create_task = MagicMock(side_effect=_swallow_task)
+    use_real_create_task(mass)
     manifest = MagicMock()
     manifest.domain = "smart_playlist"
     config = MagicMock()
@@ -1125,9 +1126,9 @@ async def test_get_playlist_tracks_dynamic_cold_evaluates_and_caches(tmp_path: A
     result = await plugin.get_playlist_tracks("abc")
     assert len(result) <= DYNAMIC_PLAYLIST_SAMPLE_SIZE
     assert len(result) > 5
-    # Observable behaviour: the wrapped evaluator ran and a store task was scheduled.
+    # Observable behaviour: the wrapped evaluator ran and its result was stored.
     library_mock.assert_awaited()
-    mass.create_task.assert_called_once()
+    mass.cache.set.assert_awaited_once()
 
 
 @pytest.mark.asyncio

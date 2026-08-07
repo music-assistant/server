@@ -26,6 +26,12 @@ from music_assistant.constants import VARIOUS_ARTISTS_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.controllers.music.recency import RecencySnapshot
 from music_assistant.helpers.json import json_dumps, json_loads
 from music_assistant.models.plugin import AIEngine, PluginProvider
+from music_assistant.providers.music_quiz.constants import (
+    AI_QUERY_TIMEOUT_SECONDS,
+    MAX_AI_PROMPT_BYTES,
+    MAX_AI_RESPONSE_BYTES,
+    MAX_AI_RESPONSE_LINES,
+)
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import (
     DEFAULT_TRIVIA_LANGUAGE,
@@ -36,12 +42,12 @@ from music_assistant.providers.music_quiz.models import (
     TimelineBonusMode,
 )
 from music_assistant.providers.music_quiz.quiz_types import get_quiz_type
-from music_assistant.providers.music_quiz.quiz_types.base import MAX_SUGGESTION_COUNT
+from music_assistant.providers.music_quiz.quiz_types.base import (
+    MAX_SUGGESTION_COUNT,
+    has_untrusted_release_year,
+)
 from music_assistant.providers.music_quiz.quiz_types.trivia import (
     AI_GENERATION_ATTEMPTS,
-    AI_QUERY_TIMEOUT_SECONDS,
-    MAX_AI_PROMPT_BYTES,
-    MAX_AI_RESPONSE_BYTES,
     MAX_ANSWER_LENGTH,
     MAX_METADATA_VALUE_LENGTH,
     MAX_QUESTION_LENGTH,
@@ -51,6 +57,7 @@ from music_assistant.providers.music_quiz.quiz_types.trivia import (
     TriviaQuizType,
     TriviaTarget,
     TriviaTrackFacts,
+    _has_untrusted_release_facts,
 )
 
 
@@ -713,6 +720,70 @@ def test_various_artists_album_omits_album_and_year(
     )
 
 
+@pytest.mark.parametrize(
+    ("album_type", "album_artists", "expected_album"),
+    [
+        (AlbumType.LIVE, [], "The Long Night"),
+        (AlbumType.SOUNDTRACK, [], "The Long Night"),
+        (
+            AlbumType.LIVE,
+            [_album_artist("primary", "Primary Artist"), _album_artist("va", VARIOUS_ARTISTS_NAME)],
+            None,
+        ),
+        (AlbumType.SOUNDTRACK, [_album_artist("va", VARIOUS_ARTISTS_NAME)], None),
+    ],
+    ids=["live", "soundtrack", "live-various-artists", "soundtrack-various-artists"],
+)
+def test_live_and_soundtrack_album_names_stay_usable_answers(
+    album_type: AlbumType,
+    album_artists: list[Artist],
+    expected_album: str | None,
+) -> None:
+    """Keep a live or soundtrack album name as an answer while distrusting its own year."""
+    # the track carries no year of its own, so the album's year is the only one that could
+    # surface and a trusted album type would leak it into the grounding
+    track = _track("live", "Teardrop", "Massive Attack")
+    track.album = _full_album(
+        "the-long-night",
+        "The Long Night",
+        album_type=album_type,
+        artists=album_artists,
+        year=2015,
+    )
+
+    facts = TriviaQuizType._track_facts(track)
+
+    assert facts is not None
+    assert facts.album == expected_album
+    assert facts.release_year is None
+
+
+def test_trivia_album_distrust_stays_a_subset_of_untrusted_release_years() -> None:
+    """Pin Trivia's album distrust as a subset of the shared untrusted release year rule."""
+    artist_credits: dict[str, list[Artist]] = {
+        "own": [_album_artist("own", "Album Artist")],
+        "various": [_album_artist("va", VARIOUS_ARTISTS_NAME)],
+    }
+    distrusted = set()
+    for album_type in AlbumType:
+        for credit, album_artists in artist_credits.items():
+            album = _full_album(
+                "album", "Album", album_type=album_type, artists=album_artists, year=2015
+            )
+            if _has_untrusted_release_facts(album):
+                distrusted.add((album_type, credit))
+                # _track_facts only bypasses get_track_release_year for albums Trivia distrusts,
+                # so every such album must also be one whose own year is never trusted
+                assert has_untrusted_release_year(album)
+
+    assert (AlbumType.COMPILATION, "own") in distrusted
+    assert (AlbumType.ALBUM, "various") in distrusted
+    assert (AlbumType.LIVE, "various") in distrusted
+    assert (AlbumType.SOUNDTRACK, "various") in distrusted
+    assert (AlbumType.LIVE, "own") not in distrusted
+    assert (AlbumType.SOUNDTRACK, "own") not in distrusted
+
+
 def test_normal_full_album_retains_release_grounding() -> None:
     """Keep album and earliest release year facts for a normal full album."""
     track = _track("normal", "Teardrop", "Massive Attack", release_year=2001)
@@ -1051,6 +1122,51 @@ async def test_compilation_year_round_is_scored_on_the_musicbrainz_year() -> Non
         "artist": "Artist 2",
         "release_year": 1982,
     }
+
+
+@pytest.mark.asyncio
+async def test_compilation_year_round_prefers_the_older_of_both_lookups() -> None:
+    """Score a compilation year round on the older year, since a remaster carries its own ISRC."""
+    # the track carries the compilation's own date, which is exactly the year Trivia may not
+    # fall back on, so it must not decide whether the song is dated by name as well
+    tracks = [
+        _with_isrc(
+            _track(f"track-{index}", f"Song {index}", f"Artist {index}", release_year=2012),
+            f"ISRC-{index}",
+        )
+        for index in range(3)
+    ]
+    for index, track in enumerate(tracks):
+        track.album = _full_album(
+            f"album-{index}",
+            f"Compilation {index}",
+            album_type=AlbumType.COMPILATION,
+            year=2012,
+        )
+    provider = _ai_provider()
+    provider.ai_query.side_effect = [
+        _valid_response("Who performs the selected song?", ["Portishead", "Radiohead", "Air"]),
+        _valid_response("Which title is this?", ["Teardrop", "Genesis", "Midnight City"]),
+        _valid_response("In which year did this first appear?", ["1975", "1991", "2003"]),
+    ]
+    quiz, mass = _quiz(tracks, providers=[provider], round_count=3)
+    _with_musicbrainz(
+        mass,
+        {f"ISRC-{index}": 2005 for index in range(3)},
+        name_years={(f"Artist {index}", f"Song {index}"): 1982 for index in range(3)},
+    )
+
+    with patch(
+        "music_assistant.providers.music_quiz.quiz_types.trivia.SYSTEM_RANDOM.choice",
+        side_effect=lambda candidates: candidates[0],
+    ):
+        first_round = await quiz.prepare_round(0, [])
+        second_round = await quiz.prepare_round(1, [first_round])
+        year_round = await quiz.prepare_round(2, [first_round, second_round])
+
+    assert year_round.answer_label == "1982"
+    payload = _prompt_payload(provider.ai_query.await_args.args[0])
+    assert payload["correct_answer"] == "1982"
 
 
 @pytest.mark.asyncio
@@ -1405,12 +1521,28 @@ def test_strict_generation_parser_accepts_fenced_response(fence: str) -> None:
     )
 
 
-def test_strict_generation_parser_limits_the_original_response() -> None:
-    """Enforce the response size limit before a code fence is stripped."""
+def test_strict_generation_parser_enforces_size_and_line_limits() -> None:
+    """Reject responses outside their explicit resource limits."""
     quiz, _ = _quiz([])
+    oversized_response = "x" * (MAX_AI_RESPONSE_BYTES + 1)
+    too_many_lines = "\n".join("{}" for _ in range(MAX_AI_RESPONSE_LINES + 1))
 
     with pytest.raises(ValueError, match="size"):
-        quiz._parse_generation(f"```json\n{'x' * MAX_AI_RESPONSE_BYTES}\n```", _artist_fact())
+        quiz._parse_generation(oversized_response, _artist_fact())
+    with pytest.raises(ValueError, match="line"):
+        quiz._parse_generation(too_many_lines, _artist_fact())
+
+
+def test_strict_generation_parser_limits_the_original_response() -> None:
+    """Enforce the size and line limits before a code fence is stripped."""
+    quiz, _ = _quiz([])
+    oversized_response = f"```json\n{'x' * MAX_AI_RESPONSE_BYTES}\n```"
+    too_many_lines = "```json\n" + "\n".join("{}" for _ in range(MAX_AI_RESPONSE_LINES)) + "\n```"
+
+    with pytest.raises(ValueError, match="size"):
+        quiz._parse_generation(oversized_response, _artist_fact())
+    with pytest.raises(ValueError, match="line"):
+        quiz._parse_generation(too_many_lines, _artist_fact())
 
 
 @pytest.mark.asyncio

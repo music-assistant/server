@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from music_assistant_models.enums import ContentType, ImageType, LinkType, MediaType
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
@@ -34,6 +34,7 @@ if TYPE_CHECKING:
     from libopensonic.media import ArtistID3 as SonicArtist
     from libopensonic.media import ArtistInfo2 as SonicArtistInfo
     from libopensonic.media import Child as SonicSong
+    from libopensonic.media import InternetRadioStation as SonicRadio
     from libopensonic.media import Playlist as SonicPlaylist
     from libopensonic.media import PodcastChannel as SonicPodcast
     from libopensonic.media import PodcastEpisode as SonicEpisode
@@ -409,7 +410,7 @@ def parse_album(
     return album
 
 
-def parse_radio(instance_id: str, sonic_station: Any) -> Radio:
+def parse_radio(instance_id: str, sonic_station: SonicRadio) -> Radio:
     """Parse an OpenSubsonic internet radio station into an MA Radio item."""
     metadata: MediaItemMetadata = MediaItemMetadata()
     if sonic_station.cover_art:

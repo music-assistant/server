@@ -2416,7 +2416,10 @@ class KionMusicProvider(MusicProvider):
             icon="mdi-weather-sunny",
         )
 
-    @use_cache(3600 * 3, allow_expired_cache=True)
+    # single_flight=False: the My Mix branch advances the rotor cursor and sends a one-shot
+    # "radioStarted" feedback, which must happen once per call. The cache sits on this
+    # method, so the flag covers the other playlist kinds along with it
+    @use_cache(3600 * 3, allow_expired_cache=True, single_flight=False)
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """
         Get playlist tracks.

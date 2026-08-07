@@ -21,6 +21,7 @@ from music_assistant.models.metadata_provider import MetadataProvider
 from .api_client import MusicBrainzAPIClient
 from .constants import (
     LUCENE_SPECIAL,
+    MIN_FIRST_RELEASE_CORRECTION_YEARS,
     SOCIAL_HOST_MAPPING,
     SUPPORTED_FEATURES,
     URL_RELATION_TYPE_MAPPING,
@@ -313,11 +314,11 @@ class MusicbrainzProvider(MetadataProvider):
         """
         recordings = await self.get_recordings_by_isrc(isrc)
         # one ISRC can cover several recordings, the oldest one dates the song
-        years: list[int] = []
-        for recording in recordings:
-            release_date = recording.first_release_date or ""
-            if (year := release_date[:4]).isdigit():
-                years.append(int(year))
+        years = [
+            year
+            for recording in recordings
+            if (year := _release_year(recording.first_release_date or "")) is not None
+        ]
         return min(years, default=None)
 
     async def get_release_details(self, album_id: str) -> MusicBrainzRelease:
@@ -440,6 +441,7 @@ class MusicbrainzProvider(MetadataProvider):
         Weaker evidence than :meth:`get_release_year_by_isrc`, which identifies the exact
         recording: this matches on name and only counts studio albums and singles named
         after the song, so an ambiguous or unknown name yields no year rather than a guess.
+        Costs up to two MusicBrainz requests.
 
         :param artist_name: Name of the track's primary artist.
         :param track_name: Name of the track.
@@ -449,8 +451,21 @@ class MusicbrainzProvider(MetadataProvider):
         if not result or not (release_groups := result[1]):
             return None
         # the release groups are sorted oldest first, and undated ones sort last
-        release_date = release_groups[0][1]
-        return int(release_date[:4]) if release_date[:4].isdigit() else None
+        release_year = _release_year(release_groups[0][1])
+        # the release found already dates the song, so a lookup that fails costs this song
+        # precision rather than the year the search already supplied
+        first_release_year: int | None = None
+        with suppress(Exception):
+            first_release_year = await self._earliest_first_release_year(
+                [release_group.id for release_group, _ in release_groups]
+            )
+        if first_release_year is None:
+            return release_year
+        if release_year is None:
+            return first_release_year
+        if release_year - first_release_year > MIN_FIRST_RELEASE_CORRECTION_YEARS:
+            return first_release_year
+        return release_year
 
     @staticmethod
     def _link_type_for_relation(relation: MusicBrainzRelation) -> LinkType | None:
@@ -600,3 +615,37 @@ class MusicbrainzProvider(MetadataProvider):
                 seen[rg_id] = (mb_rg, release_date)
 
         return list(seen.values())
+
+    async def _earliest_first_release_year(self, release_group_ids: list[str]) -> int | None:
+        """
+        Get the year the oldest of the given release groups was first released.
+
+        :param release_group_ids: MusicBrainz release group IDs to look up.
+        :return: The earliest known first release year, or None if MusicBrainz knows none.
+        """
+        # a recording search never yields more than a handful of release groups, so one
+        # query covers them all
+        safe_ids = (re.sub(LUCENE_SPECIAL, r"\\\1", rg_id) for rg_id in release_group_ids)
+        result = await self._api_client.get_data(
+            "release-group",
+            query=f"rgid:({' OR '.join(safe_ids)})",
+            limit="100",
+        )
+        if not result:
+            return None
+        years = [
+            year
+            for release_group in result.get("release-groups", [])
+            if (year := _release_year(release_group.get("first-release-date") or "")) is not None
+        ]
+        return min(years, default=None)
+
+
+def _release_year(release_date: str) -> int | None:
+    """
+    Read the year off a MusicBrainz date of any precision.
+
+    :param release_date: MusicBrainz date, as a year, year-month or full date.
+    :return: The year, or None if the date is absent or unparsable.
+    """
+    return int(year) if (year := release_date[:4]).isdigit() else None

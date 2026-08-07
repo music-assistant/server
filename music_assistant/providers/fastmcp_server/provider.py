@@ -17,7 +17,11 @@ from music_assistant.models.plugin import PluginProvider
 from .constants import HOT_SWAPPABLE_KEYS
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import (
+        ConfigActionResult,
+        ConfigEntry,
+        ProviderConfig,
+    )
 
     from .server import MCPServerRuntime
 
@@ -39,11 +43,13 @@ class MCPServerProvider(PluginProvider):
             self.mass, str(self.get_config_value(CONF_MOUNT_PATH, DEFAULT_MOUNT_PATH))
         )
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
-        """Handle a one-shot config action button press and re-render the entries."""
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
+        """Handle a one-shot config action button press and report its outcome."""
         if action == "open_connect":
-            from music_assistant_models.config_entries import ConfigEntry  # noqa: PLC0415
-            from music_assistant_models.enums import ConfigEntryType  # noqa: PLC0415
+            from music_assistant_models.config_entries import ConfigActionResult  # noqa: PLC0415
+            from music_assistant_models.errors import ActionUnavailable  # noqa: PLC0415
 
             from ._init_helpers import _dispatch_open_connect  # noqa: PLC0415
             from .constants import CONF_CONNECT_EXTERNAL_URL, CONF_MOUNT_PATH  # noqa: PLC0415
@@ -55,18 +61,13 @@ class MCPServerProvider(PluginProvider):
                     CONF_CONNECT_EXTERNAL_URL: self.get_config_value(CONF_CONNECT_EXTERNAL_URL),
                 },
             )
-            entries = await self.get_config_entries()
             if url is None:
-                return entries
-            # a URL entry in an invoke_action response is opened one-shot by the frontend
-            return (
-                *entries,
-                ConfigEntry(
-                    key="connect_wizard_url",
-                    type=ConfigEntryType.URL,
-                    value=url,
-                ),
-            )
+                raise ActionUnavailable(
+                    "The Connect Wizard could not be opened; check the provider logs.",
+                    translation_key="connect_wizard_unavailable",
+                    translation_owner=self.translation_owner,
+                )
+            return ConfigActionResult(open_url=url)
         return await super().handle_config_action(action)
 
     async def handle_async_init(self) -> None:
