@@ -49,7 +49,7 @@ async def _setup_with_bind_ip(
     config.update({CONF_BIND_IP: bind_ip, CONF_BIND_PORT: unused_port()})
     with (
         patch(
-            "music_assistant.controllers.streams.controller.get_ip_addresses",
+            "music_assistant.controllers.streams.controller.get_publish_ip_candidates",
             AsyncMock(return_value=ALL_ADDRESSES),
         ),
         patch(

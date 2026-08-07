@@ -1734,9 +1734,12 @@ class ProtocolLinkingMixin:
                     )
                     return protocol_player, linked
 
-        # 2. Check for user's preferred output protocol
+        # 2. Check for user's preferred output protocol.
+        # The value is only stored while it differs from the entry's default, which is computed
+        # per player: "native" when a native output is available, otherwise "auto". Both of those
+        # are handled identically by the steps below, so an absent value can safely fall through.
         preferred = self.mass.config.get_raw_player_config_value(
-            player.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL, "auto"
+            player.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
         )
         if preferred and preferred != "auto":
             if preferred == "native":
@@ -1950,7 +1953,7 @@ class ProtocolLinkingMixin:
         Returns tuple of (child_protocol_id, protocol_domain) or (None, None).
         """
         child_preferred = self.mass.config.get_raw_player_config_value(
-            child_player.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL, "auto"
+            child_player.player_id, CONF_PREFERRED_OUTPUT_PROTOCOL
         )
         if not child_preferred or child_preferred in {"auto", "native"}:
             return None, None

@@ -126,6 +126,7 @@ class PlanAssembler:
         return replace(
             candidate.plan,
             eq_plan=self._choose_eq(candidate.plan),
+            fadeout_curve=self._choose_fadeout_curve(candidate.plan),
             metrics=candidate.metrics,
         )
 
@@ -530,6 +531,20 @@ class PlanAssembler:
             if running_max > 0.0 and power > 0.0:
                 max_drop_db = max(max_drop_db, 10.0 * float(np.log10(running_max / power)))
         return max_drop_db
+
+    def _choose_fadeout_curve(self, plan: TransitionPlan) -> str:
+        """Pick ``nofade`` when the overlap sits entirely inside a detected mastered fade."""
+        ctx = self._ctx
+        if ctx.fade_onset is None:
+            return "qsin"
+        crossfade_start = plan.fade_out_window - plan.crossfade_duration
+        if crossfade_start < ctx.fade_onset:
+            return "qsin"
+        bar_out = ctx.outgoing.beats_per_bar * 60.0 / ctx.outgoing.bpm
+        if plan.fade_out_window < ctx.audio_end - bar_out:
+            return "qsin"
+        # the record already fades itself here; don't double it with a second curve
+        return "nofade"
 
 
 class EmergencyHandoffFactory:

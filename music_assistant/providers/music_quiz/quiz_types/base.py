@@ -439,18 +439,17 @@ class QuizType(ABC):
 
     async def _musicbrainz_dated_track(self, track: Track) -> tuple[Track, int | None]:
         """
-        Return the track dated with the first release year MusicBrainz knows for its recording.
+        Return the track dated with the first release year MusicBrainz knows for the song.
 
         The track itself is returned unchanged when MusicBrainz has nothing better to offer.
 
-        :param track: Track to date by its ISRC.
-        :return: The dated track and the usable release year MusicBrainz knows for its recording.
+        :param track: Track to date.
+        :return: The dated track and the usable release year MusicBrainz knows for the song.
             The year is reported even when the track already carries that year or an earlier one,
             and is None when MusicBrainz knows no year or only an implausible one.
         """
         musicbrainz = self.mass.get_provider("musicbrainz")
-        isrc = track.get_external_id(ExternalID.ISRC)
-        if musicbrainz is None or not isrc:
+        if musicbrainz is None:
             return track, None
         release_year: int | None = None
         # callers wait for this and MusicBrainz throttles to 10 requests per 10 seconds, so a
@@ -458,9 +457,9 @@ class QuizType(ABC):
         with suppress(TimeoutError):
             async with asyncio.timeout(RELEASE_YEAR_LOOKUP_BUDGET_SECONDS):
                 try:
-                    release_year = await cast(
-                        "MusicbrainzProvider", musicbrainz
-                    ).get_release_year_by_isrc(isrc)
+                    release_year = await self._musicbrainz_release_year(
+                        cast("MusicbrainzProvider", musicbrainz), track
+                    )
                 except Exception as err:
                     LOGGER.debug("Could not date Music Quiz track %s: %s", track.uri, err)
         # a year outside this range is rejected by get_track_release_year anyway, and a year
@@ -477,6 +476,26 @@ class QuizType(ABC):
             metadata=replace(track.metadata, release_date=datetime(release_year, 1, 1, tzinfo=UTC)),
         )
         return dated_track, release_year
+
+    @staticmethod
+    async def _musicbrainz_release_year(
+        musicbrainz: MusicbrainzProvider, track: Track
+    ) -> int | None:
+        """
+        Return the first release year MusicBrainz knows for a track.
+
+        :param musicbrainz: The loaded MusicBrainz provider.
+        :param track: Track to date.
+        """
+        # an ISRC identifies the exact recording, so it is always the better evidence and
+        # the search below is only reached when it is absent or MusicBrainz does not know it
+        if isrc := track.get_external_id(ExternalID.ISRC):
+            if (release_year := await musicbrainz.get_release_year_by_isrc(isrc)) is not None:
+                return release_year
+        artist_name = track.artists[0].name if track.artists else None
+        if not artist_name or not track.name:
+            return None
+        return await musicbrainz.get_release_year_by_track_name(artist_name, track.name)
 
 
 def get_track_release_year(track: Track) -> int | None:

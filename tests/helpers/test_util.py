@@ -1,6 +1,7 @@
 """Tests for music_assistant.helpers.util helpers."""
 
 import asyncio
+import contextlib
 import gc
 import socket
 import threading
@@ -8,6 +9,7 @@ import time
 from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
 
+import ifaddr
 import pytest
 from music_assistant_models.media_items import Album, ProviderMapping, Track
 
@@ -19,7 +21,6 @@ from music_assistant.helpers.util import (
     is_port_in_use,
     load_provider_module,
     sanitize_http_header_value,
-    select_announce_addresses,
     select_free_port,
 )
 from music_assistant.mass import MusicAssistant
@@ -280,7 +281,8 @@ class TestGetIpAddresses:
     def test_falls_back_to_loopback_without_routable_addresses(self) -> None:
         """With no routable addresses at all, loopback is returned instead of an empty tuple."""
         with patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=[]):
-            assert util._enumerate_ip_addresses(include_ipv6=True) == ("127.0.0.1",)
+            assert util._enumerate_ip_addresses(True, False) == ("127.0.0.1",)
+            assert util._enumerate_ip_addresses(True, True) == ("127.0.0.1",)
 
     @pytest.mark.asyncio
     async def test_concurrent_callers_share_a_single_probe(self, enumerate_mock: MagicMock) -> None:
@@ -311,8 +313,8 @@ class TestGetIpAddresses:
         """Once the TTL passed, the next call enumerates the adapters again."""
         await util.get_ip_addresses()
         # age the cached entry beyond the TTL
-        cached_at, addresses = util._ip_addresses_cache[False]
-        util._ip_addresses_cache[False] = (
+        cached_at, addresses = util._ip_addresses_cache[False, False]
+        util._ip_addresses_cache[False, False] = (
             cached_at - util.IP_ADDRESSES_CACHE_TTL - 1,
             addresses,
         )
@@ -323,7 +325,7 @@ class TestGetIpAddresses:
     async def test_cancelled_caller_does_not_break_concurrent_callers(self) -> None:
         """Cancelling one caller must not cancel the shared probe for the others."""
 
-        def slow_enumerate(_include_ipv6: bool) -> tuple[str, ...]:
+        def slow_enumerate(_include_ipv6: bool, _publish_candidates_only: bool) -> tuple[str, ...]:
             time.sleep(0.1)
             return ("192.168.1.10",)
 
@@ -346,7 +348,9 @@ class TestGetIpAddresses:
         """A probe failing after a caller gave up is not reported to the loop handler."""
         release = threading.Event()
 
-        def failing_enumerate(_include_ipv6: bool) -> tuple[str, ...]:
+        def failing_enumerate(
+            _include_ipv6: bool, _publish_candidates_only: bool
+        ) -> tuple[str, ...]:
             release.wait()
             raise OSError("probe failed")
 
@@ -378,7 +382,9 @@ class TestGetIpAddresses:
         """A probe failing with no caller left to receive it is not reported either."""
         release = threading.Event()
 
-        def failing_enumerate(_include_ipv6: bool) -> tuple[str, ...]:
+        def failing_enumerate(
+            _include_ipv6: bool, _publish_candidates_only: bool
+        ) -> tuple[str, ...]:
             release.wait()
             raise OSError("probe failed")
 
@@ -391,7 +397,7 @@ class TestGetIpAddresses:
         ):
             caller = asyncio.create_task(util.get_ip_addresses())
             await asyncio.sleep(0)
-            probe = util._ip_addresses_pending[False]
+            probe = util._ip_addresses_pending[False, False]
             caller.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await caller
@@ -405,29 +411,72 @@ class TestGetIpAddresses:
         assert reported == []
 
 
-class TestSelectAnnounceAddresses:
-    """select_announce_addresses picks the addresses that are safe to announce."""
+def _adapter(name: str, *ips: str) -> ifaddr.Adapter:
+    """Build an adapter of the given name holding the given IPv4 addresses."""
+    return ifaddr.Adapter(name, name, [ifaddr.IP(ip, 24, name) for ip in ips])
 
-    def test_ipv6_addresses_are_left_out(self) -> None:
-        """A dual-stack host announces its IPv4 addresses only, in their original order."""
-        assert select_announce_addresses(
-            ["192.168.1.10", "fd00::10", "10.0.0.5", "2001:db8::1"]
-        ) == ["192.168.1.10", "10.0.0.5"]
 
-    def test_ipv6_only_host_announces_ipv6(self) -> None:
-        """A host without any IPv4 address falls back to announcing its IPv6 addresses."""
-        assert select_announce_addresses(["fd00::10", "2001:db8::1"]) == [
-            "fd00::10",
-            "2001:db8::1",
-        ]
+@contextlib.contextmanager
+def _fake_adapters(*adapters: ifaddr.Adapter) -> Iterator[None]:
+    """Enumerate the given adapters, with the primary-route probe failing on this host."""
+    with (
+        patch("music_assistant.helpers.util.ifaddr.get_adapters", return_value=list(adapters)),
+        patch("music_assistant.helpers.util.socket.socket") as mock_socket,
+    ):
+        # without a primary route every address is ranked on its prefix alone, so the
+        # outcome does not depend on the network the test host happens to sit on
+        mock_socket.return_value.connect.side_effect = OSError
+        yield
 
-    def test_ipv4_only_host_is_unchanged(self) -> None:
-        """The common IPv4-only host announces exactly what it publishes."""
-        assert select_announce_addresses(["192.168.1.10"]) == ["192.168.1.10"]
 
-    def test_empty_input_yields_no_addresses(self) -> None:
-        """Nothing to publish means nothing to announce."""
-        assert select_announce_addresses([]) == []
+class TestGetPublishIpCandidates:
+    """get_publish_ip_candidates skips the addresses no local network device can reach."""
+
+    @pytest.fixture(autouse=True)
+    def _clean_cache(self) -> Iterator[None]:
+        """Run every test against an empty module-level cache."""
+        util._ip_addresses_cache.clear()
+        util._ip_addresses_pending.clear()
+        yield
+        util._ip_addresses_cache.clear()
+        util._ip_addresses_pending.clear()
+
+    @pytest.mark.asyncio
+    async def test_container_and_tunnel_addresses_are_left_out(self) -> None:
+        """A HA OS host publishes its LAN address, not the docker bridges alongside it."""
+        with _fake_adapters(
+            _adapter("end0", "192.168.1.10"),
+            _adapter("hassio", "172.30.32.1"),
+            _adapter("docker0", "172.30.232.1"),
+            _adapter("tailscale0", "100.64.0.1"),
+        ):
+            assert await util.get_publish_ip_candidates() == ("192.168.1.10",)
+
+    @pytest.mark.asyncio
+    async def test_real_lan_bridge_is_kept(self) -> None:
+        """A host whose LAN lives on a bridge (Proxmox, Unraid, OpenWrt) still publishes it."""
+        with _fake_adapters(
+            _adapter("vmbr0", "192.168.1.10"),
+            _adapter("br-lan", "10.0.0.5"),
+            _adapter("br-1a2b3c4d5e6f", "172.18.0.1"),
+        ):
+            assert await util.get_publish_ip_candidates() == ("192.168.1.10", "10.0.0.5")
+
+    @pytest.mark.asyncio
+    async def test_host_behind_a_tunnel_only_still_publishes(self) -> None:
+        """With nothing but a tunnel to offer, that tunnel beats publishing nothing."""
+        with _fake_adapters(_adapter("wg0", "10.6.0.2")):
+            assert await util.get_publish_ip_candidates() == ("10.6.0.2",)
+
+    @pytest.mark.asyncio
+    async def test_unfiltered_lookup_keeps_the_container_addresses(self) -> None:
+        """get_ip_addresses is unaffected: the HA ingress site binds one of those bridges."""
+        with _fake_adapters(
+            _adapter("end0", "192.168.1.10"),
+            _adapter("hassio", "172.30.32.1"),
+        ):
+            assert await util.get_ip_addresses() == ("192.168.1.10", "172.30.32.1")
+            assert await util.get_publish_ip_candidates() == ("192.168.1.10",)
 
 
 class TestSanitizeHttpHeaderValue:

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from hass_client.exceptions import BaseHassClientError
-from music_assistant_models.enums import ProviderFeature
+from music_assistant_models.enums import EventType, ProviderFeature
 from music_assistant_models.errors import SetupFailedError, UnsupportedFeaturedException
 
 from music_assistant.constants import CONF_LOG_LEVEL
@@ -355,6 +355,20 @@ async def _fire_registry_update(
             await provider._engine_refresh_task
 
 
+def _providers_updated_events(provider: HomeAssistantProvider) -> list[Any]:
+    """
+    Return the PROVIDERS_UPDATED events the provider signalled so far.
+
+    :param provider: The provider whose Music Assistant mock is inspected.
+    """
+    signal_event = cast("MagicMock", provider.mass.signal_event)
+    return [
+        call
+        for call in signal_event.call_args_list
+        if call.args[:1] == (EventType.PROVIDERS_UPDATED,)
+    ]
+
+
 async def test_feature_resolution_starts_listener_first() -> None:
     """Resolve startup features only after the Home Assistant listener starts."""
     states = [
@@ -679,6 +693,114 @@ async def test_registry_update_discards_the_feature_of_a_removed_engine() -> Non
         assert ProviderFeature.TTS not in provider.supported_features
         # the AI Task entity is untouched, so its feature stays declared
         assert ProviderFeature.AI_QUERY in provider.supported_features
+
+
+async def test_changed_engines_notify_the_consumers_once() -> None:
+    """Announce a refresh that changed the engine lists with a single PROVIDERS_UPDATED."""
+    states = [_state("tts.only", "Only"), _state("ai_task.only", "Only")]
+
+    async with _start_provider(states) as (provider, hass):
+        await provider.loaded_in_mass()
+        mass = cast("MagicMock", provider.mass)
+        mass.signal_event.reset_mock()
+
+        del hass.compressed_states["tts.only"]
+        await _fire_registry_update(provider, hass, "tts.only", "remove")
+
+        events = _providers_updated_events(provider)
+        assert len(events) == 1
+        assert events[0].kwargs["data"] is mass.get_providers.return_value
+
+
+async def test_a_lost_ai_engine_notifies_the_consumers() -> None:
+    """Announce a vanished AI engine, the selection AI Radio depends on."""
+    states = [_state("tts.only", "Only"), _state("ai_task.only", "Only")]
+
+    async with _start_provider(states) as (provider, hass):
+        await provider.loaded_in_mass()
+        cast("MagicMock", provider.mass).signal_event.reset_mock()
+
+        del hass.compressed_states["ai_task.only"]
+        await _fire_registry_update(provider, hass, "ai_task.only", "remove")
+
+        assert await provider.get_ai_engines() == []
+        assert [engine.id for engine in await provider.get_tts_engines()] == ["tts.only"]
+        assert len(_providers_updated_events(provider)) == 1
+
+
+async def test_engines_are_in_place_before_the_consumers_are_told() -> None:
+    """Expose the rebuilt engine lists before signalling, as consumers read them at once."""
+    states = [_state("tts.only", "Only"), _state("ai_task.only", "Only")]
+
+    async with _start_provider(states) as (provider, hass):
+        await provider.loaded_in_mass()
+        signal_event = cast("MagicMock", provider.mass.signal_event)
+        signal_event.reset_mock()
+        engines_when_told: list[list[str]] = []
+        signal_event.side_effect = lambda *_args, **_kwargs: engines_when_told.append(
+            [engine.id for engine in provider._tts_engines]
+        )
+
+        del hass.compressed_states["tts.only"]
+        await _fire_registry_update(provider, hass, "tts.only", "remove")
+
+        assert engines_when_told == [[]]
+
+
+async def test_unchanged_engines_do_not_notify_the_consumers() -> None:
+    """Stay silent when a refresh rebuilds the very same engine lists."""
+    states = [_state("tts.only", "Only"), _state("ai_task.only", "Only")]
+
+    async with _start_provider(states) as (provider, hass):
+        await provider.loaded_in_mass()
+        cast("MagicMock", provider.mass).signal_event.reset_mock()
+
+        # registry churn that leaves the feature entities as they are, as in a rename of
+        # an entity that the engine name does not depend on
+        await _fire_registry_update(provider, hass, "tts.only", "update")
+
+        assert [engine.id for engine in await provider.get_tts_engines()] == ["tts.only"]
+        assert [engine.id for engine in await provider.get_ai_engines()] == ["ai_task.only"]
+        assert _providers_updated_events(provider) == []
+
+
+async def test_startup_refresh_does_not_notify_the_consumers() -> None:
+    """Leave the announcement of the engines found during startup to the load path."""
+    states = [_state("tts.only", "Only"), _state("ai_task.only", "Only")]
+
+    async with _start_provider(states) as (provider, _):
+        # the refresh that filled the empty lists ran before startup was marked complete
+        assert provider._startup_complete
+        assert [engine.id for engine in await provider.get_tts_engines()] == ["tts.only"]
+        assert _providers_updated_events(provider) == []
+
+
+async def test_refresh_tracks_engines_and_features_in_both_directions() -> None:
+    """Follow the engine lists and their features as feature entities appear and vanish."""
+    async with _start_provider([_state("sensor.example", "Example")]) as (provider, hass):
+        await provider.loaded_in_mass()
+        cast("MagicMock", provider.mass).signal_event.reset_mock()
+        assert ProviderFeature.TTS not in provider.supported_features
+        assert ProviderFeature.AI_QUERY not in provider.supported_features
+
+        hass.compressed_states["tts.new"] = _compressed(_state("tts.new", "New TTS"))
+        hass.compressed_states["ai_task.new"] = _compressed(_state("ai_task.new", "New AI"))
+        await _fire_registry_update(provider, hass, "tts.new", "create")
+
+        assert [engine.id for engine in await provider.get_tts_engines()] == ["tts.new"]
+        assert [engine.id for engine in await provider.get_ai_engines()] == ["ai_task.new"]
+        assert ProviderFeature.TTS in provider.supported_features
+        assert ProviderFeature.AI_QUERY in provider.supported_features
+
+        del hass.compressed_states["tts.new"]
+        del hass.compressed_states["ai_task.new"]
+        await _fire_registry_update(provider, hass, "tts.new", "remove")
+
+        assert await provider.get_tts_engines() == []
+        assert await provider.get_ai_engines() == []
+        assert ProviderFeature.TTS not in provider.supported_features
+        assert ProviderFeature.AI_QUERY not in provider.supported_features
+        assert len(_providers_updated_events(provider)) == 2
 
 
 async def test_registry_update_of_another_domain_is_ignored() -> None:

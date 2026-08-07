@@ -694,6 +694,28 @@ def test_overlay_args_probe_the_main_input_and_add_no_filters() -> None:
     assert not any(arg.startswith(("pan=", "aresample=resampler=")) for arg in args)
 
 
+@pytest.mark.parametrize(
+    "extra_input_args",
+    [
+        # the concat demuxer brings its own -f, and needs the whitelist for the listed files
+        ["-safe", "0", "-f", "concat", "-i", "/list.txt"],
+        # a caller raising the probe limits relies on its own values landing last
+        ["-probesize", "65536", "-analyzeduration", "5000000"],
+    ],
+    ids=["caller-supplied-input-format", "caller-raised-probe-limits"],
+)
+def test_read_args_lead_the_main_input(extra_input_args: list[str]) -> None:
+    """Every main input is opened under our read limits, which the caller may override."""
+    args = get_ffmpeg_args(_PCM_FORMAT, _PCM_FORMAT, [], extra_input_args=extra_input_args)
+    start = args.index("-protocol_whitelist")
+    end = start + len(_INPUT_READ_ARGS)
+    assert args[start:end] == _INPUT_READ_ARGS
+    # the caller's args follow ours within the same input group, so theirs win on a conflict
+    assert args[end : end + len(extra_input_args)] == extra_input_args
+    # exactly one input either way: we add ours only when the caller brings none
+    assert args.count("-i") == 1
+
+
 # -- _log_reader_task (decode-error flood guard) --
 
 

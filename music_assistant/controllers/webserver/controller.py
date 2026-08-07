@@ -58,7 +58,11 @@ from music_assistant.helpers.redirect_validation import (
     build_code_redirect_url,
     is_allowed_redirect_url,
 )
-from music_assistant.helpers.util import format_ip_for_url, get_ip_addresses
+from music_assistant.helpers.util import (
+    format_ip_for_url,
+    get_ip_addresses,
+    get_publish_ip_candidates,
+)
 from music_assistant.helpers.webserver import Webserver
 from music_assistant.models.core_controller import CoreController
 
@@ -96,14 +100,14 @@ CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
 
 
 def _get_publish_addresses(
-    bind_ip: str | None, publish_ip: str, all_ip_addresses: tuple[str, ...]
+    bind_ip: str | None, publish_ip: str, publish_candidates: tuple[str, ...]
 ) -> list[str]:
     """
     Return the IP addresses the webserver should publish/advertise.
 
     :param bind_ip: The configured bind IP (None or a wildcard means all interfaces).
     :param publish_ip: The resolved primary publish IP.
-    :param all_ip_addresses: All detected host IP addresses, in ranked order.
+    :param publish_candidates: Host addresses reachable from the local network, ranked.
     """
     addresses = [publish_ip]
     if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
@@ -111,7 +115,7 @@ def _get_publish_addresses(
     # bound to all interfaces: also publish the primary address of the other
     # IP family (if any) so both IPv4-only and IPv6-only clients can connect
     publish_is_ipv6 = ":" in publish_ip
-    for ip in all_ip_addresses:
+    for ip in publish_candidates:
         if (":" in ip) != publish_is_ipv6:
             addresses.append(ip)
             break
@@ -290,10 +294,11 @@ class WebserverController(CoreController):
         routes.append(("GET", "/sendspin", self._sendspin_proxy.handle_sendspin_proxy))
         await self.auth.setup()
         # start the webserver
-        all_ip_addresses = await get_ip_addresses(include_ipv6=True)
         if self.mass.running_as_hass_addon:
             # if we're running on the HA supervisor we start an additional TCP site
-            # on the internal ("172.30.32.) IP for the HA ingress proxy
+            # on the internal ("172.30.32.") IP for the HA ingress proxy - that address
+            # lives on a docker bridge, so it needs the unfiltered adapter list
+            all_ip_addresses = await get_ip_addresses(include_ipv6=True)
             ingress_host = next(
                 (x for x in all_ip_addresses if x.startswith("172.30.32.")), all_ip_addresses[0]
             )
@@ -317,7 +322,8 @@ class WebserverController(CoreController):
         # out must follow the context that was actually created, not the configured value
         self._ssl_active = ssl_context is not None
         protocol = "https" if self._ssl_active else "http"
-        self._resolve_publish_state(bind_ip, all_ip_addresses, protocol)
+        publish_candidates = await get_publish_ip_candidates(include_ipv6=True)
+        self._resolve_publish_state(bind_ip, publish_candidates, protocol)
 
         await self._server.setup(
             bind_ip=bind_ip,
@@ -333,7 +339,7 @@ class WebserverController(CoreController):
         # adopt what the server actually bound to: a configured port of 0 is only resolved
         # by the OS at bind time and an unavailable bind IP falls back to all interfaces
         self.publish_port = cast("int", self._server.port)
-        self._resolve_publish_state(self._server.bind_ip, all_ip_addresses, protocol)
+        self._resolve_publish_state(self._server.bind_ip, publish_candidates, protocol)
         base_url = self.base_url
         # print a big fat message in the log where the webserver is running
         # because this is a common source of issues for people with more complex setups
@@ -474,7 +480,7 @@ class WebserverController(CoreController):
         return resp
 
     def _resolve_publish_state(
-        self, bind_ip: str | None, all_ip_addresses: tuple[str, ...], protocol: str
+        self, bind_ip: str | None, publish_candidates: tuple[str, ...], protocol: str
     ) -> None:
         """
         Resolve the addresses and base URL to advertise for the given bind address.
@@ -482,15 +488,17 @@ class WebserverController(CoreController):
         Reads ``self.publish_port``, so set that first.
 
         :param bind_ip: Address the webserver binds to (None or a wildcard means all interfaces).
-        :param all_ip_addresses: All detected host IP addresses, in ranked order.
+        :param publish_candidates: Host addresses reachable from the local network, ranked.
         :param protocol: URL scheme the webserver serves.
         """
         self.bind_ip = bind_ip
         if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
             self.publish_ip = bind_ip
         else:
-            self.publish_ip = all_ip_addresses[0]
-        self.publish_addresses = _get_publish_addresses(bind_ip, self.publish_ip, all_ip_addresses)
+            self.publish_ip = publish_candidates[0]
+        self.publish_addresses = _get_publish_addresses(
+            bind_ip, self.publish_ip, publish_candidates
+        )
         self._auto_base_url = (
             f"{protocol}://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
         )

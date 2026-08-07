@@ -288,4 +288,5 @@ class TransitionPlan:
     fadeout_trim: FadeOutTrim | None = None
     # seconds trimmed off the incoming head for beat alignment
     fadein_trim_start: float | None = None
+    fadeout_curve: str = "qsin"
     metrics: PlanMetrics = field(default_factory=PlanMetrics)

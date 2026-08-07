@@ -310,10 +310,23 @@ def _with_isrc(track: Track, isrc: str) -> Track:
     return track
 
 
-def _with_musicbrainz(mass: MagicMock, years: dict[str, int]) -> MagicMock:
-    """Attach a MusicBrainz provider that dates the given ISRCs to the mock MusicAssistant."""
+def _with_musicbrainz(
+    mass: MagicMock,
+    years: dict[str, int],
+    name_years: dict[tuple[str, str], int] | None = None,
+) -> MagicMock:
+    """
+    Attach a MusicBrainz provider to the mock MusicAssistant.
+
+    :param mass: Mock MusicAssistant to attach the provider to.
+    :param years: Release year per ISRC.
+    :param name_years: Release year per (artist name, track name), for tracks without an ISRC.
+    """
     provider = MagicMock()
     provider.get_release_year_by_isrc = AsyncMock(side_effect=lambda isrc: years.get(isrc))
+    provider.get_release_year_by_track_name = AsyncMock(
+        side_effect=lambda artist, track: (name_years or {}).get((artist, track))
+    )
     mass.get_provider = MagicMock(
         side_effect=lambda domain: provider if domain == "musicbrainz" else None
     )
@@ -889,6 +902,31 @@ def test_compilation_release_year_stays_suppressed_without_dating() -> None:
     assert facts is not None
     assert facts.release_year is None
     assert TriviaTarget.YEAR not in TriviaQuizType._available_targets(facts)
+
+
+@pytest.mark.asyncio
+async def test_prepare_round_grounds_a_compilation_without_an_isrc_on_its_name_lookup() -> None:
+    """Ground a compilation round on the name lookup when the track carries no ISRC."""
+    # a compilation has no usable year of its own, so the name lookup is the only thing
+    # that can answer a release year question about tracks from an ISRC-less provider
+    track = _track("compilation", "Africa", "Toto", release_year=1998)
+    track.album = _full_album(
+        "party-hits",
+        "Party Hits",
+        album_type=AlbumType.COMPILATION,
+        year=1998,
+    )
+    provider = _ai_provider(_valid_response())
+    quiz, mass = _quiz([track], providers=[provider])
+    _with_musicbrainz(mass, {}, name_years={("Toto", "Africa"): 1982})
+
+    await quiz.prepare_round(0, [])
+
+    assert _prompt_payload(provider.ai_query.await_args.args[0])["track_metadata"] == {
+        "title": "Africa",
+        "artist": "Toto",
+        "release_year": 1982,
+    }
 
 
 @pytest.mark.asyncio
