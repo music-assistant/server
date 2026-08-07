@@ -2637,9 +2637,7 @@ class YandexMusicProvider(MusicProvider):
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found")
         return parse_playlist(self, playlist)
 
-    # single_flight=False: this advances the rotor cursor and sends a one-shot "radioStarted"
-    # feedback, so concurrent callers must each get their own batch instead of sharing one
-    @use_cache(3600 * 3, allow_expired_cache=True, single_flight=False)
+    @use_cache(3600 * 3, allow_expired_cache=True)
     async def _get_my_wave_playlist_tracks(self, page: int) -> list[Track]:
         """
         Get My Wave tracks for virtual playlist (uses cursor for page > 0).
@@ -3025,9 +3023,7 @@ class YandexMusicProvider(MusicProvider):
             return UniqueList()
         return folder.items
 
-    # single_flight=False: this advances the rotor cursor and establishes session state,
-    # so concurrent callers must each get their own batch instead of sharing one
-    @use_cache(600, allow_expired_cache=True, single_flight=False)
+    @use_cache(600, allow_expired_cache=True)
     async def _get_my_wave_recommendations(self) -> RecommendationFolder | None:
         """
         Get My Wave recommendation folder with personalized tracks.
