@@ -1887,7 +1887,7 @@ class KionMusicProvider(MusicProvider):
         return parse_playlist(self, playlist)
 
     # single_flight=False: this advances the rotor cursor and sends a one-shot "radioStarted"
-    # feedback, which must happen once per call
+    # feedback, so concurrent callers must each get their own batch instead of sharing one
     @use_cache(3600 * 3, allow_expired_cache=True, single_flight=False)
     async def _get_my_wave_playlist_tracks(self, page: int) -> list[Track]:
         """

@@ -5,7 +5,8 @@ These tests construct a partial provider instance via ``__new__`` (no
 ``__init__``), attach the attributes the method-under-test reads, and
 exercise it directly. The pattern avoids the upstream Music Assistant
 provider-init machinery which would otherwise drag in a real
-``MusicAssistant`` instance.
+``MusicAssistant`` instance. Tests that exercise the cache decorator do
+need a server, and attach the minimal one from the ``mass_minimal`` fixture.
 """
 
 from __future__ import annotations

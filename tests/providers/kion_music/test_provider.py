@@ -3,9 +3,9 @@ Unit tests for KionMusicProvider (provider.py).
 
 These tests construct a partial provider instance via ``__new__`` (no
 ``__init__``), attach the attributes the method-under-test reads, and
-exercise it directly. The pattern avoids the upstream Music Assistant
-provider-init machinery which would otherwise drag in a real
-``MusicAssistant`` instance.
+exercise it directly, so the upstream provider-init machinery does not run.
+The cache decorator does need a server, so those tests attach the minimal
+``MusicAssistant`` instance from the ``mass_minimal`` fixture.
 """
 
 from __future__ import annotations
