@@ -76,7 +76,7 @@ def _player_config_stub(
     def _conf(_player_id: str, key: str, default: object = None) -> object:
         if key in config:
             return config[key]
-        return default if default is not None else "auto"
+        return default
 
     return _conf
 
@@ -580,7 +580,7 @@ def _set_play_media_override(mock_mass: MagicMock, value: bool) -> None:
             return value
         if callable(original):
             return original(player_id, key, default)
-        return default if default is not None else "auto"
+        return default
 
     mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_side_effect)
 
@@ -1195,7 +1195,7 @@ class TestVolumeScalingOnRedirect:
             if key == "max_volume":
                 # user-facing player caps at 50, the protocol player has no limits of its own
                 return 50 if player_id == "user_player" else 100
-            return default if default is not None else "auto"
+            return default
 
         mock_mass.config.get_raw_player_config_value = MagicMock(side_effect=_conf)
 
