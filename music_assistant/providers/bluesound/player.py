@@ -23,6 +23,7 @@ from music_assistant.helpers.util import is_valid_mac_address
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia, PlayerSource
 from music_assistant.providers.bluesound.const import (
     IDLE_POLL_INTERVAL,
+    MAX_CONNECTING_POLLS,
     PLAYBACK_POLL_INTERVAL,
     PLAYBACK_STATE_MAP,
     PLAYER_FEATURES_BASE,
@@ -60,6 +61,7 @@ class BluesoundPlayer(Player):
         self.status: Status
         self.poll_state = POLL_STATE_STATIC
         self.dynamic_poll_count: int = 0
+        self._connecting_polls: int = 0
         self._listen_task: asyncio.Task[None] | None = None
         # Set base player attributes
         self._attr_supported_features = PLAYER_FEATURES_BASE.copy()
@@ -334,9 +336,14 @@ class BluesoundPlayer(Player):
         # BluOS reports 'connecting' whenever it is (re)filling its buffer, including
         # while it plays out the tail of a stream that stopped sending. Taking that as
         # idle would end the queue while the player is still making sound, so we hold on
-        # to the playing state until BluOS reports a real stop.
+        # to the playing state for a few polls. Beyond that the player is not buffering
+        # but stuck, and reporting it idle is what lets playback recover.
         if self.status.state == "connecting" and self._attr_playback_state == PlaybackState.PLAYING:
-            return PlaybackState.PLAYING
+            self._connecting_polls += 1
+            if self._connecting_polls <= MAX_CONNECTING_POLLS:
+                return PlaybackState.PLAYING
+        else:
+            self._connecting_polls = 0
         return PLAYBACK_STATE_MAP[self.status.state]
 
     async def update_attributes(self) -> None:

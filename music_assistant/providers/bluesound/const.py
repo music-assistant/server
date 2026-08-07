@@ -9,6 +9,10 @@ from music_assistant.models.player import PlayerSource
 IDLE_POLL_INTERVAL = 30
 PLAYBACK_POLL_INTERVAL = 10
 
+# how many polls a playing player may report 'connecting' before it counts as stopped.
+# spans the grace period the streams controller gives a player to empty its buffer.
+MAX_CONNECTING_POLLS = 2
+
 PLAYER_FEATURES_BASE = {
     PlayerFeature.PLAY_MEDIA,
     PlayerFeature.SET_MEMBERS,
