@@ -2691,6 +2691,60 @@ class TestPlayAnnouncementRestore:
 
         assert mute_mock.await_args_list == [call(False), call(True)]
 
+    async def test_player_without_volume_control_is_still_unmuted(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player that can only be muted is unmuted for the announcement all the same."""
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub({CONF_VOLUME_CONTROL: PLAYER_CONTROL_NONE})
+        )
+        controller, player, _ = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+        mute_mock = self._mute_natively(player)
+        assert player.state.volume_control == PLAYER_CONTROL_NONE
+
+        await controller._play_announcement(player, self._announcement())
+
+        assert mute_mock.await_args_list == [call(False), call(True)]
+
+    async def test_mute_is_restored_before_the_player_is_regrouped(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A player is handed back to its group already muted, holding on to its mute lock."""
+        controller, player, _ = self._make_player(
+            mock_mass, PlayerMedia(uri="http://test/track.mp3", media_type=MediaType.TRACK)
+        )
+        group = self._add_group(controller, player, supports_set_members=True)
+        real_set_members = group.set_members
+
+        async def _set_members(**kwargs: list[str]) -> None:
+            # let the membership really change, so the player is ungrouped while the
+            # announcement plays - just like it is in production. neither player picks
+            # the new membership up on its own here, so publish it on both.
+            await real_set_members(**kwargs)
+            group.update_state(force_update=True, signal_event=False)
+            player._cache.clear()
+            player.update_state(force_update=True, signal_event=False)
+
+        set_members = AsyncMock(side_effect=_set_members)
+        group.set_members = set_members  # type: ignore[method-assign]
+        player.extra_data[ATTR_MUTE_LOCK] = True
+        recorder = MagicMock()
+        recorder.attach_mock(self._mute_natively(player), "mute")
+        recorder.attach_mock(set_members, "set_members")
+
+        await controller._play_announcement(player, self._announcement())
+
+        assert recorder.mock_calls == [
+            call.set_members(player_ids_to_remove=["player_1"]),
+            call.mute(False),
+            call.mute(True),
+            call.set_members(player_ids_to_add=["player_1"]),
+        ]
+        # the lock survives the announcement, so the regroup does not unmute the player
+        assert player.extra_data[ATTR_MUTE_LOCK] is True
+
     async def test_unmuted_player_is_left_alone(self, mock_mass: MagicMock) -> None:
         """A player that was not muted is never sent a mute command."""
         controller, player, _ = self._make_player(
