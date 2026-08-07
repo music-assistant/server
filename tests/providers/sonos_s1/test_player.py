@@ -283,6 +283,63 @@ async def test_unloaded_player_ignores_group_topology_updates(
     update_state.assert_not_called()
 
 
+async def test_on_unload_unsubscribes_from_soco_events(timer_mass: MusicAssistant) -> None:
+    """Unloading a speaker also tears down its soco event subscriptions."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    subscription = MagicMock()
+    subscription.unsubscribe = AsyncMock()
+    player._subscriptions = [subscription]
+
+    await player.on_unload()
+
+    subscription.unsubscribe.assert_awaited_once()
+    assert player._subscriptions == []
+
+
+async def test_on_unload_unsubscribes_even_when_already_unavailable(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Unlike offline(), on_unload() must still tear down an unavailable speaker's events."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    subscription = MagicMock()
+    subscription.unsubscribe = AsyncMock()
+    player._subscriptions = [subscription]
+    player._attr_available = False
+
+    await player.on_unload()
+
+    subscription.unsubscribe.assert_awaited_once()
+    assert player._subscriptions == []
+
+
+async def test_unloading_mid_subscribe_keeps_no_subscriptions(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A speaker unloaded while subscribing must not keep the subscriptions it created."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    subscribing = asyncio.Event()
+    speaker_responds = asyncio.Event()
+
+    async def _slow_subscribe_target(_target: object, _callback: object) -> None:
+        subscribing.set()
+        await speaker_responds.wait()
+        player._subscriptions.append(MagicMock(unsubscribe=AsyncMock()))
+
+    with patch.object(player, "_subscribe_target", _slow_subscribe_target):
+        subscribe_task = asyncio.create_task(player.subscribe())
+        await subscribing.wait()
+
+        unload_task = asyncio.create_task(player.on_unload())
+        await asyncio.sleep(0)
+        assert not unload_task.done()
+
+        speaker_responds.set()
+        async with asyncio.timeout(5):
+            await asyncio.gather(subscribe_task, unload_task)
+
+    assert player._subscriptions == []
+
+
 async def test_unsubscribe_drops_subscriptions_even_when_cancelled() -> None:
     """A cancelled unsubscribe must not leave stale entries that block resubscribing."""
     provider = MagicMock()

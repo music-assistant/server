@@ -1,29 +1,71 @@
 """Tests for the Sonos player connection/reconnect handling."""
 
+import asyncio
 import logging
+import threading
+from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import ConnectionTimeoutError
 from aiosonos.exceptions import CannotConnect
+from music_assistant_models.enums import CoreState
 
+from music_assistant.mass import MusicAssistant
 from music_assistant.providers.sonos.player import SonosPlayer
 
 
-def _make_player() -> tuple[SonosPlayer, MagicMock]:
-    """Create a SonosPlayer with mocked connection dependencies."""
+@pytest.fixture
+async def timer_mass() -> AsyncGenerator[MusicAssistant]:
+    """Create a bare MusicAssistant exposing the real task/timer machinery."""
+    mass = object.__new__(MusicAssistant)
+    mass.loop = asyncio.get_running_loop()
+    mass.loop_thread_id = threading.get_ident()
+    mass._tracked_timers = {}
+    mass._tracked_tasks = {}
+    mass._state = CoreState.RUNNING
+    yield mass
+    for handle in mass._tracked_timers.values():
+        handle.cancel()
+    for task in mass._tracked_tasks.values():
+        task.cancel()
+
+
+def _bind_player(mass: MusicAssistant | MagicMock) -> tuple[SonosPlayer, MagicMock]:
+    """Create a SonosPlayer bound to the given MusicAssistant, with a mocked client."""
     player = SonosPlayer.__new__(SonosPlayer)
-    mass = MagicMock()
-    mass.closing = False
-    mass.players.get_player.return_value = MagicMock()
+    client = MagicMock()
+    client.disconnect = AsyncMock()
     player.mass = mass
     player.logger = logging.getLogger("test.sonos.player")
     player._player_id = "sonos_player"
     player._listen_task = None
     player.connected = False
-    player.client = MagicMock()
+    player.client = client
+    player._on_unload_callbacks = []
     player.update_state = MagicMock()  # type: ignore[misc, method-assign]
+    return player, client
+
+
+def _make_player() -> tuple[SonosPlayer, MagicMock]:
+    """Create a SonosPlayer with mocked connection dependencies."""
+    mass = MagicMock()
+    mass.closing = False
+    mass.players.get_player.return_value = MagicMock()
+    player, _ = _bind_player(mass)
     return player, mass
+
+
+async def _connect_player(player: SonosPlayer, client: MagicMock) -> None:
+    """Connect the player to a listener that stays alive until it is cancelled."""
+
+    async def _start_listening(init_ready: asyncio.Event) -> None:
+        init_ready.set()
+        await asyncio.sleep(3600)
+
+    client.connect = AsyncMock()
+    client.start_listening = _start_listening
+    await player._connect()
 
 
 @pytest.mark.asyncio
@@ -69,3 +111,141 @@ async def test_connect_websocket_handshake_failure_reschedules_reconnect() -> No
 
     assert player._attr_available is False
     mass.call_later.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_on_unload_disconnects_without_reconnecting(timer_mass: MusicAssistant) -> None:
+    """Test an unloaded player disconnects and its aborted listener does not reconnect."""
+    player, client = _bind_player(timer_mass)
+    await _connect_player(player, client)
+    listener = player._listen_task
+    assert listener is not None
+
+    await player.on_unload()
+
+    assert player.connected is False
+    client.disconnect.assert_awaited_once()
+    # let the aborted listener run its cleanup
+    with pytest.raises(asyncio.CancelledError):
+        await listener
+    assert timer_mass._tracked_timers == {}
+
+
+@pytest.mark.asyncio
+async def test_on_unload_cancels_a_pending_reconnect(timer_mass: MusicAssistant) -> None:
+    """Test a reconnect that is still waiting to fire does not connect after the unload."""
+    player, _ = _bind_player(timer_mass)
+    connect_attempts: list[int] = []
+
+    async def _connect(retry_on_fail: int = 0) -> None:
+        connect_attempts.append(retry_on_fail)
+
+    player._connect = _connect  # type: ignore[method-assign]
+    player.reconnect(0)
+    handle = timer_mass._tracked_timers[f"sonos_reconnect_{player.player_id}"]
+
+    await player.on_unload()
+    await asyncio.sleep(0.05)
+
+    assert handle.cancelled()
+    assert connect_attempts == []
+
+
+@pytest.mark.asyncio
+async def test_on_unload_cancels_a_scheduled_airplay_group_restore(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Test the AirPlay group restore scheduled for a player does not run after the unload."""
+    player, client = _bind_player(timer_mass)
+    player._attr_name = "Sonos Player"
+    client.player.is_coordinator = True
+    client.player.group_members = [player.player_id, "sonos_player_2"]
+    output_protocol = MagicMock()
+    output_protocol.protocol_domain = "airplay"
+
+    await player.on_protocol_playback(output_protocol)
+    handle = timer_mass._tracked_timers[f"restore_airplay_group_{player.player_id}"]
+
+    await player.on_unload()
+
+    assert handle.cancelled()
+    assert timer_mass._tracked_timers == {}
+
+
+@pytest.mark.asyncio
+async def test_on_unload_cancels_an_airplay_group_restore_that_already_started(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Test a group restore that already started is aborted when the player is unloaded."""
+    player, _ = _bind_player(timer_mass)
+    restoring = asyncio.Event()
+
+    async def _restore_airplay_group() -> None:
+        restoring.set()
+        await asyncio.sleep(5)
+
+    task_id = f"restore_airplay_group_{player.player_id}"
+    timer_mass.call_later(0, _restore_airplay_group, task_id=task_id)
+    await restoring.wait()
+    task = timer_mass._tracked_tasks[task_id]
+
+    await player.on_unload()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_on_unload_unsubscribes_before_disconnecting(timer_mass: MusicAssistant) -> None:
+    """Test the registered unload callbacks run before the client is disconnected."""
+    player, client = _bind_player(timer_mass)
+    calls: list[str] = []
+    player._on_unload_callbacks.append(lambda: calls.append("unsubscribe"))
+    client.disconnect = AsyncMock(side_effect=lambda: calls.append("disconnect"))
+
+    await player.on_unload()
+
+    assert calls == ["unsubscribe", "disconnect"]
+
+
+@pytest.mark.asyncio
+async def test_a_listener_ending_during_the_unload_cannot_rearm_a_reconnect(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Test a listener that ends while the player is unloading does not schedule a reconnect."""
+    player, client = _bind_player(timer_mass)
+    socket_drops = asyncio.Event()
+
+    async def _start_listening(init_ready: asyncio.Event) -> None:
+        init_ready.set()
+        await socket_drops.wait()
+        raise ConnectionResetError("socket dropped")
+
+    client.connect = AsyncMock()
+    client.start_listening = _start_listening
+    await player._connect()
+    listener = player._listen_task
+    assert listener is not None
+
+    # release the listener so it is queued to run its finally, then unload without
+    # yielding in between: the cancellations and connected=False must be indivisible
+    socket_drops.set()
+    await player.on_unload()
+
+    with pytest.raises(asyncio.CancelledError):
+        await listener
+    assert timer_mass._tracked_timers == {}
+    assert timer_mass._tracked_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_on_unload_survives_a_failing_disconnect(timer_mass: MusicAssistant) -> None:
+    """Test a speaker that cannot be disconnected does not abort the unload."""
+    player, client = _bind_player(timer_mass)
+    client.disconnect = AsyncMock(side_effect=OSError("speaker unreachable"))
+    player.reconnect(0)
+
+    await player.on_unload()
+
+    assert player.connected is False
+    assert timer_mass._tracked_timers == {}
