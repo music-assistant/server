@@ -100,6 +100,16 @@ CONF_ENTRY_IGNORE_ALBUM_PLAYLISTS = ConfigEntry(
     depends_on_value="music",
 )
 
+CONF_ENTRY_BACKGROUND_ANALYSIS_ENABLED = ConfigEntry(
+    key="background_analysis",
+    type=ConfigEntryType.BOOLEAN,
+    default_value=False,
+    required=False,
+    category="sync_options",
+    depends_on=CONF_CONTENT_TYPE,
+    depends_on_value="music",
+)
+
 TRACK_EXTENSIONS = {
     "aac",
     "mp3",

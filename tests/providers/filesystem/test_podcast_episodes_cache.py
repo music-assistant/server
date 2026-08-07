@@ -23,7 +23,7 @@ from music_assistant.providers.filesystem_local.constants import (
 
 PODCAST_FOLDER = "My Podcast"
 INSTANCE_ID = "filesystem_local--test"
-PARSE_TAGS_TARGET = "music_assistant.providers.filesystem_local.async_parse_tags"
+PARSE_TAGS_TARGET = "music_assistant.providers.filesystem_local.base.async_parse_tags"
 
 
 def _audio_tags(path: str, chapters: bool = False) -> AudioTags:

@@ -488,7 +488,10 @@ async def test_find_candidates_handles_sqlite_row_without_get(
     # Make the filesystem-providers gate succeed
     fs_prov = MagicMock(spec=LocalFileSystemProvider)
     fs_prov.domain = "filesystem_local"
+    fs_prov.instance_id = "filesystem_local"
     fs_prov.available = True
+    fs_prov.config = MagicMock()
+    fs_prov.config.get_value.return_value = True
     controller.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
 
     class _RowNoGet:
@@ -542,7 +545,10 @@ async def test_find_candidates_query_gates_on_current_version(
 
     fs_prov = MagicMock(spec=LocalFileSystemProvider)
     fs_prov.domain = "filesystem_local"
+    fs_prov.instance_id = "filesystem_local"
     fs_prov.available = True
+    fs_prov.config = MagicMock()
+    fs_prov.config.get_value.return_value = True
     controller.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
 
     captured: dict[str, Any] = {}
@@ -1274,10 +1280,13 @@ async def test_count_candidates_missing_analysis_zero_without_filesystem() -> No
 async def test_count_candidates_missing_analysis_queries_with_available_filesystem() -> None:
     """With an available filesystem provider, the NOT EXISTS count query runs with bound params."""
     c, db = _stub_controller(count_result=7)
-    domain = "filesystem_local"
+    instance_id = "filesystem_local"
     fs_prov = MagicMock(spec=LocalFileSystemProvider)
-    fs_prov.domain = domain
+    fs_prov.domain = "filesystem_local"
+    fs_prov.instance_id = instance_id
     fs_prov.available = True
+    fs_prov.config = MagicMock()
+    fs_prov.config.get_value.return_value = True
     c.mass.get_providers = MagicMock(return_value=[fs_prov])  # type: ignore[method-assign]
 
     result = await c._count_candidates_missing_analysis("sonic_analysis", 2)
@@ -1288,7 +1297,7 @@ async def test_count_candidates_missing_analysis_queries_with_available_filesyst
     assert "NOT EXISTS" in sql
     assert "aa.analysis_version IS NOT NULL" in sql
     assert "aa.analysis_version >= :current_version" in sql
-    assert f"'{domain}'" in sql
+    assert f"'{instance_id}'" in sql
     assert params["media_type"] == MediaType.TRACK.value
     assert params["aa_domain"] == "sonic_analysis"
     assert params["current_version"] == 2

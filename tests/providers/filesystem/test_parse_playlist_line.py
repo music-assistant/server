@@ -32,7 +32,7 @@ def provider(
     provider.base_path = str(music_dir)
     provider.logger = MagicMock()
     monkeypatch.setattr(
-        "music_assistant.providers.filesystem_local.async_parse_tags",
+        "music_assistant.providers.filesystem_local.base.async_parse_tags",
         AsyncMock(return_value=MagicMock()),
     )
     track = MagicMock(name="track")

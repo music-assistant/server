@@ -125,7 +125,7 @@ async def test_failed_item_is_kept_in_the_scan_result() -> None:
     item.absolute_path = f"/media/{MISSING_FILE}"
 
     with patch(
-        "music_assistant.providers.filesystem_local.async_parse_tags",
+        "music_assistant.providers.filesystem_local.base.async_parse_tags",
         AsyncMock(side_effect=OSError(errno.EIO, "i/o error")),
     ):
         result = await provider._process_item_async(item, None, cur_filenames)

@@ -1,7 +1,7 @@
 """
 Base class for cloud-storage filesystem providers (Google Drive, OneDrive, ...).
 
-Extends LocalFileSystemProvider with path <-> cloud-file-ID resolution, API-backed
+Extends FileSystemProvider with path <-> cloud-file-ID resolution, API-backed
 directory listings and streaming through a dynamic MA URL, so short-lived cloud
 auth tokens stay fresh. Concrete providers implement the _api_* hooks and their
 own auth/setup.
@@ -27,7 +27,7 @@ from music_assistant_models.errors import (
 from music_assistant.controllers.tasks.context import update_current_task_progress_text
 from music_assistant.helpers.tags import get_embedded_image
 from music_assistant.models.setup_flow import SetupFlowError
-from music_assistant.providers.filesystem_local import LocalFileSystemProvider
+from music_assistant.providers.filesystem_local.base import FileSystemProvider
 from music_assistant.providers.filesystem_local.constants import (
     AUDIOBOOK_EXTENSIONS,
     CONF_CONTENT_TYPE,
@@ -141,7 +141,7 @@ def _cloud_setup_entries(*, has_stored_secret: bool) -> tuple[ConfigEntry, ...]:
     )
 
 
-class CloudFileSystemProvider(LocalFileSystemProvider):
+class CloudFileSystemProvider(FileSystemProvider):
     """Base class for filesystem providers backed by a cloud storage API."""
 
     # cloud APIs generally struggle with the default 16 parallel tag-parse downloads

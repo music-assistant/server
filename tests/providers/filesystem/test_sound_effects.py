@@ -87,7 +87,7 @@ async def test_get_sound_effects_enumerates_files(tmp_path: pathlib.Path) -> Non
     provider = _create_provider(base_path=str(tmp_path))
 
     with patch(
-        "music_assistant.providers.filesystem_local.async_parse_tags",
+        "music_assistant.providers.filesystem_local.base.async_parse_tags",
         new_callable=AsyncMock,
         side_effect=lambda path, _size: _mock_tags(pathlib.Path(path).stem),
     ):
@@ -115,7 +115,7 @@ async def test_get_sound_effects_uses_cache(tmp_path: pathlib.Path) -> None:
     provider.cache.get = AsyncMock(return_value=cached_item)  # type: ignore[method-assign]
 
     with patch(
-        "music_assistant.providers.filesystem_local.async_parse_tags",
+        "music_assistant.providers.filesystem_local.base.async_parse_tags",
         new_callable=AsyncMock,
     ) as mock_parse_tags:
         result = [x async for x in provider.get_sound_effects()]

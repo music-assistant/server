@@ -41,7 +41,10 @@ from music_assistant.models.audio_analysis_provider import (
     InstrumentedSemaphore,
 )
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.filesystem_local import LocalFileSystemProvider
+from music_assistant.providers.filesystem_local.base import FileSystemProvider
+from music_assistant.providers.filesystem_local.constants import (
+    CONF_ENTRY_BACKGROUND_ANALYSIS_ENABLED,
+)
 
 LOUDNESS_ANALYSIS_DOMAIN = "loudness_analysis"
 SMART_FADES_ANALYSIS_DOMAIN = "smart_fades"
@@ -1151,12 +1154,15 @@ class AudioAnalysisController:
         if session_key in self._active_sessions:
             self._finalize_providers(session_key)
 
-    def _available_filesystem_domains(self) -> tuple[str, ...]:
-        """Return domains of currently available local-filesystem-style music providers."""
+    def _available_filesystem_instances(self) -> tuple[str, ...]:
+        """Return instance ids of filesystem providers with background analysis enabled."""
+        bg_key = CONF_ENTRY_BACKGROUND_ANALYSIS_ENABLED.key
         return tuple(
-            p.domain
+            p.instance_id
             for p in self.mass.get_providers(ProviderType.MUSIC)
-            if isinstance(p, LocalFileSystemProvider) and p.available
+            if isinstance(p, FileSystemProvider)
+            and p.available
+            and bool(p.config.get_value(bg_key))
         )
 
     async def _find_candidates_missing_analysis(
@@ -1184,8 +1190,8 @@ class AudioAnalysisController:
         if not aa_provider_versions:
             return []
 
-        filesystem_domains = self._available_filesystem_domains()
-        if not filesystem_domains:
+        filesystem_instances = self._available_filesystem_instances()
+        if not filesystem_instances:
             return []
 
         # CROSS JOIN (track x possible domain), keep pairs with no up-to-date analysis row and
@@ -1193,7 +1199,7 @@ class AudioAnalysisController:
         # row counts as up-to-date only when its analysis_version is non-NULL and >= the
         # provider's current version, so missing and stale-version rows both surface.
         aa_domains = list(aa_provider_versions)
-        fs_inline = ", ".join(f"'{d}'" for d in filesystem_domains)
+        fs_inline = ", ".join(f"'{i}'" for i in filesystem_instances)
         aa_select_terms = " UNION ALL ".join(
             f"SELECT :aa_{i} AS aa_provider_domain, :ver_{i} AS current_version"
             for i in range(len(aa_domains))
@@ -1214,7 +1220,7 @@ class AudioAnalysisController:
             f"FROM {DB_TABLE_PROVIDER_MAPPINGS} pm "
             f"CROSS JOIN ({aa_select_terms}) possible "
             f"WHERE pm.media_type = :media_type "
-            f"  AND pm.provider_domain IN ({fs_inline}) "
+            f"  AND pm.provider_instance IN ({fs_inline}) "
             f"  AND NOT EXISTS ("
             f"    SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS} aa "
             f"    WHERE aa.item_id = pm.provider_item_id "
@@ -1252,14 +1258,14 @@ class AudioAnalysisController:
 
     async def _count_candidates_missing_analysis(self, aa_domain: str, current_version: int) -> int:
         """Count filesystem candidate tracks lacking a current analysis row or blocking failure."""
-        filesystem_domains = self._available_filesystem_domains()
-        if not filesystem_domains:
+        filesystem_instances = self._available_filesystem_instances()
+        if not filesystem_instances:
             return 0
-        fs_inline = ", ".join(f"'{d}'" for d in filesystem_domains)
+        fs_inline = ", ".join(f"'{i}'" for i in filesystem_instances)
         query = (
             f"SELECT pm.provider_item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} pm "
             f"WHERE pm.media_type = :media_type "
-            f"  AND pm.provider_domain IN ({fs_inline}) "
+            f"  AND pm.provider_instance IN ({fs_inline}) "
             f"  AND NOT EXISTS ("
             f"    SELECT 1 FROM {DB_TABLE_AUDIO_ANALYSIS} aa "
             f"    WHERE aa.item_id = pm.provider_item_id "

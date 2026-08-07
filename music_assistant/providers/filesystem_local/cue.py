@@ -48,7 +48,7 @@ from .constants import CACHE_CATEGORY_CUE_SHEETS, TRACK_EXTENSIONS
 from .helpers import FileSystemItem
 
 if TYPE_CHECKING:
-    from . import LocalFileSystemProvider
+    from . import FileSystemProvider
 
 CUE_TRACK_ID_DELIMITER = "::track"
 
@@ -108,9 +108,9 @@ def _cue_sheet_from_dict(data: dict[str, Any]) -> CueSheet:
 
 
 class CueSheetHandler:
-    """CUE sheet integration bound to a :class:`LocalFileSystemProvider` instance."""
+    """CUE sheet integration bound to a :class:`FileSystemProvider` instance."""
 
-    def __init__(self, provider: LocalFileSystemProvider) -> None:
+    def __init__(self, provider: FileSystemProvider) -> None:
         """
         Initialize the handler.
 
