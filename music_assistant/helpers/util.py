@@ -2043,6 +2043,33 @@ class TimedAsyncGenerator:
         return self._factory()
 
 
+async def join_task[T](task: asyncio.Future[T], timeout: float | None = None) -> T:
+    """
+    Wait for a task started elsewhere and return its result.
+
+    Cancelling the waiter leaves the task running, so work that is shared between callers -
+    or that must outlive a caller's deadline - keeps going and still reaches every other
+    waiter. A task that can lose all its waiters needs a done callback that retrieves its
+    exception (as mass.create_task installs) to keep asyncio quiet about it.
+
+    :param task: The task (or future) to wait for.
+    :param timeout: Optional number of seconds to wait before giving up.
+    :raises TimeoutError: If the task did not complete within the timeout.
+    :raises asyncio.CancelledError: If the task itself was cancelled.
+    :return: The task's result.
+    """
+    if not task.done():
+        # awaiting the task directly would hold it as this coroutine's fut_waiter, so
+        # cancelling the waiter would cancel the task itself. asyncio.shield achieves the
+        # same isolation, but as of Python 3.14 a cancelled waiter makes it report the task's
+        # exception through loop.call_exception_handler, even when another waiter already
+        # handled it.
+        await asyncio.wait((task,), timeout=timeout)
+    if not task.done():
+        raise TimeoutError
+    return task.result()
+
+
 # Bound for guard_single_request: it only needs ``.mass``, so a structural protocol
 # lets it decorate providers, core controllers and media controllers alike without
 # coupling to their concrete base classes.
