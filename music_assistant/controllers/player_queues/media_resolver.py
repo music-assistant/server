@@ -14,7 +14,7 @@ import random
 from types import NoneType
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant_models.enums import MediaType
+from music_assistant_models.enums import ArtistType, MediaType
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
@@ -495,6 +495,21 @@ class MediaResolver:
                 return next_book
         return None
 
+    async def get_author_narrator_audiobooks(self, author_narrator: Artist) -> list[Audiobook]:
+        """Return audiobooks to play of a given artist."""
+        if author_narrator.provider != "library":
+            _author_narrator = await self.mass.music.artists.get_library_item_by_prov_id(
+                author_narrator.item_id, author_narrator.provider
+            )
+            if _author_narrator is None:
+                raise MediaNotFoundError(
+                    f"Author/ narrator {author_narrator.name} is not part of the library."
+                )
+            author_narrator = _author_narrator
+        return await self.mass.music.artists.get_library_author_narrator_audiobooks(
+            author_narrator.item_id, author_narrator.artist_type
+        )
+
     async def _set_episode_resume_point(
         self, episode: PodcastEpisode, userid: str | None, start_from_beginning: bool
     ) -> None:
@@ -616,9 +631,13 @@ class MediaResolver:
             return list(playlist_tracks)
         if media_item.media_type == MediaType.ARTIST:
             media_item = cast("Artist", media_item)
-            artist_tracks = await self.get_artist_tracks(media_item)
-            self._mark_container_played(media_item, artist_tracks, userid, queue_id)
-            return list(artist_tracks)
+            artist_items: list[Audiobook] | list[Track]
+            if media_item.artist_type in [ArtistType.AUTHOR, ArtistType.NARRATOR]:
+                artist_items = await self.get_author_narrator_audiobooks(media_item)
+            else:
+                artist_items = await self.get_artist_tracks(media_item)
+            self._mark_container_played(media_item, artist_items, userid, queue_id)
+            return list(artist_items)
         if media_item.media_type == MediaType.ALBUM:
             media_item = cast("Album", media_item)
             return list(
