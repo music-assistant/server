@@ -630,7 +630,7 @@ def _parse_union(
     allow_value_convert: bool,
 ) -> Any:
     """
-    Parse a value against a union annotation, trying every member until one fits.
+    Parse a value against a union annotation.
 
     :param name: Name of the value, used in error messages.
     :param value: The raw (json) value to parse.
