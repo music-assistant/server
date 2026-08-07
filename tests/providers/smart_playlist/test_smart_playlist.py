@@ -28,6 +28,7 @@ from music_assistant.models.plugin import AIEngine, PluginProvider
 from music_assistant.providers.smart_playlist import (
     CONF_AI_DESCRIPTIONS,
     CONF_AI_ENGINE,
+    MAX_AI_DESCRIPTION_BYTES,
     SmartPlaylistProvider,
 )
 from music_assistant.providers.smart_playlist.helpers import (
@@ -2076,6 +2077,40 @@ async def test_disabled_toggle_does_not_schedule_refresh(tmp_path: Any) -> None:
 async def test_generate_ai_description_blank_response_returns_none(tmp_path: Any) -> None:
     """A blank/whitespace AI response is treated as no description."""
     plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_provider=_make_ai_provider("   "))
+
+    result = await plugin._generate_ai_description("X", SmartPlaylistRules(favorites_only=True))
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_generate_ai_description_oversized_response_returns_none(tmp_path: Any) -> None:
+    """A reply beyond the size cap is discarded so the rules summary stays in place."""
+    oversized = "x" * (MAX_AI_DESCRIPTION_BYTES + 1)
+    plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_provider=_make_ai_provider(oversized))
+
+    result = await plugin._generate_ai_description("X", SmartPlaylistRules(favorites_only=True))
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_generate_ai_description_accepts_a_response_at_the_size_cap(tmp_path: Any) -> None:
+    """A reply exactly at the size cap is still accepted."""
+    at_cap = "x" * MAX_AI_DESCRIPTION_BYTES
+    plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_provider=_make_ai_provider(at_cap))
+
+    result = await plugin._generate_ai_description("X", SmartPlaylistRules(favorites_only=True))
+
+    assert result == at_cap
+
+
+@pytest.mark.asyncio
+async def test_generate_ai_description_measures_the_cap_in_bytes(tmp_path: Any) -> None:
+    """The cap counts utf-8 bytes, so multibyte replies are not measured as characters."""
+    # under the cap as characters, over it as utf-8 bytes
+    multibyte = "あ" * (MAX_AI_DESCRIPTION_BYTES // 2)
+    plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_provider=_make_ai_provider(multibyte))
 
     result = await plugin._generate_ai_description("X", SmartPlaylistRules(favorites_only=True))
 

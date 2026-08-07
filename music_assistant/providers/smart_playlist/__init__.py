@@ -84,6 +84,9 @@ CONF_AI_ENGINE = "ai_engine"
 DESCRIPTION_PREFIX = "[Smart Playlist] "
 # descriptions are a sentence or two, so this only has to cover a slow local model
 AI_QUERY_TIMEOUT_SECONDS = 60
+# a reply is persisted and served in every playlist listing, so a runaway one is discarded
+# in favour of the rules summary; the cap sits well above the sentence or two we ask for
+MAX_AI_DESCRIPTION_BYTES = 2048
 
 SUPPORTED_FEATURES: set[ProviderFeature] = {
     ProviderFeature.BROWSE,
@@ -1380,7 +1383,8 @@ class SmartPlaylistProvider(PluginProvider):
 
         :param name: The playlist name, included in the prompt for context.
         :param rules: The rules whose summary the description should reflect.
-        :return: The AI-generated description, or None when disabled, unavailable, or on error.
+        :return: The AI-generated description, or None when disabled, unavailable, too large,
+            or on error.
         """
         if not self.config.get_value(CONF_AI_DESCRIPTIONS):
             return None
@@ -1404,7 +1408,15 @@ class SmartPlaylistProvider(PluginProvider):
             )
             self.logger.debug("AI description generation failed for '%s': %s", name, details)
             return None
-        return response.strip() or None
+        description = response.strip()
+        if len(description.encode("utf-8")) > MAX_AI_DESCRIPTION_BYTES:
+            self.logger.debug(
+                "AI description for '%s' exceeds %d bytes, keeping the rules summary",
+                name,
+                MAX_AI_DESCRIPTION_BYTES,
+            )
+            return None
+        return description or None
 
     def _build_ai_prompt(self, name: str, rules: SmartPlaylistRules, locale: str) -> str:
         """Build the prompt asking an AI provider to describe the smart playlist."""
