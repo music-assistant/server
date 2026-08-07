@@ -36,6 +36,9 @@ APP_MA_HOST = "https://app.music-assistant.io"
 # every real dashboard type, i.e. what a registration supports when not given explicitly
 ALL_DASHBOARD_TYPES = frozenset(t for t in DashboardType if t != DashboardType.UNKNOWN)
 
+# the frontend's router leaves these literal in a query value; escaped, it never matches
+ROUTE_SAFE_CHARS = ":!'()*@,;$/"
+
 
 @dataclass
 class _RegisteredDashboard:
@@ -385,7 +388,7 @@ class DashboardController(CoreController):
             if not player_id:
                 msg = "player_id is required to show the now_playing dashboard"
                 raise InvalidCommand(msg)
-            return f"/now-playing?{urlencode({'player': player_id})}"
+            return f"/now-playing?{urlencode({'player': player_id}, safe=ROUTE_SAFE_CHARS)}"
         if dashboard == DashboardType.MUSIC_QUIZ:
             return "/music-quiz"
         msg = f"Unsupported dashboard type: {dashboard}"
