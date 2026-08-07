@@ -94,6 +94,9 @@ class DLNAPlayer(Player):
 
         self.force_poll = False  # used, if connection is lost
 
+        self._observed_playback_state: PlaybackState | None = None
+        self._playing_since: float | None = None
+
         # ssdp_connect_failed: bool = False
         #
         # Track BOOTID in SSDP advertisements for device changes
@@ -146,6 +149,12 @@ class DLNAPlayer(Player):
         self._attr_volume_muted = self.device.is_volume_muted
         _playback_state = self._get_playback_state()
         assert _playback_state is not None  # for type checking
+        prev_playback_state = self._observed_playback_state
+        self._observed_playback_state = _playback_state
+        if _playback_state != PlaybackState.PLAYING:
+            self._playing_since = None
+        elif prev_playback_state not in (None, PlaybackState.PLAYING):
+            self._playing_since = time.time()
         self._attr_playback_state = _playback_state
 
         _device_uri = self.device.current_track_uri or ""
@@ -192,10 +201,14 @@ class DLNAPlayer(Player):
         # and is adopted instead of being discarded as 'not reported'.
         if (media_position := self.device.media_position) is not None:
             self._attr_elapsed_time = float(media_position)
-            if self.device.media_position_updated_at is not None:
-                self._attr_elapsed_time_last_updated = (
-                    self.device.media_position_updated_at.timestamp()
-                )
+            if (position_updated_at := self.device.media_position_updated_at) is not None:
+                anchor = position_updated_at.timestamp()
+                if self._playing_since is not None:
+                    # a device only re-stamps a position that actually changed, so shortly
+                    # after a resume the timestamp still dates from before the pause. The
+                    # position may not be extrapolated across the time it was not playing.
+                    anchor = max(anchor, self._playing_since)
+                self._attr_elapsed_time_last_updated = anchor
 
     async def get_config_entries(self) -> list[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
@@ -413,6 +426,7 @@ class DLNAPlayer(Player):
             # Indicates a failure to resubscribe, check if device is still available
             self.force_poll = True
             return
+        poll_first = False
         if service.service_id == "urn:upnp-org:serviceId:AVTransport":
             for state_variable in state_variables:
                 # Force a state refresh when player begins or pauses playback
@@ -422,7 +436,7 @@ class DLNAPlayer(Player):
                     TransportState.PAUSED_PLAYBACK,
                 ):
                     self.force_poll = True
-                    self.mass.create_task(self.poll())
+                    poll_first = True
                     self.logger.log(
                         VERBOSE_LOG_LEVEL,
                         "Received new state from event for Player %s: %s",
@@ -430,10 +444,19 @@ class DLNAPlayer(Player):
                         state_variable.value,
                     )
         self.last_seen = time.time()
-        self.mass.create_task(self._update_player())
+        self.mass.create_task(self._update_player(poll_first=poll_first))
 
-    async def _update_player(self) -> None:
-        """Update DLNA Player."""
+    async def _update_player(self, poll_first: bool = False) -> None:
+        """
+        Update DLNA Player.
+
+        :param poll_first: Refresh the device state before reading it, so that the
+            position info belongs to the state that is about to be reported.
+        """
+        if poll_first:
+            # an unavailable device is reported as such by the state update below
+            with suppress(PlayerUnavailableError):
+                await self.poll()
         prev_url = self._attr_current_media.uri if self._attr_current_media is not None else ""
         prev_state = self.state
         await self.set_dynamic_attributes()

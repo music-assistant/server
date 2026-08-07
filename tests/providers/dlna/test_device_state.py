@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import asyncio
+import time
+from collections.abc import Coroutine
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 from async_upnp_client.profiles.dlna import TransportState
+from music_assistant_models.enums import PlaybackState
 
 from music_assistant.providers.dlna.player import DLNAPlayer
 from tests.common import MockProvider
@@ -17,15 +21,12 @@ STALE_POSITION = 120.0
 STALE_REPORTED_AT = 1000.0
 
 
-async def _updated_player(**device_state: Any) -> DLNAPlayer:
+def _mock_device(**device_state: Any) -> MagicMock:
     """
-    Run a state update on a player that already knows a position, and return it.
+    Return a mocked device that fully reports its state.
 
-    :param device_state: Attributes to override on the fully reporting mocked device.
+    :param device_state: Attributes to override on the device.
     """
-    provider = MockProvider("dlna", instance_id="dlna_test")
-    provider.mass.streams.base_url = "http://192.168.1.2:8097"
-
     device = MagicMock()
     device.profile_device.available = True
     device.name = "Living Room Renderer"
@@ -42,6 +43,17 @@ async def _updated_player(**device_state: Any) -> DLNAPlayer:
     device.media_position_updated_at = REPORTED_AT
     for name, value in device_state.items():
         setattr(device, name, value)
+    return device
+
+
+def _player(device: MagicMock) -> DLNAPlayer:
+    """
+    Return a player for the given device that already knows a position.
+
+    :param device: The mocked device to attach to the player.
+    """
+    provider = MockProvider("dlna", instance_id="dlna_test")
+    provider.mass.streams.base_url = "http://192.168.1.2:8097"
 
     player = DLNAPlayer(
         provider,  # type: ignore[arg-type]
@@ -51,7 +63,16 @@ async def _updated_player(**device_state: Any) -> DLNAPlayer:
     )
     player._attr_elapsed_time = STALE_POSITION
     player._attr_elapsed_time_last_updated = STALE_REPORTED_AT
+    return player
 
+
+async def _updated_player(**device_state: Any) -> DLNAPlayer:
+    """
+    Run a state update on a player that already knows a position, and return it.
+
+    :param device_state: Attributes to override on the fully reporting mocked device.
+    """
+    player = _player(_mock_device(**device_state))
     await player.set_dynamic_attributes()
     return player
 
@@ -78,6 +99,109 @@ async def test_missing_position_keeps_the_previous_one() -> None:
 
     assert player.elapsed_time == STALE_POSITION
     assert player.elapsed_time_last_updated == STALE_REPORTED_AT
+
+
+async def test_position_from_before_a_resume_is_not_extrapolated() -> None:
+    """
+    A position reported from before a resume is anchored at the resume.
+
+    A device does not re-stamp a position that did not change, so the timestamp it
+    reports right after a resume still dates from before the pause.
+    """
+    paused_at = datetime.now(UTC) - timedelta(minutes=10)
+    device = _mock_device(
+        transport_state=TransportState.PAUSED_PLAYBACK,
+        media_position=200,
+        media_position_updated_at=paused_at,
+    )
+    player = _player(device)
+    await player.set_dynamic_attributes()
+
+    device.transport_state = TransportState.PLAYING
+    resumed_at = time.time()
+    await player.set_dynamic_attributes()
+
+    assert player.elapsed_time == 200.0
+    assert player.elapsed_time_last_updated is not None
+    assert player.elapsed_time_last_updated >= resumed_at
+
+
+async def test_position_of_a_player_found_while_playing_keeps_its_own_anchor() -> None:
+    """Without having seen playback start, the timestamp the device reports is all there is."""
+    player = await _updated_player(media_position=200, media_position_updated_at=REPORTED_AT)
+
+    assert player.elapsed_time == 200.0
+    assert player.elapsed_time_last_updated == REPORTED_AT.timestamp()
+
+
+async def test_optimistic_playing_state_does_not_hide_the_start_of_playback() -> None:
+    """
+    Playback starting is tracked from what the device reports, not from what MA assumes.
+
+    A play command marks the player as playing before the device confirms it, which must
+    not be mistaken for the player having been playing all along.
+    """
+    device = _mock_device(
+        transport_state=TransportState.STOPPED,
+        media_position=200,
+        media_position_updated_at=datetime.now(UTC) - timedelta(minutes=10),
+    )
+    player = _player(device)
+    await player.set_dynamic_attributes()
+
+    player._attr_playback_state = PlaybackState.PLAYING
+    device.transport_state = TransportState.PLAYING
+    started_at = time.time()
+    await player.set_dynamic_attributes()
+
+    assert player.elapsed_time_last_updated is not None
+    assert player.elapsed_time_last_updated >= started_at
+
+
+async def test_transport_state_event_polls_before_reading_the_position() -> None:
+    """A player that starts playing reports the position of the track it just started."""
+    device = _mock_device(
+        transport_state=TransportState.STOPPED,
+        media_position=200,
+        media_position_updated_at=datetime.now(UTC) - timedelta(minutes=10),
+    )
+
+    async def _async_update(**_kwargs: Any) -> None:
+        """Answer the poll a round trip later with the position of the new track."""
+        await asyncio.sleep(0)
+        device.transport_state = TransportState.PLAYING
+        device.media_position = 0
+        device.media_position_updated_at = datetime.now(UTC)
+
+    device.async_update = _async_update
+
+    player = _player(device)
+    tasks: list[asyncio.Task[Any]] = []
+
+    def _create_task(target: Coroutine[Any, Any, Any], **_kwargs: Any) -> asyncio.Task[Any]:
+        # eager, like the real helper: the stale read happened because the update task
+        # ran up to its first suspension before the poll task got its answer
+        task: asyncio.Task[Any] = asyncio.Task(
+            target, loop=asyncio.get_running_loop(), eager_start=True
+        )
+        tasks.append(task)
+        return task
+
+    player.mass.create_task = _create_task  # type: ignore[assignment]
+
+    service = MagicMock()
+    service.service_id = "urn:upnp-org:serviceId:AVTransport"
+    state_variable = MagicMock()
+    state_variable.name = "TransportState"
+    state_variable.value = TransportState.PLAYING
+
+    started_at = time.time()
+    player._handle_event(service, [state_variable])
+    await asyncio.gather(*tasks)
+
+    assert player.elapsed_time == 0.0
+    assert player.elapsed_time_last_updated is not None
+    assert player.elapsed_time_last_updated >= started_at
 
 
 @pytest.mark.parametrize(("reported", "expected"), [(0.5, 50), (0.0, 0), (1.0, 100)])
