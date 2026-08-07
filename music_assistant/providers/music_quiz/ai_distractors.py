@@ -11,6 +11,12 @@ from typing import TYPE_CHECKING
 
 from music_assistant.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads, strip_code_fence
 from music_assistant.helpers.plugin_engines import resolve_ai_engine
+from music_assistant.providers.music_quiz.constants import (
+    AI_QUERY_TIMEOUT_SECONDS,
+    MAX_AI_PROMPT_BYTES,
+    MAX_AI_RESPONSE_BYTES,
+    MAX_AI_RESPONSE_LINES,
+)
 from music_assistant.providers.music_quiz.suggestions import answer_labels_are_too_close
 
 if TYPE_CHECKING:
@@ -18,10 +24,6 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(__name__)
 
-AI_QUERY_TIMEOUT_SECONDS = 30.0
-MAX_AI_PROMPT_BYTES = 8192
-MAX_AI_RESPONSE_BYTES = 4096
-MAX_AI_RESPONSE_LINES = 32
 MAX_AI_CONTEXT_VALUE_LENGTH = 500
 MAX_AI_LABEL_LENGTH = 200
 MAX_AI_SYNTHETIC_COUNT = 12

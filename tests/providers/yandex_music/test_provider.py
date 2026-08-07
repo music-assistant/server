@@ -5,20 +5,30 @@ These tests construct a partial provider instance via ``__new__`` (no
 ``__init__``), attach the attributes the method-under-test reads, and
 exercise it directly. The pattern avoids the upstream Music Assistant
 provider-init machinery which would otherwise drag in a real
-``MusicAssistant`` instance.
+``MusicAssistant`` instance. Tests that exercise the cache decorator do
+need a server, and attach the minimal one from the ``mass_minimal`` fixture.
 """
 
 from __future__ import annotations
 
-from typing import Any
+import asyncio
+from typing import TYPE_CHECKING, Any
 from unittest import mock
 
 import pytest
 from music_assistant_models.errors import ResourceTemporarilyUnavailable
 
 from music_assistant.models.music_provider import MusicProvider
-from music_assistant.providers.yandex_music.constants import TRACK_BATCH_SIZE
+from music_assistant.providers.yandex_music.constants import (
+    MY_WAVE_PLAYLIST_ID,
+    TRACK_BATCH_SIZE,
+)
 from music_assistant.providers.yandex_music.provider import YandexMusicProvider
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from music_assistant.mass import MusicAssistant
 
 
 def _make_provider() -> tuple[YandexMusicProvider, mock.AsyncMock]:
@@ -79,8 +89,8 @@ async def test_get_playlist_tracks_continues_on_empty_batch() -> None:
         "music_assistant.providers.yandex_music.provider.parse_track",
         side_effect=lambda _self, t: t,
     ):
-        fn: Any = YandexMusicProvider.get_playlist_tracks.__wrapped__  # type: ignore[attr-defined]
-        result = await fn(provider, "12345:67")
+        cached: Any = YandexMusicProvider._get_regular_playlist_tracks
+        result = await cached.__wrapped__(provider, "12345:67", 0)
 
     # 50 from batch 1 + 50 from batch 3 = 100 tracks; the empty batch 2 must
     # not abort the load.
@@ -110,9 +120,94 @@ async def test_get_playlist_tracks_raises_only_when_every_batch_is_empty() -> No
     mock_client.get_playlist = mock.AsyncMock(return_value=playlist_obj)
     mock_client.get_tracks = mock.AsyncMock(side_effect=[[], []])
 
-    fn: Any = YandexMusicProvider.get_playlist_tracks.__wrapped__  # type: ignore[attr-defined]
+    cached: Any = YandexMusicProvider._get_regular_playlist_tracks
     with pytest.raises(ResourceTemporarilyUnavailable):
-        await fn(provider, "12345:67")
+        await cached.__wrapped__(provider, "12345:67", 0)
+
+
+# -- request coalescing is scoped to the branch that must run per call --------
+
+
+class _StubConfig:
+    """Minimal provider config for the @use_cache decorator."""
+
+    instance_id = "yandex_music_test"
+
+    def get_value(self, key: str, default: Any = None) -> Any:
+        """Return the default for every config key."""
+        return default
+
+
+@pytest.fixture
+async def cached_provider(
+    mass_minimal: MusicAssistant,
+) -> tuple[YandexMusicProvider, mock.AsyncMock]:
+    """Return a provider backed by a real (empty) cache controller."""
+    await mass_minimal.cache._setup_database()
+    provider, mock_client = _make_provider()
+    provider.mass = mass_minimal
+    provider.config = _StubConfig()  # type: ignore[assignment]
+    provider.manifest = mock.MagicMock(domain="yandex_music")
+    provider._wave_states = {}
+    return provider, mock_client
+
+
+async def _wait_for_gated_fetch(started: Callable[[], bool]) -> None:
+    """Wait until the gated fetch runs, then let the other callers catch up with it."""
+    for _ in range(200):
+        if started():
+            break
+        await asyncio.sleep(0.01)
+    else:
+        pytest.fail("gated fetch never started")
+    # a caller arriving after the gate is released would start a second fetch,
+    # which the await-count assertions below catch
+    await asyncio.sleep(0.05)
+
+
+async def test_regular_playlist_fetch_is_shared_between_callers(
+    cached_provider: tuple[YandexMusicProvider, mock.AsyncMock],
+) -> None:
+    """Concurrent callers for the same regular playlist share one provider fetch."""
+    provider, mock_client = cached_provider
+    gate = asyncio.Event()
+
+    async def _get_playlist(*_args: Any, **_kwargs: Any) -> Any:
+        await gate.wait()
+        return type("PL", (), {"tracks": [], "track_count": 0})()
+
+    mock_client.get_playlist = mock.AsyncMock(side_effect=_get_playlist)
+
+    tasks = [asyncio.create_task(provider.get_playlist_tracks("12345:67")) for _ in range(3)]
+    await _wait_for_gated_fetch(lambda: mock_client.get_playlist.await_count > 0)
+    gate.set()
+
+    assert await asyncio.gather(*tasks) == [[], [], []]
+    assert mock_client.get_playlist.await_count == 1
+
+
+async def test_my_wave_fetch_runs_for_every_caller(
+    cached_provider: tuple[YandexMusicProvider, mock.AsyncMock],
+) -> None:
+    """Every My Wave caller runs its own fetch, so the rotor cursor keeps advancing."""
+    provider, _ = cached_provider
+    gate = asyncio.Event()
+
+    async def _fetch_batch(*_args: Any, **_kwargs: Any) -> tuple[list[Any], None]:
+        await gate.wait()
+        return [], None
+
+    fetch_batch = mock.AsyncMock(side_effect=_fetch_batch)
+    provider._fetch_rotor_session_batch = fetch_batch  # type: ignore[method-assign]
+
+    tasks = [
+        asyncio.create_task(provider.get_playlist_tracks(MY_WAVE_PLAYLIST_ID)) for _ in range(3)
+    ]
+    await _wait_for_gated_fetch(lambda: fetch_batch.await_count > 0)
+    gate.set()
+
+    assert await asyncio.gather(*tasks) == [[], [], []]
+    assert fetch_batch.await_count == 3
 
 
 # -- M11: unload() must clear every per-session cache -------------------------

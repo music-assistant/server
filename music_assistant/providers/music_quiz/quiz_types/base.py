@@ -98,6 +98,15 @@ def has_untrusted_release_year(album: Album | ItemMapping) -> bool:
         return False
     if album.album_type in UNTRUSTED_RELEASE_ALBUM_TYPES:
         return True
+    return has_various_artists_credit(album)
+
+
+def has_various_artists_credit(album: Album) -> bool:
+    """
+    Return whether an album is credited to Various Artists.
+
+    :param album: Album whose artist credits should be inspected.
+    """
     return any(
         artist.mbid == VARIOUS_ARTISTS_MBID
         or compare_strings(artist.name, VARIOUS_ARTISTS_NAME, strict=False)
@@ -437,35 +446,57 @@ class QuizType(ABC):
             track, QUIZ_TRACK_RECENCY_SECONDS
         )
 
-    async def _musicbrainz_dated_track(self, track: Track) -> tuple[Track, int | None]:
+    async def _musicbrainz_dated_track(
+        self, track: Track, *, cross_check: bool = True
+    ) -> tuple[Track, int | None]:
         """
-        Return the track dated with the first release year MusicBrainz knows for its recording.
+        Return the track dated with the first release year MusicBrainz knows for the song.
 
         The track itself is returned unchanged when MusicBrainz has nothing better to offer.
 
-        :param track: Track to date by its ISRC.
-        :return: The dated track and the usable release year MusicBrainz knows for its recording.
+        :param track: Track to date.
+        :param cross_check: Whether to date the song by artist and title as well and keep the
+            older of the two answers. Costs a second MusicBrainz request, so callers that date
+            a batch of tracks against one shared budget leave it off.
+        :return: The dated track and the usable release year MusicBrainz knows for the song.
             The year is reported even when the track already carries that year or an earlier one,
             and is None when MusicBrainz knows no year or only an implausible one.
         """
         musicbrainz = self.mass.get_provider("musicbrainz")
-        isrc = track.get_external_id(ExternalID.ISRC)
-        if musicbrainz is None or not isrc:
+        if musicbrainz is None:
             return track, None
-        release_year: int | None = None
+        provider = cast("MusicbrainzProvider", musicbrainz)
+        isrc_year: int | None = None
+        name_year: int | None = None
         # callers wait for this and MusicBrainz throttles to 10 requests per 10 seconds, so a
         # lookup that does not resolve within the budget leaves the track on its library year
         with suppress(TimeoutError):
             async with asyncio.timeout(RELEASE_YEAR_LOOKUP_BUDGET_SECONDS):
                 try:
-                    release_year = await cast(
-                        "MusicbrainzProvider", musicbrainz
-                    ).get_release_year_by_isrc(isrc)
+                    isrc_year = await self._isrc_release_year(provider, track)
+                    # a remaster carries its own ISRC and the name search dates a release group
+                    # by the oldest release it finds, so both run late on their own and on
+                    # different songs; the older of the two answers is right more often. the
+                    # search also stands in for an ISRC MusicBrainz has no recording for
+                    if cross_check or isrc_year is None:
+                        name_year = await self._name_release_year(provider, track)
                 except Exception as err:
                     LOGGER.debug("Could not date Music Quiz track %s: %s", track.uri, err)
+        # the ISRC year is read before the search runs, so a search that stalls past the budget
+        # or fails costs this track precision rather than the year the ISRC already supplied
+        current_year = utc().year
         # a year outside this range is rejected by get_track_release_year anyway, and a year
-        # below 1 cannot be expressed as a datetime at all
-        if release_year is None or not MIN_RELEASE_YEAR <= release_year <= utc().year:
+        # below 1 cannot be expressed as a datetime at all. each answer is judged on its own,
+        # so an implausible one cannot pull the other one down with it
+        release_year = min(
+            [
+                year
+                for year in (isrc_year, name_year)
+                if year is not None and MIN_RELEASE_YEAR <= year <= current_year
+            ],
+            default=None,
+        )
+        if release_year is None:
             return track, None
         release_date = track.metadata.release_date
         if release_date is not None and release_date.year <= release_year:
@@ -477,6 +508,31 @@ class QuizType(ABC):
             metadata=replace(track.metadata, release_date=datetime(release_year, 1, 1, tzinfo=UTC)),
         )
         return dated_track, release_year
+
+    @staticmethod
+    async def _isrc_release_year(musicbrainz: MusicbrainzProvider, track: Track) -> int | None:
+        """
+        Return the year MusicBrainz first released the track's exact recording.
+
+        :param musicbrainz: The loaded MusicBrainz provider.
+        :param track: Track to date.
+        """
+        if not (isrc := track.get_external_id(ExternalID.ISRC)):
+            return None
+        return await musicbrainz.get_release_year_by_isrc(isrc)
+
+    @staticmethod
+    async def _name_release_year(musicbrainz: MusicbrainzProvider, track: Track) -> int | None:
+        """
+        Return the year MusicBrainz first released the song, searched by artist and title.
+
+        :param musicbrainz: The loaded MusicBrainz provider.
+        :param track: Track to date.
+        """
+        artist_name = track.artists[0].name if track.artists else None
+        if not artist_name or not track.name:
+            return None
+        return await musicbrainz.get_release_year_by_track_name(artist_name, track.name)
 
 
 def get_track_release_year(track: Track) -> int | None:

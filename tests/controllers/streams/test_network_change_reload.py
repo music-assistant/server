@@ -44,7 +44,7 @@ def _streams_controller(*providers: MagicMock) -> StreamsController:
     controller._bind_ip = BIND_IP
     controller.publish_ip = PUBLISH_IP
     controller.publish_port = PUBLISH_PORT
-    controller.publish_addresses = list(PUBLISH_ADDRESSES)
+    controller._publish_addresses = list(PUBLISH_ADDRESSES)
     return controller
 
 
@@ -83,7 +83,7 @@ async def test_reload_without_network_change_reloads_nothing() -> None:
         ("publish_ip", "10.45.0.20"),
         ("publish_port", 8098),
         # narrowing "auto" to one literal address leaves publish_ip itself untouched
-        ("publish_addresses", ["192.168.1.5"]),
+        ("_publish_addresses", ["192.168.1.5"]),
     ],
 )
 async def test_changed_network_reloads_only_dependent_providers(

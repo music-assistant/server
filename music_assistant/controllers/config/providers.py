@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast, overload
 import shortuuid
 from music_assistant_models.auth import Scope
 from music_assistant_models.config_entries import (
+    ConfigActionResult,
     ConfigEntry,
     ConfigValueType,
     ProviderConfig,
@@ -216,12 +217,13 @@ class ProviderConfigMixin:
     @api_command("config/providers/invoke_action", required_scope=Scope.CONFIG_PROVIDERS_WRITE)
     async def invoke_provider_config_action(
         self, instance_id: str, action: str
-    ) -> list[ConfigEntry]:
+    ) -> list[ConfigEntry] | ConfigActionResult:
         """
         Run a one-shot action button from a provider's options.
 
-        An empty list means the action ran with nothing to re-render; a non-empty list
-        holds the entries the options page should re-render with.
+        A ``ConfigActionResult`` holds the outcome to report to the user; an empty list
+        means the action ran with nothing to report; a non-empty list holds the entries
+        the options page should re-render with.
 
         :param instance_id: The provider instance id (must be loaded).
         :param action: The action id of the pressed button.
@@ -232,6 +234,9 @@ class ProviderConfigMixin:
             raise ActionUnavailable(msg)
         if (result := await provider.handle_config_action(action)) is None:
             return []
+        if isinstance(result, ConfigActionResult):
+            result.translation_owner = result.translation_owner or f"provider.{provider.domain}"
+            return result
         return self._wrap_provider_config_entries(provider, result)
 
     def seed_stored_config_values(self, config: ProviderConfig) -> None:

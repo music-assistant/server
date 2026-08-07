@@ -73,7 +73,7 @@ async def _setup_streams(
     )
     with (
         patch(
-            "music_assistant.controllers.streams.controller.get_ip_addresses",
+            "music_assistant.controllers.streams.controller.get_publish_ip_candidates",
             AsyncMock(return_value=all_ip_addresses),
         ),
         patch(
