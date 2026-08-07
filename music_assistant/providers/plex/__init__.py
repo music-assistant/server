@@ -1020,7 +1020,7 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         if (
             (quality_bitrate := self._get_stream_quality_bitrate())
             and audio_stream
-            and media_part.size
+            and media_part.size is not None
         ):
             stream_details.path = self._get_transcode_url(plex_track, quality_bitrate)
             stream_details.stream_type = StreamType.HLS
@@ -2046,27 +2046,35 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
     def _get_single_transcodable_track(
         self, plex_tracks: list[PlexTrack], item_id: str
     ) -> PlexTrack | None:
-        """Return the only Plex track that has audio stream data, if exactly one exists."""
+        """Return the only Plex track with the metadata needed for transcoding."""
         playable_track = self._get_single_playable_track(plex_tracks, item_id)
-        if playable_track and self._track_has_audio_stream(playable_track, item_id):
+        if playable_track and self._track_is_transcodable(playable_track, item_id):
             return playable_track
         return None
 
-    def _track_has_audio_stream(self, plex_track: PlexTrack, item_id: str) -> bool:
-        """Return whether the Plex track has audio stream data needed for transcoding."""
+    def _track_is_transcodable(self, plex_track: PlexTrack, item_id: str) -> bool:
+        """Return whether the Plex track has the metadata needed for transcoding."""
         media = self._track_media_or_log(plex_track, item_id)
         if media is None:
             return False
         media_part: PlexMediaPart = media.parts[0]
-        if media_part.audioStreams():
-            return True
-        self.logger.debug(
-            "Skipping Plex transcode for '%s' (key=%s) in %s: no audio streams",
-            plex_track.title,
-            plex_track.key,
-            item_id,
-        )
-        return False
+        if not media_part.audioStreams():
+            self.logger.debug(
+                "Skipping Plex transcode for '%s' (key=%s) in %s: no audio streams",
+                plex_track.title,
+                plex_track.key,
+                item_id,
+            )
+            return False
+        if media_part.size is None:
+            self.logger.debug(
+                "Skipping Plex transcode for '%s' (key=%s) in %s: no media size",
+                plex_track.title,
+                plex_track.key,
+                item_id,
+            )
+            return False
+        return True
 
     def _track_media_or_log(self, plex_track: PlexTrack, item_id: str) -> PlexMedia | None:
         """Return the first PlexMedia for a track, or log and return None if unavailable."""
@@ -2121,7 +2129,11 @@ class PlexProvider(RecommendationPayloadMixin, MusicProvider):
         download_url = self._plex_server.url(f"{media_part.key}?download=1", True)
         stream_type = StreamType.HTTP
         audio_format = AudioFormat(content_type=content_type)
-        if (quality_bitrate := self._get_stream_quality_bitrate()) and audio_stream:
+        if (
+            (quality_bitrate := self._get_stream_quality_bitrate())
+            and audio_stream
+            and media_part.size is not None
+        ):
             download_url = self._get_transcode_url(plex_track, quality_bitrate)
             stream_type = StreamType.HLS
             audio_format.content_type = ContentType.OPUS
