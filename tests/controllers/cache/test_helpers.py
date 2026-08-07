@@ -371,6 +371,16 @@ async def test_result_shape_survives_being_copied(provider: _FakeProvider) -> No
     assert all(result == [("a", "name", None)] for result in results)
 
 
+async def test_tuple_result_shape_survives_a_cache_hit(
+    cache: CacheController, provider: _FakeProvider
+) -> None:
+    """Test that a cached tuple is rebuilt with all of its members, including the None ones."""
+    assert await provider.fetch_tuples("a") == [("a", "name", None)]
+    await _wait_for_stored(cache, "fetch_tuples.a")
+    assert await provider.fetch_tuples("a") == [("a", "name", None)]
+    assert provider.calls == 1
+
+
 async def test_uncopyable_result_is_still_returned(
     provider: _FakeProvider, caplog: pytest.LogCaptureFixture
 ) -> None:
