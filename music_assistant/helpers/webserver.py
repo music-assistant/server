@@ -18,6 +18,9 @@ if TYPE_CHECKING:
 MAX_CLIENT_SIZE: Final = 1024**2 * 16
 MAX_LINE_SIZE: Final = 24570
 
+# grace period handlers get to finish before they are cancelled on shutdown
+DEFAULT_SHUTDOWN_TIMEOUT: Final = 10
+
 # Type alias for dynamic route handlers
 DynamicRouteHandler = Callable[
     [web.Request], Coroutine[Any, Any, web.Response | web.StreamResponse]
@@ -101,7 +104,9 @@ class Webserver:
         if app_state:
             for key, value in app_state.items():
                 self._webapp[key] = value
-        self._apprunner = web.AppRunner(self._webapp, access_log=None, shutdown_timeout=10)
+        self._apprunner = web.AppRunner(
+            self._webapp, access_log=None, shutdown_timeout=DEFAULT_SHUTDOWN_TIMEOUT
+        )
         # add static routes
         if self._static_routes:
             for method, path, handler in self._static_routes:

@@ -7,6 +7,7 @@ purely to stream audio packets to players.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import struct
@@ -83,6 +84,7 @@ from music_assistant.controllers.streams.constants import (
     CONF_BUFFER_SIZE_DEFAULT,
     CONF_SMART_FADES_LOG_LEVEL,
     DEFAULT_PORT,
+    FLOW_STREAM_LEAD_OUT_SECONDS,
     BufferSize,
     get_available_buffer_sizes,
 )
@@ -1110,9 +1112,10 @@ class StreamsController(CoreController):
             # this is reported to be an issue especially with Chromecast players.
             # see for example: https://github.com/music-assistant/support/issues/3717
             # allow buffer ahead of a few seconds and read rest in (near) realtime
-            extra_input_args=["-readrate", "1.1", "-readrate_initial_burst", "5"],
+            extra_input_args=["-readrate", "1.05", "-readrate_initial_burst", "5"],
             chunk_size=icy_meta_interval if enable_icy else calculate_content_length(output_format),
         )
+        client_disconnected = False
         try:
             # aclosing guarantees the flow stream (and thus the ffmpeg process chain
             # behind it) is torn down immediately when the player disconnects
@@ -1124,6 +1127,7 @@ class StreamsController(CoreController):
                         await resp.write(chunk)
                     except BrokenPipeError, ConnectionResetError, ConnectionError:
                         # race condition
+                        client_disconnected = True
                         break
 
                     if not enable_icy:
@@ -1152,6 +1156,9 @@ class StreamsController(CoreController):
                     await resp.write(length_b + metadata)
         finally:
             self._active_output_streams -= 1
+
+        if not client_disconnected and http_profile == "forced_content_length":
+            await self._finish_flow_stream(resp, queue_id, session_id)
 
         return resp
 
@@ -1630,6 +1637,33 @@ class StreamsController(CoreController):
             return "default"
         return announce_player.get_output_config_value(CONF_HTTP_PROFILE, "default")
 
+    async def _finish_flow_stream(
+        self, resp: web.StreamResponse, queue_id: str, session_id: str
+    ) -> None:
+        """
+        Close a fully served flow stream, giving the player time to drain when it ends the queue.
+
+        :param resp: The flow stream response, already fully written.
+        :param queue_id: Id of the queue the flow stream belongs to.
+        :param session_id: Stream session this response was opened for.
+        """
+        if self.mass.player_queues.flow_queue_exhausted(queue_id, session_id):
+            # the player is still holding a few seconds of audio it has not rendered yet
+            # and drops that as soon as the stream ends, so let it play out first.
+            # a flow that ends to be restarted right away gets no such grace: there the
+            # player should go idle as soon as possible so the next stream can start.
+            self.logger.debug(
+                "Flow stream for queue %s reached the end of the queue - holding the "
+                "connection open for %ss so the player can play out its buffer",
+                queue_id,
+                FLOW_STREAM_LEAD_OUT_SECONDS,
+            )
+            await asyncio.sleep(FLOW_STREAM_LEAD_OUT_SECONDS)
+        # aiohttp derives keep-alive from the request, so the 'Connection: close' we
+        # advertise is relayed to the player but never applied to the response itself.
+        # Without this the player is left waiting on a stream that already ended.
+        resp.force_close()
+
     def _log_request(self, request: web.Request) -> None:
         """Log request."""
         if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
@@ -1643,7 +1677,13 @@ class StreamsController(CoreController):
             )
         else:
             self.logger.debug(
-                "Got %s request to %s from %s", request.method, request.path, request.remote
+                "Got %s request to %s from %s (HTTP/%s.%s, connection: %s)",
+                request.method,
+                request.path,
+                request.remote,
+                request.version.major,
+                request.version.minor,
+                request.headers.get("Connection", "-"),
             )
 
     async def _reload_network_dependent_providers(self) -> None:
