@@ -12,11 +12,22 @@ from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
 # ---------------------------------------------------------------------------
 
 
-def _provider(response: Any) -> tuple[MusicbrainzProvider, AsyncMock]:
-    """Return a MusicbrainzProvider whose API client answers with the given response."""
+def _provider(
+    response: Any, release_group_response: Any = None
+) -> tuple[MusicbrainzProvider, AsyncMock]:
+    """
+    Return a MusicbrainzProvider whose API client answers with the given response.
+
+    :param response: Answer to every request but the release group lookup.
+    :param release_group_response: Answer to the release group lookup.
+    """
     with patch.object(MusicbrainzProvider, "__init__", lambda *_a, **_kw: None):
         provider = MusicbrainzProvider.__new__(MusicbrainzProvider)
-    get_data = AsyncMock(return_value=response)
+
+    async def _answer(endpoint: str, **_kwargs: Any) -> Any:
+        return release_group_response if endpoint == "release-group" else response
+
+    get_data = AsyncMock(side_effect=_answer)
     api_client = MagicMock()
     api_client.get_data = get_data
     provider._api_client = api_client
@@ -228,11 +239,11 @@ async def test_release_year_by_track_name_returns_the_earliest_studio_release() 
     )
 
     assert await provider.get_release_year_by_track_name("Queen", "Bohemian Rhapsody") == 1975
-    get_data.assert_awaited_once_with(
-        "recording",
-        query='"Bohemian Rhapsody" AND artist:"Queen"',
-        limit="100",
-    )
+    assert get_data.await_args_list[0].args == ("recording",)
+    assert get_data.await_args_list[0].kwargs == {
+        "query": '"Bohemian Rhapsody" AND artist:"Queen"',
+        "limit": "100",
+    }
 
 
 async def test_release_year_by_track_name_ignores_untrustworthy_releases() -> None:
@@ -290,6 +301,90 @@ async def test_release_year_by_track_name_is_none_without_a_confident_match() ->
     ):
         provider, _ = _provider(response)
         assert await provider.get_release_year_by_track_name("Queen", "Bohemian Rhapsody") is None
+
+
+def _release_groups(*first_release_dates: tuple[str, str]) -> dict[str, Any]:
+    """Return a release group search response holding the given (id, first release date) pairs."""
+    return {
+        "count": len(first_release_dates),
+        "release-groups": [
+            {"id": group_id, "title": group_id, "first-release-date": date}
+            for group_id, date in first_release_dates
+        ],
+    }
+
+
+async def test_release_year_by_track_name_prefers_the_release_group_first_release() -> None:
+    """Date a much reissued song by its album's first release, not by the reissue found."""
+    provider, _ = _provider(
+        _search_result(_recording(_release("2021-11-12"))),
+        _release_groups(("rg-A Night at the Opera-Album", "1975-11-21")),
+    )
+
+    assert await provider.get_release_year_by_track_name("Queen", "Bohemian Rhapsody") == 1975
+
+
+async def test_release_year_by_track_name_keeps_a_close_release_date() -> None:
+    """Keep the found release when the album barely predates it, as a single ahead of it would."""
+    provider, _ = _provider(
+        _search_result(_recording(_release("1975-11-21"))),
+        _release_groups(("rg-A Night at the Opera-Album", "1974-10-31")),
+    )
+
+    assert await provider.get_release_year_by_track_name("Queen", "Bohemian Rhapsody") == 1975
+
+
+async def test_release_year_by_track_name_looks_up_every_release_group_at_once() -> None:
+    """Resolve all release groups of a song with a single request."""
+    provider, get_data = _provider(
+        _search_result(
+            _recording(_release("2011-05-16", title="The Platinum Collection")),
+            _recording(_release("1975-11-21")),
+        ),
+        _release_groups(("rg-A Night at the Opera-Album", "1975-11-21")),
+    )
+
+    await provider.get_release_year_by_track_name("Queen", "Bohemian Rhapsody")
+
+    release_group_calls = [
+        call for call in get_data.await_args_list if call.args == ("release-group",)
+    ]
+    assert len(release_group_calls) == 1
+    assert release_group_calls[0].kwargs["query"] == (
+        "rgid:(rg-A Night at the Opera-Album OR rg-The Platinum Collection-Album)"
+    )
+
+
+async def test_release_year_by_track_name_falls_back_to_the_found_release() -> None:
+    """Keep the found release when MusicBrainz does not know when the album first came out."""
+    for release_group_response in (None, _release_groups(), {"release-groups": [{"id": "rg-x"}]}):
+        provider, _ = _provider(
+            _search_result(_recording(_release("1975-11-21"))), release_group_response
+        )
+
+        assert await provider.get_release_year_by_track_name("Queen", "Bohemian Rhapsody") == 1975
+
+
+async def test_release_year_by_track_name_dates_an_undated_release_group() -> None:
+    """Date a song whose found releases carry no date at all by its album's first release."""
+    provider, _ = _provider(
+        _search_result(_recording(_release(""))),
+        _release_groups(("rg-A Night at the Opera-Album", "1975-11-21")),
+    )
+
+    assert await provider.get_release_year_by_track_name("Queen", "Bohemian Rhapsody") == 1975
+
+
+async def test_release_group_by_track_name_costs_a_single_request() -> None:
+    """Never spend the release group lookup on callers that only want the release groups."""
+    provider, get_data = _provider(
+        _search_result(_recording(_release("1975-11-21"))),
+        _release_groups(("rg-A Night at the Opera-Album", "1975-11-21")),
+    )
+
+    await provider.get_release_group_by_track_name("Queen", "Bohemian Rhapsody")
+
+    assert [call.args for call in get_data.await_args_list] == [("recording",)]
 
 
 async def test_release_group_by_track_name_returns_the_artist_and_oldest_groups_first() -> None:
