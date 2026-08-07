@@ -17,7 +17,12 @@ from music_assistant.constants import CONF_ENTRY_MANUAL_DISCOVERY_IPS, VERBOSE_L
 from music_assistant.helpers.util import format_ip_for_url
 from music_assistant.models.player_provider import PlayerProvider
 
-from .constants import CONF_HOUSEHOLD_ID, CONF_NETWORK_SCAN, SUBSCRIPTION_TIMEOUT
+from .constants import (
+    CONF_HOUSEHOLD_ID,
+    CONF_NETWORK_SCAN,
+    DISCOVERY_INTERVAL,
+    SUBSCRIPTION_TIMEOUT,
+)
 from .player import SonosPlayer
 
 
@@ -25,11 +30,12 @@ class SonosPlayerProvider(PlayerProvider):
     """Sonos S1 Player Provider for legacy Sonos speakers."""
 
     _discovery_running: bool = False
-    _discovery_reschedule_timer: asyncio.TimerHandle | None = None
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         """Initialize the provider."""
         super().__init__(*args, **kwargs)
+        self._discovery_task_id: str = f"sonos_s1_discovery_{self.instance_id}"
+        self._unloaded: bool = False
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return Config entries to setup this provider."""
@@ -71,9 +77,13 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def unload(self, is_removed: bool = False) -> None:
         """Handle unload/close of the provider."""
-        if self._discovery_reschedule_timer:
-            self._discovery_reschedule_timer.cancel()
-            self._discovery_reschedule_timer = None
+        # a discovery already running in its worker thread cannot be interrupted, so the
+        # flag is what stops it from arming a new reschedule once it resumes
+        self._unloaded = True
+        # a reschedule that already fired lives on as a task under the same id,
+        # so both are needed to cover the pending and the running case
+        self.mass.cancel_timer(self._discovery_task_id)
+        self.mass.cancel_task(self._discovery_task_id)
         # await any in-progress discovery
         while self._discovery_running:
             await asyncio.sleep(0.5)
@@ -142,12 +152,12 @@ class SonosPlayerProvider(PlayerProvider):
 
         await asyncio.to_thread(do_discover)
 
-        def reschedule() -> None:
-            self._discovery_reschedule_timer = None
-            self.mass.create_task(self.discover_players())
-
-        # reschedule self once finished
-        self._discovery_reschedule_timer = self.mass.loop.call_later(1800, reschedule)
+        if self._unloaded:
+            return
+        # reschedule self once finished, replacing any reschedule already armed
+        self.mass.call_later(
+            DISCOVERY_INTERVAL, self.discover_players, task_id=self._discovery_task_id
+        )
 
     async def _setup_player(self, soco: SoCo) -> None:
         """Set up a discovered Sonos player."""
