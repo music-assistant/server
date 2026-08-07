@@ -3530,7 +3530,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
     @staticmethod
     def _is_in_group(state: PlayerState) -> bool:
-        """Check if the given player is currently grouped with other players."""
+        """Check if the player with the given state is currently grouped with other players."""
         # a sync leader has neither synced_to nor active_group set, but it does lead its
         # own group_members, which stays empty for a player that is not grouped at all
         return bool(state.synced_to or state.active_group or state.group_members)
@@ -3541,6 +3541,8 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
         A lock is only earned inside a group and only holds for as long as the player
         is still grouped, so it can not outlive the group it was earned in.
+
+        :param player: The player to check, which may be a protocol player.
         """
         if player.extra_data.get(ATTR_MUTE_LOCK) and self._is_in_group(player.state):
             return True

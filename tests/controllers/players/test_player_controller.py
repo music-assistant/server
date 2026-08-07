@@ -2107,6 +2107,54 @@ class TestMuteLockAfterUngroup:
         assert players["member"].state.volume_level == 0
         assert players["member"].state.volume_muted is True
 
+    async def test_protocol_player_follows_the_lock_of_its_parent(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A protocol player inherits the lock of the parent it renders for, group and all."""
+        controller, players = self._make_synced_pair(mock_mass, PLAYER_CONTROL_NATIVE)
+        member = players["member"]
+        protocol_player = MockPlayer(
+            MockProvider("sendspin", instance_id="sendspin", mass=mock_mass),
+            "proto_member",
+            "Member Protocol",
+            player_type=PlayerType.PROTOCOL,
+        )
+        protocol_player._attr_supported_features = {
+            PlayerFeature.VOLUME_SET,
+            PlayerFeature.VOLUME_MUTE,
+        }
+        protocol_player._attr_volume_muted = True
+        protocol_player.set_protocol_parent_id("member")
+        # an unmute on a protocol player is redirected to the parent it renders for
+        mute = AsyncMock()
+        member.volume_mute = mute  # type: ignore[method-assign]
+        protocol_player.volume_mute = AsyncMock()  # type: ignore[method-assign]
+        protocol_player.volume_set = AsyncMock()  # type: ignore[method-assign]
+        controller._players["proto_member"] = protocol_player
+        member.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="proto_member",
+                    name="Sendspin",
+                    protocol_domain="sendspin",
+                    priority=40,
+                )
+            ]
+        )
+        protocol_player.set_initialized()
+        protocol_player.update_state(signal_event=False)
+        member.refresh_state(signal_event=False)
+        member.extra_data[ATTR_MUTE_LOCK] = True
+
+        # a group volume change reaches the protocol player through the internal handler
+        await controller._handle_cmd_volume_set("proto_member", 70)
+        mute.assert_not_awaited()
+
+        self._dissolve_group(players)
+        await controller._handle_cmd_volume_set("proto_member", 70)
+
+        mute.assert_awaited_once_with(False)
+
 
 class TestCurrentMediaTimeUpdates:
     """Playback-position anchor semantics of timing-only state updates."""
