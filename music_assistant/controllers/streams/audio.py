@@ -2194,6 +2194,7 @@ class StreamsAudio:
             """Return True if a newer stream session has taken over this queue."""
             return pq_data.session_id != flow_session_id
 
+        queue_exhausted = False
         while True:
             # bail out early if a newer producer has taken over this queue,
             # so we don't append another entry to a stream log we no longer own
@@ -2215,6 +2216,7 @@ class StreamsAudio:
                         queue.queue_id, queue_track.queue_item_id
                     )
                 except QueueEmpty:
+                    queue_exhausted = True
                     break
 
             if self._flow_stream_needs_restart(
@@ -2556,7 +2558,7 @@ class StreamsAudio:
         if not _superseded():
             # inform the queue controller that all audio data has been generated
             # so it can handle the case where new items were added after the flow stream ended
-            self.mass.player_queues.queue_buffer_completed(queue.queue_id)
+            self.mass.player_queues.queue_buffer_completed(queue.queue_id, queue_exhausted)
 
     async def get_overlay_mixed_stream(
         self,
