@@ -217,3 +217,14 @@ async def test_injected_protocol_entry_resolves_under_origin_provider(
     proto_entry = next(entry for entry in entries if entry.key == PREFIXED_KEY)
     assert proto_entry.translation_owner == "provider.dlna"
     assert proto_entry.translation_key == CONF_FLOW_MODE_SAMPLE_RATE
+
+
+async def test_player_entries_resolve_under_their_own_provider(mass: MusicAssistant) -> None:
+    """A player's own entries carry its provider's namespace, so its strings.json is consulted."""
+    await _setup_parent_with_protocol_child(mass)
+
+    entries = await mass.config.get_player_config_entries(PARENT_ID)
+    own_entries = [entry for entry in entries if CONF_PROTOCOL_KEY_SPLITTER not in entry.key]
+
+    assert own_entries
+    assert {entry.translation_owner for entry in own_entries} == {"provider.sonos"}
