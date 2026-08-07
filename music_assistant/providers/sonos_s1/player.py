@@ -802,6 +802,8 @@ class SonosPlayer(Player):
 
     def _speaker_activity(self, source: str) -> None:
         """Track the last activity on this speaker, set availability and resubscribe."""
+        if self._unloaded:
+            return
         if self._resub_cooldown_expires_at:
             if time.monotonic() < self._resub_cooldown_expires_at:
                 self.logger.debug(

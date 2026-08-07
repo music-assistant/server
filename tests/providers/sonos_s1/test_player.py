@@ -312,6 +312,39 @@ async def test_on_unload_unsubscribes_even_when_already_unavailable(
     assert player._subscriptions == []
 
 
+async def test_unloaded_player_is_not_resubscribed_by_a_late_poll(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A poll that reaches an unloaded speaker must not subscribe it to events again."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    # the speaker was marked unavailable earlier, so it carries no subscriptions and
+    # unloading it leaves that unavailable state behind for a late poll to act on
+    player._attr_available = False
+    await player.on_unload()
+
+    with patch.object(player, "subscribe", AsyncMock()) as subscribe:
+        await player.poll()
+
+    subscribe.assert_not_called()
+    assert player._attr_available is False
+
+
+async def test_speaker_answering_a_poll_again_is_resubscribed(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A speaker that answers a poll after being unavailable is subscribed to events again."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    player.soco.group.coordinator.uid = player.player_id
+    player.soco.group.members = [player.soco.group.coordinator]
+    player._attr_available = False
+
+    with patch.object(player, "subscribe", AsyncMock()) as subscribe:
+        await player.poll()
+
+    subscribe.assert_called_once()
+    assert player._attr_available is True
+
+
 async def test_unloading_mid_subscribe_keeps_no_subscriptions(
     timer_mass: MusicAssistant,
 ) -> None:
