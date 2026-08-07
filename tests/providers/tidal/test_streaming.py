@@ -10,6 +10,7 @@ from music_assistant_models.enums import ContentType, ExternalID, StreamType
 from music_assistant_models.errors import MediaNotFoundError
 from music_assistant_models.media_items import AudioFormat, Track
 
+from music_assistant.providers.tidal.constants import OPEN_API_URL
 from music_assistant.providers.tidal.streaming import TidalStreamingManager
 
 
@@ -17,7 +18,6 @@ from music_assistant.providers.tidal.streaming import TidalStreamingManager
 def provider_mock(provider_mock: Mock) -> Mock:
     """Return the shared provider mock with the streaming quality and throttler bypass wired."""
     provider_mock.config.get_value.return_value = "HIGH"
-    provider_mock.api.OPEN_API_URL = "https://openapi.tidal.com/v2"
 
     # the streaming manager enters api.throttler.bypass() as an async context manager,
     # which a MagicMock supports out of the box
@@ -315,7 +315,7 @@ async def test_get_track_by_isrc_cache_miss_lookup_success(
     provider_mock.api.get.assert_called_with(
         "tracks",
         params={"filter[isrc]": "US1234567890"},
-        base_url=provider_mock.api.OPEN_API_URL,
+        base_url=OPEN_API_URL,
     )
 
     # Verify cache set
