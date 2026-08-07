@@ -2021,6 +2021,141 @@ class TestGroupMuteOnNonGroupPlayer:
             mute.assert_not_awaited()
 
 
+class TestMuteLockAfterUngroup:
+    """A mute lock is only honored while the player it belongs to is still grouped."""
+
+    def _make_synced_pair(
+        self, mock_mass: MagicMock, member_mute_control: str
+    ) -> tuple[PlayerController, dict[str, MockPlayer]]:
+        """
+        Build a leader with one synced member.
+
+        :param member_mute_control: Mute control to configure on both players.
+        """
+        mock_mass.config.get_raw_player_config_value = MagicMock(
+            side_effect=_player_config_stub({CONF_MUTE_CONTROL: member_mute_control})
+        )
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        players: dict[str, MockPlayer] = {}
+        for player_id in ("leader", "member"):
+            player = MockPlayer(provider, player_id, player_id.title())
+            player._attr_supported_features = {
+                PlayerFeature.VOLUME_SET,
+                PlayerFeature.VOLUME_MUTE,
+            }
+            player._attr_volume_level = 50
+            player.volume_set = AsyncMock(  # type: ignore[method-assign]
+                side_effect=lambda volume, _player=player: setattr(
+                    _player, "_attr_volume_level", volume
+                )
+            )
+            players[player_id] = player
+        players["leader"]._attr_group_members = ["member"]
+        controller._players = dict(players)
+        mock_mass.players = controller
+        mock_mass.player_queues.get = MagicMock(return_value=None)
+        for player in players.values():
+            player.set_initialized()
+            player._cache.clear()
+            player.update_state(signal_event=False)
+        return controller, players
+
+    def _dissolve_group(self, players: dict[str, MockPlayer]) -> None:
+        """Drop the sync group, the way a provider side topology change does."""
+        players["leader"]._attr_group_members = []
+        for player in players.values():
+            player.refresh_state(signal_event=False)
+
+    async def test_fake_muted_player_follows_volume_again(self, mock_mass: MagicMock) -> None:
+        """A fake muted player is no longer forced silent once its group is gone."""
+        controller, players = self._make_synced_pair(mock_mass, PLAYER_CONTROL_FAKE)
+        await controller.cmd_volume_mute("member", True)
+        self._dissolve_group(players)
+
+        await controller.cmd_volume_set("member", 70)
+
+        players["member"].update_state()
+        assert players["member"].state.volume_level == 70
+        assert players["member"].state.volume_muted is False
+
+    async def test_natively_muted_player_is_unmuted_again(self, mock_mass: MagicMock) -> None:
+        """A natively muted player is auto-unmuted by a volume change once its group is gone."""
+        controller, players = self._make_synced_pair(mock_mass, PLAYER_CONTROL_NATIVE)
+        mute = AsyncMock(
+            side_effect=lambda muted: setattr(players["member"], "_attr_volume_muted", muted)
+        )
+        players["member"].volume_mute = mute  # type: ignore[method-assign]
+        await controller.cmd_volume_mute("member", True)
+        self._dissolve_group(players)
+
+        await controller.cmd_volume_set("member", 70)
+
+        assert mute.await_args_list == [call(True), call(False)]
+        players["member"].update_state()
+        assert players["member"].state.volume_level == 70
+        assert players["member"].state.volume_muted is False
+
+    async def test_still_grouped_player_keeps_its_lock(self, mock_mass: MagicMock) -> None:
+        """A muted player that is still grouped stays silent on a volume change."""
+        controller, players = self._make_synced_pair(mock_mass, PLAYER_CONTROL_FAKE)
+        await controller.cmd_volume_mute("member", True)
+
+        await controller.cmd_volume_set("member", 70)
+
+        players["member"].update_state()
+        assert players["member"].state.volume_level == 0
+        assert players["member"].state.volume_muted is True
+
+    async def test_protocol_player_follows_the_lock_of_its_parent(
+        self, mock_mass: MagicMock
+    ) -> None:
+        """A protocol player inherits the lock of the parent it renders for, group and all."""
+        controller, players = self._make_synced_pair(mock_mass, PLAYER_CONTROL_NATIVE)
+        member = players["member"]
+        protocol_player = MockPlayer(
+            MockProvider("sendspin", instance_id="sendspin", mass=mock_mass),
+            "proto_member",
+            "Member Protocol",
+            player_type=PlayerType.PROTOCOL,
+        )
+        protocol_player._attr_supported_features = {
+            PlayerFeature.VOLUME_SET,
+            PlayerFeature.VOLUME_MUTE,
+        }
+        protocol_player._attr_volume_muted = True
+        protocol_player.set_protocol_parent_id("member")
+        # an unmute on a protocol player is redirected to the parent it renders for
+        mute = AsyncMock()
+        member.volume_mute = mute  # type: ignore[method-assign]
+        protocol_player.volume_mute = AsyncMock()  # type: ignore[method-assign]
+        protocol_player.volume_set = AsyncMock()  # type: ignore[method-assign]
+        controller._players["proto_member"] = protocol_player
+        member.set_linked_output_protocols(
+            [
+                OutputProtocol(
+                    output_protocol_id="proto_member",
+                    name="Sendspin",
+                    protocol_domain="sendspin",
+                    priority=40,
+                )
+            ]
+        )
+        protocol_player.set_initialized()
+        protocol_player.update_state(signal_event=False)
+        member.refresh_state(signal_event=False)
+        member.extra_data[ATTR_MUTE_LOCK] = True
+
+        # a group volume change reaches the protocol player through the internal handler
+        await controller._handle_cmd_volume_set("proto_member", 70)
+        mute.assert_not_awaited()
+
+        self._dissolve_group(players)
+        await controller._handle_cmd_volume_set("proto_member", 70)
+
+        mute.assert_awaited_once_with(False)
+
+
 class TestCurrentMediaTimeUpdates:
     """Playback-position anchor semantics of timing-only state updates."""
 
