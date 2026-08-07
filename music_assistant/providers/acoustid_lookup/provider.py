@@ -17,6 +17,7 @@ from music_assistant_models.errors import (
     RateLimited,
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
+    UnsupportedSystemError,
 )
 
 from music_assistant.controllers.cache import use_cache
@@ -99,12 +100,23 @@ class AcoustidLookupProvider(AudioAnalysisProvider):
         self._fingerprint_errors: tuple[type[BaseException], ...] = ()
 
     async def handle_async_init(self) -> None:
-        """Fail the provider load when the chromaprint native library is unavailable."""
+        """
+        Handle async initialization of the provider.
+
+        :raises UnsupportedSystemError: When the chromaprint native library is missing.
+        """
         # pyacoustid binds libchromaprint through ctypes at import time, so this import is
         # what surfaces a missing native library. Route it through the shared import
         # executor to keep the dlopen off the event loop; it also warms sys.modules so the
         # per-session import in _create_fingerprinter is a plain lookup.
-        await import_module_in_thread("chromaprint")
+        try:
+            await import_module_in_thread("chromaprint")
+        except ImportError as err:
+            msg = (
+                "AcoustID needs the chromaprint library, which is not installed on this "
+                "system. See the Music Assistant documentation for how to install it."
+            )
+            raise UnsupportedSystemError(msg) from err
 
     async def get_config_entries(self) -> tuple[ConfigEntry, ...]:
         """Return config entries for this provider."""

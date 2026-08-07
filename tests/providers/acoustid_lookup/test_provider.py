@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 import aiohttp
 import pytest
 from music_assistant_models.enums import MediaType, StreamType
+from music_assistant_models.errors import UnsupportedSystemError
 
 from music_assistant.constants import CONF_LOG_LEVEL
 from music_assistant.helpers.datetime import utc_timestamp
@@ -591,7 +592,9 @@ async def test_async_init_imports_the_native_binding(monkeypatch: pytest.MonkeyP
         "music_assistant.providers.acoustid_lookup.provider.import_module_in_thread", fake_import
     )
 
-    with pytest.raises(ImportError):
+    # UnsupportedSystemError marks the failure as permanent, so the loader reports it
+    # to the user instead of retrying a library that will not appear on its own.
+    with pytest.raises(UnsupportedSystemError):
         await provider.handle_async_init()
     assert imported == ["chromaprint"]
 
