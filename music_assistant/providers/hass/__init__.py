@@ -60,7 +60,7 @@ from .control_entities import (
     ControlEntitySearch,
     HassControlEntitySearchResult,
 )
-from .helpers import ControlCapabilities, get_control_name
+from .helpers import ControlCapabilities, get_control_name, is_entity_id
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Collection, Mapping
@@ -730,9 +730,9 @@ class HomeAssistantProvider(PluginProvider):
         # the wanted selection is determined inside the lock, so a reconcile that had to
         # wait for another one cannot apply a selection that was already superseded
         async with self._control_reconcile_lock:
-            power_controls = cast("list[str]", self.config.get_value(CONF_POWER_CONTROLS))
-            mute_controls = cast("list[str]", self.config.get_value(CONF_MUTE_CONTROLS))
-            volume_controls = cast("list[str]", self.config.get_value(CONF_VOLUME_CONTROLS))
+            power_controls = self._selected_control_entities(CONF_POWER_CONTROLS)
+            mute_controls = self._selected_control_entities(CONF_MUTE_CONTROLS)
+            volume_controls = self._selected_control_entities(CONF_VOLUME_CONTROLS)
             wanted_controls: dict[str, ControlCapabilities] = {
                 entity_id: ControlCapabilities(
                     power=entity_id in power_controls,
@@ -759,6 +759,27 @@ class HomeAssistantProvider(PluginProvider):
                 await self.mass.players.register_or_update_player_control(control)
             await self._subscribe_control_states()
             self._wanted_controls = wanted_controls
+
+    def _selected_control_entities(self, conf_key: str) -> list[str]:
+        """
+        Return the entity IDs selected in the given player control setting.
+
+        :param conf_key: The control config key to read the selection from.
+        """
+        entity_ids: list[str] = []
+        for value in cast("list[str]", self.config.get_value(conf_key)):
+            if is_entity_id(value):
+                entity_ids.append(value)
+                continue
+            # Home Assistant rejects an entire state fetch or subscription over a single
+            # value that is not an entity ID, so a leftover selection would otherwise
+            # take down every control of this provider
+            self.logger.warning(
+                "Ignoring %r in the %s setting: it is not a Home Assistant entity ID",
+                value,
+                conf_key,
+            )
+        return entity_ids
 
     def _create_player_control(
         self,
