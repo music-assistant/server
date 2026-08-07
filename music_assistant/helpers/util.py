@@ -6,6 +6,7 @@ import asyncio
 import functools
 import html
 import importlib
+import inspect
 import logging
 import os
 import platform
@@ -25,6 +26,7 @@ from contextlib import suppress
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from ipaddress import IPv4Address, IPv6Address, ip_address
+from itertools import islice
 from pathlib import Path
 from types import ModuleType, TracebackType
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, Protocol, Self, TypeVar, cast
@@ -2080,11 +2082,15 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
 
     Callers arriving while an identical call is already in flight await that same call and
     receive its result. Cancelling one caller leaves both the request and the other callers
-    unaffected. Calls count as identical when they are made on the same object with equally
-    represented arguments.
+    unaffected. Calls count as identical when they are made on the same object with equal
+    arguments, no matter whether those were passed positionally or by keyword.
+
+    Every argument must be either a scalar or a media item, so that equal arguments are
+    guaranteed to produce an equal key.
 
     :param func: The coroutine method to guard.
     """
+    signature = inspect.signature(func)
 
     @functools.wraps(func)
     async def wrapper(self: SelfT, *args: P.args, **kwargs: P.kwargs) -> R:
@@ -2096,10 +2102,23 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
         # (e.g. a provider set up twice), which must never join each other's flight.
         # id(self) is stable while a flight is live because the task references self;
         # the class name only serves to keep the task_id readable while debugging.
-        cache_key_parts = [type(self).__name__, id(self), func.__qualname__, *args]
-        for key in sorted(kwargs.keys()):
-            cache_key_parts.append(f"{key}{kwargs[key]}")
-        task_id = ".".join(map(str, cache_key_parts))
+        # binding the arguments to their parameter names and filling in the defaults keys a
+        # call the same however it was spelled; repr of the resulting tuple quotes every
+        # part, so an id that itself contains punctuation stays unambiguous.
+        bound = signature.bind(self, *args, **kwargs)
+        bound.apply_defaults()
+        task_id = repr(
+            (
+                type(self).__name__,
+                id(self),
+                func.__qualname__,
+                # skip the instance: it is the first parameter and is keyed by id() above
+                *(
+                    (name, _canonical_key_part(value))
+                    for name, value in islice(bound.arguments.items(), 1, None)
+                ),
+            )
+        )
         task: asyncio.Task[R] = mass.create_task(
             func,
             self,
@@ -2112,3 +2131,13 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
         return await join_task(task)
 
     return wrapper
+
+
+def _canonical_key_part(value: Any) -> Any:
+    """Return a stable stand-in for a single argument of a guarded request."""
+    if (uri := getattr(value, "uri", None)) is not None:
+        # a media item renders as a multi-kilobyte dataclass repr in which the set-typed
+        # fields (provider_mappings, external_ids) can iterate in different orders for two
+        # equal items. the uri identifies the item, which is all a request key needs.
+        return uri
+    return value

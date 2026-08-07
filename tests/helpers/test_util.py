@@ -643,6 +643,55 @@ class TestGuardSingleRequest:
         assert provider.album_calls == 1
         assert provider.track_calls == 1
 
+    @pytest.mark.asyncio
+    async def test_media_item_argument_keys_on_its_uri(self, mass_minimal: MusicAssistant) -> None:
+        """Media item arguments pointing at the same provider item share a request."""
+        caller = _GuardedCaller(mass_minimal)
+        calls = [
+            asyncio.create_task(
+                caller.fetch_item("123", fallback=_guarded_album("First", ("a", "b")))
+            ),
+            asyncio.create_task(
+                caller.fetch_item("123", fallback=_guarded_album("Second", ("b", "a", "c")))
+            ),
+        ]
+        # both fallbacks describe item 123, only their contents differ
+        await asyncio.sleep(0)
+        caller.release.set()
+
+        assert await asyncio.gather(*calls) == ["result-123-False", "result-123-False"]
+        assert caller.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_positional_and_keyword_arguments_share_a_request(
+        self, mass_minimal: MusicAssistant
+    ) -> None:
+        """The same call spelled positionally and by keyword shares a request."""
+        caller = _GuardedCaller(mass_minimal)
+        calls = [
+            asyncio.create_task(caller.fetch_item("123", True)),
+            asyncio.create_task(caller.fetch_item("123", force_refresh=True)),
+        ]
+        await asyncio.sleep(0)
+        caller.release.set()
+
+        assert await asyncio.gather(*calls) == ["result-123-True", "result-123-True"]
+        assert caller.calls == 1
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_gets_its_own_request(self, mass_minimal: MusicAssistant) -> None:
+        """A force refresh must issue its own request instead of joining a normal one."""
+        caller = _GuardedCaller(mass_minimal)
+        calls = [
+            asyncio.create_task(caller.fetch_item("123")),
+            asyncio.create_task(caller.fetch_item("123", force_refresh=True)),
+        ]
+        await asyncio.sleep(0)
+        caller.release.set()
+
+        assert await asyncio.gather(*calls) == ["result-123-False", "result-123-True"]
+        assert caller.calls == 2
+
 
 class _GuardedCaller:
     """Minimal stand-in for a controller exposing a guarded request."""
@@ -663,6 +712,15 @@ class _GuardedCaller:
         self.calls += 1
         await self.release.wait()
         return f"result-{item_id}"
+
+    @guard_single_request
+    async def fetch_item(
+        self, item_id: str, force_refresh: bool = False, fallback: Album | None = None
+    ) -> str:
+        """Return the result for the given item id, once released."""
+        self.calls += 1
+        await self.release.wait()
+        return f"result-{item_id}-{force_refresh}"
 
 
 class _GatedMusicProvider(MusicProvider):
@@ -714,6 +772,21 @@ async def _gated_task(release: asyncio.Event, result: str, fail: bool = False) -
     if fail:
         raise RuntimeError("task failed")
     return result
+
+
+def _guarded_album(name: str, mapping_ids: tuple[str, ...]) -> Album:
+    """
+    Build an album on the gated test provider to pass as a fallback argument.
+
+    :param name: The album name.
+    :param mapping_ids: The provider item ids to add as provider mappings.
+    """
+    return Album(
+        item_id="123",
+        provider=GUARDED_PROVIDER_ID,
+        name=name,
+        provider_mappings={_provider_mapping(item_id) for item_id in mapping_ids},
+    )
 
 
 def _provider_mapping(item_id: str) -> ProviderMapping:
