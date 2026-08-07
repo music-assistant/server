@@ -32,6 +32,25 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "music_assistant"
 BASELINE_PATH = REPO_ROOT / "scripts" / "lint_baselines" / "blocking_io_in_async.txt"
 
+# A SoCo device and the UPnP service proxies it exposes: every method on these is a SOAP
+# request over synchronous HTTP. ``zone_group_state`` is deliberately absent, its calls only
+# touch an in-memory cache.
+SOCO_OBJECTS = frozenset(
+    {
+        "soco",
+        "alarmClock",
+        "audioIn",
+        "avTransport",
+        "contentDirectory",
+        "deviceProperties",
+        "groupRenderingControl",
+        "musicServices",
+        "renderingControl",
+        "systemProperties",
+        "zoneGroupTopology",
+    }
+)
+
 # Blocking, module-qualified calls ruff's ASYNC rules don't catch, keyed by the immediate module
 # name in the attribute chain (``module.method(...)``). An empty value set means "any attribute".
 BLOCKING_CALLS: dict[str, frozenset[str]] = {
@@ -53,8 +72,7 @@ BLOCKING_CALLS: dict[str, frozenset[str]] = {
         }
     ),
     "socket": frozenset({"create_connection"}),
-    # every method on a SoCo device speaks UPnP over synchronous HTTP
-    "soco": frozenset(),
+    **dict.fromkeys(SOCO_OBJECTS, frozenset()),
 }
 
 # urllib.request.urlopen(...) / .urlretrieve(...): matched anywhere a ``urllib`` chain ends in these.
