@@ -116,13 +116,6 @@ class _FakeProvider:
 
 
 @pytest.fixture
-async def cache(mass_minimal: MusicAssistant) -> CacheController:
-    """Return an initialized cache controller."""
-    await mass_minimal.cache._setup_database()
-    return mass_minimal.cache
-
-
-@pytest.fixture
 def provider(cache: CacheController) -> _FakeProvider:
     """Return a fake provider with @use_cache decorated methods."""
     return _FakeProvider(cache.mass)

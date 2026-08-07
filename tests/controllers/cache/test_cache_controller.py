@@ -30,13 +30,6 @@ class _FakeModel:
         return cls(name=data.get("name", ""), value=data.get("value", 0))
 
 
-@pytest.fixture
-async def cache(mass_minimal: MusicAssistant) -> CacheController:
-    """Return an initialized cache controller."""
-    await mass_minimal.cache._setup_database()
-    return mass_minimal.cache
-
-
 async def _create_db_files(cache_path: str) -> list[str]:
     """
     Create small cache.db, cache.db-wal, and cache.db-shm files.

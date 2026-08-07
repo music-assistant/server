@@ -104,12 +104,6 @@ def controller(mock_mass: MagicMock) -> PlayerController:
     return PlayerController(mock_mass)
 
 
-@pytest.fixture
-def provider(mock_mass: MagicMock) -> MockProvider:
-    """Create a mock provider."""
-    return MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
-
-
 class TestSetMembersValidation:
     """Test cmd_set_members validation logic."""
 
