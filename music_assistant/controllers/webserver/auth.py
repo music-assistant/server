@@ -272,10 +272,10 @@ class AuthenticationManager:
             return None
         return str(token_row["token_id"])
 
-    @api_command("auth/user", required_scope=Scope.USERS_MANAGE)
+    @api_command("auth/user", required_scope=Scope.USERS_READ)
     async def get_user(self, user_id: str) -> User | None:
         """
-        Get user by ID (admin only).
+        Get user by ID (requires the users.read scope).
 
         :param user_id: The user ID.
         :return: User object or None if not found.
@@ -767,12 +767,10 @@ class AuthenticationManager:
         )
         return [AuthToken.from_dict(dict(row)) for row in token_rows]
 
-    # a caller that may impersonate any user must be able to see which users exist,
-    # so the (read-only) listing is gated on the impersonation scope
-    @api_command("auth/users", required_scope=Scope.USERS_IMPERSONATE)
+    @api_command("auth/users", required_scope=Scope.USERS_READ)
     async def list_users(self) -> list[User]:
         """
-        Get all users.
+        Get all users (requires the users.read scope).
 
         System users are excluded from the list.
 

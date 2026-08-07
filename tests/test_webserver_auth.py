@@ -2235,13 +2235,16 @@ def test_has_scope() -> None:
     assert not has_scope(_user(UserRole.GUEST), Scope.CONFIG_CORE_READ)
     # service
     assert has_scope(_user(UserRole.SERVICE), Scope.USERS_IMPERSONATE)
+    assert has_scope(_user(UserRole.SERVICE), Scope.USERS_READ)
     assert has_scope(_user(UserRole.SERVICE), Scope.CONFIG_PLAYERS_WRITE)
     assert not has_scope(_user(UserRole.SERVICE), Scope.CONFIG_CORE_WRITE)
+    # reading user accounts does not imply managing them
+    assert not has_scope(_user(UserRole.SERVICE), Scope.USERS_MANAGE)
     # an unknown (custom) role id is fail-closed and grants no scopes at all
     assert not has_scope(_user("some_future_role"), Scope.LIBRARY_READ)
 
 
-async def test_homeassistant_system_user_may_list_users(
+async def test_homeassistant_system_user_may_read_users(
     auth_manager: AuthenticationManager,
 ) -> None:
     """
@@ -2249,15 +2252,16 @@ async def test_homeassistant_system_user_may_list_users(
 
     :param auth_manager: AuthenticationManager instance.
     """
-    required_scope = getattr(AuthenticationManager.list_users, "api_required_scope", None)
-    assert required_scope is not None
     system_user = await auth_manager.get_homeassistant_system_user()
-    assert has_scope(system_user, required_scope)
-    # listing users remains off limits for regular users and guests
     standard_user = await auth_manager.create_user(username="user_a", role=UserRole.USER)
-    assert not has_scope(standard_user, required_scope)
     guest_user = await auth_manager.create_user(username="guest_a", role=UserRole.GUEST)
-    assert not has_scope(guest_user, required_scope)
+    for command in (AuthenticationManager.list_users, AuthenticationManager.get_user):
+        required_scope = getattr(command, "api_required_scope", None)
+        assert required_scope is not None
+        assert has_scope(system_user, required_scope)
+        # reading user accounts remains off limits for regular users and guests
+        assert not has_scope(standard_user, required_scope)
+        assert not has_scope(guest_user, required_scope)
 
 
 async def test_homeassistant_system_user_has_service_role(
