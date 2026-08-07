@@ -53,8 +53,9 @@ ROLE_SCOPES: Final[Mapping[str, frozenset[Scope]]] = {
     UserRole.GUEST: _GUEST_SCOPES,
     # service accounts (such as the Home Assistant integration) get
     # slightly elevated rights over a regular user
-    UserRole.SERVICE: _USER_SCOPES
-    | {Scope.CONFIG_PLAYERS_WRITE, Scope.USERS_READ, Scope.USERS_IMPERSONATE},
+    UserRole.SERVICE: (
+        _USER_SCOPES | {Scope.CONFIG_PLAYERS_WRITE, Scope.USERS_READ, Scope.USERS_IMPERSONATE}
+    ),
 }
 
 # ContextVar for tracking current user and token across async calls
