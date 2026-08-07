@@ -816,11 +816,13 @@ class PlayerConfigMixin:
         player: Player,
     ) -> list[ConfigEntry]:
         """
-        Create config entry for preferred output protocol.
+        Create the output protocol config entries for a player.
 
-        Returns empty list if there are no output protocol options (native only or no protocols).
-        The player.output_protocols property includes native, active, and disabled protocols,
-        with the available flag indicating their status.
+        The preferred output protocol entry is always returned, listing outputs that can not
+        be selected right now as disabled options and hidden altogether when the player has
+        at most one output. The settings of each output whose provider is loaded follow.
+
+        :param player: The player to create the output protocol config entries for.
         """
         all_entries: list[ConfigEntry] = []
         output_protocols = player.output_protocols
