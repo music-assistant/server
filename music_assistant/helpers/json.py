@@ -20,13 +20,12 @@ DO_NOT_SERIALIZE_TYPES = (MethodType, asyncio.Task)
 SerializableType = str | int | float | bool | None | list[Any] | tuple[Any, ...] | dict[str, Any]
 
 
-def get_serializable_value(obj: Any, raise_unhandled: bool = False) -> Any:
+def get_serializable_value(obj: Any) -> Any:
     """Parse the value to its serializable equivalent."""
     if getattr(obj, "do_not_serialize", None):
         return None
-    if (
-        isinstance(obj, list | set | filter | tuple | dict_values | dict_keys | dict_values)
-        or obj.__class__ == "dict_valueiterator"
+    if isinstance(obj, list | set | filter | tuple | dict_values | dict_keys) or (
+        obj.__class__.__name__ == "dict_valueiterator"
     ):
         return [get_serializable_value(x) for x in obj]
     if hasattr(obj, "to_dict"):
@@ -35,8 +34,8 @@ def get_serializable_value(obj: Any, raise_unhandled: bool = False) -> Any:
         return base64.b64encode(obj).decode("ascii")
     if isinstance(obj, DO_NOT_SERIALIZE_TYPES):
         return None
-    if raise_unhandled:
-        raise TypeError
+    # unhandled values are returned as-is on purpose: serialize_to_json and the
+    # recursion above rely on natively serializable values passing through
     return obj
 
 
@@ -57,7 +56,7 @@ def json_dumps(data: Any, indent: bool = False) -> str:
         option |= orjson.OPT_INDENT_2
     return orjson.dumps(
         data,
-        default=get_serializable_value,
+        default=_json_default,
         option=option,
     ).decode("utf-8")
 
@@ -102,3 +101,16 @@ async def load_json_dict(path: str) -> dict[str, Any]:
         msg = f"Expected a JSON object in {path}, got {type(data).__name__}"
         raise TypeError(msg)
     return data
+
+
+def _json_default(obj: Any) -> Any:
+    """Convert a value for orjson, raising a descriptive error for unhandled types."""
+    value = get_serializable_value(obj)
+    if value is obj:
+        cls = type(obj)
+        msg = (
+            f"unhandled type for json serialization: {cls.__module__}.{cls.__qualname__}"
+            " - pass a dict (e.g. via .to_dict()) instead of the raw object"
+        )
+        raise TypeError(msg)
+    return value
