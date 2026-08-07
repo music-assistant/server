@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 
 import pytest
 from async_upnp_client.profiles.dlna import TransportState
+from music_assistant_models.enums import PlaybackState
 
 from music_assistant.providers.dlna.player import DLNAPlayer
 from tests.common import MockProvider
@@ -125,6 +126,38 @@ async def test_position_from_before_a_resume_is_not_extrapolated() -> None:
     assert player.elapsed_time_last_updated >= resumed_at
 
 
+async def test_position_of_a_player_found_while_playing_keeps_its_own_anchor() -> None:
+    """Without having seen playback start, the timestamp the device reports is all there is."""
+    player = await _updated_player(media_position=200, media_position_updated_at=REPORTED_AT)
+
+    assert player.elapsed_time == 200.0
+    assert player.elapsed_time_last_updated == REPORTED_AT.timestamp()
+
+
+async def test_optimistic_playing_state_does_not_hide_the_start_of_playback() -> None:
+    """
+    Playback starting is tracked from what the device reports, not from what MA assumes.
+
+    A play command marks the player as playing before the device confirms it, which must
+    not be mistaken for the player having been playing all along.
+    """
+    device = _mock_device(
+        transport_state=TransportState.STOPPED,
+        media_position=200,
+        media_position_updated_at=datetime.now(UTC) - timedelta(minutes=10),
+    )
+    player = _player(device)
+    await player.set_dynamic_attributes()
+
+    player._attr_playback_state = PlaybackState.PLAYING
+    device.transport_state = TransportState.PLAYING
+    started_at = time.time()
+    await player.set_dynamic_attributes()
+
+    assert player.elapsed_time_last_updated is not None
+    assert player.elapsed_time_last_updated >= started_at
+
+
 async def test_transport_state_event_polls_before_reading_the_position() -> None:
     """A player that starts playing reports the position of the track it just started."""
     device = _mock_device(
@@ -146,7 +179,11 @@ async def test_transport_state_event_polls_before_reading_the_position() -> None
     tasks: list[asyncio.Task[Any]] = []
 
     def _create_task(target: Coroutine[Any, Any, Any], **_kwargs: Any) -> asyncio.Task[Any]:
-        task: asyncio.Task[Any] = asyncio.ensure_future(target)
+        # eager, like the real helper: the stale read happened because the update task
+        # ran up to its first suspension before the poll task got its answer
+        task: asyncio.Task[Any] = asyncio.Task(
+            target, loop=asyncio.get_running_loop(), eager_start=True
+        )
         tasks.append(task)
         return task
 
@@ -158,10 +195,13 @@ async def test_transport_state_event_polls_before_reading_the_position() -> None
     state_variable.name = "TransportState"
     state_variable.value = TransportState.PLAYING
 
+    started_at = time.time()
     player._handle_event(service, [state_variable])
     await asyncio.gather(*tasks)
 
     assert player.elapsed_time == 0.0
+    assert player.elapsed_time_last_updated is not None
+    assert player.elapsed_time_last_updated >= started_at
 
 
 @pytest.mark.parametrize(("reported", "expected"), [(0.5, 50), (0.0, 0), (1.0, 100)])
