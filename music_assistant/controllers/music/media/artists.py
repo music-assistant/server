@@ -26,6 +26,7 @@ from music_assistant_models.media_items import (
     ArtistSummary,
     Audiobook,
     ItemMapping,
+    MediaCollection,
     ProviderMapping,
     Track,
 )
@@ -325,11 +326,13 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider_instance_id_or_domain: str,
         artist_type: ArtistType = ArtistType.AUTHOR,
         in_library_only: bool = False,
-    ) -> list[Audiobook]:
+        collapse_collections: bool = False,
+    ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
         """
         Return audiobooks for an artist.
 
         Artist_type can be omitted for in-library artists.
+        Collapse collections only works for in library items.
         """
         if artist_type == ArtistType.SINGER:
             self.logger.warning("Audiobooks not supported for artist_type SINGER.")
@@ -355,9 +358,11 @@ class ArtistsController(MediaControllerBase[Artist]):
             return []
 
         db_items = await self.get_library_author_narrator_audiobooks(
-            library_artist.item_id, artist_type=library_artist.artist_type
+            library_artist.item_id,
+            artist_type=library_artist.artist_type,
+            collapse_collections=collapse_collections,
         )
-        result: list[Audiobook] = db_items
+        result: list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]] = db_items
         if in_library_only:
             # return in-library items only
             return result
@@ -391,10 +396,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         return result
 
     async def get_library_author_narrator_audiobooks(
-        self,
-        item_id: str | int,
-        artist_type: ArtistType,
-    ) -> list[Audiobook]:
+        self, item_id: str | int, artist_type: ArtistType, collapse_collections: bool = False
+    ) -> list[Audiobook] | list[Audiobook | MediaCollection[Audiobook]]:
         """Return all in-library audiobooks for an author/ narrator."""
         db_id = int(item_id)  # ensure integer
         library_item = await self.get_library_item(db_id)
@@ -408,6 +411,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         return await self.mass.music.audiobooks.get_library_items_by_query(
             extra_query_parts=[query],
             extra_query_params={"artist_id": db_id},
+            collapse_collections=collapse_collections,
         )
 
     async def get_provider_author_audiobooks(
