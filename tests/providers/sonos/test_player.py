@@ -206,3 +206,16 @@ async def test_on_unload_unsubscribes_before_disconnecting(timer_mass: MusicAssi
     await player.on_unload()
 
     assert calls == ["unsubscribe", "disconnect"]
+
+
+@pytest.mark.asyncio
+async def test_on_unload_survives_a_failing_disconnect(timer_mass: MusicAssistant) -> None:
+    """Test a speaker that cannot be disconnected does not abort the unload."""
+    player, client = _bind_player(timer_mass)
+    client.disconnect = AsyncMock(side_effect=OSError("speaker unreachable"))
+    player.reconnect(0)
+
+    await player.on_unload()
+
+    assert player.connected is False
+    assert timer_mass._tracked_timers == {}
