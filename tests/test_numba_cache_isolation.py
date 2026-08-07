@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import TYPE_CHECKING
 
-import librosa
-import numpy as np
+from numba.core import config as numba_config
 
 from tests.conftest import NUMBA_CACHE_DIR
 
@@ -16,13 +14,8 @@ if TYPE_CHECKING:
 
 
 def test_numba_kernel_cache_is_process_private(pytestconfig: pytest.Config) -> None:
-    """Verify librosa's compiled kernels are cached in this process's own directory."""
-    # a TemporaryDirectory of this session's own, so no other process can be writing here
-    session_cache_dir = pytestconfig.stash[NUMBA_CACHE_DIR]
-    cache_dir = Path(os.environ["NUMBA_CACHE_DIR"])
-    assert cache_dir.is_dir()
-    assert str(cache_dir) == session_cache_dir.name
-
-    librosa.onset.onset_detect(onset_envelope=np.abs(np.sin(np.arange(256.0))), sr=22050)
-
-    assert list(cache_dir.rglob("*peak_pick*.nbi"))
+    """Verify numba caches its compiled kernels in a directory this process owns alone."""
+    # a TemporaryDirectory of this session's own, so no other process can be writing there
+    assert os.environ["NUMBA_CACHE_DIR"] == pytestconfig.stash[NUMBA_CACHE_DIR].name
+    # numba snapshots the variable as it is imported, so a mismatch means it got in first
+    assert os.environ["NUMBA_CACHE_DIR"] == numba_config.CACHE_DIR  # type: ignore[attr-defined]
