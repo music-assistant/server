@@ -5,7 +5,7 @@ Developer docs
 * ffmpeg (minimum version 6.1, version 7 recommended), must be available in the path so install at OS level
 * Python 3.14 is minimal required (the exact pinned runtime lives in `.python-version` at the repo root — that file is the single source of truth for all tools)
 * [Python venv](https://docs.python.org/3/library/venv.html)
-* libchromaprint and PortAudio, also at OS level. The `acoustid_lookup` and `local_audio` providers bind to these natively and refuse to load without them, so install both if you want to run either provider. The test suite does not need them: the AcoustID tests drive a fake fingerprinter and the local audio tests that need PortAudio are skipped.
+* libchromaprint and PortAudio, also at OS level. Install both if you want to run the `acoustid_lookup` and `local_audio` providers: without libchromaprint AcoustID refuses to load, and without PortAudio local audio loads but finds no output devices. The test suite does not need either: the AcoustID tests drive a fake fingerprinter and the local audio tests that need PortAudio are skipped.
 
       # macOS
       brew install chromaprint portaudio
