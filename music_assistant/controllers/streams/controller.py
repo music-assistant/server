@@ -103,6 +103,7 @@ from music_assistant.helpers.ffmpeg import LOGGER as FFMPEG_LOGGER
 from music_assistant.helpers.util import (
     format_ip_for_url,
     get_ip_addresses,
+    get_publish_ip_candidates,
     get_source_ip_for_target,
     sanitize_http_header_value,
 )
@@ -159,14 +160,14 @@ async def _wav_passthrough_stream(
 
 
 def _get_publish_addresses(
-    bind_ip: str, configured_publish_ip: str | None, all_ip_addresses: tuple[str, ...]
+    bind_ip: str, configured_publish_ip: str | None, publish_candidates: tuple[str, ...]
 ) -> list[str]:
     """
-    Return the addresses this host should advertise to players on the local network.
+    Return the addresses this host publishes on, best candidate first.
 
     :param bind_ip: The configured bind IP (a wildcard means all interfaces).
     :param configured_publish_ip: The explicitly configured publish IP, or None when auto.
-    :param all_ip_addresses: All detected host IP addresses, in ranked order.
+    :param publish_candidates: Host addresses reachable from the local network, ranked.
     """
     if configured_publish_ip:
         # an explicitly configured address is the authoritative answer
@@ -174,11 +175,9 @@ def _get_publish_addresses(
     if bind_ip and bind_ip not in WILDCARD_BIND_IPS:
         # only one interface is served, so no other address can be reached
         return [bind_ip]
-    # Auto-detected: the primary address is only a guess at which interface the players
-    # live on, so advertise every address (highest ranked first) and let the device pick
-    # one it can reach. On a multi-homed host - a VPN or docker interface alongside the
-    # LAN - the primary-route address is regularly not the one on the players' network.
-    return list(all_ip_addresses)
+    # auto-detected: keep the whole ranked list - publish_ip takes the best of them and
+    # the network fingerprint watches all of them to spot an interface change
+    return list(publish_candidates)
 
 
 class StreamsController(CoreController):
@@ -202,8 +201,8 @@ class StreamsController(CoreController):
         self._bind_ip: str = "0.0.0.0"
         self._base_url: str = ""
         self._configured_publish_ip: str | None = None
-        # every address players may reach this host on, best candidate first - for mDNS
-        # records, which can carry them all, unlike the single-valued publish_ip
+        # every address players may reach this host on, best candidate first; publish_ip is
+        # the first of them and the network fingerprint watches the whole list for changes
         self.publish_addresses: list[str] = []
         # the network as it was at the previous setup, to spot a runtime change
         self._network_fingerprint: tuple[str, str, int, tuple[str, ...]] | None = None
@@ -450,9 +449,9 @@ class StreamsController(CoreController):
         self._configured_publish_ip = (
             None if configured_publish_ip == CONF_VALUE_AUTO else configured_publish_ip
         )
-        all_ip_addresses = await get_ip_addresses(include_ipv6=True)
+        publish_candidates = await get_publish_ip_candidates(include_ipv6=True)
         bind_ip = str(config.get_value(CONF_BIND_IP))
-        self._resolve_publish_state(bind_ip, all_ip_addresses)
+        self._resolve_publish_state(bind_ip, publish_candidates)
         await self._server.setup(
             bind_ip=bind_ip,
             bind_port=cast("int", self.publish_port),
@@ -474,7 +473,7 @@ class StreamsController(CoreController):
         # adopt what the server actually bound to: a configured port of 0 is only resolved
         # by the OS at bind time and an unavailable bind IP falls back to all interfaces
         self.publish_port = cast("int", self._server.port)
-        self._resolve_publish_state(self._server.bind_ip or DEFAULT_HOST, all_ip_addresses)
+        self._resolve_publish_state(self._server.bind_ip or DEFAULT_HOST, publish_candidates)
         # print a big fat message in the log where the streamserver is running
         # because this is a common source of issues for people with more complex setups
         self.logger.log(
@@ -1693,18 +1692,18 @@ class StreamsController(CoreController):
         else:
             self.audio.smart_fades_mixer.logger.setLevel(log_level)
 
-    def _resolve_publish_state(self, bind_ip: str, all_ip_addresses: tuple[str, ...]) -> None:
+    def _resolve_publish_state(self, bind_ip: str, publish_candidates: tuple[str, ...]) -> None:
         """
         Resolve the addresses and base URL to advertise for the given bind address.
 
         Reads ``self.publish_port``, so set that first.
 
         :param bind_ip: Address the streamserver binds to (a wildcard means all interfaces).
-        :param all_ip_addresses: All detected host IP addresses, in ranked order.
+        :param publish_candidates: Host addresses reachable from the local network, ranked.
         """
         self._bind_ip = bind_ip
         self.publish_addresses = _get_publish_addresses(
-            bind_ip, self._configured_publish_ip, all_ip_addresses
+            bind_ip, self._configured_publish_ip, publish_candidates
         )
         # players that can only be handed one address get the highest ranked one
         self.publish_ip = self.publish_addresses[0]
