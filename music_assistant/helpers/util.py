@@ -2083,10 +2083,11 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
     Callers arriving while an identical call is already in flight await that same call and
     receive its result. Cancelling one caller leaves both the request and the other callers
     unaffected. Calls count as identical when they are made on the same object with equal
-    arguments, no matter whether those were passed positionally or by keyword.
+    arguments, no matter whether those were passed positionally or by keyword; the request
+    runs with the arguments of the caller that started it.
 
-    Every argument must be either a scalar or a media item, so that equal arguments are
-    guaranteed to produce an equal key.
+    Every argument must be a scalar or an object identified by its ``uri``, so that equal
+    arguments are guaranteed to produce an equal key.
 
     :param func: The coroutine method to guard.
     """
@@ -2103,8 +2104,8 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
         # id(self) is stable while a flight is live because the task references self;
         # the class name only serves to keep the task_id readable while debugging.
         # binding the arguments to their parameter names and filling in the defaults keys a
-        # call the same however it was spelled; repr of the resulting tuple quotes every
-        # part, so an id that itself contains punctuation stays unambiguous.
+        # call the same however it was spelled; repr of the resulting tuple keeps the parts
+        # apart, so an id that itself contains punctuation cannot run into the next one.
         bound = signature.bind(self, *args, **kwargs)
         bound.apply_defaults()
         task_id = repr(
@@ -2138,6 +2139,7 @@ def _canonical_key_part(value: Any) -> Any:
     if (uri := getattr(value, "uri", None)) is not None:
         # a media item renders as a multi-kilobyte dataclass repr in which the set-typed
         # fields (provider_mappings, external_ids) can iterate in different orders for two
-        # equal items. the uri identifies the item, which is all a request key needs.
-        return uri
+        # equal items. the uri identifies the item, and the type travels with it because a
+        # full item and an ItemMapping for that same item are not handled the same.
+        return (type(value).__name__, uri)
     return value
