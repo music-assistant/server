@@ -4,9 +4,10 @@ Fail when async code makes a known-blocking, module-qualified call that ruff's A
 Music Assistant is fully async: blocking IO inside a coroutine stalls the event loop and every other
 task on it. Ruff's flake8-async already flags the obvious offenders (``open()``, ``time.sleep()``,
 ``subprocess`` …); this check complements it with high-confidence library calls it does not cover
-(``requests``, ``urllib.request``, ``shutil``, blocking ``os`` filesystem calls, ``socket`` …) made
-directly inside an ``async def``. Wrap such work in ``asyncio.to_thread`` / ``run_in_executor`` (pass
-the function reference rather than calling it inline) or use an async client.
+(``requests``, ``urllib.request``, ``shutil``, blocking ``os`` filesystem calls, ``socket``,
+``soco`` …) made directly inside an ``async def``. Wrap such work in ``asyncio.to_thread`` /
+``run_in_executor`` (pass the function reference rather than calling it inline) or use an async
+client. Only calls are matched, so a blocking attribute read (``soco.volume``) slips through.
 
 The call sites that predate this check are grandfathered through
 ``scripts/lint_baselines/blocking_io_in_async.txt``.
@@ -52,6 +53,8 @@ BLOCKING_CALLS: dict[str, frozenset[str]] = {
         }
     ),
     "socket": frozenset({"create_connection"}),
+    # every method on a SoCo device speaks UPnP over synchronous HTTP
+    "soco": frozenset(),
 }
 
 # urllib.request.urlopen(...) / .urlretrieve(...): matched anywhere a ``urllib`` chain ends in these.

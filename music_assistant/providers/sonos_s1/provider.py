@@ -161,24 +161,38 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def _setup_player(self, soco: SoCo) -> None:
         """Set up a discovered Sonos player."""
-        player_id = soco.uid
+
+        def _read_uid() -> str:
+            """Read the unique id of the speaker (NOT async friendly)."""
+            return cast("str", soco.uid)
+
+        def _interrogate() -> tuple[bool, bool]:
+            """Read whether the speaker is visible and has a fixed volume (NOT async friendly)."""
+            # Ensure speaker info is available during setup
+            if not soco.speaker_info:
+                soco.get_speaker_info(True, timeout=7)
+            # SonosPlayer reads these off the SoCo instance while it is constructed,
+            # resolving them here keeps their lookups off the event loop
+            _ = soco.household_id
+            _ = soco.player_name
+            return soco.is_visible, soco.fixed_volume
+
+        player_id = await asyncio.to_thread(_read_uid)
 
         if existing := cast("SonosPlayer", self.mass.players.get_player(player_id=player_id)):
             if existing.soco.ip_address != soco.ip_address:
-                existing.update_ip(soco.ip_address)
-            return
-        if not soco.is_visible:
+                await existing.update_ip(soco)
             return
         enabled = self.mass.config.get_raw_player_config_value(player_id, "enabled", True)
         if not enabled:
             self.logger.debug("Ignoring disabled player: %s", player_id)
             return
+        is_visible, fixed_volume = await asyncio.to_thread(_interrogate)
+        if not is_visible:
+            return
         try:
-            # Ensure speaker info is available during setup
-            if not soco.speaker_info:
-                soco.get_speaker_info(True, timeout=7)
             sonos_player = SonosPlayer(self, soco)
-            if not soco.fixed_volume:
+            if not fixed_volume:
                 sonos_player._attr_supported_features = {
                     *sonos_player._attr_supported_features,
                     PlayerFeature.VOLUME_SET,

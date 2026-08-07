@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from music_assistant_models.enums import MediaType, PlaybackState
+from music_assistant_models.enums import IdentifierType, MediaType, PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
 from soco.exceptions import SoCoException
 
@@ -371,6 +371,94 @@ async def test_unloading_mid_subscribe_keeps_no_subscriptions(
             await asyncio.gather(subscribe_task, unload_task)
 
     assert player._subscriptions == []
+
+
+def _make_rediscovered_soco(ip_address: str = "127.0.0.2") -> MagicMock:
+    """Create the mocked soco device that discovery hands over for a speaker that moved."""
+    soco = _make_soco()
+    soco.ip_address = ip_address
+    return soco
+
+
+async def test_update_ip_talks_to_the_rediscovered_speaker(sonos_player: SonosPlayer) -> None:
+    """A speaker found at another address is reached through the newly discovered device."""
+    sonos_player._attr_available = False
+    new_soco = _make_rediscovered_soco()
+
+    with patch.object(sonos_player, "setup", AsyncMock()) as setup:
+        await sonos_player.update_ip(new_soco)
+
+    assert sonos_player.soco is new_soco
+    setup.assert_awaited_once()
+    assert sonos_player.device_info.identifiers[IdentifierType.IP_ADDRESS] == "127.0.0.2"
+
+
+async def test_update_ip_probes_the_speaker_off_the_event_loop(sonos_player: SonosPlayer) -> None:
+    """Probing the rediscovered speaker must not stall the event loop."""
+    sonos_player._attr_available = False
+    new_soco = _make_rediscovered_soco()
+    probing = threading.Event()
+    probe_may_finish = threading.Event()
+
+    def _blocking_probe(*_args: object, **_kwargs: object) -> None:
+        probing.set()
+        probe_may_finish.wait(5)
+
+    new_soco.renderingControl.GetVolume.side_effect = _blocking_probe
+
+    # a probe held on the event loop would starve this block until it hits the timeout
+    with patch.object(sonos_player, "setup", AsyncMock()):
+        async with asyncio.timeout(2):
+            update = asyncio.create_task(sonos_player.update_ip(new_soco))
+            await asyncio.to_thread(probing.wait, 5)
+            probe_may_finish.set()
+            await update
+
+
+async def test_update_ip_skips_setup_when_the_new_address_stays_silent(
+    sonos_player: SonosPlayer,
+) -> None:
+    """An unanswered probe leaves the speaker for the regular poll to pick up."""
+    sonos_player._attr_available = False
+    new_soco = _make_rediscovered_soco()
+    new_soco.renderingControl.GetVolume.side_effect = SoCoException("no answer")
+
+    with patch.object(sonos_player, "setup", AsyncMock()) as setup:
+        await sonos_player.update_ip(new_soco)
+
+    setup.assert_not_awaited()
+    assert sonos_player.soco is new_soco
+
+
+async def test_update_ip_leaves_a_responding_speaker_alone(sonos_player: SonosPlayer) -> None:
+    """A speaker that is still reachable keeps the device it is already talking to."""
+    original_soco = sonos_player.soco
+
+    with patch.object(sonos_player, "setup", AsyncMock()) as setup:
+        await sonos_player.update_ip(_make_rediscovered_soco())
+
+    assert sonos_player.soco is original_soco
+    setup.assert_not_awaited()
+
+
+async def test_setup_reads_the_speaker_off_the_event_loop(sonos_player: SonosPlayer) -> None:
+    """Reading the initial state of a speaker must not stall the event loop."""
+    cast("MagicMock", sonos_player.mass.players).register_or_update = AsyncMock()
+    reading_threads: list[int] = []
+
+    with (
+        patch.object(
+            sonos_player,
+            "update_groups",
+            lambda: reading_threads.append(threading.get_ident()),
+        ),
+        patch.object(sonos_player, "poll_media"),
+        patch.object(sonos_player, "subscribe", AsyncMock()),
+    ):
+        await sonos_player.setup()
+
+    assert len(reading_threads) == 1
+    assert reading_threads[0] != threading.get_ident()
 
 
 async def test_unsubscribe_drops_subscriptions_even_when_cancelled() -> None:
