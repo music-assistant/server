@@ -443,7 +443,9 @@ class StreamsAudio:
         mass = self.mass
         logger = self.logger.getChild("media_stream")
         logger.log(VERBOSE_LOG_LEVEL, "Starting media stream for %s", streamdetails.uri)
-        extra_input_args = streamdetails.extra_input_args or []
+        # copy: the args below are appended per call, while the StreamDetails is cached on
+        # the queue item and reused across calls (retry, seek, background analysis)
+        extra_input_args = list(streamdetails.extra_input_args or [])
 
         # work out audio source for these streamdetails
         audio_source: str | AsyncGenerator[bytes]
@@ -1325,9 +1327,9 @@ class StreamsAudio:
         rate the player supports that is <= the source rate, so the source is never
         upsampled. The bit depth follows the source unless audio processing
         (crossfade, volume normalization, DSP) is active — those need F32 headroom
-        to avoid clipping/precision loss. Realtime AudioSource items skip all
-        processing and get a pure passthrough format (source rate/bit depth when
-        the player supports them).
+        to avoid clipping/precision loss. Surround sources are folded down to stereo.
+        Realtime AudioSource items skip all processing and get a pure passthrough
+        format (source rate/bit depth when the player supports them).
 
         :param player: The player requesting the stream.
         :param streamdetails: Stream details for the current item.
@@ -1355,7 +1357,10 @@ class StreamsAudio:
             sample_rate=output_sample_rate,
             content_type=content_type,
             bit_depth=bit_depth,
-            channels=streamdetails.audio_format.channels,
+            # fold surround sources down to stereo right at the decode step: no
+            # output format carries more than two channels, so a wider PCM format
+            # only makes every bytes-to-seconds sum on the stream come out short
+            channels=min(streamdetails.audio_format.channels, 2),
         )
         if crossfade_enabled or overlay_active:
             pcm_format.channels = 2
@@ -2189,6 +2194,7 @@ class StreamsAudio:
             """Return True if a newer stream session has taken over this queue."""
             return pq_data.session_id != flow_session_id
 
+        queue_exhausted = False
         while True:
             # bail out early if a newer producer has taken over this queue,
             # so we don't append another entry to a stream log we no longer own
@@ -2210,6 +2216,7 @@ class StreamsAudio:
                         queue.queue_id, queue_track.queue_item_id
                     )
                 except QueueEmpty:
+                    queue_exhausted = True
                     break
 
             if self._flow_stream_needs_restart(
@@ -2551,7 +2558,7 @@ class StreamsAudio:
         if not _superseded():
             # inform the queue controller that all audio data has been generated
             # so it can handle the case where new items were added after the flow stream ended
-            self.mass.player_queues.queue_buffer_completed(queue.queue_id)
+            self.mass.player_queues.queue_buffer_completed(queue.queue_id, queue_exhausted)
 
     async def get_overlay_mixed_stream(
         self,
@@ -3158,8 +3165,9 @@ class StreamsAudio:
         The format matches the source's native sample rate, bit depth and
         channel count whenever the player can accept them; if the player does
         not support the source's sample rate, it is snapped down to the
-        closest supported rate. No F32 widening, no forced stereo — realtime
-        sources skip every processing stage that would otherwise need them.
+        closest supported rate. No F32 widening — realtime sources skip every
+        processing stage that would otherwise need it. Surround sources are
+        still folded down to stereo, which every output path requires anyway.
 
         :param player: The player requesting the stream.
         :param streamdetails: Stream details for the AudioSource item.
@@ -3183,7 +3191,10 @@ class StreamsAudio:
             content_type=ContentType.from_bit_depth(bit_depth),
             sample_rate=output_sample_rate,
             bit_depth=bit_depth,
-            channels=streamdetails.audio_format.channels,
+            # a realtime source may announce more channels than anything downstream can
+            # carry (a VBAN stream can be configured up to 8), and player handoff formats
+            # copy this count straight through, so fold it here
+            channels=min(streamdetails.audio_format.channels, 2),
         )
 
     def _flow_restart_context(

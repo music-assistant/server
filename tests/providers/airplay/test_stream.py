@@ -23,6 +23,7 @@ from music_assistant.providers.airplay.constants import (
     AIRPLAY_JOIN_START_ACK_TIMEOUT_MS,
     AIRPLAY_START_ACK_TIMEOUT_MS,
     CONF_AIRPLAY_CREDENTIALS,
+    CONF_BUFFER_DEPTH,
     CONF_ENCRYPTION,
     CONF_PASSWORD,
     AirPlayRemoteCommand,
@@ -46,6 +47,8 @@ def _make_player() -> MagicMock:
     player.volume_level = 40
     player.device_info.mac_address = "AA:BB:CC:DD:EE:FF"
     player.device_info.ip_address = "192.168.1.50"
+    player.device_info.manufacturer = "Acme, Inc."
+    player.device_info.model = "Test1,1"
     player.logger = logging.getLogger("test.airplay.player")
     player.config.get_value = MagicMock(side_effect=lambda _key, default=None: default)
     player.state.active_group = None
@@ -289,6 +292,47 @@ async def test_cli_args_no_ptp_shared_when_daemon_alive_but_not_ready() -> None:
     player.provider.ptp_daemon_ready = False
     args = await _build_args(player)
     assert "--ptp-shared" not in args
+
+
+@pytest.mark.asyncio
+async def test_cli_args_linkplay_gets_deeper_buffer() -> None:
+    """
+    LinkPlay-family devices get the deep receiver queue from the family table.
+
+    Their pipeline starves at the stock depth - fully once the device is also
+    master of a native multiroom group - so the table maps them to 1750 ms.
+    Both platform generations must match: the newer names Linkplay as
+    manufacturer, the older only marks the platform in fv under OEM brands.
+    """
+    player = _make_player()
+    player.device_info.manufacturer = "Linkplay Technology Inc."
+    args = await _build_args(player)
+    assert _arg_value(args, "--latency") == "1750"
+    assert "--ptp-shared" in args
+
+    # Old platform: OEM brand, the Linkplay token only in fv.
+    player = _make_player()
+    player.device_info.manufacturer = "Edifier Inc"
+    player.airplay_discovery_info.decoded_properties["fv"] = "p20.Linkplay.4.6.430230"
+    args = await _build_args(player)
+    assert _arg_value(args, "--latency") == "1750"
+
+    # Non-LinkPlay devices stay on the binary's stock depth.
+    player = _make_player()
+    args = await _build_args(player)
+    assert "--latency" not in args
+
+
+@pytest.mark.asyncio
+async def test_cli_args_buffer_depth_config_overrides_auto() -> None:
+    """A configured buffer depth wins over the device-family default."""
+    player = _make_player()
+    player.device_info.manufacturer = "Linkplay Technology Inc."
+    player.config.get_value = MagicMock(
+        side_effect=lambda key, default=None: 1500 if key == CONF_BUFFER_DEPTH else default
+    )
+    args = await _build_args(player)
+    assert _arg_value(args, "--latency") == "1500"
 
 
 @pytest.mark.asyncio
@@ -1465,10 +1509,8 @@ async def test_start_returns_the_instant_the_binary_scheduled() -> None:
 
 
 @pytest.mark.asyncio
-async def test_start_reports_no_instant_when_the_ack_never_arrives(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """An unacknowledged START reports no instant and says the commanded one is assumed."""
+async def test_start_fails_when_the_ack_never_arrives() -> None:
+    """An unacknowledged START fails: nothing may be mapped onto an unconfirmed instant."""
     stream = AirPlayStream(_make_player())
     stream._cli_proc = MagicMock(closed=False)
     stream._connected.set()
@@ -1476,12 +1518,41 @@ async def test_start_reports_no_instant_when_the_ack_never_arrives(
     with (
         patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True),
         patch("music_assistant.providers.airplay.stream.AIRPLAY_START_ACK_TIMEOUT_MS", 10),
-        caplog.at_level(logging.WARNING),
+        pytest.raises(PlayerCommandFailed, match="did not acknowledge its start") as err,
     ):
-        assert await stream.start(START_UNIX_MS, 0) is None
+        await stream.start(START_UNIX_MS, 0)
 
-    assert "did not acknowledge its start" in caplog.text
-    assert str(START_UNIX_MS) in caplog.text
+    # the player and the instant nothing confirmed are the whole diagnostic
+    assert "Player A" in str(err.value)
+    assert str(START_UNIX_MS) in str(err.value)
+
+
+@pytest.mark.asyncio
+async def test_start_accepts_a_malformed_ack_as_the_commanded_instant() -> None:
+    """An ack that cannot be parsed still answered the START, so the commanded instant stands."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
+        start_task = asyncio.create_task(stream.start(START_UNIX_MS, 0))
+        await asyncio.sleep(0)
+        stream._handle_status_line("[STATUS] started requested_unix_ms=nonsense at_unix_ms=")
+        assert await start_task == START_UNIX_MS
+
+
+@pytest.mark.asyncio
+async def test_start_treats_a_missing_scheduled_instant_as_malformed() -> None:
+    """An ack without at_unix_ms parses cleanly to 0, which must never be returned."""
+    stream = AirPlayStream(_make_player())
+    stream._cli_proc = MagicMock(closed=False)
+    stream._connected.set()
+
+    with patch.object(stream, "_write_cli_command", new_callable=AsyncMock, return_value=True):
+        start_task = asyncio.create_task(stream.start(START_UNIX_MS, 0))
+        await asyncio.sleep(0)
+        stream._handle_status_line(f"[STATUS] started requested_unix_ms={START_UNIX_MS}")
+        assert await start_task == START_UNIX_MS
 
 
 @pytest.mark.asyncio
@@ -1511,8 +1582,9 @@ async def test_start_ack_window_matches_the_arm(join: bool, expected_timeout: fl
             "music_assistant.providers.airplay.stream.asyncio.wait_for",
             side_effect=record_timeout,
         ),
+        pytest.raises(PlayerCommandFailed),
     ):
-        assert await stream.start(START_UNIX_MS, 0, join=join) is None
+        await stream.start(START_UNIX_MS, 0, join=join)
 
     assert timeouts == [expected_timeout]
 
@@ -1675,52 +1747,36 @@ def test_elapsed_includes_start_position() -> None:
     )
 
 
-def test_legacy_reanchor_warns_accumulate_per_event() -> None:
-    """The legacy warn line reports a per-event shift, so successive events accumulate."""
+def test_reanchor_status_sets_the_cumulative_total() -> None:
+    """Each [STATUS] REANCHOR line carries the authoritative total, so it SETS the shift."""
     stream = AirPlayStream(_make_player())
     assert stream.cumulative_shift_seconds == 0.0
 
-    for _event in range(2):
-        assert (
-            stream._handle_status_line(
-                "[AP2] Re-anchored after PCM starvation: "
-                "shifted_frames=67870 lead_frames=77175 count=1"
-            )
-            is False
-        )
-
-    # two +1.539s events accumulate to ~3.078s
-    assert stream.cumulative_shift_seconds == pytest.approx(2 * 67870 / 44100)
-
-
-def test_reanchor_status_supersedes_legacy_warn() -> None:
-    """The [STATUS] REANCHOR total is authoritative and stops the legacy warn double count."""
-    stream = AirPlayStream(_make_player())
-
-    # a first legacy warn accumulates until the status line arrives
-    stream._handle_status_line(
-        "[AP2] Re-anchored after PCM starvation: shifted_frames=67870 lead_frames=77175 count=1"
-    )
-    # the machine-readable line SETS from the cumulative total and supersedes the warn
     assert (
         stream._handle_status_line(
             "[STATUS] REANCHOR shifted_frames=67870 total_shifted_frames=67870 sample_rate=44100"
         )
         is False
     )
-    assert stream._reanchor_status_seen is True
     assert stream.cumulative_shift_seconds == pytest.approx(67870 / 44100)
 
-    # both lines fire per event for new binaries: the warn that follows is ignored,
-    # only the status line's cumulative total is tracked (no double count)
-    stream._handle_status_line(
-        "[AP2] Re-anchored after PCM starvation: shifted_frames=67870 lead_frames=77175 count=2"
-    )
-    assert stream.cumulative_shift_seconds == pytest.approx(67870 / 44100)
+    # the second event reports the running total, never a delta to add
     stream._handle_status_line(
         "[STATUS] REANCHOR shifted_frames=67870 total_shifted_frames=135740 sample_rate=44100"
     )
     assert stream.cumulative_shift_seconds == pytest.approx(135740 / 44100)
+
+
+def test_human_readable_reanchor_warn_is_not_counted() -> None:
+    """The binary's warn line accompanies the status line; counting it would double it."""
+    stream = AirPlayStream(_make_player())
+
+    ended = stream._handle_status_line(
+        "[AP2] Re-anchored after PCM starvation: shifted_frames=67870 lead_frames=77175 count=1"
+    )
+
+    assert ended is False
+    assert stream.cumulative_shift_seconds == 0.0
 
 
 def test_reanchor_status_prefers_line_sample_rate() -> None:
@@ -1747,28 +1803,15 @@ def test_reanchor_status_ignores_line_without_total() -> None:
     stream._handle_status_line("[STATUS] REANCHOR shifted_frames=67870 sample_rate=44100")
 
     assert stream.cumulative_shift_seconds == 1.5
-    assert stream._reanchor_status_seen is False
-
-
-def test_reanchor_shift_ignores_line_without_frames() -> None:
-    """A malformed legacy re-anchor line leaves the tracked shift unchanged."""
-    stream = AirPlayStream(_make_player())
-    stream.cumulative_shift_seconds = 1.5
-
-    ended = stream._handle_status_line("[AP2] Re-anchored after PCM starvation: shifted_frames=")
-
-    assert ended is False
-    assert stream.cumulative_shift_seconds == 1.5
 
 
 @pytest.mark.asyncio
 async def test_start_resets_reanchor_shift() -> None:
-    """A START re-anchors from scratch, clearing the shift and the status flag."""
+    """A START re-anchors from scratch, clearing the accumulated shift."""
     stream = AirPlayStream(_make_player())
     stream._cli_proc = MagicMock(closed=False)
     stream._connected.set()
     stream.cumulative_shift_seconds = 3.078
-    stream._reanchor_status_seen = True
 
     with patch.object(
         stream,
@@ -1779,16 +1822,14 @@ async def test_start_resets_reanchor_shift() -> None:
         assert await stream.start(START_UNIX_MS, 0) == START_UNIX_MS
 
     assert stream.cumulative_shift_seconds == 0.0
-    assert stream._reanchor_status_seen is False
 
 
 @pytest.mark.asyncio
 async def test_connect_resets_accumulated_shift() -> None:
-    """A fresh cliairplay process starts from a zero playout shift and cleared flag."""
+    """A fresh cliairplay process starts from a zero playout shift."""
     player = _make_player()
     stream = AirPlayStream(player)
     stream.cumulative_shift_seconds = 5.0
-    stream._reanchor_status_seen = True
     process = MagicMock(closed=False)
     process.start = AsyncMock(return_value=None)
 
@@ -1807,7 +1848,6 @@ async def test_connect_resets_accumulated_shift() -> None:
         await stream.connect()
 
     assert stream.cumulative_shift_seconds == 0.0
-    assert stream._reanchor_status_seen is False
 
 
 @pytest.mark.asyncio
@@ -1919,8 +1959,8 @@ async def test_deferred_volume_resend_reads_the_state_when_it_fires() -> None:
 
 
 @pytest.mark.asyncio
-async def test_wait_for_connection_reports_an_unread_command_pipe() -> None:
-    """A binary that never attaches to the command pipe is reported for the player it serves."""
+async def test_wait_for_connection_fails_on_an_unread_command_pipe() -> None:
+    """A binary that never attaches to the command pipe can never be anchored: fail the connect."""
     player = _make_player()
     player.logger = MagicMock()
     player.volume_muted = False
@@ -1934,12 +1974,12 @@ async def test_wait_for_connection_reports_an_unread_command_pipe() -> None:
         ) as wait_for_reader,
         patch.object(stream, "_send_current_metadata", new_callable=AsyncMock),
         patch.object(stream, "send_cli_command", return_value=None),
+        pytest.raises(PlayerCommandFailed, match="command pipe") as err,
     ):
         await stream.wait_for_connection()
 
     wait_for_reader.assert_awaited_once()
-    player.logger.warning.assert_called_once()
-    assert player.display_name in player.logger.warning.call_args.args
+    assert player.display_name in str(err.value)
 
 
 @pytest.mark.asyncio
@@ -2759,7 +2799,7 @@ async def test_generic_connect_failure_keeps_the_timeout_semantics() -> None:
 @pytest.mark.asyncio
 async def test_dead_process_fails_the_connect_wait_immediately() -> None:
     """
-    An older binary reports no reason at all, so the wait keeps its timeout error.
+    A binary that reports no reason at all leaves the wait its plain timeout error.
 
     It must still end the moment the process is gone instead of running out the
     full connect timeout.

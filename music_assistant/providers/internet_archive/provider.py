@@ -95,8 +95,8 @@ class InternetArchiveProvider(MusicProvider):
         """Throttled metadata wrapper."""
         return await self.client.get_metadata(identifier)
 
-    @throttle_with_retries
     @use_cache(expiration=86400 * 30)  # 30 days - file listings are static
+    @throttle_with_retries
     async def _get_audio_files(self, identifier: str) -> list[dict[str, Any]]:
         """Throttled audio files wrapper."""
         return await self.client.get_audio_files(identifier)

@@ -25,7 +25,7 @@ if TYPE_CHECKING:
 
 _APPLE_API_BASE = "https://api.music.apple.com/v1"
 
-_LIBRARY_PAGE_SIZE = 50
+_LIBRARY_PAGE_SIZE = 100
 
 _PAGE_TRUNCATION_RETRIES = 3
 

@@ -58,6 +58,9 @@ class PlayerQueueData:
     last_counted_play: str | None = None
     # session_id whose flow stream was fully generated
     flow_buffer_completed: str | None = None
+    # session_id whose flow stream ended because the queue ran out of items, as opposed
+    # to ending early to restart on a format change or a live item
+    flow_queue_exhausted: str | None = None
     # the current stream session id (set when a stream starts, cleared between sessions)
     session_id: str | None = None
     # per-item play log for the active flow-mode stream
