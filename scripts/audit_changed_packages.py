@@ -146,6 +146,8 @@ def audit_status(
     """
     Return `pass`, `preexisting` or `fail` for the given audit report.
 
+    Findings the pull request's own resolution does not carry are named on stderr.
+
     :param audit: A pip-audit report in JSON format.
     :param requirements: Requirement lines the pull request adds or changes, one per line.
     :param base_closure: The target branch's resolved dependency set as pinned requirement
@@ -208,9 +210,11 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def _carried(pinned: set[str] | None) -> str:
+def _describe_resolution(pinned: set[str] | None) -> str:
     """Describe what a resolved dependency set holds for a package."""
-    if not pinned:
+    # A package the set carries without an exact version is never set aside, so the only
+    # findings described here are the ones it resolves to another version or not at all
+    if pinned is None:
         return "not in the resolved set"
     return "resolved to " + ", ".join(sorted(pinned))
 
@@ -225,7 +229,7 @@ def _report_set_aside(set_aside: set[tuple[str, str]], resolved: dict[str, set[s
     if not set_aside:
         return
     described = ", ".join(
-        f"`{name} {version}` ({_carried(resolved.get(name))})"
+        f"`{name} {version}` ({_describe_resolution(resolved.get(name))})"
         for name, version in sorted(set_aside)
     )
     print(

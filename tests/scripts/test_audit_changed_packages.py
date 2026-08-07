@@ -204,6 +204,17 @@ def test_findings_not_gated_on_are_named(capsys: pytest.CaptureFixture[str]) -> 
     assert "`transformers 5.14.1` (not in the resolved set)" in captured.err
 
 
+def test_findings_are_named_alongside_a_gating_one(capsys: pytest.CaptureFixture[str]) -> None:
+    """A pull request that introduces one finding can have another set aside at the same time."""
+    head_closure = "aiohttp==3.14.3\nclean-package==1.0.0\n"
+    report = audit_report("aiohttp==3.14.3", "transformers==5.14.1")
+
+    assert audit_status(report, "aiohttp==3.14.3", BASE_CLOSURE, head_closure) == "fail"
+    captured = capsys.readouterr()
+    assert "`transformers 5.14.1` (not in the resolved set)" in captured.err
+    assert "aiohttp" not in captured.err
+
+
 def test_gated_findings_are_not_named(capsys: pytest.CaptureFixture[str]) -> None:
     """Nothing is set aside when the pull request's own resolution carries every finding."""
     head_closure = "aiohttp==3.14.3\nclean-package==1.0.0\n"
