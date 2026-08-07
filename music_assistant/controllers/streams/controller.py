@@ -1111,9 +1111,7 @@ class StreamsController(CoreController):
             # restarting (or completely failing) the audio stream by keeping the buffer short.
             # this is reported to be an issue especially with Chromecast players.
             # see for example: https://github.com/music-assistant/support/issues/3717
-            # allow buffer ahead of a few seconds and read rest in (near) realtime.
-            # staying close to realtime also keeps the amount a player has buffered but not
-            # yet rendered predictable, which is what the lead-out below has to cover.
+            # allow buffer ahead of a few seconds and read rest in (near) realtime
             extra_input_args=["-readrate", "1.05", "-readrate_initial_burst", "5"],
             chunk_size=icy_meta_interval if enable_icy else calculate_content_length(output_format),
         )
@@ -1160,7 +1158,7 @@ class StreamsController(CoreController):
             self._active_output_streams -= 1
 
         if not client_disconnected and http_profile == "forced_content_length":
-            await self._flow_stream_lead_out(resp, queue_id, session_id)
+            await self._finish_flow_stream(resp, queue_id, session_id)
 
         return resp
 
@@ -1639,27 +1637,28 @@ class StreamsController(CoreController):
             return "default"
         return announce_player.get_output_config_value(CONF_HTTP_PROFILE, "default")
 
-    async def _flow_stream_lead_out(
+    async def _finish_flow_stream(
         self, resp: web.StreamResponse, queue_id: str, session_id: str
     ) -> None:
         """
-        Keep an exhausted flow stream response open so the player can play out its buffer.
+        Close a fully served flow stream, giving the player time to drain when it ends the queue.
 
         :param resp: The flow stream response, already fully written.
         :param queue_id: Id of the queue the flow stream belongs to.
         :param session_id: Stream session this response was opened for.
         """
-        if not self.mass.player_queues.flow_queue_exhausted(queue_id, session_id):
-            # either a newer stream session took over, or this flow ended early to be
-            # restarted right away - in both cases there is no tail to play out
-            return
-        self.logger.debug(
-            "Flow stream for queue %s exhausted - holding the connection open for %ss "
-            "so the player can play out its buffer",
-            queue_id,
-            FLOW_STREAM_LEAD_OUT_SECONDS,
-        )
-        await asyncio.sleep(FLOW_STREAM_LEAD_OUT_SECONDS)
+        if self.mass.player_queues.flow_queue_exhausted(queue_id, session_id):
+            # the player is still holding a few seconds of audio it has not rendered yet
+            # and drops that as soon as the stream ends, so let it play out first.
+            # a flow that ends to be restarted right away gets no such grace: there the
+            # player should go idle as soon as possible so the next stream can start.
+            self.logger.debug(
+                "Flow stream for queue %s reached the end of the queue - holding the "
+                "connection open for %ss so the player can play out its buffer",
+                queue_id,
+                FLOW_STREAM_LEAD_OUT_SECONDS,
+            )
+            await asyncio.sleep(FLOW_STREAM_LEAD_OUT_SECONDS)
         # aiohttp derives keep-alive from the request, so the 'Connection: close' we
         # advertise is relayed to the player but never applied to the response itself.
         # Without this the player is left waiting on a stream that already ended.
