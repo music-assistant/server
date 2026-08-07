@@ -507,8 +507,8 @@ class UniversalGroupPlayer(Player):
             self._attr_playback_state = child_player.state.playback_state
             # a position is only meaningful together with the timestamp it was taken at,
             # so the pair is adopted as a whole or not at all. Position 0 is a valid
-            # position: members that serve the group stream from a buffer report a fixed
-            # 0 and let the timestamp carry the correction for their buffer delay.
+            # position: members that anchor the group stream once report a fixed 0 and
+            # let the timestamp carry both the progression and their own buffer delay.
             if (
                 child_player.state.elapsed_time is not None
                 and child_player.state.elapsed_time_last_updated is not None

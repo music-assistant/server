@@ -329,7 +329,7 @@ class TestMemberPositionPropagation:
 
     def test_position_without_timestamp_is_ignored(self) -> None:
         """A position without its timestamp is unusable, so the group keeps its anchor."""
-        ugp = self._ugp_with_member(self._member(0.0, None))
+        ugp = self._ugp_with_member(self._member(42.0, None))
 
         with patch.object(ugp, "update_state"):
             ugp._set_attributes()
