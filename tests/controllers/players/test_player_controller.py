@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterator
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -334,6 +334,29 @@ def _group_with_member(
     return controller, group_player, member
 
 
+@contextlib.contextmanager
+def _restricted_user(visible_player_ids: list[str]) -> Iterator[None]:
+    """
+    Run the wrapped block as a non-admin user that may only see the given players.
+
+    :param visible_player_ids: The player ids the user is allowed to see.
+    """
+    # the contextvar is copied into the task an API command runs in, so it stays
+    # live for everything that command reaches, internal bookkeeping included
+    token = current_user.set(
+        User(
+            user_id="user_1",
+            username="restricted",
+            role=UserRole.USER,
+            player_filter=visible_player_ids,
+        )
+    )
+    try:
+        yield
+    finally:
+        current_user.reset(token)
+
+
 class TestStateForwarding:
     """Test forwarding of player state changes to related players."""
 
@@ -427,22 +450,11 @@ class TestStateForwarding:
         """The fan-out must not be narrowed by the user that triggered the update."""
         controller, group_player, member = _group_with_member(mock_mass)
 
-        # a non-admin user that may only see the member; the contextvar is copied into
-        # the task an API command runs in, so it is live during the state fan-out
-        restricted_user = User(
-            user_id="user_1",
-            username="restricted",
-            role=UserRole.USER,
-            player_filter=["member"],
-        )
-        token = current_user.set(restricted_user)
-        try:
+        with _restricted_user(["member"]):
             assert group_player not in controller.all_players()
             with patch.object(group_player, "on_group_member_updated") as on_group_member_updated:
                 changed_values = {"playback_state": (PlaybackState.IDLE, PlaybackState.PLAYING)}
                 controller._forward_state_update(member, changed_values)
-        finally:
-            current_user.reset(token)
 
         on_group_member_updated.assert_called_once_with(member, changed_values)
 
@@ -483,6 +495,69 @@ class TestStateForwarding:
             )
 
         on_group_member_updated.assert_not_called()
+
+
+class TestUnscopedPlayerLookups:
+    """Derived player state must not depend on who triggered the recalculation."""
+
+    def test_iter_players_ignores_the_user_filter(self, mock_mass: MagicMock) -> None:
+        """iter_players is the internal view: every registered player, no user filter."""
+        controller, group_player, member = _group_with_member(mock_mass)
+
+        with _restricted_user(["member"]):
+            assert controller.all_players() == [member]
+            assert set(controller.iter_players()) == {group_player, member}
+
+    def test_active_group_survives_a_restricted_user_context(self, mock_mass: MagicMock) -> None:
+        """A member must still know its group when the triggering user cannot see it."""
+        _controller, group_player, member = _group_with_member(mock_mass)
+        group_player._attr_group_members = ["member"]
+        group_player._attr_powered = True
+        group_player.update_state(signal_event=False)
+
+        with _restricted_user(["member"]):
+            member.update_state(signal_event=False, force_update=True)
+            assert member.state.active_group == "group"
+
+    def test_synced_to_survives_a_restricted_user_context(self, mock_mass: MagicMock) -> None:
+        """A follower must still resolve its sync leader across a user filter."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+
+        leader = MockPlayer(provider, "leader", "Leader")
+        follower = MockPlayer(provider, "follower", "Follower")
+        controller._players = {"leader": leader, "follower": follower}
+        mock_mass.players = controller
+
+        leader._attr_group_members = ["leader", "follower"]
+        for player in (leader, follower):
+            player.initialized.set()
+            player.update_state(signal_event=False)
+
+        with _restricted_user(["follower"]):
+            follower.update_state(signal_event=False, force_update=True)
+            assert follower.state.synced_to == "leader"
+
+    def test_can_group_with_survives_a_restricted_user_context(self, mock_mass: MagicMock) -> None:
+        """Expanding a provider id into players must not drop players the user cannot see."""
+        controller = PlayerController(mock_mass)
+        provider = MockProvider("test_provider", instance_id="test", mass=mock_mass)
+        mock_mass.get_provider.return_value = provider
+
+        player_a = MockPlayer(provider, "player_a", "Player A")
+        player_b = MockPlayer(provider, "player_b", "Player B")
+        controller._players = {"player_a": player_a, "player_b": player_b}
+        mock_mass.players = controller
+
+        # a provider instance id stands for "every player of that provider"
+        player_a._attr_can_group_with = {"test"}
+        for player in (player_a, player_b):
+            player.initialized.set()
+            player.update_state(signal_event=False)
+
+        with _restricted_user(["player_a"]):
+            player_a.update_state(signal_event=False, force_update=True)
+            assert "player_b" in player_a.state.can_group_with
 
 
 class TestSleepTimer:

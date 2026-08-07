@@ -294,6 +294,38 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         """Return all loaded/running MusicProviders."""
         return cast("list[PlayerProvider]", self.mass.get_providers(ProviderType.PLAYER))
 
+    def iter_players(
+        self,
+        return_unavailable: bool = True,
+        return_disabled: bool = False,
+        provider_filter: str | None = None,
+        return_protocol_players: bool = False,
+    ) -> Iterator[Player]:
+        """
+        Iterate over all registered players, regardless of who is asking.
+
+        Use this for internal logic - state derivation, bookkeeping and topology
+        lookups - which must stay correct no matter which user's command happened
+        to trigger it. Use :meth:`all_players` for anything presented to a user.
+
+        :param return_unavailable [bool]: Include unavailable players.
+        :param return_disabled [bool]: Include disabled players.
+        :param provider_filter [str]: Optional filter by provider lookup key.
+        :param return_protocol_players [bool]: Include protocol players (hidden by default).
+        """
+        for player in list(self._players.values()):
+            if not (player.state.available or return_unavailable):
+                continue
+            if not (player.state.enabled or return_disabled):
+                continue
+            if not player.initialized.is_set():
+                continue
+            if provider_filter is not None and player.provider.instance_id != provider_filter:
+                continue
+            if not return_protocol_players and player.state.type == PlayerType.PROTOCOL:
+                continue
+            yield player
+
     def all_players(
         self,
         return_unavailable: bool = True,
@@ -302,9 +334,10 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         return_protocol_players: bool = False,
     ) -> list[Player]:
         """
-        Return all registered players.
+        Return the registered players the current user is allowed to see.
 
-        Note that this applies user filters for players (for non admin users).
+        Note that this applies user filters for players (for non admin users),
+        which makes it unsuitable for internal logic - use :meth:`iter_players` there.
 
         :param return_unavailable [bool]: Include unavailable players.
         :param return_disabled [bool]: Include disabled players.
@@ -322,17 +355,15 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         current_sendspin_player = get_sendspin_player_id()
         return [
             player
-            for player in list(self._players.values())
-            if (player.state.available or return_unavailable)
-            and (player.state.enabled or return_disabled)
-            and player.initialized.is_set()
-            and (provider_filter is None or player.provider.instance_id == provider_filter)
-            and (
-                not user_filter
-                or player.player_id in user_filter
-                or player.player_id == current_sendspin_player
+            for player in self.iter_players(
+                return_unavailable=return_unavailable,
+                return_disabled=return_disabled,
+                provider_filter=provider_filter,
+                return_protocol_players=return_protocol_players,
             )
-            and (return_protocol_players or player.state.type != PlayerType.PROTOCOL)
+            if not user_filter
+            or player.player_id in user_filter
+            or player.player_id == current_sendspin_player
         ]
 
     @api_command("players/all", required_scope=Scope.PLAYERS_READ)
@@ -1254,7 +1285,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         # unjoin from any dynamic sync groups if we're currently in one (edge case)
         # this is in particular used for the Home Assistant integration which does
         # not have a set_members command and only supports a single unjoin command
-        for player in self.all_players(False):
+        for player in self.iter_players(False):
             if not player.state.group_members or player.state.synced_to:
                 continue
             if PlayerFeature.SET_MEMBERS not in player.state.supported_features:
@@ -2590,19 +2621,13 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
         :param player: The player to look up the group memberships for.
         """
-        # Deliberately walks the registry instead of all_players(): this is internal
-        # topology used to keep derived state consistent, so it must not be narrowed by
-        # the user context of whichever command happens to trigger the lookup. A group
-        # player mirrors its members, so it is also included while unavailable -
-        # skipping it there is exactly how its state goes stale. Disabled players take
-        # no part at all and players still registering are not fully set up yet.
+        # A group player mirrors its members, so it is also included while unavailable -
+        # skipping it there is exactly how its state goes stale.
         player_id = player.player_id
-        for _player in list(self._players.values()):
+        for _player in self.iter_players():
             if _player.player_id == player_id:
                 continue
             if _player.state.type != PlayerType.GROUP:
-                continue
-            if not _player.state.enabled or not _player.initialized.is_set():
                 continue
             if player_id in _player.state.group_members:
                 yield _player
