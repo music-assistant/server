@@ -83,7 +83,9 @@ def use_cache(
         a shared fetch each get their own copy of the result, or share the one object when
         it cannot be copied. Set to False when sharing a fetch would be wrong, e.g. because
         the call advances a cursor on the provider side or sends a one-shot event, so
-        concurrent callers must each run their own fetch instead of sharing one.
+        concurrent callers must each run their own fetch instead of sharing one. This does
+        not apply while a stale entry is served under allow_expired_cache: that refresh is
+        always a single background call, whichever way single_flight is set.
     """
     if allow_bypass is None:
         allow_bypass = not persistent
