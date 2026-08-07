@@ -14,7 +14,7 @@ published in between must not read as a finding the pull request brings in.
 
 Prints the status the reporting workflow gates on:
     pass         no known vulnerabilities at all
-    preexisting  vulnerabilities exist, but the target branch has all of them too
+    preexisting  vulnerabilities exist, but none of them are this pull request's doing
     fail         vulnerabilities this pull request introduces
 
 Usage:
