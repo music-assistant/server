@@ -1010,14 +1010,7 @@ async def _get_ip_addresses(include_ipv6: bool, publish_candidates_only: bool) -
         pending = asyncio.create_task(_probe())
         pending.add_done_callback(_log_ip_probe_failure)
         _ip_addresses_pending[cache_key] = pending
-    # wait for the shared probe instead of awaiting it directly: a caller awaiting a task
-    # holds it as its fut_waiter, so cancelling that caller would otherwise cancel the probe
-    # for all other callers. asyncio.shield achieves the same, but as of Python 3.14 a
-    # cancelled caller makes it report the probe's exception through
-    # loop.call_exception_handler, even when another caller already handled it.
-    if not pending.done():
-        await asyncio.wait((pending,))
-    return pending.result()
+    return await join_task(pending)
 
 
 def _log_ip_probe_failure(probe: asyncio.Task[tuple[str, ...]]) -> None:
@@ -2116,13 +2109,6 @@ def guard_single_request[SelfT: _SupportsMass, **P, R](
             eager_start=True,
             **kwargs,
         )
-        # wait for the shared task instead of awaiting it directly: a caller awaiting a
-        # task holds it as its fut_waiter, so cancelling that caller would cancel the
-        # request for every other caller too. asyncio.shield achieves the same, but as of
-        # Python 3.14 a cancelled caller makes it report the request's exception through
-        # loop.call_exception_handler, even when another caller already handled it.
-        if not task.done():
-            await asyncio.wait((task,))
-        return task.result()
+        return await join_task(task)
 
     return wrapper
