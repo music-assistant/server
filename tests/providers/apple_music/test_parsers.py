@@ -14,6 +14,7 @@ from music_assistant.providers.apple_music.parsers import (
     parse_artwork_image,
     parse_track,
 )
+from tests.common import use_real_create_task
 
 BLOBSTORE_ARTWORK = {
     "url": "https://store-033.blobstore.apple.com/pic/image?X-Amz-Signature=abc",
@@ -47,6 +48,7 @@ def _create_provider_mock() -> MagicMock:
     provider.mass.cache.get = AsyncMock(return_value=None)
     provider.mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     provider.mass.cache.set = AsyncMock()
+    use_real_create_task(provider.mass)
     return provider
 
 

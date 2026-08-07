@@ -1797,6 +1797,7 @@ class TestGroupMuteOnNonGroupPlayer:
                 PlayerFeature.VOLUME_SET,
                 PlayerFeature.VOLUME_MUTE,
             }
+            player._attr_volume_level = 50
             players[player_id] = player
         if members:
             # the leader is not listed as its own member here, so the tests also cover
@@ -1879,6 +1880,34 @@ class TestGroupMuteOnNonGroupPlayer:
         mutes["leader"].assert_awaited_once_with(False)
         mutes["member"].assert_awaited_once_with(False)
         assert ATTR_MUTE_LOCK not in players["member"].extra_data
+
+    async def test_group_mute_locks_the_sync_leader_too(self, mock_mass: MagicMock) -> None:
+        """A sync leader is as much part of the group as its members, so it is locked too."""
+        controller, players = self._setup(mock_mass, "member")
+        self._stub_mutes(players)
+
+        await controller.cmd_group_volume_mute("leader", True)
+
+        assert ATTR_MUTE_LOCK in players["leader"].extra_data
+        assert ATTR_MUTE_LOCK in players["member"].extra_data
+
+    async def test_group_volume_keeps_a_muted_sync_pair_muted(self, mock_mass: MagicMock) -> None:
+        """A group volume change may not half-unmute a muted pair of directly synced players."""
+        controller, players = self._setup(mock_mass, "member")
+        self._stub_mutes(players)
+        await controller.cmd_group_volume_mute("leader", True)
+        # the mock players do not act on the mute command, so reflect it in their state
+        for player in players.values():
+            player._attr_volume_muted = True
+            player.update_state(signal_event=False)
+            player.volume_set = AsyncMock()  # type: ignore[method-assign]
+        # re-stub so only the mute commands of the group volume change are counted
+        mutes = self._stub_mutes(players)
+
+        await controller.cmd_group_volume("leader", 30)
+
+        for mute in mutes.values():
+            mute.assert_not_awaited()
 
 
 class TestCurrentMediaTimeUpdates:

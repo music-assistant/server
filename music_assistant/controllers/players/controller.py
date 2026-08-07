@@ -941,7 +941,11 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         # Set mute lock for players in a group
         # This prevents auto-unmute when group volume changes
         had_mute_lock = ATTR_MUTE_LOCK in player.extra_data
-        is_in_group = bool(player.state.synced_to or player.state.active_group)
+        # a sync leader has neither synced_to nor active_group set, but it does lead its
+        # own group_members, which stays empty for a player that is not grouped at all
+        is_in_group = bool(
+            player.state.synced_to or player.state.active_group or player.state.group_members
+        )
         if muted and is_in_group:
             player.extra_data[ATTR_MUTE_LOCK] = True
 
