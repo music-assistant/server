@@ -142,6 +142,7 @@ jobs:
           git show origin/$BASE_BRANCH:requirements_all.txt > base_requirements.txt
           echo "pip-audit" >> base_requirements.txt
 
+          # Step 1 leaves the PR's own requirements_all.txt in place, in sync or not
           cp requirements_all.txt head_requirements.txt
           echo "pip-audit" >> head_requirements.txt
 
@@ -172,7 +173,7 @@ jobs:
               echo "⚠️  **Vulnerabilities detected in the dependencies this PR introduces!**" >> audit_report.md
               ;;
             preexisting)
-              echo "ℹ️  The findings above are already present on the target branch, so this PR does not introduce them." >> audit_report.md
+              echo "ℹ️  The findings above are not ones this PR introduces." >> audit_report.md
               ;;
             scan_failed)
               echo "❌ The vulnerability scan could not be completed." >> audit_report.md

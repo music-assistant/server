@@ -161,9 +161,10 @@ def test_no_findings_passes() -> None:
 
 def test_findings_the_target_branch_has_too_are_preexisting() -> None:
     """Vulnerabilities the target branch already installs describe it, not the pull request."""
-    assert audit_status(audit_report("aiohttp==3.14.1"), "aiohttp==3.14.1", BASE_CLOSURE) == (
-        "preexisting"
-    )
+    report = audit_report("aiohttp==3.14.1")
+
+    assert audit_status(report, "aiohttp==3.14.1", BASE_CLOSURE) == "preexisting"
+    assert audit_status(report, "aiohttp==3.14.1", BASE_CLOSURE, BASE_CLOSURE) == "preexisting"
 
 
 def test_findings_in_a_bumped_package_fail() -> None:
@@ -204,6 +205,15 @@ def test_swapping_a_url_pin_for_a_vulnerable_release_fails() -> None:
 
     assert audit_status(report, "aiolibdatachannel==0.1.0", base_closure) == "fail"
     assert audit_status(report, "", base_closure) == "preexisting"
+
+
+def test_a_changed_url_pin_fails_against_both_resolutions() -> None:
+    """A URL requirement pins no version, so the pull request's resolution matches on name."""
+    base_closure = "aiolibdatachannel @ git+https://github.com/example/aiolibdatachannel@v1"
+    head_closure = "aiolibdatachannel @ git+https://github.com/example/aiolibdatachannel@v2"
+    report = audit_report("aiolibdatachannel==0.1.0")
+
+    assert audit_status(report, head_closure, base_closure, head_closure) == "fail"
 
 
 def test_an_unreadable_target_branch_set_raises() -> None:
@@ -252,18 +262,23 @@ def test_main_prints_status(tmp_path: Path, capsys: pytest.CaptureFixture[str]) 
     assert capsys.readouterr().out.strip() == "fail"
 
 
-def test_main_reads_the_head_resolution(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """The pull request's own resolved set narrows the findings that gate."""
+def test_main_reads_the_resolutions_in_order(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The target branch is the third argument, the pull request's own set the fourth."""
     audit = tmp_path / "audit.json"
     audit.write_text(audit_report("aiohttp==3.14.1"))
     requirements = tmp_path / "new_deps.txt"
     requirements.write_text("music-assistant-models==1.1.183\n")
-    base_closure = tmp_path / "base_closure.txt"
-    base_closure.write_text("aiohttp==3.14.3\n")
-    head_closure = tmp_path / "head_closure.txt"
-    head_closure.write_text("aiohttp==3.14.3\n")
+    without = tmp_path / "without.txt"
+    without.write_text("aiohttp==3.14.3\n")
+    carrying = tmp_path / "carrying.txt"
+    carrying.write_text("aiohttp==3.14.1\n")
 
-    assert main([str(audit), str(requirements), str(base_closure), str(head_closure)]) == 0
+    assert main([str(audit), str(requirements), str(without), str(carrying)]) == 0
+    assert capsys.readouterr().out.strip() == "fail"
+
+    assert main([str(audit), str(requirements), str(carrying), str(without)]) == 0
     assert capsys.readouterr().out.strip() == "preexisting"
 
 
