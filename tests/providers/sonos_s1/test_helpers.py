@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -14,6 +15,7 @@ from music_assistant.providers.sonos_s1.player import SonosPlayer
 
 IGNORED_ERROR_CODE = "501"
 OTHER_ERROR_CODE = "701"
+SPEAKER_IP = "192.168.1.20"
 
 SOCO_ERRORS = [
     pytest.param(SoCoException("boom"), id="soco"),
@@ -29,9 +31,10 @@ SYNC_AND_ASYNC_FILTERED = ["probe_filtered", "regroup_filtered"]
 class _Speaker(SonosPlayer):
     """Minimal speaker exposing a decorated service call in a sync and an async flavour."""
 
-    def __init__(self, error: Exception | None = None) -> None:
+    def __init__(self, error: Exception | None = None, player_name: str | None = "Kitchen") -> None:
         soco = MagicMock()
-        soco._player_name = "Kitchen"
+        soco._player_name = player_name
+        soco.ip_address = SPEAKER_IP
         self.soco = soco
         self._error = error
 
@@ -81,6 +84,12 @@ async def test_soco_errors_become_a_sonos_update_error(method: str, error: Excep
         await _invoke(_Speaker(error), method)
 
     assert exc_info.value.__cause__ is error
+
+
+def test_speaker_without_a_cached_name_is_reported_by_ip() -> None:
+    """A speaker whose name is not cached yet is named by its IP address."""
+    with pytest.raises(SonosUpdateError, match=re.escape(SPEAKER_IP)):
+        _Speaker(SoCoException("boom"), player_name=None).probe()
 
 
 @pytest.mark.parametrize("method", SYNC_AND_ASYNC_FILTERED)
