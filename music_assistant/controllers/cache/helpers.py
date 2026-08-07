@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import functools
 from collections.abc import Awaitable, Callable, Coroutine
+from copy import deepcopy
+from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -16,6 +19,7 @@ from typing import (
 )
 
 from music_assistant.controllers.cache.constants import (
+    BYPASS_CACHE,
     DEFAULT_CACHE_EXPIRATION,
     LOGGER,
 )
@@ -50,6 +54,7 @@ def use_cache(
     base_class: Any = None,
     allow_expired_cache: bool = False,
     cache_none: bool = True,
+    single_flight: bool = True,
 ) -> Callable[
     [Callable[Concatenate[ProviderT, P], Awaitable[R]]],
     Callable[Concatenate[ProviderT, P], Coroutine[Any, Any, R]],
@@ -73,6 +78,12 @@ def use_cache(
         (a negative hit, e.g. "no lyrics exist for this track"). Set to False for
         methods where None signals a (transient) failure, so the call is retried on
         the next invocation instead of serving a cached None.
+    :param single_flight: Whether concurrent callers that miss the cache on the same key
+        share one execution of the wrapped function instead of each running it. Callers of
+        a shared fetch each get their own copy of the result, or share the one object when
+        it cannot be copied. Set to False for methods that must run once per call, e.g.
+        because they advance a cursor on the provider side or send a one-shot event along
+        with the fetch.
     """
     if allow_bypass is None:
         allow_bypass = not persistent
@@ -97,18 +108,6 @@ def use_cache(
                 cache_key_parts.append(f"{key}{kwargs[key]}")
             cache_key = ".".join(map(str, cache_key_parts))
 
-            def _store_task(result: R) -> Any:
-                return cache.set(
-                    key=cache_key,
-                    data=cast("SerializableType", result),
-                    expiration=expiration,
-                    provider=provider_id,
-                    category=category,
-                    checksum=cache_checksum,
-                    persistent=persistent,
-                    allow_expired_cache=allow_expired_cache,
-                )
-
             # single lookup that returns the entry, its freshness and whether it was found;
             # found distinguishes a stored None (a negative hit) from a cache miss. expired
             # entries are only read (and deserialized) when this call serves stale data
@@ -127,6 +126,18 @@ def use_cache(
 
             if cache_hit and is_fresh:
                 return _reconstruct(cachedata)
+
+            def _store_task(result: R) -> Any:
+                return cache.set(
+                    key=cache_key,
+                    data=cast("SerializableType", result),
+                    expiration=expiration,
+                    provider=provider_id,
+                    category=category,
+                    checksum=cache_checksum,
+                    persistent=persistent,
+                    allow_expired_cache=allow_expired_cache,
+                )
 
             if cache_hit and allow_expired_cache:
                 # serve stale data and refresh in the background;
@@ -151,14 +162,68 @@ def use_cache(
 
             # cache miss (or expired entry without stale-while-revalidate):
             # fetch synchronously, store in background
-            result = await func(self, *args, **kwargs)
-            if cache_none or result is not None:
-                self.mass.create_task(_store_task(result))
-            return result
+            async def _fetch_and_store() -> R:
+                result = await func(self, *args, **kwargs)
+                if cache_none or result is not None:
+                    self.mass.create_task(_store_task(result))
+                return result
+
+            # a caller that bypasses this method's cache asked for the backend, so it
+            # fetches alone rather than joining or publishing a flight
+            if not single_flight or (allow_bypass and BYPASS_CACHE.get()):
+                return await _fetch_and_store()
+
+            async def _flight() -> _FlightOutcome[R]:
+                # the outcome is returned rather than raised, to keep a routine failure quiet:
+                # a MediaNotFoundError out of a cached lookup is an ordinary result that
+                # callers deal with themselves, while a raising task would both draw a warning
+                # from create_task and, once every caller has gone, have asyncio report it
+                # against the shielded future
+                outcome: _FlightOutcome[R] = _FlightOutcome()
+                try:
+                    outcome.result = await _fetch_and_store()
+                except Exception as err:
+                    outcome.error = err
+                return outcome
+
+            # task_id folds concurrent callers for this key onto one execution
+            flight = self.mass.create_task(
+                _flight(), task_id=f"cache_flight.{provider_id}.{cache_key}"
+            )
+            if flight is asyncio.current_task():
+                # a body that calls back into itself for the same key is handed the very
+                # fetch it is running in, and awaiting that would wait on itself forever
+                return await _fetch_and_store()
+            # the shield keeps the shared task out of every caller's cancellation scope: a
+            # caller giving up cancels neither the fetch nor the callers still waiting
+            outcome = await asyncio.shield(flight)
+            if outcome.error is not None:
+                raise outcome.error
+            # the fetched objects stay behind with the flight, which keeps them pristine for
+            # the cache write; callers get a clone each because they do mutate results in
+            # place (per-user podcast resume state, for one)
+            try:
+                return deepcopy(cast("R", outcome.result))
+            except Exception as err:
+                LOGGER.warning(
+                    "Cannot copy the shared result for %s/%s, callers share one object: %s",
+                    provider_id,
+                    cache_key,
+                    err,
+                )
+                return cast("R", outcome.result)
 
         return wrapper
 
     return _decorator
+
+
+@dataclass(slots=True)
+class _FlightOutcome[ResultT]:
+    """Outcome of one shared fetch, handed to every caller awaiting that fetch."""
+
+    result: ResultT | None = None
+    error: Exception | None = None
 
 
 @functools.cache
