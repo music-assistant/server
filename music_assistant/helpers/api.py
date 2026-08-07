@@ -247,7 +247,7 @@ def parse_value(
     if origin in (tuple, list, set, frozenset, Sequence, Iterable):
         return _parse_sequence(name, value, value_type, origin, allow_value_convert)
     if origin is dict:
-        return _parse_dict(value, value_type, allow_value_convert)
+        return _parse_dict(name, value, value_type, allow_value_convert)
     if origin is Union or origin is UnionType:
         return _parse_union(name, value, value_type, allow_value_convert)
     if origin is type:
@@ -602,6 +602,7 @@ def _parse_sequence(
 
 
 def _parse_dict(
+    name: str,
     value: Any,
     value_type: Any,
     allow_value_convert: bool,
@@ -609,6 +610,7 @@ def _parse_dict(
     """
     Parse a value against a dict annotation.
 
+    :param name: Name of the value, used in error messages.
     :param value: The raw (json) value to parse.
     :param value_type: The dict annotation to parse against.
     :param allow_value_convert: Whether conversion of common type mistakes is allowed.
@@ -616,8 +618,8 @@ def _parse_dict(
     subkey_type = get_args(value_type)[0]
     subvalue_type = get_args(value_type)[1]
     return {
-        parse_value(subkey, subkey, subkey_type): parse_value(
-            f"{subkey}.value", subvalue, subvalue_type, allow_value_convert=allow_value_convert
+        parse_value(f"{name} key", subkey, subkey_type): parse_value(
+            f"{name}[{subkey}]", subvalue, subvalue_type, allow_value_convert=allow_value_convert
         )
         for subkey, subvalue in value.items()
     }

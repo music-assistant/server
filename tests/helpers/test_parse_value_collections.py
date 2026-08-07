@@ -114,3 +114,15 @@ def test_parse_value_fixed_length_tuple_in_union() -> None:
     """A union of fixed-length tuples falls through to the member that fits the value."""
     result = parse_value("values", ["a", "b", "c"], tuple[str, str] | tuple[str, str, str])
     assert result == ("a", "b", "c")
+
+
+def test_parse_value_dict_names_the_failing_value() -> None:
+    """A dict value that does not fit its type is reported with its argument and key."""
+    with pytest.raises(TypeError, match=r"invalid for supported_types\[a\]"):
+        parse_value("supported_types", {"a": {}}, dict[str, int])
+
+
+def test_parse_value_dict_names_the_failing_key() -> None:
+    """A dict key that does not fit its type is reported with the argument it belongs to."""
+    with pytest.raises(TypeError, match="invalid for supported_types key"):
+        parse_value("supported_types", {1: "a"}, dict[str, str])
