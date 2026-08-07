@@ -778,6 +778,8 @@ async def test_musicbrainz_lookups_do_not_scale_with_the_source_pool() -> None:
     assert isinstance(game_round.answer_state, TimelineRoundState)
     assert game_round.answer_state.candidate.entry.release_year == 1970
     assert musicbrainz.get_release_year_by_isrc.await_count <= quiz.config.round_count + 1
+    # the name search runs alongside the ISRC lookup, so it is bound to the same entries
+    assert musicbrainz.get_release_year_by_track_name.await_count <= quiz.config.round_count + 1
 
 
 @pytest.mark.asyncio
@@ -909,6 +911,46 @@ async def test_rescuing_undated_tracks_spends_one_request_per_track() -> None:
     assert len(eligible_tracks) == 5
     assert musicbrainz.get_release_year_by_isrc.await_count == 5
     musicbrainz.get_release_year_by_track_name.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_rescuing_undated_tracks_still_dates_them_without_an_isrc() -> None:
+    """Rescue a track by name when it carries no ISRC, on the one lookup it is allowed."""
+    candidate = _track("undated", "Africa", "Toto")
+    quiz, mass = _quiz([candidate])
+    musicbrainz = _with_musicbrainz(mass, {}, name_years={("Toto", "Africa"): 1982})
+    eligible_tracks: dict[str, Track] = {}
+
+    await quiz._rescue_undated_tracks(eligible_tracks, [candidate])
+
+    assert MusicTimelineQuizType._release_year(eligible_tracks[str(candidate.uri)]) == 1982
+    musicbrainz.get_release_year_by_track_name.assert_awaited_once_with("Toto", "Africa")
+
+
+@pytest.mark.asyncio
+async def test_rescuing_undated_tracks_falls_back_to_the_name_for_an_unknown_isrc() -> None:
+    """Rescue a track by name when MusicBrainz has no recording for the ISRC it carries."""
+    candidate = _with_isrc(_track("undated", "Africa", "Toto"), "ISRC-UNKNOWN")
+    quiz, mass = _quiz([candidate])
+    musicbrainz = _with_musicbrainz(mass, {}, name_years={("Toto", "Africa"): 1982})
+    eligible_tracks: dict[str, Track] = {}
+
+    await quiz._rescue_undated_tracks(eligible_tracks, [candidate])
+
+    assert MusicTimelineQuizType._release_year(eligible_tracks[str(candidate.uri)]) == 1982
+    musicbrainz.get_release_year_by_track_name.assert_awaited_once_with("Toto", "Africa")
+
+
+@pytest.mark.asyncio
+async def test_an_implausible_year_does_not_discard_the_other_lookup() -> None:
+    """Judge each MusicBrainz answer on its own so one unusable year cannot annul the other."""
+    track = _with_isrc(_track("track", "Africa", "Toto", album_year=1998), "ISRC-TRACK")
+    quiz, mass = _quiz([track])
+    _with_musicbrainz(mass, {"ISRC-TRACK": 1982}, name_years={("Toto", "Africa"): 999})
+
+    _, release_year = await quiz._musicbrainz_dated_track(track)
+
+    assert release_year == 1982
 
 
 @pytest.mark.asyncio

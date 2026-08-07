@@ -476,19 +476,27 @@ class QuizType(ABC):
                     isrc_year = await self._isrc_release_year(provider, track)
                     # a remaster carries its own ISRC and the name search dates a release group
                     # by the oldest release it finds, so both run late on their own and on
-                    # different songs; the older of the two answers is right more often
+                    # different songs; the older of the two answers is right more often. the
+                    # search also stands in for an ISRC MusicBrainz has no recording for
                     if cross_check or isrc_year is None:
                         name_year = await self._name_release_year(provider, track)
                 except Exception as err:
                     LOGGER.debug("Could not date Music Quiz track %s: %s", track.uri, err)
         # the ISRC year is read before the search runs, so a search that stalls past the budget
         # or fails costs this track precision rather than the year the ISRC already supplied
-        release_year = min(
-            [year for year in (isrc_year, name_year) if year is not None], default=None
-        )
+        current_year = utc().year
         # a year outside this range is rejected by get_track_release_year anyway, and a year
-        # below 1 cannot be expressed as a datetime at all
-        if release_year is None or not MIN_RELEASE_YEAR <= release_year <= utc().year:
+        # below 1 cannot be expressed as a datetime at all. each answer is judged on its own,
+        # so an implausible one cannot pull the other one down with it
+        release_year = min(
+            [
+                year
+                for year in (isrc_year, name_year)
+                if year is not None and MIN_RELEASE_YEAR <= year <= current_year
+            ],
+            default=None,
+        )
+        if release_year is None:
             return track, None
         release_date = track.metadata.release_date
         if release_date is not None and release_date.year <= release_year:

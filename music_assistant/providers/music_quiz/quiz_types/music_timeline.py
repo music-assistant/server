@@ -296,8 +296,8 @@ class MusicTimelineQuizType(QuizType):
         async def _rescue_track(track: Track) -> None:
             async with semaphore:
                 # this batch shares one budget and one 10 requests per 10 seconds allowance, so
-                # every track gets the single lookup that decides whether it can be dated at
-                # all; the entry it may become is cross-checked on its own budget later
+                # every track gets the single lookup that answers what this pass is for: can
+                # the track be dated at all. entries are cross-checked one at a time instead
                 dated_track, _ = await self._musicbrainz_dated_track(track, cross_check=False)
             if dated_track.uri is not None and self._track_is_eligible(dated_track):
                 eligible_tracks[dated_track.uri] = dated_track
