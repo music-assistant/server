@@ -13,6 +13,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 from music_assistant_models.config_entries import ConfigActionResult
 from music_assistant_models.enums import ConfigEntryType
+from music_assistant_models.errors import InvalidDataError
 
 from music_assistant.constants import WILDCARD_BIND_IPS
 from music_assistant.controllers.webserver.controller import (
@@ -167,6 +168,25 @@ async def test_verify_ssl_action_reports_the_certificate_info(
     assert "Subject: CN=localhost" in result.message
     # computed details, so there is nothing to look up in a strings.json
     assert result.translation_key is None
+
+
+async def test_verify_ssl_action_raises_for_an_unusable_certificate(
+    mock_mass: MagicMock, tmp_path: Path, self_signed_cert: tuple[str, str]
+) -> None:
+    """A certificate that cannot be verified is reported as a failure, not an outcome."""
+    certificate, _ = self_signed_cert
+    webserver, _ = await _setup_webserver(
+        mock_mass, tmp_path, certificate=certificate, private_key="not-a-key"
+    )
+
+    with pytest.raises(InvalidDataError) as err:
+        await webserver.handle_config_action(CONF_ACTION_VERIFY_SSL)
+
+    assert err.value.translation_key == "ssl_verification_failed"
+    assert err.value.translation_owner == "core.webserver"
+    # the reason fills the {0} placeholder so the user learns what is wrong
+    assert len(err.value.translation_args) == 1
+    assert err.value.translation_args[0]
 
 
 async def test_config_entries_hold_no_verify_result_label(

@@ -228,6 +228,14 @@ class WebserverController(CoreController):
                 str(self.get_config_value(CONF_SSL_CERTIFICATE, "")),
                 str(self.get_config_value(CONF_SSL_PRIVATE_KEY, "")),
             )
+            if not cert_info.is_valid:
+                # a result only ever reports success, so an unusable certificate must raise
+                raise InvalidDataError(
+                    f"Certificate verification failed: {cert_info.error_message}",
+                    translation_key="ssl_verification_failed",
+                    translation_args=[cert_info.error_message or ""],
+                    translation_owner=self.translation_owner,
+                )
             return ConfigActionResult(message=format_certificate_info(cert_info))
         return await super().handle_config_action(action)
 
