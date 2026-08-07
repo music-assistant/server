@@ -941,12 +941,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
         # Set mute lock for players in a group
         # This prevents auto-unmute when group volume changes
         had_mute_lock = ATTR_MUTE_LOCK in player.extra_data
-        # a sync leader has neither synced_to nor active_group set, but it does lead its
-        # own group_members, which stays empty for a player that is not grouped at all
-        is_in_group = bool(
-            player.state.synced_to or player.state.active_group or player.state.group_members
-        )
-        if muted and is_in_group:
+        if muted and self._is_in_group(player.state):
             player.extra_data[ATTR_MUTE_LOCK] = True
 
         try:
@@ -3450,13 +3445,7 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
 
         # Check if player has mute lock (set when individually muted in a group)
         # If locked, don't auto-unmute when volume changes
-        # Also check the protocol parent player, because cmd_volume_mute stores
-        # the lock on the parent player while this method may be called with
-        # the protocol player ID (e.g. during group volume changes).
-        has_mute_lock = player.extra_data.get(ATTR_MUTE_LOCK, False)
-        if not has_mute_lock and player.protocol_parent_id:
-            if parent := self.get_player(player.protocol_parent_id):
-                has_mute_lock = parent.extra_data.get(ATTR_MUTE_LOCK, False)
+        has_mute_lock = self._has_active_mute_lock(player)
         if (
             not has_mute_lock
             # the live value is what cmd_volume_mute checks, so a control change that
@@ -3538,6 +3527,28 @@ class PlayerController(AnnouncementsMixin, ProtocolLinkingMixin, CoreController)
             )
             await self._handle_cmd_volume_set(protocol_player.player_id, device_volume)
             return
+
+    @staticmethod
+    def _is_in_group(state: PlayerState) -> bool:
+        """Check if the given player is currently grouped with other players."""
+        # a sync leader has neither synced_to nor active_group set, but it does lead its
+        # own group_members, which stays empty for a player that is not grouped at all
+        return bool(state.synced_to or state.active_group or state.group_members)
+
+    def _has_active_mute_lock(self, player: Player) -> bool:
+        """
+        Check if the given player holds a mute lock that still applies to it.
+
+        A lock is only earned inside a group and only holds for as long as the player
+        is still grouped, so it can not outlive the group it was earned in.
+        """
+        if player.extra_data.get(ATTR_MUTE_LOCK) and self._is_in_group(player.state):
+            return True
+        # cmd_volume_mute stores the lock on the parent player, while the volume command
+        # may arrive with the protocol player ID (e.g. during group volume changes)
+        if player.protocol_parent_id and (parent := self.get_player(player.protocol_parent_id)):
+            return bool(parent.extra_data.get(ATTR_MUTE_LOCK)) and self._is_in_group(parent.state)
+        return False
 
     async def _mute_group_members(self, group_player: Player, muted: bool) -> None:
         """
