@@ -25,6 +25,12 @@ from music_assistant.helpers.json import (
     strip_code_fence,
 )
 from music_assistant.helpers.plugin_engines import get_ai_engines, resolve_ai_engine
+from music_assistant.providers.music_quiz.ai_distractors import (
+    AI_QUERY_TIMEOUT_SECONDS,
+    MAX_AI_PROMPT_BYTES,
+    MAX_AI_RESPONSE_BYTES,
+    MAX_AI_RESPONSE_LINES,
+)
 from music_assistant.providers.music_quiz.errors import TRANSLATION_OWNER
 from music_assistant.providers.music_quiz.models import (
     MultipleChoiceRoundState,
@@ -55,9 +61,6 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 AI_GENERATION_ATTEMPTS = 2
-AI_QUERY_TIMEOUT_SECONDS = 30.0
-MAX_AI_PROMPT_BYTES = 8192
-MAX_AI_RESPONSE_BYTES = 4096
 MAX_METADATA_VALUE_LENGTH = 500
 MAX_ANSWER_LENGTH = 200
 MAX_QUESTION_LENGTH = 300
@@ -398,6 +401,8 @@ class TriviaQuizType(QuizType):
             raise TypeError("response must be a string")
         if len(response.encode("utf-8")) > MAX_AI_RESPONSE_BYTES:
             raise ValueError("response exceeds the size limit")
+        if len(response.splitlines()) > MAX_AI_RESPONSE_LINES:
+            raise ValueError("response exceeds the line limit")
         try:
             payload = json_loads(strip_code_fence(response))
         except JSON_DECODE_EXCEPTIONS as err:
