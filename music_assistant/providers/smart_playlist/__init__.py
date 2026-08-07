@@ -1438,7 +1438,9 @@ class SmartPlaylistProvider(PluginProvider):
             for playlist_id, entry in data.items():
                 self._rules_store[playlist_id] = SmartPlaylistRules.from_dict(entry["rules"])
                 self._names_store[playlist_id] = entry.get("name", playlist_id)
-                if description := entry.get("ai_description"):
+                # a description persisted before the size cap existed is dropped here too
+                description = str(entry.get("ai_description") or "")
+                if description and len(description.encode("utf-8")) <= MAX_AI_DESCRIPTION_BYTES:
                     self._descriptions_store[playlist_id] = description
         except Exception as exc:
             self.logger.warning("Failed to load smart playlist rules: %s", exc)

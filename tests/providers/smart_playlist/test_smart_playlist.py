@@ -2085,7 +2085,7 @@ async def test_generate_ai_description_blank_response_returns_none(tmp_path: Any
 
 @pytest.mark.asyncio
 async def test_generate_ai_description_oversized_response_returns_none(tmp_path: Any) -> None:
-    """A reply beyond the size cap is discarded so the rules summary stays in place."""
+    """A reply beyond the size cap is discarded."""
     oversized = "x" * (MAX_AI_DESCRIPTION_BYTES + 1)
     plugin = _make_ai_plugin(tmp_path, ai_enabled=True, ai_provider=_make_ai_provider(oversized))
 
@@ -2403,6 +2403,58 @@ async def test_refresh_ai_description_no_provider_uses_fallback(tmp_path: Any) -
     assert "abc" not in plugin._descriptions_store
     written = cast("Any", plugin)._update_playlist_description.await_args.args[1]
     assert written == f"[Smart Playlist] {rules.human_readable()}"
+
+
+@pytest.mark.asyncio
+async def test_refresh_ai_description_oversized_reply_uses_fallback(tmp_path: Any) -> None:
+    """An oversized reply drops the stored text and writes the fallback."""
+    oversized = "x" * (MAX_AI_DESCRIPTION_BYTES + 1)
+    plugin = _make_ai_plugin(tmp_path, ai_provider=_make_ai_provider(oversized))
+    await plugin.handle_async_init()
+    rules = SmartPlaylistRules(favorites_only=True)
+    plugin._rules_store["abc"] = rules
+    plugin._names_store["abc"] = "Name"
+    plugin._descriptions_store["abc"] = "Good text."
+    cast("Any", plugin.mass).music.playlists.get_library_item_by_prov_id = AsyncMock(
+        return_value=_make_library_item(plugin, "abc")
+    )
+    cast("Any", plugin)._update_playlist_description = AsyncMock()
+
+    await plugin._refresh_ai_description("abc")
+
+    assert "abc" not in plugin._descriptions_store
+    written = cast("Any", plugin)._update_playlist_description.await_args.args[1]
+    assert written == f"[Smart Playlist] {rules.human_readable()}"
+
+
+@pytest.mark.asyncio
+async def test_load_rules_from_disk_drops_an_oversized_description(tmp_path: Any) -> None:
+    """A description persisted before the size cap existed is not adopted on load."""
+    plugin = _make_ai_plugin(tmp_path)
+    await plugin.handle_async_init()
+    await write_json(
+        str(tmp_path / "smart_playlists" / RULES_FILENAME),
+        {
+            "abc": {
+                "name": "Name",
+                "rules": SmartPlaylistRules(favorites_only=True).to_dict(),
+                "ai_description": "x" * (MAX_AI_DESCRIPTION_BYTES + 1),
+            },
+            "def": {
+                "name": "Other",
+                "rules": SmartPlaylistRules(favorites_only=True).to_dict(),
+                "ai_description": "Short and fine.",
+            },
+        },
+    )
+    plugin._rules_store.clear()
+    plugin._descriptions_store.clear()
+
+    await plugin._load_rules_from_disk()
+
+    assert "abc" in plugin._rules_store
+    assert "abc" not in plugin._descriptions_store
+    assert plugin._descriptions_store["def"] == "Short and fine."
 
 
 @pytest.mark.asyncio
