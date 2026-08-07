@@ -94,7 +94,7 @@ class SonosPlayer(Player):
 
         # Subscriptions and events
         self._subscriptions: list[SubscriptionBase] = []
-        self._subscription_lock: asyncio.Lock | None = None
+        self._subscription_lock: asyncio.Lock = asyncio.Lock()
         self._last_activity: float = NEVER_TIME
         self._resub_cooldown_expires_at: float | None = None
         self._poll_task_id: str = f"sonos_poll_{self.player_id}"
@@ -118,18 +118,8 @@ class SonosPlayer(Player):
 
     async def offline(self) -> None:
         """Handle removal of speaker when unavailable."""
-        if not self._attr_available:
-            return
-
-        if self._resub_cooldown_expires_at is None and not self.mass.closing:
-            self._resub_cooldown_expires_at = time.monotonic() + RESUB_COOLDOWN_SECONDS
-            self.logger.debug("Starting resubscription cooldown for %s", self.display_name)
-
-        self._attr_available = False
-        self._share_link_plugin = None
-
-        self.update_state()
-        await self.unsubscribe()
+        async with self._subscription_lock:
+            await self._offline()
 
     async def on_unload(self) -> None:
         """Handle logic when the player is unloaded from the Player controller."""
@@ -402,9 +392,6 @@ class SonosPlayer(Player):
 
     async def subscribe(self) -> None:
         """Initiate event subscriptions under an async lock."""
-        if not self._subscription_lock:
-            self._subscription_lock = asyncio.Lock()
-
         async with self._subscription_lock:
             try:
                 # Create event subscriptions.
@@ -425,7 +412,7 @@ class SonosPlayer(Player):
             except SonosSubscriptionsFailed:
                 self.logger.warning("Creating subscriptions failed for %s", self.display_name)
                 # the subscription lock is already held here and is not reentrant
-                await self.offline()
+                await self._offline()
 
     async def unsubscribe(self) -> None:
         """Cancel all subscriptions."""
@@ -603,6 +590,21 @@ class SonosPlayer(Player):
         track_info[DURATION_SECONDS] = _timespan_secs(track_info.get("duration"))
         track_info[POSITION_SECONDS] = _timespan_secs(track_info.get("position"))
         return track_info
+
+    async def _offline(self) -> None:
+        """Handle removal of speaker when unavailable; caller must hold the subscription lock."""
+        if not self._attr_available:
+            return
+
+        if self._resub_cooldown_expires_at is None and not self.mass.closing:
+            self._resub_cooldown_expires_at = time.monotonic() + RESUB_COOLDOWN_SECONDS
+            self.logger.debug("Starting resubscription cooldown for %s", self.display_name)
+
+        self._attr_available = False
+        self._share_link_plugin = None
+
+        self.update_state()
+        await self.unsubscribe()
 
     async def _subscribe_target(
         self, target: SubscriptionBase, sub_callback: Callable[[SonosEvent], None]
