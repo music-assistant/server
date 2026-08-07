@@ -57,6 +57,8 @@ def self_signed_cert() -> tuple[str, str]:
 @pytest.fixture
 def mock_mass() -> MagicMock:
     """Create a mock Music Assistant instance."""
+    # deliberate override of the package fixture: the base URL these tests exercise
+    # is also derived from the addon and provider state
     mass = MagicMock()
     mass.config.get_raw_core_config_value.return_value = "GLOBAL"
     mass.running_as_hass_addon = False

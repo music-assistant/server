@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 
 @pytest.fixture
-async def cache(mass_minimal: MusicAssistant) -> CacheController:
+async def cache_controller(mass_minimal: MusicAssistant) -> CacheController:
     """Return an initialized cache controller."""
     await mass_minimal.cache._setup_database()
     return mass_minimal.cache

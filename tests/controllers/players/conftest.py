@@ -15,4 +15,6 @@ if TYPE_CHECKING:
 @pytest.fixture
 def provider(mock_mass: MagicMock) -> MockProvider:
     """Create a mock provider."""
+    # mock_mass is defined per test module and differs between them, so a module
+    # requesting this fixture must bring its own
     return MockProvider("test_provider", instance_id="test_prov", mass=mock_mass)
