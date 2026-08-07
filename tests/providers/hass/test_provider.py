@@ -18,17 +18,19 @@ from music_assistant_models.errors import SetupFailedError, UnsupportedFeaturedE
 from music_assistant.constants import CONF_LOG_LEVEL
 from music_assistant.providers.hass import (
     CONF_AUTH_TOKEN,
-    CONF_MUTE_CONTROLS,
-    CONF_POWER_CONTROLS,
     CONF_URL,
     CONF_VERIFY_SSL,
-    CONF_VOLUME_CONTROLS,
     STATE_FETCH_BATCH_SIZE,
     HassRegistryEntity,
     HomeAssistantProvider,
     setup,
 )
-from music_assistant.providers.hass.constants import MediaPlayerEntityFeature
+from music_assistant.providers.hass.constants import (
+    CONF_MUTE_CONTROLS,
+    CONF_POWER_CONTROLS,
+    CONF_VOLUME_CONTROLS,
+    MediaPlayerEntityFeature,
+)
 from tests.common import use_real_create_task
 
 LAST_CHANGED = 1683832716.072648
@@ -887,7 +889,7 @@ async def test_registry_update_of_another_domain_invalidates_the_registry() -> N
     [
         pytest.param({"name": "Old name"}, id="rename"),
         pytest.param({"icon": None}, id="icon"),
-        pytest.param({"area_id": None, "labels": []}, id="area_and_labels"),
+        pytest.param({"labels": []}, id="labels"),
         pytest.param({"hidden_by": None}, id="hidden"),
         # an integration reload re-registers its entities, which touches these
         pytest.param({"capabilities": None, "supported_features": 0}, id="reload"),
@@ -915,6 +917,7 @@ async def test_registry_update_of_unmirrored_fields_keeps_the_registry(
         pytest.param({"entity_id": "light.old"}, id="entity_id"),
         pytest.param({"platform": "old_platform"}, id="platform"),
         pytest.param({"device_id": None}, id="device_id"),
+        pytest.param({"area_id": None}, id="area_id"),
         # the listing omits disabled entities, so this one enters or leaves it
         pytest.param({"disabled_by": None}, id="disabled_by"),
         # a device rename reports no changed fields at all
@@ -1027,21 +1030,26 @@ async def test_shared_registry_rejects_writes() -> None:
 
         with pytest.raises(TypeError):
             registry["light.kitchen"] = HassRegistryEntity(  # type: ignore[index]
-                platform="test", device_id=None
+                platform="test", device_id=None, area_id=None
             )
         with pytest.raises(AttributeError):
             registry["tts.only"].platform = "test"  # type: ignore[misc]
 
 
 async def test_registry_reuses_repeated_strings() -> None:
-    """Hold on to a single string object per distinct platform and device id."""
+    """Hold on to a single string object per distinct platform, device id and area id."""
     async with _start_provider([_state("tts.only", "Only")]) as (provider, _):
-        # decode the listing like a real response, so the repeated platform and device id
-        # arrive as distinct string objects instead of shared literals
+        # decode the listing like a real response, so the repeated platform, device id and
+        # area id arrive as distinct string objects instead of shared literals
         entities = json.loads(
             json.dumps(
                 [
-                    {"ei": f"light.lamp_{index}", "pl": "esphome", "di": "device"}
+                    {
+                        "ei": f"light.lamp_{index}",
+                        "pl": "esphome",
+                        "di": "device",
+                        "ai": "area",
+                    }
                     for index in range(3)
                 ]
             )
@@ -1053,10 +1061,32 @@ async def test_registry_reuses_repeated_strings() -> None:
 
         assert len(registry) == 3
         assert registry["light.lamp_0"] == HassRegistryEntity(
-            platform="esphome", device_id="device"
+            platform="esphome", device_id="device", area_id="area"
         )
         assert len({id(entry.platform) for entry in registry.values()}) == 1
         assert len({id(entry.device_id) for entry in registry.values()}) == 1
+        assert len({id(entry.area_id) for entry in registry.values()}) == 1
+
+
+async def test_registry_leaves_out_the_device_and_area_it_is_not_told_about() -> None:
+    """Report no device or area for the entities whose listing entry omits them."""
+    async with _start_provider([_state("tts.only", "Only")]) as (provider, _):
+        entities = [
+            {"ei": "light.full", "pl": "esphome", "di": "device", "ai": "area"},
+            {"ei": "light.bare", "pl": "esphome"},
+            {"ei": "light.device_only", "pl": "esphome", "di": "other_device"},
+        ]
+        with patch.object(
+            provider.hass, "send_command", AsyncMock(return_value={"entities": entities})
+        ):
+            registry = await provider._fetch_entity_registry()
+
+        assert registry["light.bare"] == HassRegistryEntity(
+            platform="esphome", device_id=None, area_id=None
+        )
+        assert registry["light.device_only"] == HassRegistryEntity(
+            platform="esphome", device_id="other_device", area_id=None
+        )
 
 
 async def test_device_registry_is_reused_within_the_cache_window() -> None:
