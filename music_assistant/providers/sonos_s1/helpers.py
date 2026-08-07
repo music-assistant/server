@@ -82,6 +82,25 @@ def soco_error(
     return decorator
 
 
+def hostname_to_uid(hostname: str) -> str:
+    """Convert a Sonos hostname to a uid."""
+    if hostname.startswith("Sonos-"):
+        baseuid = hostname.removeprefix("Sonos-").replace(".local.", "")
+    elif hostname.startswith("sonos"):
+        baseuid = hostname.removeprefix("sonos").replace(".local.", "")
+    else:
+        msg = f"{hostname} is not a sonos device."
+        raise ValueError(msg)
+    return f"{UID_PREFIX}{baseuid}{UID_POSTFIX}"
+
+
+def sync_get_visible_zones(soco: SoCo) -> set[SoCo]:
+    """Ensure I/O attributes are cached and return visible zones."""
+    _ = soco.household_id
+    _ = soco.uid
+    return soco.visible_zones or set()
+
+
 def _handle_soco_error(
     instance: Any,
     err: Exception,
@@ -113,22 +132,3 @@ def _find_target_identifier(instance: Any, fallback_soco: SoCo | None) -> str | 
         # Only use attributes with no I/O
         return str(soco._player_name or soco.ip_address)
     return None
-
-
-def hostname_to_uid(hostname: str) -> str:
-    """Convert a Sonos hostname to a uid."""
-    if hostname.startswith("Sonos-"):
-        baseuid = hostname.removeprefix("Sonos-").replace(".local.", "")
-    elif hostname.startswith("sonos"):
-        baseuid = hostname.removeprefix("sonos").replace(".local.", "")
-    else:
-        msg = f"{hostname} is not a sonos device."
-        raise ValueError(msg)
-    return f"{UID_PREFIX}{baseuid}{UID_POSTFIX}"
-
-
-def sync_get_visible_zones(soco: SoCo) -> set[SoCo]:
-    """Ensure I/O attributes are cached and return visible zones."""
-    _ = soco.household_id
-    _ = soco.uid
-    return soco.visible_zones or set()
