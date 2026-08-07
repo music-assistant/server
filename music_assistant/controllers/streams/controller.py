@@ -203,7 +203,7 @@ class StreamsController(CoreController):
         self._configured_publish_ip: str | None = None
         # every address players may reach this host on, best candidate first; publish_ip is
         # the first of them and the network fingerprint watches the whole list for changes
-        self.publish_addresses: list[str] = []
+        self._publish_addresses: list[str] = []
         # the network as it was at the previous setup, to spot a runtime change
         self._network_fingerprint: tuple[str, str, int, tuple[str, ...]] | None = None
         self.audio = StreamsAudio(mass)
@@ -1653,7 +1653,7 @@ class StreamsController(CoreController):
             self._bind_ip,
             str(self.publish_ip),
             cast("int", self.publish_port),
-            tuple(self.publish_addresses),
+            tuple(self._publish_addresses),
         )
         if previous is None or previous == current:
             self._network_fingerprint = current
@@ -1702,11 +1702,11 @@ class StreamsController(CoreController):
         :param publish_candidates: Host addresses reachable from the local network, ranked.
         """
         self._bind_ip = bind_ip
-        self.publish_addresses = _get_publish_addresses(
+        self._publish_addresses = _get_publish_addresses(
             bind_ip, self._configured_publish_ip, publish_candidates
         )
-        # players that can only be handed one address get the highest ranked one
-        self.publish_ip = self.publish_addresses[0]
+        # the single address players are handed, taken from the top of the ranked list
+        self.publish_ip = self._publish_addresses[0]
         self._base_url = f"http://{format_ip_for_url(self.publish_ip)}:{self.publish_port}"
 
 
