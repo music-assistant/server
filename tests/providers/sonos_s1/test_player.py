@@ -283,6 +283,35 @@ async def test_unloaded_player_ignores_group_topology_updates(
     update_state.assert_not_called()
 
 
+async def test_on_unload_unsubscribes_from_soco_events(timer_mass: MusicAssistant) -> None:
+    """Unloading a speaker also tears down its soco event subscriptions."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    subscription = MagicMock()
+    subscription.unsubscribe = AsyncMock()
+    player._subscriptions = [subscription]
+
+    await player.on_unload()
+
+    subscription.unsubscribe.assert_awaited_once()
+    assert player._subscriptions == []
+
+
+async def test_on_unload_unsubscribes_even_when_already_unavailable(
+    timer_mass: MusicAssistant,
+) -> None:
+    """Unlike offline(), on_unload() must still tear down an unavailable speaker's events."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    subscription = MagicMock()
+    subscription.unsubscribe = AsyncMock()
+    player._subscriptions = [subscription]
+    player._attr_available = False
+
+    await player.on_unload()
+
+    subscription.unsubscribe.assert_awaited_once()
+    assert player._subscriptions == []
+
+
 async def test_unsubscribe_drops_subscriptions_even_when_cancelled() -> None:
     """A cancelled unsubscribe must not leave stale entries that block resubscribing."""
     provider = MagicMock()

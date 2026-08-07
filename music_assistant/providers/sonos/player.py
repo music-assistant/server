@@ -195,6 +195,19 @@ class SonosPlayer(Player):
             CONF_ENTRY_HTTP_PROFILE_DEFAULT_2,
         ]
 
+    async def on_unload(self) -> None:
+        """Handle logic when the player is unloaded from the Player controller."""
+        await super().on_unload()
+        for task_id in (
+            f"sonos_reconnect_{self.player_id}",
+            f"restore_airplay_group_{self.player_id}",
+        ):
+            # a timer that already fired lives on as a task under the same id,
+            # so both are needed to cover the pending and the running case
+            self.mass.cancel_timer(task_id)
+            self.mass.cancel_task(task_id)
+        await self._disconnect()
+
     async def volume_set(self, volume_level: int) -> None:
         """
         Handle VOLUME_SET command on the player.

@@ -131,6 +131,9 @@ class SonosPlayer(Player):
         # the poll runs as a task under the same id and cancel_task is what stops it
         self.mass.cancel_timer(self._poll_task_id)
         self.mass.cancel_task(self._poll_task_id)
+        # unsubscribe directly: offline() skips a speaker that is already marked
+        # unavailable, which would leave its subscriptions behind
+        await self.unsubscribe()
 
     async def stop(self) -> None:
         """Send STOP command to the player."""
