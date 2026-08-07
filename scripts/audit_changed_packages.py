@@ -45,7 +45,8 @@ def requirement_versions(requirements: str) -> dict[str, set[str]]:
     """
     Return the versions the given requirement lines pin, keyed on normalized package name.
 
-    A package pinned by URL rather than by version maps to an empty set.
+    A package maps to an empty set when no line pins it to an exact version, as a URL
+    or a range requirement does not.
 
     :param requirements: Requirement lines, one per line.
     """
