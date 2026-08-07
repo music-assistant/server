@@ -500,9 +500,17 @@ def parse_value(  # noqa: PLR0911
     if origin is tuple and (subtypes := get_args(value_type)) and subtypes[-1] is not Ellipsis:
         # a fixed-length tuple annotates every position separately, so each member is
         # parsed against its own type and kept, including the members that are None
+        if len(value) != len(subtypes):
+            msg = (
+                f"Value {value} of type {type(value)} is invalid for {name}, "
+                f"expected value of type {value_type}"
+            )
+            raise TypeError(msg)
         return tuple(
-            parse_value(name, subvalue, subtype, allow_value_convert=allow_value_convert)
-            for subvalue, subtype in zip(value, subtypes, strict=True)
+            parse_value(
+                f"{name}[{index}]", subvalue, subtype, allow_value_convert=allow_value_convert
+            )
+            for index, (subvalue, subtype) in enumerate(zip(value, subtypes, strict=True))
         )
     if origin in (tuple, list, set, frozenset, Sequence, Iterable):
         # For abstract types like Sequence and Iterable, use list as the concrete type

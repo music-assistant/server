@@ -82,5 +82,17 @@ def test_parse_value_variadic_tuple() -> None:
 
 def test_parse_value_fixed_length_tuple_wrong_length() -> None:
     """A value with the wrong number of members is rejected for a fixed-length tuple."""
-    with pytest.raises(ValueError):  # noqa: PT011
+    with pytest.raises(TypeError, match="is invalid for values"):
         parse_value("values", ["a"], tuple[str, str])
+
+
+def test_parse_value_fixed_length_tuple_names_the_failing_member() -> None:
+    """An unparseable member is reported with its position in the tuple."""
+    with pytest.raises(TypeError, match=r"invalid for values\[1\]"):
+        parse_value("values", ["a", {}], tuple[str, str])
+
+
+def test_parse_value_fixed_length_tuple_in_union() -> None:
+    """A union of fixed-length tuples falls through to the member that fits the value."""
+    result = parse_value("values", ["a", "b", "c"], tuple[str, str] | tuple[str, str, str])
+    assert result == ("a", "b", "c")
