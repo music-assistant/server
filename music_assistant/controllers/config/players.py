@@ -300,7 +300,7 @@ class PlayerConfigMixin:
         if isinstance(result, ConfigActionResult):
             # the strings belong to the provider that handled the action, which for a
             # protocol-prefixed action is the protocol player's, not the host player's
-            result.translation_owner = result.translation_owner or f"provider.{target.provider}"
+            result.translation_owner = result.translation_owner or target.translation_owner
             return result
         # re-render the full (parent) player entries so injected protocol entries refresh
         return await self.get_player_config_entries(player_id)

@@ -183,7 +183,9 @@ def _action_outcome(mass: MusicAssistant, result: ConfigActionResult) -> dict[st
     if result.translation_key:
         message = (
             mass.translations.get_translation(
-                f"config_actions.{result.translation_key}", owner=result.translation_owner
+                f"config_actions.{result.translation_key}",
+                owner=result.translation_owner,
+                params=[str(a) for a in result.translation_args] or None,
             )
             or message
         )

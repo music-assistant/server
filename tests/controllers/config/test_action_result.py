@@ -87,7 +87,7 @@ async def test_player_action_result_is_returned_without_rerender() -> None:
     """A player action result is passed through and skips the full-entries re-render."""
     mock_mass = MagicMock()
     player = MagicMock()
-    player.provider = "some_player_provider"
+    player.translation_owner = "provider.some_player_provider"
     action_result = ConfigActionResult(translation_key="some_action.result")
     player.handle_config_action = AsyncMock(return_value=action_result)
     mock_mass.players.get_player.return_value = player
@@ -105,7 +105,7 @@ async def test_player_action_result_keeps_a_preset_owner() -> None:
     """A player result that already declares its owner keeps it."""
     mock_mass = MagicMock()
     player = MagicMock()
-    player.provider = "some_player_provider"
+    player.translation_owner = "provider.some_player_provider"
     action_result = ConfigActionResult(
         translation_key="some_action.result", translation_owner="common"
     )
@@ -123,10 +123,10 @@ async def test_protocol_action_result_is_returned_without_rerendering_the_parent
     """A protocol-routed result is passed through, owned by the protocol player's provider."""
     mock_mass = MagicMock()
     parent = MagicMock()
-    parent.provider = "host_provider"
+    parent.translation_owner = "provider.host_provider"
     parent.handle_config_action = AsyncMock()
     protocol_player = MagicMock()
-    protocol_player.provider = "protocol_provider"
+    protocol_player.translation_owner = "provider.protocol_provider"
     action_result = ConfigActionResult(translation_key="some_action.result")
     protocol_player.handle_config_action = AsyncMock(return_value=action_result)
     mock_mass.players.get_player.side_effect = lambda player_id, *_args: {

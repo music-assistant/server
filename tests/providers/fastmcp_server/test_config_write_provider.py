@@ -128,15 +128,25 @@ def test_action_outcome_localizes_a_translation_key() -> None:
     from music_assistant.providers.fastmcp_server.tools.config import _action_outcome
 
     mass = MagicMock()
-    mass.translations.get_translation.return_value = "The cache has been cleared"
+    # stand in for the resolver, echoing what it was asked to resolve
+    mass.translations.get_translation.side_effect = lambda key, owner=None, params=None: (
+        f"{key}|{owner}|{','.join(params or ())}"
+    )
     result = ConfigActionResult(
         translation_key="clear_cache.result", translation_owner="core.cache"
     )
 
-    assert _action_outcome(mass, result) == {"message": "The cache has been cleared"}
-    mass.translations.get_translation.assert_called_once_with(
-        "config_actions.clear_cache.result", owner="core.cache"
+    assert _action_outcome(mass, result) == {
+        "message": "config_actions.clear_cache.result|core.cache|"
+    }
+    # positional args reach the resolver so a templated message renders filled in
+    templated = ConfigActionResult(
+        translation_key="cleanup.result", translation_owner="core.cache", translation_args=[3]
     )
+
+    assert _action_outcome(mass, templated) == {
+        "message": "config_actions.cleanup.result|core.cache|3"
+    }
 
 
 def test_action_outcome_reports_a_url_and_omits_absent_fields() -> None:
