@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import inspect
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
-from soco import SoCo
 from soco.exceptions import SoCoException, SoCoUPnPException
 
 from music_assistant.providers.sonos_s1.helpers import SonosUpdateError, soco_error
@@ -30,8 +30,9 @@ class _Speaker(SonosPlayer):
     """Minimal speaker exposing a decorated service call in a sync and an async flavour."""
 
     def __init__(self, error: Exception | None = None) -> None:
-        self.soco = SoCo("192.168.99.1")
-        self.soco._player_name = "Kitchen"
+        soco = MagicMock()
+        soco._player_name = "Kitchen"
+        self.soco = soco
         self._error = error
 
     @soco_error()

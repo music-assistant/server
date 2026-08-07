@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import inspect
 import logging
 from collections.abc import Callable
@@ -52,8 +53,9 @@ def soco_error(
         """Decorate functions."""
         if inspect.iscoroutinefunction(funct):
 
+            @functools.wraps(funct)
             async def async_wrapper(self: _T, *args: _P.args, **kwargs: _P.kwargs) -> Any:
-                """Wrap for all soco UPnP exception."""
+                """Await the call so soco UPnP exceptions surface inside the try block."""
                 args_soco = next((arg for arg in args if isinstance(arg, SoCo)), None)
                 try:
                     return await funct(self, *args, **kwargs)
@@ -63,6 +65,7 @@ def soco_error(
 
             return cast("_ReturnFuncType[_T, _P, _R]", async_wrapper)
 
+        @functools.wraps(funct)
         def wrapper(self: _T, *args: _P.args, **kwargs: _P.kwargs) -> _R | None:
             """Wrap for all soco UPnP exception."""
             args_soco = next((arg for arg in args if isinstance(arg, SoCo)), None)

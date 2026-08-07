@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from music_assistant_models.enums import MediaType, PlaybackState
 from music_assistant_models.errors import PlayerCommandFailed
-from soco.exceptions import SoCoUPnPException
+from soco.exceptions import SoCoException
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import PlayerMedia
@@ -209,7 +209,7 @@ async def test_grouping_failure_is_reported_as_a_player_command_failure(
     kitchen = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
     study = _make_player(timer_mass, "RINCON_000E58BBBBBB01400", "Study")
     cast("MagicMock", timer_mass.players).get_player.side_effect = {study.player_id: study}.get
-    study.soco.join.side_effect = SoCoUPnPException("boom", "501", b"")
+    study.soco.join.side_effect = SoCoException("the speaker refused to join")
 
     with pytest.raises(PlayerCommandFailed, match="Kitchen"):
         await kitchen.set_members(player_ids_to_add=[study.player_id])
