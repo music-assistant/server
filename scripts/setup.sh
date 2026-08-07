@@ -89,15 +89,15 @@ check_native_lib() {
   warn_missing "'$module' is installed but cannot load its native library." "$brew_pkg" "$apt_pkg"
 }
 
-# These bindings are imported at module scope by their providers, so a missing native
-# library surfaces as a pytest collection error rather than a skipped test.
+# Both providers import these bindings lazily, so a missing native library only stops the
+# provider that needs it. Check here so that shows up during setup instead of at runtime.
 echo "Checking OS-level dependencies..."
 command -v ffmpeg &>/dev/null || warn_missing "ffmpeg not found in PATH (6.1 minimum, 7.x recommended)." ffmpeg ffmpeg
 check_native_lib chromaprint chromaprint libchromaprint1
 check_native_lib sounddevice portaudio libportaudio2
 
 if [[ "$missing_prereqs" -eq 1 ]]; then
-  echo "⚠️  Tests may fail or be skipped until the above is resolved (see DEVELOPMENT.md)."
+  echo "⚠️  Some tests and providers may not work until the above is resolved (see DEVELOPMENT.md)."
 fi
 
 echo "✅ Done. Interpreter: $(python -V). Package manager: $(uv --version)"
