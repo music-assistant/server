@@ -463,7 +463,7 @@ def parse_utc_timestamp(datetime_string: str) -> datetime:
     return datetime.fromisoformat(datetime_string)
 
 
-def parse_value(  # noqa: PLR0911, PLR0915
+def parse_value(
     name: str,
     value: Any,
     value_type: Any,
@@ -498,65 +498,13 @@ def parse_value(  # noqa: PLR0911, PLR0915
         return None
     origin = get_origin(value_type)
     if origin is tuple and (subtypes := get_args(value_type)) and subtypes[-1] is not Ellipsis:
-        # a fixed-length tuple annotates every position separately, so each member is
-        # parsed against its own type and kept, including the members that are None
-        if len(value) != len(subtypes):
-            msg = (
-                f"Value {value} of type {type(value)} is invalid for {name}, "
-                f"expected value of type {value_type}"
-            )
-            raise TypeError(msg)
-        return tuple(
-            parse_value(
-                f"{name}[{index}]", subvalue, subtype, allow_value_convert=allow_value_convert
-            )
-            for index, (subvalue, subtype) in enumerate(zip(value, subtypes, strict=True))
-        )
+        return _parse_fixed_length_tuple(name, value, value_type, subtypes, allow_value_convert)
     if origin in (tuple, list, set, frozenset, Sequence, Iterable):
-        # For abstract types like Sequence and Iterable, use list as the concrete type
-        concrete_type = list if origin in (Sequence, Iterable) else origin
-        return concrete_type(
-            parse_value(
-                name, subvalue, get_args(value_type)[0], allow_value_convert=allow_value_convert
-            )
-            for subvalue in value
-            if subvalue is not None
-        )
+        return _parse_sequence(name, value, value_type, origin, allow_value_convert)
     if origin is dict:
-        subkey_type = get_args(value_type)[0]
-        subvalue_type = get_args(value_type)[1]
-        return {
-            parse_value(subkey, subkey, subkey_type): parse_value(
-                f"{subkey}.value", subvalue, subvalue_type, allow_value_convert=allow_value_convert
-            )
-            for subkey, subvalue in value.items()
-        }
+        return _parse_dict(value, value_type, allow_value_convert)
     if origin is Union or origin is UnionType:
-        # try all possible types
-        sub_value_types = get_args(value_type)
-        if value is None and NoneType in sub_value_types:
-            # an optional annotation with no value needs no further parsing
-            return None
-        for sub_arg_type in sub_value_types:
-            # try them all until one succeeds
-            try:
-                return parse_value(
-                    name, value, sub_arg_type, allow_value_convert=allow_value_convert
-                )
-            except KeyError, TypeError, ValueError, MissingField:
-                pass
-        # if we get to this point, all possibilities failed
-        # find out if we should raise or log this
-        err = (
-            f"Value {value} of type {type(value)} is invalid for {name}, "
-            f"expected value of type {value_type}"
-        )
-        if NoneType not in sub_value_types:
-            # raise exception, we have no idea how to handle this value
-            raise TypeError(err)
-        # failed to parse the (sub) value but None allowed, log only
-        logging.getLogger(__name__).warning(err)
-        return None
+        return _parse_union(name, value, value_type, allow_value_convert)
     if origin is type:
         # type[X] parameters are skipped in parse_arguments so this branch
         # should not be reachable from API input. Reject as a safeguard.
@@ -579,17 +527,7 @@ def parse_value(  # noqa: PLR0911, PLR0915
         pass
 
     if allow_value_convert:
-        # allow conversion of common types/mistakes
-        if value_type is float and isinstance(value, int):
-            return float(value)
-        if value_type is int and isinstance(value, float):
-            return int(value)
-        if value_type is int and isinstance(value, str) and value.isnumeric():
-            return int(value)
-        if value_type is float and isinstance(value, str) and value.isnumeric():
-            return float(value)
-        if value_type is bool and isinstance(value, str | int):
-            return try_parse_bool(value)
+        value = _convert_common_value(value, value_type)
 
     if not isinstance(value, value_type):
         # all options failed, raise exception
@@ -598,4 +536,141 @@ def parse_value(  # noqa: PLR0911, PLR0915
             f"expected value of type {value_type}"
         )
         raise TypeError(msg)
+    return value
+
+
+def _parse_fixed_length_tuple(
+    name: str,
+    value: Any,
+    value_type: Any,
+    subtypes: tuple[Any, ...],
+    allow_value_convert: bool,
+) -> tuple[Any, ...]:
+    """
+    Parse a value against a fixed-length tuple annotation.
+
+    :param name: Name of the value, used in error messages.
+    :param value: The raw (json) value to parse.
+    :param value_type: The tuple annotation to parse against.
+    :param subtypes: The type arguments of the tuple annotation, one per position.
+    :param allow_value_convert: Whether conversion of common type mistakes is allowed.
+    """
+    # a fixed-length tuple annotates every position separately, so each member is
+    # parsed against its own type and kept, including the members that are None
+    if len(value) != len(subtypes):
+        msg = (
+            f"Value {value} of type {type(value)} is invalid for {name}, "
+            f"expected value of type {value_type}"
+        )
+        raise TypeError(msg)
+    return tuple(
+        parse_value(f"{name}[{index}]", subvalue, subtype, allow_value_convert=allow_value_convert)
+        for index, (subvalue, subtype) in enumerate(zip(value, subtypes, strict=True))
+    )
+
+
+def _parse_sequence(
+    name: str,
+    value: Any,
+    value_type: Any,
+    origin: Any,
+    allow_value_convert: bool,
+) -> Any:
+    """
+    Parse a value against a homogeneous sequence annotation.
+
+    :param name: Name of the value, used in error messages.
+    :param value: The raw (json) value to parse.
+    :param value_type: The sequence annotation to parse against.
+    :param origin: The unsubscripted origin of the annotation.
+    :param allow_value_convert: Whether conversion of common type mistakes is allowed.
+    """
+    # For abstract types like Sequence and Iterable, use list as the concrete type
+    concrete_type = list if origin in (Sequence, Iterable) else origin
+    return concrete_type(
+        parse_value(
+            name, subvalue, get_args(value_type)[0], allow_value_convert=allow_value_convert
+        )
+        for subvalue in value
+        if subvalue is not None
+    )
+
+
+def _parse_dict(
+    value: Any,
+    value_type: Any,
+    allow_value_convert: bool,
+) -> dict[Any, Any]:
+    """
+    Parse a value against a dict annotation.
+
+    :param value: The raw (json) value to parse.
+    :param value_type: The dict annotation to parse against.
+    :param allow_value_convert: Whether conversion of common type mistakes is allowed.
+    """
+    subkey_type = get_args(value_type)[0]
+    subvalue_type = get_args(value_type)[1]
+    return {
+        parse_value(subkey, subkey, subkey_type): parse_value(
+            f"{subkey}.value", subvalue, subvalue_type, allow_value_convert=allow_value_convert
+        )
+        for subkey, subvalue in value.items()
+    }
+
+
+def _parse_union(
+    name: str,
+    value: Any,
+    value_type: Any,
+    allow_value_convert: bool,
+) -> Any:
+    """
+    Parse a value against a union annotation, trying every member until one fits.
+
+    :param name: Name of the value, used in error messages.
+    :param value: The raw (json) value to parse.
+    :param value_type: The union annotation to parse against.
+    :param allow_value_convert: Whether conversion of common type mistakes is allowed.
+    """
+    sub_value_types = get_args(value_type)
+    if value is None and NoneType in sub_value_types:
+        # an optional annotation with no value needs no further parsing
+        return None
+    for sub_arg_type in sub_value_types:
+        # try them all until one succeeds
+        try:
+            return parse_value(name, value, sub_arg_type, allow_value_convert=allow_value_convert)
+        except KeyError, TypeError, ValueError, MissingField:
+            pass
+    # if we get to this point, all possibilities failed
+    # find out if we should raise or log this
+    err = (
+        f"Value {value} of type {type(value)} is invalid for {name}, "
+        f"expected value of type {value_type}"
+    )
+    if NoneType not in sub_value_types:
+        # raise exception, we have no idea how to handle this value
+        raise TypeError(err)
+    # failed to parse the (sub) value but None allowed, log only
+    logging.getLogger(__name__).warning(err)
+    return None
+
+
+def _convert_common_value(value: Any, value_type: Any) -> Any:
+    """
+    Convert common type mistakes in raw (json) data, or return the value untouched.
+
+    :param value: The raw (json) value to convert.
+    :param value_type: The type to convert the value to.
+    """
+    if value_type is float and isinstance(value, int):
+        return float(value)
+    if value_type is int and isinstance(value, float):
+        return int(value)
+    if value_type is int and isinstance(value, str) and value.isnumeric():
+        return int(value)
+    if value_type is float and isinstance(value, str) and value.isnumeric():
+        return float(value)
+    if value_type is bool and isinstance(value, str | int):
+        return try_parse_bool(value)
     return value
