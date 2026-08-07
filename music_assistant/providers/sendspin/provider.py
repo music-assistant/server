@@ -89,6 +89,7 @@ from music_assistant.providers.sendspin.bridge_role import (
     BridgePlayerRole,
 )
 from music_assistant.providers.sendspin.constants import (
+    CONF_ALLOW_NONCOMPLIANT_CLIENTS,
     CONF_ALLOW_UNENCRYPTED,
     CONF_MIN_PIN_LENGTH,
     CONF_SENDSPIN_STATIC_DELAY,
@@ -408,6 +409,12 @@ class SendspinProvider(PlayerProvider):
                 default_value=True,
             ),
             ConfigEntry(
+                key=CONF_ALLOW_NONCOMPLIANT_CLIENTS,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=True,
+                advanced=True,
+            ),
+            ConfigEntry(
                 key=CONF_MIN_PIN_LENGTH,
                 type=ConfigEntryType.INTEGER,
                 range=(4, 12),
@@ -465,6 +472,9 @@ class SendspinProvider(PlayerProvider):
             self.mass.http_session,
             pairing_store=pairing_store,
             allow_unencrypted=cast("bool", self.config.get_value(CONF_ALLOW_UNENCRYPTED, True)),
+            allow_noncompliant_clients=cast(
+                "bool", self.config.get_value(CONF_ALLOW_NONCOMPLIANT_CLIENTS, True)
+            ),
             min_pin_length=cast(
                 "int", self.config.get_value(CONF_MIN_PIN_LENGTH, DEFAULT_MIN_PIN_LENGTH)
             ),

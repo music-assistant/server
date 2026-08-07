@@ -18,6 +18,10 @@
       "label": "Allow unencrypted connections",
       "description": "Accept legacy Sendspin clients that do not support encryption. Unencrypted connections are not authenticated and can be intercepted on the local network. This is also (currently) required for the built-in web player."
     },
+    "allow_noncompliant_clients": {
+      "label": "Allow non-spec-compliant clients",
+      "description": "Tolerate clients that deviate from the current Sendspin specification. While enabled, the server also avoids newer protocol behavior that some clients might mishandle. Disable this to test a client against the spec-compliant server behavior, which becomes the default in a future release, after which this option is removed."
+    },
     "min_pin_length": {
       "label": "Minimum PIN length",
       "description": "Minimum number of digits for dynamic PIN pairing."

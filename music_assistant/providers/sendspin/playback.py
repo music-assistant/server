@@ -406,7 +406,8 @@ class SendspinPlaybackSession:
 
         :param reason: Why the task is being cancelled, for logging and the cancel message.
         :param keep_stream: Keep the stream active for a track change and only have clients
-            clear their buffers.
+            clear their buffers. Ignored while non-spec-compliant clients are allowed, since
+            legacy clients might mishandle stream/clear.
         """
         task = self.playback_task
         if task is None:
@@ -415,6 +416,9 @@ class SendspinPlaybackSession:
             if self.playback_task is task:
                 self.playback_task = None
             return
+        provider = cast("SendspinProvider", self.player.provider)
+        if provider.server_api.allow_noncompliant_clients:
+            keep_stream = False
         self.player.logger.debug("Cancelling playback task (%s)", reason)
         self._cancel_requested = True
         task.cancel(msg=reason)
