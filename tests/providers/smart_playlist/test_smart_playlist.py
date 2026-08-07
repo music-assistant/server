@@ -2428,19 +2428,26 @@ async def test_refresh_ai_description_oversized_reply_uses_fallback(tmp_path: An
 
 
 @pytest.mark.asyncio
-async def test_load_rules_from_disk_drops_an_oversized_description(tmp_path: Any) -> None:
-    """A description persisted before the size cap existed is not adopted on load."""
+async def test_load_rules_from_disk_drops_an_unusable_description(tmp_path: Any) -> None:
+    """Only a short, textual persisted description is adopted on load."""
     plugin = _make_ai_plugin(tmp_path)
     await plugin.handle_async_init()
     await write_json(
         str(tmp_path / "smart_playlists" / RULES_FILENAME),
         {
+            # both unusable entries come first, so an entry that raises instead of being
+            # skipped would abort the load and cost the good entry below it
             "abc": {
                 "name": "Name",
                 "rules": SmartPlaylistRules(favorites_only=True).to_dict(),
                 "ai_description": "x" * (MAX_AI_DESCRIPTION_BYTES + 1),
             },
             "def": {
+                "name": "Corrupt",
+                "rules": SmartPlaylistRules(favorites_only=True).to_dict(),
+                "ai_description": {"not": "a string"},
+            },
+            "ghi": {
                 "name": "Other",
                 "rules": SmartPlaylistRules(favorites_only=True).to_dict(),
                 "ai_description": "Short and fine.",
@@ -2452,9 +2459,10 @@ async def test_load_rules_from_disk_drops_an_oversized_description(tmp_path: Any
 
     await plugin._load_rules_from_disk()
 
-    assert "abc" in plugin._rules_store
+    assert set(plugin._rules_store) == {"abc", "def", "ghi"}
     assert "abc" not in plugin._descriptions_store
-    assert plugin._descriptions_store["def"] == "Short and fine."
+    assert "def" not in plugin._descriptions_store
+    assert plugin._descriptions_store["ghi"] == "Short and fine."
 
 
 @pytest.mark.asyncio
