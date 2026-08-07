@@ -12,6 +12,7 @@ from music_assistant_models.unique_list import UniqueList
 
 from music_assistant.providers.nicovideo import SUPPORTED_FEATURES
 from music_assistant.providers.nicovideo.provider import NicovideoMusicProvider
+from tests.common import use_real_create_task
 
 EXPECTED_ROW_IDS = [
     "nicovideo_recommendations",
@@ -75,6 +76,7 @@ def _install_cache_mocks(provider: NicovideoMusicProvider) -> None:
         return_value=(None, False, False)
     )
     provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
+    use_real_create_task(provider.mass)
 
 
 def _install_dict_backed_cache(provider: NicovideoMusicProvider) -> list[asyncio.Future[Any]]:

@@ -457,6 +457,32 @@ def test_round_trip_multiple_entries() -> None:
     assert parsed[2].length is None
 
 
+def test_round_trip_unknown_length_keeps_title() -> None:
+    """Test that an entry with unknown length survives repeated rewrites."""
+    original = PlaylistItem(
+        path="builtin://radio/http://stream.example.com",
+        title="My Custom Station Name",
+        metadata={"media_type": "radio", "name": "My Custom Station Name"},
+        images=[
+            ImageInfo(
+                type="thumb",
+                path="https://img.example.com/station.jpg",
+                provider="builtin",
+                remotely_accessible=True,
+            ),
+        ],
+    )
+    # playlist files are rewritten on every edit, so parse -> generate must be lossless
+    parsed = parse_m3u(generate_m3u("Radio", [original]))
+    reparsed = parse_m3u(generate_m3u("Radio", parsed))
+
+    assert len(reparsed) == 1
+    assert reparsed[0].title == "My Custom Station Name"
+    assert reparsed[0].length is None
+    assert reparsed[0].metadata == original.metadata
+    assert reparsed[0].images[0].path == "https://img.example.com/station.jpg"
+
+
 def test_round_trip_bare_uris() -> None:
     """Test round-trip with bare URIs (no metadata) - migrated playlists."""
     items = [
@@ -690,7 +716,7 @@ def test_media_item_to_playlist_item_radio() -> None:
     assert result.album is None
     assert len(result.artists) == 0
     # a radio has no duration, which must still yield an #EXTINF line carrying the name
-    assert result.length == "-1"
+    assert result.length is None
     assert "#EXTINF:-1,Test FM" in generate_m3u("Radio Stations", [result])
 
 

@@ -393,8 +393,10 @@ def generate_m3u(
             remotely = "true" if img.remotely_accessible else "false"
             fields = [img.type, img.path, img.provider, remotely]
             lines.append(f"#EXTIMG:{sep.join(fields)}")
-        if item.title is not None and item.length is not None:
-            lines.append(f"#EXTINF:{item.length},{item.title}")
+        if item.title is not None:
+            # -1 is the M3U convention for unknown length; without it an entry without
+            # duration (such as a radio station) loses its title on every rewrite
+            lines.append(f"#EXTINF:{item.length if item.length is not None else -1},{item.title}")
         lines.append(item.path)
     return "\n".join(lines) + "\n"
 
@@ -797,9 +799,7 @@ def media_item_to_playlist_item(full_item: MediaItem) -> PlaylistItem:
     return PlaylistItem(
         path=primary_uri,
         title=title,
-        # generate_m3u only writes #EXTINF when length is set, and -1 is the M3U
-        # convention for unknown length, which parse_m3u maps back to None
-        length=str(duration) if duration else "-1",
+        length=str(duration) if duration else None,
         metadata=metadata,
         providers=prov_infos,
         images=images,

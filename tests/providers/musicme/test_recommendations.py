@@ -10,6 +10,7 @@ import pytest
 from music_assistant_models.media_items import Radio, RecommendationFolder, UniqueList
 
 from music_assistant.providers.musicme.provider import MusicMeProvider
+from tests.common import use_real_create_task
 
 HOME_DATA = {"results": {"items": [{"id": 1, "name": "Home Radio"}]}}
 NEWS_DATA = {"results": {"albums": [{"barcode": "b1", "name": "Album", "streamable": 2}]}}
@@ -42,6 +43,7 @@ def _install_cache_mocks(provider: MusicMeProvider) -> None:
         return_value=(None, False, False)
     )
     provider.mass.cache.set = AsyncMock()  # type: ignore[method-assign]
+    use_real_create_task(provider.mass)
 
 
 @pytest.mark.asyncio

@@ -191,6 +191,67 @@ async def test_stream_details_raises_media_not_found(provider: OpenSonicProvider
         await provider.get_stream_details("tr-missing", MediaType.TRACK)
 
 
+@pytest.mark.asyncio
+async def test_get_library_radios_returns_parsed_radios(provider: OpenSonicProvider) -> None:
+    """Internet radio stations are pulled from the server and parsed into MA radios."""
+    radio_station = Mock()
+    radio_station.id = "radio-1"
+    radio_station.name = "Sample Radio"
+    radio_station.stream_url = "https://example.com/stream"
+    radio_station.home_page_url = "https://example.com"
+    radio_station.cover_art = "/cover.jpg"
+
+    provider.conn = Mock()
+    provider.conn.get_internet_radio_stations = AsyncMock(return_value=[radio_station])
+
+    radios = [radio async for radio in provider.get_library_radios()]
+
+    assert len(radios) == 1
+    assert radios[0].item_id == "radio-1"
+    assert radios[0].name == "Sample Radio"
+    assert radios[0].uri == "https://example.com/stream"
+
+
+@pytest.mark.asyncio
+async def test_get_radio_returns_matching_station(provider: OpenSonicProvider) -> None:
+    """Lookup by provider id resolves the requested radio station."""
+    radio_station = Mock()
+    radio_station.id = "radio-1"
+    radio_station.name = "Sample Radio"
+    radio_station.stream_url = "https://example.com/stream"
+    radio_station.home_page_url = "https://example.com"
+    radio_station.cover_art = None
+
+    provider.conn = Mock()
+    provider.conn.get_internet_radio_stations = AsyncMock(return_value=[radio_station])
+
+    radio = await provider.get_radio("radio-1")
+
+    assert radio.item_id == "radio-1"
+    assert radio.name == "Sample Radio"
+
+
+@pytest.mark.asyncio
+async def test_stream_details_for_radio(provider: OpenSonicProvider) -> None:
+    """Radio stream details point to the station stream URL and disable seeking."""
+    radio_station = Mock()
+    radio_station.id = "radio-1"
+    radio_station.name = "Sample Radio"
+    radio_station.stream_url = "https://example.com/stream"
+    radio_station.home_page_url = "https://example.com"
+    radio_station.cover_art = None
+
+    provider.conn = Mock()
+    provider.conn.get_internet_radio_stations = AsyncMock(return_value=[radio_station])
+
+    sd = await provider.get_stream_details("radio-1", MediaType.RADIO)
+
+    assert sd.stream_type == StreamType.HTTP
+    assert sd.path == "https://example.com/stream"
+    assert sd.can_seek is False
+    assert sd.allow_seek is False
+
+
 # ---------------------------------------------------------------------------
 # on_played
 # ---------------------------------------------------------------------------

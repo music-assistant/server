@@ -236,7 +236,7 @@ async def _run_setup(
 
     with (
         patch(
-            "music_assistant.controllers.webserver.controller.get_ip_addresses",
+            "music_assistant.controllers.webserver.controller.get_publish_ip_candidates",
             AsyncMock(return_value=("192.168.1.5",)),
         ),
         patch(

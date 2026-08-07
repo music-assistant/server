@@ -498,7 +498,7 @@ class YandexMusicProvider(MusicProvider):
             ),
         )
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
         """
         Handle a wave-preset save/delete button press and re-render the entries.
 
@@ -3015,7 +3015,9 @@ class YandexMusicProvider(MusicProvider):
             return UniqueList()
         return folder.items
 
-    @use_cache(600, allow_expired_cache=True)
+    # single_flight=False: this advances the rotor cursor and establishes session state,
+    # so concurrent callers must each get their own batch instead of sharing one
+    @use_cache(600, allow_expired_cache=True, single_flight=False)
     async def _get_my_wave_recommendations(self) -> RecommendationFolder | None:
         """
         Get My Wave recommendation folder with personalized tracks.
@@ -3359,7 +3361,10 @@ class YandexMusicProvider(MusicProvider):
             icon="mdi-weather-sunny",
         )
 
-    @use_cache(3600 * 3, allow_expired_cache=True)
+    # single_flight=False: the My Wave branch advances the rotor cursor and sends a one-shot
+    # "radioStarted" feedback, which must happen once per call. The cache sits on this
+    # method, so the flag covers the other playlist kinds along with it
+    @use_cache(3600 * 3, allow_expired_cache=True, single_flight=False)
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """
         Get playlist tracks.

@@ -15,7 +15,12 @@ from libopensonic.errors import (
 )
 from libopensonic.media import PodcastChannel
 from music_assistant_models.config_entries import ConfigEntry
-from music_assistant_models.enums import ConfigEntryType, ContentType, MediaType, StreamType
+from music_assistant_models.enums import (
+    ConfigEntryType,
+    ContentType,
+    MediaType,
+    StreamType,
+)
 from music_assistant_models.errors import (
     ActionUnavailable,
     LoginFailed,
@@ -34,6 +39,7 @@ from music_assistant_models.media_items import (
     Podcast,
     PodcastEpisode,
     ProviderMapping,
+    Radio,
     RecommendationFolder,
     SearchResults,
     Track,
@@ -60,6 +66,7 @@ from .parsers import (
     parse_epsiode,
     parse_playlist,
     parse_podcast,
+    parse_radio,
     parse_structured_lyrics,
     parse_track,
 )
@@ -79,6 +86,7 @@ if TYPE_CHECKING:
 
 CONF_BASE_URL = "baseURL"
 CONF_ENABLE_PODCASTS = "enable_podcasts"
+CONF_ENABLE_RADIO_STATIONS = "enable_radio_stations"
 CONF_ENABLE_LEGACY_AUTH = "enable_legacy_auth"
 CONF_RECO_FAVES = "recommend_favorites"
 CONF_NEW_ALBUMS = "recommend_new"
@@ -99,6 +107,7 @@ class OpenSonicProvider(MusicProvider):
 
     conn: SonicConnection
     _enable_podcasts: bool = True
+    _enable_radio_stations: bool = True
     _show_faves: bool = True
     _show_new: bool = True
     _show_played: bool = True
@@ -112,6 +121,12 @@ class OpenSonicProvider(MusicProvider):
         return (
             ConfigEntry(
                 key=CONF_ENABLE_PODCASTS,
+                type=ConfigEntryType.BOOLEAN,
+                required=True,
+                default_value=True,
+            ),
+            ConfigEntry(
+                key=CONF_ENABLE_RADIO_STATIONS,
                 type=ConfigEntryType.BOOLEAN,
                 required=True,
                 default_value=True,
@@ -205,6 +220,7 @@ class OpenSonicProvider(MusicProvider):
             self.logger.info("Failed to query server for OpenSubsonic extensions")
 
         self._enable_podcasts = bool(self.config.get_value(CONF_ENABLE_PODCASTS))
+        self._enable_radio_stations = bool(self.config.get_value(CONF_ENABLE_RADIO_STATIONS, True))
         self._show_faves = bool(self.config.get_value(CONF_RECO_FAVES))
         self._show_new = bool(self.config.get_value(CONF_NEW_ALBUMS))
         self._show_played = bool(self.config.get_value(CONF_PLAYED_ALBUMS))
@@ -299,38 +315,6 @@ class OpenSonicProvider(MusicProvider):
         if folder is None:
             return UniqueList()
         return folder.items
-
-    async def _get_podcast_episode(self, eid: str) -> SonicEpisode:
-        chan_id, ep_id = eid.split(EP_CHAN_SEP)
-        chan = await self.conn.get_podcasts(inc_episodes=True, pid=chan_id)
-
-        if not chan[0].episode:
-            raise MediaNotFoundError(f"Missing episode list for podcast channel '{chan[0].id}'")
-
-        for episode in chan[0].episode:
-            if episode.id == ep_id:
-                return episode
-
-        msg = f"Can't find episode {ep_id} in podcast {chan_id}"
-        raise MediaNotFoundError(msg)
-
-    def _set_loudness(self, item: SonicItem) -> None:
-        if item.replay_gain and item.replay_gain.track_gain is not None:
-            # Convert ReplayGain values (gain in dB) to integrated loudness (LUFS)
-            track_loudness = -18 - item.replay_gain.track_gain
-            album_loudness = (
-                -18 - item.replay_gain.album_gain
-                if item.replay_gain.album_gain is not None
-                else None
-            )
-            self.mass.create_task(
-                self.mass.streams.audio_analysis.set_track_loudness(
-                    item.id,
-                    self.instance_id,
-                    track_loudness,
-                    album_loudness,
-                )
-            )
 
     async def resolve_image(self, path: str) -> bytes | Any:
         """Return the image."""
@@ -451,6 +435,22 @@ class OpenSonicProvider(MusicProvider):
         results = await self.conn.get_playlists()
         for entry in results:
             yield parse_playlist(self.instance_id, entry)
+
+    async def get_library_radios(self) -> AsyncGenerator[Radio]:
+        """Provide a generator for library radio stations."""
+        if not self._enable_radio_stations:
+            return
+        stations = await self.conn.get_internet_radio_stations()
+        for entry in stations:
+            yield parse_radio(self.instance_id, entry)
+
+    async def get_radio(self, prov_radio_id: str) -> Radio:
+        """Return the requested radio station."""
+        async for station in self.get_library_radios():
+            if station.item_id == prov_radio_id:
+                return station
+        msg = f"Radio {prov_radio_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track]:
         """
@@ -797,6 +797,21 @@ class OpenSonicProvider(MusicProvider):
                 item.id,
                 item.content_type,
             )
+        elif media_type == MediaType.RADIO:
+            async for station in self.get_library_radios():
+                if station.item_id == item_id:
+                    return StreamDetails(
+                        item_id=item_id,
+                        provider=self.instance_id,
+                        allow_seek=False,
+                        can_seek=False,
+                        media_type=MediaType.RADIO,
+                        audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
+                        stream_type=StreamType.HTTP,
+                        path=station.uri or "",
+                    )
+            msg = f"Radio {item_id} not found"
+            raise MediaNotFoundError(msg)
         else:
             msg = f"Unsupported media type encountered '{media_type}'"
             raise UnsupportedFeaturedException(msg)
@@ -904,6 +919,63 @@ class OpenSonicProvider(MusicProvider):
         # If we get here, there is no bookmark
         return (False, 0, None)
 
+    async def get_track_lyrics(self, track: SonicItem) -> tuple[str, bool] | None:
+        """
+        Get lyrics for a track.
+
+        Fetches lyrics from Subsonic server. Returns the lyrics text in LRC format
+        if the Lyrics are synced (have time stamp info) or raw text if not
+        """
+        # Server doesn't support to newer lyrics retrieval, fall back to the old one
+        if not self._id_lyrics:
+            try:
+                ly: SonicLyrics = await self.conn.get_lyrics(track.title, track.artist)
+            except DataNotFoundError:
+                self.logger.debug("Lyrics not found for '%s' by '%s'", track.title, track.artist)
+                return None
+            return (ly.value, False)
+
+        try:
+            lyrics: list[StructuredLyrics] = await self.conn.get_lyrics_by_song_id(track.id)
+        except DataNotFoundError:
+            self.logger.debug("Lyrics not found for '%s'", track.id)
+            return None
+        if not lyrics:
+            return None
+        return parse_structured_lyrics(lyrics[0])
+
+    async def _get_podcast_episode(self, eid: str) -> SonicEpisode:
+        chan_id, ep_id = eid.split(EP_CHAN_SEP)
+        chan = await self.conn.get_podcasts(inc_episodes=True, pid=chan_id)
+
+        if not chan[0].episode:
+            raise MediaNotFoundError(f"Missing episode list for podcast channel '{chan[0].id}'")
+
+        for episode in chan[0].episode:
+            if episode.id == ep_id:
+                return episode
+
+        msg = f"Can't find episode {ep_id} in podcast {chan_id}"
+        raise MediaNotFoundError(msg)
+
+    def _set_loudness(self, item: SonicItem) -> None:
+        if item.replay_gain and item.replay_gain.track_gain is not None:
+            # Convert ReplayGain values (gain in dB) to integrated loudness (LUFS)
+            track_loudness = -18 - item.replay_gain.track_gain
+            album_loudness = (
+                -18 - item.replay_gain.album_gain
+                if item.replay_gain.album_gain is not None
+                else None
+            )
+            self.mass.create_task(
+                self.mass.streams.audio_analysis.set_track_loudness(
+                    item.id,
+                    self.instance_id,
+                    track_loudness,
+                    album_loudness,
+                )
+            )
+
     async def _get_podcast_channel_async(self, chan_id: str) -> PodcastChannel | None:
         if cache := await self.mass.cache.get(
             key=chan_id,
@@ -988,28 +1060,3 @@ class OpenSonicProvider(MusicProvider):
         for sonic_album in albums:
             recent.items.append(parse_album(self.logger, self.instance_id, sonic_album))
         return recent
-
-    async def get_track_lyrics(self, track: SonicItem) -> tuple[str, bool] | None:
-        """
-        Get lyrics for a track.
-
-        Fetches lyrics from Subsonic server. Returns the lyrics text in LRC format
-        if the Lyrics are synced (have time stamp info) or raw text if not
-        """
-        # Server doesn't support to newer lyrics retrieval, fall back to the old one
-        if not self._id_lyrics:
-            try:
-                ly: SonicLyrics = await self.conn.get_lyrics(track.title, track.artist)
-            except DataNotFoundError:
-                self.logger.debug("Lyrics not found for '%s' by '%s'", track.title, track.artist)
-                return None
-            return (ly.value, False)
-
-        try:
-            lyrics: list[StructuredLyrics] = await self.conn.get_lyrics_by_song_id(track.id)
-        except DataNotFoundError:
-            self.logger.debug("Lyrics not found for '%s'", track.id)
-            return None
-        if not lyrics:
-            return None
-        return parse_structured_lyrics(lyrics[0])

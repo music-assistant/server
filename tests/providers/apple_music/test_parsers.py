@@ -14,6 +14,7 @@ from music_assistant.providers.apple_music.parsers import (
     parse_artwork_image,
     parse_track,
 )
+from tests.common import use_real_create_task
 
 BLOBSTORE_ARTWORK = {
     "url": "https://store-033.blobstore.apple.com/pic/image?X-Amz-Signature=abc",
@@ -47,6 +48,7 @@ def _create_provider_mock() -> MagicMock:
     provider.mass.cache.get = AsyncMock(return_value=None)
     provider.mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     provider.mass.cache.set = AsyncMock()
+    use_real_create_task(provider.mass)
     return provider
 
 
@@ -548,7 +550,7 @@ async def test_library_tracks_fetches_detail_when_list_item_has_no_album() -> No
     assert isinstance(tracks[0].album, ItemMapping)
     assert tracks[0].album.name == "Album From Detail"
     provider.api_client.get_data.assert_called_once_with(
-        "me/library/songs/i.librarytrack3", include="catalog,albums,artists"
+        "me/library/songs", ids="i.librarytrack3", include="catalog,albums,artists"
     )
 
 
@@ -614,7 +616,7 @@ async def test_library_tracks_fetches_detail_for_album_name_only_mapping() -> No
     assert tracks[0].album.item_id == "l.album4"
     assert tracks[0].album.name == "Resolved Album"
     provider.api_client.get_data.assert_called_once_with(
-        "me/library/songs/i.librarytrack4", include="catalog,albums,artists"
+        "me/library/songs", ids="i.librarytrack4", include="catalog,albums,artists"
     )
 
 

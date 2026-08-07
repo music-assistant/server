@@ -34,15 +34,19 @@ if TYPE_CHECKING:
 @dataclass(slots=True)
 class ComplexFilterInput:
     """
-    An extra audio file feeding a ComplexFilter.
+    An extra audio source feeding a ComplexFilter.
 
-    :param path: Audio file to read.
+    :param path: Audio source to read, either a file path or a URL.
     :param filters: Optional chain applied to the input before the body consumes
         it (e.g. "aresample=48000").
+    :param input_args: Optional FFmpeg options for reading this input, placed
+        before its ``-i`` on top of the ones every input already gets
+        (e.g. ["-stream_loop", "-1"]).
     """
 
     path: str
     filters: str = ""
+    input_args: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
@@ -56,7 +60,7 @@ class ComplexFilter:
 
     :param body: The filter consuming the main input followed by each extra
         input in order (e.g. "afir=irnorm=1").
-    :param inputs: Extra audio files for ``body``, in the order it consumes them.
+    :param inputs: Extra audio sources for ``body``, in the order it consumes them.
     """
 
     body: str

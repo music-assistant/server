@@ -14,6 +14,14 @@ CONF_WEATHER_COUNTRY = "weather_country"
 # loading when AI Radio initializes: wait this long for it before giving up
 ENGINE_DISCOVERY_TIMEOUT = 30
 
+# grace period for an engine that disappears while AI Radio is loaded. Generous enough
+# to sit out a Home Assistant restart, so a running show is not torn down for it
+ENGINE_RECHECK_GRACE = 300
+
+# how long to wait before reloading after an engine stayed missing, matching the
+# cadence the load path uses for its own retries
+ENGINE_RETRY_DELAY = 120
+
 TRANSLATION_OWNER = "provider.ai_radio"
 
 DEFAULT_LLM_INSTRUCTIONS = (
