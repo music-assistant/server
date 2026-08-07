@@ -7,9 +7,11 @@
     "reset_db": {
       "label": "Reset library database",
       "description": "This will issue a full reset of the library database and trigger a full sync. Only use this option as a last resort if you are seeing issues with the library database."
-    },
-    "reset_db_result": {
-      "label": "The database has been reset."
+    }
+  },
+  "config_actions": {
+    "reset_db": {
+      "result": "The database has been reset."
     }
   },
   "background_task": {

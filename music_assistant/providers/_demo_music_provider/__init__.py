@@ -67,7 +67,11 @@ from music_assistant_models.streamdetails import StreamDetails
 from music_assistant.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant_models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant_models.config_entries import (
+        ConfigActionResult,
+        ConfigEntry,
+        ProviderConfig,
+    )
     from music_assistant_models.provider import ProviderManifest
 
     from music_assistant.mass import MusicAssistant
@@ -143,7 +147,9 @@ class MyDemoMusicprovider(MusicProvider):
         """
         return ()
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
+    async def handle_config_action(
+        self, action: str
+    ) -> tuple[ConfigEntry, ...] | ConfigActionResult | None:
         """
         Handle a one-shot ACTION button press from the options page.
 
