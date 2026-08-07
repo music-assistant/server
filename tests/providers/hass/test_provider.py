@@ -331,6 +331,21 @@ async def _wait_for_stored(provider: HomeAssistantProvider) -> None:
             await asyncio.sleep(0)
 
 
+def _hold_back_registry_fetch(hass: _HomeAssistantClient) -> asyncio.Future[None]:
+    """Hold back the next registry listing and return the future that releases it."""
+    registry_response: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+    hass._registry_result = registry_response
+    # the startup fetch left the event set, so re-arm it for the fetch under test
+    hass.registry_started.clear()
+    return registry_response
+
+
+async def _wait_for_registry_fetch(hass: _HomeAssistantClient) -> None:
+    """Wait until the held back registry listing is in flight."""
+    async with asyncio.timeout(1):
+        await hass.registry_started.wait()
+
+
 def _registry_event(
     entity_id: str, action: str = "update", changes: dict[str, Any] | None = None
 ) -> dict[str, Any]:
@@ -930,14 +945,14 @@ async def test_unmirrored_change_during_the_fetch_is_still_cached() -> None:
     async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
         provider._entity_registry = None
         # hold back the registry response until the update has been delivered
-        hass._registry_result = asyncio.get_running_loop().create_future()
+        registry_response = _hold_back_registry_fetch(hass)
         lookup = asyncio.ensure_future(provider.get_states(domains=("tts",)))
-        await asyncio.sleep(0)
+        await _wait_for_registry_fetch(hass)
 
         hass.fire_event(
             "entity_registry_updated", _registry_event("light.kitchen", changes={"name": "Old"})
         )
-        hass._registry_result.set_result(None)
+        registry_response.set_result(None)
         async with asyncio.timeout(1):
             await lookup
 
@@ -971,13 +986,13 @@ async def test_concurrent_domain_lookups_share_one_registry_fetch() -> None:
         registry_fetches = hass.calls.count(REGISTRY_LIST_COMMAND)
         provider._entity_registry = None
         # hold back the registry response until both lookups are waiting for it
-        hass._registry_result = asyncio.get_running_loop().create_future()
+        registry_response = _hold_back_registry_fetch(hass)
 
         lookups = asyncio.gather(
             provider.get_states(domains=("tts",)), provider.get_states(domains=("tts",))
         )
-        await asyncio.sleep(0)
-        hass._registry_result.set_result(None)
+        await _wait_for_registry_fetch(hass)
+        registry_response.set_result(None)
         async with asyncio.timeout(1):
             results = await lookups
 
@@ -990,12 +1005,12 @@ async def test_registry_changed_during_the_fetch_is_not_cached() -> None:
     async with _start_provider([_state("tts.only", "Only")]) as (provider, hass):
         provider._entity_registry = None
         # hold back the registry response until the update has been delivered
-        hass._registry_result = asyncio.get_running_loop().create_future()
+        registry_response = _hold_back_registry_fetch(hass)
         lookup = asyncio.ensure_future(provider.get_states(domains=("tts",)))
-        await asyncio.sleep(0)
+        await _wait_for_registry_fetch(hass)
 
         hass.fire_event("entity_registry_updated", _registry_event("light.kitchen", "create"))
-        hass._registry_result.set_result(None)
+        registry_response.set_result(None)
         async with asyncio.timeout(1):
             await lookup
 
