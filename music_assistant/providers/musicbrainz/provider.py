@@ -441,7 +441,7 @@ class MusicbrainzProvider(MetadataProvider):
         Weaker evidence than :meth:`get_release_year_by_isrc`, which identifies the exact
         recording: this matches on name and only counts studio albums and singles named
         after the song, so an ambiguous or unknown name yields no year rather than a guess.
-        Costs two MusicBrainz requests.
+        Costs up to two MusicBrainz requests.
 
         :param artist_name: Name of the track's primary artist.
         :param track_name: Name of the track.
@@ -452,9 +452,13 @@ class MusicbrainzProvider(MetadataProvider):
             return None
         # the release groups are sorted oldest first, and undated ones sort last
         release_year = _release_year(release_groups[0][1])
-        first_release_year = await self._earliest_first_release_year(
-            [release_group.id for release_group, _ in release_groups]
-        )
+        # the release found already dates the song, so a lookup that fails costs this song
+        # precision rather than the year the search already supplied
+        first_release_year: int | None = None
+        with suppress(Exception):
+            first_release_year = await self._earliest_first_release_year(
+                [release_group.id for release_group, _ in release_groups]
+            )
         if first_release_year is None:
             return release_year
         if release_year is None:
@@ -621,9 +625,10 @@ class MusicbrainzProvider(MetadataProvider):
         """
         # a recording search never yields more than a handful of release groups, so one
         # query covers them all
+        safe_ids = (re.sub(LUCENE_SPECIAL, r"\\\1", rg_id) for rg_id in release_group_ids)
         result = await self._api_client.get_data(
             "release-group",
-            query=f"rgid:({' OR '.join(release_group_ids)})",
+            query=f"rgid:({' OR '.join(safe_ids)})",
             limit="100",
         )
         if not result:
@@ -641,5 +646,6 @@ def _release_year(release_date: str) -> int | None:
     Read the year off a MusicBrainz date of any precision.
 
     :param release_date: MusicBrainz date, as a year, year-month or full date.
+    :return: The year, or None if the date is absent or unparsable.
     """
     return int(year) if (year := release_date[:4]).isdigit() else None

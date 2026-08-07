@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from music_assistant_models.errors import RateLimited
+
 from music_assistant.providers.musicbrainz.provider import MusicbrainzProvider
 
 # ---------------------------------------------------------------------------
@@ -303,13 +305,17 @@ async def test_release_year_by_track_name_is_none_without_a_confident_match() ->
         assert await provider.get_release_year_by_track_name("Queen", "Bohemian Rhapsody") is None
 
 
-def _release_groups(*first_release_dates: tuple[str, str]) -> dict[str, Any]:
-    """Return a release group search response holding the given (id, first release date) pairs."""
+def _release_groups(*groups: tuple[str, str]) -> dict[str, Any]:
+    """
+    Return a release group search response holding the given release groups.
+
+    :param groups: Release groups as (id, first release date) pairs.
+    """
     return {
-        "count": len(first_release_dates),
+        "count": len(groups),
         "release-groups": [
             {"id": group_id, "title": group_id, "first-release-date": date}
-            for group_id, date in first_release_dates
+            for group_id, date in groups
         ],
     }
 
@@ -334,8 +340,36 @@ async def test_release_year_by_track_name_keeps_a_close_release_date() -> None:
     assert await provider.get_release_year_by_track_name("Queen", "Bohemian Rhapsody") == 1975
 
 
+async def test_release_year_by_track_name_corrects_only_beyond_the_threshold() -> None:
+    """Correct the year only once the album predates the found release by enough years."""
+    for first_release_year, expected in ((1970, 1975), (1969, 1969)):
+        provider, _ = _provider(
+            _search_result(_recording(_release("1975-11-21"))),
+            _release_groups(("rg-A Night at the Opera-Album", f"{first_release_year}-10-31")),
+        )
+
+        assert (
+            await provider.get_release_year_by_track_name("Queen", "Bohemian Rhapsody") == expected
+        )
+
+
+async def test_release_year_by_track_name_keeps_the_found_release_when_the_lookup_fails() -> None:
+    """Never lose the year the search already supplied when the release group lookup fails."""
+    search_result = _search_result(_recording(_release("1975-11-21")))
+    provider, get_data = _provider(search_result)
+
+    async def _answer(endpoint: str, **_kwargs: Any) -> Any:
+        if endpoint == "release-group":
+            raise RateLimited("rate limited")
+        return search_result
+
+    get_data.side_effect = _answer
+
+    assert await provider.get_release_year_by_track_name("Queen", "Bohemian Rhapsody") == 1975
+
+
 async def test_release_year_by_track_name_looks_up_every_release_group_at_once() -> None:
-    """Resolve all release groups of a song with a single request."""
+    """Resolve all release groups of a song with a single, escaped, request."""
     provider, get_data = _provider(
         _search_result(
             _recording(_release("2011-05-16", title="The Platinum Collection")),
@@ -346,12 +380,10 @@ async def test_release_year_by_track_name_looks_up_every_release_group_at_once()
 
     await provider.get_release_year_by_track_name("Queen", "Bohemian Rhapsody")
 
-    release_group_calls = [
-        call for call in get_data.await_args_list if call.args == ("release-group",)
-    ]
-    assert len(release_group_calls) == 1
-    assert release_group_calls[0].kwargs["query"] == (
-        "rgid:(rg-A Night at the Opera-Album OR rg-The Platinum Collection-Album)"
+    # one release group lookup, however many groups the search turned up
+    assert [call.args for call in get_data.await_args_list] == [("recording",), ("release-group",)]
+    assert get_data.await_args_list[1].kwargs["query"] == (
+        r"rgid:(rg\-A Night at the Opera\-Album OR rg\-The Platinum Collection\-Album)"
     )
 
 

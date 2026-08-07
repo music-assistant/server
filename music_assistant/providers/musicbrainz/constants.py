@@ -10,7 +10,8 @@ LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
 # reissued song those can all be reissues. The release group knows when it was first
 # released, but a group that predates the listed releases by only a few years is usually
 # just a single issued ahead of its album or a regional edition, where the listed release
-# is the safer answer. Only a gap this size means the search saw nothing but reissues.
+# is the safer answer. Only a wider gap means the search saw nothing but reissues.
+# Measured against hand-dated songs: a smaller gap corrects as often as it misleads.
 MIN_FIRST_RELEASE_CORRECTION_YEARS = 5
 
 SUPPORTED_FEATURES: set[ProviderFeature] = {
