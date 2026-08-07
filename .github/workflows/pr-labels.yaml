@@ -32,7 +32,7 @@ jobs:
     # GitHub-typed bots (Dependabot, musicassistant-bot[bot], etc.)
     # don't follow the PR template and apply their own labels, so
     # skip them outright. Trusted automation can also pre-apply a
-    # known-set label; those PRs are handled below.
+    # known-set label; that is honoured below when no box is ticked.
     if: github.event.pull_request.user.type != 'Bot'
     steps:
       - name: 🏷 Apply label from PR description checkbox
