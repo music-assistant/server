@@ -13,10 +13,13 @@ from music_assistant_models.errors import LoginFailed
 from music_assistant_models.provider import ProviderManifest
 
 from music_assistant.controllers.music import MusicController
+from music_assistant.controllers.players import PlayerController
 from music_assistant.controllers.tasks import TasksController
 from music_assistant.controllers.tasks.constants import TASK_UPDATE_TIMER_ID
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.music_provider import MusicProvider
+from music_assistant.models.player import Player
+from music_assistant.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
     import pytest
@@ -136,3 +139,84 @@ async def test_unload_provider_waits_for_running_sync(
         await mass_minimal.tasks.close()
 
     assert sync_finished_on_unload is True
+
+
+async def test_unload_provider_unregisters_hidden_players(
+    mass_minimal: MusicAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unloading a player provider also unregisters its disabled and initializing players."""
+    mass_minimal.players = PlayerController(mass_minimal)
+    mass_minimal.music = MagicMock(unschedule_provider_sync=AsyncMock())
+    mass_minimal.player_queues = MagicMock()
+    # discovery is not set up on the minimal instance and plays no part in this test
+    monkeypatch.setattr(mass_minimal.discovery, "on_provider_unload", MagicMock())
+
+    unloaded_players: list[str] = []
+
+    class RecordingPlayer(Player):
+        """Player that records that it was unloaded."""
+
+        async def on_unload(self) -> None:
+            """Handle unload of the player."""
+            unloaded_players.append(self.player_id)
+            await super().on_unload()
+
+    def add_provider(instance_id: str) -> PlayerProvider:
+        provider_config = ProviderConfig(
+            values={},
+            type=ProviderType.PLAYER,
+            domain="test_player_provider",
+            instance_id=instance_id,
+            name="Test player provider",
+        )
+        monkeypatch.setattr(provider_config, "get_value", lambda *_args, **_kwargs: "GLOBAL")
+        provider = PlayerProvider(
+            mass_minimal,
+            manifest=ProviderManifest(
+                type=ProviderType.PLAYER,
+                domain="test_player_provider",
+                name="Test player provider",
+                description="Test player provider",
+                codeowners=["@music-assistant"],
+            ),
+            config=provider_config,
+        )
+        provider.available = True
+        mass_minimal._providers[instance_id] = provider
+        return provider
+
+    def add_player(
+        provider: PlayerProvider,
+        player_id: str,
+        enabled: bool = True,
+        initialized: bool = True,
+    ) -> RecordingPlayer:
+        player = RecordingPlayer(provider, player_id)
+        if initialized:
+            player.set_initialized()
+        if not enabled:
+            # config and state are kept in sync so the player reads as disabled
+            # even if its state gets recalculated from the config
+            player.config.enabled = False
+            player.state.enabled = False
+        mass_minimal.players._players[player_id] = player
+        return player
+
+    provider = add_provider("test_player_provider--instance")
+    other_provider = add_provider("test_player_provider--other")
+    add_player(provider, "enabled_player")
+    # a player provider may deliberately keep a disabled player registered (msx_bridge does)
+    add_player(provider, "disabled_player", enabled=False)
+    # a player that is still being set up when its provider goes away
+    add_player(provider, "initializing_player", initialized=False)
+    other_player = add_player(other_provider, "other_provider_player")
+
+    try:
+        await mass_minimal.unload_provider(provider.instance_id)
+    finally:
+        # unregistering schedules a debounced state update for the players that remain
+        mass_minimal.cancel_timer(f"player_update_state_{other_player.player_id}")
+
+    assert set(unloaded_players) == {"enabled_player", "disabled_player", "initializing_player"}
+    assert set(mass_minimal.players._players) == {other_player.player_id}
