@@ -81,9 +81,9 @@ def use_cache(
     :param single_flight: Whether concurrent callers that miss the cache on the same key
         share one execution of the wrapped function instead of each running it. Callers of
         a shared fetch each get their own copy of the result, or share the one object when
-        it cannot be copied. Set to False for methods that must run once per call, e.g.
-        because they advance a cursor on the provider side or send a one-shot event along
-        with the fetch.
+        it cannot be copied. Set to False when sharing a fetch would be wrong, e.g. because
+        the call advances a cursor on the provider side or sends a one-shot event, so
+        concurrent callers must each run their own fetch instead of sharing one.
     """
     if allow_bypass is None:
         allow_bypass = not persistent
