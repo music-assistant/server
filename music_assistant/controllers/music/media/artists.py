@@ -334,6 +334,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         Artist_type can be omitted for in-library artists.
         Collapse collections only works for in library items.
         """
+        if collapse_collections and not in_library_only:
+            self.logger.warning("Collapsing of collections is only available for in-library items.")
+            in_library_only = True
         if artist_type == ArtistType.SINGER:
             self.logger.warning("Audiobooks not supported for artist_type SINGER.")
             return []
