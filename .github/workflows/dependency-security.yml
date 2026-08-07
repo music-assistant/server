@@ -163,9 +163,12 @@ jobs:
           .venv/bin/pip-audit --desc --format=markdown >> audit_report.md 2>&1 || true
           .venv/bin/pip-audit --format=json --output=audit.json || true
 
-          # Gate when the scan itself could not be completed, rather than pass silently
-          STATUS=$(python3 scripts/audit_changed_packages.py audit.json new_deps.txt base_closure.txt head_closure.txt) || STATUS=scan_failed
+          # Gate when the scan itself could not be completed, rather than pass silently.
+          # Only the status goes to stdout; stderr carries the findings that were not
+          # gated on, and is echoed back so it stays in the job log as well.
+          STATUS=$(python3 scripts/audit_changed_packages.py audit.json new_deps.txt base_closure.txt head_closure.txt 2>audit_notes.txt) || STATUS=scan_failed
           echo "status=$STATUS" >> $GITHUB_OUTPUT
+          cat audit_notes.txt >&2
 
           echo "" >> audit_report.md
           case "$STATUS" in
@@ -182,6 +185,12 @@ jobs:
               echo "✅ No known vulnerabilities found" >> audit_report.md
               ;;
           esac
+
+          # On a failed scan stderr holds the traceback, which belongs in the log only
+          if [ "$STATUS" != "scan_failed" ] && [ -s audit_notes.txt ]; then
+            echo "" >> audit_report.md
+            echo "ℹ️  $(cat audit_notes.txt)" >> audit_report.md
+          fi
 
           if [ "$STATUS" != "pass" ] && [ ! -s base_closure.txt ]; then
             echo "" >> audit_report.md

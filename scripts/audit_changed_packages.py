@@ -17,6 +17,9 @@ Prints the status the reporting workflow gates on:
     preexisting  vulnerabilities exist, but none of them are this pull request's doing
     fail         vulnerabilities this pull request introduces
 
+Findings set aside because the pull request's own resolved set does not carry them are
+named on stderr, so a maintainer can tell a timing artifact from a wrongly cleared finding.
+
 Usage:
     python3 scripts/audit_changed_packages.py audit.json new_deps.txt \
         [base_closure.txt] [head_closure.txt]
@@ -27,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 
 # ruff: noqa: T201
@@ -142,6 +146,8 @@ def audit_status(
     """
     Return `pass`, `preexisting` or `fail` for the given audit report.
 
+    Findings the pull request's own resolution does not carry are named on stderr.
+
     :param audit: A pip-audit report in JSON format.
     :param requirements: Requirement lines the pull request adds or changes, one per line.
     :param base_closure: The target branch's resolved dependency set as pinned requirement
@@ -160,7 +166,10 @@ def audit_status(
         # published in between reads as introduced. Gate only on the findings the pull
         # request's own resolution carries as well.
         if head_closure.strip():
-            introduced = resolved_findings(introduced, _resolution(head_closure))
+            head_resolution = _resolution(head_closure)
+            carried = resolved_findings(introduced, head_resolution)
+            _report_set_aside(introduced - carried, head_resolution)
+            introduced = carried
         return "fail" if introduced else "preexisting"
 
     changed = changed_packages(requirements)
@@ -201,9 +210,33 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _describe_resolution(pinned: set[str] | None) -> str:
+    """Describe what a resolved dependency set holds for a package."""
+    # A package the set carries without an exact version is never set aside, so the only
+    # findings described here are the ones it resolves to another version or not at all
+    if pinned is None:
+        return "not in the resolved set"
+    return "resolved to " + ", ".join(sorted(pinned))
+
+
 def _read_optional(path: Path | None) -> str:
     """Return the contents of a file the workflow writes conditionally."""
     return path.read_text() if path and path.is_file() else ""
+
+
+def _report_set_aside(set_aside: set[tuple[str, str]], resolved: dict[str, set[str]]) -> None:
+    """Name the findings that were not gated on, and what the resolution carries instead."""
+    if not set_aside:
+        return
+    described = ", ".join(
+        f"`{name} {version}` ({_describe_resolution(resolved.get(name))})"
+        for name, version in sorted(set_aside)
+    )
+    print(
+        "Not counted against this PR, because its own resolved dependencies do not"
+        f" carry them: {described}.",
+        file=sys.stderr,
+    )
 
 
 def _resolution(closure: str) -> dict[str, set[str]]:
