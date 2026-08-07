@@ -372,11 +372,11 @@ async def test_result_shape_survives_being_copied(provider: _FakeProvider) -> No
 
 
 async def test_tuple_result_shape_survives_a_cache_hit(
-    cache: CacheController, provider: _FakeProvider
+    cache_controller: CacheController, provider: _FakeProvider
 ) -> None:
     """Test that a cached tuple is rebuilt with all of its members, including the None ones."""
     assert await provider.fetch_tuples("a") == [("a", "name", None)]
-    await _wait_for_stored(cache, "fetch_tuples.a")
+    await _wait_for_stored(cache_controller, "fetch_tuples.a")
     assert await provider.fetch_tuples("a") == [("a", "name", None)]
     assert provider.calls == 1
 
