@@ -684,7 +684,7 @@ class AriaCastReceiver(PluginProvider):
             "album": m.album,
             "artwork_url": m.image_url,
             "duration_ms": int(m.duration * 1000) if m.duration else None,
-            "position_ms": int(m.elapsed_time * 1000) if m.elapsed_time else None,
+            "position_ms": int(m.elapsed_time * 1000) if m.elapsed_time is not None else None,
             "is_playing": self._is_playing,
         }
 
