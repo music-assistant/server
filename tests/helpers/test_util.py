@@ -19,6 +19,7 @@ from music_assistant.helpers.util import (
     guard_single_request,
     import_module_in_thread,
     is_port_in_use,
+    join_task,
     load_provider_module,
     sanitize_http_header_value,
     select_free_port,
@@ -479,6 +480,66 @@ class TestGetPublishIpCandidates:
             assert await util.get_publish_ip_candidates() == ("192.168.1.10",)
 
 
+class TestJoinTask:
+    """join_task waits for a task without adopting it, so a waiter never cancels the work."""
+
+    @pytest.mark.asyncio
+    async def test_returns_the_task_result(self) -> None:
+        """A completed task hands its result to the waiter."""
+        release = asyncio.Event()
+        release.set()
+        task = asyncio.create_task(_gated_task(release, "done"))
+        assert await join_task(task) == "done"
+
+    @pytest.mark.asyncio
+    async def test_cancelled_waiter_leaves_the_task_running(self) -> None:
+        """Cancelling one waiter must not disturb the task or the waiters that remain."""
+        release = asyncio.Event()
+        task = asyncio.create_task(_gated_task(release, "done"))
+        waiter_a = asyncio.create_task(join_task(task))
+        waiter_b = asyncio.create_task(join_task(task))
+        await asyncio.sleep(0)
+        waiter_a.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiter_a
+
+        release.set()
+        assert await waiter_b == "done"
+        assert not task.cancelled()
+
+    @pytest.mark.asyncio
+    async def test_cancelled_waiter_of_a_failing_task_logs_no_loop_error(self) -> None:
+        """A task failing after a waiter gave up is not reported to the loop handler."""
+        release = asyncio.Event()
+        with collect_loop_errors() as reported:
+            task = asyncio.create_task(_gated_task(release, "done", fail=True))
+            waiter_a = asyncio.create_task(join_task(task))
+            waiter_b = asyncio.create_task(join_task(task))
+            await asyncio.sleep(0)
+            waiter_a.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter_a
+            # release the task only once the cancellation is fully processed, so the failure
+            # reliably lands after the giving-up waiter is gone
+            release.set()
+            with pytest.raises(RuntimeError, match="task failed"):
+                await waiter_b
+
+        assert reported == []
+
+    @pytest.mark.asyncio
+    async def test_timeout_leaves_the_task_running(self) -> None:
+        """Giving up on the timeout raises TimeoutError but keeps the task alive."""
+        release = asyncio.Event()
+        task = asyncio.create_task(_gated_task(release, "done"))
+        with pytest.raises(TimeoutError):
+            await join_task(task, timeout=0.01)
+        assert not task.done()
+
+        release.set()
+        assert await task == "done"
+
+
 class TestSanitizeHttpHeaderValue:
     """sanitize_http_header_value strips characters aiohttp forbids in response headers."""
 
@@ -639,6 +700,20 @@ class _GatedMusicProvider(MusicProvider):
             name="Track",
             provider_mappings={_provider_mapping(prov_track_id)},
         )
+
+
+async def _gated_task(release: asyncio.Event, result: str, fail: bool = False) -> str:
+    """
+    Return (or raise) once the given event is set.
+
+    :param release: Event that lets the task complete.
+    :param result: Value to return.
+    :param fail: Raise instead of returning the result.
+    """
+    await release.wait()
+    if fail:
+        raise RuntimeError("task failed")
+    return result
 
 
 def _provider_mapping(item_id: str) -> ProviderMapping:
