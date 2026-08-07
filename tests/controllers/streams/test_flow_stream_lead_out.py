@@ -23,45 +23,43 @@ def _controller(*, exhausted: bool) -> StreamsController:
     return StreamsController(mass)
 
 
-@pytest.mark.asyncio
-async def test_holds_connection_open_after_the_last_queue_item() -> None:
-    """A flow stream that played the queue to its end lets the player drain first."""
-    controller = _controller(exhausted=True)
+async def _lead_out(
+    controller: StreamsController, session_id: str = SESSION_ID
+) -> tuple[AsyncMock, MagicMock]:
+    """Run the lead-out against a stub response, returning the sleep and the response."""
+    resp = MagicMock()
     with patch(
         "music_assistant.controllers.streams.controller.asyncio.sleep", new=AsyncMock()
     ) as sleep:
-        await controller._flow_stream_lead_out(QUEUE_ID, SESSION_ID, keep_alive=False)
+        await controller._flow_stream_lead_out(resp, QUEUE_ID, session_id)
+    return sleep, resp
+
+
+@pytest.mark.asyncio
+async def test_holds_connection_open_after_the_last_queue_item() -> None:
+    """A flow stream that played the queue to its end lets the player drain first."""
+    sleep, _ = await _lead_out(_controller(exhausted=True))
     sleep.assert_awaited_once_with(FLOW_STREAM_LEAD_OUT_SECONDS)
+
+
+@pytest.mark.asyncio
+async def test_closes_the_connection_after_the_lead_out() -> None:
+    """The player only learns the stream ended once the connection is really closed."""
+    _, resp = await _lead_out(_controller(exhausted=True))
+    resp.force_close.assert_called_once()
 
 
 @pytest.mark.asyncio
 async def test_skips_lead_out_when_flow_restarts() -> None:
     """A flow that ended early to be restarted must not delay the next stream."""
-    controller = _controller(exhausted=False)
-    with patch(
-        "music_assistant.controllers.streams.controller.asyncio.sleep", new=AsyncMock()
-    ) as sleep:
-        await controller._flow_stream_lead_out(QUEUE_ID, SESSION_ID, keep_alive=False)
+    sleep, resp = await _lead_out(_controller(exhausted=False))
     sleep.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_skips_lead_out_on_a_kept_alive_connection() -> None:
-    """A connection that outlives the response is not something the player waits on."""
-    controller = _controller(exhausted=True)
-    with patch(
-        "music_assistant.controllers.streams.controller.asyncio.sleep", new=AsyncMock()
-    ) as sleep:
-        await controller._flow_stream_lead_out(QUEUE_ID, SESSION_ID, keep_alive=True)
-    sleep.assert_not_awaited()
+    resp.force_close.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_skips_lead_out_when_superseded() -> None:
     """A newer stream session owns playback, so the stale response must not linger."""
-    controller = _controller(exhausted=True)
-    with patch(
-        "music_assistant.controllers.streams.controller.asyncio.sleep", new=AsyncMock()
-    ) as sleep:
-        await controller._flow_stream_lead_out(QUEUE_ID, "session-2", keep_alive=False)
+    sleep, resp = await _lead_out(_controller(exhausted=True), session_id="session-2")
     sleep.assert_not_awaited()
+    resp.force_close.assert_not_called()

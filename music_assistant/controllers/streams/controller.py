@@ -1160,7 +1160,7 @@ class StreamsController(CoreController):
             self._active_output_streams -= 1
 
         if not client_disconnected and http_profile == "forced_content_length":
-            await self._flow_stream_lead_out(queue_id, session_id, keep_alive=resp.keep_alive)
+            await self._flow_stream_lead_out(resp, queue_id, session_id)
 
         return resp
 
@@ -1640,28 +1640,18 @@ class StreamsController(CoreController):
         return announce_player.get_output_config_value(CONF_HTTP_PROFILE, "default")
 
     async def _flow_stream_lead_out(
-        self, queue_id: str, session_id: str, keep_alive: bool | None
+        self, resp: web.StreamResponse, queue_id: str, session_id: str
     ) -> None:
         """
         Keep an exhausted flow stream response open so the player can play out its buffer.
 
+        :param resp: The flow stream response, already fully written.
         :param queue_id: Id of the queue the flow stream belongs to.
         :param session_id: Stream session this response was opened for.
-        :param keep_alive: Whether the connection will be reused instead of closed.
         """
         if not self.mass.player_queues.flow_queue_exhausted(queue_id, session_id):
             # either a newer stream session took over, or this flow ended early to be
             # restarted right away - in both cases there is no tail to play out
-            return
-        if keep_alive:
-            # aiohttp decides this from the request, so our own 'Connection: close' header
-            # is relayed to the player but never applied to the response: the connection
-            # outlives the handler anyway and there is nothing to postpone.
-            self.logger.debug(
-                "Flow stream for queue %s exhausted - connection is kept alive, "
-                "so the player is not waiting on us to close it",
-                queue_id,
-            )
             return
         self.logger.debug(
             "Flow stream for queue %s exhausted - holding the connection open for %ss "
@@ -1670,6 +1660,10 @@ class StreamsController(CoreController):
             FLOW_STREAM_LEAD_OUT_SECONDS,
         )
         await asyncio.sleep(FLOW_STREAM_LEAD_OUT_SECONDS)
+        # aiohttp derives keep-alive from the request, so the 'Connection: close' we
+        # advertise is relayed to the player but never applied to the response itself.
+        # Without this the player is left waiting on a stream that already ended.
+        resp.force_close()
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""
