@@ -136,7 +136,9 @@ class Provider:
                 self.domain,
                 self.instance_id,
             )
-            task_id = f"provider_reload_{self.instance_id}"
+            # armed under the load path's task id so any (re)load starting before it fires
+            # cancels it
+            task_id = f"load_provider_{self.instance_id}"
             self.mass.call_later(1, self.mass.load_provider_config, config, task_id=task_id)
 
     async def get_diagnostics(self) -> dict[str, SerializableType] | None:
