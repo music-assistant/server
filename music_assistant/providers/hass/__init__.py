@@ -25,6 +25,7 @@ from music_assistant_models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant_models.enums import (
     ConfigEntryType,
     ContentType,
+    EventType,
     MediaType,
     ProviderFeature,
     StreamType,
@@ -1017,6 +1018,7 @@ class HomeAssistantProvider(PluginProvider):
                 ai_engines.append(AIEngine(id=entity_id, name=name, provider=self))
         tts_engines.sort(key=lambda engine: engine.name)
         ai_engines.sort(key=lambda engine: engine.name)
+        changed = (self._tts_engines, self._ai_engines) != (tts_engines, ai_engines)
         self._tts_engines = tts_engines
         self._ai_engines = ai_engines
         self._supported_features.discard(ProviderFeature.TTS)
@@ -1025,6 +1027,12 @@ class HomeAssistantProvider(PluginProvider):
             self._supported_features.add(ProviderFeature.TTS)
         if ai_engines:
             self._supported_features.add(ProviderFeature.AI_QUERY)
+        # the entities can come and go without this provider (un)loading, so tell the
+        # consumers of our engines that their selection may need re-evaluating. They read
+        # the lists straight from their handler, so this has to stay below the assignments.
+        # during startup the load itself signals once we are done.
+        if changed and self._startup_complete:
+            self.mass.signal_event(EventType.PROVIDERS_UPDATED, data=self.mass.get_providers())
 
     async def _subscribe_entity_registry(self) -> None:
         """Watch the Home Assistant entity registry to keep the engine lists up to date."""
