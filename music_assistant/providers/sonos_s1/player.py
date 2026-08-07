@@ -71,7 +71,6 @@ class SonosPlayer(Player):
         super().__init__(provider, soco.uid)
         self.soco = soco
         self.household_id: str = soco.household_id
-        self.subscriptions: list[SubscriptionBase] = []
 
         # Set player attributes
         self._attr_supported_features = set(PLAYER_FEATURES)
@@ -606,7 +605,6 @@ class SonosPlayer(Player):
             self.logger.debug("Starting resubscription cooldown for %s", self.display_name)
 
         self._attr_available = False
-        self._share_link_plugin = None
 
         self.update_state()
         await self.unsubscribe()
