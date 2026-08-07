@@ -390,7 +390,7 @@ async def test_revoke_token(auth_manager: AuthenticationManager) -> None:
 
 async def test_list_users(auth_manager: AuthenticationManager) -> None:
     """
-    Test listing all users (admin only).
+    Test listing all users (requires the users.read scope).
 
     :param auth_manager: AuthenticationManager instance.
     """
@@ -2256,12 +2256,11 @@ async def test_homeassistant_system_user_may_read_users(
     standard_user = await auth_manager.create_user(username="user_a", role=UserRole.USER)
     guest_user = await auth_manager.create_user(username="guest_a", role=UserRole.GUEST)
     for command in (AuthenticationManager.list_users, AuthenticationManager.get_user):
-        required_scope = getattr(command, "api_required_scope", None)
-        assert required_scope is not None
-        assert has_scope(system_user, required_scope)
-        # reading user accounts remains off limits for regular users and guests
-        assert not has_scope(standard_user, required_scope)
-        assert not has_scope(guest_user, required_scope)
+        assert getattr(command, "api_required_scope", None) is Scope.USERS_READ
+    assert has_scope(system_user, Scope.USERS_READ)
+    # reading user accounts remains off limits for regular users and guests
+    assert not has_scope(standard_user, Scope.USERS_READ)
+    assert not has_scope(guest_user, Scope.USERS_READ)
 
 
 async def test_homeassistant_system_user_has_service_role(
