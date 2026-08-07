@@ -312,6 +312,34 @@ async def test_on_unload_unsubscribes_even_when_already_unavailable(
     assert player._subscriptions == []
 
 
+async def test_unloading_mid_subscribe_keeps_no_subscriptions(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A speaker unloaded while subscribing must not keep the subscriptions it created."""
+    player = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    subscribing = asyncio.Event()
+    speaker_responds = asyncio.Event()
+
+    async def _slow_subscribe_target(_target: object, _callback: object) -> None:
+        subscribing.set()
+        await speaker_responds.wait()
+        player._subscriptions.append(MagicMock(unsubscribe=AsyncMock()))
+
+    with patch.object(player, "_subscribe_target", _slow_subscribe_target):
+        subscribe_task = asyncio.create_task(player.subscribe())
+        await subscribing.wait()
+
+        unload_task = asyncio.create_task(player.on_unload())
+        await asyncio.sleep(0)
+        assert not unload_task.done()
+
+        speaker_responds.set()
+        async with asyncio.timeout(5):
+            await asyncio.gather(subscribe_task, unload_task)
+
+    assert player._subscriptions == []
+
+
 async def test_unsubscribe_drops_subscriptions_even_when_cancelled() -> None:
     """A cancelled unsubscribe must not leave stale entries that block resubscribing."""
     provider = MagicMock()
