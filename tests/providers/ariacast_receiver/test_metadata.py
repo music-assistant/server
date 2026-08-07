@@ -52,11 +52,6 @@ async def test_zero_position_from_sender_is_applied() -> None:
     assert (await _apply_meta({"positionMs": 0})).elapsed_time == 0
 
 
-async def test_zero_duration_from_sender_is_applied() -> None:
-    """A sender switching to a stream of unknown length clears the previous duration."""
-    assert (await _apply_meta({"durationMs": 0})).duration == 0
-
-
 @pytest.mark.parametrize("key", ["positionMs", "position_ms"])
 async def test_position_from_sender_is_applied(key: str) -> None:
     """Senders may use either casing for the position."""

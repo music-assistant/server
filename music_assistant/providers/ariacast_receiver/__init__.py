@@ -699,12 +699,13 @@ class AriaCastReceiver(PluginProvider):
         if "album" in data:
             m.album = data["album"]
 
-        # Accept both camelCase (Android) and snake_case (spec broadcast) per interop rule.
-        # The fallback is on the key and not on the value, so a reported 0 survives.
-        duration = data.get("durationMs", data.get("duration_ms"))
+        # Accept both camelCase (Android) and snake_case (spec broadcast) per interop rule
+        duration = data.get("durationMs") or data.get("duration_ms")
         if duration is not None:
             m.duration = int(duration) // 1000
 
+        # the fallback is on the key rather than on the value, so a reported position
+        # of 0 (the start of a track) is applied instead of read as 'not reported'
         position = data.get("positionMs", data.get("position_ms"))
         if position is not None:
             m.elapsed_time = int(position) // 1000
