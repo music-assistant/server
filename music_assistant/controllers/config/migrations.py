@@ -1382,11 +1382,11 @@ FORCED_HTTP_PROFILE = "forced_content_length"
 
 def _migrate_bluesound_http_profile(data: dict[str, Any]) -> bool:
     """
-    Drop the stored HTTP profile of Bluesound players.
+    Drop a stored HTTP profile that Bluesound players can no longer select.
 
     BluOS keeps looping the audio on any profile other than the forced content length one,
-    so the setting is no longer offered. Stored picks are removed rather than kept,
-    otherwise a player left on another profile would stay broken with no way back.
+    so the setting is no longer offered. A player left on another profile would stay broken
+    with no way back, so that pick is removed.
     """
     all_player_configs = data.get(CONF_PLAYERS, {})
     if not isinstance(all_player_configs, dict):
