@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from music_assistant_models.enums import MediaType, PlaybackState
+from music_assistant_models.errors import PlayerCommandFailed
+from soco.exceptions import SoCoException
 
 from music_assistant.mass import MusicAssistant
 from music_assistant.models.player import PlayerMedia
@@ -33,6 +35,7 @@ def _make_soco(uid: str = "RINCON_000E58AAAAAA01400", name: str = "Test Sonos") 
     soco.uid = uid
     soco.household_id = "Sonos_household"
     soco.player_name = name
+    soco._player_name = name
     soco.ip_address = "127.0.0.1"
     soco.speaker_info = {"model_name": "Sonos Play:1"}
     return soco
@@ -197,6 +200,19 @@ async def test_set_members_polls_the_speakers_it_regrouped(timer_mass: MusicAssi
     await kitchen.set_members(player_ids_to_add=[study.player_id, hallway.player_id])
 
     assert _pending_polls(timer_mass) == sorted([_poll_id(study), _poll_id(hallway)])
+
+
+async def test_grouping_failure_is_reported_as_a_player_command_failure(
+    timer_mass: MusicAssistant,
+) -> None:
+    """A speaker that refuses to join surfaces as a typed player command failure."""
+    kitchen = _make_player(timer_mass, "RINCON_000E58AAAAAA01400", "Kitchen")
+    study = _make_player(timer_mass, "RINCON_000E58BBBBBB01400", "Study")
+    cast("MagicMock", timer_mass.players).get_player.side_effect = {study.player_id: study}.get
+    study.soco.join.side_effect = SoCoException("the speaker refused to join")
+
+    with pytest.raises(PlayerCommandFailed, match="Kitchen"):
+        await kitchen.set_members(player_ids_to_add=[study.player_id])
 
 
 async def test_unload_cancels_the_pending_poll(timer_mass: MusicAssistant) -> None:
