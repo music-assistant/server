@@ -17,7 +17,7 @@ from music_assistant.constants import (
 from music_assistant.controllers.streams.audio_analysis import AudioAnalysisController
 from music_assistant.helpers.database import DatabaseConnection
 from music_assistant.models.audio_analysis import AudioAnalysisData
-from music_assistant.models.music_provider import MusicProvider
+from music_assistant.providers.filesystem_local.base import FileSystemProvider
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -54,11 +54,13 @@ async def real_db(tmp_path: pathlib.Path) -> AsyncGenerator[DatabaseConnection]:
 
 def _make_fs_music_provider() -> MagicMock:
     """Return a fake filesystem (non-streaming) MusicProvider keyed by instance_id."""
-    prov = MagicMock(spec=MusicProvider)
+    prov = MagicMock(spec=FileSystemProvider)
     prov.is_streaming_provider = False
     prov.domain = "filesystem_local"
     prov.instance_id = "filesystem_local--abc"
     prov.available = True
+    prov.config = MagicMock()
+    prov.config.get_value.return_value = True
     return prov
 
 
