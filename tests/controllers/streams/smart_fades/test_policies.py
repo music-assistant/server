@@ -271,7 +271,7 @@ class TestAudibleTrimPolicy:
 
 
 class TestOverlapPreferencePolicy:
-    """Prefer the tier's top rung, the context's chosen tier, and two-sided vocal relief."""
+    """Prefer the tier's top rung and the context's chosen tier."""
 
     policy = OverlapPreferencePolicy()
 
@@ -307,28 +307,9 @@ class TestOverlapPreferencePolicy:
 
         assert self.policy.evaluate(candidate, ctx).penalty == pytest.approx(0.0)
 
-    def test_one_sided_vocal_asymmetry(self) -> None:
-        """Relaxing on the outgoing side costs more (12.0) than the incoming side (5.0)."""
-        ctx = _ctx(tier=TransitionTier.FULL_BLEND)
-        incoming = _candidate(
-            bars=16, ideal=16, tier=TransitionTier.FULL_BLEND, one_sided="incoming"
-        )
-        outgoing = _candidate(
-            bars=16, ideal=16, tier=TransitionTier.FULL_BLEND, one_sided="outgoing"
-        )
-
-        incoming_penalty = self.policy.evaluate(incoming, ctx).penalty
-        outgoing_penalty = self.policy.evaluate(outgoing, ctx).penalty
-
-        assert incoming_penalty == pytest.approx(5.0)
-        assert outgoing_penalty == pytest.approx(12.0)
-        assert outgoing_penalty > incoming_penalty
-
     def test_never_rejects(self) -> None:
         """This is a pure soft-scoring policy: it never disqualifies a candidate."""
-        candidate = _candidate(
-            bars=1, ideal=16, tier=TransitionTier.QUICK_FADE, one_sided="outgoing"
-        )
+        candidate = _candidate(bars=1, ideal=16, tier=TransitionTier.QUICK_FADE)
         ctx = _ctx(tier=TransitionTier.FULL_BLEND)
 
         assert self.policy.evaluate(candidate, ctx).rejected is False

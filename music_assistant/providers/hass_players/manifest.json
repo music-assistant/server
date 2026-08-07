@@ -5,7 +5,7 @@
   "name": "Home Assistant MediaPlayers",
   "description": "Control and play music on (supported) Home Assistant media players in your smart home.",
   "codeowners": ["@music-assistant"],
-  "documentation": "https://music-assistant.io/player-support/ha/",
+  "documentation": "https://music-assistant.io/player-support/home-assistant/",
   "multi_instance": false,
   "builtin": false,
   "icon": "md:webhook",

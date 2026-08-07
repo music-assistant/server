@@ -18,6 +18,7 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from modern_colorthief import get_palette as _mmcq_palette
+from music_assistant_models.errors import MusicAssistantError
 from music_assistant_models.media_items import MediaItemPalette
 
 from music_assistant.helpers.images import (
@@ -218,7 +219,13 @@ def extract_palette(image_bytes: bytes) -> MediaItemPalette:
 async def _extract_and_cache(
     mass: MusicAssistant, path_or_url: str, provider: str, key: str
 ) -> MediaItemPalette:
-    img_data = await get_image_data(mass, path_or_url, provider)
+    try:
+        img_data = await get_image_data(mass, path_or_url, provider)
+    except FileNotFoundError, MusicAssistantError:
+        # the image is unavailable (e.g. a stale artwork URL that 404s); the
+        # empty palette is not cached below, so extraction is retried once the
+        # image becomes available again
+        return MediaItemPalette()
     palette = await asyncio.to_thread(extract_palette, img_data)
     # Only persist a palette that actually yielded colors; an empty result is
     # usually a transient decode/download failure that should be retried rather
@@ -263,7 +270,14 @@ async def get_palette(
         task_id=f"palette.{key}",
         abort_existing=False,
     )
-    return await asyncio.shield(task)
+    # wait for the shared extraction instead of awaiting it directly: a caller awaiting a
+    # task holds it as its fut_waiter, so cancelling that caller would cancel the
+    # extraction for every other caller too. asyncio.shield achieves the same, but as of
+    # Python 3.14 a cancelled caller makes it report the extraction's exception through
+    # loop.call_exception_handler, even when another caller already handled it.
+    if not task.done():
+        await asyncio.wait((task,))
+    return task.result()
 
 
 async def invalidate_cached_palette(mass: MusicAssistant, provider: str, path_or_url: str) -> None:

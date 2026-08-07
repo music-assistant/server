@@ -268,11 +268,13 @@ class PlayerConfigMixin:
     @api_command("config/players/invoke_action", required_scope=Scope.CONFIG_PLAYERS_WRITE)
     async def invoke_player_config_action(self, player_id: str, action: str) -> list[ConfigEntry]:
         """
-        Run a one-shot action button from a player's config and return the (re-rendered) entries.
+        Run a one-shot action button from a player's config.
 
         A protocol-prefixed action (``<protocol_player_id>||protocol||<action>``) is routed to
         the linked protocol player; the parent player's entries are then re-rendered so the
-        injected protocol entries pick up any state change.
+        injected protocol entries pick up any state change. An empty list means the action
+        ran with nothing to re-render; a non-empty list holds the parent player's entries
+        the config form should re-render with.
 
         :param player_id: The player whose config surface holds the action.
         :param action: The action id of the pressed button (may be protocol-prefixed).
@@ -285,9 +287,11 @@ class PlayerConfigMixin:
             if not (target := self.mass.players.get_player(protocol_player_id, False)):
                 msg = f"Player {protocol_player_id} not found"
                 raise KeyError(msg)
-            await target.handle_config_action(protocol_action)
+            result = await target.handle_config_action(protocol_action)
         else:
-            await player.handle_config_action(action)
+            result = await player.handle_config_action(action)
+        if result is None:
+            return []
         # re-render the full (parent) player entries so injected protocol entries refresh
         return await self.get_player_config_entries(player_id)
 
@@ -812,11 +816,13 @@ class PlayerConfigMixin:
         player: Player,
     ) -> list[ConfigEntry]:
         """
-        Create config entry for preferred output protocol.
+        Create the output protocol config entries for a player.
 
-        Returns empty list if there are no output protocol options (native only or no protocols).
-        The player.output_protocols property includes native, active, and disabled protocols,
-        with the available flag indicating their status.
+        The preferred output protocol entry is always returned, listing outputs that can not
+        be selected right now as disabled options and hidden altogether when the player has
+        at most one output. The settings of each output whose provider is loaded follow.
+
+        :param player: The player to create the output protocol config entries for.
         """
         all_entries: list[ConfigEntry] = []
         output_protocols = player.output_protocols
@@ -953,6 +959,7 @@ class PlayerConfigMixin:
                 # we grab the config entries from the protocol player
                 # and then prefix them to avoid key collisions
                 protocol_entries = await self._get_player_config_entries(protocol_player)
+                protocol_entry_keys = {entry.key for entry in protocol_entries}
                 for proto_entry in protocol_entries:
                     # deep copy to avoid mutating shared/constant ConfigEntry objects
                     entry = deepcopy(proto_entry)
@@ -965,7 +972,17 @@ class PlayerConfigMixin:
                     entry.translation_key = entry.translation_key or entry.key
                     entry.translation_owner = protocol_player.translation_owner
                     entry.key = f"{protocol_prefix}{entry.key}"
-                    entry.depends_on = None if protocol.is_native else protocol_enabled_key
+                    if entry.depends_on in protocol_entry_keys:
+                        # the entry it depends on is copied into this same block, so follow it
+                        # to its prefixed key and keep the value condition that goes with it
+                        entry.depends_on = f"{protocol_prefix}{entry.depends_on}"
+                    else:
+                        # nothing of its own to depend on, so gate it on the protocol toggle.
+                        # any value condition belonged to the original key and must not carry
+                        # over, or it gets compared against the toggle's boolean instead.
+                        entry.depends_on = protocol_enabled_key
+                        entry.depends_on_value = None
+                        entry.depends_on_value_not = None
                     entry.action = f"{protocol_prefix}{entry.action}" if entry.action else None
                     all_entries.append(entry)
 

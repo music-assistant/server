@@ -49,7 +49,7 @@ class BoseSoundTouchProvider(PlayerProvider):
         """Return Config entries to configure this provider."""
         return (CONF_ENTRY_MANUAL_DISCOVERY_IPS, *await build_preset_config_entries(self))
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
         """
         Handle a preset search/assignment button press and re-render the entries.
 

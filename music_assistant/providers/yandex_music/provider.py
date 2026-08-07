@@ -498,7 +498,7 @@ class YandexMusicProvider(MusicProvider):
             ),
         )
 
-    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...]:
+    async def handle_config_action(self, action: str) -> tuple[ConfigEntry, ...] | None:
         """
         Handle a wave-preset save/delete button press and re-render the entries.
 
@@ -881,21 +881,12 @@ class YandexMusicProvider(MusicProvider):
 
         # The English name on each folder doubles as the fallback; translation_key localizes
         # it for the connection locale at serialization (the server is the single source).
-        folders: list[BrowseFolder] = []
+        items: list[MediaItemType | ItemMapping | BrowseFolder] = []
         base = path if path.endswith("//") else path.rstrip("/") + "/"
-        # My Wave folder (always enabled — Яндекс «Моя волна»)
-        folders.append(
-            BrowseFolder(
-                item_id=MY_WAVE_PLAYLIST_ID,
-                provider=self.instance_id,
-                path=f"{base}{MY_WAVE_PLAYLIST_ID}",
-                name="My Wave",
-                translation_key=MY_WAVE_PLAYLIST_ID,
-                is_playable=True,
-            )
-        )
+        # Expose My Wave as its dynamic virtual playlist so queue refills stay enabled.
+        items.append(await self.get_playlist(MY_WAVE_PLAYLIST_ID))
         # Wave modes folder (P4): discover / calm / active / language presets
-        folders.append(
+        items.append(
             BrowseFolder(
                 item_id=MY_WAVE_MODES_FOLDER_ID,
                 provider=self.instance_id,
@@ -907,7 +898,7 @@ class YandexMusicProvider(MusicProvider):
         )
         # User-defined wave presets (P8) — shown only when any configured.
         if self._get_user_wave_presets():
-            folders.append(
+            items.append(
                 BrowseFolder(
                     item_id=MY_WAVE_PRESETS_FOLDER_ID,
                     provider=self.instance_id,
@@ -918,7 +909,7 @@ class YandexMusicProvider(MusicProvider):
                 )
             )
         # For You folder — Picks + Mixes (Яндекс «Для вас»)
-        folders.append(
+        items.append(
             BrowseFolder(
                 item_id=FOR_YOU_FOLDER_ID,
                 provider=self.instance_id,
@@ -939,7 +930,7 @@ class YandexMusicProvider(MusicProvider):
             )
         )
         if has_library:
-            folders.append(
+            items.append(
                 BrowseFolder(
                     item_id=COLLECTION_FOLDER_ID,
                     provider=self.instance_id,
@@ -950,7 +941,7 @@ class YandexMusicProvider(MusicProvider):
                 )
             )
         # Radio folder — rotor stations (Яндекс волны, shown as Radio)
-        folders.append(
+        items.append(
             BrowseFolder(
                 item_id=RADIO_FOLDER_ID,
                 provider=self.instance_id,
@@ -961,7 +952,7 @@ class YandexMusicProvider(MusicProvider):
             )
         )
         # AI Wave Sets — parametric stations from /landing-blocks/mixes-waves
-        folders.append(
+        items.append(
             BrowseFolder(
                 item_id=MY_WAVES_SET_FOLDER_ID,
                 provider=self.instance_id,
@@ -972,7 +963,7 @@ class YandexMusicProvider(MusicProvider):
             )
         )
         # Pinned items — user-pinned artists/albums/playlists/waves
-        folders.append(
+        items.append(
             BrowseFolder(
                 item_id=PINNED_ITEMS_FOLDER_ID,
                 provider=self.instance_id,
@@ -983,7 +974,7 @@ class YandexMusicProvider(MusicProvider):
             )
         )
         # Listening history — recently played tracks/albums
-        folders.append(
+        items.append(
             BrowseFolder(
                 item_id=LISTENING_HISTORY_FOLDER_ID,
                 provider=self.instance_id,
@@ -993,9 +984,9 @@ class YandexMusicProvider(MusicProvider):
                 is_playable=False,
             )
         )
-        if len(folders) == 1:
-            return await self.browse(folders[0].path)
-        return folders
+        if len(items) == 1 and isinstance(items[0], BrowseFolder):
+            return await self.browse(items[0].path)
+        return items
 
     async def _browse_my_wave(
         self, path: str, sub_subpath: str | None
@@ -2595,6 +2586,7 @@ class YandexMusicProvider(MusicProvider):
                     )
                 },
                 is_editable=False,
+                is_dynamic=True,
             )
 
         if prov_playlist_id == LIKED_TRACKS_PLAYLIST_ID:
@@ -3023,7 +3015,9 @@ class YandexMusicProvider(MusicProvider):
             return UniqueList()
         return folder.items
 
-    @use_cache(600, allow_expired_cache=True)
+    # single_flight=False: this advances the rotor cursor and establishes session state,
+    # so concurrent callers must each get their own batch instead of sharing one
+    @use_cache(600, allow_expired_cache=True, single_flight=False)
     async def _get_my_wave_recommendations(self) -> RecommendationFolder | None:
         """
         Get My Wave recommendation folder with personalized tracks.
@@ -3367,7 +3361,10 @@ class YandexMusicProvider(MusicProvider):
             icon="mdi-weather-sunny",
         )
 
-    @use_cache(3600 * 3, allow_expired_cache=True)
+    # single_flight=False: the My Wave branch advances the rotor cursor and sends a one-shot
+    # "radioStarted" feedback, which must happen once per call. The cache sits on this
+    # method, so the flag covers the other playlist kinds along with it
+    @use_cache(3600 * 3, allow_expired_cache=True, single_flight=False)
     async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """
         Get playlist tracks.

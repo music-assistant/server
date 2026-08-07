@@ -28,12 +28,27 @@ from music_assistant.providers.yandex_music.constants import (
     ROTOR_STATION_MY_WAVE,
 )
 from music_assistant.providers.yandex_music.provider import YandexMusicProvider, _WaveState
+from tests.common import use_real_create_task
 
 from .conftest import DE_JSON_CLIENT, provider_dir
 
 _RECOMMENDATION_STRINGS = json.loads((provider_dir() / "strings.json").read_text(encoding="utf-8"))[
     "media"
 ]["recommendations"]
+
+
+def _media_item_mock(spec: type) -> Mock:
+    """
+    Return a media item stand-in that a copy hands back unchanged.
+
+    A cached result is copied per caller, which real media items survive because they
+    compare by value. A mock compares by identity, so keep it out of the copy.
+
+    :param spec: The media item class the mock stands in for.
+    """
+    item = Mock(spec=spec)
+    item.__deepcopy__ = lambda _memo: item
+    return item
 
 
 @pytest.fixture
@@ -60,6 +75,7 @@ def provider_mock() -> Mock:
     provider.mass.cache.get = AsyncMock(return_value=None)  # Cache always misses
     provider.mass.cache.get_with_freshness = AsyncMock(return_value=(None, False, False))
     provider.mass.cache.set = AsyncMock()
+    use_real_create_task(provider.mass)
 
     # Resolve media labels through the real helper; unauthored keys fall back.
     provider.mass.translations.get_translation = Mock(return_value=None)
@@ -88,7 +104,7 @@ async def test_get_my_wave_recommendations_success(provider_mock: Mock) -> None:
     # the same shape across repeated batch calls.
     provider_mock._fetch_rotor_session_batch = AsyncMock(return_value=([mock_track], "batch_a"))
 
-    mock_parsed_track = Mock(spec=Track)
+    mock_parsed_track = _media_item_mock(Track)
     mock_parsed_track.item_id = f"12345{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_WAVE}"
     mock_parsed_track.name = "Test Track"
     mock_parsed_track.provider_mappings = []
@@ -137,7 +153,7 @@ async def test_get_my_wave_recommendations_duplicate_filtering(provider_mock: Mo
         ]
     )
 
-    mock_parsed_track = Mock(spec=Track)
+    mock_parsed_track = _media_item_mock(Track)
     mock_parsed_track.item_id = f"12345{RADIO_TRACK_ID_SEP}{ROTOR_STATION_MY_WAVE}"
     mock_parsed_track.name = "Test Track"
     mock_parsed_track.provider_mappings = []
@@ -267,7 +283,7 @@ async def test_get_chart_recommendations_success(provider_mock: Mock) -> None:
     provider_mock.client.get_chart = AsyncMock(return_value=mock_chart_info)
 
     # Mock parse_track
-    mock_parsed_track = Mock(spec=Track)
+    mock_parsed_track = _media_item_mock(Track)
     mock_parsed_track.item_id = "track_1"
     mock_parsed_track.name = "Chart Track 1"
 
@@ -982,7 +998,7 @@ async def test_get_recommendation_items_chart_triggers_only_chart_fetch(
     mock_chart_info.chart = mock_chart
     provider_mock.client.get_chart = AsyncMock(return_value=mock_chart_info)
 
-    mock_parsed_track = Mock(spec=Track)
+    mock_parsed_track = _media_item_mock(Track)
     mock_parsed_track.item_id = "track_1"
     with patch(
         "music_assistant.providers.yandex_music.provider.parse_track",
@@ -1001,7 +1017,7 @@ async def test_get_similar_artists_returns_parsed(provider_mock: Mock) -> None:
     yandex_artists = [Mock(), Mock(), Mock()]
     provider_mock.client.get_similar_artists = AsyncMock(return_value=yandex_artists)
 
-    parsed = [Mock(spec=Artist) for _ in yandex_artists]
+    parsed = [_media_item_mock(Artist) for _ in yandex_artists]
     with patch(
         "music_assistant.providers.yandex_music.provider.parse_artist",
         side_effect=parsed,
@@ -1018,7 +1034,7 @@ async def test_get_similar_artists_skips_invalid(provider_mock: Mock) -> None:
     yandex_artists = [Mock(), Mock()]
     provider_mock.client.get_similar_artists = AsyncMock(return_value=yandex_artists)
 
-    parsed_ok = Mock(spec=Artist)
+    parsed_ok = _media_item_mock(Artist)
     with patch(
         "music_assistant.providers.yandex_music.provider.parse_artist",
         side_effect=[InvalidDataError("missing id"), parsed_ok],

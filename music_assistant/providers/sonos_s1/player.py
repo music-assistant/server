@@ -25,12 +25,14 @@ from music_assistant.helpers.upnp import create_didl_metadata
 from music_assistant.models.player import DeviceInfo, Player, PlayerMedia
 
 from .constants import (
+    COMMAND_POLL_DELAY,
     DURATION_SECONDS,
     LINEIN_SOURCE_IDS,
     LINEIN_SOURCES,
     NEVER_TIME,
     PLAYER_FEATURES,
     PLAYER_SOURCE_MAP,
+    POLL_INTERVAL,
     POSITION_SECONDS,
     RESUB_COOLDOWN_SECONDS,
     SONOS_STATE_TRANSITIONING,
@@ -39,6 +41,7 @@ from .constants import (
     SOURCE_TV,
     SUBSCRIPTION_SERVICES,
     SUBSCRIPTION_TIMEOUT,
+    TRANSITION_POLL_INTERVAL,
 )
 from .helpers import SonosUpdateError, soco_error
 
@@ -85,7 +88,7 @@ class SonosPlayer(Player):
         if mac_address:
             self._attr_device_info.add_identifier(IdentifierType.MAC_ADDRESS, mac_address)
         self._attr_needs_poll = True
-        self._attr_poll_interval = 5
+        self._attr_poll_interval = POLL_INTERVAL
         self._attr_available = True
         self._attr_can_group_with = {provider.instance_id}
 
@@ -94,6 +97,8 @@ class SonosPlayer(Player):
         self._subscription_lock: asyncio.Lock | None = None
         self._last_activity: float = NEVER_TIME
         self._resub_cooldown_expires_at: float | None = None
+        self._poll_task_id: str = f"sonos_poll_{self.player_id}"
+        self._unloaded: bool = False
 
     @property
     def missing_subscriptions(self) -> set[str]:
@@ -126,6 +131,17 @@ class SonosPlayer(Player):
         self.update_state()
         await self.unsubscribe()
 
+    async def on_unload(self) -> None:
+        """Handle logic when the player is unloaded from the Player controller."""
+        await super().on_unload()
+        # a poll already running in its worker thread cannot be interrupted, so the flag
+        # is what keeps its results from reaching a player the controller no longer has
+        self._unloaded = True
+        # cancel_timer only reaches a poll that is still pending: once the timer fired,
+        # the poll runs as a task under the same id and cancel_task is what stops it
+        self.mass.cancel_timer(self._poll_task_id)
+        self.mass.cancel_task(self._poll_task_id)
+
     async def stop(self) -> None:
         """Send STOP command to the player."""
         if self.synced_to:
@@ -140,7 +156,7 @@ class SonosPlayer(Player):
                 await asyncio.to_thread(self.soco.play_uri, "")
         else:
             await asyncio.to_thread(self.soco.stop)
-        self.mass.call_later(2, self.poll)
+        self.schedule_poll()
         self.update_state()
 
     async def play(self) -> None:
@@ -152,7 +168,7 @@ class SonosPlayer(Player):
             )
             return
         await asyncio.to_thread(self.soco.play)
-        self.mass.call_later(2, self.poll)
+        self.schedule_poll()
 
     async def pause(self) -> None:
         """Send PAUSE command to the player."""
@@ -167,7 +183,7 @@ class SonosPlayer(Player):
             await self.stop()
             return
         await asyncio.to_thread(self.soco.pause)
-        self.mass.call_later(2, self.poll)
+        self.schedule_poll()
 
     async def volume_set(self, volume_level: int) -> None:
         """Send VOLUME_SET command to the player."""
@@ -176,7 +192,7 @@ class SonosPlayer(Player):
             self.soco.volume = volume_level
 
         await asyncio.to_thread(set_volume_level, volume_level)
-        self.mass.call_later(2, self.poll)
+        self.schedule_poll()
 
     async def volume_mute(self, muted: bool) -> None:
         """Send VOLUME MUTE command to the player."""
@@ -185,7 +201,7 @@ class SonosPlayer(Player):
             self.soco.mute = muted
 
         await asyncio.to_thread(set_volume_mute, muted)
-        self.mass.call_later(2, self.poll)
+        self.schedule_poll()
 
     async def play_media(self, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on the player."""
@@ -214,7 +230,7 @@ class SonosPlayer(Player):
         await asyncio.to_thread(
             self.soco.play_uri, stream_url, meta=didl_metadata, force_radio=force_radio
         )
-        self.mass.call_later(2, self.poll)
+        self.schedule_poll()
 
     async def enqueue_next_media(self, media: PlayerMedia) -> None:
         """Handle enqueuing next media item."""
@@ -244,7 +260,7 @@ class SonosPlayer(Player):
             )
 
         await asyncio.to_thread(add_to_queue)
-        self.mass.call_later(2, self.poll)
+        self.schedule_poll()
 
     async def select_source(self, source: str) -> None:
         """Handle SELECT SOURCE command on the player."""
@@ -257,7 +273,7 @@ class SonosPlayer(Player):
                     self.soco.switch_to_line_in()
 
             await asyncio.to_thread(_switch_to_linein)
-            self.mass.call_later(2, self.poll)
+            self.schedule_poll()
         else:
             await self.stop()
 
@@ -280,13 +296,17 @@ class SonosPlayer(Player):
             for player_id in player_ids_to_remove:
                 if player_to_remove := cast("SonosPlayer", self.mass.players.get_player(player_id)):
                     await asyncio.to_thread(player_to_remove.soco.unjoin)
-                    self.mass.call_later(2, player_to_remove.poll)
+                    player_to_remove.schedule_poll()
 
         if player_ids_to_add:
             for player_id in player_ids_to_add:
                 if player_to_add := cast("SonosPlayer", self.mass.players.get_player(player_id)):
                     await asyncio.to_thread(player_to_add.soco.join, self.soco)
-                    self.mass.call_later(2, player_to_add.poll)
+                    player_to_add.schedule_poll()
+
+    def schedule_poll(self) -> None:
+        """Read the speaker state back shortly after a command was sent to it."""
+        self.mass.call_later(COMMAND_POLL_DELAY, self.poll, task_id=self._poll_task_id)
 
     async def poll(self) -> None:
         """Poll player for state updates."""
@@ -309,7 +329,9 @@ class SonosPlayer(Player):
         new_status = transport_info["current_transport_state"]
 
         if new_status == SONOS_STATE_TRANSITIONING:
+            self._attr_poll_interval = TRANSITION_POLL_INTERVAL
             return
+        self._attr_poll_interval = POLL_INTERVAL
 
         new_status = _convert_state(new_status)
         update_position = new_status != self._attr_playback_state
@@ -348,6 +370,8 @@ class SonosPlayer(Player):
 
     def update_player(self, signal_update: bool = True) -> None:
         """Update Sonos Player."""
+        if self._unloaded:
+            return
         self._update_attributes()
         if signal_update:
             # send update to the player manager right away only if we are triggered from an event
@@ -400,22 +424,24 @@ class SonosPlayer(Player):
                     raise SonosSubscriptionsFailed
             except SonosSubscriptionsFailed:
                 self.logger.warning("Creating subscriptions failed for %s", self.display_name)
-                assert self._subscription_lock is not None
-                async with self._subscription_lock:
-                    await self.offline()
+                # the subscription lock is already held here and is not reentrant
+                await self.offline()
 
     async def unsubscribe(self) -> None:
         """Cancel all subscriptions."""
         if not self._subscriptions:
             return
         self.logger.log(VERBOSE_LOG_LEVEL, "Unsubscribing from events for %s", self.display_name)
+        # drop the subscriptions before awaiting: if the unsubscribe is cancelled midway
+        # they would stay behind as stale entries, and subscribe() skips the services it
+        # believes are still subscribed, leaving the speaker without events entirely
+        subscriptions, self._subscriptions = self._subscriptions, []
         results = await asyncio.gather(
-            *(subscription.unsubscribe() for subscription in self._subscriptions),
+            *(subscription.unsubscribe() for subscription in subscriptions),
             return_exceptions=True,
         )
         for result in results:
             self.log_subscription_result(result, "Unsubscribe")
-        self._subscriptions = []
 
     def update_groups(self) -> None:
         """Update group topology when polling."""
@@ -482,6 +508,8 @@ class SonosPlayer(Player):
 
         async def _handle_group_event(event: SonosEvent | None) -> None:
             """Get async lock and handle event."""
+            if self._unloaded:
+                return
             _provider = cast("SonosPlayerProvider", self._provider)
             async with _provider.topology_condition:
                 group = await _extract_group(event)
@@ -636,7 +664,9 @@ class SonosPlayer(Player):
 
         # Ignore transitions, we should get the target state soon
         if new_status == SONOS_STATE_TRANSITIONING:
+            self._attr_poll_interval = TRANSITION_POLL_INTERVAL
             return
+        self._attr_poll_interval = POLL_INTERVAL
 
         evars = event.variables
         new_status = _convert_state(evars["transport_state"])

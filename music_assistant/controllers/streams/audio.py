@@ -30,7 +30,13 @@ from music_assistant_models.audio_processing import (
     AudioOutputDetails,
     AudioQueueProcessing,
 )
-from music_assistant_models.dsp import AudioChannel, DSPConfig, DSPFilter, DSPState
+from music_assistant_models.dsp import (
+    AudioChannel,
+    ConvolutionFilter,
+    DSPConfig,
+    DSPFilter,
+    DSPState,
+)
 from music_assistant_models.enums import (
     ContentType,
     CrossfadeMode,
@@ -68,6 +74,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_RADIO,
     CONF_VOLUME_NORMALIZATION_TARGET,
     CONF_VOLUME_NORMALIZATION_TRACKS,
+    DSP_IRS_DIRNAME,
     FLOW_MODE_SAMPLE_RATE_48000,
     FLOW_MODE_SAMPLE_RATE_96000,
     FLOW_MODE_SAMPLE_RATE_BIT_PERFECT,
@@ -113,7 +120,7 @@ from music_assistant.helpers.audio import (
     resample_pcm_audio,
     resolve_output_player_ids,
 )
-from music_assistant.helpers.dsp import filter_to_ffmpeg_params
+from music_assistant.helpers.dsp import ComplexFilter, filter_to_ffmpeg_params
 from music_assistant.helpers.ffmpeg import (
     FFMpeg,
     get_ffmpeg_overlay_stream,
@@ -311,21 +318,14 @@ class StreamsAudio:
                     if not provider:
                         self.logger.debug(f"Skipping {prov_media} - provider not available")
                         continue  # provider not available ?
-                    # get streamdetails from provider; AudioSource items come from a
-                    # PluginProvider which carries a different signature (queue-scoped
-                    # context rather than media_type) — branch on provider type.
+                    # get streamdetails from provider; music and plugin providers
+                    # share this signature, so either type can own the item.
                     try:
                         BYPASS_THROTTLER.set(True)
-                        if media_item.media_type == MediaType.AUDIO_SOURCE:
-                            plugin_prov = cast("PluginProvider", provider)
-                            streamdetails = await plugin_prov.get_stream_details(
-                                prov_media.item_id, queue_item.queue_id
-                            )
-                        else:
-                            music_prov = cast("MusicProvider", provider)
-                            streamdetails = await music_prov.get_stream_details(
-                                prov_media.item_id, media_item.media_type
-                            )
+                        stream_prov = cast("MusicProvider | PluginProvider", provider)
+                        streamdetails = await stream_prov.get_stream_details(
+                            prov_media.item_id, media_item.media_type
+                        )
                     except AudioError as err:
                         last_audio_error = err
                         self.logger.warning(str(err))
@@ -361,12 +361,16 @@ class StreamsAudio:
                     )
                     streamdetails.stream_metadata_update_interval = 5
 
-        if streamdetails.duration is None:
+        # providers report an unknown duration as either None or 0
+        if not streamdetails.duration:
             if queue_item.media_item and queue_item.media_item.duration:
                 streamdetails.duration = queue_item.media_item.duration
             elif queue_item.duration:
                 streamdetails.duration = queue_item.duration
-        if seek_position and (not streamdetails.allow_seek or not streamdetails.duration):
+        if seek_position and not streamdetails.allow_seek:
+            self.logger.warning("seeking is not possible on this stream!")
+            seek_position = 0
+        elif seek_position and not streamdetails.duration:
             self.logger.warning("seeking is not possible on duration-less streams!")
             seek_position = 0
 
@@ -439,7 +443,9 @@ class StreamsAudio:
         mass = self.mass
         logger = self.logger.getChild("media_stream")
         logger.log(VERBOSE_LOG_LEVEL, "Starting media stream for %s", streamdetails.uri)
-        extra_input_args = streamdetails.extra_input_args or []
+        # copy: the args below are appended per call, while the StreamDetails is cached on
+        # the queue item and reused across calls (retry, seek, background analysis)
+        extra_input_args = list(streamdetails.extra_input_args or [])
 
         # work out audio source for these streamdetails
         audio_source: str | AsyncGenerator[bytes]
@@ -1150,7 +1156,7 @@ class StreamsAudio:
         :param session_id: Explicit queue session identifier for the processing snapshot.
         :param queue_item_id: Queue item for a single-item output path.
         """
-        filter_params: list[str] = []
+        filter_params: list[str | ComplexFilter] = []
         player = self.mass.players.get_player(player_id)
         destination_player_id = (
             player.protocol_parent_id if player and player.protocol_parent_id else player_id
@@ -1181,8 +1187,21 @@ class StreamsAudio:
         if dsp.enabled:
             if dsp.input_gain != 0:
                 filter_params.append(f"volume={dsp.input_gain}dB")
+            ir_dir = os.path.join(self.mass.storage_path, DSP_IRS_DIRNAME)
+            known_ir_ids = {record["ir_id"] for record in self.mass.config.get_dsp_irs()}
             for dsp_filter in enabled_filters:
-                params = filter_to_ffmpeg_params(dsp_filter, input_format)
+                if isinstance(dsp_filter, ConvolutionFilter) and dsp_filter.ir_id:
+                    # ffmpeg fails to open the graph if the impulse response file is gone,
+                    # which costs the player all audio, so drop the filter instead
+                    if dsp_filter.ir_id not in known_ir_ids:
+                        self.logger.warning(
+                            "Skipping the convolution filter of player %s: "
+                            "impulse response %s is not stored",
+                            player_id,
+                            dsp_filter.ir_id,
+                        )
+                        continue
+                params = filter_to_ffmpeg_params(dsp_filter, input_format, ir_dir=ir_dir)
                 if not params:
                     continue
                 filter_params.extend(params)
@@ -1192,12 +1211,29 @@ class StreamsAudio:
 
         channel_value = self._get_output_channels(player, player_id)
         source_channel = None
-        if channel_value == "left":
-            source_channel = AudioChannel.FL
-            filter_params.append("pan=mono|c0=FL")
-        elif channel_value == "right":
-            source_channel = AudioChannel.FR
-            filter_params.append("pan=mono|c0=FR")
+        channel_mix = ""
+        # a single channel source is already the downmix and holds no FL/FR to select
+        # from, where a pan would silently resolve every gain to zero
+        if input_format.channels > 1:
+            if channel_value == "left":
+                source_channel = AudioChannel.FL
+                channel_mix = "FL"
+            elif channel_value == "right":
+                source_channel = AudioChannel.FR
+                channel_mix = "FR"
+            elif channel_value == "mono":
+                # both source channels feed the downmix, so report ALL to keep the
+                # output from ever being presented as bit perfect
+                source_channel = AudioChannel.ALL
+                channel_mix = "0.5*FL+0.5*FR"
+        if channel_mix:
+            # the pan runs in the command that emits the handoff format, and it feeds
+            # every channel of it explicitly: leaving ffmpeg to upmix from a single
+            # channel costs 3 dB through its rematrix
+            if (handoff_format or output_format).channels == 1:
+                filter_params.append(f"pan=mono|c0={channel_mix}")
+            else:
+                filter_params.append(f"pan=stereo|c0={channel_mix}|c1={channel_mix}")
 
         output_details = AudioOutputDetails(
             player_ids=sorted(destination_player_ids),
@@ -1291,9 +1327,9 @@ class StreamsAudio:
         rate the player supports that is <= the source rate, so the source is never
         upsampled. The bit depth follows the source unless audio processing
         (crossfade, volume normalization, DSP) is active — those need F32 headroom
-        to avoid clipping/precision loss. Realtime AudioSource items skip all
-        processing and get a pure passthrough format (source rate/bit depth when
-        the player supports them).
+        to avoid clipping/precision loss. Surround sources are folded down to stereo.
+        Realtime AudioSource items skip all processing and get a pure passthrough
+        format (source rate/bit depth when the player supports them).
 
         :param player: The player requesting the stream.
         :param streamdetails: Stream details for the current item.
@@ -1321,7 +1357,10 @@ class StreamsAudio:
             sample_rate=output_sample_rate,
             content_type=content_type,
             bit_depth=bit_depth,
-            channels=streamdetails.audio_format.channels,
+            # fold surround sources down to stereo right at the decode step: no
+            # output format carries more than two channels, so a wider PCM format
+            # only makes every bytes-to-seconds sum on the stream come out short
+            channels=min(streamdetails.audio_format.channels, 2),
         )
         if crossfade_enabled or overlay_active:
             pcm_format.channels = 2
@@ -1659,18 +1698,18 @@ class StreamsAudio:
                         streamdetails.uri,
                         asyncio.get_event_loop().time() - stream_started_at,
                     )
-                # trigger pre-buffering of the next track well before end
-                # to ensure the raw PCM is ready when the next track needs to be streamed.
-                # only do this for tracks: live sources (radio, audio_source) open an
-                # upstream connection that would sit idle and likely time out before the
-                # player actually consumes it.
+                # trigger pre-buffering of the next item well before end
+                # to ensure the raw PCM is ready when the next item needs to be streamed.
+                # tracks and sound effects are finite files that fill and close immediately;
+                # live sources (radio, audio_source) open an upstream connection that would
+                # sit idle and likely time out before the player actually consumes it.
                 if (
                     not next_buffer_triggered
                     and streamdetails.duration
                     and (queue := self.mass.player_queues.get_active_queue(queue_item.queue_id))
                     and queue.next_item
                     and queue.next_item.queue_item_id != queue_item.queue_item_id
-                    and queue.next_item.media_type == MediaType.TRACK
+                    and queue.next_item.media_type in (MediaType.TRACK, MediaType.SOUND_EFFECT)
                     and (bytes_received / pcm_format.pcm_sample_size + seek_position)
                     >= streamdetails.duration - 60
                 ):
@@ -3124,8 +3163,9 @@ class StreamsAudio:
         The format matches the source's native sample rate, bit depth and
         channel count whenever the player can accept them; if the player does
         not support the source's sample rate, it is snapped down to the
-        closest supported rate. No F32 widening, no forced stereo — realtime
-        sources skip every processing stage that would otherwise need them.
+        closest supported rate. No F32 widening — realtime sources skip every
+        processing stage that would otherwise need it. Surround sources are
+        still folded down to stereo, which every output path requires anyway.
 
         :param player: The player requesting the stream.
         :param streamdetails: Stream details for the AudioSource item.
@@ -3149,7 +3189,10 @@ class StreamsAudio:
             content_type=ContentType.from_bit_depth(bit_depth),
             sample_rate=output_sample_rate,
             bit_depth=bit_depth,
-            channels=streamdetails.audio_format.channels,
+            # a realtime source may announce more channels than anything downstream can
+            # carry (a VBAN stream can be configured up to 8), and player handoff formats
+            # copy this count straight through, so fold it here
+            channels=min(streamdetails.audio_format.channels, 2),
         )
 
     def _flow_restart_context(
@@ -3400,8 +3443,8 @@ class StreamsAudio:
             provider = self.mass.get_provider(mapping.provider)
             if provider is None:
                 raise MediaNotFoundError(f"Provider {mapping.provider} is not available")
-            provider = cast("MusicProvider", provider)
-            streamdetails = await provider.get_stream_details(
+            stream_prov = cast("MusicProvider | PluginProvider", provider)
+            streamdetails = await stream_prov.get_stream_details(
                 mapping.item_id, MediaType.SOUND_EFFECT
             )
         except Exception as err:

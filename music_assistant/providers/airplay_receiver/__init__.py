@@ -69,6 +69,9 @@ SUPPORTED_FEATURES = {ProviderFeature.AUDIO_SOURCE}
 # combined with the provider instance_id this forms the persistent uri
 AUDIO_SOURCE_ID = "main"
 
+# seconds the silence nudge waits for the audio pipe's consumer to reattach
+AUDIO_PIPE_READER_TIMEOUT = 1.0
+
 
 def airplay_receiver_port(instance_id: str) -> int:
     """
@@ -92,6 +95,8 @@ async def setup(
 
 class AirPlayReceiverProvider(PluginProvider):
     """Implementation of an AirPlay Receiver Plugin."""
+
+    reload_on_streams_network_change = True
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -209,7 +214,7 @@ class AirPlayReceiverProvider(PluginProvider):
         """Return the AudioSources this plugin currently exposes."""
         return [self._audio_source]
 
-    async def get_stream_details(self, source_id: str, queue_id: str) -> StreamDetails:
+    async def get_stream_details(self, item_id: str, media_type: MediaType) -> StreamDetails:
         """
         Return StreamDetails for streaming the AirPlay audio to a queue.
 
@@ -221,8 +226,8 @@ class AirPlayReceiverProvider(PluginProvider):
 
         Raises AudioError when no AirPlay client is currently connected.
         """
-        if source_id != AUDIO_SOURCE_ID:
-            raise MediaNotFoundError(f"Unknown AudioSource: {source_id}")
+        if item_id != AUDIO_SOURCE_ID:
+            raise MediaNotFoundError(f"Unknown AudioSource: {item_id}")
         if not self._active_player_id:
             raise AudioError(
                 "AirPlay receiver has no active client — start playback from your "
@@ -230,7 +235,7 @@ class AirPlayReceiverProvider(PluginProvider):
             )
         return StreamDetails(
             provider=self.instance_id,
-            item_id=source_id,
+            item_id=item_id,
             audio_format=self._audio_format,
             decoded_audio_format=self._decoded_audio_format,
             media_type=MediaType.AUDIO_SOURCE,
@@ -453,7 +458,9 @@ class AirPlayReceiverProvider(PluginProvider):
         config_content = config_content.replace("{METADATA_PIPE}", self.metadata_pipe.path)
         config_content = config_content.replace("{AUDIO_PIPE}", self.audio_pipe.path)
         config_content = config_content.replace("{PORT}", str(self.airplay_port))
-        config_content = config_content.replace("{INTERFACE_LINE}", self._get_mdns_interface_line())
+        config_content = config_content.replace(
+            "{INTERFACE_LINE}", await self._get_mdns_interface_line()
+        )
 
         # Set default volume based on default player's current volume if available
         # Convert player volume (0-100) to AirPlay volume (-30.0 to 0.0 dB)
@@ -473,7 +480,7 @@ class AirPlayReceiverProvider(PluginProvider):
 
         await asyncio.to_thread(_write_config)
 
-    def _get_mdns_interface_line(self) -> str:
+    async def _get_mdns_interface_line(self) -> str:
         """
         Build the shairport-sync ``general.interface`` directive, or an empty string.
 
@@ -482,8 +489,8 @@ class AirPlayReceiverProvider(PluginProvider):
         announced on the intended network instead of an unrelated one (e.g. a
         Docker bridge). Returns an empty string to advertise on all interfaces.
         """
-        bind_ip = self.mass.streams.bind_ip
-        if not bind_ip or bind_ip == "0.0.0.0":
+        bind_ip = await self.mass.streams.get_source_ip()
+        if not bind_ip:
             return ""
         iface_name = interface_name_for_ip(bind_ip)
         if not iface_name:
@@ -531,6 +538,11 @@ class AirPlayReceiverProvider(PluginProvider):
         """
         self.logger.debug("Writing silence to audio pipe to unblock stream")
         silence = b"\x00" * 176400  # 1 second of silence in PCM_S16LE stereo 44.1kHz
+        # the consumer reopens the pipe shortly after shairport-sync drops it, so the
+        # nudge waits for it to come back instead of landing in that gap
+        if not await self.audio_pipe.wait_for_reader(AUDIO_PIPE_READER_TIMEOUT):
+            self.logger.debug("No reader on the audio pipe, skipping the silence write")
+            return
         await self.audio_pipe.write(silence)
 
     def _process_shairport_log_line(self, line: str) -> None:
@@ -568,6 +580,13 @@ class AirPlayReceiverProvider(PluginProvider):
             self._shairport_proc = shairport = AsyncProcess(
                 args, stderr=True, name=f"shairport-sync[{self.name}]"
             )
+
+            # Open the FIFO before shairport-sync can invoke session-control hooks.
+            self._metadata_reader = MetadataReader(
+                self.metadata_pipe.path, self.logger, self._on_metadata_update
+            )
+            await self._metadata_reader.start()
+
             await shairport.start()
 
             # Check if process started successfully
@@ -577,12 +596,6 @@ class AirPlayReceiverProvider(PluginProvider):
                     "shairport-sync exited immediately with code %s", shairport.returncode
                 )
                 return
-
-            # Start metadata reader
-            self._metadata_reader = MetadataReader(
-                self.metadata_pipe.path, self.logger, self._on_metadata_update
-            )
-            await self._metadata_reader.start()
 
             # Keep reading logging from stderr until exit
             self.logger.debug("Starting to read shairport-sync stderr")

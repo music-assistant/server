@@ -8,8 +8,9 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Final, cast
 
 from music_assistant_models.background_task import TaskSchedule
-from music_assistant_models.enums import MediaType, ProviderFeature
+from music_assistant_models.enums import ArtistType, MediaType, ProviderFeature
 from music_assistant_models.errors import (
+    InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
     UnsupportedFeaturedException,
@@ -80,6 +81,16 @@ class MusicProvider(Provider):
         Setting this to False will query all instances of this provider for search and lookups.
         """
         return True
+
+    @property
+    def supported_artist_types(self) -> set[ArtistType]:
+        """
+        Return all supported artist types by this provider.
+
+        Note, that this property currently is only used, to verify support of artists with
+        ArtistType.AUTHOR or ArtistType.NARRATOR.
+        """
+        return {ArtistType.SINGER}
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
@@ -1052,33 +1063,42 @@ class MusicProvider(Provider):
                 self._report_sync_task_failure(MediaType.TRACK, prov_track.uri, err)
 
     def _validate_audiobook_author_narrator_types(self, prov_item: Audiobook) -> None:
-        """Validate that authors/narrators types match the provider's supported features."""
-        if ProviderFeature.AUTHOR_AUDIOBOOKS in self.supported_features and not all(
-            isinstance(author, Artist) for author in prov_item.authors
+        """
+        Validate of correct artist and artist types.
+
+        If a provider supports artists of type Author or Narrator, they have to be part of an audiobook instance.
+        Otherwise only strings are allowed.
+        """
+        if ArtistType.AUTHOR in self.supported_artist_types and not all(
+            (isinstance(author, Artist) and author.artist_type == ArtistType.AUTHOR)
+            for author in prov_item.authors
         ):
-            raise MusicAssistantError(
-                f"Provider {self.name} supports ProviderFeature.AUTHOR_AUDIOBOOKS, but"
-                f" item {prov_item.name} does not exclusively provide Artist instances."
+            raise InvalidDataError(
+                f"Provider {self.name} supports ArtistType.AUTHOR, but"
+                f" item {prov_item.name} does not exclusively provide Artist instances "
+                "with ArtistType.AUTHOR set."
             )
-        if ProviderFeature.NARRATOR_AUDIOBOOKS in self.supported_features and not all(
-            isinstance(narrator, Artist) for narrator in prov_item.narrators
+        if ArtistType.NARRATOR in self.supported_artist_types and not all(
+            (isinstance(narrator, Artist) and narrator.artist_type == ArtistType.NARRATOR)
+            for narrator in prov_item.narrators
         ):
-            raise MusicAssistantError(
-                f"Provider {self.name} supports ProviderFeature.NARRATOR_AUDIOBOOKS, but"
-                f" item {prov_item.name} does not exclusively provide Artist instances."
+            raise InvalidDataError(
+                f"Provider {self.name} supports ArtistType.NARRATOR, but"
+                f" item {prov_item.name} does not exclusively provide Artist instances "
+                "with ArtistType.NARRATOR set."
             )
-        if ProviderFeature.AUTHOR_AUDIOBOOKS not in self.supported_features and not all(
+        if ArtistType.AUTHOR not in self.supported_artist_types and not all(
             isinstance(author, str) for author in prov_item.authors
         ):
-            raise MusicAssistantError(
-                f"Provider {self.name} does not support ProviderFeature.AUTHOR_AUDIOBOOKS, but"
+            raise InvalidDataError(
+                f"Provider {self.name} does not support artists of type author, but"
                 f" item {prov_item.name} does not exclusively provide strings."
             )
-        if ProviderFeature.NARRATOR_AUDIOBOOKS not in self.supported_features and not all(
+        if ArtistType.NARRATOR not in self.supported_artist_types and not all(
             isinstance(narrator, str) for narrator in prov_item.narrators
         ):
-            raise MusicAssistantError(
-                f"Provider {self.name} does not support ProviderFeature.NARRATOR_AUDIOBOOKS, but"
+            raise InvalidDataError(
+                f"Provider {self.name} does not support artists of type narrator, but"
                 f" item {prov_item.name} does not exclusively provide strings."
             )
 
@@ -1120,9 +1140,8 @@ class MusicProvider(Provider):
                         lib_fully_played = library_item.fully_played
                         lib_resume_position_ms = library_item.resume_position_ms
                     else:
-                        # detect a change in ProviderFeature
-                        # (stored authors/narrators are plain strings but the provider
-                        # now supplies full Artist objects)
+                        # Detect, if stored authors/narrators are plain strings but the provider
+                        # now supplies full Artist objects, i.e. artist support changed.
                         prov_author = prov_item.authors[0] if prov_item.authors else None
                         prov_narrator = prov_item.narrators[0] if prov_item.narrators else None
                         if (sync_details.author_is_str and not isinstance(prov_author, str)) or (

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from music_assistant_models.enums import ContentType, ImageType, MediaType
+from music_assistant_models.enums import ContentType, ImageType, LinkType, MediaType
 from music_assistant_models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant_models.media_items import (
     Album,
@@ -14,15 +14,18 @@ from music_assistant_models.media_items import (
     AudioFormat,
     ItemMapping,
     MediaItemImage,
+    MediaItemLink,
     MediaItemMetadata,
     Playlist,
     Podcast,
     PodcastEpisode,
     ProviderMapping,
+    Radio,
     Track,
 )
 
 from music_assistant.constants import UNKNOWN_ARTIST
+from music_assistant.helpers.tags import clean_mbid
 from music_assistant.helpers.util import parse_title_and_version
 
 if TYPE_CHECKING:
@@ -152,8 +155,8 @@ def parse_track(  # noqa: PLR0915
         track_number=sonic_song.track or 0,
     )
 
-    if sonic_song.music_brainz_id:
-        track.mbid = sonic_song.music_brainz_id
+    if mbid := clean_mbid(sonic_song.music_brainz_id, sonic_song.path or f"track {name}", logger):
+        track.mbid = mbid
 
     if sonic_song.sort_name:
         track.sort_name = sonic_song.sort_name
@@ -225,7 +228,10 @@ def parse_track(  # noqa: PLR0915
 
 
 def parse_artist(
-    instance_id: str, sonic_artist: SonicArtist, sonic_info: SonicArtistInfo | None = None
+    instance_id: str,
+    sonic_artist: SonicArtist,
+    sonic_info: SonicArtistInfo | None = None,
+    logger: logging.Logger | None = None,
 ) -> Artist:
     """Parse artist and artistInfo into a Music Assistant Artist."""
     metadata: MediaItemMetadata = MediaItemMetadata()
@@ -279,8 +285,8 @@ def parse_artist(
         sort_name=sonic_artist.sort_name,
     )
 
-    if sonic_artist.music_brainz_id:
-        artist.mbid = sonic_artist.music_brainz_id
+    if mbid := clean_mbid(sonic_artist.music_brainz_id, f"artist {sonic_artist.name}", logger):
+        artist.mbid = mbid
 
     return artist
 
@@ -357,8 +363,8 @@ def parse_album(
     if sonic_album.sort_name:
         album.sort_name = sonic_album.sort_name
 
-    if sonic_album.music_brainz_id:
-        album.mbid = sonic_album.music_brainz_id
+    if mbid := clean_mbid(sonic_album.music_brainz_id, f"album {sonic_album.name}", logger):
+        album.mbid = mbid
 
     if sonic_album.artist_id:
         album.artists.append(
@@ -401,6 +407,42 @@ def parse_album(
             )
 
     return album
+
+
+def parse_radio(instance_id: str, sonic_station: Any) -> Radio:
+    """Parse an OpenSubsonic internet radio station into an MA Radio item."""
+    metadata: MediaItemMetadata = MediaItemMetadata()
+    if sonic_station.cover_art:
+        metadata.add_image(
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=sonic_station.cover_art,
+                provider=instance_id,
+                remotely_accessible=False,
+            )
+        )
+
+    radio = Radio(
+        item_id=sonic_station.id,
+        provider=instance_id,
+        name=sonic_station.name,
+        uri=sonic_station.stream_url,
+        metadata=metadata,
+        provider_mappings={
+            ProviderMapping(
+                item_id=sonic_station.id,
+                provider_domain=SUBSONIC_DOMAIN,
+                provider_instance=instance_id,
+            )
+        },
+    )
+
+    if sonic_station.home_page_url:
+        radio.metadata.links = {
+            MediaItemLink(type=LinkType.WEBSITE, url=sonic_station.home_page_url)
+        }
+
+    return radio
 
 
 def parse_playlist(instance_id: str, sonic_playlist: SonicPlaylist) -> Playlist:

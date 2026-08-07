@@ -78,7 +78,6 @@ from music_assistant.models.setup_flow import AbortFlow, StepExpiredError
 
 from .constants import (
     BRIDGE_PREFIX,
-    CONF_ACTION_ALLOW_UNPAIRED,
     CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_DISABLE,
     CONF_ACTION_MANAGEMENT_DYNAMIC_PIN_ENABLE,
     CONF_ACTION_MANAGEMENT_ENTER,
@@ -87,12 +86,8 @@ from .constants import (
     CONF_ACTION_MANAGEMENT_STATIC_PIN_ENABLE,
     CONF_ACTION_MANAGEMENT_UNPAIRED_DISABLE,
     CONF_ACTION_MANAGEMENT_UNPAIRED_ENABLE,
-    CONF_ACTION_PAIR_PIN_CANCEL,
-    CONF_ACTION_PAIR_PIN_RETRY,
-    CONF_ACTION_PAIR_PIN_SUBMIT,
     CONF_ACTION_REVOKE_UNPAIRED,
     CONF_ACTION_UNPAIR,
-    CONF_ACTION_VERIFY_PIN_START,
     CONF_CAST_AUDIO_UNSUPPORTED,
     CONF_PAIRING_METHOD,
     CONF_PAIRING_PIN,
@@ -102,6 +97,7 @@ from .constants import (
     PAIR_METHOD_PIN,
     PAIR_METHOD_STATIC_PIN,
     PAIR_METHOD_TOKEN,
+    PAIR_METHOD_UNPAIRED,
 )
 from .helpers import (
     AlertText,
@@ -208,6 +204,7 @@ PAIR_CONFIRM_TIMEOUT = 30.0
 # Terminal pairing-error slugs that map to a dedicated setup_flow.abort reason;
 # anything else falls back to the generic "pairing_failed" abort.
 _PAIRING_ABORT_REASONS = {
+    "pairing_error_concurrent": "pairing_error_concurrent",
     "pairing_error_locked_out": "pairing_error_locked_out",
     "pairing_error_no_pin_method": "no_pair_methods",
     "pairing_error_not_connected": "pairing_error_not_connected",
@@ -235,7 +232,6 @@ if TYPE_CHECKING:
     from aiosendspin.models.player import SupportedAudioFormat
     from aiosendspin.noise.trust_store import ServerPairingRecord
     from aiosendspin.server.client import SendspinClient
-    from music_assistant_models.config_entries import ConfigValueType
     from music_assistant_models.media_items import MediaItemPalette
     from music_assistant_models.player_queue import PlayerQueue
     from music_assistant_models.queue_item import QueueItem
@@ -375,35 +371,46 @@ class SendspinBasePlayer(Player):
         return entries
 
     async def handle_config_action(self, action: str) -> list[ConfigEntry]:
-        """Run a device-presence/pairing/management action, then re-render the entries."""
+        """Run an unpair/management action, then re-render the entries."""
         if self.api.connection is not None:
             provider = cast("SendspinProvider", self.provider)
-            # the no-values contract reads the entered PIN from the (persisted) config value
-            pin = str(self.get_config_value(CONF_PAIRING_PIN, "") or "")
-            alert = await self._handle_security_action(provider, action, {CONF_PAIRING_PIN: pin})
+            alert = await self._handle_security_action(provider, action)
             if alert is not None:
                 self._pending_security_alert = alert
         return await self.get_config_entries()
 
     async def run_setup_flow(self, session: SetupSession) -> None:
         """
-        Drive the initial pairing of this (encrypted, unpaired) Sendspin device.
+        Drive pairing (or an unpaired-access grant) for this encrypted Sendspin device.
 
-        Pairing succeeds as a side effect of the provider pairing calls; the flow only
-        drives and confirms it, then finishes with no persisted values. Bridge/web
-        players and unencrypted (legacy) connections have nothing to pair.
+        An unpaired device picks between the offered pair methods and - when the device
+        permits it - playback without pairing; re-running the flow on a paired device
+        verifies its presence via a dynamic PIN. Pairing succeeds as a side effect of
+        the provider pairing calls; the flow finishes with no persisted values. Bridge/
+        web players and unencrypted (legacy) connections have nothing to pair.
 
         :param session: The setup flow session used to interact with the user.
         """
-        if self._is_bridge_or_web_player or self.api.connection_security is None:
+        security = self.api.connection_security
+        if self._is_bridge_or_web_player or security is None:
             raise AbortFlow("nothing_to_configure")
         provider = cast("SendspinProvider", self.provider)
-        options = self._pairing_method_options(provider)
+        record = await provider.server_api.pairing_store.record_by_client_id(self.player_id)
+        if security.psk_category is PskCategory.LONG_TERM and record is not None:
+            await self._run_verify_presence_flow(session, provider, record)
+            await session.finish({})
+            return
+        trusted_unpaired = (
+            await provider.server_api.pairing_store.trusted_unpaired(self.player_id) is not None
+        )
+        options = self._pairing_method_options(provider, offer_unpaired=not trusted_unpaired)
         if not options:
             raise AbortFlow("no_pair_methods")
-        if len(options) == 1:
+        if len(options) == 1 and options[0] != PAIR_METHOD_UNPAIRED:
             method = options[0]
         else:
+            # a lone unpaired-access option still renders the form: granting
+            # unauthenticated playback needs an explicit user choice
             values = await session.form(
                 [
                     ConfigEntry(
@@ -417,7 +424,9 @@ class SendspinBasePlayer(Player):
                 step_id="select_method",
             )
             method = str(values[CONF_PAIRING_METHOD])
-        if method == PAIR_METHOD_TOKEN:
+        if method == PAIR_METHOD_UNPAIRED:
+            await provider.set_trusted_unpaired(self.player_id, enabled=True)
+        elif method == PAIR_METHOD_TOKEN:
             await self._run_token_pairing_flow(session, provider)
         else:
             await self._run_pin_pairing_flow(
@@ -614,24 +623,14 @@ class SendspinBasePlayer(Player):
         # surface (and clear) any alert produced by the most recent action
         alert: AlertText | None = self._pending_security_alert
         self._pending_security_alert = None
-
-        pin_session = provider.get_pin_session(self.player_id)
-        if pin_session is not None and pin_session.finished:
-            if alert is None and pin_session.error is not None:
-                alert = error_alert(pin_session.error)
-            provider.clear_pin_session(self.player_id)
-            pin_session = None
-
-        status, actions = await self._security_state_entries(provider, pin_session)
+        status, actions = await self._security_state_entries(provider)
         entries = [status] if status is not None else []
         if alert is not None:
             entries.append(alert_entry(alert))
         return entries + actions
 
     async def _security_state_entries(
-        self,
-        provider: SendspinProvider,
-        pin_session: PinPairingSession | None,
+        self, provider: SendspinProvider
     ) -> tuple[ConfigEntry | None, list[ConfigEntry]]:
         """Return the current security-status entry and the available action entries."""
         if not self.api.is_connected:
@@ -642,12 +641,7 @@ class SendspinBasePlayer(Player):
         if security is None:
             return ConfigEntry(key="security_status_unencrypted", type=ConfigEntryType.ALERT), []
 
-        info = self.api.info_or_none
-        pairing_config = provider.pairing_config_snapshot(self.player_id)
         record = await provider.server_api.pairing_store.record_by_client_id(self.player_id)
-        trusted_unpaired = (
-            await provider.server_api.pairing_store.trusted_unpaired(self.player_id) is not None
-        )
 
         # psk_category is fixed at handshake time: right after an unpair the live connection
         # still reports LONG_TERM while the record is already gone. The settings view refetches
@@ -656,34 +650,27 @@ class SendspinBasePlayer(Player):
         if security.psk_category is PskCategory.LONG_TERM and record is not None:
             return (
                 ConfigEntry(key="security_status_paired", type=ConfigEntryType.LABEL),
-                await self._paired_entries(provider, info, record, pin_session, pairing_config),
+                await self._paired_entries(
+                    provider, provider.pairing_config_snapshot(self.player_id)
+                ),
             )
 
-        # Initial pairing of an unpaired device is driven by the interactive setup flow
-        # (run_setup_flow), not from this page; only the unpaired-access toggle is offered here.
-        status = (
-            ConfigEntry(key="security_status_unpaired", type=ConfigEntryType.ALERT)
-            if trusted_unpaired
-            else None
+        trusted_unpaired = (
+            await provider.server_api.pairing_store.trusted_unpaired(self.player_id) is not None
         )
-        actions: list[ConfigEntry] = []
-        if trusted_unpaired:
-            actions.append(action_entry(CONF_ACTION_REVOKE_UNPAIRED, advanced=True))
-        elif effective_unpaired_access(info, pairing_config):
-            actions.append(action_entry(CONF_ACTION_ALLOW_UNPAIRED))
-        return status, actions
+        if not trusted_unpaired:
+            return None, []
+        return (
+            ConfigEntry(key="security_status_unpaired", type=ConfigEntryType.ALERT),
+            [action_entry(CONF_ACTION_REVOKE_UNPAIRED)],
+        )
 
     async def _paired_entries(
         self,
         provider: SendspinProvider,
-        info: ClientHelloPayload | None,
-        record: ServerPairingRecord,
-        pin_session: PinPairingSession | None,
         pairing_config: ManagementResultData | None,
     ) -> list[ConfigEntry]:
-        """Return the action entries for the paired view (sessions, management, unpair)."""
-        if pin_session is not None:
-            return self._pin_session_entries(pin_session)
+        """Return the action entries for the paired view (management, unpair)."""
         entries: list[ConfigEntry] = []
         if provider.get_management_session(self.player_id) is not None:
             # Render from the snapshot the enter/patch actions keep fresh; only fetch if it is
@@ -699,49 +686,7 @@ class SendspinBasePlayer(Player):
                 entries.extend(self._management_section_entries(management_config))
                 return entries
         entries.append(action_entry(CONF_ACTION_MANAGEMENT_ENTER, advanced=True))
-        entries.extend(self._verify_offer_entry(info, record, pairing_config))
         entries.append(action_entry(CONF_ACTION_UNPAIR, advanced=True))
-        return entries
-
-    @staticmethod
-    def _pin_session_entries(pin_session: PinPairingSession) -> list[ConfigEntry]:
-        """Return the entries for the current state of a PIN pairing session."""
-        entries: list[ConfigEntry] = []
-        if pin_session.can_retry:
-            if pin_session.error is not None:
-                entries.append(alert_entry(error_alert(pin_session.error)))
-            else:
-                entries.append(ConfigEntry(key="pairing_error_generic", type=ConfigEntryType.ALERT))
-            entries.append(action_entry(CONF_ACTION_PAIR_PIN_RETRY))
-        elif pin_session.awaiting_pin:
-            entries.append(
-                ConfigEntry(
-                    key="pairing_pin_prompt_gesture"
-                    if pin_session.awaiting_gesture
-                    else "pairing_pin_prompt",
-                    type=ConfigEntryType.LABEL,
-                )
-            )
-            entries.append(
-                ConfigEntry(
-                    key=CONF_PAIRING_PIN,
-                    type=ConfigEntryType.STRING,
-                    required=False,
-                    default_value="",
-                    value="",
-                )
-            )
-            entries.append(action_entry(CONF_ACTION_PAIR_PIN_SUBMIT))
-        else:
-            entries.append(
-                ConfigEntry(
-                    key="pairing_pin_progress_gesture"
-                    if pin_session.awaiting_gesture
-                    else "pairing_pin_progress",
-                    type=ConfigEntryType.LABEL,
-                )
-            )
-        entries.append(action_entry(CONF_ACTION_PAIR_PIN_CANCEL))
         return entries
 
     @staticmethod
@@ -786,49 +731,13 @@ class SendspinBasePlayer(Player):
         action = disable_action if method.enabled else enable_action
         return [action_entry(action)]
 
-    @staticmethod
-    def _verify_offer_entry(
-        info: ClientHelloPayload | None,
-        record: ServerPairingRecord | None,
-        pairing_config: ManagementResultData | None,
-    ) -> list[ConfigEntry]:
-        """Return the device-presence verification action, only when it would add something."""
-        if info is None:
-            return []
-        offers_dynamic_pin = any(
-            descriptor.method is PairMethod.DYNAMIC_PIN and not descriptor.locked_out
-            for descriptor in effective_pair_methods(info, pairing_config)
-        )
-        if not offers_dynamic_pin:
-            return []
-        if record is not None and PairMethod.DYNAMIC_PIN in record.pair_methods:
-            return []
-        return [action_entry(CONF_ACTION_VERIFY_PIN_START, advanced=True)]
-
     async def _handle_security_action(
-        self,
-        provider: SendspinProvider,
-        action: str,
-        values: dict[str, ConfigValueType],
+        self, provider: SendspinProvider, action: str
     ) -> AlertText | None:
-        """Execute a device-presence/management action, returning a localized alert on failure."""
+        """Execute an unpair/management action, returning a localized alert on failure."""
         try:
-            if action == CONF_ACTION_PAIR_PIN_RETRY:
-                # A retryable session resumes in place, preserving its method and verify mode.
-                await provider.start_pin_pairing(self.player_id)
-            elif action == CONF_ACTION_VERIFY_PIN_START:
-                await provider.start_pin_pairing(self.player_id, verify=True)
-            elif action == CONF_ACTION_PAIR_PIN_SUBMIT:
-                pin = str(values.get(CONF_PAIRING_PIN) or "").strip()
-                if not pin:
-                    return AlertText("pin_required")
-                await provider.submit_pin(self.player_id, pin)
-            elif action == CONF_ACTION_PAIR_PIN_CANCEL:
-                await provider.cancel_pin_pairing(self.player_id)
-            elif action == CONF_ACTION_UNPAIR:
+            if action == CONF_ACTION_UNPAIR:
                 await provider.unpair_client(self.player_id)
-            elif action == CONF_ACTION_ALLOW_UNPAIRED:
-                await provider.set_trusted_unpaired(self.player_id, enabled=True)
             elif action == CONF_ACTION_REVOKE_UNPAIRED:
                 await provider.set_trusted_unpaired(self.player_id, enabled=False)
             elif action == CONF_ACTION_MANAGEMENT_ENTER:
@@ -855,8 +764,14 @@ class SendspinBasePlayer(Player):
             return error_alert(err)
         return None
 
-    def _pairing_method_options(self, provider: SendspinProvider) -> list[str]:
-        """Return the pairing-method option values the device currently offers for setup."""
+    def _pairing_method_options(
+        self, provider: SendspinProvider, *, offer_unpaired: bool
+    ) -> list[str]:
+        """
+        Return the pairing-method option values the device currently offers for setup.
+
+        :param offer_unpaired: Include the unpaired-playback grant when the device permits it.
+        """
         info = self.api.info_or_none
         pairing_config = provider.pairing_config_snapshot(self.player_id)
         pair_methods = effective_pair_methods(info, pairing_config)
@@ -874,48 +789,78 @@ class SendspinBasePlayer(Player):
                 options.append(PAIR_METHOD_STATIC_PIN)
         if any(descriptor.method is PairMethod.PAIRING_PSK for descriptor in pair_methods):
             options.append(PAIR_METHOD_TOKEN)
+        if offer_unpaired and effective_unpaired_access(info, pairing_config):
+            options.append(PAIR_METHOD_UNPAIRED)
         return options
 
-    def _pairing_succeeded(self, pin_session: PinPairingSession) -> bool:
-        """Whether pairing activated the device's roles (or otherwise finished cleanly)."""
-        return not self.needs_setup or (pin_session.finished and pin_session.error is None)
+    async def _pairing_succeeded(
+        self, provider: SendspinProvider, pin_session: PinPairingSession
+    ) -> bool:
+        """Whether the attempt finished cleanly (or a long-term pairing record now exists)."""
+        if pin_session.finished and pin_session.error is None:
+            return True
+        if pin_session.verify:
+            return False
+        # a confirm wait that outlived its deadline: the record is the proof of success
+        return (
+            await provider.server_api.pairing_store.record_by_client_id(self.player_id) is not None
+        )
+
+    async def _run_verify_presence_flow(
+        self, session: SetupSession, provider: SendspinProvider, record: ServerPairingRecord
+    ) -> None:
+        """Confirm a paired device's physical presence via its dynamic PIN."""
+        info = self.api.info_or_none
+        pairing_config = provider.pairing_config_snapshot(self.player_id)
+        offers_dynamic_pin = any(
+            descriptor.method is PairMethod.DYNAMIC_PIN and not descriptor.locked_out
+            for descriptor in effective_pair_methods(info, pairing_config)
+        )
+        # presence proven by a dynamic-PIN pairing itself needs no re-verification
+        if not offers_dynamic_pin or PairMethod.DYNAMIC_PIN in record.pair_methods:
+            raise AbortFlow("already_paired")
+        await self._run_pin_pairing_flow(session, provider, static=False, verify=True)
 
     async def _run_pin_pairing_flow(
-        self, session: SetupSession, provider: SendspinProvider, *, static: bool
+        self,
+        session: SetupSession,
+        provider: SendspinProvider,
+        *,
+        static: bool,
+        verify: bool = False,
     ) -> None:
         """
-        Pair via PIN: drive the gesture wait, PIN entry and the retry-in-place loop.
+        Pair via PIN: gesture wait, PIN entry and the retry-in-place loop.
 
         A retryable failure re-renders the PIN form (start_pin_pairing resumes the session in
-        place); a terminal failure aborts the flow. On any non-success exit the finally tears
-        down a device-side session still in flight - including when the flow is cancelled.
+        place); a terminal failure aborts the flow and an expired gesture wait propagates as a
+        timed_out abort. On any non-success exit the finally tears down a device-side session
+        still in flight - including when the flow is cancelled.
 
         :param static: Pair with the device's static PIN instead of a dynamic one.
+        :param verify: Verify an already-paired device's presence (dynamic PIN only).
         """
-        paired = False
+        succeeded = False
         errors: dict[str, str] | None = None
         try:
             while True:
                 try:
-                    pin_session = await provider.start_pin_pairing(self.player_id, static=static)
+                    pin_session = await provider.start_pin_pairing(
+                        self.player_id, static=static, verify=verify
+                    )
                 except SecurityActionError as err:
                     raise AbortFlow(_pairing_abort_reason(err)) from err
                 if pin_session.awaiting_gesture:
-                    try:
-                        await session.progress_until(
-                            pin_session.pin_request_event.wait(),
-                            step_id="awaiting_gesture",
-                            text="awaiting_gesture",
-                            expires_in=PAIR_GESTURE_TIMEOUT,
-                        )
-                    except StepExpiredError:
-                        # The device never entered pairing mode; wait for the gesture afresh.
-                        errors = {"base": "pairing_error_timeout"}
-                        continue
+                    await session.progress_until(
+                        pin_session.pin_request_event.wait(),
+                        step_id="awaiting_gesture",
+                        text="awaiting_gesture",
+                        expires_in=PAIR_GESTURE_TIMEOUT,
+                    )
                 if not pin_session.awaiting_pin:
                     # The attempt ended before a PIN could be entered.
-                    if self._pairing_succeeded(pin_session):
-                        paired = True
+                    if await self._pairing_succeeded(provider, pin_session):
+                        succeeded = True
                         return
                     if pin_session.can_retry:
                         errors = {"base": _pin_error_slug(pin_session.error)}
@@ -923,11 +868,16 @@ class SendspinBasePlayer(Player):
                     raise AbortFlow(_pairing_abort_reason(pin_session.error))
                 pin_values = await session.form(
                     [ConfigEntry(key=CONF_PAIRING_PIN, type=ConfigEntryType.STRING, required=True)],
-                    step_id="enter_pin",
+                    step_id="verify_pin" if verify else "enter_pin",
                     errors=errors,
                 )
                 errors = None
-                await provider.submit_pin(self.player_id, str(pin_values[CONF_PAIRING_PIN]).strip())
+                try:
+                    provider.submit_pin(self.player_id, str(pin_values[CONF_PAIRING_PIN]).strip())
+                except SecurityActionError as err:
+                    # the session ended underneath us (cancelled/timed out); start afresh
+                    errors = {"base": err.alert_key}
+                    continue
                 task = pin_session.task
                 if task is not None and not task.done():
                     # Shield the pairing task: the step deadline must not cancel it.
@@ -938,15 +888,17 @@ class SendspinBasePlayer(Player):
                             text="confirming",
                             expires_in=PAIR_CONFIRM_TIMEOUT,
                         )
-                if self._pairing_succeeded(pin_session):
-                    paired = True
+                if await self._pairing_succeeded(provider, pin_session):
+                    succeeded = True
                     return
                 if pin_session.can_retry:
                     errors = {"base": _pin_error_slug(pin_session.error)}
                     continue
                 raise AbortFlow(_pairing_abort_reason(pin_session.error))
         finally:
-            if not paired and provider.get_pin_session(self.player_id) is not None:
+            if succeeded:
+                provider.clear_pin_session(self.player_id)
+            elif provider.get_pin_session(self.player_id) is not None:
                 await provider.cancel_pin_pairing(self.player_id)
 
     async def _run_token_pairing_flow(
@@ -1334,8 +1286,15 @@ class SendspinPlayer(SendspinBasePlayer):
         self._attr_elapsed_time = 0
         self._attr_elapsed_time_last_updated = time.time()
         self.update_state()
-        await self.playback_session.cancel("stop command")
-        await self.api.group.stop()
+        # group.stop() snapshots the live position, which it can only do while the push
+        # stream is up - cancelling first leaves it re-emitting a stale anchor. Teardown
+        # goes in finally so a failing group stop can't strand the session, and nothing
+        # may await between the two: the STOPPED event cancels this session inline, and a
+        # suspension in between would let that cancel cut pipeline teardown short.
+        try:
+            await self.api.group.stop()
+        finally:
+            await self.playback_session.cancel("stop command")
 
     def _get_cast_bridge_manager(self) -> SendspinBridgeManager | None:
         """Return the Chromecast provider's Sendspin bridge manager, if loaded."""

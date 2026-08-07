@@ -40,9 +40,14 @@ from music_assistant.controllers.player_queues.constants import (
     ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
 )
 from music_assistant.controllers.player_queues.helpers import sort_tracks
-from music_assistant.helpers.collections import get_collection_item_media_type_from_item_id
+from music_assistant.helpers.collections import (
+    get_collection_item_id,
+    get_collection_item_media_type_from_item_id,
+)
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from music_assistant.controllers.player_queues.controller import PlayerQueuesController
 
 _LATEST_EPISODE_KEYWORDS = frozenset({"latest", "newest"})
@@ -420,6 +425,76 @@ class MediaResolver:
         # return the (remaining) episode(s) to play
         return UniqueList(all_episodes[episode_index:])
 
+    async def get_next_podcast_episode(
+        self, episode: PodcastEpisode, userid: str | None = None
+    ) -> PodcastEpisode | None:
+        """
+        Return the episode to play after the given one, or None if there is none left.
+
+        Episodes are walked in the same order a full podcast enqueue produces, skipping the
+        ones that were already fully played.
+
+        :param episode: The episode that is being continued.
+        :param userid: User whose resume position should be applied.
+        """
+        podcast = episode.podcast
+        all_episodes = [
+            x async for x in self.mass.music.podcasts.episodes(podcast.item_id, podcast.provider)
+        ]
+        all_episodes.sort(key=lambda x: x.position)
+        current_index = next(
+            (idx for idx, x in enumerate(all_episodes) if x.uri == episode.uri), None
+        )
+        if current_index is None:
+            # the episode is no longer part of the feed, so we have nothing to continue from
+            return None
+        for candidate in all_episodes[current_index + 1 :]:
+            if candidate.fully_played:
+                continue
+            # ensure we have accurate resume info
+            fully_played, resume_position_ms = await self.mass.music.get_resume_position(
+                candidate, userid=userid
+            )
+            if fully_played:
+                continue
+            candidate.resume_position_ms = resume_position_ms
+            return candidate
+        return None
+
+    async def get_next_audiobook(
+        self, audiobook: Audiobook, userid: str | None = None
+    ) -> Audiobook | None:
+        """
+        Return the next book in the collection(s) the given book belongs to, if there is one.
+
+        Returns None for a standalone book and for a book whose collection has no not-fully-played
+        book left after it.
+
+        :param audiobook: The audiobook that is being continued.
+        :param userid: User whose resume position should be applied.
+        """
+        # collections are built from the library metadata, so a book that is not in the
+        # library has no series to continue with
+        library_item = (
+            audiobook
+            if audiobook.provider == "library"
+            else await self.mass.music.audiobooks.get_library_item_by_prov_id(
+                audiobook.item_id, audiobook.provider
+            )
+        )
+        if library_item is None:
+            return None
+        for collection in library_item.metadata.collections or []:
+            try:
+                media_collection = await self.mass.music.audiobooks.get_collection(
+                    get_collection_item_id(collection.title, MediaType.AUDIOBOOK)
+                )
+            except MediaNotFoundError:
+                continue
+            if next_book := await self._next_unplayed_book(media_collection, library_item, userid):
+                return next_book
+        return None
+
     async def _set_episode_resume_point(
         self, episode: PodcastEpisode, userid: str | None, start_from_beginning: bool
     ) -> None:
@@ -438,6 +513,29 @@ class MediaResolver:
         )
         episode.fully_played = fully_played
         episode.resume_position_ms = 0 if fully_played else resume_position_ms
+
+    async def _next_unplayed_book(
+        self,
+        collection: MediaCollection[Audiobook],
+        current: Audiobook,
+        userid: str | None,
+    ) -> Audiobook | None:
+        """Return the first not fully played book after `current` in the given collection."""
+        books = [x for x in collection.items if isinstance(x, Audiobook)]
+        current_index = next(
+            (idx for idx, x in enumerate(books) if x.item_id == current.item_id), None
+        )
+        if current_index is None:
+            return None
+        for candidate in books[current_index + 1 :]:
+            fully_played, resume_position_ms = await self.mass.music.get_resume_position(
+                candidate, userid=userid
+            )
+            if fully_played:
+                continue
+            candidate.resume_position_ms = resume_position_ms
+            return candidate
+        return None
 
     async def _resolve_library_artist(self, artist: Artist) -> Artist | None:
         """
@@ -508,27 +606,19 @@ class MediaResolver:
             media_item = await self.mass.music.get_item_by_uri(media_item.uri)
         if media_item.media_type == MediaType.PLAYLIST:
             media_item = cast("Playlist", media_item)
-            self.mass.create_task(
-                self.mass.music.mark_item_played(
-                    media_item, userid=userid, queue_id=queue_id, user_initiated=True
-                )
+            playlist_tracks = await self.get_playlist_tracks(
+                media_item,
+                start_item,
+                sort_by=sort_by,
+                keep_preceding_items=keep_preceding_items,
             )
-            return list(
-                await self.get_playlist_tracks(
-                    media_item,
-                    start_item,
-                    sort_by=sort_by,
-                    keep_preceding_items=keep_preceding_items,
-                )
-            )
+            self._mark_container_played(media_item, playlist_tracks, userid, queue_id)
+            return list(playlist_tracks)
         if media_item.media_type == MediaType.ARTIST:
             media_item = cast("Artist", media_item)
-            self.mass.create_task(
-                self.mass.music.mark_item_played(
-                    media_item, userid=userid, queue_id=queue_id, user_initiated=True
-                )
-            )
-            return list(await self.get_artist_tracks(media_item))
+            artist_tracks = await self.get_artist_tracks(media_item)
+            self._mark_container_played(media_item, artist_tracks, userid, queue_id)
+            return list(artist_tracks)
         if media_item.media_type == MediaType.ALBUM:
             media_item = cast("Album", media_item)
             return list(
@@ -541,12 +631,9 @@ class MediaResolver:
             )
         if media_item.media_type == MediaType.GENRE:
             media_item = cast("Genre", media_item)
-            self.mass.create_task(
-                self.mass.music.mark_item_played(
-                    media_item, userid=userid, queue_id=queue_id, user_initiated=True
-                )
-            )
-            return list(await self.get_genre_tracks(media_item, start_item))
+            genre_tracks = await self.get_genre_tracks(media_item, start_item)
+            self._mark_container_played(media_item, genre_tracks, userid, queue_id)
+            return list(genre_tracks)
         if media_item.media_type == MediaType.AUDIOBOOK:
             media_item = cast("Audiobook", media_item)
             # ensure we grab the correct/latest resume point info
@@ -583,16 +670,11 @@ class MediaResolver:
 
         if media_item.media_type == MediaType.PODCAST:
             media_item = cast("Podcast", media_item)
-            self.mass.create_task(
-                self.mass.music.mark_item_played(
-                    media_item, userid=userid, queue_id=queue_id, user_initiated=True
-                )
+            episodes = await self.get_next_podcast_episodes(
+                media_item, start_item, userid=userid, start_from_beginning=start_from_beginning
             )
-            return list(
-                await self.get_next_podcast_episodes(
-                    media_item, start_item, userid=userid, start_from_beginning=start_from_beginning
-                )
-            )
+            self._mark_container_played(media_item, episodes, userid, queue_id)
+            return list(episodes)
         if media_item.media_type == MediaType.PODCAST_EPISODE:
             media_item = cast("PodcastEpisode", media_item)
             return list(
@@ -631,3 +713,29 @@ class MediaResolver:
             tracks += [x for x in resolved if isinstance(x, Track)]
 
         return tracks
+
+    def _mark_container_played(
+        self,
+        container: MediaItemType,
+        resolved_items: Sequence[MediaItemType],
+        userid: str | None,
+        queue_id: str | None,
+    ) -> None:
+        """
+        Credit a container the user asked to play with an explicit play.
+
+        Only credits when the container actually resolved to something, so an empty
+        playlist/artist/genre/podcast never lands in the play history.
+
+        :param container: The playlist, artist, genre or podcast that was asked for.
+        :param resolved_items: The items the container resolved to.
+        :param userid: Optional user the playback is attributed to.
+        :param queue_id: Optional queue the playback is requested for.
+        """
+        if not resolved_items:
+            return
+        self.mass.create_task(
+            self.mass.music.mark_item_played(
+                container, userid=userid, queue_id=queue_id, user_initiated=True
+            )
+        )
