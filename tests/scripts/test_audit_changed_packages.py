@@ -123,7 +123,7 @@ def test_introduced_packages_compares_name_and_version() -> None:
 def test_introduced_packages_reads_a_url_pin_from_the_changed_requirements() -> None:
     """A package the target branch pins by URL is only introduced when its requirement changes."""
     findings = {("aiolibdatachannel", "0.1.0")}
-    resolved = {"aiolibdatachannel": set()}
+    resolved: dict[str, set[str]] = {"aiolibdatachannel": set()}
 
     assert introduced_packages(findings, resolved) == set()
     assert introduced_packages(findings, resolved, {"aiolibdatachannel"}) == findings
